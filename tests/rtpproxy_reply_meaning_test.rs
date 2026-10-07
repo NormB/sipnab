@@ -25,15 +25,17 @@
 
 use sipnab::relay::rtpproxy::{Meaning, RtpproxyControl, decode_command, decode_reply, interpret};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The WHOLE decoded reply, cookie included.
 ///
 /// Not just the `Reply`: the cookie is what pairs it with a command, and a
 /// helper that dropped it would make the pairing test unwritable -- the one
 /// test that matters most here.
-fn reply_of(bytes: &[u8]) -> RtpproxyControl {
+fn reply_of(bytes: &[u8]) -> Result<RtpproxyControl, TestError> {
     match decode_reply(bytes) {
-        Some(r @ RtpproxyControl::Reply { .. }) => r,
-        other => panic!("expected a reply, got {other:?}"),
+        Some(r @ RtpproxyControl::Reply { .. }) => Ok(r),
+        other => Err(format!("expected a reply, got {other:?}").into()),
     }
 }
 
@@ -43,12 +45,13 @@ fn reply_of(bytes: &[u8]) -> RtpproxyControl {
 /// WHEN the reply is interpreted against its command
 /// THEN it means the session was torn down.
 #[test]
-fn zero_after_a_delete_means_success() {
-    let cmd = decode_command(b"d_1 D retry-call ftag").expect("decodes");
+fn zero_after_a_delete_means_success() -> Result<(), TestError> {
+    let cmd = decode_command(b"d_1 D retry-call ftag").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"d_1 0")),
+        interpret(&cmd, &reply_of(b"d_1 0")?),
         Some(Meaning::Succeeded)
     );
+    Ok(())
 }
 
 /// GIVEN a feature query answered with zero
@@ -58,79 +61,85 @@ fn zero_after_a_delete_means_success() {
 /// The same byte as a successful delete. Reporting both as `Number(0)` leaves
 /// a reader to remember which question was asked.
 #[test]
-fn zero_after_a_feature_query_means_unsupported() {
-    let cmd = decode_command(b"s3 VF 99999").expect("decodes");
+fn zero_after_a_feature_query_means_unsupported() -> Result<(), TestError> {
+    let cmd = decode_command(b"s3 VF 99999").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"s3 0")),
+        interpret(&cmd, &reply_of(b"s3 0")?),
         Some(Meaning::FeatureAbsent)
     );
+    Ok(())
 }
 
 /// GIVEN the two zero replies
 /// WHEN their meanings are compared
 /// THEN they differ.
 #[test]
-fn the_same_zero_does_not_mean_the_same_thing_twice() {
+fn the_same_zero_does_not_mean_the_same_thing_twice() -> Result<(), TestError> {
     let deleted = interpret(
-        &decode_command(b"d_1 D c ftag").expect("decodes"),
-        &reply_of(b"d_1 0"),
+        &decode_command(b"d_1 D c ftag").ok_or("decodes")?,
+        &reply_of(b"d_1 0")?,
     );
     let unsupported = interpret(
-        &decode_command(b"s3 VF 99999").expect("decodes"),
-        &reply_of(b"s3 0"),
+        &decode_command(b"s3 VF 99999").ok_or("decodes")?,
+        &reply_of(b"s3 0")?,
     );
     assert_ne!(deleted, unsupported);
+    Ok(())
 }
 
 /// GIVEN a feature query answered with one
 /// WHEN it is interpreted
 /// THEN the feature is present.
 #[test]
-fn one_after_a_feature_query_means_supported() {
-    let cmd = decode_command(b"s2 VF 20040107").expect("decodes");
+fn one_after_a_feature_query_means_supported() -> Result<(), TestError> {
+    let cmd = decode_command(b"s2 VF 20040107").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"s2 1")),
+        interpret(&cmd, &reply_of(b"s2 1")?),
         Some(Meaning::FeaturePresent)
     );
+    Ok(())
 }
 
 /// GIVEN a delete-all answered with zero
 /// WHEN it is interpreted
 /// THEN it means success, like the single delete.
 #[test]
-fn zero_after_delete_all_means_success_too() {
-    let cmd = decode_command(b"s7 X").expect("decodes");
+fn zero_after_delete_all_means_success_too() -> Result<(), TestError> {
+    let cmd = decode_command(b"s7 X").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"s7 0")),
+        interpret(&cmd, &reply_of(b"s7 0")?),
         Some(Meaning::Succeeded)
     );
+    Ok(())
 }
 
 /// GIVEN a version command answered with a large number
 /// WHEN it is interpreted
 /// THEN it is a protocol version, not a count and not a success code.
 #[test]
-fn a_number_after_a_version_command_is_a_version() {
-    let cmd = decode_command(b"s1 V").expect("decodes");
+fn a_number_after_a_version_command_is_a_version() -> Result<(), TestError> {
+    let cmd = decode_command(b"s1 V").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"s1 20040107")),
+        interpret(&cmd, &reply_of(b"s1 20040107")?),
         Some(Meaning::ProtocolVersion(20_040_107))
     );
+    Ok(())
 }
 
 /// GIVEN an update answered with a port and address
 /// WHEN it is interpreted
 /// THEN it is an allocation, whatever the verb.
 #[test]
-fn a_media_reply_is_an_allocation_regardless_of_the_verb() {
-    let cmd = decode_command(b"s5 Uc8 nl-call 172.28.0.21 6000 ftag").expect("decodes");
+fn a_media_reply_is_an_allocation_regardless_of_the_verb() -> Result<(), TestError> {
+    let cmd = decode_command(b"s5 Uc8 nl-call 172.28.0.21 6000 ftag").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"s5 31008 172.28.0.12")),
+        interpret(&cmd, &reply_of(b"s5 31008 172.28.0.12")?),
         Some(Meaning::Allocated {
             port: 31008,
             address: "172.28.0.12".to_string()
         })
     );
+    Ok(())
 }
 
 // ── Pairing is the precondition ──────────────────────────────────────────────
@@ -143,13 +152,14 @@ fn a_media_reply_is_an_allocation_regardless_of_the_verb() {
 /// command it did not answer produces a confident statement about the wrong
 /// call, which is worse than declining.
 #[test]
-fn a_reply_is_never_interpreted_against_another_commands_cookie() {
-    let cmd = decode_command(b"d_1 D retry-call ftag").expect("decodes");
+fn a_reply_is_never_interpreted_against_another_commands_cookie() -> Result<(), TestError> {
+    let cmd = decode_command(b"d_1 D retry-call ftag").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"OTHER 0")),
+        interpret(&cmd, &reply_of(b"OTHER 0")?),
         None,
         "mismatched cookies must not be paired"
     );
+    Ok(())
 }
 
 /// GIVEN an error reply
@@ -160,12 +170,13 @@ fn a_reply_is_never_interpreted_against_another_commands_cookie() {
 /// which is the same command my own decoder refuses. Two independent bounds
 /// agreeing is worth more than either alone.
 #[test]
-fn an_error_reply_keeps_its_code_through_interpretation() {
-    let cmd = decode_command(b"s9 D call ftag").expect("decodes");
+fn an_error_reply_keeps_its_code_through_interpretation() -> Result<(), TestError> {
+    let cmd = decode_command(b"s9 D call ftag").ok_or("decodes")?;
     assert_eq!(
-        interpret(&cmd, &reply_of(b"s9 E1")),
+        interpret(&cmd, &reply_of(b"s9 E1")?),
         Some(Meaning::Failed(1))
     );
+    Ok(())
 }
 
 /// GIVEN the command the relay itself rejected with E1
@@ -177,10 +188,11 @@ fn an_error_reply_keeps_its_code_through_interpretation() {
 /// only evidence that the bounds table describes rtpproxy rather than my
 /// reading of it.
 #[test]
-fn the_decoder_refuses_what_the_relay_refused() {
+fn the_decoder_refuses_what_the_relay_refused() -> Result<(), TestError> {
     assert!(
         decode_command(b"s4 U short-args").is_none(),
         "the relay answered E1 for this; a decoder that accepted it would be \
          reporting a call the relay never created"
     );
+    Ok(())
 }

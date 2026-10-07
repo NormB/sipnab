@@ -619,6 +619,6 @@ question is left standing rather than deleted so the reasoning survives.
   call site on the absorb/merge path
   ([`dialog_store.rs:1269`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1269)), and
   `merge_recovers_timestamp_order_from_permuted_stores`
-  ([`arrival_order_parity_test.rs:416`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L416))
+  ([`arrival_order_parity_test.rs:433`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L433))
   shows the offline merge is order-tolerant today. Whether it stays so under a
   dispatch keyed on the arriving message has not been checked.

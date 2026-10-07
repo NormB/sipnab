@@ -31,6 +31,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Words where `ise`/`yse` is not the British suffix.
 ///
 /// Each is a word this tree actually uses, checked by
@@ -284,13 +287,12 @@ fn british_form(stem: &str, suffix: &str) -> String {
 }
 
 /// Every git-tracked file the scan reads.
-fn scanned_files() -> Vec<String> {
+fn scanned_files() -> Result<Vec<String>, TestError> {
     let out = Command::new("git")
         .args(["ls-files"])
         .current_dir(repo())
-        .output()
-        .expect("git ls-files");
-    String::from_utf8_lossy(&out.stdout)
+        .output()?;
+    Ok(String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .filter(|f| {
             !NOT_SCANNED.iter().any(|(p, _)| {
@@ -302,7 +304,7 @@ fn scanned_files() -> Vec<String> {
             }) && !f.ends_with(".lock")
         })
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
 // ── 1. the rule, against the tree ───────────────────────────────────────
@@ -312,10 +314,10 @@ fn scanned_files() -> Vec<String> {
 /// The gate itself. It names the US spelling for each hit, so acting on a
 /// failure needs no dictionary.
 #[test]
-fn the_tree_uses_us_spellings() {
+fn the_tree_uses_us_spellings() -> Result<(), TestError> {
     let mut hits: Vec<String> = Vec::new();
     let mut read = 0usize;
-    for f in scanned_files() {
+    for f in scanned_files()? {
         let Ok(text) = std::fs::read_to_string(repo().join(&f)) else {
             continue; // binary, or not UTF-8: nothing to spell
         };
@@ -337,6 +339,7 @@ fn the_tree_uses_us_spellings() {
         hits.len(),
         hits.join("\n")
     );
+    Ok(())
 }
 
 // ── 2. the rule catches what no list names ──────────────────────────────
@@ -347,7 +350,7 @@ fn the_tree_uses_us_spellings() {
 /// in `docs_drift_test.rs`, and several were sitting in the tree unnoticed
 /// until the day this was written.
 #[test]
-fn a_british_word_no_list_names_is_still_caught() {
+fn a_british_word_no_list_names_is_still_caught() -> Result<(), TestError> {
     for (stem, suffix) in [
         ("container", "ised"),
         ("synthes", "ised"),
@@ -368,6 +371,7 @@ fn a_british_word_no_list_names_is_still_caught() {
              replaces"
         );
     }
+    Ok(())
 }
 
 /// The US spelling of each of those passes.
@@ -375,7 +379,7 @@ fn a_british_word_no_list_names_is_still_caught() {
 /// The paired half. Without it, "catch everything ending in a vowel" would
 /// satisfy the test above.
 #[test]
-fn the_us_spelling_of_each_is_accepted() {
+fn the_us_spelling_of_each_is_accepted() -> Result<(), TestError> {
     for word in [
         "containerized",
         "synthesized",
@@ -393,6 +397,7 @@ fn the_us_spelling_of_each_is_accepted() {
             "{word} is correct US English and the rule flagged it: {found:?}"
         );
     }
+    Ok(())
 }
 
 /// Words where `ise` is not a suffix are left alone.
@@ -400,7 +405,7 @@ fn the_us_spelling_of_each_is_accepted() {
 /// The false-positive half. A gate that cries wolf gets switched off, and
 /// these are the words that would make it cry.
 #[test]
-fn words_that_merely_end_in_ise_are_not_flagged() {
+fn words_that_merely_end_in_ise_are_not_flagged() -> Result<(), TestError> {
     let text = "otherwise the precise exercise of an enterprise promise may \
                 surprise; we advise you devise a concise premise rather than \
                 compromise, and disable whatever noise arises as usage rises";
@@ -427,6 +432,7 @@ fn words_that_merely_end_in_ise_are_not_flagged() {
              it; the floor must reject fragments, not words"
         );
     }
+    Ok(())
 }
 
 /// The correction it offers is the right word.
@@ -434,7 +440,7 @@ fn words_that_merely_end_in_ise_are_not_flagged() {
 /// A gate that reports a hit but names the wrong replacement teaches the
 /// wrong spelling, and it is the message, not the rule, that a reader acts on.
 #[test]
-fn the_reported_us_spelling_is_the_right_one() {
+fn the_reported_us_spelling_is_the_right_one() -> Result<(), TestError> {
     for (stem, suffix, want) in [
         ("normal", "isation", "normalization"),
         ("optim", "ised", "optimized"),
@@ -450,6 +456,7 @@ fn the_reported_us_spelling_is_the_right_one() {
             "the rule would tell a reader to write the wrong word"
         );
     }
+    Ok(())
 }
 
 // ── 3. the rule subsumes the list it supplements ────────────────────────
@@ -462,14 +469,17 @@ fn the_reported_us_spelling_is_the_right_one() {
 /// suffix class the rule has to be a superset, or a word could be dropped from
 /// the list in good faith and become legal again.
 #[test]
-fn the_rule_subsumes_every_suffixed_word_on_the_fixed_list() {
-    let gate = std::fs::read_to_string(repo().join("tests/docs_drift_test.rs"))
-        .expect("read tests/docs_drift_test.rs");
-    let start = gate.find("const BRITISH:").expect(
+fn the_rule_subsumes_every_suffixed_word_on_the_fixed_list() -> Result<(), TestError> {
+    let gate = std::fs::read_to_string(repo().join("tests/docs_drift_test.rs"))?;
+    let start = gate.find("const BRITISH:").ok_or(
         "docs_drift_test.rs no longer declares BRITISH; this check is \
                  reading the wrong file",
-    );
-    let list = &gate[start..start + gate[start..].find("];").expect("unterminated BRITISH list")];
+    )?;
+    let list = &gate[start
+        ..start
+            + gate[start..]
+                .find("];")
+                .ok_or("unterminated BRITISH list")?];
 
     let mut checked = 0;
     for raw in list.split('"') {
@@ -492,6 +502,7 @@ fn the_rule_subsumes_every_suffixed_word_on_the_fixed_list() {
         "only {checked} suffixed word(s) found on the fixed list; this check \
          is not reading it and proves nothing"
     );
+    Ok(())
 }
 
 // ── 4. the exceptions and exclusions are honest ─────────────────────────
@@ -502,9 +513,9 @@ fn the_rule_subsumes_every_suffixed_word_on_the_fixed_list() {
 /// Both are how an allowlist stops describing the tree and starts permitting
 /// whatever anyone adds to it.
 #[test]
-fn every_exception_is_a_word_the_tree_actually_uses() {
+fn every_exception_is_a_word_the_tree_actually_uses() -> Result<(), TestError> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    for f in scanned_files() {
+    for f in scanned_files()? {
         let Ok(text) = std::fs::read_to_string(repo().join(&f)) else {
             continue;
         };
@@ -523,6 +534,7 @@ fn every_exception_is_a_word_the_tree_actually_uses() {
         "these exceptions match nothing in the tree, so they exempt words \
          nobody writes -- remove them rather than leave the hole: {unused:?}"
     );
+    Ok(())
 }
 
 /// Every excluded path exists, and says why it cannot be read.
@@ -530,7 +542,7 @@ fn every_exception_is_a_word_the_tree_actually_uses() {
 /// The other direction. An exclusion that outlives its path silently widens,
 /// and "it was already there" is not a reason.
 #[test]
-fn every_exclusion_names_a_path_that_exists_and_says_why() {
+fn every_exclusion_names_a_path_that_exists_and_says_why() -> Result<(), TestError> {
     for (path, reason) in NOT_SCANNED {
         let p = repo().join(path.trim_end_matches('/'));
         assert!(
@@ -544,6 +556,7 @@ fn every_exclusion_names_a_path_that_exists_and_says_why() {
              edited, not that it was inconvenient"
         );
     }
+    Ok(())
 }
 
 /// Every wire exemption is a name this project actually publishes.
@@ -553,7 +566,7 @@ fn every_exclusion_names_a_path_that_exists_and_says_why() {
 /// British spelling somebody wanted to keep, and this is exactly where such a
 /// thing would be parked.
 #[test]
-fn every_wire_exemption_is_a_published_name() {
+fn every_wire_exemption_is_a_published_name() -> Result<(), TestError> {
     let published = [
         "src/output/api.rs",
         "src/mcp/server.rs",
@@ -577,6 +590,7 @@ fn every_wire_exemption_is_a_published_name() {
              and it must simply be spelled correctly."
         );
     }
+    Ok(())
 }
 
 // ── 5. the scan is looking at what it claims to ─────────────────────────
@@ -587,8 +601,8 @@ fn every_wire_exemption_is_a_published_name() {
 /// docs, not the one in a comment. A scan that quietly covered only `.rs`
 /// would leave every user-visible surface unguarded while passing.
 #[test]
-fn the_scan_reaches_every_kind_of_text_the_project_ships() {
-    let files = scanned_files();
+fn the_scan_reaches_every_kind_of_text_the_project_ships() -> Result<(), TestError> {
+    let files = scanned_files()?;
     for ext in ["rs", "md", "py", "toml", "html", "js", "yml", "sh"] {
         let n = files
             .iter()
@@ -605,6 +619,7 @@ fn the_scan_reaches_every_kind_of_text_the_project_ships() {
         "only {} file(s) in the scan; the listing is wrong",
         files.len()
     );
+    Ok(())
 }
 
 // ── 6. the blind spot that let fourteen through ─────────────────────────
@@ -620,7 +635,7 @@ fn the_scan_reaches_every_kind_of_text_the_project_ships() {
 /// The exact miss. `etag_serializes_with_named_fields` is a real test name
 /// this tree carried, invisible to the sweep that declared it clean.
 #[test]
-fn a_british_spelling_inside_a_snake_case_identifier_is_caught() {
+fn a_british_spelling_inside_a_snake_case_identifier_is_caught() -> Result<(), TestError> {
     for (stem, suffix, tail) in [
         ("etag_serial", "ises", "_with_named_fields"),
         ("scrape_initial", "ises", "_closed_label_sets"),
@@ -636,6 +651,7 @@ fn a_british_spelling_inside_a_snake_case_identifier_is_caught() {
              of them survived a sweep that reported the tree clean"
         );
     }
+    Ok(())
 }
 
 /// camelCase hides one too.
@@ -644,7 +660,7 @@ fn a_british_spelling_inside_a_snake_case_identifier_is_caught() {
 /// tokenizer that only splits on punctuation reads `serializesWithFields` as
 /// one word ending in `elds` and passes it.
 #[test]
-fn a_british_spelling_inside_a_camel_case_identifier_is_caught() {
+fn a_british_spelling_inside_a_camel_case_identifier_is_caught() -> Result<(), TestError> {
     for (stem, suffix, tail) in [
         ("serial", "ises", "WithFields"),
         ("normal", "ised", "Timing"),
@@ -658,24 +674,26 @@ fn a_british_spelling_inside_a_camel_case_identifier_is_caught() {
              camelCase separates words with case, not punctuation"
         );
     }
+    Ok(())
 }
 
 /// SCREAMING_SNAKE is the same token shape, upper case.
 #[test]
-fn a_british_spelling_in_a_screaming_snake_constant_is_caught() {
+fn a_british_spelling_in_a_screaming_snake_constant_is_caught() -> Result<(), TestError> {
     let ident = format!("{}_LIMIT", british_form("NORMAL", "ISED"));
     let found = british_words(&format!("const {ident}: usize = 4;"));
     assert!(
         !found.is_empty(),
         "{ident} carries a British spelling and the rule missed it"
     );
+    Ok(())
 }
 
 /// Hyphens and path separators are word boundaries too.
 ///
 /// A doc filename or a URL fragment reaches a reader exactly as prose does.
 #[test]
-fn a_british_spelling_in_a_hyphenated_or_path_segment_is_caught() {
+fn a_british_spelling_in_a_hyphenated_or_path_segment_is_caught() -> Result<(), TestError> {
     for text in [
         format!(
             "see docs/design/{}-timing.md",
@@ -694,6 +712,7 @@ fn a_british_spelling_in_a_hyphenated_or_path_segment_is_caught() {
              separate words as surely as a space does"
         );
     }
+    Ok(())
 }
 
 /// A wire exemption covers the WHOLE token and nothing longer.
@@ -703,7 +722,7 @@ fn a_british_spelling_in_a_hyphenated_or_path_segment_is_caught() {
 /// substring match would exempt every future field that happens to start
 /// with an old one.
 #[test]
-fn a_wire_exemption_matches_only_the_whole_token() {
+fn a_wire_exemption_matches_only_the_whole_token() -> Result<(), TestError> {
     let invented = format!("{}_v2", wire_identifiers()[0]);
     let found = british_words(&format!("\"{invented}\": 3"));
     assert!(
@@ -711,6 +730,7 @@ fn a_wire_exemption_matches_only_the_whole_token() {
         "{invented} is not the exempted contract, it is a new name that \
          inherited its spelling; the exemption must not stretch to cover it"
     );
+    Ok(())
 }
 
 /// A wire exemption does not permit the bare word in prose.
@@ -719,7 +739,7 @@ fn a_wire_exemption_matches_only_the_whole_token() {
 /// spelling because consumers read that key by name; the sentence
 /// explaining it has no such excuse.
 #[test]
-fn a_wire_exemption_does_not_permit_the_bare_word_in_prose() {
+fn a_wire_exemption_does_not_permit_the_bare_word_in_prose() -> Result<(), TestError> {
     let word = british_form("unanal", "ysed");
     let found = british_words(&format!("how many messages went {word} before analysis"));
     assert!(
@@ -728,6 +748,7 @@ fn a_wire_exemption_does_not_permit_the_bare_word_in_prose() {
          prose; a whole-token exemption that leaked into the vocabulary would \
          legalize the very spelling it was cut around"
     );
+    Ok(())
 }
 
 /// The tracked PATHS are spelled correctly, not only their contents.
@@ -735,9 +756,9 @@ fn a_wire_exemption_does_not_permit_the_bare_word_in_prose() {
 /// A file called `normalized-timing.md` ships its spelling in every link that
 /// points at it, and a scan that reads only file CONTENTS never sees the name.
 #[test]
-fn no_tracked_path_is_spelled_the_british_way() {
+fn no_tracked_path_is_spelled_the_british_way() -> Result<(), TestError> {
     let mut hits = Vec::new();
-    let files = scanned_files();
+    let files = scanned_files()?;
     for f in &files {
         for w in british_words(f) {
             hits.push(format!("  {f}: \"{w}\" -> \"{}\"", us_form(&w)));
@@ -754,6 +775,7 @@ fn no_tracked_path_is_spelled_the_british_way() {
          them carries it:\n{}",
         hits.join("\n")
     );
+    Ok(())
 }
 
 /// The two lists do not overlap.
@@ -762,7 +784,7 @@ fn no_tracked_path_is_spelled_the_british_way() {
 /// anywhere, the other says it is tolerated only as a published key. Whichever
 /// is read first wins, and which that is has nothing to do with intent.
 #[test]
-fn the_exception_and_wire_lists_do_not_overlap() {
+fn the_exception_and_wire_lists_do_not_overlap() -> Result<(), TestError> {
     let exceptions: BTreeSet<&str> = NOT_A_SUFFIX.iter().copied().collect();
     let wire = wire_identifiers();
     let both: Vec<&String> = wire
@@ -774,6 +796,7 @@ fn the_exception_and_wire_lists_do_not_overlap() {
         "{both:?} appear on both lists; a word cannot be both always-fine and \
          tolerated-only-as-a-key"
     );
+    Ok(())
 }
 
 /// No fixture above is passing because the word was exempt.
@@ -783,7 +806,7 @@ fn the_exception_and_wire_lists_do_not_overlap() {
 /// assertion would fail loudly rather than silently -- but the fixture WORDS
 /// must also not be exempt, or a future exemption would quietly hollow them.
 #[test]
-fn no_fixture_word_in_these_tests_is_exempt() {
+fn no_fixture_word_in_these_tests_is_exempt() -> Result<(), TestError> {
     let exceptions: BTreeSet<&str> = NOT_A_SUFFIX.iter().copied().collect();
     let wire = wire_identifiers();
     for (stem, suffix) in [
@@ -807,6 +830,7 @@ fn no_fixture_word_in_these_tests_is_exempt() {
              fixtures above"
         );
     }
+    Ok(())
 }
 
 /// Case does not hide a spelling either.
@@ -815,7 +839,7 @@ fn no_fixture_word_in_these_tests_is_exempt() {
 /// mistake as the lower-case one, and a rule that compared literally would
 /// catch one in three.
 #[test]
-fn capitalization_does_not_hide_a_british_spelling() {
+fn capitalization_does_not_hide_a_british_spelling() -> Result<(), TestError> {
     let lower = british_form("normal", "ised");
     let title = format!("{}{}", lower[..1].to_uppercase(), &lower[1..]);
     let upper = lower.to_uppercase();
@@ -826,6 +850,7 @@ fn capitalization_does_not_hide_a_british_spelling() {
             "{variant} was not caught; the rule must compare case-insensitively"
         );
     }
+    Ok(())
 }
 
 // ── 7. debts from the misses this file's own work produced ──────────────
@@ -850,14 +875,15 @@ fn capitalization_does_not_hide_a_british_spelling() {
 /// A gate that exempts the file defining it proves the least where it matters
 /// most.
 #[test]
-fn the_spelling_scan_reads_this_very_file() {
+fn the_spelling_scan_reads_this_very_file() -> Result<(), TestError> {
     let me = "tests/us_spelling_test.rs";
     assert!(
-        scanned_files().iter().any(|f| f == me),
+        scanned_files()?.iter().any(|f| f == me),
         "{me} is not in the scan. Either it is untracked -- in which case the \
          gate is passing on a file nobody checked -- or it has been excluded, \
          which a spelling gate may not do to its own definition."
     );
+    Ok(())
 }
 
 /// No test file is invisible to the scan.
@@ -866,13 +892,12 @@ fn the_spelling_scan_reads_this_very_file() {
 /// be written and least likely to be read again, and a new one is invisible
 /// until it is staged.
 #[test]
-fn every_tracked_test_file_is_reachable_by_the_scan() {
-    let scanned = scanned_files();
+fn every_tracked_test_file_is_reachable_by_the_scan() -> Result<(), TestError> {
+    let scanned = scanned_files()?;
     let out = Command::new("git")
         .args(["ls-files", "tests/"])
         .current_dir(repo())
-        .output()
-        .expect("git ls-files tests/");
+        .output()?;
     let listed: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .filter(|f| f.ends_with(".rs"))
@@ -898,6 +923,7 @@ fn every_tracked_test_file_is_reachable_by_the_scan() {
          list, so nothing checks their spelling and nothing says why: \
          {missed:?}"
     );
+    Ok(())
 }
 
 /// The scan reads what git tracks, and says so.
@@ -906,8 +932,8 @@ fn every_tracked_test_file_is_reachable_by_the_scan() {
 /// An unstaged file is invisible; that is a property of the input, not a bug,
 /// and the fix is to stage before believing a pass.
 #[test]
-fn the_scan_reads_what_git_tracks_and_nothing_else() {
-    let scanned = scanned_files();
+fn the_scan_reads_what_git_tracks_and_nothing_else() -> Result<(), TestError> {
+    let scanned = scanned_files()?;
     assert!(
         !scanned.iter().any(|f| f.starts_with("target/")),
         "the scan is reading build output, so it is not reading git's listing"
@@ -920,6 +946,7 @@ fn the_scan_reads_what_git_tracks_and_nothing_else() {
         !scanned.iter().any(|f| f == "no/such/file.rs"),
         "the scan invented a path"
     );
+    Ok(())
 }
 
 /// A fenced code block is prose too.
@@ -928,7 +955,7 @@ fn the_scan_reads_what_git_tracks_and_nothing_else() {
 /// inside a fence reaches them as surely as one in a sentence, and reaches
 /// their shell as a command that may not exist.
 #[test]
-fn a_british_spelling_in_a_code_fence_is_caught() {
+fn a_british_spelling_in_a_code_fence_is_caught() -> Result<(), TestError> {
     let word = british_form("normal", "ise");
     let fence = format!("```sh\nsipnab --{word}-timing\n```");
     assert!(
@@ -936,6 +963,7 @@ fn a_british_spelling_in_a_code_fence_is_caught() {
         "a British spelling inside a code fence was missed; a reader copies \
          that line"
     );
+    Ok(())
 }
 
 /// A string literal is shipped text.
@@ -943,7 +971,7 @@ fn a_british_spelling_in_a_code_fence_is_caught() {
 /// What a program PRINTS is the most user-visible prose it has, and it sits in
 /// quotes where a prose-only reading would skip it.
 #[test]
-fn a_british_spelling_in_a_string_literal_is_caught() {
+fn a_british_spelling_in_a_string_literal_is_caught() -> Result<(), TestError> {
     let word = british_form("recogn", "ised");
     let src = format!("    return Err(format!(\"the header was not {word}\"));");
     assert!(
@@ -951,6 +979,7 @@ fn a_british_spelling_in_a_string_literal_is_caught() {
         "a British spelling inside a string literal was missed, and a string \
          literal is what the user actually reads"
     );
+    Ok(())
 }
 
 /// Digits do not hide a spelling.
@@ -959,7 +988,7 @@ fn a_british_spelling_in_a_string_literal_is_caught() {
 /// that splits only on punctuation, and neither form ends in a suffix as a
 /// whole.
 #[test]
-fn a_british_spelling_adjacent_to_digits_is_caught() {
+fn a_british_spelling_adjacent_to_digits_is_caught() -> Result<(), TestError> {
     let word = british_form("normal", "ise");
     for ident in [
         format!("{word}2"),
@@ -971,6 +1000,7 @@ fn a_british_spelling_adjacent_to_digits_is_caught() {
             "{ident} carries a British spelling and the rule missed it"
         );
     }
+    Ok(())
 }
 
 /// An acronym run is not shredded into fragments.
@@ -979,7 +1009,7 @@ fn a_british_spelling_adjacent_to_digits_is_caught() {
 /// every capital would turn `HTTPServer` into single letters and `SIPMessage`
 /// into noise, and a rule that manufactures fragments manufactures hits.
 #[test]
-fn an_acronym_run_is_not_split_into_fragments() {
+fn an_acronym_run_is_not_split_into_fragments() -> Result<(), TestError> {
     for ident in [
         "HTTPServer",
         "SIPMessageParser",
@@ -992,6 +1022,7 @@ fn an_acronym_run_is_not_split_into_fragments() {
             "{ident} is an ordinary identifier and the rule reported {found:?}"
         );
     }
+    Ok(())
 }
 
 /// Hash and hex fragments are never reported.
@@ -1000,7 +1031,7 @@ fn an_acronym_run_is_not_split_into_fragments() {
 /// convincing-looking fragments by the thousand, and one bogus hit teaches a
 /// reader to skim every real one after it.
 #[test]
-fn a_hash_or_hex_fragment_is_never_reported() {
+fn a_hash_or_hex_fragment_is_never_reported() -> Result<(), TestError> {
     // Built, not written: a literal here would be a British-suffixed token in
     // a file that may not contain one.
     let long_stem = format!("deadbeef{}", british_form("", "yse"));
@@ -1023,6 +1054,7 @@ fn a_hash_or_hex_fragment_is_never_reported() {
         british_words("sha512-Pyse").is_empty(),
         "a four-character hash fragment was reported as a spelling"
     );
+    Ok(())
 }
 
 /// Every suffix pair changes the spelling.
@@ -1031,7 +1063,7 @@ fn a_hash_or_hex_fragment_is_never_reported() {
 /// word back, which reads as a gate that is broken rather than a word that is
 /// wrong.
 #[test]
-fn every_suffix_pair_maps_to_a_different_spelling() {
+fn every_suffix_pair_maps_to_a_different_spelling() -> Result<(), TestError> {
     for (brit, us) in SUFFIXES {
         assert_ne!(
             brit, us,
@@ -1045,6 +1077,7 @@ fn every_suffix_pair_maps_to_a_different_spelling() {
              letter substituted, and a length change means a typo in the table"
         );
     }
+    Ok(())
 }
 
 /// Every suffix pair actually fires.
@@ -1053,7 +1086,7 @@ fn every_suffix_pair_maps_to_a_different_spelling() {
 /// longest suffixes are the ones at risk: `isation` is only reachable if the
 /// table is tried longest-first, and a reordering would silently shadow it.
 #[test]
-fn every_suffix_pair_actually_fires() {
+fn every_suffix_pair_actually_fires() -> Result<(), TestError> {
     for (brit, us) in SUFFIXES {
         let word = format!("normal{brit}");
         let found = british_words(&word);
@@ -1069,4 +1102,5 @@ fn every_suffix_pair_actually_fires() {
              correction it offers comes from the wrong pair"
         );
     }
+    Ok(())
 }

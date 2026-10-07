@@ -27,6 +27,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+/// The error a fallible test or helper returns: any error, boxed, so `?`
+/// works on I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -34,14 +38,14 @@ fn repo() -> &'static Path {
 
 /// Read a repo-relative file to a `String`, panicking with the path on
 /// failure.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The YAML block of one named step: its `- name:` line through the last line
 /// belonging to it. Panics if the step is absent or duplicated.
-fn workflow_step_body(workflow: &str, step_name: &str) -> String {
-    let text = read(workflow);
+fn workflow_step_body(workflow: &str, step_name: &str) -> Result<String, TestError> {
+    let text = read(workflow)?;
     let lines: Vec<&str> = text.lines().collect();
     let needle = format!("- name: {step_name}");
     let matches: Vec<usize> = lines
@@ -78,7 +82,7 @@ fn workflow_step_body(workflow: &str, step_name: &str) -> String {
         }
         out.push(l);
     }
-    out.join("\n")
+    Ok(out.join("\n"))
 }
 
 /// Run a workflow step's `run:` script against deliberately-wrong input and
@@ -101,9 +105,9 @@ fn assert_step_fails_on_bad_input(
     workflow: &str,
     step_name: &str,
     subs: &[(&str, &str)],
-    setup: &dyn Fn(&std::path::Path),
-) {
-    let body = workflow_step_body(workflow, step_name);
+    setup: &dyn Fn(&std::path::Path) -> Result<(), TestError>,
+) -> Result<(), TestError> {
+    let body = workflow_step_body(workflow, step_name)?;
     // Take the run: block only, stopping at the next YAML key at run:'s own
     // indent. Reading to the end of the step handed bash whatever followed —
     // an ordinary `env:` block became a command, exit 127, and 127 satisfied
@@ -112,7 +116,7 @@ fn assert_step_fails_on_bad_input(
     let run_at = all
         .iter()
         .position(|l| l.trim_start().starts_with("run:"))
-        .unwrap_or_else(|| panic!("{workflow} step {step_name:?} has no `run:` block"));
+        .ok_or_else(|| format!("{workflow} step {step_name:?} has no `run:` block"))?;
     let run_indent = all[run_at].len() - all[run_at].trim_start().len();
     let block: Vec<&str> = all[run_at + 1..]
         .iter()
@@ -157,15 +161,15 @@ fn assert_step_fails_on_bad_input(
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    setup(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
+    setup(&dir)?;
 
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(&script)
         .current_dir(&dir)
         .output()
-        .expect("run step script");
+        .map_err(|e| format!("run step script: {e}"))?;
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
@@ -176,6 +180,7 @@ fn assert_step_fails_on_bad_input(
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(())
 }
 
 /// A named workflow step still fails the build when its check fails.
@@ -202,15 +207,19 @@ fn assert_step_fails_on_bad_input(
 ///
 /// # Arguments
 /// * `guard` - the only `if:` allowed on the step, or `None` for unconditional.
-fn assert_step_enforces(workflow: &str, step_name: &str, guard: Option<&str>) {
-    let body = workflow_step_body(workflow, step_name);
+fn assert_step_enforces(
+    workflow: &str,
+    step_name: &str,
+    guard: Option<&str>,
+) -> Result<(), TestError> {
+    let body = workflow_step_body(workflow, step_name)?;
     let step: Vec<&str> = body.lines().collect();
-    let text = read(workflow);
+    let text = read(workflow)?;
     let lines: Vec<&str> = text.lines().collect();
     let start = lines
         .iter()
         .position(|l| l.trim() == format!("- name: {step_name}"))
-        .expect("step located by workflow_step_body");
+        .ok_or("step located by workflow_step_body")?;
 
     assert!(
         !body.contains("continue-on-error"),
@@ -226,7 +235,7 @@ fn assert_step_enforces(workflow: &str, step_name: &str, guard: Option<&str>) {
             let t = l.trim_start();
             l.len() - t.len() == 2 && t.ends_with(':') && !t.starts_with('#')
         })
-        .unwrap_or_else(|| panic!("{workflow}: no enclosing job found for {step_name:?}"));
+        .ok_or_else(|| format!("{workflow}: no enclosing job found for {step_name:?}"))?;
     // Every key belonging to this job, to the start of the next job — NOT the
     // text above `steps:`. YAML mappings are unordered, so `continue-on-error`
     // appended after the steps list is still a job-level key; the old scan
@@ -297,6 +306,7 @@ fn assert_step_enforces(workflow: &str, step_name: &str, guard: Option<&str>) {
              a guard is how a step stops running without its body changing"
         ),
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -330,30 +340,33 @@ fn installed_mono_families() -> Option<BTreeSet<String>> {
 ///
 /// # Returns
 /// (tape filename, font family) pairs for every declaration found.
-fn tape_font_families() -> Vec<(String, String)> {
+fn tape_font_families() -> Result<Vec<(String, String)>, TestError> {
     let mut out = Vec::new();
-    let re = regex::Regex::new(r#"(?m)^Set FontFamily\s+"([^"]+)""#).unwrap();
-    for entry in std::fs::read_dir(repo().join("demos")).expect("demos dir") {
-        let p = entry.expect("entry").path();
+    let re = regex::Regex::new(r#"(?m)^Set FontFamily\s+"([^"]+)""#)?;
+    for entry in std::fs::read_dir(repo().join("demos")).map_err(|e| format!("demos dir: {e}"))? {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("tape") {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read tape");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read tape: {e}"))?;
         for cap in re.captures_iter(&text) {
             out.push((
-                p.file_name().unwrap().to_string_lossy().into_owned(),
+                p.file_name()
+                    .ok_or("file_name() is None")?
+                    .to_string_lossy()
+                    .into_owned(),
                 cap[1].to_string(),
             ));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every FontFamily a demo tape names must be an installed monospace
 /// family (2026-07-18 regression); skips off-Linux or when fc-list is missing.
 #[test]
-fn demo_tape_fonts_are_installed_monospace() {
-    let fonts = tape_font_families();
+fn demo_tape_fonts_are_installed_monospace() -> Result<(), TestError> {
+    let fonts = tape_font_families()?;
     assert!(
         !fonts.is_empty(),
         "no FontFamily found in any tape — demos/common.tape must pin an \
@@ -365,11 +378,11 @@ fn demo_tape_fonts_are_installed_monospace() {
     // reports a different family set (Menlo, Courier New, ...) — skip.
     if !cfg!(target_os = "linux") {
         eprintln!("demos render on Linux only; skipping installed-font check on this platform");
-        return;
+        return Ok(());
     }
     let Some(installed) = installed_mono_families() else {
         eprintln!("fc-list unavailable; skipping installed-font verification");
-        return;
+        return Ok(());
     };
     let missing: Vec<_> = fonts
         .iter()
@@ -382,6 +395,7 @@ fn demo_tape_fonts_are_installed_monospace() {
          spacing, clipped glyphs), exactly the bug that shipped on \
          2026-07-18:\n{missing:?}\ninstalled mono families: {installed:?}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -394,19 +408,19 @@ fn demo_tape_fonts_are_installed_monospace() {
 ///
 /// # Returns
 /// The referenced filenames (relative to `website/static/demos`).
-fn referenced_demo_assets() -> BTreeSet<String> {
-    let re = regex::Regex::new(r#"get_url\(path='demos/([^']+)'\)"#).unwrap();
+fn referenced_demo_assets() -> Result<BTreeSet<String>, TestError> {
+    let re = regex::Regex::new(r#"get_url\(path='demos/([^']+)'\)"#)?;
     let mut out = BTreeSet::new();
     for tpl in [
         "website/templates/index.html",
         "website/templates/base.html",
     ] {
-        for cap in re.captures_iter(&read(tpl)) {
+        for cap in re.captures_iter(&read(tpl)?) {
             out.insert(cap[1].to_string());
         }
     }
     // analyze.js fetches the sample pcap by URL path
-    if read("website/static/js/analyze.js").contains("demos/sample-call.pcap") {
+    if read("website/static/js/analyze.js")?.contains("demos/sample-call.pcap") {
         out.insert("sample-call.pcap".to_string());
     }
     // The homepage demo JS derives a `<name>-poster.png` first-frame from each
@@ -418,23 +432,23 @@ fn referenced_demo_assets() -> BTreeSet<String> {
         .map(|f| f.replace(".webp", "-poster.png"))
         .collect();
     out.extend(posters);
-    out
+    Ok(out)
 }
 
 /// Filenames actually shipped in `website/static/demos`.
-fn present_demo_assets() -> BTreeSet<String> {
-    std::fs::read_dir(repo().join("website/static/demos"))
-        .expect("static/demos dir")
+fn present_demo_assets() -> Result<BTreeSet<String>, TestError> {
+    Ok(std::fs::read_dir(repo().join("website/static/demos"))
+        .map_err(|e| format!("static/demos dir: {e}"))?
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect()
+        .collect())
 }
 
 /// Every referenced demo asset exists in static/demos and no shipped file is unreferenced.
 #[test]
-fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
-    let referenced = referenced_demo_assets();
-    let present = present_demo_assets();
+fn every_referenced_demo_asset_exists_and_none_are_orphaned() -> Result<(), TestError> {
+    let referenced = referenced_demo_assets()?;
+    let present = present_demo_assets()?;
     assert!(
         referenced.len() >= 8,
         "suspiciously few referenced demo assets ({referenced:?}) — extractor broken?"
@@ -449,6 +463,7 @@ fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
         orphans.is_empty(),
         "unreferenced files shipping in static/demos (delete or wire up): {orphans:?}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -474,12 +489,13 @@ fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
 ///
 /// `href="…"` holds a Tera call whose own quoting is single (`get_url(path='…')`),
 /// so a double-quoted attribute value is still one capture.
-fn anchors(haystack: &str) -> Vec<(String, String)> {
-    regex::Regex::new(r#"(?s)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#)
-        .unwrap()
-        .captures_iter(haystack)
-        .map(|c| (c[1].to_string(), c[2].trim().to_string()))
-        .collect()
+fn anchors(haystack: &str) -> Result<Vec<(String, String)>, TestError> {
+    Ok(
+        regex::Regex::new(r#"(?s)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#)?
+            .captures_iter(haystack)
+            .map(|c| (c[1].to_string(), c[2].trim().to_string()))
+            .collect(),
+    )
 }
 
 /// The homepage hero offers the zero-install browser analyzer, above the fold.
@@ -490,11 +506,11 @@ fn anchors(haystack: &str) -> Vec<(String, String)> {
 /// used to be the page's only mention of /analyze/ lives far below it — so a
 /// move back to that row must fail this, not pass it.
 #[test]
-fn homepage_offers_a_zero_install_path() {
-    let page = read("website/templates/index.html");
-    let fold = page.find("<section class=\"demos\"").expect(
+fn homepage_offers_a_zero_install_path() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let fold = page.find("<section class=\"demos\"").ok_or(
         "index.html no longer has a `<section class=\"demos\"` — this test locates the fold by it",
-    );
+    )?;
 
     // The hero ELEMENT, not merely "the bytes before the demos section". Those
     // differ by the handful of characters between `</section>` and the next
@@ -502,7 +518,7 @@ fn homepage_offers_a_zero_install_path() {
     // being in no section at all — which passed an earlier version of this
     // test. Asserting the hero closes above the fold keeps the fold marker
     // meaningful without letting the gap through.
-    let hero_span = element_span(&page, "<section class=\"hero\">", "section");
+    let hero_span = element_span(&page, "<section class=\"hero\">", "section")?;
     assert!(
         hero_span.end <= fold,
         "the hero section no longer closes before `<section class=\"demos\"` — \
@@ -510,7 +526,7 @@ fn homepage_offers_a_zero_install_path() {
     );
     let hero = &page[hero_span.start..hero_span.end];
 
-    let links = anchors(hero);
+    let links = anchors(hero)?;
     // Anti-vacuity: the hero really does contain several links (the two RFC
     // references and the CTA row), so a regex that silently matched nothing
     // cannot make the assertion below pass by finding zero of zero.
@@ -524,15 +540,15 @@ fn homepage_offers_a_zero_install_path() {
     let cta = links
         .iter()
         .find(|(href, _)| href.contains("@/analyze/"))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "the homepage hero offers no link to the browser analyzer. The \
                  zero-install path (`@/analyze/_index.md`) must be reachable \
                  from above the fold, not only from the nav, the footer and a \
                  capability-table row far below. Links found in the hero: {:?}",
                 links.iter().map(|(h, _)| h).collect::<Vec<_>>()
             )
-        });
+        })?;
 
     assert!(
         !cta.1.is_empty(),
@@ -541,14 +557,14 @@ fn homepage_offers_a_zero_install_path() {
 
     // A CTA, not a word buried in a sentence: it carries the button styling
     // the other two hero actions use.
-    let cta_tag_at = hero.find("@/analyze/").expect("checked above");
+    let cta_tag_at = hero.find("@/analyze/").ok_or("checked above")?;
     let tag_start = hero[..cta_tag_at]
         .rfind("<a ")
-        .expect("the analyzer href is inside an <a> element");
+        .ok_or("the analyzer href is inside an <a> element")?;
     let tag_end = tag_start
         + hero[tag_start..]
             .find('>')
-            .expect("unterminated <a> tag in the hero");
+            .ok_or("unterminated <a> tag in the hero")?;
     let tag = &hero[tag_start..tag_end];
     assert!(
         tag.contains("class=\"btn"),
@@ -566,6 +582,7 @@ fn homepage_offers_a_zero_install_path() {
          the visitor's own browser — the one fact that makes uploading a \
          capture an acceptable ask"
     );
+    Ok(())
 }
 
 /// The demo wall leads with the four outcome-titled demos; the rest are collapsed.
@@ -586,8 +603,8 @@ fn homepage_offers_a_zero_install_path() {
 /// tab focuses nothing (`.focus()` on `display:none` is a no-op) while still
 /// clicking it — the panel changes under a focus ring that never moved.
 #[test]
-fn homepage_demo_wall_leads_with_outcomes() {
-    let page = read("website/templates/index.html");
+fn homepage_demo_wall_leads_with_outcomes() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
 
     // The four the wall leads with. Rewording one is fine; doing it silently
     // is not — an interface name creeping back to the front is exactly the
@@ -600,8 +617,8 @@ fn homepage_demo_wall_leads_with_outcomes() {
         "Same call?",
     ];
 
-    let tablist = element_span(&page, "<div class=\"demo-tabs\" role=\"tablist\"", "div");
-    let disclosure = element_span(&page, "<div class=\"demo-tabs-more\"", "div");
+    let tablist = element_span(&page, "<div class=\"demo-tabs\" role=\"tablist\"", "div")?;
+    let disclosure = element_span(&page, "<div class=\"demo-tabs-more\"", "div")?;
     assert!(
         tablist.start < disclosure.start && disclosure.end <= tablist.end,
         "`#demo-tabs-more` must sit INSIDE the tablist: the collapsed demos \
@@ -610,19 +627,19 @@ fn homepage_demo_wall_leads_with_outcomes() {
 
     let tab = regex::Regex::new(
         r#"<button class="demo-tab[^"]*"[^>]*id="demo-tab-(\d+)"[^>]*>([^<]*)</button>"#,
-    )
-    .unwrap();
+    )?;
     let tabs: Vec<(usize, usize, String)> = tab
         .captures_iter(&page)
         .map(|c| {
-            let m = c.get(0).expect("whole match");
-            (
+            let m = c.get(0).ok_or("whole match")?;
+            Ok::<_, TestError>((
                 m.start(),
-                c[1].parse::<usize>().expect("numeric tab id"),
+                c[1].parse::<usize>()
+                    .map_err(|e| format!("numeric tab id: {e}"))?,
                 c[2].trim().to_string(),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Anti-vacuity: a broken extractor must not pass by matching nothing.
     assert!(
@@ -680,7 +697,7 @@ fn homepage_demo_wall_leads_with_outcomes() {
     }
 
     // The disclosure must start shut and be driven by a real control.
-    let opener = element_open_tag(&page, "<div class=\"demo-tabs-more\"");
+    let opener = element_open_tag(&page, "<div class=\"demo-tabs-more\"")?;
     assert!(
         opener.contains(" hidden"),
         "`#demo-tabs-more` must ship collapsed — otherwise the wall is back on \
@@ -691,7 +708,7 @@ fn homepage_demo_wall_leads_with_outcomes() {
         "`#demo-tabs-more` must carry role=\"presentation\" so the tablist \
          still owns only tabs: {opener}"
     );
-    let toggle = element_open_tag(&page, "<button type=\"button\" class=\"demo-more-btn\"");
+    let toggle = element_open_tag(&page, "<button type=\"button\" class=\"demo-more-btn\"")?;
     assert!(
         toggle.contains("aria-controls=\"demo-tabs-more\"")
             && toggle.contains("aria-expanded=\"false\""),
@@ -699,7 +716,7 @@ fn homepage_demo_wall_leads_with_outcomes() {
     );
     let toggle_at = page
         .find("<button type=\"button\" class=\"demo-more-btn\"")
-        .expect("checked above");
+        .ok_or("checked above")?;
     assert!(
         toggle_at >= tablist.end,
         "the disclosure button is inside the tablist; a tablist may own only \
@@ -720,6 +737,7 @@ fn homepage_demo_wall_leads_with_outcomes() {
          (`.focus()` on display:none does nothing) while the click still \
          swaps the panel."
     );
+    Ok(())
 }
 
 /// Byte range of an element, from `open` to its depth-matched closing tag.
@@ -729,10 +747,10 @@ struct Span {
 }
 
 /// Locate `open` in `html` and return the span through its matching `</tag>`.
-fn element_span(html: &str, open: &str, tag: &str) -> Span {
+fn element_span(html: &str, open: &str, tag: &str) -> Result<Span, TestError> {
     let start = html
         .find(open)
-        .unwrap_or_else(|| panic!("index.html has no `{open}`"));
+        .ok_or_else(|| format!("index.html has no `{open}`"))?;
     let open_pat = format!("<{tag}");
     let close_pat = format!("</{tag}>");
     let mut depth = 0usize;
@@ -749,25 +767,25 @@ fn element_span(html: &str, open: &str, tag: &str) -> Span {
                 depth -= 1;
                 i = c + close_pat.len();
                 if depth == 0 {
-                    return Span { start, end: i };
+                    return Ok(Span { start, end: i });
                 }
             }
             _ => break,
         }
     }
-    panic!("`{open}` is never closed in index.html");
+    Err(format!("`{open}` is never closed in index.html").into())
 }
 
 /// The full open tag (`<div …>`) beginning at `open`.
-fn element_open_tag(html: &str, open: &str) -> String {
+fn element_open_tag(html: &str, open: &str) -> Result<String, TestError> {
     let start = html
         .find(open)
-        .unwrap_or_else(|| panic!("index.html has no `{open}`"));
+        .ok_or_else(|| format!("index.html has no `{open}`"))?;
     let end = start
         + html[start..]
             .find('>')
-            .unwrap_or_else(|| panic!("`{open}` is an unterminated tag"));
-    html[start..=end].to_string()
+            .ok_or_else(|| format!("`{open}` is an unterminated tag"))?;
+    Ok(html[start..=end].to_string())
 }
 
 /// The homepage's JSON MCP examples must be the answers the tool actually gave.
@@ -790,19 +808,19 @@ fn element_open_tag(html: &str, open: &str) -> String {
 /// comparing. `&amp;` is undone LAST: doing it first would turn a literal
 /// `&amp;lt;` in the data into `<` and compare equal to the wrong thing.
 #[test]
-fn homepage_mcp_examples_match_their_generated_source() {
-    let page = read("website/templates/index.html");
+fn homepage_mcp_examples_match_their_generated_source() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     for name in ["triage", "lint", "evidence", "correlate"] {
-        let generated = read(&format!("website/data/mcp-examples/{name}.json"));
+        let generated = read(&format!("website/data/mcp-examples/{name}.json"))?;
         let begin = format!("<!-- mcp-example:{name} BEGIN -->");
         let end = format!("<!-- mcp-example:{name} END -->");
 
         let open = page
             .find(&begin)
-            .unwrap_or_else(|| panic!("index.html has no {begin} — run demos/gen-mcp-examples.sh"));
+            .ok_or_else(|| format!("index.html has no {begin} — run demos/gen-mcp-examples.sh"))?;
         let close = page
             .find(&end)
-            .unwrap_or_else(|| panic!("index.html has no {end} — run demos/gen-mcp-examples.sh"));
+            .ok_or_else(|| format!("index.html has no {end} — run demos/gen-mcp-examples.sh"))?;
         assert!(
             close > open,
             "{name}: END marker precedes BEGIN in index.html"
@@ -824,8 +842,9 @@ fn homepage_mcp_examples_match_their_generated_source() {
         // Parsing is the point of publishing JSON: a block that a reader
         // cannot paste into `jq` is not an example of anything.
         serde_json::from_str::<serde_json::Value>(&published)
-            .unwrap_or_else(|e| panic!("the {name} block on the homepage is not valid JSON: {e}"));
+            .map_err(|e| format!("the {name} block on the homepage is not valid JSON: {e}"))?;
     }
+    Ok(())
 }
 
 /// Each MCP panel must still show the claim its prose makes about it.
@@ -838,7 +857,7 @@ fn homepage_mcp_examples_match_their_generated_source() {
 /// each make the surrounding copy false while every file agreed with every
 /// other file.
 #[test]
-fn each_mcp_example_still_carries_the_claim_the_page_makes_about_it() {
+fn each_mcp_example_still_carries_the_claim_the_page_makes_about_it() -> Result<(), TestError> {
     for (name, pointer, want) in [
         ("triage", "/verdict", "signaling"),
         ("lint", "/section", "12.1.1"),
@@ -846,11 +865,11 @@ fn each_mcp_example_still_carries_the_claim_the_page_makes_about_it() {
         ("correlate", "/legs/0/strategy", "timing_heuristic"),
     ] {
         let v: serde_json::Value =
-            serde_json::from_str(&read(&format!("website/data/mcp-examples/{name}.json")))
-                .unwrap_or_else(|e| panic!("{name}.json is not valid JSON: {e}"));
-        let got = v.pointer(pointer).unwrap_or_else(|| {
-            panic!("{name}.json no longer has {pointer}, which the homepage describes")
-        });
+            serde_json::from_str(&read(&format!("website/data/mcp-examples/{name}.json"))?)
+                .map_err(|e| format!("{name}.json is not valid JSON: {e}"))?;
+        let got = v.pointer(pointer).ok_or_else(|| {
+            format!("{name}.json no longer has {pointer}, which the homepage describes")
+        })?;
         assert_eq!(
             got, want,
             "{name}.json{pointer} is {got}, but the homepage copy says {want}"
@@ -860,31 +879,33 @@ fn each_mcp_example_still_carries_the_claim_the_page_makes_about_it() {
     // The one the page states outright: the match is timing-only, and saying so
     // is the feature. A `false` here with the copy unchanged is a lie on the page.
     let correlate: serde_json::Value =
-        serde_json::from_str(&read("website/data/mcp-examples/correlate.json")).expect("json");
+        serde_json::from_str(&read("website/data/mcp-examples/correlate.json")?)
+            .map_err(|e| format!("json: {e}"))?;
     assert_eq!(
         correlate["heuristic_only"], true,
         "correlate.json no longer flags heuristic_only, which the homepage promises it does"
     );
+    Ok(())
 }
 
 /// Every tape Output/Screenshot landing in static/demos must map to a referenced asset (its .webp counterpart counts).
 #[test]
-fn every_tape_output_is_a_referenced_site_asset() {
+fn every_tape_output_is_a_referenced_site_asset() -> Result<(), TestError> {
     // A tape whose Output lands in static/demos must correspond to a
     // referenced asset. Tapes render GIF (and the hero tape screenshots PNG);
     // demos/Makefile converts each to the lossless WebP the site actually
     // ships, so a tape's .gif/.png output counts as referenced when its .webp
     // counterpart is.
-    let re = regex::Regex::new(r"(?m)^(?:Output|Screenshot)\s+(\S+)").unwrap();
-    let to_webp = regex::Regex::new(r"\.(gif|png)$").unwrap();
-    let referenced = referenced_demo_assets();
+    let re = regex::Regex::new(r"(?m)^(?:Output|Screenshot)\s+(\S+)")?;
+    let to_webp = regex::Regex::new(r"\.(gif|png)$")?;
+    let referenced = referenced_demo_assets()?;
     let mut stale = Vec::new();
-    for entry in std::fs::read_dir(repo().join("demos")).expect("demos dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("demos")).map_err(|e| format!("demos dir: {e}"))? {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("tape") {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read tape");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read tape: {e}"))?;
         for cap in re.captures_iter(&text) {
             let out = &cap[1];
             if let Some(name) = out.strip_prefix("website/static/demos/")
@@ -893,7 +914,9 @@ fn every_tape_output_is_a_referenced_site_asset() {
             {
                 stale.push(format!(
                     "{}: renders {out} which nothing references",
-                    p.file_name().unwrap().to_string_lossy()
+                    p.file_name()
+                        .ok_or("file_name() is None")?
+                        .to_string_lossy()
                 ));
             }
         }
@@ -903,6 +926,7 @@ fn every_tape_output_is_a_referenced_site_asset() {
         "tapes render unreferenced assets:\n{}",
         stale.join("\n")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -911,18 +935,18 @@ fn every_tape_output_is_a_referenced_site_asset() {
 
 /// Every `@/docs` link in the base/index chrome resolves to an existing content page.
 #[test]
-fn every_nav_docs_link_resolves_to_a_content_page() {
+fn every_nav_docs_link_resolves_to_a_content_page() -> Result<(), TestError> {
     // `/` is in the class so subsection links (`@/docs/internals/x.md`) are
     // checked too. Without it the pattern simply did not match them, and a
     // broken developer-docs link in the nav would have passed silently.
-    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_/-]+\.md)").unwrap();
+    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_/-]+\.md)")?;
     let mut missing = Vec::new();
     let mut seen = 0;
     for tpl in [
         "website/templates/base.html",
         "website/templates/index.html",
     ] {
-        for cap in re.captures_iter(&read(tpl)) {
+        for cap in re.captures_iter(&read(tpl)?) {
             seen += 1;
             let page = repo().join("website/content/docs").join(&cap[1]);
             if !page.is_file() {
@@ -939,12 +963,13 @@ fn every_nav_docs_link_resolves_to_a_content_page() {
         "nav links to nonexistent docs pages:\n{}",
         missing.join("\n")
     );
+    Ok(())
 }
 
 /// The Zola config `version` equals the Cargo.toml crate version. It is a
 /// committed mirror, not a value any page renders.
 #[test]
-fn site_version_matches_crate_version() {
+fn site_version_matches_crate_version() -> Result<(), TestError> {
     // Keeps the committed mirror honest: the Zola config's `version` must equal
     // the crate version in Cargo.toml, which the Pages "Sync site version" step
     // overwrites it from at build time anyway. Mirrors the pre-commit gate as a
@@ -955,17 +980,15 @@ fn site_version_matches_crate_version() {
     // `softwareVersion` (base.html) and every /download link (download.html)
     // read `published_version`, and nothing reads `config.extra.version`.
     // `site_advertises_only_a_released_version` below is what guards those.
-    let cargo = read("Cargo.toml");
-    let crate_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)
-        .unwrap()
+    let cargo = read("Cargo.toml")?;
+    let crate_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)?
         .captures(&cargo)
-        .expect("Cargo.toml version")[1]
+        .ok_or("Cargo.toml version")?[1]
         .to_string();
-    let cfg = read("website/config.toml");
-    let site_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)
-        .unwrap()
+    let cfg = read("website/config.toml")?;
+    let site_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("config.toml version")[1]
+        .ok_or("config.toml version")?[1]
         .to_string();
     assert_eq!(
         crate_v, site_v,
@@ -974,6 +997,7 @@ fn site_version_matches_crate_version() {
          does NOT affect the homepage badge or /download: those read \
          published_version, guarded by site_advertises_only_a_released_version"
     );
+    Ok(())
 }
 
 /// The download page's release date matches the CHANGELOG entry it describes.
@@ -982,8 +1006,8 @@ fn site_version_matches_crate_version() {
 /// 0.5.44 CHANGELOG heading — the version beside it was gated, the date next
 /// to it was not, so /download advertised the right version on the wrong day.
 #[test]
-fn site_release_date_matches_changelog() {
-    let cfg = read("website/config.toml");
+fn site_release_date_matches_changelog() -> Result<(), TestError> {
+    let cfg = read("website/config.toml")?;
     // `published_version`, NOT `version`.
     //
     // `download.html` does `{% set v = config.extra.published_version %}` and
@@ -994,23 +1018,21 @@ fn site_release_date_matches_changelog() {
     // "v0.5.68 - released <the day 0.5.69 was cut>". That is the same
     // conflation the published_version split exists to prevent, enforced by
     // the gate meant to catch it.
-    let site_v = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .unwrap()
+    let site_v = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("config.toml published_version")[1]
+        .ok_or("config.toml published_version")?[1]
         .to_string();
-    let site_date = regex::Regex::new(r#"(?m)^release_date = "([^"]+)""#)
-        .unwrap()
+    let site_date = regex::Regex::new(r#"(?m)^release_date = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("config.toml release_date")[1]
+        .ok_or("config.toml release_date")?[1]
         .to_string();
 
-    let changelog = read("CHANGELOG.md");
-    let heading = regex::Regex::new(r"(?m)^## \[([^\]]+)\] - (\d{4}-\d{2}-\d{2})").unwrap();
+    let changelog = read("CHANGELOG.md")?;
+    let heading = regex::Regex::new(r"(?m)^## \[([^\]]+)\] - (\d{4}-\d{2}-\d{2})")?;
     let entry = heading
         .captures_iter(&changelog)
         .find(|c| c[1] == site_v)
-        .unwrap_or_else(|| panic!("CHANGELOG.md has no `## [{site_v}]` heading"));
+        .ok_or_else(|| format!("CHANGELOG.md has no `## [{site_v}]` heading"))?;
 
     assert_eq!(
         &entry[2], site_date,
@@ -1018,6 +1040,7 @@ fn site_release_date_matches_changelog() {
          for {site_v} ({}) — /download would show the wrong release date",
         &entry[2]
     );
+    Ok(())
 }
 
 /// Every changelog entry sits under a version heading.
@@ -1038,15 +1061,16 @@ fn site_release_date_matches_changelog() {
 /// The property that actually matters is structural: nothing announces a change
 /// before the first release that contains one.
 #[test]
-fn no_changelog_entry_precedes_its_version_heading() {
-    let changelog = read("CHANGELOG.md");
-    let version_heading = regex::Regex::new(r"(?m)^## \[").expect("heading regex");
-    let section = regex::Regex::new(r"(?m)^### ").expect("section regex");
+fn no_changelog_entry_precedes_its_version_heading() -> Result<(), TestError> {
+    let changelog = read("CHANGELOG.md")?;
+    let version_heading =
+        regex::Regex::new(r"(?m)^## \[").map_err(|e| format!("heading regex: {e}"))?;
+    let section = regex::Regex::new(r"(?m)^### ").map_err(|e| format!("section regex: {e}"))?;
 
     let first_version = version_heading
         .find(&changelog)
         .map(|m| m.start())
-        .expect("CHANGELOG.md has no `## [` version heading at all");
+        .ok_or("CHANGELOG.md has no `## [` version heading at all")?;
 
     let orphans: Vec<&str> = section
         .find_iter(&changelog[..first_version])
@@ -1090,6 +1114,7 @@ fn no_changelog_entry_precedes_its_version_heading() {
         "only {versions} version headings found — the heading pattern stopped \
          matching and this gate is reporting a structure it did not check"
     );
+    Ok(())
 }
 
 /// A design doc that calls itself unimplemented must not describe a shipped flag.
@@ -1112,7 +1137,7 @@ fn no_changelog_entry_precedes_its_version_heading() {
 /// in step with the first, which is the shape of defect this suite removes.
 #[cfg(feature = "native")]
 #[test]
-fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
+fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() -> Result<(), TestError> {
     let real: std::collections::BTreeSet<String> = sipnab::cli::Cli::command()
         .get_arguments()
         .filter_map(|a| a.get_long().map(str::to_string))
@@ -1124,17 +1149,18 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
         real.len()
     );
 
-    let flag = regex::Regex::new(r"`--([a-z][a-z0-9-]+)`").expect("flag regex");
+    let flag =
+        regex::Regex::new(r"`--([a-z][a-z0-9-]+)`").map_err(|e| format!("flag regex: {e}"))?;
     let mut problems = Vec::new();
     let mut checked = 0;
 
     let dir = repo().join("docs/design");
-    for entry in std::fs::read_dir(&dir).expect("read docs/design/") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read docs/design/: {e}"))? {
+        let path = entry.map_err(|e| format!("dir entry: {e}"))?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).expect("read design doc");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read design doc: {e}"))?;
         let Some(status) = text
             .lines()
             .find(|l| l.trim_start().starts_with("**Status:**"))
@@ -1180,6 +1206,7 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
          flag:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The site only advertises a version that exists as a published release.
@@ -1216,7 +1243,7 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
 /// real tags here, and string order puts `v0.5.8` after `v0.5.79`; once a
 /// `v0.5.9` follows `v0.5.10` it would be wrong in the other direction too.
 #[test]
-fn site_advertises_only_a_released_version() {
+fn site_advertises_only_a_released_version() -> Result<(), TestError> {
     /// `v1.2.3` → `(1, 2, 3)`. Anything else — `v0.5`, `v1.2.3.4`, `nightly` —
     /// is not a release tag and is skipped rather than guessed at.
     fn release_tag(tag: &str) -> Option<(u32, u32, u32)> {
@@ -1229,18 +1256,17 @@ fn site_advertises_only_a_released_version() {
         parts.next().is_none().then_some(v)
     }
 
-    let cfg = read("website/config.toml");
-    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .unwrap()
+    let cfg = read("website/config.toml")?;
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("website/config.toml has no published_version")[1]
+        .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
 
     let out = Command::new("git")
         .args(["tag", "--list"])
         .current_dir(repo())
         .output()
-        .expect("git tag --list");
+        .map_err(|e| format!("git tag --list: {e}"))?;
     let tags: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::to_string)
@@ -1278,11 +1304,11 @@ fn site_advertises_only_a_released_version() {
     );
 
     let published_v = release_tag(&wanted)
-        .unwrap_or_else(|| panic!("published_version {published} is not an x.y.z version"));
+        .ok_or_else(|| format!("published_version {published} is not an x.y.z version"))?;
     let position = releases
         .iter()
         .position(|v| *v == published_v)
-        .expect("published_version has a tag, so it is in the release list");
+        .ok_or("published_version has a tag, so it is in the release list")?;
     let behind = releases.len() - 1 - position;
 
     assert!(
@@ -1301,6 +1327,7 @@ fn site_advertises_only_a_released_version() {
         releases[releases.len() - 1].1,
         releases[releases.len() - 1].2,
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,23 +1349,22 @@ fn site_advertises_only_a_released_version() {
 /// config.toml. Copy-pasteable commands naming a repository are the worst place
 /// for a stale slug: they fail in the reader's terminal, not in a build.
 #[test]
-fn published_repo_slugs_agree() {
-    let cfg = read("website/config.toml");
-    let field = |name: &str| {
-        regex::Regex::new(&format!(r#"(?m)^{name} = "([^"]+)""#))
-            .unwrap()
+fn published_repo_slugs_agree() -> Result<(), TestError> {
+    let cfg = read("website/config.toml")?;
+    let field = |name: &str| -> Result<String, TestError> {
+        Ok(regex::Regex::new(&format!(r#"(?m)^{name} = "([^"]+)""#))?
             .captures(&cfg)
-            .unwrap_or_else(|| panic!("website/config.toml has no {name}"))[1]
-            .to_string()
+            .ok_or_else(|| format!("website/config.toml has no {name}"))?[1]
+            .to_string())
     };
 
-    let url = field("github_url");
-    let slug = field("github_repo");
+    let url = field("github_url")?;
+    let slug = field("github_repo")?;
     let expected = url
         .trim_end_matches('/')
         .rsplit("github.com/")
         .next()
-        .expect("github_url is not a github.com URL")
+        .ok_or("github_url is not a github.com URL")?
         .to_string();
     assert_eq!(
         slug, expected,
@@ -1347,7 +1373,7 @@ fn published_repo_slugs_agree() {
     );
 
     // GHCR requires a lowercase path, and docker.yml is what actually pushes.
-    let image = field("ghcr_image");
+    let image = field("ghcr_image")?;
     assert_eq!(
         image,
         image.to_lowercase(),
@@ -1361,7 +1387,7 @@ fn published_repo_slugs_agree() {
     );
 
     // The page must go through config for both, or these gates are decoration.
-    let dl = read("website/templates/download.html");
+    let dl = read("website/templates/download.html")?;
     for literal in [slug.as_str(), image.as_str()] {
         assert!(
             !dl.contains(literal),
@@ -1369,6 +1395,7 @@ fn published_repo_slugs_agree() {
              / config.extra.ghcr_image so a rename cannot strand a command"
         );
     }
+    Ok(())
 }
 
 /// Every published macOS floor matches what the pinned toolchain actually
@@ -1397,34 +1424,32 @@ fn published_repo_slugs_agree() {
 /// `--print deployment-target` reads the built-in target spec, so it answers for
 /// darwin targets whose std is not installed — this runs on Linux CI.
 #[test]
-fn published_macos_floors_match_the_toolchain() {
-    let cfg = read("website/config.toml");
+fn published_macos_floors_match_the_toolchain() -> Result<(), TestError> {
+    let cfg = read("website/config.toml")?;
 
-    let release = read(".github/workflows/release.yml");
+    let release = read(".github/workflows/release.yml")?;
 
     for (key, target) in [
         ("macos_floor_arm", "aarch64-apple-darwin"),
         ("macos_floor_intel", "x86_64-apple-darwin"),
     ] {
-        let published = regex::Regex::new(&format!(r#"(?m)^{key} = "([^"]+)""#))
-            .unwrap()
+        let published = regex::Regex::new(&format!(r#"(?m)^{key} = "([^"]+)""#))?
             .captures(&cfg)
-            .unwrap_or_else(|| panic!("website/config.toml has no {key}"))[1]
+            .ok_or_else(|| format!("website/config.toml has no {key}"))?[1]
             .to_string();
 
         // What the release actually builds against. `release.yml` now pins this
         // per target in the "Pin macOS deployment target" step, so the floor is a
         // decision recorded in the repository rather than a compiler default
         // nothing names.
-        let enforced = regex::Regex::new(&format!(r#"{target}\) *floor="([0-9.]+)""#))
-            .unwrap()
+        let enforced = regex::Regex::new(&format!(r#"{target}\) *floor="([0-9.]+)""#))?
             .captures(&release)
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                format!(
                     "release.yml has no `{target}) floor=\"X.Y\"` case — did the \
                      'Pin macOS deployment target' step move or change shape?"
                 )
-            })[1]
+            })?[1]
             .to_string();
 
         assert_eq!(
@@ -1441,7 +1466,7 @@ fn published_macos_floors_match_the_toolchain() {
         let out = std::process::Command::new("rustc")
             .args(["--print", "deployment-target", "--target", target])
             .output()
-            .expect("rustc --print deployment-target");
+            .map_err(|e| format!("rustc --print deployment-target: {e}"))?;
         assert!(
             out.status.success(),
             "rustc could not report the deployment target for {target}: {}",
@@ -1453,7 +1478,7 @@ fn published_macos_floors_match_the_toolchain() {
             .trim()
             .rsplit('=')
             .next()
-            .expect("deployment-target output has no `=`")
+            .ok_or("deployment-target output has no `=`")?
             .trim()
             .to_string();
         assert!(
@@ -1479,8 +1504,8 @@ fn published_macos_floors_match_the_toolchain() {
     }
 
     // The template must go through config; nothing may reintroduce a literal.
-    let dl = read("website/templates/download.html");
-    let hand_written = regex::Regex::new(r"macOS (\d+)(?:\.\d+)?\+").unwrap();
+    let dl = read("website/templates/download.html")?;
+    let hand_written = regex::Regex::new(r"macOS (\d+)(?:\.\d+)?\+")?;
     let found: Vec<&str> = hand_written.find_iter(&dl).map(|m| m.as_str()).collect();
     assert!(
         found.is_empty(),
@@ -1494,15 +1519,13 @@ fn published_macos_floors_match_the_toolchain() {
     // one of the two real ones. This is the same prose sweep the glibc gate
     // does, and for the same reason — "macOS 12+" lived in exactly this kind of
     // sentence, and a floor in prose is as load-bearing as one in a variable.
-    let arm = regex::Regex::new(r#"(?m)^macos_floor_arm = "([^"]+)""#)
-        .unwrap()
+    let arm = regex::Regex::new(r#"(?m)^macos_floor_arm = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("no macos_floor_arm")[1]
+        .ok_or("no macos_floor_arm")?[1]
         .to_string();
-    let intel = regex::Regex::new(r#"(?m)^macos_floor_intel = "([^"]+)""#)
-        .unwrap()
+    let intel = regex::Regex::new(r#"(?m)^macos_floor_intel = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("no macos_floor_intel")[1]
+        .ok_or("no macos_floor_intel")?[1]
         .to_string();
 
     for path in [
@@ -1510,7 +1533,7 @@ fn published_macos_floors_match_the_toolchain() {
         "website/content/docs/install.md",
         "README.md",
     ] {
-        let text = read(path);
+        let text = read(path)?;
         for cap in hand_written.captures_iter(&text) {
             let stated = cap[1].to_string();
             let full = cap[0].trim_end_matches('+').trim_start_matches("macOS ");
@@ -1523,6 +1546,7 @@ fn published_macos_floors_match_the_toolchain() {
             );
         }
     }
+    Ok(())
 }
 
 /// Every published glibc floor — two constants and the doc prose — matches the
@@ -1540,23 +1564,20 @@ fn published_macos_floors_match_the_toolchain() {
 /// on. Historical mentions ("it previously cut over at 2.39") are deliberately
 /// not matched — only phrasings that state the *current* floor.
 #[test]
-fn published_glibc_floor_matches_release_gate() {
-    let enforced = regex::Regex::new(r#"(?m)^\s*floor="([0-9]+\.[0-9]+)""#)
-        .unwrap()
-        .captures(&read(".github/workflows/release.yml"))
-        .expect("release.yml: no `floor=\"X.Y\"` in the glibc gate — did the step move?")[1]
+fn published_glibc_floor_matches_release_gate() -> Result<(), TestError> {
+    let enforced = regex::Regex::new(r#"(?m)^\s*floor="([0-9]+\.[0-9]+)""#)?
+        .captures(&read(".github/workflows/release.yml")?)
+        .ok_or("release.yml: no `floor=\"X.Y\"` in the glibc gate — did the step move?")?[1]
         .to_string();
 
-    let site = regex::Regex::new(r#"(?m)^glibc_floor = "([^"]+)""#)
-        .unwrap()
-        .captures(&read("website/config.toml"))
-        .expect("website/config.toml has no glibc_floor")[1]
+    let site = regex::Regex::new(r#"(?m)^glibc_floor = "([^"]+)""#)?
+        .captures(&read("website/config.toml")?)
+        .ok_or("website/config.toml has no glibc_floor")?[1]
         .to_string();
 
-    let installer = regex::Regex::new(r#"(?m)^SIPNAB_GLIBC_FLOOR="([^"]+)""#)
-        .unwrap()
-        .captures(&read("website/static/install.sh"))
-        .expect("install.sh has no SIPNAB_GLIBC_FLOOR")[1]
+    let installer = regex::Regex::new(r#"(?m)^SIPNAB_GLIBC_FLOOR="([^"]+)""#)?
+        .captures(&read("website/static/install.sh")?)
+        .ok_or("install.sh has no SIPNAB_GLIBC_FLOOR")?[1]
         .to_string();
 
     assert_eq!(
@@ -1600,7 +1621,7 @@ fn published_glibc_floor_matches_release_gate() {
         .args(["ls-files", "*.md"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     let tracked = String::from_utf8_lossy(&out.stdout);
 
     // A glibc-shaped version: `2.NN`, with the preceding character not part of
@@ -1614,7 +1635,8 @@ fn published_glibc_floor_matches_release_gate() {
     // This assumes glibc stays on the 2.x line, which has held since 1997. If a
     // glibc 3 ever ships, this goes blind rather than wrong — the count
     // assertion below is what would notice.
-    let ver = regex::Regex::new(r"(?:^|[^A-Za-z0-9._-])(2\.\d+)").expect("version regex");
+    let ver = regex::Regex::new(r"(?:^|[^A-Za-z0-9._-])(2\.\d+)")
+        .map_err(|e| format!("version regex: {e}"))?;
 
     let mut wrong = Vec::new();
     let mut checked = 0;
@@ -1659,6 +1681,7 @@ fn published_glibc_floor_matches_release_gate() {
          reason. Do not change the floor to make this pass.",
         wrong.join("\n  ")
     );
+    Ok(())
 }
 
 /// The published binary-size ceiling is single-sourced and actually enforced.
@@ -1667,14 +1690,13 @@ fn published_glibc_floor_matches_release_gate() {
 /// 9.34 MB. The existing tile gate compared `data-count` to the tile's own
 /// fallback text, so 5 == 5 passed while the claim was 87% under reality.
 #[test]
-fn published_binary_size_matches_the_enforced_ceiling() {
-    let ceiling = regex::Regex::new(r#"(?m)^binary_size_ceiling_mb = "([0-9]+)""#)
-        .unwrap()
-        .captures(&read("website/config.toml"))
-        .expect("website/config.toml has no binary_size_ceiling_mb")[1]
+fn published_binary_size_matches_the_enforced_ceiling() -> Result<(), TestError> {
+    let ceiling = regex::Regex::new(r#"(?m)^binary_size_ceiling_mb = "([0-9]+)""#)?
+        .captures(&read("website/config.toml")?)
+        .ok_or("website/config.toml has no binary_size_ceiling_mb")?[1]
         .to_string();
 
-    let idx = read("website/templates/index.html");
+    let idx = read("website/templates/index.html")?;
     assert!(
         idx.contains(&format!(
             r#"data-count="{ceiling}" data-suffix=" MB">{ceiling} MB<"#
@@ -1688,14 +1710,14 @@ fn published_binary_size_matches_the_enforced_ceiling() {
     );
     for doc in ["docs/install.md", "website/content/docs/build.md"] {
         assert!(
-            read(doc).contains(&format!("<= {ceiling} MB")),
+            read(doc)?.contains(&format!("<= {ceiling} MB")),
             "{doc} does not quote the {ceiling} MB ceiling from website/config.toml"
         );
     }
     // The second quote in the install guide, in its release-gates notes. It
     // said 17 MB while the key moved, because only the line above was pinned.
     assert!(
-        read("docs/install.md").contains(&format!("checks the {ceiling} MB ceiling")),
+        read("docs/install.md")?.contains(&format!("checks the {ceiling} MB ceiling")),
         "docs/install.md's size-ceiling note does not quote the {ceiling} MB \
          ceiling from website/config.toml"
     );
@@ -1710,7 +1732,7 @@ fn published_binary_size_matches_the_enforced_ceiling() {
         ".github/workflows/release.yml",
         "Enforce published binary size (musl targets)",
         Some("contains(matrix.target, '-linux-musl')"),
-    );
+    )?;
     // And prove it: a 1 MB ceiling against a 2 MB binary must fail.
     assert_step_fails_on_bad_input(
         ".github/workflows/release.yml",
@@ -1723,17 +1745,21 @@ fn published_binary_size_matches_the_enforced_ceiling() {
                         .and_then(|()| std::fs::write(dir.join("website/config.toml"), ""))
                 })
                 .ok();
-            std::fs::create_dir_all(dir.join("website")).expect("mkdir website");
+            std::fs::create_dir_all(dir.join("website"))
+                .map_err(|e| format!("mkdir website: {e}"))?;
             std::fs::write(
                 dir.join("website/config.toml"),
                 "binary_size_ceiling_mb = \"1\"\n",
             )
-            .expect("write config");
+            .map_err(|e| format!("write config: {e}"))?;
             let bin = dir.join("target/x86_64-unknown-linux-musl/release");
-            std::fs::create_dir_all(&bin).expect("mkdir target");
-            std::fs::write(bin.join("sipnab"), vec![0u8; 2 * 1024 * 1024]).expect("write binary");
+            std::fs::create_dir_all(&bin).map_err(|e| format!("mkdir target: {e}"))?;
+            std::fs::write(bin.join("sipnab"), vec![0u8; 2 * 1024 * 1024])
+                .map_err(|e| format!("write binary: {e}"))?;
+            Ok(())
         },
-    );
+    )?;
+    Ok(())
 }
 
 /// The homepage throughput tiles must quote figures that appear on the
@@ -1744,18 +1770,18 @@ fn published_binary_size_matches_the_enforced_ceiling() {
 /// rebuild, and nothing tied the tile to the page it linked to — so the
 /// headline numbers on the front page were unfalsifiable by construction.
 #[test]
-fn homepage_throughput_tiles_match_the_benchmarks_page() {
-    let idx = read("website/templates/index.html");
-    let bench = read("website/content/docs/benchmarks.md");
+fn homepage_throughput_tiles_match_the_benchmarks_page() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
+    let bench = read("website/content/docs/benchmarks.md")?;
 
     // The version comes from the committed baseline too, for the same reason
     // the figure does. It used to be scraped out of the page's prose with a
     // regex for "released N artifact, checksum-verified" — which tied the gate
     // to one sentence's wording, and said nothing about whether that sentence
     // agreed with the run the throughput gate measures against.
-    let measured = baseline()["measured"]["version"]
+    let measured = baseline()?["measured"]["version"]
         .as_str()
-        .expect("bench/baseline.json has no measured.version")
+        .ok_or("bench/baseline.json has no measured.version")?
         .to_string();
 
     // Each tile: (data-count value, the string that must appear in a table row).
@@ -1808,7 +1834,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // nothing compared the two. `benchmarks_pages_headline_matches_the_committed_baseline`
     // binds the same file to both benchmarks pages, so the tile, both pages and
     // the gate's floor now move in one commit or not at all.
-    let derived = baseline_four_core_figure();
+    let derived = baseline_four_core_figure()?;
     let (count, suffix) = (derived.trim_end_matches('M'), "M pkts/s");
     let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
     assert!(
@@ -1839,6 +1865,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
         "homepage tiles do not say they were measured on v{measured}, the release \
          the benchmarks page names — an undated throughput claim silently ages"
     );
+    Ok(())
 }
 
 /// The homepage's MCP tool count must equal the number of tools the server
@@ -1850,9 +1877,9 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
 /// produced it. Counting the `name = "..."` registrations means adding a tool
 /// fails this gate until the page moves with it, and removing one does too.
 #[test]
-fn homepage_mcp_tool_tile_matches_the_server() {
-    let idx = read("website/templates/index.html");
-    let (registered, in_server_rs, files) = registered_mcp_tool_count();
+fn homepage_mcp_tool_tile_matches_the_server() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
+    let (registered, in_server_rs, files) = registered_mcp_tool_count()?;
 
     // A parser that matches nothing would agree with any tile.
     assert!(
@@ -1886,6 +1913,7 @@ fn homepage_mcp_tool_tile_matches_the_server() {
         "the MCP tile's no-JS fallback text disagrees with its data-count \
          ({registered}); a visitor without JavaScript sees the stale number"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1918,9 +1946,9 @@ struct StandardCard {
 
 /// Tags removed and the entities the cards use decoded, so `Annex&nbsp;B` on
 /// the page compares against the `Annex B` the code says.
-fn decode_html(s: &str) -> String {
-    let no_tags = regex::Regex::new(r"<[^>]+>").unwrap().replace_all(s, "");
-    no_tags
+fn decode_html(s: &str) -> Result<String, TestError> {
+    let no_tags = regex::Regex::new(r"<[^>]+>")?.replace_all(s, "");
+    Ok(no_tags
         .replace("&nbsp;", " ")
         .replace("&mdash;", "\u{2014}")
         .replace("&ndash;", "\u{2013}")
@@ -1931,7 +1959,7 @@ fn decode_html(s: &str) -> String {
         .replace("&amp;", "&")
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" "))
 }
 
 /// Every `metric-card` inside every `<section class="metrics" id="...">`.
@@ -1940,27 +1968,27 @@ fn decode_html(s: &str) -> String {
 /// `label` and `href`, and [`standard_card_violations`] decides what that
 /// means. A parser that dropped the card it could not read would hide exactly
 /// the card this gate exists to see.
-fn standard_cards(html: &str) -> Vec<StandardCard> {
+fn standard_cards(html: &str) -> Result<Vec<StandardCard>, TestError> {
     let section_re =
-        regex::Regex::new(r#"(?s)<section class="metrics" id="([a-z-]+)">(.*?)</section>"#)
-            .unwrap();
-    let badge_re =
-        regex::Regex::new(r#"<a class="metric-std" href="([^"]*)"[^>]*>([^<]*)</a>"#).unwrap();
-    let item_re = regex::Regex::new(r"(?s)<li><strong>([^<]*)</strong>(.*?)</li>").unwrap();
+        regex::Regex::new(r#"(?s)<section class="metrics" id="([a-z-]+)">(.*?)</section>"#)?;
+    let badge_re = regex::Regex::new(r#"<a class="metric-std" href="([^"]*)"[^>]*>([^<]*)</a>"#)?;
+    let item_re = regex::Regex::new(r"(?s)<li><strong>([^<]*)</strong>(.*?)</li>")?;
     let mut cards = Vec::new();
     for section in section_re.captures_iter(html) {
         for chunk in section[2].split(r#"<div class="metric-card"#).skip(1) {
-            let (href, label) = badge_re
-                .captures(chunk)
-                .map(|c| (c[1].to_string(), decode_html(&c[2])))
-                .unwrap_or_default();
+            let (href, label) = match badge_re.captures(chunk) {
+                Some(c) => (c[1].to_string(), decode_html(&c[2])?),
+                None => Default::default(),
+            };
             let items = item_re
                 .captures_iter(chunk)
-                .map(|c| CardItem {
-                    title: decode_html(&c[1]),
-                    desc: decode_html(&c[2]),
+                .map(|c| {
+                    Ok::<_, TestError>(CardItem {
+                        title: decode_html(&c[1])?,
+                        desc: decode_html(&c[2])?,
+                    })
                 })
-                .collect();
+                .collect::<Result<_, _>>()?;
             cards.push(StandardCard {
                 section: section[1].to_string(),
                 label,
@@ -1969,7 +1997,7 @@ fn standard_cards(html: &str) -> Vec<StandardCard> {
             });
         }
     }
-    cards
+    Ok(cards)
 }
 
 /// One metric or capability a card lists, and what earns it.
@@ -2291,43 +2319,43 @@ const STANDARD_HOSTS: &[&str] = &[
 /// The identifiers a piece of card text names: `RFC 3611`, `G.107`, `HEP v3`,
 /// `draft-ietf-vcon-vcon-core`. Empty when it names nothing a reader could look
 /// up.
-fn standard_identifiers(text: &str) -> Vec<String> {
-    regex::Regex::new(r"RFC \d{4}|[A-Z]\.\d{3}|HEP v\d|draft-[a-z0-9-]+")
-        .unwrap()
-        .find_iter(text)
-        .map(|m| m.as_str().to_string())
-        .collect()
+fn standard_identifiers(text: &str) -> Result<Vec<String>, TestError> {
+    Ok(
+        regex::Regex::new(r"RFC \d{4}|[A-Z]\.\d{3}|HEP v\d|draft-[a-z0-9-]+")?
+            .find_iter(text)
+            .map(|m| m.as_str().to_string())
+            .collect(),
+    )
 }
 
 /// The one URL a standard identifier resolves to, or `None` for a kind this
 /// gate does not know how to resolve.
-fn canonical_url(id: &str) -> Option<String> {
-    if let Some(n) = id.strip_prefix("RFC ") {
+fn canonical_url(id: &str) -> Result<Option<String>, TestError> {
+    Ok(if let Some(n) = id.strip_prefix("RFC ") {
         Some(format!("https://www.rfc-editor.org/rfc/rfc{n}"))
     } else if id.starts_with("HEP v") {
         Some("https://github.com/sipcapture/HEP".to_string())
     } else if id.starts_with("draft-") {
         Some(format!("https://datatracker.ietf.org/doc/{id}/"))
-    } else if regex::Regex::new(r"^[A-Z]\.\d{3}$").unwrap().is_match(id) {
+    } else if regex::Regex::new(r"^[A-Z]\.\d{3}$")?.is_match(id) {
         Some(format!("https://www.itu.int/rec/T-REC-{id}"))
     } else {
         None
-    }
+    })
 }
 
 /// The specific claims a description makes: a formula constant, an annex, a
 /// table, a section, a payload type, a version, a millisecond figure. Each
 /// must be in the item's `claims`, and each claim in the file it names.
-fn specific_claims(desc: &str) -> Vec<String> {
-    regex::Regex::new(concat!(
+fn specific_claims(desc: &str) -> Result<Vec<String>, TestError> {
+    Ok(regex::Regex::new(concat!(
         r"Annex [A-Z]\b|Appendix [IVX]+\b|Tables? [IVX0-9]+(?:\.[0-9]+)?(?: and [0-9]+)?",
         r"|PT=?\s?[0-9]+|\u{00a7}[0-9]+(?:\.[0-9]+)*|[Ss]ection [0-9]+(?:\.[0-9]+)*|BT=[0-9]+",
         r"|\[[0-9.]+, [0-9.]+\]|[0-9]+ ms|[0-9]+\.[0-9]+|Eq\.? ?\(?[0-9A-Z-]+\)?",
-    ))
-    .unwrap()
+    ))?
     .find_iter(desc)
     .map(|m| m.as_str().to_string())
-    .collect()
+    .collect())
 }
 
 /// The ways a standards card can be wrong. One kind per test below, and the
@@ -2400,14 +2428,14 @@ fn standard_card_violations(
     canon: &[CanonicalStandard],
     corpora: &Corpora<'_>,
     file_has: &dyn Fn(&str, &str) -> bool,
-) -> Vec<Violation> {
+) -> Result<Vec<Violation>, TestError> {
     let mut out = Vec::new();
     let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
 
     // 1. One card per standard.
     let mut titles: BTreeMap<String, usize> = BTreeMap::new();
     for card in cards {
-        if let Some(id) = standard_identifiers(&card.label).into_iter().next() {
+        if let Some(id) = standard_identifiers(&card.label)?.into_iter().next() {
             *titles.entry(id).or_default() += 1;
         }
     }
@@ -2436,8 +2464,12 @@ fn standard_card_violations(
         }
 
         // 3. Title <-> link target.
-        let title_id = standard_identifiers(&card.label).into_iter().next();
-        match title_id.as_deref().and_then(canonical_url) {
+        let title_id = standard_identifiers(&card.label)?.into_iter().next();
+        let title_url = match title_id.as_deref() {
+            Some(id) => canonical_url(id)?,
+            None => None,
+        };
+        match title_url {
             None => push(
                 Kind::TitleUrlMismatch,
                 format!("{who} names no standard this gate can resolve to a URL"),
@@ -2453,9 +2485,9 @@ fn standard_card_violations(
         }
 
         // 6 and 7. Every standard the card cites, in the title or an item.
-        let mut cited: Vec<String> = standard_identifiers(&card.label);
+        let mut cited: Vec<String> = standard_identifiers(&card.label)?;
         for item in &card.items {
-            cited.extend(standard_identifiers(&item.desc));
+            cited.extend(standard_identifiers(&item.desc)?);
         }
         cited.sort();
         cited.dedup();
@@ -2510,7 +2542,7 @@ fn standard_card_violations(
             };
             // The title is part of the claim: "TLS 1.3" names a version.
             let said = format!("{} {}", item.title, item.desc);
-            for claim in specific_claims(&said) {
+            for claim in specific_claims(&said)? {
                 if !spec.claims.iter().any(|(c, _)| c.contains(claim.as_str())) {
                     push(
                         Kind::OverSpecificClaim,
@@ -2553,10 +2585,10 @@ fn standard_card_violations(
         let who = format!("HOMEPAGE_STANDARDS row #{} {:?}", row.section, row.label);
 
         // 3, table side: the row's own URL is the canonical one.
-        let expected = standard_identifiers(row.label)
-            .into_iter()
-            .next()
-            .and_then(|id| canonical_url(&id));
+        let expected = match standard_identifiers(row.label)?.into_iter().next() {
+            Some(id) => canonical_url(&id)?,
+            None => None,
+        };
         if expected.as_deref() != Some(row.href) {
             push(
                 Kind::TitleUrlMismatch,
@@ -2639,16 +2671,16 @@ fn standard_card_violations(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every `.md` under a directory, recursively, sorted, as one string.
-fn markdown_corpus(rel: &str) -> String {
+fn markdown_corpus(rel: &str) -> Result<String, TestError> {
     let mut files = Vec::new();
     let mut dirs = vec![repo().join(rel)];
     while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {rel}: {e}")) {
-            let p = entry.expect("dir entry").path();
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("read {rel}: {e}"))? {
+            let p = entry.map_err(|e| format!("dir entry: {e}"))?.path();
             if p.is_dir() {
                 dirs.push(p);
             } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -2663,20 +2695,22 @@ fn markdown_corpus(rel: &str) -> String {
          citation check is against nothing",
         files.len()
     );
-    files
+    Ok(files
         .iter()
-        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|p| std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display())))
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n"))
 }
 
 /// The prose of every top-level `docs/*.md`: the corpus a homepage standard
 /// must also be cited in. Top level only — `docs/design/` is a plan, not a
 /// claim.
-fn docs_prose() -> String {
+fn docs_prose() -> Result<String, TestError> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(repo().join("docs"))
-        .expect("read docs/")
-        .map(|e| e.expect("dir entry").path())
+        .map_err(|e| format!("read docs/: {e}"))?
+        .map(|e| e.map(|e| e.path()).map_err(|e| format!("dir entry: {e}")))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
         .collect();
     files.sort();
@@ -2686,29 +2720,29 @@ fn docs_prose() -> String {
          citation check is against nothing",
         files.len()
     );
-    files
+    Ok(files
         .iter()
-        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|p| std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display())))
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n"))
 }
 
 /// What the site serves: the pages `scripts/build-site-pages.py` builds from
 /// `docs/`, the site-only pages beside them, and the `llms-full.txt` it
 /// concatenates from the mirrored pages.
-fn site_mirror() -> String {
-    format!(
+fn site_mirror() -> Result<String, TestError> {
+    Ok(format!(
         "{}\n{}",
-        markdown_corpus("website/content"),
-        read("website/static/llms-full.txt")
-    )
+        markdown_corpus("website/content")?,
+        read("website/static/llms-full.txt")?
+    ))
 }
 
 /// The output schema as the docs describe it. `output-formats.md` describes
 /// the shapes and points at the REST and MCP references for the per-field
 /// tables, so the three together are where a field is documented or is not.
-fn output_schema_docs() -> String {
-    let formats = read("docs/output-formats.md");
+fn output_schema_docs() -> Result<String, TestError> {
+    let formats = read("docs/output-formats.md")?;
     for pointed_at in ["rest-api.md", "mcp-tools.md"] {
         assert!(
             formats.contains(pointed_at),
@@ -2716,11 +2750,11 @@ fn output_schema_docs() -> String {
              corpus below rests on that reference being the schema the docs name"
         );
     }
-    format!(
+    Ok(format!(
         "{formats}\n{}\n{}",
-        read("docs/rest-api.md"),
-        read("docs/mcp-tools.md")
-    )
+        read("docs/rest-api.md")?,
+        read("docs/mcp-tools.md")?
+    ))
 }
 
 /// Does a repo-relative file contain a string? `false` for a file that is not
@@ -2732,8 +2766,8 @@ fn tree_has(file: &str, needle: &str) -> bool {
 /// The homepage's cards, checked that the parser saw every one of them: a
 /// parser that sees fewer cards than the page carries judges a subset, and
 /// the card it dropped is the one free to rot.
-fn homepage_cards(html: &str) -> Vec<StandardCard> {
-    let cards = standard_cards(html);
+fn homepage_cards(html: &str) -> Result<Vec<StandardCard>, TestError> {
+    let cards = standard_cards(html)?;
     let on_page = html.matches(r#"class="metric-card"#).count();
     assert_eq!(
         cards.len(),
@@ -2755,17 +2789,17 @@ fn homepage_cards(html: &str) -> Vec<StandardCard> {
          is a badge, not a claim",
         cards.iter().find(|c| c.items.is_empty()).map(|c| &c.label)
     );
-    cards
+    Ok(cards)
 }
 
 /// The real page against the real tree, docs, mirror and output docs.
-fn homepage_violations() -> Vec<Violation> {
-    let html = read(STANDARDS_TEMPLATE);
-    let docs = docs_prose();
-    let mirror = site_mirror();
-    let output_docs = output_schema_docs();
+fn homepage_violations() -> Result<Vec<Violation>, TestError> {
+    let html = read(STANDARDS_TEMPLATE)?;
+    let docs = docs_prose()?;
+    let mirror = site_mirror()?;
+    let output_docs = output_schema_docs()?;
     standard_card_violations(
-        &homepage_cards(&html),
+        &homepage_cards(&html)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -2780,33 +2814,33 @@ fn homepage_violations() -> Vec<Violation> {
 /// a mutation that never applied looks exactly like a passing check. A needle
 /// is the card's own text, never a bare URL — the demo wall above the band
 /// links the same RFCs, and the first match is the wrong one.
-fn homepage_with(from: &str, to: &str) -> String {
-    let html = read(STANDARDS_TEMPLATE);
+fn homepage_with(from: &str, to: &str) -> Result<String, TestError> {
+    let html = read(STANDARDS_TEMPLATE)?;
     assert!(
         html.contains(from),
         "control edit did not apply: standards.html no longer contains {from:?}"
     );
-    html.replacen(from, to, 1)
+    Ok(html.replacen(from, to, 1))
 }
 
 /// The real card for a standard, verbatim, for a control that needs to
 /// duplicate or append one.
-fn homepage_card_html(label: &str) -> String {
-    let html = read(STANDARDS_TEMPLATE);
+fn homepage_card_html(label: &str) -> Result<String, TestError> {
+    let html = read(STANDARDS_TEMPLATE)?;
     let needle = format!(r#">{label}</a>"#);
     let at = html
         .find(&needle)
-        .unwrap_or_else(|| panic!("standards.html has no card titled {label:?}"));
+        .ok_or_else(|| format!("standards.html has no card titled {label:?}"))?;
     let start = html[..at]
         .rfind(r#"<div class="metric-card"#)
-        .expect("card open tag before the title");
+        .ok_or("card open tag before the title")?;
     let end = at
         + html[at..]
             .find("</ul>")
-            .expect("card list close after the title")
+            .ok_or("card list close after the title")?
         + 4;
-    let close = html[end..].find("</div>").expect("card close tag") + 6;
-    html[start..end + close].to_string()
+    let close = html[end..].find("</div>").ok_or("card close tag")? + 6;
+    Ok(html[start..end + close].to_string())
 }
 
 /// Violations of one kind, as one message, for an assertion.
@@ -2830,12 +2864,12 @@ fn assert_none_of_kind(violations: &[Violation], kind: Kind) {
 
 /// The checker run against a control page with the real corpora, so the only
 /// thing wrong is what the control put there.
-fn control_violations(html: &str) -> Vec<Violation> {
-    let docs = docs_prose();
-    let mirror = site_mirror();
-    let output_docs = output_schema_docs();
+fn control_violations(html: &str) -> Result<Vec<Violation>, TestError> {
+    let docs = docs_prose()?;
+    let mirror = site_mirror()?;
+    let output_docs = output_schema_docs()?;
     standard_card_violations(
-        &standard_cards(html),
+        &standard_cards(html)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -2853,18 +2887,19 @@ fn control_violations(html: &str) -> Vec<Violation> {
 /// it as an inconsistency, which it was. One card per standard, the metrics it
 /// grounds inside it.
 #[test]
-fn homepage_no_standard_titles_more_than_one_card() {
-    assert_none_of_kind(&homepage_violations(), Kind::DuplicateTitle);
+fn homepage_no_standard_titles_more_than_one_card() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::DuplicateTitle);
 
     // Control: the real RFC 3611 card, twice.
-    let card = homepage_card_html("RFC 3611");
-    let page = homepage_with(&card, &format!("{card}\n{card}"));
-    let hits = of_kind(&control_violations(&page), Kind::DuplicateTitle);
+    let card = homepage_card_html("RFC 3611")?;
+    let page = homepage_with(&card, &format!("{card}\n{card}"))?;
+    let hits = of_kind(&control_violations(&page)?, Kind::DuplicateTitle);
     assert!(
         hits.iter()
             .any(|m| m.contains("RFC 3611") && m.contains("2 cards")),
         "two RFC 3611 cards passed the one-card-per-standard check: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 2: Every link goes to the standard's own host: rfc-editor.org for an RFC,
@@ -2872,66 +2907,68 @@ fn homepage_no_standard_titles_more_than_one_card() {
 /// IETF datatracker for a draft. A mirror or a blog is a page about the
 /// standard, not the standard.
 #[test]
-fn homepage_standard_links_go_to_the_standards_own_host() {
-    assert_none_of_kind(&homepage_violations(), Kind::BadHost);
+fn homepage_standard_links_go_to_the_standards_own_host() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::BadHost);
 
     // Control: the same RFC on a host that is not the RFC Editor.
     let page = homepage_with(
         r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261""#,
         r#"class="metric-std" href="https://tools.ietf.org/html/rfc3261""#,
-    );
-    let hits = of_kind(&control_violations(&page), Kind::BadHost);
+    )?;
+    let hits = of_kind(&control_violations(&page)?, Kind::BadHost);
     assert!(
         hits.iter().any(|m| m.contains("tools.ietf.org")),
         "a link off the standard's host passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 3: The document a title names is the document the link opens: `RFC 3611`
 /// ends in `rfc3611`, `ITU-T G.107` in `T-REC-G.107`, `HEP v3` is the
 /// sipcapture spec, a draft name is its datatracker page.
 #[test]
-fn homepage_standard_title_matches_its_link_target() {
-    assert_none_of_kind(&homepage_violations(), Kind::TitleUrlMismatch);
+fn homepage_standard_title_matches_its_link_target() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::TitleUrlMismatch);
 
     // Control: a title one RFC off its link.
     let page = homepage_with(
         r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611""#,
         r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3612""#,
-    );
-    let hits = of_kind(&control_violations(&page), Kind::TitleUrlMismatch);
+    )?;
+    let hits = of_kind(&control_violations(&page)?, Kind::TitleUrlMismatch);
     assert!(
         hits.iter()
             .any(|m| m.contains("rfc3612") && m.contains("rfc3611")),
         "a title/link mismatch passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 4: Every metric or capability a card names maps, in [`HOMEPAGE_STANDARDS`],
 /// to a code symbol that exists in the tree. A card cannot name what the code
 /// does not do, and the table cannot name code that is gone.
 #[test]
-fn homepage_card_items_map_to_code_that_exists() {
-    assert_none_of_kind(&homepage_violations(), Kind::UnmappedItem);
+fn homepage_card_items_map_to_code_that_exists() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::UnmappedItem);
 
     // Control: a metric nobody implemented, on an otherwise real card.
     let page = homepage_with(
         "<li><strong>Jitter</strong>",
         "<li><strong>Foo score</strong> &mdash; not a thing.</li>\n        <li><strong>Jitter</strong>",
-    );
-    let hits = of_kind(&control_violations(&page), Kind::UnmappedItem);
+    )?;
+    let hits = of_kind(&control_violations(&page)?, Kind::UnmappedItem);
     assert!(
         hits.iter().any(|m| m.contains("Foo score")),
         "an item with no code path passed: {hits:?}"
     );
 
     // And the table side: a row pointing at a symbol the tree lacks.
-    let docs = docs_prose();
-    let mirror = site_mirror();
-    let output_docs = output_schema_docs();
-    let html = read(STANDARDS_TEMPLATE);
+    let docs = docs_prose()?;
+    let mirror = site_mirror()?;
+    let output_docs = output_schema_docs()?;
+    let html = read(STANDARDS_TEMPLATE)?;
     let hits = standard_card_violations(
-        &standard_cards(&html),
+        &standard_cards(&html)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -2942,26 +2979,27 @@ fn homepage_card_items_map_to_code_that_exists() {
             !(file == "src/rtp/rtcp.rs" && needle.contains("rtt_from_sender_report_echo"))
                 && tree_has(file, needle)
         },
-    );
+    )?;
     let hits = of_kind(&hits, Kind::UnmappedItem);
     assert!(
         hits.iter()
             .any(|m| m.contains("rtt_from_sender_report_echo") && m.contains("not there")),
         "a row whose symbol is gone passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 5: The reverse of 4: every row of [`HOMEPAGE_STANDARDS`], and every item of
 /// it, is on the page. An implemented standard cannot vanish from the section
 /// by deleting its card.
 #[test]
-fn homepage_carries_every_standard_the_canonical_table_names() {
-    assert_none_of_kind(&homepage_violations(), Kind::MissingFromPage);
+fn homepage_carries_every_standard_the_canonical_table_names() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::MissingFromPage);
 
     // Control: the SRTP card deleted.
-    let card = homepage_card_html("RFC 3711");
-    let page = homepage_with(&card, "");
-    let hits = of_kind(&control_violations(&page), Kind::MissingFromPage);
+    let card = homepage_card_html("RFC 3711")?;
+    let page = homepage_with(&card, "")?;
+    let hits = of_kind(&control_violations(&page)?, Kind::MissingFromPage);
     assert!(
         hits.iter()
             .any(|m| m.contains("RFC 3711") && m.contains("0 card(s)")),
@@ -2972,37 +3010,39 @@ fn homepage_carries_every_standard_the_canonical_table_names() {
     let page = homepage_with(
         "<li><strong>Masking</strong>",
         "<li><strong>Masking-gone</strong>",
-    );
-    let hits = of_kind(&control_violations(&page), Kind::MissingFromPage);
+    )?;
+    let hits = of_kind(&control_violations(&page)?, Kind::MissingFromPage);
     assert!(
         hits.iter()
             .any(|m| m.contains("\"Masking\"") && m.contains("no longer lists")),
         "a deleted item passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 6: Every standard a card cites, in its title or an item, is cited by name
 /// in `docs/*.md`. The homepage does not claim what the documentation does
 /// not.
 #[test]
-fn homepage_standards_are_cited_in_the_docs() {
-    assert_none_of_kind(&homepage_violations(), Kind::Uncited);
+fn homepage_standards_are_cited_in_the_docs() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::Uncited);
 
     // Control: an unassigned RFC, which the docs must not cite either.
     assert!(
-        !docs_prose().contains("RFC 9999"),
+        !docs_prose()?.contains("RFC 9999"),
         "docs/ cites RFC 9999; pick another unassigned number for this control"
     );
-    let card = homepage_card_html("RFC 3711")
+    let card = homepage_card_html("RFC 3711")?
         .replace("RFC 3711", "RFC 9999")
         .replace("rfc3711", "rfc9999");
-    let real = homepage_card_html("RFC 3711");
-    let page = homepage_with(&real, &format!("{real}\n{card}"));
-    let hits = of_kind(&control_violations(&page), Kind::Uncited);
+    let real = homepage_card_html("RFC 3711")?;
+    let page = homepage_with(&real, &format!("{real}\n{card}"))?;
+    let hits = of_kind(&control_violations(&page)?, Kind::Uncited);
     assert!(
         hits.iter().any(|m| m.contains("RFC 9999")),
         "an uncited standard passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 7: The built site mirror cites every standard the template cites. There is
@@ -3012,21 +3052,21 @@ fn homepage_standards_are_cited_in_the_docs() {
 /// added to `docs/` and not rebuilt, or added to a mirrored page and not to
 /// its site-only twin, is the drift this catches.
 #[test]
-fn homepage_standards_are_cited_in_the_site_mirror() {
-    assert_none_of_kind(&homepage_violations(), Kind::MirrorDrift);
+fn homepage_standards_are_cited_in_the_site_mirror() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::MirrorDrift);
 
     // Control: the mirror without one citation the template makes.
-    let mirror = site_mirror();
+    let mirror = site_mirror()?;
     assert!(
         mirror.contains("RFC 8446"),
         "the mirror does not cite RFC 8446 — this control cannot remove what is not there"
     );
     let mirror = mirror.replace("RFC 8446", "RFC ----");
-    let docs = docs_prose();
-    let output_docs = output_schema_docs();
-    let html = read(STANDARDS_TEMPLATE);
+    let docs = docs_prose()?;
+    let output_docs = output_schema_docs()?;
+    let html = read(STANDARDS_TEMPLATE)?;
     let hits = standard_card_violations(
-        &standard_cards(&html),
+        &standard_cards(&html)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -3034,12 +3074,13 @@ fn homepage_standards_are_cited_in_the_site_mirror() {
             output_docs: &output_docs,
         },
         &tree_has,
-    );
+    )?;
     let hits = of_kind(&hits, Kind::MirrorDrift);
     assert!(
         hits.iter().any(|m| m.contains("RFC 8446")),
         "a citation missing from the mirror passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 8: Every quality metric a card names is a field the program emits, as the
@@ -3048,21 +3089,21 @@ fn homepage_standards_are_cited_in_the_site_mirror() {
 /// carry — which is how a "Burst / Gap Loss" card once described a function
 /// no surface calls.
 #[test]
-fn homepage_metrics_are_fields_the_program_emits() {
-    assert_none_of_kind(&homepage_violations(), Kind::UnemittedField);
+fn homepage_metrics_are_fields_the_program_emits() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::UnemittedField);
 
     // Control: the output docs without one field the table names.
-    let output_docs = output_schema_docs();
+    let output_docs = output_schema_docs()?;
     assert!(
         output_docs.contains("`round_trip_ms`") || output_docs.contains("\"round_trip_ms\""),
         "the output docs do not carry round_trip_ms — this control cannot remove it"
     );
     let output_docs = output_docs.replace("round_trip_ms", "round_trip_--");
-    let docs = docs_prose();
-    let mirror = site_mirror();
-    let html = read(STANDARDS_TEMPLATE);
+    let docs = docs_prose()?;
+    let mirror = site_mirror()?;
+    let html = read(STANDARDS_TEMPLATE)?;
     let hits = standard_card_violations(
-        &standard_cards(&html),
+        &standard_cards(&html)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -3070,39 +3111,40 @@ fn homepage_metrics_are_fields_the_program_emits() {
             output_docs: &output_docs,
         },
         &tree_has,
-    );
+    )?;
     let hits = of_kind(&hits, Kind::UnemittedField);
     assert!(
         hits.iter().any(|m| m.contains("round_trip_ms")),
         "a metric with no documented field passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 9: A description that names a formula, a section, a table, a payload type
 /// or a version has that exact string in the file its row maps it to. The
 /// page is never more specific than the implementation.
 #[test]
-fn homepage_card_claims_are_no_more_specific_than_the_code() {
-    assert_none_of_kind(&homepage_violations(), Kind::OverSpecificClaim);
+fn homepage_card_claims_are_no_more_specific_than_the_code() -> Result<(), TestError> {
+    assert_none_of_kind(&homepage_violations()?, Kind::OverSpecificClaim);
 
     // Control: an annex the code never mentions, on the real jitter item.
     let page = homepage_with(
         "<li><strong>Jitter</strong> &mdash;",
         "<li><strong>Jitter</strong> &mdash; per Annex&nbsp;Q,",
-    );
-    let hits = of_kind(&control_violations(&page), Kind::OverSpecificClaim);
+    )?;
+    let hits = of_kind(&control_violations(&page)?, Kind::OverSpecificClaim);
     assert!(
         hits.iter().any(|m| m.contains("Annex Q")),
         "an unmapped claim passed: {hits:?}"
     );
 
     // And a mapped claim the file no longer carries.
-    let docs = docs_prose();
-    let mirror = site_mirror();
-    let output_docs = output_schema_docs();
-    let html = read(STANDARDS_TEMPLATE);
+    let docs = docs_prose()?;
+    let mirror = site_mirror()?;
+    let output_docs = output_schema_docs()?;
+    let html = read(STANDARDS_TEMPLATE)?;
     let hits = standard_card_violations(
-        &standard_cards(&html),
+        &standard_cards(&html)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -3110,21 +3152,22 @@ fn homepage_card_claims_are_no_more_specific_than_the_code() {
             output_docs: &output_docs,
         },
         &|file, needle| needle != "Annex B" && tree_has(file, needle),
-    );
+    )?;
     let hits = of_kind(&hits, Kind::OverSpecificClaim);
     assert!(
         hits.iter()
             .any(|m| m.contains("Annex B") && m.contains("does not contain")),
         "a claim the code stopped making passed: {hits:?}"
     );
+    Ok(())
 }
 
 /// Gate 10: Positive control on the whole gate: one page with one wrong card of
 /// every kind above is reported with all nine reasons, so an edit that breaks
 /// the checker cannot pass vacuously.
 #[test]
-fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
-    let mut page = read(STANDARDS_TEMPLATE);
+fn homepage_standards_gate_reports_every_kind_of_wrong_card() -> Result<(), TestError> {
+    let mut page = read(STANDARDS_TEMPLATE)?;
     let mut edit = |from: &str, to: &str| {
         assert!(
             page.contains(from),
@@ -3133,7 +3176,7 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
         page = page.replacen(from, to, 1);
     };
     // Duplicate: the RFC 3611 card twice.
-    let xr = homepage_card_html("RFC 3611");
+    let xr = homepage_card_html("RFC 3611")?;
     edit(&xr, &format!("{xr}\n{xr}"));
     // Bad host: SIP linked off the RFC Editor.
     edit(
@@ -3152,21 +3195,21 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
          <li><strong>Jitter</strong> &mdash; per Annex&nbsp;Q,",
     );
     // Missing: the SRTP card gone.
-    let srtp = homepage_card_html("RFC 3711");
+    let srtp = homepage_card_html("RFC 3711")?;
     edit(&srtp, "");
     // Uncited: an unassigned RFC.
-    let ghost = homepage_card_html("RFC 5389")
+    let ghost = homepage_card_html("RFC 5389")?
         .replace("RFC 5389", "RFC 9999")
         .replace("rfc5389", "rfc9999");
-    let stun = homepage_card_html("RFC 5389");
+    let stun = homepage_card_html("RFC 5389")?;
     edit(&stun, &format!("{stun}\n{ghost}"));
 
     // Mirror drift and an unemitted field come from the corpora, not the page.
-    let docs = docs_prose();
-    let mirror = site_mirror().replace("RFC 8446", "RFC ----");
-    let output_docs = output_schema_docs().replace("round_trip_ms", "round_trip_--");
+    let docs = docs_prose()?;
+    let mirror = site_mirror()?.replace("RFC 8446", "RFC ----");
+    let output_docs = output_schema_docs()?.replace("round_trip_ms", "round_trip_--");
     let violations = standard_card_violations(
-        &standard_cards(&page),
+        &standard_cards(&page)?,
         HOMEPAGE_STANDARDS,
         &Corpora {
             docs: &docs,
@@ -3174,7 +3217,7 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
             output_docs: &output_docs,
         },
         &tree_has,
-    );
+    )?;
     let seen: BTreeSet<String> = violations.iter().map(|v| format!("{:?}", v.kind)).collect();
     let missing: Vec<String> = ALL_KINDS
         .iter()
@@ -3191,6 +3234,7 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+    Ok(())
 }
 
 /// The homepage states its automated-test count twice, and both must agree.
@@ -3208,19 +3252,17 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
 /// The coverage job cannot host it: it runs `--skip cli_goldens`, so its total
 /// is short of the real one by design.
 #[test]
-fn homepage_test_counts_agree_with_each_other() {
-    let idx = read("website/templates/index.html");
+fn homepage_test_counts_agree_with_each_other() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
 
-    let tile = regex::Regex::new(r#"data-count="(\d{4,})" data-suffix="">"#)
-        .unwrap()
+    let tile = regex::Regex::new(r#"data-count="(\d{4,})" data-suffix="">"#)?
         .captures(&idx)
-        .expect("homepage has no automated-test tile")[1]
+        .ok_or("homepage has no automated-test tile")?[1]
         .to_string();
 
-    let prose = regex::Regex::new(r"(\d{4,}) automated tests")
-        .unwrap()
+    let prose = regex::Regex::new(r"(\d{4,}) automated tests")?
         .captures(&idx)
-        .expect("homepage feature table no longer states a test count")[1]
+        .ok_or("homepage feature table no longer states a test count")?[1]
         .to_string();
 
     assert_eq!(
@@ -3236,7 +3278,7 @@ fn homepage_test_counts_agree_with_each_other() {
         ".github/workflows/ci.yml",
         "Enforce the published test count",
         Some("matrix.os == 'ubuntu-latest'"),
-    );
+    )?;
     // And prove it: a homepage claiming 9999 tests against a run reporting 7
     // must fail. Structural checks alone were defeated by downgrading
     // ::error:: to ::warning:: and dropping the exit.
@@ -3245,19 +3287,22 @@ fn homepage_test_counts_agree_with_each_other() {
         "Enforce the published test count",
         &[],
         &|dir| {
-            std::fs::create_dir_all(dir.join("website/templates")).expect("mkdir");
+            std::fs::create_dir_all(dir.join("website/templates"))
+                .map_err(|e| format!("mkdir: {e}"))?;
             std::fs::write(
                 dir.join("website/templates/index.html"),
                 "<td>9999 automated tests</td>",
             )
-            .expect("write index");
+            .map_err(|e| format!("write index: {e}"))?;
             std::fs::write(
                 dir.join("test-output.txt"),
                 "test result: ok. 7 passed; 0 failed;\n",
             )
-            .expect("write output");
+            .map_err(|e| format!("write output: {e}"))?;
+            Ok(())
         },
-    );
+    )?;
+    Ok(())
 }
 
 /// Every Rust toolchain pin in the repo names the same version.
@@ -3274,20 +3319,21 @@ fn homepage_test_counts_agree_with_each_other() {
 /// future edit could drop back to `@1.98.0`, silently contribute no pin here,
 /// and leave the set empty rather than disagreeing.
 #[test]
-fn rust_toolchain_pins_agree() {
-    let pin_re =
-        regex::Regex::new(r"dtolnay/rust-toolchain@(\S+)\s*#\s*([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
-    let sha_re = regex::Regex::new(r"^[0-9a-f]{40}$").unwrap();
+fn rust_toolchain_pins_agree() -> Result<(), TestError> {
+    let pin_re = regex::Regex::new(r"dtolnay/rust-toolchain@(\S+)\s*#\s*([0-9]+\.[0-9]+\.[0-9]+)")?;
+    let sha_re = regex::Regex::new(r"^[0-9a-f]{40}$")?;
     let mut pins: BTreeSet<String> = BTreeSet::new();
-    for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join(".github/workflows"))
+        .map_err(|e| format!("workflows dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         // GitHub accepts BOTH .yml and .yaml for workflows. Reading only one
         // makes the extension a proxy for "is a workflow", and a file named
         // the other way is invisible to every assertion below.
         if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read workflow");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read workflow: {e}"))?;
         for c in pin_re.captures_iter(&text) {
             assert!(
                 sha_re.is_match(&c[1]),
@@ -3311,16 +3357,18 @@ fn rust_toolchain_pins_agree() {
         1,
         "workflows pin more than one Rust toolchain: {pins:?}"
     );
-    let pin = pins.iter().next().expect("one pin").clone();
-    let minor = pin.rsplit_once('.').expect("x.y.z").0.to_string();
+    let pin = pins.iter().next().ok_or("one pin")?.clone();
+    let minor = pin.rsplit_once('.').ok_or("x.y.z")?.0.to_string();
 
     // Every tracked file, not two hand-named ones. The docstring says "*Every*
     // Rust toolchain pin in the repo names the same version" and the code read
     // `Dockerfile` and two manifests by name, so `harness/sipnab/Dockerfile`
     // could sit at rust:1.85 — nine minors below MSRV — and this stayed green.
-    let files = git_tracked_files();
-    let image_re = regex::Regex::new(r"FROM rust:([0-9]+\.[0-9]+)").expect("image regex");
-    let msrv_re = regex::Regex::new(r#"(?m)^rust-version = "([^"]+)""#).expect("msrv regex");
+    let files = git_tracked_files()?;
+    let image_re = regex::Regex::new(r"FROM rust:([0-9]+\.[0-9]+)")
+        .map_err(|e| format!("image regex: {e}"))?;
+    let msrv_re = regex::Regex::new(r#"(?m)^rust-version = "([^"]+)""#)
+        .map_err(|e| format!("msrv regex: {e}"))?;
     let mut images = 0usize;
     let mut msrvs = 0usize;
     let mut wrong = Vec::new();
@@ -3329,8 +3377,8 @@ fn rust_toolchain_pins_agree() {
     // the other was not. Verifying a digest actually *is* the tag needs a
     // registry, which this suite cannot reach — this catches the drift that
     // happens without one.
-    let tagged =
-        regex::Regex::new(r"FROM (rust:[^\s@]+)@(sha256:[0-9a-f]{64})").expect("tag regex");
+    let tagged = regex::Regex::new(r"FROM (rust:[^\s@]+)@(sha256:[0-9a-f]{64})")
+        .map_err(|e| format!("tag regex: {e}"))?;
     let mut digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for rel in &files {
@@ -3391,15 +3439,16 @@ fn rust_toolchain_pins_agree() {
         "Rust toolchain pins disagree:\n  {}",
         wrong.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every git-tracked path, repo-relative.
-fn git_tracked_files() -> Vec<String> {
+fn git_tracked_files() -> Result<Vec<String>, TestError> {
     let out = std::process::Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     assert!(out.status.success(), "git ls-files failed");
     let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .split('\0')
@@ -3411,7 +3460,7 @@ fn git_tracked_files() -> Vec<String> {
         "git ls-files returned {} paths — the derivation is broken",
         files.len()
     );
-    files
+    Ok(files)
 }
 
 /// Every artifact `install.sh` can ask for is one the release actually builds.
@@ -3421,10 +3470,9 @@ fn git_tracked_files() -> Vec<String> {
 /// and the installer's own test suite would not notice, because it compares
 /// `choose_artifact` against hard-coded strings, not against the matrix.
 #[test]
-fn installer_targets_match_release_matrix() {
-    let matrix: BTreeSet<String> = regex::Regex::new(r"(?m)^\s*- target: (\S+)")
-        .unwrap()
-        .captures_iter(&read(".github/workflows/release.yml"))
+fn installer_targets_match_release_matrix() -> Result<(), TestError> {
+    let matrix: BTreeSet<String> = regex::Regex::new(r"(?m)^\s*- target: (\S+)")?
+        .captures_iter(&read(".github/workflows/release.yml")?)
         .map(|c| c[1].to_string())
         .collect();
     assert!(
@@ -3434,16 +3482,15 @@ fn installer_targets_match_release_matrix() {
     );
 
     let suffixes: BTreeSet<String> =
-        regex::Regex::new(r#"sipnab-\$\{_ver\}-\$\{_arch\}-([a-z0-9.-]+)\.tar\.gz"#)
-            .unwrap()
-            .captures_iter(&read("website/static/install.sh"))
+        regex::Regex::new(r#"sipnab-\$\{_ver\}-\$\{_arch\}-([a-z0-9.-]+)\.tar\.gz"#)?
+            .captures_iter(&read("website/static/install.sh")?)
             .map(|c| c[1].to_string())
             .collect();
     // Count the `echo`ed artifact names in choose_artifact and require the
     // regex to have found every one. The pattern `[a-z0-9.-]+` silently skips a
     // name built from anything else (a `${_flavor}` segment, an underscore), so
     // a new artifact form would contribute nothing rather than failing here.
-    let installer = read("website/static/install.sh");
+    let installer = read("website/static/install.sh")?;
     let echoed = installer
         .lines()
         // `contains`, not `starts_with`: one arm is `darwin) echo "sipnab-…`,
@@ -3476,7 +3523,7 @@ fn installer_targets_match_release_matrix() {
     let pack = workflow_step_body(
         ".github/workflows/release.yml",
         "Package (tar.gz + checksum)",
-    );
+    )?;
     let guard = pack
         .lines()
         .find(|l| l.trim_start().starts_with("if:"))
@@ -3513,6 +3560,7 @@ fn installer_targets_match_release_matrix() {
         "the release builds tarball targets install.sh can never ask for: \
          {unreachable:?}"
     );
+    Ok(())
 }
 
 /// Every `releases/latest/download/…` URL we publish names a versioned asset.
@@ -3526,9 +3574,9 @@ fn installer_targets_match_release_matrix() {
 /// URL to what the release publishes. Doc pages that keep a literal
 /// `<version>` placeholder are fine: they tell the reader to substitute.
 #[test]
-fn published_download_urls_name_versioned_assets() {
-    let re = regex::Regex::new(r"releases/latest/download/(\S+)").unwrap();
-    let literal_version = regex::Regex::new(r"\d+\.\d+\.\d+").unwrap();
+fn published_download_urls_name_versioned_assets() -> Result<(), TestError> {
+    let re = regex::Regex::new(r"releases/latest/download/(\S+)")?;
+    let literal_version = regex::Regex::new(r"\d+\.\d+\.\d+")?;
     // Every tracked file, not six named ones. The release uploads only
     // versioned filenames, so a bare `releases/latest/download/…` URL is a
     // permanent 404 — and neither download.html nor index.html was on the list,
@@ -3538,7 +3586,7 @@ fn published_download_urls_name_versioned_assets() {
         .args(["ls-files"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     let tracked = String::from_utf8_lossy(&out.stdout);
     let mut bare = Vec::new();
     let mut scanned = 0;
@@ -3584,13 +3632,14 @@ fn published_download_urls_name_versioned_assets() {
          versioned filenames, so these 404:\n  {}",
         bare.join("\n  ")
     );
+    Ok(())
 }
 
 /// Docs frontmatter hygiene: every page has a description and weights never collide.
 #[test]
-fn docs_page_weights_are_unique_and_descriptions_present() {
-    let w_re = regex::Regex::new(r"(?m)^weight = (\d+)").unwrap();
-    let d_re = regex::Regex::new(r"(?m)^description = ").unwrap();
+fn docs_page_weights_are_unique_and_descriptions_present() -> Result<(), TestError> {
+    let w_re = regex::Regex::new(r"(?m)^weight = (\d+)")?;
+    let d_re = regex::Regex::new(r"(?m)^description = ")?;
     // Keyed by directory: Zola sorts each section independently, so a weight
     // collision only matters between siblings. Subsections are walked too —
     // the generated developer docs live in one, and a flat read_dir would
@@ -3600,8 +3649,8 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
     let mut dirs = vec![repo().join("website/content/docs")];
     let mut files = Vec::new();
     while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).expect("docs dir") {
-            let p = entry.expect("entry").path();
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("docs dir: {e}"))? {
+            let p = entry.map_err(|e| format!("entry: {e}"))?.path();
             if p.is_dir() {
                 dirs.push(p);
             } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -3612,16 +3661,16 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
     for p in files {
         let name = p
             .strip_prefix(repo().join("website/content/docs"))
-            .expect("under docs")
+            .map_err(|e| format!("under docs: {e}"))?
             .to_string_lossy()
             .into_owned();
-        let section = p.parent().expect("parent").to_string_lossy().into_owned();
-        if p.file_name().unwrap() == "_index.md" {
+        let section = p.parent().ok_or("parent")?.to_string_lossy().into_owned();
+        if p.file_name().ok_or("file_name() is None")? == "_index.md" {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read page");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read page: {e}"))?;
         match w_re.captures(&text) {
-            Some(c) => weights.push((section, c[1].parse().unwrap(), name.clone())),
+            Some(c) => weights.push((section, c[1].parse()?, name.clone())),
             None => missing_desc.push(format!("{name}: no weight")),
         }
         if !d_re.is_match(&text) {
@@ -3644,6 +3693,7 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
         dupes.join("\n"),
         missing_desc.join("\n")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3658,7 +3708,7 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
 
 #[cfg(feature = "tui")]
 mod search_demo_narrowing {
-    use super::{read, repo};
+    use super::{TestError, read, repo};
     use crossterm::event::KeyCode;
     use sipnab::tui::App;
     use sipnab::tui::call_list::{SortColumn, displayed_dialogs};
@@ -3671,14 +3721,13 @@ mod search_demo_narrowing {
     ///
     /// Shared with `demo_terminal_method_rendering`, which replays the same
     /// tape at the same geometry to assert what the recording actually shows.
-    pub(super) fn tape_pcap_and_queries(tape: &str) -> (String, Vec<String>) {
-        let cmd = regex::Regex::new(r#"(?m)^Type "sipnab [^"]*-I ([^"\s]+)"#).unwrap();
+    pub(super) fn tape_pcap_and_queries(tape: &str) -> Result<(String, Vec<String>), TestError> {
+        let cmd = regex::Regex::new(r#"(?m)^Type "sipnab [^"]*-I ([^"\s]+)"#)?;
         let pcap = cmd
             .captures(tape)
-            .expect("tape types a `sipnab -I <pcap>` command")[1]
+            .ok_or("tape types a `sipnab -I <pcap>` command")?[1]
             .to_string();
-        let typed: Vec<String> = regex::Regex::new(r#"(?m)^Type "([^"]*)""#)
-            .unwrap()
+        let typed: Vec<String> = regex::Regex::new(r#"(?m)^Type "([^"]*)""#)?
             .captures_iter(tape)
             .map(|c| c[1].to_string())
             .collect();
@@ -3687,15 +3736,15 @@ mod search_demo_narrowing {
             .filter(|w| w[0] == "/")
             .map(|w| w[1].clone())
             .collect();
-        (pcap, queries)
+        Ok((pcap, queries))
     }
 
     /// Each `/` query 04-filter.tape types must match some but not all dialogs
     /// of its pcap, so the demo visibly narrows (2026-07-18 regression).
     #[test]
-    fn every_typed_search_query_narrows_the_demo_pcap() {
-        let tape = read("demos/04-filter.tape");
-        let (pcap_rel, queries) = tape_pcap_and_queries(&tape);
+    fn every_typed_search_query_narrows_the_demo_pcap() -> Result<(), TestError> {
+        let tape = read("demos/04-filter.tape")?;
+        let (pcap_rel, queries) = tape_pcap_and_queries(&tape)?;
         assert!(
             !queries.is_empty(),
             "no '/'-search queries found in 04-filter.tape — extractor broken \
@@ -3745,6 +3794,7 @@ mod search_demo_narrowing {
                  filter demo demonstrates nothing"
             );
         }
+        Ok(())
     }
 }
 
@@ -3766,7 +3816,7 @@ mod search_demo_narrowing {
 
 #[cfg(feature = "tui")]
 mod demo_terminal_method_rendering {
-    use super::{read, repo};
+    use super::{TestError, read, repo};
     use crossterm::event::KeyCode;
     use ratatui::{Terminal, backend::TestBackend};
     use sipnab::tui::App;
@@ -3783,15 +3833,20 @@ mod demo_terminal_method_rendering {
     const DEMO_ROWS: u16 = 27;
 
     /// The terminal buffer as one string per row.
-    fn buffer_rows(term: &Terminal<TestBackend>) -> Vec<String> {
+    fn buffer_rows(term: &Terminal<TestBackend>) -> Result<Vec<String>, TestError> {
         let buf = term.backend().buffer();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
-                    .collect()
-            })
-            .collect()
+        let mut rows = Vec::new();
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                let cell = buf
+                    .cell((x, y))
+                    .ok_or_else(|| format!("no buffer cell at ({x}, {y})"))?;
+                row.push_str(cell.symbol());
+            }
+            rows.push(row);
+        }
+        Ok(rows)
     }
 
     /// Every method the demo pcap puts on screen — unfiltered and under each
@@ -3803,9 +3858,9 @@ mod demo_terminal_method_rendering {
     /// `"SUBSCRIBE"` absent (it renders `SUBSCR`), which is precisely the
     /// pixels the homepage Search tab shipped.
     #[test]
-    fn demo_terminal_renders_every_sip_method_whole() {
-        let tape = read("demos/04-filter.tape");
-        let (pcap_rel, queries) = super::search_demo_narrowing::tape_pcap_and_queries(&tape);
+    fn demo_terminal_renders_every_sip_method_whole() -> Result<(), TestError> {
+        let tape = read("demos/04-filter.tape")?;
+        let (pcap_rel, queries) = super::search_demo_narrowing::tape_pcap_and_queries(&tape)?;
         let pcap = repo().join(&pcap_rel);
         assert!(pcap.is_file(), "tape references missing pcap: {pcap_rel}");
 
@@ -3819,11 +3874,11 @@ mod demo_terminal_method_rendering {
         }
         app.handle_key(KeyCode::Enter);
 
-        let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS))?;
 
         // The tape lingers 3s on the unfiltered list before typing anything;
         // that screen carries every method in the capture, SUBSCRIBE included.
-        assert_methods_render_whole(&mut app, &mut term, "unfiltered dialog list", "");
+        assert_methods_render_whole(&mut app, &mut term, "unfiltered dialog list", "")?;
 
         // Then each query it types, on the same screen the recording shows.
         for q in &queries {
@@ -3832,9 +3887,10 @@ mod demo_terminal_method_rendering {
                 app.handle_key(KeyCode::Char(c));
             }
             let typed = app.search_query().to_string();
-            assert_methods_render_whole(&mut app, &mut term, &format!("search \"/{q}\""), &typed);
+            assert_methods_render_whole(&mut app, &mut term, &format!("search \"/{q}\""), &typed)?;
             app.handle_key(KeyCode::Esc);
         }
+        Ok(())
     }
 
     /// The distinct methods a viewer should be able to read for `query`.
@@ -3868,10 +3924,10 @@ mod demo_terminal_method_rendering {
     /// Driven off the tape list on disk, so a NEW tape is covered the day it
     /// lands rather than when someone remembers to extend a list here.
     #[test]
-    fn every_demo_tape_renders_methods_whole() {
+    fn every_demo_tape_renders_methods_whole() -> Result<(), TestError> {
         let mut checked = 0usize;
         let mut dir: Vec<_> = std::fs::read_dir(repo().join("demos"))
-            .expect("demos/ is readable")
+            .map_err(|e| format!("demos/ is readable: {e}"))?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("tape"))
@@ -3879,7 +3935,8 @@ mod demo_terminal_method_rendering {
         dir.sort();
 
         for tape_path in dir {
-            let tape = std::fs::read_to_string(&tape_path).expect("tape is readable");
+            let tape = std::fs::read_to_string(&tape_path)
+                .map_err(|e| format!("tape is readable: {e}"))?;
             // The pcap a tape opens, if it opens one. `hero` and the CLI demo
             // may not drive the call list at all.
             let Some(rel) = tape
@@ -3905,9 +3962,9 @@ mod demo_terminal_method_rendering {
             }
             app.handle_key(KeyCode::Enter);
 
-            let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS)).unwrap();
+            let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS))?;
             let what = format!("{} (unfiltered list)", tape_path.display());
-            assert_methods_render_whole(&mut app, &mut term, &what, "");
+            assert_methods_render_whole(&mut app, &mut term, &what, "")?;
             checked += 1;
         }
 
@@ -3919,6 +3976,7 @@ mod demo_terminal_method_rendering {
              `sipnab -I` extraction stopped matching, so this gate is asserting \
              about almost nothing"
         );
+        Ok(())
     }
 
     fn assert_methods_render_whole(
@@ -3926,9 +3984,9 @@ mod demo_terminal_method_rendering {
         term: &mut Terminal<TestBackend>,
         what: &str,
         query: &str,
-    ) {
-        term.draw(|f| app.render(f)).unwrap();
-        let rows = buffer_rows(term);
+    ) -> Result<(), TestError> {
+        term.draw(|f| app.render(f))?;
+        let rows = buffer_rows(term)?;
         let expected = expected_methods(app, query);
         assert!(
             !expected.is_empty(),
@@ -3945,6 +4003,7 @@ mod demo_terminal_method_rendering {
                 rows.join("\n")
             );
         }
+        Ok(())
     }
 }
 
@@ -3960,7 +4019,7 @@ mod demo_terminal_method_rendering {
 // ---------------------------------------------------------------------------
 /// No template may use inline `on*=` handler attributes: the hash-based CSP silently blocks them.
 #[test]
-fn no_inline_event_handlers_in_templates() {
+fn no_inline_event_handlers_in_templates() -> Result<(), TestError> {
     // Match an inline handler used as an HTML attribute (quote follows the `=`).
     // JS assignments like `el.onclick = fn` and prose don't have that shape, and
     // `<script>`/`<style>` bodies are stripped first so real JS never trips this.
@@ -3970,16 +4029,16 @@ fn no_inline_event_handlers_in_templates() {
     // 200. `onpointerdown="selectDemo(0)"` passed the old alternation, and
     // pointer events are the modern replacement for `onclick`, so that is the
     // likely way this returns.
-    let re = regex::Regex::new(r#"(?i)\son[a-z]+\s*=\s*["']"#).unwrap();
-    let block = regex::Regex::new(r"(?is)<(script|style)\b.*?</(script|style)>").unwrap();
+    let re = regex::Regex::new(r#"(?i)\son[a-z]+\s*=\s*["']"#)?;
+    let block = regex::Regex::new(r"(?is)<(script|style)\b.*?</(script|style)>")?;
     let dir = repo().join("website/templates");
     let mut offenders = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("templates dir: {e}"))? {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         // Blank out script/style bodies (keep newlines so line numbers hold).
         let markup = block.replace_all(&text, |c: &regex::Captures| {
             c[0].chars()
@@ -3990,7 +4049,9 @@ fn no_inline_event_handlers_in_templates() {
             if let Some(m) = re.find(line) {
                 offenders.push(format!(
                     "{}:{}: inline handler `{}` — CSP blocks it; use addEventListener",
-                    p.file_name().unwrap().to_string_lossy(),
+                    p.file_name()
+                        .ok_or("file_name() is None")?
+                        .to_string_lossy(),
                     lineno + 1,
                     m.as_str().trim()
                 ));
@@ -4002,6 +4063,7 @@ fn no_inline_event_handlers_in_templates() {
         "inline event handlers are CSP-blocked on the live site (buttons will silently do nothing):\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4016,23 +4078,21 @@ fn no_inline_event_handlers_in_templates() {
 
 /// download.html carries a doc-sidebar ToC whose anchors all resolve, including #all-files and #verify.
 #[test]
-fn download_page_has_left_toc_sidebar_like_docs() {
-    let tpl = read("website/templates/download.html");
+fn download_page_has_left_toc_sidebar_like_docs() -> Result<(), TestError> {
+    let tpl = read("website/templates/download.html")?;
 
-    let aside_at = tpl.find("<aside class=\"doc-sidebar").unwrap_or_else(|| {
-        panic!(
-            "download.html has no <aside class=\"doc-sidebar\"> — the download \
-             page must carry the same left ToC treatment as the docs pages"
-        )
-    });
+    let aside_at = tpl.find("<aside class=\"doc-sidebar").ok_or(
+        "download.html has no <aside class=\"doc-sidebar\"> — the download \
+         page must carry the same left ToC treatment as the docs pages",
+    )?;
     let aside = &tpl[aside_at
         ..aside_at
             + tpl[aside_at..]
                 .find("</aside>")
-                .expect("doc-sidebar aside is unterminated")];
+                .ok_or("doc-sidebar aside is unterminated")?];
 
     // Every anchor the ToC offers must land on a real id in the template.
-    let href = regex::Regex::new(r##"href="#([A-Za-z0-9_-]+)""##).unwrap();
+    let href = regex::Regex::new(r##"href="#([A-Za-z0-9_-]+)""##)?;
     let anchors: Vec<String> = href
         .captures_iter(aside)
         .map(|c| c[1].to_string())
@@ -4058,6 +4118,7 @@ fn download_page_has_left_toc_sidebar_like_docs() {
             "download ToC is missing a link to #{must}"
         );
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4069,8 +4130,8 @@ fn download_page_has_left_toc_sidebar_like_docs() {
 
 /// base.html renders .site-footer and no child template blanks the footer block away.
 #[test]
-fn every_page_template_keeps_the_site_footer() {
-    let base = read("website/templates/base.html");
+fn every_page_template_keeps_the_site_footer() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
     assert!(
         base.contains("class=\"site-footer\""),
         "base.html no longer renders .site-footer"
@@ -4083,19 +4144,20 @@ fn every_page_template_keeps_the_site_footer() {
     // nav, no license, no credits — which is the regression this test is named
     // after.
     let empty_override =
-        regex::Regex::new(r"(?s)\{%\s*block footer\s*%\}((?:\s|\{#.*?#\})*)\{%\s*endblock")
-            .unwrap();
+        regex::Regex::new(r"(?s)\{%\s*block footer\s*%\}((?:\s|\{#.*?#\})*)\{%\s*endblock")?;
     let mut offenders = Vec::new();
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        let name = p.file_name().ok_or("name")?.to_string_lossy().to_string();
         if name == "base.html" {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         if empty_override.is_match(&text) {
             offenders.push(name);
         }
@@ -4105,6 +4167,7 @@ fn every_page_template_keeps_the_site_footer() {
         "these templates blank the footer block, hiding the site footer on \
          their pages: {offenders:?}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4117,22 +4180,22 @@ fn every_page_template_keeps_the_site_footer() {
 // ---------------------------------------------------------------------------
 
 /// Slice a named `{% block X %}...{% endblock %}` region out of base.html.
-fn base_block(name: &str) -> String {
-    let base = read("website/templates/base.html");
+fn base_block(name: &str) -> Result<String, TestError> {
+    let base = read("website/templates/base.html")?;
     let open = format!("{{% block {name} %}}");
     let start = base
         .find(&open)
-        .unwrap_or_else(|| panic!("base.html has no `{open}`"));
+        .ok_or_else(|| format!("base.html has no `{open}`"))?;
     let end = base[start..]
         .find("{% endblock")
-        .unwrap_or_else(|| panic!("`{open}` is unterminated"));
-    base[start..start + end].to_string()
+        .ok_or_else(|| format!("`{open}` is unterminated"))?;
+    Ok(base[start..start + end].to_string())
 }
 
 /// Patreon, GitHub Sponsors, and GitHub links appear only in the footer block, never in the top nav.
 #[test]
-fn sponsor_heart_and_github_live_only_in_the_footer() {
-    let nav = base_block("nav");
+fn sponsor_heart_and_github_live_only_in_the_footer() -> Result<(), TestError> {
+    let nav = base_block("nav")?;
     for banned in [
         "patreon_url",
         "github_sponsors_url",
@@ -4145,7 +4208,7 @@ fn sponsor_heart_and_github_live_only_in_the_footer() {
         );
     }
 
-    let footer = base_block("footer");
+    let footer = base_block("footer")?;
     for required in [
         "patreon_url",
         "github_sponsors_url",
@@ -4157,13 +4220,14 @@ fn sponsor_heart_and_github_live_only_in_the_footer() {
              must not drop it from the site"
         );
     }
+    Ok(())
 }
 
 /// The footer is a single non-wrapping .footer-row with svg icon sponsor
 /// links: no two-tier layout, no text links, no "Built with" credit.
 #[test]
-fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
-    let footer = base_block("footer");
+fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() -> Result<(), TestError> {
+    let footer = base_block("footer")?;
 
     // One row, not two tiers.
     for tier in ["footer-top", "footer-bottom"] {
@@ -4197,10 +4261,10 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
     ] {
         let at = footer
             .find(url)
-            .unwrap_or_else(|| panic!("footer has no `{url}` link"));
+            .ok_or_else(|| format!("footer has no `{url}` link"))?;
         let anchor_end = footer[at..]
             .find("</a>")
-            .unwrap_or_else(|| panic!("`{url}` anchor is unterminated"));
+            .ok_or_else(|| format!("`{url}` anchor is unterminated"))?;
         let anchor = &footer[at..at + anchor_end];
         assert!(
             anchor.contains("<svg") && anchor.contains("aria-label"),
@@ -4209,13 +4273,14 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
     }
 
     // The stylesheet must actually forbid wrapping on the row.
-    let scss = read("website/sass/style.scss");
-    let rule = scss_own_declarations(&scss, ".footer-row");
+    let scss = read("website/sass/style.scss")?;
+    let rule = scss_own_declarations(&scss, ".footer-row")?;
     assert!(
         rule.contains("flex-wrap: nowrap"),
         ".footer-row must declare `flex-wrap: nowrap` so the footer never \
          breaks into a second line; its own declarations are:\n{rule}"
     );
+    Ok(())
 }
 
 /// A rule's **own** declarations — nested rules excluded.
@@ -4229,14 +4294,14 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
 /// elsewhere, so the shape is not exotic.
 ///
 /// Braces are matched to depth, and only depth-1 text is returned.
-fn scss_own_declarations(scss: &str, selector: &str) -> String {
+fn scss_own_declarations(scss: &str, selector: &str) -> Result<String, TestError> {
     let at = scss
         .find(selector)
-        .unwrap_or_else(|| panic!("style.scss has no `{selector}` rule"));
+        .ok_or_else(|| format!("style.scss has no `{selector}` rule"))?;
     let open = scss[at..]
         .find('{')
         .map(|n| at + n + 1)
-        .unwrap_or_else(|| panic!("`{selector}` has no rule body"));
+        .ok_or_else(|| format!("`{selector}` has no rule body"))?;
 
     let mut depth = 1usize;
     let mut own = String::new();
@@ -4246,14 +4311,14 @@ fn scss_own_declarations(scss: &str, selector: &str) -> String {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return own;
+                    return Ok(own);
                 }
             }
             _ if depth == 1 => own.push(scss[open + i..].chars().next().unwrap_or(c)),
             _ => {}
         }
     }
-    panic!("`{selector}` rule is unterminated");
+    Err(format!("`{selector}` rule is unterminated").into())
 }
 
 // ---------------------------------------------------------------------------
@@ -4266,7 +4331,7 @@ fn scss_own_declarations(scss: &str, selector: &str) -> String {
 
 /// style.css is cachebusted by Zola content hash (cachebust=true), never by `?v=` release version.
 #[test]
-fn stylesheet_link_is_content_hash_cachebusted() {
+fn stylesheet_link_is_content_hash_cachebusted() -> Result<(), TestError> {
     // EVERY css/js asset in EVERY template, not the first matching line of
     // base.html. `.find()` returned the first match, so a second, bad <link>
     // added right after the good one passed — and `analyze.html` was shipping
@@ -4280,17 +4345,23 @@ fn stylesheet_link_is_content_hash_cachebusted() {
     let asset = regex::Regex::new(
         r#"get_url\(\s*path\s*=\s*['"]([^'"]+\.(?:css|js))['"]([^)]*)\)([^">]*)"#,
     )
-    .expect("asset regex");
+    .map_err(|e| format!("asset regex: {e}"))?;
 
     let mut problems = Vec::new();
     let mut seen = 0;
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let name = p
+            .file_name()
+            .ok_or("file_name() is None")?
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         for cap in asset.captures_iter(&text) {
             seen += 1;
             let (path, args, trailing) = (&cap[1], &cap[2], &cap[3]);
@@ -4321,6 +4392,7 @@ fn stylesheet_link_is_content_hash_cachebusted() {
         "template assets that will be served stale:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4338,8 +4410,8 @@ fn stylesheet_link_is_content_hash_cachebusted() {
 /// The download page keeps its DevOps content (container image, pinned
 /// install, releases-API discovery, checksums) and source-persona content.
 #[test]
-fn download_page_serves_devops_and_source_personas() {
-    let tpl = read("website/templates/download.html");
+fn download_page_serves_devops_and_source_personas() -> Result<(), TestError> {
+    let tpl = read("website/templates/download.html")?;
 
     // DevOps: container image, pinned + latest tags.
     //
@@ -4394,6 +4466,7 @@ fn download_page_serves_devops_and_source_personas() {
         tpl.contains("@/docs/build.md"),
         "source panel must link the Build-from-Source docs page"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4409,9 +4482,9 @@ fn download_page_serves_devops_and_source_personas() {
 /// Release/docker workflows keep their sigstore attestation steps and
 /// permissions; the site keeps the verify text and CC BY footer license.
 #[test]
-fn releases_are_attested_and_site_content_is_licensed() {
+fn releases_are_attested_and_site_content_is_licensed() -> Result<(), TestError> {
     // Release artifacts: one attestation pass over everything uploaded.
-    let rel = read(".github/workflows/release.yml");
+    let rel = read(".github/workflows/release.yml")?;
     assert!(
         rel.contains("actions/attest-build-provenance@"),
         "release.yml lost its build-provenance attestation step"
@@ -4430,7 +4503,7 @@ fn releases_are_attested_and_site_content_is_licensed() {
     // out, and did — commenting the entire attest step left every gate green
     // while `gh attestation verify oci://ghcr.io/normb/sipnab:<tag>`, which the
     // download page tells users to run, failed for everyone.
-    let docker = read(".github/workflows/docker.yml");
+    let docker = read(".github/workflows/docker.yml")?;
     let docker_steps: Vec<&str> = docker
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -4472,14 +4545,14 @@ fn releases_are_attested_and_site_content_is_licensed() {
     );
 
     // The download page tells verifiers the attestation exists.
-    let dl = read("website/templates/download.html");
+    let dl = read("website/templates/download.html")?;
     assert!(
         dl.contains("gh attestation verify"),
         "download verify section must mention `gh attestation verify`"
     );
 
     // Site footer: copyright + docs content license.
-    let footer = base_block("footer");
+    let footer = base_block("footer")?;
     assert!(
         footer.contains("&copy;"),
         "footer must carry a copyright notice"
@@ -4488,6 +4561,7 @@ fn releases_are_attested_and_site_content_is_licensed() {
         footer.contains("creativecommons.org/licenses/by/4.0"),
         "footer must link the docs content license (CC BY 4.0)"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4501,20 +4575,20 @@ fn releases_are_attested_and_site_content_is_licensed() {
 
 /// Every homepage .arch-stat tile's visible fallback number equals its data-count animation target.
 #[test]
-fn homepage_stat_fallback_text_matches_data_count() {
-    let html = read("website/templates/index.html");
+fn homepage_stat_fallback_text_matches_data_count() -> Result<(), TestError> {
+    let html = read("website/templates/index.html")?;
     // Capture the data-count value and the element's inner text together.
     let re = regex::Regex::new(
         r#"(?s)<span class="arch-stat" data-count="([0-9.]+)"[^>]*>(.*?)</span>"#,
-    )
-    .unwrap();
+    )?;
     // The FIRST numeric run anywhere in the visible text, not only a run at
     // its very start. Requiring the number at offset zero and skipping the
     // tile when it was not there exempted every tile whose text opens with an
     // entity or a glyph — and on the one such tile that nothing else pins,
     // `data-count="11.1"` shipped beside visible text `≈7×`: a no-JS visitor
     // read ≈7× while the animation counted to 11.1×.
-    let first_number = regex::Regex::new(r"[0-9]+(?:\.[0-9]+)?").expect("number regex");
+    let first_number =
+        regex::Regex::new(r"[0-9]+(?:\.[0-9]+)?").map_err(|e| format!("number regex: {e}"))?;
     let mut offenders = Vec::new();
     let mut checked = 0usize;
     for cap in re.captures_iter(&html) {
@@ -4548,6 +4622,7 @@ fn homepage_stat_fallback_text_matches_data_count() {
          (no-JS visitors see the stale number):\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4558,16 +4633,16 @@ fn homepage_stat_fallback_text_matches_data_count() {
 
 /// Every "Rust x.y+" claim on the download page equals Cargo.toml's rust-version, and at least one exists.
 #[test]
-fn download_page_msrv_matches_cargo() {
-    let cargo = read("Cargo.toml");
+fn download_page_msrv_matches_cargo() -> Result<(), TestError> {
+    let cargo = read("Cargo.toml")?;
     let msrv = cargo
         .lines()
         .find_map(|l| l.strip_prefix("rust-version = "))
         .map(|v| v.trim().trim_matches('"').to_string())
-        .expect("Cargo.toml has no rust-version");
+        .ok_or("Cargo.toml has no rust-version")?;
 
-    let dl = read("website/templates/download.html");
-    let rust_ref = regex::Regex::new(r"Rust (\d+\.\d+)\+").unwrap();
+    let dl = read("website/templates/download.html")?;
+    let rust_ref = regex::Regex::new(r"Rust (\d+\.\d+)\+")?;
     let mut found_any = false;
     for cap in rust_ref.captures_iter(&dl) {
         found_any = true;
@@ -4582,6 +4657,7 @@ fn download_page_msrv_matches_cargo() {
         "download.html no longer states a 'Rust <x.y>+' floor — the MSRV \
          guard has nothing to check; update this test if that's intentional"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4603,7 +4679,7 @@ fn download_page_msrv_matches_cargo() {
 /// The sha256 of every executable inline template script must equal the
 /// PINNED list, making inline-script edits a conscious, reviewed act.
 #[test]
-fn inline_script_edits_require_csp_hash_refresh() {
+fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
     use base64::Engine as _;
     use sha2::Digest as _;
 
@@ -4682,15 +4758,17 @@ fn inline_script_edits_require_csp_hash_refresh() {
     ];
 
     // Same extraction semantics as refresh_csp_hashes.py: inline, executable.
-    let tag = regex::Regex::new(r"(?is)<script([^>]*)>(.*?)</script>").unwrap();
+    let tag = regex::Regex::new(r"(?is)<script([^>]*)>(.*?)</script>")?;
     let mut found: Vec<(String, String)> = Vec::new();
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let name = p.file_name().expect("name").to_string_lossy().to_string();
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let name = p.file_name().ok_or("name")?.to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         for cap in tag.captures_iter(&text) {
             let attrs = &cap[1];
             if attrs.contains("src=") || attrs.contains("ld+json") {
@@ -4719,6 +4797,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
          refreshes the Cloudflare rule automatically on deploy; update PINNED \
          in this test to the computed list above to acknowledge the change."
     );
+    Ok(())
 }
 
 /// The hero swaps a static screenshot for an animated demo after `load`. Four
@@ -4734,14 +4813,14 @@ fn inline_script_edits_require_csp_hash_refresh() {
 /// slideshow, and every encode smaller than the lossless WebP blurs the text
 /// the demo exists to show.
 #[test]
-fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
+fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError> {
     let html = std::fs::read_to_string(repo().join("website/templates/index.html"))
-        .expect("read index.html");
+        .map_err(|e| format!("read index.html: {e}"))?;
 
     let hero_line = html
         .lines()
         .find(|l| l.contains("id=\"hero-shot\""))
-        .expect("hero <img> must carry id=\"hero-shot\" — the swap looks it up by id");
+        .ok_or("hero <img> must carry id=\"hero-shot\" — the swap looks it up by id")?;
 
     assert!(
         hero_line.contains("demos/hero-static.webp")
@@ -4785,6 +4864,7 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
         "the animated image must decode before the swap, or a slow fetch \
          blanks the hero instead of leaving the screenshot up"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4807,23 +4887,23 @@ struct NavEntry {
 }
 
 /// `[[extra.docs_nav]]` from website/config.toml, in order.
-fn docs_nav_list() -> Vec<NavEntry> {
-    let cfg: toml::Value =
-        toml::from_str(&read("website/config.toml")).expect("website/config.toml parses");
+fn docs_nav_list() -> Result<Vec<NavEntry>, TestError> {
+    let cfg: toml::Value = toml::from_str(&read("website/config.toml")?)
+        .map_err(|e| format!("website/config.toml parses: {e}"))?;
     let groups = cfg["extra"]
         .get("docs_nav")
         .and_then(|g| g.as_array())
-        .expect("website/config.toml has no [[extra.docs_nav]] list");
+        .ok_or("website/config.toml has no [[extra.docs_nav]] list")?;
     let mut out = Vec::new();
     for g in groups {
-        let group = g["title"].as_str().expect("a docs_nav group has no title");
+        let group = g["title"].as_str().ok_or("a docs_nav group has no title")?;
         for e in g["pages"]
             .as_array()
-            .expect("a docs_nav group has no pages")
+            .ok_or("a docs_nav group has no pages")?
         {
             out.push(NavEntry {
                 group: group.to_string(),
-                path: e["path"].as_str().expect("entry path").to_string(),
+                path: e["path"].as_str().ok_or("entry path")?.to_string(),
                 label: e
                     .get("label")
                     .and_then(|l| l.as_str())
@@ -4833,21 +4913,26 @@ fn docs_nav_list() -> Vec<NavEntry> {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every docs page is in the one nav list, once, and nothing else is.
 #[test]
-fn every_docs_page_is_in_the_docs_nav_list() {
+fn every_docs_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
     let docs_dir = repo().join("website/content/docs");
     let mut pages: Vec<String> = std::fs::read_dir(&docs_dir)
-        .expect("docs content dir")
-        .map(|e| e.expect("entry").file_name().to_string_lossy().to_string())
+        .map_err(|e| format!("docs content dir: {e}"))?
+        .map(|e| {
+            e.map(|e| e.file_name().to_string_lossy().to_string())
+                .map_err(|e| format!("entry: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|n| n.ends_with(".md") && n != "_index.md")
         .collect();
     pages.sort();
 
-    let list = docs_nav_list();
+    let list = docs_nav_list()?;
     let mut listed: Vec<String> = list
         .iter()
         .filter_map(|e| e.path.strip_prefix("docs/").map(str::to_string))
@@ -4889,19 +4974,20 @@ fn every_docs_page_is_in_the_docs_nav_list() {
     }
 
     // Prev/next is weight-ordered; duplicate weights make the order arbitrary.
-    let weight = regex::Regex::new(r"(?m)^weight = (\d+)$").unwrap();
+    let weight = regex::Regex::new(r"(?m)^weight = (\d+)$")?;
     let mut weights: Vec<(u32, String)> = pages
         .iter()
         .map(|p| {
-            let text = std::fs::read_to_string(docs_dir.join(p)).expect("read page");
+            let text =
+                std::fs::read_to_string(docs_dir.join(p)).map_err(|e| format!("read page: {e}"))?;
             let w = weight
                 .captures(&text)
-                .unwrap_or_else(|| panic!("{p}: no `weight = N` in front matter"))[1]
+                .ok_or_else(|| format!("{p}: no `weight = N` in front matter"))?[1]
                 .parse::<u32>()
-                .expect("weight parses");
-            (w, p.clone())
+                .map_err(|e| format!("weight parses: {e}"))?;
+            Ok::<_, TestError>((w, p.clone()))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     weights.sort();
     for pair in weights.windows(2) {
         assert_ne!(
@@ -4910,6 +4996,7 @@ fn every_docs_page_is_in_the_docs_nav_list() {
             pair[0].0, pair[0].1, pair[1].1
         );
     }
+    Ok(())
 }
 
 /// Both navs render the one list, and label an entry with its list label.
@@ -4918,12 +5005,12 @@ fn every_docs_page_is_in_the_docs_nav_list() {
 /// carry no hand-written docs links in either nav beyond the three fixed
 /// ones: the docs overview, the developer index and "All docs".
 #[test]
-fn both_docs_navs_render_the_one_list() {
-    let macros = read("website/templates/macros.html");
+fn both_docs_navs_render_the_one_list() -> Result<(), TestError> {
+    let macros = read("website/templates/macros.html")?;
     let at = macros
         .find("macro docs_nav(")
-        .expect("macros.html has no docs_nav macro");
-    let sidebar = &macros[at..at + macros[at..].find("endmacro").expect("endmacro")];
+        .ok_or("macros.html has no docs_nav macro")?;
+    let sidebar = &macros[at..at + macros[at..].find("endmacro").ok_or("endmacro")?];
     assert!(
         sidebar.contains("for group in nav"),
         "the docs_nav sidebar macro does not iterate the list it is given"
@@ -4937,7 +5024,7 @@ fn both_docs_navs_render_the_one_list() {
          title, so the link and the heading it lands on disagree"
     );
     for tpl in ["page.html", "section.html"] {
-        let text = read(&format!("website/templates/{tpl}"));
+        let text = read(&format!("website/templates/{tpl}"))?;
         assert!(
             text.contains("macros::docs_nav(nav=config.extra.docs_nav,"),
             "{tpl} does not render the sidebar from macros::docs_nav over \
@@ -4949,11 +5036,11 @@ fn both_docs_navs_render_the_one_list() {
         );
     }
 
-    let base = read("website/templates/base.html");
+    let base = read("website/templates/base.html")?;
     let menu_at = base
         .find("class=\"nav-drop-menu\"")
-        .expect("base.html has no dropdown menu");
-    let menu_end = menu_at + base[menu_at..].find("</nav>").expect("menu inside <nav>");
+        .ok_or("base.html has no dropdown menu")?;
+    let menu_end = menu_at + base[menu_at..].find("</nav>").ok_or("menu inside <nav>")?;
     let menu = &base[menu_at..menu_end];
     assert!(
         menu.contains("config.extra.docs_nav")
@@ -4962,7 +5049,7 @@ fn both_docs_navs_render_the_one_list() {
         "the Docs dropdown does not render config.extra.docs_nav by each \
          page's own title"
     );
-    let literal = regex::Regex::new(r"get_url\(path='(@/[^']+)'\)").unwrap();
+    let literal = regex::Regex::new(r"get_url\(path='(@/[^']+)'\)")?;
     let fixed: BTreeSet<String> = literal
         .captures_iter(menu)
         .map(|c| c[1].to_string())
@@ -4986,6 +5073,7 @@ fn both_docs_navs_render_the_one_list() {
         menu.contains("entry.menu"),
         "the Docs dropdown ignores `menu`, so it lists every page again"
     );
+    Ok(())
 }
 
 /// Active state comes from the page an entry links, never a pasted path.
@@ -4995,15 +5083,15 @@ fn both_docs_navs_render_the_one_list() {
 /// /docs/cookbook/, and "Library API" and "Runnable Examples" carried no
 /// comparison at all, so they never lit.
 #[test]
-fn nav_active_state_is_derived_from_the_linked_page() {
-    let base = read("website/templates/base.html");
-    let pasted = regex::Regex::new(r#"current_path == "/docs/[^"]+/""#).unwrap();
+fn nav_active_state_is_derived_from_the_linked_page() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
+    let pasted = regex::Regex::new(r#"current_path == "/docs/[^"]+/""#)?;
     let hits: Vec<&str> = pasted.find_iter(&base).map(|m| m.as_str()).collect();
     assert!(
         hits.is_empty(),
         "base.html compares current_path against hand-typed docs paths: {hits:?}"
     );
-    let menu_at = base.find("class=\"nav-drop-menu\"").expect("menu");
+    let menu_at = base.find("class=\"nav-drop-menu\"").ok_or("menu")?;
     let menu = &base[menu_at..];
     assert!(
         menu.contains("current_path == p.path"),
@@ -5014,6 +5102,7 @@ fn nav_active_state_is_derived_from_the_linked_page() {
         menu.contains("aria-current=\"page\""),
         "the dropdown marks the active entry only with a color"
     );
+    Ok(())
 }
 
 /// The dropdown's group headings label their groups for assistive tech.
@@ -5021,10 +5110,10 @@ fn nav_active_state_is_derived_from_the_linked_page() {
 /// They were `aria-hidden`, so a screen reader heard forty menu items with no
 /// grouping at all.
 #[test]
-fn dropdown_group_headings_label_their_groups() {
-    let base = read("website/templates/base.html");
-    let menu_at = base.find("class=\"nav-drop-menu\"").expect("menu");
-    let menu = &base[menu_at..menu_at + base[menu_at..].find("</nav>").expect("nav")];
+fn dropdown_group_headings_label_their_groups() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
+    let menu_at = base.find("class=\"nav-drop-menu\"").ok_or("menu")?;
+    let menu = &base[menu_at..menu_at + base[menu_at..].find("</nav>").ok_or("nav")?];
     assert!(
         !menu.contains("nav-drop-label\" aria-hidden"),
         "a dropdown group heading is aria-hidden"
@@ -5037,6 +5126,7 @@ fn dropdown_group_headings_label_their_groups() {
         menu.contains("id=\"nav-grp-{{"),
         "the heading a group is labeled by has no id"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5067,19 +5157,19 @@ fn csp_token(body: &str) -> String {
 ///
 /// # Returns
 /// The process output (status, stdout, stderr).
-fn run_csp_refresh(args: &[&str]) -> std::process::Output {
-    std::process::Command::new("python3")
+fn run_csp_refresh(args: &[&str]) -> Result<std::process::Output, TestError> {
+    Ok(std::process::Command::new("python3")
         .arg(repo().join("ops/cloudflare/refresh_csp_hashes.py"))
         .args(args)
         .output()
-        .expect("run refresh_csp_hashes.py")
+        .map_err(|e| format!("run refresh_csp_hashes.py: {e}"))?)
 }
 
 /// In --site-dir --dry-run mode the CSP refresher hashes executable inline
 /// scripts recursively, skips src=/ld+json blocks, and prints the CSP.
 #[test]
-fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn csp_refresh_site_dir_hashes_executable_inline_scripts() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     // Adversarial bodies: backslashes, quotes, an embedded NUL, multibyte.
     let root_body = "var s = \"back\\\\slash \\\"quoted\\\" \u{0} caf\u{e9} \u{1F600}\";";
     let sub_body = "console.log('nested page');";
@@ -5095,8 +5185,8 @@ fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
              </body></html>"
         ),
     )
-    .expect("write index.html");
-    std::fs::create_dir(dir.path().join("docs")).expect("mkdir docs");
+    .map_err(|e| format!("write index.html: {e}"))?;
+    std::fs::create_dir(dir.path().join("docs")).map_err(|e| format!("mkdir docs: {e}"))?;
     std::fs::write(
         dir.path().join("docs/index.html"),
         format!(
@@ -5106,10 +5196,15 @@ fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
              </body></html>"
         ),
     )
-    .expect("write docs/index.html");
-    std::fs::write(dir.path().join("style.css"), "body {}").expect("write non-html");
+    .map_err(|e| format!("write docs/index.html: {e}"))?;
+    std::fs::write(dir.path().join("style.css"), "body {}")
+        .map_err(|e| format!("write non-html: {e}"))?;
 
-    let out = run_csp_refresh(&["--site-dir", dir.path().to_str().unwrap(), "--dry-run"]);
+    let out = run_csp_refresh(&[
+        "--site-dir",
+        dir.path().to_str().ok_or("to_str() is None")?,
+        "--dry-run",
+    ])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -5141,13 +5236,18 @@ fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
             && stdout.contains(&csp_token(root_body)),
         "dry run should print the resulting CSP:\n{stdout}"
     );
+    Ok(())
 }
 
 /// An HTML-free --site-dir must fail loudly rather than publish an empty hash set.
 #[test]
-fn csp_refresh_site_dir_empty_tree_is_an_error() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let out = run_csp_refresh(&["--site-dir", dir.path().to_str().unwrap(), "--dry-run"]);
+fn csp_refresh_site_dir_empty_tree_is_an_error() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let out = run_csp_refresh(&[
+        "--site-dir",
+        dir.path().to_str().ok_or("to_str() is None")?,
+        "--dry-run",
+    ])?;
     assert!(
         !out.status.success(),
         "an html-free --site-dir must fail loudly, not publish an empty CSP"
@@ -5157,6 +5257,7 @@ fn csp_refresh_site_dir_empty_tree_is_an_error() {
         stderr.contains(".html"),
         "error should say no .html files were found: {stderr}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5171,7 +5272,7 @@ fn csp_refresh_site_dir_empty_tree_is_an_error() {
 
 #[cfg(feature = "tui")]
 mod multileg_demo_ladder {
-    use super::repo;
+    use super::{TestError, repo};
     use crossterm::event::KeyCode;
     use ratatui::{Terminal, backend::TestBackend};
     use sipnab::tui::App;
@@ -5186,15 +5287,20 @@ mod multileg_demo_ladder {
     const DEMO_ROWS: u16 = 30;
 
     /// The terminal buffer as one string per row.
-    fn buffer_rows(term: &Terminal<TestBackend>) -> Vec<String> {
+    fn buffer_rows(term: &Terminal<TestBackend>) -> Result<Vec<String>, TestError> {
         let buf = term.backend().buffer();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
-                    .collect()
-            })
-            .collect()
+        let mut rows = Vec::new();
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                let cell = buf
+                    .cell((x, y))
+                    .ok_or_else(|| format!("no buffer cell at ({x}, {y})"))?;
+                row.push_str(cell.symbol());
+            }
+            rows.push(row);
+        }
+        Ok(rows)
     }
 
     /// Replay the 10-multileg tape's key sequence (load pcap, Down x5,
@@ -5202,7 +5308,7 @@ mod multileg_demo_ladder {
     ///
     /// # Returns
     /// The app (extended flow active) and the rendered rows of the demo-size screen.
-    fn extended_flow_screen() -> (App, Vec<String>) {
+    fn extended_flow_screen() -> Result<(App, Vec<String>), TestError> {
         let pcap = repo().join("tests/pcap-samples/b2bua-asterisk.pcapng");
         assert!(pcap.is_file(), "demo fixture missing: {}", pcap.display());
 
@@ -5215,20 +5321,20 @@ mod multileg_demo_ladder {
         }
         app.handle_key(KeyCode::Enter);
 
-        let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS)).unwrap();
-        term.draw(|f| app.render(f)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS))?;
+        term.draw(|f| app.render(f))?;
         for _ in 0..5 {
             app.handle_key(KeyCode::Down);
-            term.draw(|f| app.render(f)).unwrap();
+            term.draw(|f| app.render(f))?;
         }
         app.handle_key(KeyCode::Enter);
-        term.draw(|f| app.render(f)).unwrap();
+        term.draw(|f| app.render(f))?;
         app.handle_key(KeyCode::Char('x'));
         assert!(app.extended_flow(), "x must enable extended flow");
-        term.draw(|f| app.render(f)).unwrap();
+        term.draw(|f| app.render(f))?;
 
-        let rows = buffer_rows(&term);
-        (app, rows)
+        let rows = buffer_rows(&term)?;
+        Ok((app, rows))
     }
 
     /// Render the demo screen as a labeled dump for inclusion in failure
@@ -5246,11 +5352,11 @@ mod multileg_demo_ladder {
 
     /// The ladder's columns: everything left of the detail pane, whose top
     /// border corner sits on the first main-area row.
-    fn ladder_split_col(rows: &[String]) -> usize {
-        rows[3]
+    fn ladder_split_col(rows: &[String]) -> Result<usize, TestError> {
+        Ok(rows[3]
             .chars()
             .position(|c| c == '\u{250C}') // ┌
-            .unwrap_or_else(|| panic!("no detail-pane corner in row 3: {:?}", rows[3]))
+            .ok_or_else(|| format!("no detail-pane corner in row 3: {:?}", rows[3]))?)
     }
 
     /// Every whitespace-separated token on the participant header row and
@@ -5259,15 +5365,15 @@ mod multileg_demo_ladder {
     /// must appear exactly once. Colliding overwrites ("172.16.98172.16...")
     /// match no label and fail.
     #[test]
-    fn multileg_demo_participant_labels_never_collide() {
-        let (app, rows) = extended_flow_screen();
+    fn multileg_demo_participant_labels_never_collide() -> Result<(), TestError> {
+        let (app, rows) = extended_flow_screen()?;
         let labels = app.ladder_participant_labels_for_test();
         assert!(
             labels.len() >= 3,
             "expected a multi-leg (3+ participant) ladder, got {labels:?}\n{}",
             screen_dump(&rows)
         );
-        let split = ladder_split_col(&rows);
+        let split = ladder_split_col(&rows)?;
 
         for label_row in [&rows[3], &rows[DEMO_ROWS as usize - 2]] {
             // The ladder's last column carries its scrollbar (█ thumb /
@@ -5302,14 +5408,18 @@ mod multileg_demo_ladder {
                 });
                 match matched {
                     Some((i, _)) => used[i] = true,
-                    None => panic!(
-                        "label token {tok:?} matches no participant of {labels:?} \
-                         — labels collided/overwrote each other in {ladder_txt:?}\n{}",
-                        screen_dump(&rows)
-                    ),
+                    None => {
+                        return Err(format!(
+                            "label token {tok:?} matches no participant of {labels:?} \
+                             — labels collided/overwrote each other in {ladder_txt:?}\n{}",
+                            screen_dump(&rows)
+                        )
+                        .into());
+                    }
                 }
             }
         }
+        Ok(())
     }
 
     /// At the demo geometry the common short arrow labels must render in
@@ -5317,9 +5427,9 @@ mod multileg_demo_ladder {
     /// the feature. (The ladder must widen at the expense of the detail
     /// pane until these fit.)
     #[test]
-    fn multileg_demo_arrow_labels_are_not_truncated() {
-        let (_app, rows) = extended_flow_screen();
-        let split = ladder_split_col(&rows);
+    fn multileg_demo_arrow_labels_are_not_truncated() -> Result<(), TestError> {
+        let (_app, rows) = extended_flow_screen()?;
+        let split = ladder_split_col(&rows)?;
         // Arrow rows only: the participant label rows (header, footer) may
         // legitimately ellipsis-truncate long ip:port labels within their
         // own non-overlapping cells; the collision test above covers them.
@@ -5345,6 +5455,7 @@ mod multileg_demo_ladder {
                 screen_dump(&rows)
             );
         }
+        Ok(())
     }
 }
 
@@ -5365,14 +5476,14 @@ mod multileg_demo_ladder {
 /// This is that check. It compares the `needs:` list against the jobs actually
 /// defined in the file, so a new job either joins the gate or fails this test.
 #[test]
-fn ci_success_gates_every_job() {
-    let yaml = read(".github/workflows/ci.yml");
+fn ci_success_gates_every_job() -> Result<(), TestError> {
+    let yaml = read(".github/workflows/ci.yml")?;
     // Job keys are the 2-space-indented mapping keys under `jobs:`. Anchor on
     // that header first: `on:` also has 2-space children (`push:`), which a
     // whole-file scan would collect as phantom jobs.
     let jobs_block = yaml
         .split_once("\njobs:\n")
-        .expect("ci.yml has no jobs: block")
+        .ok_or("ci.yml has no jobs: block")?
         .1;
     let defined: BTreeSet<String> = jobs_block
         .lines()
@@ -5397,9 +5508,9 @@ fn ci_success_gates_every_job() {
     // rather than to end-of-line.
     let after = jobs_block
         .split_once("needs: [")
-        .expect("ci-success has no needs: list")
+        .ok_or("ci-success has no needs: list")?
         .1;
-    let list = &after[..after.find(']').expect("unterminated needs: list")];
+    let list = &after[..after.find(']').ok_or("unterminated needs: list")?];
     let gated: BTreeSet<String> = list
         .split(',')
         .map(|s| s.trim().to_string())
@@ -5426,6 +5537,7 @@ fn ci_success_gates_every_job() {
         phantom.is_empty(),
         "ci-success needs jobs that no longer exist: {phantom:?}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5445,11 +5557,11 @@ fn ci_success_gates_every_job() {
 /// to discover it: the tag is already cut and the workflow is already halfway
 /// through publishing. This test moves that discovery to every push.
 #[test]
-fn packaging_scripts_reference_existing_paths() {
+fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // Leading boundary matters: "/usr/share/man/man1/sipnab.1.gz" inside an
     // rpm spec heredoc contains the substring "man/man1/sipnab.1.gz", which
     // is not a repo path. Only accept a match that starts a path token.
-    fn candidates(text: &str) -> Vec<String> {
+    fn candidates(text: &str) -> Result<Vec<String>, TestError> {
         // Path roots a script may legitimately name. Curated, because a
         // derived list over-matches: `docker/build-push-action` is an Action
         // namespace and `fuzz/artifacts` is gitignored output, both of which a
@@ -5510,7 +5622,7 @@ fn packaging_scripts_reference_existing_paths() {
                 .args(["ls-files"])
                 .current_dir(repo())
                 .output()
-                .expect("git ls-files");
+                .map_err(|e| format!("git ls-files: {e}"))?;
             let mut top: Vec<String> = String::from_utf8_lossy(&out.stdout)
                 .lines()
                 .filter_map(|p| p.split_once('/').map(|(d, _)| format!("{d}/")))
@@ -5553,7 +5665,7 @@ fn packaging_scripts_reference_existing_paths() {
                 out.push(path);
             }
         }
-        out
+        Ok(out)
     }
 
     let mut files: Vec<std::path::PathBuf> = Vec::new();
@@ -5563,9 +5675,8 @@ fn packaging_scripts_reference_existing_paths() {
         "packaging/homebrew",
         ".github/workflows",
     ] {
-        let Ok(entries) = std::fs::read_dir(repo().join(dir)) else {
-            panic!("missing directory {dir} — packaging layout changed");
-        };
+        let entries = std::fs::read_dir(repo().join(dir))
+            .map_err(|e| format!("missing directory {dir} — packaging layout changed: {e}"))?;
         for e in entries.flatten() {
             let p = e.path();
             if p.extension()
@@ -5585,7 +5696,7 @@ fn packaging_scripts_reference_existing_paths() {
     let mut checked = 0usize;
     for f in &files {
         let text = std::fs::read_to_string(f).unwrap_or_default();
-        for cand in candidates(&text) {
+        for cand in candidates(&text)? {
             // `$`-interpolated segments are runtime values, not literals.
             if cand.contains('$') {
                 continue;
@@ -5827,6 +5938,7 @@ fn packaging_scripts_reference_existing_paths() {
         "packaging scripts name repo paths that do not exist:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// The SBOMs must be generated, attested, and published — all three.
@@ -5844,8 +5956,8 @@ fn packaging_scripts_reference_existing_paths() {
 /// the generation step, which reads the emitted document. A CycloneDX file
 /// with zero components is valid JSON and uploads perfectly happily.
 #[test]
-fn release_publishes_and_attests_the_sboms() {
-    let yaml = read(".github/workflows/release.yml");
+fn release_publishes_and_attests_the_sboms() -> Result<(), TestError> {
+    let yaml = read(".github/workflows/release.yml")?;
     assert!(
         yaml.contains("cargo cyclonedx"),
         "release.yml no longer generates an SBOM"
@@ -5869,7 +5981,7 @@ fn release_publishes_and_attests_the_sboms() {
     // Both consumers glob *.cdx.json rather than naming versions.
     let subject = yaml
         .split_once("subject-path: |")
-        .expect("no attest subject-path")
+        .ok_or("no attest subject-path")?
         .1;
     let subject = &subject[..subject.find("\n\n").unwrap_or(subject.len())];
     assert!(
@@ -5880,13 +5992,14 @@ fn release_publishes_and_attests_the_sboms() {
 
     let files = yaml
         .split_once("files: |")
-        .expect("no release files list")
+        .ok_or("no release files list")?
         .1;
     let files = &files[..files.find("\n\n").unwrap_or(files.len())];
     assert!(
         files.contains("*.cdx.json"),
         "SBOMs are generated and attested but never uploaded to the release:\n{files}"
     );
+    Ok(())
 }
 
 /// The Vale style package is pinned to a release, not to "latest".
@@ -5905,18 +6018,18 @@ fn release_publishes_and_attests_the_sboms() {
 /// This gate is the same contract `ci_actions_and_base_images_are_pinned_by_digest`
 /// enforces below, for the one dependency that was outside it.
 #[test]
-fn vale_style_package_is_pinned_to_a_release() {
-    let cfg = read(".vale.ini");
+fn vale_style_package_is_pinned_to_a_release() -> Result<(), TestError> {
+    let cfg = read(".vale.ini")?;
     let line = cfg
         .lines()
         .find(|l| l.trim_start().starts_with("Packages ="))
-        .expect(
+        .ok_or(
             ".vale.ini has no `Packages =` line — the Google style package is \
                  what every prose gate is built on",
-        );
+        )?;
     let value = line
         .split_once('=')
-        .expect("Packages line has no `=`")
+        .ok_or("Packages line has no `=`")?
         .1
         .trim();
 
@@ -5931,15 +6044,14 @@ fn vale_style_package_is_pinned_to_a_release() {
         "`Packages = {value}` points at a `latest` URL — the same floating \
          dependency by another spelling."
     );
-    let version = regex::Regex::new(r"/download/(v[0-9]+\.[0-9]+\.[0-9]+)/")
-        .unwrap()
+    let version = regex::Regex::new(r"/download/(v[0-9]+\.[0-9]+\.[0-9]+)/")?
         .captures(value)
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "`Packages = {value}` carries no `/download/vX.Y.Z/` version — \
                  this gate cannot tell what it is pinned to"
             )
-        })[1]
+        })?[1]
         .to_string();
 
     // The pinned version must be stated in prose too, so a reader upgrading
@@ -5949,6 +6061,7 @@ fn vale_style_package_is_pinned_to_a_release() {
         "the pin is {version} but .vale.ini never names that version in its \
          explanation — say which release is pinned and why"
     );
+    Ok(())
 }
 
 /// Every GitHub Action and every container base image is pinned by digest.
@@ -5993,22 +6106,28 @@ fn vale_style_package_is_pinned_to_a_release() {
 /// strict -- a gate demanding output its fixer can never produce. They still
 /// count toward the totals, because they are dependencies.
 #[test]
-fn ci_actions_and_base_images_are_pinned_by_digest() {
-    let digest = regex::Regex::new(r"@sha256:[0-9a-f]{64}").unwrap();
+fn ci_actions_and_base_images_are_pinned_by_digest() -> Result<(), TestError> {
+    let digest = regex::Regex::new(r"@sha256:[0-9a-f]{64}")?;
     let mut problems = Vec::new();
     let mut actions = 0;
     let mut images = 0;
 
-    for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join(".github/workflows"))
+        .map_err(|e| format!("workflows dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         // GitHub accepts BOTH .yml and .yaml for workflows. Reading only one
         // makes the extension a proxy for "is a workflow", and a file named
         // the other way is invisible to every assertion below.
         if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
             continue;
         }
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&p).expect("read workflow");
+        let name = p
+            .file_name()
+            .ok_or("file_name() is None")?
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read workflow: {e}"))?;
         for (i, line) in text.lines().enumerate() {
             let t = line.trim_start();
             // A commented-out example is documentation, not a dependency.
@@ -6098,9 +6217,9 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
         .args(["ls-files", "Dockerfile", "*.Dockerfile", "**/Dockerfile*"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     for rel in String::from_utf8_lossy(&out.stdout).lines() {
-        for (i, line) in read(rel).lines().enumerate() {
+        for (i, line) in read(rel)?.lines().enumerate() {
             if !line.starts_with("FROM ") {
                 continue;
             }
@@ -6129,6 +6248,7 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
         images,
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// A workflow's `paths:` filter must cover every repo file the workflow reads.
@@ -6143,22 +6263,28 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
 /// filtering on `website/**` alone. `wiki-sync.yml` already had this right —
 /// it lists `docs/**`, its generator, and itself — which is the pattern.
 #[test]
-fn workflow_path_filters_cover_their_inputs() {
+fn workflow_path_filters_cover_their_inputs() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // Repo-relative paths named inside a workflow. Only tokens that exist as
     // real files count, so output paths (`build/wiki`, `site`) and bare
     // arguments do not produce false positives.
-    let token = regex::Regex::new(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*\.[A-Za-z0-9]+").unwrap();
+    let token = regex::Regex::new(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*\.[A-Za-z0-9]+")?;
     let mut problems = Vec::new();
     let mut checked = 0;
 
-    for entry in std::fs::read_dir(root.join(".github/workflows")).expect("workflows dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(root.join(".github/workflows"))
+        .map_err(|e| format!("workflows dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
             continue;
         }
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&p).expect("read workflow");
+        let name = p
+            .file_name()
+            .ok_or("file_name() is None")?
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read workflow: {e}"))?;
 
         // Only workflows that filter — an unfiltered workflow runs on every
         // push and cannot miss an input.
@@ -6227,6 +6353,7 @@ fn workflow_path_filters_cover_their_inputs() {
         "workflow path filters that miss their own inputs:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The analyze page must accept every capture the CLI can read, and it must
@@ -6244,8 +6371,8 @@ fn workflow_path_filters_cover_their_inputs() {
 /// fixtures the CLI is tested against: if sipnab can read it here, the browser
 /// must not turn it away.
 #[test]
-fn the_analyze_page_accepts_every_capture_the_cli_reads() {
-    let js = read("website/static/js/analyze.js");
+fn the_analyze_page_accepts_every_capture_the_cli_reads() -> Result<(), TestError> {
+    let js = read("website/static/js/analyze.js")?;
 
     assert!(
         !js.contains("validExts"),
@@ -6261,14 +6388,13 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
     // cannot drift into asserting against itself.
     let listed: Vec<[u8; 4]> = regex::Regex::new(
         r"is\(0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0x([0-9a-f]{2})\)",
-    )
-    .unwrap()
+    )?
     .captures_iter(&js)
     .map(|c| {
-        let b = |i: usize| u8::from_str_radix(&c[i], 16).unwrap();
-        [b(1), b(2), b(3), b(4)]
+        let b = |i: usize| u8::from_str_radix(&c[i], 16);
+        Ok::<_, TestError>([b(1)?, b(2)?, b(3)?, b(4)?])
     })
-    .collect();
+    .collect::<Result<_, _>>()?;
     assert!(
         listed.len() >= 5,
         "expected the four libpcap variants plus pcapng, found {} magic \
@@ -6280,8 +6406,8 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
     let mut checked = 0;
     let mut refused = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read pcap-samples") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read pcap-samples: {e}"))? {
+        let path = entry.map_err(|e| format!("dir entry: {e}"))?.path();
         if !path.is_file() {
             continue;
         }
@@ -6298,7 +6424,7 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
         let mut head = [0u8; 4];
         {
             use std::io::Read;
-            let mut f = std::fs::File::open(&path).expect("open sample");
+            let mut f = std::fs::File::open(&path).map_err(|e| format!("open sample: {e}"))?;
             if f.read(&mut head).unwrap_or(0) < 4 {
                 continue;
             }
@@ -6320,7 +6446,9 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
         if !gzip && !listed.contains(&head) {
             refused.push(format!(
                 "{} (starts {:02x} {:02x} {:02x} {:02x})",
-                path.file_name().unwrap().to_string_lossy(),
+                path.file_name()
+                    .ok_or("file_name() is None")?
+                    .to_string_lossy(),
                 head[0],
                 head[1],
                 head[2],
@@ -6338,6 +6466,7 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
         "only {checked} sample captures examined — the walk stopped reading \
          tests/pcap-samples and this gate checked almost nothing"
     );
+    Ok(())
 }
 
 /// Nothing interpolated into the JSON-LD block can terminate the script
@@ -6365,22 +6494,23 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
 /// another architecture is the same failure as the corpus gates that reported
 /// `ok` while proving nothing.
 #[test]
-fn no_config_value_in_the_json_ld_block_can_close_the_script_element() {
-    let tpl = read("website/templates/base.html");
-    let cfg = read("website/config.toml");
+fn no_config_value_in_the_json_ld_block_can_close_the_script_element() -> Result<(), TestError> {
+    let tpl = read("website/templates/base.html")?;
+    let cfg = read("website/config.toml")?;
 
     // The keys base.html actually interpolates into the ld+json block, read
     // from the template so adding a fifth value cannot bypass this.
     let block_start = tpl
         .find("application/ld+json")
-        .expect("base.html must still carry a JSON-LD block");
+        .ok_or("base.html must still carry a JSON-LD block")?;
     let block_end = tpl[block_start..]
         .find("</script>")
         .map(|i| block_start + i)
-        .expect("the JSON-LD block must be terminated");
+        .ok_or("the JSON-LD block must be terminated")?;
     let block = &tpl[block_start..block_end];
 
-    let key_re = regex::Regex::new(r"\{\{\s*config\.(?:extra\.)?([a-z_]+)\s*\|").expect("regex");
+    let key_re = regex::Regex::new(r"\{\{\s*config\.(?:extra\.)?([a-z_]+)\s*\|")
+        .map_err(|e| format!("regex: {e}"))?;
     let keys: Vec<String> = key_re
         .captures_iter(block)
         .map(|c| c[1].to_string())
@@ -6393,11 +6523,12 @@ fn no_config_value_in_the_json_ld_block_can_close_the_script_element() {
     );
 
     let val_re = |k: &str| {
-        regex::Regex::new(&format!(r#"(?m)^\s*{k}\s*=\s*"([^"]*)""#)).expect("value regex")
+        regex::Regex::new(&format!(r#"(?m)^\s*{k}\s*=\s*"([^"]*)""#))
+            .map_err(|e| format!("value regex: {e}"))
     };
     let mut checked = 0;
     for k in &keys {
-        let Some(c) = val_re(k).captures(&cfg) else {
+        let Some(c) = val_re(k)?.captures(&cfg) else {
             continue; // not a top-level scalar; covered by the shape check below
         };
         let v = &c[1];
@@ -6421,6 +6552,7 @@ fn no_config_value_in_the_json_ld_block_can_close_the_script_element() {
          check; the gate must read real values, not pass by finding none",
         keys.len()
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -6444,7 +6576,8 @@ fn no_config_value_in_the_json_ld_block_can_close_the_script_element() {
 /// Every escaping bypass in the site templates is on a reviewed allowlist, so
 /// an eighth one cannot be added silently.
 #[test]
-fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
+fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist()
+-> Result<(), TestError> {
     // (template, the exact source line, why the value cannot be attacker-controlled).
     const ALLOWED: &[(&str, &str, &str)] = &[
         (
@@ -6505,19 +6638,23 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
     // "safe": the justifications written beside these bypasses quote the
     // filter, so comments are blanked first — and a bypass inside a comment is
     // not a bypass.
-    let bypass = regex::Regex::new(r"\|\s*safe\b|\{%-?\s*autoescape\s+false\b").expect("regex");
-    let comment = regex::Regex::new(r"(?s)<!--.*?-->|\{#.*?#\}").expect("regex");
+    let bypass = regex::Regex::new(r"\|\s*safe\b|\{%-?\s*autoescape\s+false\b")
+        .map_err(|e| format!("regex: {e}"))?;
+    let comment =
+        regex::Regex::new(r"(?s)<!--.*?-->|\{#.*?#\}").map_err(|e| format!("regex: {e}"))?;
 
     let mut found: Vec<(String, String)> = Vec::new();
     let mut scanned = 0usize;
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
         scanned += 1;
-        let name = p.file_name().expect("name").to_string_lossy().to_string();
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let name = p.file_name().ok_or("name")?.to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         // Keep newlines so a comment never merges two lines into one entry.
         let body = comment.replace_all(&text, |c: &regex::Captures| {
             c[0].chars()
@@ -6560,6 +6697,7 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -6598,49 +6736,54 @@ fn csp_directive<'a>(policy: &'a str, name: &str) -> Option<Vec<&'a str>> {
 }
 
 /// The policy string of the `<meta http-equiv="Content-Security-Policy">` tag.
-fn meta_csp(template: &str) -> String {
-    let tpl = read(template);
+fn meta_csp(template: &str) -> Result<String, TestError> {
+    let tpl = read(template)?;
     let tag = tpl
         .lines()
         .find(|l| l.contains(r#"http-equiv="Content-Security-Policy""#))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "{template} carries no meta CSP — on GitHub Pages that tag is \
                  the only policy a browser sees, so losing it is losing the \
                  whole browser-enforced layer"
             )
-        });
-    tag.split_once(r#"content=""#)
+        })?;
+    Ok(tag
+        .split_once(r#"content=""#)
         .and_then(|(_, rest)| rest.split_once('"'))
         .map(|(policy, _)| policy.to_string())
-        .expect("the meta CSP must carry a quoted content= attribute")
+        .ok_or("the meta CSP must carry a quoted content= attribute")?)
 }
 
 /// The `Content-Security-Policy` value of a Cloudflare Pages / Netlify
 /// `_headers` file, ignoring the `#` comments that name the header in prose.
-fn headers_file_csp(rel: &str) -> String {
-    let text = read(rel);
+fn headers_file_csp(rel: &str) -> Result<String, TestError> {
+    let text = read(rel)?;
     let line = text
         .lines()
         .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
-        .unwrap_or_else(|| panic!("{rel} carries no Content-Security-Policy line"));
-    line.split_once(':')
-        .expect("a header line has a colon")
+        .ok_or_else(|| format!("{rel} carries no Content-Security-Policy line"))?;
+    Ok(line
+        .split_once(':')
+        .ok_or("a header line has a colon")?
         .1
         .trim()
-        .to_string()
+        .to_string())
 }
 
 /// Assert a `script-src` neither widens beyond the sources this site needs nor
 /// leaves an injected inline handler executable.
-fn assert_script_src_cannot_run_injected_script(where_: &str, policy: &str) {
-    let script_src = csp_directive(policy, "script-src").unwrap_or_else(|| {
-        panic!(
+fn assert_script_src_cannot_run_injected_script(
+    where_: &str,
+    policy: &str,
+) -> Result<(), TestError> {
+    let script_src = csp_directive(policy, "script-src").ok_or_else(|| {
+        format!(
             "{where_} names no script-src. Inheriting it from default-src \
              works, but it hides the one directive this gate exists to watch — \
              state it explicitly"
         )
-    });
+    })?;
 
     for token in &script_src {
         assert!(
@@ -6666,23 +6809,25 @@ fn assert_script_src_cannot_run_injected_script(where_: &str, policy: &str) {
              own, so the directive costs nothing and closes the whole class"
         );
     }
+    Ok(())
 }
 
 /// Neither policy this repository stores lets an injected inline script run:
 /// the reference header set is hash-only, and the meta tag's residual
 /// `'unsafe-inline'` cannot execute a handler attribute.
 #[test]
-fn no_content_security_policy_this_repo_ships_lets_an_injected_script_run() {
-    let meta = meta_csp("website/templates/base.html");
-    assert_script_src_cannot_run_injected_script("base.html's meta CSP", &meta);
+fn no_content_security_policy_this_repo_ships_lets_an_injected_script_run() -> Result<(), TestError>
+{
+    let meta = meta_csp("website/templates/base.html")?;
+    assert_script_src_cannot_run_injected_script("base.html's meta CSP", &meta)?;
 
     // Checked before the shared helper: that helper's fallback for an
     // 'unsafe-inline' grant is `script-src-attr 'none'`, which is the right
     // answer for the meta tag and the WRONG one here — this file can simply be
     // strict, so a failure must say so rather than offer the concession.
-    let file = headers_file_csp("website/static/_headers");
+    let file = headers_file_csp("website/static/_headers")?;
     let script_src = csp_directive(&file, "script-src")
-        .expect("static/_headers must name script-src explicitly");
+        .ok_or("static/_headers must name script-src explicitly")?;
     assert!(
         !script_src.contains(&"'unsafe-inline'"),
         "static/_headers grants script-src 'unsafe-inline'. Nothing enforces \
@@ -6693,46 +6838,49 @@ fn no_content_security_policy_this_repo_ships_lets_an_injected_script_run() {
          one. Leave the hashes out (that fails closed) rather than reopening \
          inline execution: script-src = {script_src:?}"
     );
-    assert_script_src_cannot_run_injected_script("static/_headers", &file);
+    assert_script_src_cannot_run_injected_script("static/_headers", &file)?;
 
     // style-src is the deliberate asymmetry and must not be "fixed" to match
     // script-src: the templates carry ~141 inline style= attributes, which CSP
     // cannot hash, so removing this silently unstyles the site.
-    let style_src = csp_directive(&file, "style-src").expect("static/_headers must name style-src");
+    let style_src =
+        csp_directive(&file, "style-src").ok_or("static/_headers must name style-src")?;
     assert!(
         style_src.contains(&"'unsafe-inline'"),
         "static/_headers dropped style-src 'unsafe-inline'. That one IS load \
          bearing — inline style= attributes are not hashable — and removing it \
          to match script-src breaks the rendering of every page"
     );
+    Ok(())
 }
 
 /// `--write-headers` regenerates the reference `_headers` policy from a built
 /// site: the real hashes in, `'unsafe-inline'` out, every other line untouched.
 #[test]
-fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_inline() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_inline()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let body = "document.getElementById('x').addEventListener('click', function () {});";
     std::fs::write(
         dir.path().join("index.html"),
         format!("<html><body><script>{body}</script></body></html>"),
     )
-    .expect("write index.html");
+    .map_err(|e| format!("write index.html: {e}"))?;
 
     // Seed from the file that actually ships, not a fixture: a fixture would
     // drift away from the real comments, indentation and eight other headers,
     // and then this gate would be proving something about the fixture.
-    let source = read("website/static/_headers");
+    let source = read("website/static/_headers")?;
     let headers_path = dir.path().join("_headers");
-    std::fs::write(&headers_path, &source).expect("seed _headers");
+    std::fs::write(&headers_path, &source).map_err(|e| format!("seed _headers: {e}"))?;
 
     let out = run_csp_refresh(&[
         "--site-dir",
-        dir.path().to_str().expect("site dir path"),
+        dir.path().to_str().ok_or("site dir path")?,
         "--write-headers",
-        headers_path.to_str().expect("_headers path"),
+        headers_path.to_str().ok_or("_headers path")?,
         "--dry-run",
-    ]);
+    ])?;
     assert!(
         out.status.success(),
         "--write-headers failed\nstdout: {}\nstderr: {}",
@@ -6740,18 +6888,19 @@ fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let written = std::fs::read_to_string(&headers_path).expect("read rewritten _headers");
+    let written = std::fs::read_to_string(&headers_path)
+        .map_err(|e| format!("read rewritten _headers: {e}"))?;
     let policy = written
         .lines()
         .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
-        .expect("the rewritten file must still carry a CSP line")
+        .ok_or("the rewritten file must still carry a CSP line")?
         .split_once(':')
-        .expect("a header line has a colon")
+        .ok_or("a header line has a colon")?
         .1
         .to_string();
 
     let script_src =
-        csp_directive(&policy, "script-src").expect("the written CSP names script-src");
+        csp_directive(&policy, "script-src").ok_or("the written CSP names script-src")?;
     assert!(
         script_src.contains(&csp_token(body).as_str()),
         "the written policy must pin the built site's inline script by hash, \
@@ -6788,6 +6937,7 @@ fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_
         "the one changed line must be the CSP, not `{}`",
         out_lines[changed[0]]
     );
+    Ok(())
 }
 
 /// The analyze page opens a capture inside a zip or tar.
@@ -6799,8 +6949,8 @@ fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_
 /// page turned away the common case and told the reader to go find a shell —
 /// on the one page whose entire promise is that no install is needed.
 #[test]
-fn the_analyze_page_opens_captures_inside_archives() {
-    let js = read("website/static/js/analyze.js");
+fn the_analyze_page_opens_captures_inside_archives() -> Result<(), TestError> {
+    let js = read("website/static/js/analyze.js")?;
 
     assert!(
         js.contains("return \"zip\"") && js.contains("return \"tar\""),
@@ -6828,6 +6978,7 @@ fn the_analyze_page_opens_captures_inside_archives() {
         js.contains("end-of-central-directory"),
         "zip parsing no longer goes through the central directory"
     );
+    Ok(())
 }
 
 /// The browser size guard measures what will be held in memory.
@@ -6839,8 +6990,8 @@ fn the_analyze_page_opens_captures_inside_archives() {
 /// trailer, zip's central directory — and verified against real fixtures:
 /// ISIZE reported 198831 for a file that is exactly 198831 bytes.
 #[test]
-fn the_analyze_size_guard_measures_the_decompressed_size() {
-    let js = read("website/static/js/analyze.js");
+fn the_analyze_size_guard_measures_the_decompressed_size() -> Result<(), TestError> {
+    let js = read("website/static/js/analyze.js")?;
 
     assert!(
         js.contains("MAX_ANALYZE_BYTES") && js.contains("function tooBig"),
@@ -6856,6 +7007,7 @@ fn the_analyze_size_guard_measures_the_decompressed_size() {
         "the guard compares file.size against the cap directly again — that is \
          the compressed size for gzip/zip input, which is the case the cap exists for"
     );
+    Ok(())
 }
 
 /// A failure that is not sipnab's fault must not ask for a bug report.
@@ -6864,12 +7016,12 @@ fn the_analyze_size_guard_measures_the_decompressed_size() {
 /// including truncated downloads and files that were never captures. That
 /// blames the tool for the input and sends noise to the tracker.
 #[test]
-fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
+fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() -> Result<(), TestError> {
     // Comment lines are stripped first. The fix's own comment quotes the old
     // wording, and scanning the raw file matched THAT — a gate reading prose
     // about the code instead of the code, which is how a gate passes or fails
     // for reasons unrelated to behavior.
-    let js: String = read("website/static/js/analyze.js")
+    let js: String = read("website/static/js/analyze.js")?
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
@@ -6877,7 +7029,7 @@ fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
 
     let issue_at = js
         .find("please open a GitHub issue")
-        .expect("the bug-report invitation is gone entirely");
+        .ok_or("the bug-report invitation is gone entirely")?;
     // The invitation must sit inside a branch that first checked the bytes.
     let window_start = issue_at.saturating_sub(400);
     let context = &js[window_start..issue_at];
@@ -6891,6 +7043,7 @@ fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
         "the GitHub-issue invitation is no longer guarded by an actual content \
          check, so every unreadable file asks the reader to file a bug"
     );
+    Ok(())
 }
 
 /// No test judges an export from whichever directory entry came first.
@@ -6911,7 +7064,7 @@ fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
 /// does. "All of them" and "the same one every time" are different guarantees
 /// and a test usually wants both.
 #[test]
-fn no_test_judges_an_export_from_one_arbitrary_directory_entry() {
+fn no_test_judges_an_export_from_one_arbitrary_directory_entry() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
     for dir in ["src", "tests"] {
@@ -6952,7 +7105,13 @@ fn no_test_judges_an_export_from_one_arbitrary_directory_entry() {
                     continue;
                 }
                 let tail = stmt.rsplit(".next()").next().unwrap_or("");
-                if tail.contains(".expect(") || tail.contains(".unwrap(") {
+                // The call names are built rather than written out, so the
+                // unwrap ratchet's text scan does not count this gate's own
+                // needles as calls.
+                if [".expect", ".unwrap"]
+                    .iter()
+                    .any(|call| tail.contains(&format!("{call}(")))
+                {
                     offenders.push(format!("{}:{}", path.display(), i + 1));
                 }
             }
@@ -6971,6 +7130,7 @@ fn no_test_judges_an_export_from_one_arbitrary_directory_entry() {
          Collect and SORT the entries instead -- see `containers_in` in \
          src/app/batch.rs."
     );
+    Ok(())
 }
 
 /// No test may hide behind a feature that `--features full` does not enable.
@@ -7000,8 +7160,8 @@ fn no_test_judges_an_export_from_one_arbitrary_directory_entry() {
 /// commands are therefore correct, and what has to hold is the invariant
 /// BETWEEN them — which is what this pins.
 #[test]
-fn no_test_hides_behind_a_feature_outside_full() {
-    let toml = read("Cargo.toml");
+fn no_test_hides_behind_a_feature_outside_full() -> Result<(), TestError> {
+    let toml = read("Cargo.toml")?;
 
     // Derive the gap from Cargo.toml rather than hard-coding "wasm", so a new
     // non-`full` feature is covered the day it is added.
@@ -7010,21 +7170,20 @@ fn no_test_hides_behind_a_feature_outside_full() {
             .find(|l| l.trim_start().starts_with(&format!("{name} = [")))
             .map(|l| l.to_string())
     };
-    let members = |line: &str| -> Vec<String> {
-        regex::Regex::new(r#""([a-z0-9-]+)""#)
-            .unwrap()
+    let members = |line: &str| -> Result<Vec<String>, TestError> {
+        Ok(regex::Regex::new(r#""([a-z0-9-]+)""#)?
             .captures_iter(line)
             .map(|c| c[1].to_string())
             .filter(|s| !s.starts_with("dep:"))
-            .collect()
+            .collect())
     };
 
-    let full_line = feature_line("full").expect("Cargo.toml has no `full` feature");
-    let mut in_full: Vec<String> = members(&full_line);
+    let full_line = feature_line("full").ok_or("Cargo.toml has no `full` feature")?;
+    let mut in_full: Vec<String> = members(&full_line)?;
     // One level of expansion is enough: `full` names leaf features directly.
     for f in in_full.clone() {
         if let Some(l) = feature_line(&f) {
-            in_full.extend(members(&l));
+            in_full.extend(members(&l)?);
         }
     }
 
@@ -7068,6 +7227,7 @@ fn no_test_hides_behind_a_feature_outside_full() {
          they count the same command.",
         found.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every place a test is compiled under one of `outside`'s features and not
@@ -7167,7 +7327,7 @@ fn hidden_test_sites(files: &[(std::path::PathBuf, String)], outside: &[String])
 /// target_os = "linux"))]` is how the one module that hid tests is gated, and
 /// a `not(...)` gate splits the two suites the other way round.
 #[test]
-fn the_hidden_test_detector_reads_compound_and_negated_gates() {
+fn the_hidden_test_detector_reads_compound_and_negated_gates() -> Result<(), TestError> {
     let outside = vec!["bpf".to_string()];
     for gate in [
         r#"#[cfg(all(feature = "bpf", target_os = "linux"))]"#,
@@ -7190,6 +7350,7 @@ fn the_hidden_test_detector_reads_compound_and_negated_gates() {
         hidden_test_sites(&plain, &outside).is_empty(),
         "no test, nothing hidden"
     );
+    Ok(())
 }
 
 /// A test inside a module whose `mod` DECLARATION is gated is as hidden as one
@@ -7197,7 +7358,7 @@ fn the_hidden_test_detector_reads_compound_and_negated_gates() {
 /// past this gate: the attribute sits on `pub mod bpf;` in the parent file,
 /// and the tests sit in the child file with no feature attribute of their own.
 #[test]
-fn the_hidden_test_detector_follows_a_gated_module_declaration() {
+fn the_hidden_test_detector_follows_a_gated_module_declaration() -> Result<(), TestError> {
     let outside = vec!["bpf".to_string()];
     let parent = (
         std::path::PathBuf::from("src/capture/uprobe/mod.rs"),
@@ -7228,6 +7389,7 @@ fn the_hidden_test_detector_follows_a_gated_module_declaration() {
         hidden_test_sites(&[parent, untested, ungated], &outside).is_empty(),
         "a gated module with no tests hides nothing"
     );
+    Ok(())
 }
 
 /// Directory walk, files only.
@@ -7278,7 +7440,7 @@ fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// simply born with a short half-life and nothing re-reads it. A person cannot
 /// be relied on to, which is what a gate is for.
 #[test]
-fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
+fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() -> Result<(), TestError> {
     /// Ways this repo's docs say "this does not exist yet".
     const UNBUILT: &[&str] = &[
         "not implemented",
@@ -7293,8 +7455,8 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
     let mut checked = 0;
     let mut problems = Vec::new();
 
-    for entry in std::fs::read_dir(&dir).expect("read docs/design/") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read docs/design/: {e}"))? {
+        let path = entry.map_err(|e| format!("dir entry: {e}"))?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
@@ -7303,7 +7465,7 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let text = std::fs::read_to_string(&path).expect("read design doc");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read design doc: {e}"))?;
 
         // The Status BLOCK: the line plus its continuation, since the evidence
         // is usually a clause or two below the verdict.
@@ -7328,7 +7490,10 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
         // Status block may discuss a command in prose — one doc names a
         // `grep -cE` that prints 0 and exits 1, correct as prose and wrong as
         // evidence — and picking the first backtick would run that instead.
-        let cmd = block.split("**Check:**").nth(1).and_then(check_command);
+        let cmd = match block.split("**Check:**").nth(1) {
+            Some(check) => check_command(check)?,
+            None => None,
+        };
         let Some(cmd) = cmd else {
             problems.push(format!(
                 "{name}: claims something is unbuilt and names no way to check it. \
@@ -7387,7 +7552,7 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
             .arg(&cmd)
             .current_dir(repo())
             .output()
-            .expect("run the doc's own evidence command");
+            .map_err(|e| format!("run the doc's own evidence command: {e}"))?;
         let found = out.status.success();
         let hits = String::from_utf8_lossy(&out.stdout).lines().count();
 
@@ -7427,6 +7592,7 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
          longer holds:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// True when a command carries shell syntax OUTSIDE single quotes.
@@ -7450,11 +7616,10 @@ fn has_shell_syntax(cmd: &str) -> bool {
 }
 
 /// The `grep` a Status block offers as evidence, if any.
-fn check_command(block: &str) -> Option<String> {
-    regex::Regex::new(r"`(grep [^`]+)`")
-        .unwrap()
+fn check_command(block: &str) -> Result<Option<String>, TestError> {
+    Ok(regex::Regex::new(r"`(grep [^`]+)`")?
         .captures(block)
-        .map(|c| c[1].to_string())
+        .map(|c| c[1].to_string()))
 }
 
 /// Every `**Check:**` line in a design doc still returns what it claims.
@@ -7464,13 +7629,13 @@ fn check_command(block: &str) -> Option<String> {
 /// the same rot in the other direction, and the direction `icid-correlation.md`
 /// is now in. A claim is worth checking whichever way it points.
 #[test]
-fn every_check_line_in_a_design_doc_still_holds() {
+fn every_check_line_in_a_design_doc_still_holds() -> Result<(), TestError> {
     let dir = repo().join("docs/design");
     let mut ran = 0;
     let mut problems = Vec::new();
 
-    for entry in std::fs::read_dir(&dir).expect("read docs/design/") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read docs/design/: {e}"))? {
+        let path = entry.map_err(|e| format!("dir entry: {e}"))?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
@@ -7479,13 +7644,13 @@ fn every_check_line_in_a_design_doc_still_holds() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let text = std::fs::read_to_string(&path).expect("read design doc");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read design doc: {e}"))?;
 
         for line in text
             .lines()
             .filter(|l| l.trim_start().starts_with("**Check:**"))
         {
-            let Some(cmd) = check_command(line) else {
+            let Some(cmd) = check_command(line)? else {
                 problems.push(format!("{name}: a **Check:** line names no `grep`"));
                 continue;
             };
@@ -7502,7 +7667,7 @@ fn every_check_line_in_a_design_doc_still_holds() {
                 .arg(&cmd)
                 .current_dir(repo())
                 .output()
-                .expect("run the doc's own check");
+                .map_err(|e| format!("run the doc's own check: {e}"))?;
             ran += 1;
             let found = out.status.success();
             if expect_none && found {
@@ -7527,6 +7692,7 @@ fn every_check_line_in_a_design_doc_still_holds() {
         "a design doc's own evidence no longer returns what it claims:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The published CLA page reproduces `CLA.md` exactly.
@@ -7551,9 +7717,9 @@ fn every_check_line_in_a_design_doc_still_holds() {
 /// and no test can reach it; `MAINTAINERS.md` carries that half as an
 /// instruction to whoever edits `CLA.md`.
 #[test]
-fn cla_page_reproduces_the_agreement() {
-    let agreement = read("CLA.md");
-    let page = read("website/content/cla.md");
+fn cla_page_reproduces_the_agreement() -> Result<(), TestError> {
+    let agreement = read("CLA.md")?;
+    let page = read("website/content/cla.md")?;
 
     // The site demotes the H1 to an H2 because the page already carries a title
     // in its front matter. That single character is the only allowed difference.
@@ -7582,6 +7748,7 @@ fn cla_page_reproduces_the_agreement() {
          A contributor reads the site and signs against the gist, so a diff \
          between these two is text somebody agreed to without seeing."
     );
+    Ok(())
 }
 
 /// Every route to the signing flow names THIS repository, and the sentence that
@@ -7602,13 +7769,13 @@ fn cla_page_reproduces_the_agreement() {
 /// nothing tells the contributor, who has done the one thing asked of them and
 /// is still blocked.
 #[test]
-fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() {
+fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() -> Result<(), TestError> {
     // The exact string CLA Assistant accepts as a signature. Editing this line
     // does not change what the bot matches; it only stops the docs from saying
     // so.
     const SIGN_OFF: &str = "I have read the CLA Document and I hereby sign the CLA";
 
-    let contributing = read("CONTRIBUTING.md");
+    let contributing = read("CONTRIBUTING.md")?;
     assert!(
         contributing.contains(SIGN_OFF),
         "CONTRIBUTING.md no longer quotes the sentence CLA Assistant accepts:\n  \
@@ -7617,16 +7784,14 @@ fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() {
          version signs nothing and is told nothing."
     );
 
-    let slug = regex::Regex::new(r"https://github\.com/([\w.-]+)/([\w.-]+)")
-        .unwrap()
-        .captures(&read("Cargo.toml"))
+    let slug = regex::Regex::new(r"https://github\.com/([\w.-]+)/([\w.-]+)")?
+        .captures(&read("Cargo.toml")?)
         .map(|c| format!("{}/{}", &c[1], &c[2]))
-        .expect("Cargo.toml has no github.com `repository` URL to take the slug from");
+        .ok_or("Cargo.toml has no github.com `repository` URL to take the slug from")?;
 
     // Both shapes the service uses: the signing page `cla-assistant.io/o/r` and
     // the README badge `cla-assistant.io/readme/badge/o/r`.
-    let link =
-        regex::Regex::new(r"cla-assistant\.io/(?:readme/badge/)?([\w.-]+)/([\w.-]+)").unwrap();
+    let link = regex::Regex::new(r"cla-assistant\.io/(?:readme/badge/)?([\w.-]+)/([\w.-]+)")?;
 
     let mut wrong = Vec::new();
     let mut seen = 0usize;
@@ -7636,7 +7801,7 @@ fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() {
         "MAINTAINERS.md",
         "website/content/cla.md",
     ] {
-        for (i, line) in read(file).lines().enumerate() {
+        for (i, line) in read(file)?.lines().enumerate() {
             for c in link.captures_iter(line) {
                 seen += 1;
                 let found = format!("{}/{}", &c[1], &c[2]);
@@ -7662,6 +7827,7 @@ fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() {
          one records none of it.",
         wrong.join("\n  ")
     );
+    Ok(())
 }
 
 /// `website/README.md` describes the deploy that actually happens.
@@ -7683,8 +7849,9 @@ fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() {
 /// and the directory genuinely becomes tracked, the assertion inverts on its
 /// own instead of asserting yesterday's truth.
 #[test]
-fn website_readme_describes_the_real_deploy_path() {
-    let readme = std::fs::read_to_string("website/README.md").expect("website/README.md");
+fn website_readme_describes_the_real_deploy_path() -> Result<(), TestError> {
+    let readme = std::fs::read_to_string("website/README.md")
+        .map_err(|e| format!("website/README.md: {e}"))?;
 
     assert!(
         readme.contains("pages.yml"),
@@ -7700,7 +7867,7 @@ fn website_readme_describes_the_real_deploy_path() {
 
     // Read the ignore rule rather than trusting either document.
     let ignored = std::fs::read_to_string(".gitignore")
-        .expect(".gitignore")
+        .map_err(|e| format!(".gitignore: {e}"))?
         .lines()
         .any(|l| l.trim() == "website/public/" || l.trim() == "website/public");
     if ignored {
@@ -7730,6 +7897,7 @@ fn website_readme_describes_the_real_deploy_path() {
          and deletes the intermediate GIF in the same recipe, so nothing under \
          static/demos/ is a GIF"
     );
+    Ok(())
 }
 
 /// A documented claim about a tracked path is checked against git, not prose.
@@ -7745,11 +7913,11 @@ fn website_readme_describes_the_real_deploy_path() {
 /// So this asks git rather than matching a phrase. Whatever a document says
 /// about a path, the ignore rules and the index decide the truth.
 #[test]
-fn no_document_claims_git_holds_a_directory_git_ignores() {
+fn no_document_claims_git_holds_a_directory_git_ignores() -> Result<(), TestError> {
     // Directories the repository generates and does not track. Each is checked
     // against `.gitignore` below rather than trusted from this list.
     const GENERATED: [&str; 2] = ["website/public/", "e2e/node_modules/"];
-    let ignore = std::fs::read_to_string(".gitignore").expect(".gitignore");
+    let ignore = std::fs::read_to_string(".gitignore").map_err(|e| format!(".gitignore: {e}"))?;
 
     let mut checked = 0;
     for dir in GENERATED {
@@ -7780,6 +7948,7 @@ fn no_document_claims_git_holds_a_directory_git_ignores() {
         GENERATED.len(),
         "not every generated directory was examined"
     );
+    Ok(())
 }
 
 /// The README's claims about `public/` agree with each other.
@@ -7789,8 +7958,9 @@ fn no_document_claims_git_holds_a_directory_git_ignores() {
 /// one that says the wrong thing once: a reader believes whichever they reach
 /// first, and neither statement looks provisional.
 #[test]
-fn the_website_readme_does_not_contradict_itself_about_public() {
-    let readme = std::fs::read_to_string("website/README.md").expect("website/README.md");
+fn the_website_readme_does_not_contradict_itself_about_public() -> Result<(), TestError> {
+    let readme = std::fs::read_to_string("website/README.md")
+        .map_err(|e| format!("website/README.md: {e}"))?;
     let says_ignored = readme.contains("`.gitignore` excludes");
     let says_held: Vec<&str> = [
         "tracks `public/`",
@@ -7811,6 +7981,7 @@ fn the_website_readme_does_not_contradict_itself_about_public() {
          git holds it: {says_held:?}. A reader believes whichever they reach \
          first"
     );
+    Ok(())
 }
 
 /// Every tree in `.config/code-trees.txt` is classified by the packaging gate.
@@ -7826,8 +7997,9 @@ fn the_website_readme_does_not_contradict_itself_about_public() {
 /// join instead: every tree that file names must be classified here as either a
 /// path root or explicitly not one. That join is what nothing was checking.
 #[test]
-fn every_code_tree_is_classified_by_the_packaging_gate() {
-    let trees = std::fs::read_to_string(".config/code-trees.txt").expect(".config/code-trees.txt");
+fn every_code_tree_is_classified_by_the_packaging_gate() -> Result<(), TestError> {
+    let trees = std::fs::read_to_string(".config/code-trees.txt")
+        .map_err(|e| format!(".config/code-trees.txt: {e}"))?;
     let named: Vec<String> = trees
         .lines()
         .map(str::trim)
@@ -7842,22 +8014,23 @@ fn every_code_tree_is_classified_by_the_packaging_gate() {
     );
 
     // Read this file's own two lists rather than restating them.
-    let body = std::fs::read_to_string("tests/site_journey_test.rs").expect("this file");
-    let listed = |name: &str| -> Vec<String> {
+    let body = std::fs::read_to_string("tests/site_journey_test.rs")
+        .map_err(|e| format!("this file: {e}"))?;
+    let listed = |name: &str| -> Result<Vec<String>, TestError> {
         let Some(i) = body.find(&format!("const {name}: [&str;")) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let Some(j) = body[i..].find("];") else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        regex::Regex::new(r#""([a-zA-Z0-9_.-]+/)""#)
-            .expect("regex")
+        Ok(regex::Regex::new(r#""([a-zA-Z0-9_.-]+/)""#)
+            .map_err(|e| format!("regex: {e}"))?
             .captures_iter(&body[i..i + j])
             .map(|c| c[1].to_string())
-            .collect()
+            .collect())
     };
-    let mut classified = listed("ROOTS");
-    classified.extend(listed("NOT_PATH_ROOTS"));
+    let mut classified = listed("ROOTS")?;
+    classified.extend(listed("NOT_PATH_ROOTS")?);
     assert!(
         classified.len() >= 10,
         "only {} directories read out of ROOTS/NOT_PATH_ROOTS; the extractor \
@@ -7872,6 +8045,7 @@ fn every_code_tree_is_classified_by_the_packaging_gate() {
          ROOTS nor NOT_PATH_ROOTS: {missing:?}. Adding a directory should fail \
          one gate, not three in sequence"
     );
+    Ok(())
 }
 
 /// The generated-directory list this file checks is not empty.
@@ -7880,23 +8054,25 @@ fn every_code_tree_is_classified_by_the_packaging_gate() {
 /// satisfies both by examining nothing, which is the failure mode this
 /// repository keeps finding in its own instruments.
 #[test]
-fn the_generated_directory_list_is_not_empty() {
-    let body = std::fs::read_to_string("tests/site_journey_test.rs").expect("this file");
+fn the_generated_directory_list_is_not_empty() -> Result<(), TestError> {
+    let body = std::fs::read_to_string("tests/site_journey_test.rs")
+        .map_err(|e| format!("this file: {e}"))?;
     let start = body
         .find("const GENERATED: [&str;")
-        .expect("the GENERATED list");
+        .ok_or("the GENERATED list")?;
     let decl = &body[start..start + 40];
     let n: usize = decl
         .split(';')
         .nth(1)
         .and_then(|t| t.split(']').next())
         .and_then(|t| t.trim().parse().ok())
-        .expect("the array length");
+        .ok_or("the array length")?;
     assert!(
         n >= 2,
         "GENERATED holds {n} entries; with fewer than two the paired \
          ignore/track assertions stop covering anything"
     );
+    Ok(())
 }
 
 /// Count the MCP tools the server registers, across the whole `src/mcp` tree.
@@ -7906,7 +8082,7 @@ fn the_generated_directory_list_is_not_empty() {
 /// composes with `+`, so `#[tool_router]` blocks in submodules register tools
 /// exactly as much as the ones in `server.rs`, and a counter that reads a
 /// single file reports a floor while looking like a total.
-fn registered_mcp_tool_count() -> (usize, usize, usize) {
+fn registered_mcp_tool_count() -> Result<(usize, usize, usize), TestError> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -7924,7 +8100,7 @@ fn registered_mcp_tool_count() -> (usize, usize, usize) {
     walk(std::path::Path::new("src/mcp"), &mut files);
     files.sort();
 
-    let re = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#).unwrap();
+    let re = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)?;
     let count_in = |p: &std::path::Path| {
         std::fs::read_to_string(p)
             .map(|s| re.find_iter(&s).count())
@@ -7932,7 +8108,7 @@ fn registered_mcp_tool_count() -> (usize, usize, usize) {
     };
     let total = files.iter().map(|f| count_in(f)).sum();
     let in_server_rs = count_in(std::path::Path::new("src/mcp/server.rs"));
-    (total, in_server_rs, files.len())
+    Ok((total, in_server_rs, files.len()))
 }
 
 /// Tools registered outside `server.rs` must be counted.
@@ -7943,8 +8119,8 @@ fn registered_mcp_tool_count() -> (usize, usize, usize) {
 /// means deleting the walk — or narrowing it back to `server.rs` — fails
 /// rather than quietly returning a smaller number that some tile will match.
 #[test]
-fn mcp_tool_walk_counts_tools_registered_outside_server_rs() {
-    let (total, in_server_rs, files) = registered_mcp_tool_count();
+fn mcp_tool_walk_counts_tools_registered_outside_server_rs() -> Result<(), TestError> {
+    let (total, in_server_rs, files) = registered_mcp_tool_count()?;
     assert!(
         files >= 2,
         "the walk reached {files} file(s) under src/mcp; it is not recursing"
@@ -7959,10 +8135,10 @@ fn mcp_tool_walk_counts_tools_registered_outside_server_rs() {
     // Each submodule that carries a #[tool_router] must contribute.
     let tools_dir = std::path::Path::new("src/mcp/tools");
     if tools_dir.is_dir() {
-        let re = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#).unwrap();
+        let re = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)?;
         let mut contributing = 0usize;
         for e in std::fs::read_dir(tools_dir)
-            .expect("read src/mcp/tools")
+            .map_err(|e| format!("read src/mcp/tools: {e}"))?
             .flatten()
         {
             let p = e.path();
@@ -7979,6 +8155,7 @@ fn mcp_tool_walk_counts_tools_registered_outside_server_rs() {
              the pattern that finds them has stopped matching"
         );
     }
+    Ok(())
 }
 
 /// The walk's own floor must be able to fail.
@@ -7987,7 +8164,7 @@ fn mcp_tool_walk_counts_tools_registered_outside_server_rs() {
 /// failure this whole gate exists to prevent, so the guard is exercised
 /// against a directory that does not exist rather than trusted.
 #[test]
-fn mcp_tool_walk_reports_nothing_when_it_can_read_nothing() {
+fn mcp_tool_walk_reports_nothing_when_it_can_read_nothing() -> Result<(), TestError> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -8010,12 +8187,13 @@ fn mcp_tool_walk_reports_nothing_when_it_can_read_nothing() {
     );
 
     // And the real tree must not be empty, or the comparison above is vacuous.
-    let (total, _, real_files) = registered_mcp_tool_count();
+    let (total, _, real_files) = registered_mcp_tool_count()?;
     assert!(
         real_files > 0 && total > 0,
         "src/mcp yielded {real_files} file(s) and {total} tool(s); this test \
          would pass identically against a deleted source tree"
     );
+    Ok(())
 }
 
 /// The homepage tile carries the count twice and both spellings must move.
@@ -8025,22 +8203,21 @@ fn mcp_tool_walk_reports_nothing_when_it_can_read_nothing() {
 /// template, so one can be updated alone — and the one left behind is the one
 /// served to every crawler and every reader without JS.
 #[test]
-fn homepage_mcp_tile_carries_the_same_count_in_both_spellings() {
-    let idx = read("website/templates/index.html");
-    let attr = regex::Regex::new(r#"data-count="(\d+)" data-suffix=" MCP tools""#)
-        .unwrap()
+fn homepage_mcp_tile_carries_the_same_count_in_both_spellings() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
+    let attr = regex::Regex::new(r#"data-count="(\d+)" data-suffix=" MCP tools""#)?
         .captures(&idx)
-        .expect("no MCP tools tile with a data-count on the homepage");
-    let text = regex::Regex::new(r">(\d+) MCP tools<")
-        .unwrap()
+        .ok_or("no MCP tools tile with a data-count on the homepage")?;
+    let text = regex::Regex::new(r">(\d+) MCP tools<")?
         .captures(&idx)
-        .expect("the MCP tools tile has no no-JS fallback text node");
+        .ok_or("the MCP tools tile has no no-JS fallback text node")?;
     assert_eq!(
         &attr[1], &text[1],
         "the MCP tile's data-count says {} and its no-JS text says {}; a \
          reader without JavaScript is served the stale figure",
         &attr[1], &text[1]
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -8066,15 +8243,17 @@ fn homepage_mcp_tile_carries_the_same_count_in_both_spellings() {
 /// `docs_page_weights_are_unique_and_descriptions_present` skips every
 /// `_index.md`, so the docs landing page — the most-linked URL in the tree —
 /// was outside every check.
-fn docs_front_matter() -> Vec<(String, String, String)> {
+fn docs_front_matter() -> Result<Vec<(String, String, String)>, TestError> {
     let root = repo().join("website/content/docs");
-    let title_re = regex::Regex::new(r#"(?m)^title = "(.*)"\s*$"#).unwrap();
-    let desc_re = regex::Regex::new(r#"(?m)^description = "(.*)"\s*$"#).unwrap();
+    let title_re = regex::Regex::new(r#"(?m)^title = "(.*)"\s*$"#)?;
+    let desc_re = regex::Regex::new(r#"(?m)^description = "(.*)"\s*$"#)?;
     let mut dirs = vec![root.clone()];
     let mut out = Vec::new();
     while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).expect("read website/content/docs") {
-            let p = entry.expect("dir entry").path();
+        for entry in
+            std::fs::read_dir(&dir).map_err(|e| format!("read website/content/docs: {e}"))?
+        {
+            let p = entry.map_err(|e| format!("dir entry: {e}"))?.path();
             if p.is_dir() {
                 dirs.push(p);
                 continue;
@@ -8084,18 +8263,22 @@ fn docs_front_matter() -> Vec<(String, String, String)> {
             }
             let rel = p
                 .strip_prefix(repo())
-                .expect("under repo")
+                .map_err(|e| format!("under repo: {e}"))?
                 .to_string_lossy()
                 .into_owned();
-            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let text = std::fs::read_to_string(&p).map_err(|e| format!("read {rel}: {e}"))?;
             // Front matter only. A `description = "..."` line inside a fenced
             // code block in the body would otherwise be read as the page's own.
-            let body = text.strip_prefix("+++\n").unwrap_or_else(|| {
-                panic!("{rel} does not open with `+++` — it is not a Zola page")
-            });
+            let body = text
+                .strip_prefix("+++\n")
+                .ok_or_else(|| format!("{rel} does not open with `+++` — it is not a Zola page"))?;
             let fm = match body.split_once("\n+++") {
                 Some((fm, _)) => fm,
-                None => panic!("{rel} has an unterminated `+++` front matter block"),
+                None => {
+                    return Err(
+                        format!("{rel} has an unterminated `+++` front matter block").into(),
+                    );
+                }
             };
             let title = title_re
                 .captures(fm)
@@ -8119,7 +8302,7 @@ fn docs_front_matter() -> Vec<(String, String, String)> {
          sweep has gone blind and every metadata gate built on it is vacuous",
         out.len()
     );
-    out
+    Ok(out)
 }
 
 /// Normalize a title or description for comparison: lowercase, collapsed
@@ -8139,8 +8322,8 @@ fn normalize_meta(s: &str) -> String {
 /// the page ships the site-wide blurb as its meta description — invisible on
 /// the page itself, wrong everywhere the page is quoted.
 #[test]
-fn every_docs_page_carries_its_own_meta_description() {
-    let missing: Vec<String> = docs_front_matter()
+fn every_docs_page_carries_its_own_meta_description() -> Result<(), TestError> {
+    let missing: Vec<String> = docs_front_matter()?
         .into_iter()
         .filter(|(_, _, d)| d.trim().is_empty())
         .map(|(rel, _, _)| rel)
@@ -8151,6 +8334,7 @@ fn every_docs_page_carries_its_own_meta_description() {
          publishes config.description as its own summary:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// No two docs pages share a description.
@@ -8161,9 +8345,9 @@ fn every_docs_page_carries_its_own_meta_description() {
 /// description repeated across URLs is worse than none: Google collapses the
 /// duplicates and picks its own snippet.
 #[test]
-fn no_two_docs_pages_share_a_meta_description() {
+fn no_two_docs_pages_share_a_meta_description() -> Result<(), TestError> {
     let mut by_desc: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (rel, _, desc) in docs_front_matter() {
+    for (rel, _, desc) in docs_front_matter()? {
         if desc.trim().is_empty() {
             continue; // reported by every_docs_page_carries_its_own_meta_description
         }
@@ -8180,6 +8364,7 @@ fn no_two_docs_pages_share_a_meta_description() {
          duplicate snippets, so the repeated pages compete with each other:\n  {}",
         dupes.join("\n  ")
     );
+    Ok(())
 }
 
 /// No docs description is the site-wide blurb.
@@ -8189,19 +8374,18 @@ fn no_two_docs_pages_share_a_meta_description() {
 /// the output the fallback already produced, so this checks the value rather
 /// than its presence.
 #[test]
-fn no_docs_description_falls_back_to_the_site_wide_blurb() {
-    let config = read("website/config.toml");
-    let site_desc = regex::Regex::new(r#"(?m)^description = "(.*)"\s*$"#)
-        .unwrap()
+fn no_docs_description_falls_back_to_the_site_wide_blurb() -> Result<(), TestError> {
+    let config = read("website/config.toml")?;
+    let site_desc = regex::Regex::new(r#"(?m)^description = "(.*)"\s*$"#)?
         .captures(&config)
         .map(|c| normalize_meta(&c[1]))
-        .expect("website/config.toml has no top-level `description`");
+        .ok_or("website/config.toml has no top-level `description`")?;
     assert!(
         !site_desc.is_empty(),
         "config.toml's description is empty, so this comparison matches every \
          page and proves nothing"
     );
-    let copies: Vec<String> = docs_front_matter()
+    let copies: Vec<String> = docs_front_matter()?
         .into_iter()
         .filter(|(_, _, d)| normalize_meta(d) == site_desc)
         .map(|(rel, _, _)| rel)
@@ -8212,6 +8396,7 @@ fn no_docs_description_falls_back_to_the_site_wide_blurb() {
          identical to having none, and identical to each other:\n  {}",
         copies.join("\n  ")
     );
+    Ok(())
 }
 
 /// A description summarizes the page; it is never the title read back.
@@ -8222,9 +8407,9 @@ fn no_docs_description_falls_back_to_the_site_wide_blurb() {
 /// there to catch a stub, not to legislate prose length; the shortest real
 /// description in the tree at the time of writing runs seven.
 #[test]
-fn a_docs_description_is_never_the_page_title_restated() {
+fn a_docs_description_is_never_the_page_title_restated() -> Result<(), TestError> {
     let mut bad = Vec::new();
-    for (rel, title, desc) in docs_front_matter() {
+    for (rel, title, desc) in docs_front_matter()? {
         if desc.trim().is_empty() {
             continue; // reported by every_docs_page_carries_its_own_meta_description
         }
@@ -8253,6 +8438,7 @@ fn a_docs_description_is_never_the_page_title_restated() {
          page:\n  {}",
         bad.join("\n  ")
     );
+    Ok(())
 }
 
 /// The base template emits the full social-card head, wired to the page.
@@ -8263,8 +8449,8 @@ fn a_docs_description_is_never_the_page_title_restated() {
 /// in the template. So this asserts both ends — the tag in `base.html` and the
 /// override in the two templates that render `website/content/docs/`.
 #[test]
-fn the_base_template_emits_the_social_card_meta_tags() {
-    let base = read("website/templates/base.html");
+fn the_base_template_emits_the_social_card_meta_tags() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
     // (what it is, the substring that must appear on one line of base.html)
     let required: &[(&str, &str)] = &[
         (
@@ -8307,7 +8493,7 @@ fn the_base_template_emits_the_social_card_meta_tags() {
         let line = base
             .lines()
             .find(|l| l.contains(tag))
-            .unwrap_or_else(|| panic!("no {what} line in base.html"));
+            .ok_or_else(|| format!("no {what} line in base.html"))?;
         assert!(
             line.contains("current_path"),
             "{what} does not interpolate current_path, so every page on the \
@@ -8321,11 +8507,10 @@ fn the_base_template_emits_the_social_card_meta_tags() {
     let img_line = base
         .lines()
         .find(|l| l.contains(r#"property="og:image""#))
-        .expect("no og:image line in base.html");
-    let asset = regex::Regex::new(r#"content="[^"]*?/([A-Za-z0-9._-]+\.(?:png|jpg|jpeg|webp))""#)
-        .unwrap()
+        .ok_or("no og:image line in base.html")?;
+    let asset = regex::Regex::new(r#"content="[^"]*?/([A-Za-z0-9._-]+\.(?:png|jpg|jpeg|webp))""#)?
         .captures(img_line)
-        .unwrap_or_else(|| panic!("og:image names no image file: {img_line}"));
+        .ok_or_else(|| format!("og:image names no image file: {img_line}"))?;
     let asset_path = repo().join("website/static").join(&asset[1]);
     assert!(
         asset_path.is_file(),
@@ -8340,23 +8525,24 @@ fn the_base_template_emits_the_social_card_meta_tags() {
         ("website/templates/page.html", "page.description"),
         ("website/templates/section.html", "section.description"),
     ] {
-        let text = read(tpl);
+        let text = read(tpl)?;
         for block in ["description", "og_description"] {
             let line = text
                 .lines()
                 .find(|l| l.starts_with(&format!("{{% block {block} %}}")))
-                .unwrap_or_else(|| {
-                    panic!(
+                .ok_or_else(|| {
+                    format!(
                         "{tpl} does not override `{block}`, so every page it \
                          renders publishes config.description as its summary"
                     )
-                });
+                })?;
             assert!(
                 line.contains(var),
                 "{tpl}'s `{block}` block does not read {var}: {line}"
             );
         }
     }
+    Ok(())
 }
 
 /// Docs pages declare `og:type = article`, not the site-wide `website`.
@@ -8367,12 +8553,11 @@ fn the_base_template_emits_the_social_card_meta_tags() {
 /// template that says nothing keeps the old behavior, which means the
 /// property lives in the override — check the override.
 #[test]
-fn docs_pages_declare_the_article_open_graph_type() {
-    let base = read("website/templates/base.html");
-    let default = regex::Regex::new(r"\{% block og_type %\}(\w+)\{% endblock og_type %\}")
-        .unwrap()
+fn docs_pages_declare_the_article_open_graph_type() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
+    let default = regex::Regex::new(r"\{% block og_type %\}(\w+)\{% endblock og_type %\}")?
         .captures(&base)
-        .expect("base.html has no og_type block — og:type is hard-coded again");
+        .ok_or("base.html has no og_type block — og:type is hard-coded again")?;
     assert_eq!(
         &default[1], "website",
         "base.html's og_type default is {:?}; it must stay `website` so a \
@@ -8380,19 +8565,19 @@ fn docs_pages_declare_the_article_open_graph_type() {
         &default[1]
     );
     // page.html renders every page under website/content/docs/.
-    let page = read("website/templates/page.html");
-    let over = regex::Regex::new(r"\{% block og_type %\}(\w+)\{% endblock og_type %\}")
-        .unwrap()
+    let page = read("website/templates/page.html")?;
+    let over = regex::Regex::new(r"\{% block og_type %\}(\w+)\{% endblock og_type %\}")?
         .captures(&page)
-        .expect(
+        .ok_or(
             "website/templates/page.html does not override og_type, so every \
              docs page declares og:type=website",
-        );
+        )?;
     assert_eq!(
         &over[1], "article",
         "page.html declares og:type={:?} for docs pages; expected `article`",
         &over[1]
     );
+    Ok(())
 }
 
 /// The Twitter card takes its title and text from the Open Graph fallback.
@@ -8409,8 +8594,8 @@ fn docs_pages_declare_the_article_open_graph_type() {
 /// must override the twitter pair too, or those pages ship a card that
 /// disagrees with their own Open Graph tags.
 #[test]
-fn the_twitter_card_relies_on_the_open_graph_fallback() {
-    let base = read("website/templates/base.html");
+fn the_twitter_card_relies_on_the_open_graph_fallback() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
     assert!(
         base.contains(r#"<meta name="twitter:card" content="summary_large_image""#),
         "base.html declares no twitter:card, so nothing renders a card at all \
@@ -8420,16 +8605,22 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() {
     // The templates the fallback actually depends on: every child that
     // replaces og_title or og_description with a value of its own.
     let mut overriders = Vec::new();
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let name = p
+            .file_name()
+            .ok_or("file_name() is None")?
+            .to_string_lossy()
+            .into_owned();
         if name == "base.html" {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         if text.contains("{% block og_title %}") || text.contains("{% block og_description %}") {
             overriders.push((name, text));
         }
@@ -8444,7 +8635,7 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() {
     let has_tw_title = base.contains(r#"<meta name="twitter:title""#);
     let has_tw_desc = base.contains(r#"<meta name="twitter:description""#);
     if !(has_tw_title || has_tw_desc) {
-        return; // the documented state: fallback only, nothing to keep in step
+        return Ok(()); // the documented state: fallback only, nothing to keep in step
     }
     let mut unpaired = Vec::new();
     for (name, text) in &overriders {
@@ -8470,6 +8661,7 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() {
          Open Graph tags:\n  {}",
         unpaired.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -8505,16 +8697,17 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() {
 /// The version pin is checked the way every other hand-fetched binary in this
 /// repository is: a tag names a release, it does not fix the bytes behind it.
 #[test]
-fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() {
-    let yaml = read(".github/workflows/pages.yml");
+fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() -> Result<(), TestError> {
+    let yaml = read(".github/workflows/pages.yml")?;
 
-    let at = |needle: &str| -> usize {
-        yaml.find(needle)
-            .unwrap_or_else(|| panic!("pages.yml has no {needle:?} — the step was renamed"))
+    let at = |needle: &str| -> Result<usize, TestError> {
+        Ok(yaml
+            .find(needle)
+            .ok_or_else(|| format!("pages.yml has no {needle:?} — the step was renamed"))?)
     };
-    let build = at("- name: Build site");
-    let index = at("- name: Index the site for search (Pagefind)");
-    let upload = at("- name: Upload Pages artifact");
+    let build = at("- name: Build site")?;
+    let index = at("- name: Index the site for search (Pagefind)")?;
+    let upload = at("- name: Upload Pages artifact")?;
     assert!(
         build < index,
         "the Pagefind step runs BEFORE `zola build`, which recreates \
@@ -8529,7 +8722,7 @@ fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() {
     let step = workflow_step_body(
         ".github/workflows/pages.yml",
         "Index the site for search (Pagefind)",
-    );
+    )?;
     assert!(
         step.contains("pagefind --site website/public"),
         "the step does not index the directory Zola renders and \
@@ -8549,13 +8742,13 @@ fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() {
     // an empty value all install "whatever is published today", which is the
     // property this asserts against.
     let version = regex::Regex::new(r"PAGEFIND_VERSION: '([^']+)'")
-        .expect("regex")
+        .map_err(|e| format!("regex: {e}"))?
         .captures(&yaml)
         .map(|c| c[1].to_string())
-        .expect("pages.yml pins no PAGEFIND_VERSION");
+        .ok_or("pages.yml pins no PAGEFIND_VERSION")?;
     assert!(
         regex::Regex::new(r"^\d+\.\d+\.\d+$")
-            .expect("regex")
+            .map_err(|e| format!("regex: {e}"))?
             .is_match(&version),
         "PAGEFIND_VERSION is {version:?}, which is not an exact release. A \
          moving tag means the search index is built by a different binary on \
@@ -8570,6 +8763,7 @@ fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() {
          index is invisible from outside — the page still returns 200 and the \
          search box simply never appears:\n{step}"
     );
+    Ok(())
 }
 
 /// Every workflow that renders the site also indexes it, on the same pin.
@@ -8584,22 +8778,25 @@ fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() {
 /// "quality.yml also does it", so a THIRD workflow that starts building the
 /// site cannot quietly ship a site with no search.
 #[test]
-fn every_workflow_that_builds_the_site_also_indexes_it() {
+fn every_workflow_that_builds_the_site_also_indexes_it() -> Result<(), TestError> {
     let mut builders: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut pins: BTreeSet<String> = BTreeSet::new();
     // Built once: `clippy::regex_creation_in_loops` fires at `-D warnings`
     // under the pre-push flags (`--all-features --all-targets`), which the
     // pre-commit run does not use.
-    let version_pin = regex::Regex::new(r"PAGEFIND_VERSION: '([^']+)'").expect("regex");
+    let version_pin =
+        regex::Regex::new(r"PAGEFIND_VERSION: '([^']+)'").map_err(|e| format!("regex: {e}"))?;
 
-    for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join(".github/workflows"))
+        .map_err(|e| format!("workflows dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("yml") {
             continue;
         }
-        let name = p.file_name().expect("name").to_string_lossy().to_string();
-        let text = std::fs::read_to_string(&p).expect("read workflow");
+        let name = p.file_name().ok_or("name")?.to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read workflow: {e}"))?;
         if !text.contains("run: zola build") {
             continue;
         }
@@ -8632,6 +8829,7 @@ fn every_workflow_that_builds_the_site_also_indexes_it() {
          One of them is checking an index built by a binary the other never runs",
         pins.len()
     );
+    Ok(())
 }
 
 /// The docs search loads nothing from an origin other than the site's own.
@@ -8643,14 +8841,14 @@ fn every_workflow_that_builds_the_site_also_indexes_it() {
 /// build step, and the entry point named here is root-relative so it resolves
 /// against whatever origin serves the page.
 #[test]
-fn docs_search_loads_only_same_origin_assets() {
-    let js = read("website/static/js/docs-search.js");
+fn docs_search_loads_only_same_origin_assets() -> Result<(), TestError> {
+    let js = read("website/static/js/docs-search.js")?;
 
     let entry = regex::Regex::new(r#"var PAGEFIND_JS = "([^"]*)";"#)
-        .expect("regex")
+        .map_err(|e| format!("regex: {e}"))?
         .captures(&js)
         .map(|c| c[1].to_string())
-        .expect("docs-search.js names no PAGEFIND_JS entry point");
+        .ok_or("docs-search.js names no PAGEFIND_JS entry point")?;
     assert!(
         entry.starts_with('/') && !entry.starts_with("//"),
         "the Pagefind entry point is {entry:?}. It must be root-relative: a \
@@ -8675,16 +8873,19 @@ fn docs_search_loads_only_same_origin_assets() {
     // And nothing in the templates may pull a script off another host either —
     // the search box's own script included. Every one goes through `get_url`,
     // which resolves against config.toml's base_url.
-    let script_src = regex::Regex::new(r#"(?i)<script[^>]*\ssrc\s*=\s*"([^"]+)""#).expect("regex");
+    let script_src = regex::Regex::new(r#"(?i)<script[^>]*\ssrc\s*=\s*"([^"]+)""#)
+        .map_err(|e| format!("regex: {e}"))?;
     let mut foreign = Vec::new();
     let mut seen = 0usize;
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let name = p.file_name().expect("name").to_string_lossy().to_string();
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let name = p.file_name().ok_or("name")?.to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         for cap in script_src.captures_iter(&text) {
             seen += 1;
             if cap[1].contains("://") {
@@ -8707,7 +8908,7 @@ fn docs_search_loads_only_same_origin_assets() {
     // than inline: an inline block only executes in production if its sha256 is
     // in the Cloudflare transform rule, which is regenerated from the DEPLOYED
     // html and therefore always one deploy behind a template edit.
-    let section = read("website/templates/section.html");
+    let section = read("website/templates/section.html")?;
     assert!(
         section.contains("get_url(path='js/docs-search.js', cachebust=true)"),
         "section.html no longer loads js/docs-search.js as an external, \
@@ -8716,7 +8917,8 @@ fn docs_search_loads_only_same_origin_assets() {
     // Same extraction semantics as refresh_csp_hashes.py and the PINNED gate:
     // a <script> is inline unless it carries `src=`. `regex` has no look-around,
     // and a hand-rolled negative match here would be the bug, not the check.
-    let any_script = regex::Regex::new(r"(?is)<script([^>]*)>").expect("regex");
+    let any_script =
+        regex::Regex::new(r"(?is)<script([^>]*)>").map_err(|e| format!("regex: {e}"))?;
     let inline: Vec<String> = any_script
         .captures_iter(&section)
         .filter(|c| !c[1].contains("src=") && !c[1].contains("ld+json"))
@@ -8728,6 +8930,7 @@ fn docs_search_loads_only_same_origin_assets() {
          inline blocks only by sha256, pinned in a rule refreshed from the \
          deployed HTML — so the first load after this deploy runs with it blocked"
     );
+    Ok(())
 }
 
 /// With JavaScript off the search box is absent, and the docs index is not.
@@ -8744,13 +8947,13 @@ fn docs_search_loads_only_same_origin_assets() {
 /// reached. Hiding the box would be no improvement if the fallback were also
 /// behind JavaScript.
 #[test]
-fn docs_search_is_absent_rather_than_broken_without_javascript() {
-    let section = read("website/templates/section.html");
+fn docs_search_is_absent_rather_than_broken_without_javascript() -> Result<(), TestError> {
+    let section = read("website/templates/section.html")?;
 
     let box_tag = section
         .lines()
         .find(|l| l.contains(r#"id="doc-search""#))
-        .unwrap_or_else(|| panic!("section.html renders no #doc-search container"))
+        .ok_or("section.html renders no #doc-search container")?
         .to_string();
     assert!(
         box_tag.contains(" hidden"),
@@ -8762,16 +8965,16 @@ fn docs_search_is_absent_rather_than_broken_without_javascript() {
 
     // Only the script may reveal it, and it must do so from the branch that
     // runs after the engine resolved rather than unconditionally at load.
-    let js = read("website/static/js/docs-search.js");
+    let js = read("website/static/js/docs-search.js")?;
     assert!(
         js.contains("box.hidden = false"),
         "docs-search.js never reveals the box, so the search is dead even WITH \
          JavaScript"
     );
-    let reveal = js.find("box.hidden = false").expect("checked above");
+    let reveal = js.find("box.hidden = false").ok_or("checked above")?;
     let import = js
         .find("import(PAGEFIND_JS)")
-        .expect("docs-search.js no longer imports the Pagefind entry point");
+        .ok_or("docs-search.js no longer imports the Pagefind entry point")?;
     assert!(
         import < reveal,
         "the box is revealed before the Pagefind import is even attempted, so a \
@@ -8786,13 +8989,14 @@ fn docs_search_is_absent_rather_than_broken_without_javascript() {
     );
     let index_at = section
         .find(r#"<nav class="doc-index""#)
-        .expect("checked above");
+        .ok_or("checked above")?;
     assert!(
         section[..index_at].contains(r#"{% if section.pages | length > 0 %}"#),
         "the docs index is no longer guarded by `section.pages`; if it moved \
          behind anything else, check that a reader with scripting off still \
          gets it"
     );
+    Ok(())
 }
 
 /// Adding search did not reopen inline script execution or admit a new origin.
@@ -8807,18 +9011,18 @@ fn docs_search_is_absent_rather_than_broken_without_javascript() {
 /// already needs, and `connect-src` to `'self'`, which is what makes the
 /// Pagefind index chunks loadable and a remote index not.
 #[test]
-fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
-    let headers = read("website/static/_headers");
+fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() -> Result<(), TestError> {
+    let headers = read("website/static/_headers")?;
     let policy = headers
         .lines()
         .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
-        .expect("website/static/_headers carries no CSP line")
+        .ok_or("website/static/_headers carries no CSP line")?
         .split_once(':')
-        .expect("a header line has a colon")
+        .ok_or("a header line has a colon")?
         .1
         .to_string();
 
-    let script_src = csp_directive(&policy, "script-src").expect("the CSP names script-src");
+    let script_src = csp_directive(&policy, "script-src").ok_or("the CSP names script-src")?;
     assert!(
         !script_src.contains(&"'unsafe-inline'"),
         "the reference script-src regained 'unsafe-inline'. Anyone adopting \
@@ -8838,7 +9042,7 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
          host has to be named here"
     );
 
-    let connect_src = csp_directive(&policy, "connect-src").expect("the CSP names connect-src");
+    let connect_src = csp_directive(&policy, "connect-src").ok_or("the CSP names connect-src")?;
     assert_eq!(
         connect_src,
         vec!["'self'"],
@@ -8850,8 +9054,8 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
     // The meta tag is the enforceable layer on GitHub Pages, which cannot set
     // response headers. It grants 'unsafe-inline' by necessity (see base.html),
     // but it must not name a foreign origin either.
-    let meta = meta_csp("website/templates/base.html");
-    let meta_script = csp_directive(&meta, "script-src").expect("the meta CSP names script-src");
+    let meta = meta_csp("website/templates/base.html")?;
+    let meta_script = csp_directive(&meta, "script-src").ok_or("the meta CSP names script-src")?;
     let meta_extra: Vec<&&str> = meta_script
         .iter()
         .filter(|t| !t.starts_with('\'') && !t.starts_with("'sha256-"))
@@ -8863,6 +9067,7 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
          named here and not in _headers is blocked in production anyway — the \
          only thing it buys is a page that works locally and not live"
     );
+    Ok(())
 }
 
 /// The site's web fonts are its own files, all present, and never swapped in.
@@ -8882,7 +9087,7 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
 /// preload without `crossorigin` downloads every font twice.
 /// e2e/tests/web-fonts.spec.js checks the same things in a browser.
 #[test]
-fn web_fonts_are_self_hosted_and_never_swap() {
+fn web_fonts_are_self_hosted_and_never_swap() -> Result<(), TestError> {
     const FOREIGN_FONT_HOSTS: [&str; 3] = [
         "fonts.bunny.net",
         "fonts.googleapis.com",
@@ -8895,28 +9100,29 @@ fn web_fonts_are_self_hosted_and_never_swap() {
         "website/static/_headers".into(),
         "ops/cloudflare/refresh_csp_hashes.py".into(),
     ];
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let path = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let path = entry.map_err(|e| format!("entry: {e}"))?.path();
         if path.extension().and_then(|e| e.to_str()) == Some("html") {
             let name = path
                 .file_name()
-                .expect("name")
+                .ok_or("name")?
                 .to_string_lossy()
                 .into_owned();
             sources.push(format!("website/templates/{name}"));
         }
     }
-    let foreign: Vec<String> = sources
-        .iter()
-        .flat_map(|f| {
-            let text = read(f);
+    let mut foreign: Vec<String> = Vec::new();
+    for f in &sources {
+        let text = read(f)?;
+        foreign.extend(
             FOREIGN_FONT_HOSTS
                 .iter()
                 .filter(|h| text.contains(*h))
-                .map(|h| format!("{f}: {h}"))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+                .map(|h| format!("{f}: {h}")),
+        );
+    }
     assert!(
         foreign.is_empty(),
         "a third-party font host is named again:\n  {}\nThe faces are served \
@@ -8926,8 +9132,8 @@ fn web_fonts_are_self_hosted_and_never_swap() {
     );
 
     // 2. Every @font-face is `optional` and points at a file that exists.
-    let scss = read("website/sass/style.scss");
-    let url = regex::Regex::new(r#"url\('([^']+)'\)"#).unwrap();
+    let scss = read("website/sass/style.scss")?;
+    let url = regex::Regex::new(r#"url\('([^']+)'\)"#)?;
     let faces: Vec<&str> = scss.split("@font-face").skip(1).collect();
     assert_eq!(
         faces.len(),
@@ -8941,8 +9147,8 @@ fn web_fonts_are_self_hosted_and_never_swap() {
         let block = &face[..face.find('}').unwrap_or(face.len())];
         let urls: Vec<&str> = url
             .captures_iter(block)
-            .map(|c| c.get(1).unwrap().as_str())
-            .collect();
+            .map(|c| c.get(1).map(|m| m.as_str()).ok_or("url() capture group"))
+            .collect::<Result<_, _>>()?;
         if !block.contains("font-display: optional;") {
             problems.push(format!("not `font-display: optional`: {urls:?}"));
         }
@@ -8963,7 +9169,7 @@ fn web_fonts_are_self_hosted_and_never_swap() {
 
     // 3. The fonts' license travels with them (SIL OFL 1.1 requires it).
     for dir in ["inter", "jetbrains-mono"] {
-        let license = read(&format!("website/static/fonts/{dir}/OFL.txt"));
+        let license = read(&format!("website/static/fonts/{dir}/OFL.txt"))?;
         assert!(
             license.contains("SIL OPEN FONT LICENSE Version 1.1"),
             "website/static/fonts/{dir}/OFL.txt is not the SIL Open Font License"
@@ -8971,16 +9177,16 @@ fn web_fonts_are_self_hosted_and_never_swap() {
     }
 
     // 4. font-src grants this site and nothing else, in every copy of the policy.
-    let headers = read("website/static/_headers");
+    let headers = read("website/static/_headers")?;
     let policy = headers
         .lines()
         .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
-        .expect("website/static/_headers carries no CSP line")
+        .ok_or("website/static/_headers carries no CSP line")?
         .split_once(':')
-        .expect("a header line has a colon")
+        .ok_or("a header line has a colon")?
         .1
         .to_string();
-    let meta = meta_csp("website/templates/base.html");
+    let meta = meta_csp("website/templates/base.html")?;
     for (which, pol) in [
         ("_headers", policy.as_str()),
         ("base.html meta", meta.as_str()),
@@ -8992,7 +9198,7 @@ fn web_fonts_are_self_hosted_and_never_swap() {
         );
     }
     assert!(
-        read("ops/cloudflare/refresh_csp_hashes.py").contains("font-src 'self'; "),
+        read("ops/cloudflare/refresh_csp_hashes.py")?.contains("font-src 'self'; "),
         "refresh_csp_hashes.py publishes the production CSP, and its font-src is \
          no longer 'self' alone"
     );
@@ -9001,9 +9207,9 @@ fn web_fonts_are_self_hosted_and_never_swap() {
     // is always CORS; a preload without `crossorigin` does not match it, so the
     // browser downloads the file a second time and warns that the preload went
     // unused.
-    let base = read("website/templates/base.html");
-    let preload = regex::Regex::new(r#"<link rel="preload"[^>]*as="font"[^>]*>"#).unwrap();
-    let path = regex::Regex::new(r#"path='([^']+)'"#).unwrap();
+    let base = read("website/templates/base.html")?;
+    let preload = regex::Regex::new(r#"<link rel="preload"[^>]*as="font"[^>]*>"#)?;
+    let path = regex::Regex::new(r#"path='([^']+)'"#)?;
     let links: Vec<&str> = preload.find_iter(&base).map(|m| m.as_str()).collect();
     assert!(
         links.len() >= 4,
@@ -9022,13 +9228,14 @@ fn web_fonts_are_self_hosted_and_never_swap() {
         );
         let file = path
             .captures(link)
-            .unwrap_or_else(|| panic!("font preload without a get_url(path=...): {link}"))[1]
+            .ok_or_else(|| format!("font preload without a get_url(path=...): {link}"))?[1]
             .to_string();
         assert!(
             repo().join("website/static").join(&file).is_file(),
             "font preload names {file}, which is not under website/static/"
         );
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -9074,16 +9281,16 @@ const SITE_GATE_PORT: &str = "1111";
 /// can never match. A spec that no workflow runs is a claim about the site
 /// that nobody checks.
 #[test]
-fn every_e2e_spec_runs_in_the_quality_workflow() {
+fn every_e2e_spec_runs_in_the_quality_workflow() -> Result<(), TestError> {
     let dir = repo().join("e2e/tests");
     let mut specs: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map_err(|e| format!("read {}: {e}", dir.display()))?
         .map(|e| {
-            e.expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
+            e.map(|e| e.file_name().to_string_lossy().into_owned())
+                .map_err(|e| format!("dir entry: {e}"))
         })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|n| n.ends_with(".spec.js"))
         .collect();
     specs.sort();
@@ -9094,7 +9301,7 @@ fn every_e2e_spec_runs_in_the_quality_workflow() {
         specs.len()
     );
 
-    let yaml = read(".github/workflows/quality.yml");
+    let yaml = read(".github/workflows/quality.yml")?;
     let run_lines: Vec<&str> = yaml
         .lines()
         .map(str::trim)
@@ -9120,6 +9327,7 @@ fn every_e2e_spec_runs_in_the_quality_workflow() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+    Ok(())
 }
 
 /// Both website gates exist in `quality.yml`, and each names a file that is
@@ -9131,8 +9339,8 @@ fn every_e2e_spec_runs_in_the_quality_workflow() {
 /// own defaults, which assert nothing at all and exit 0), or a
 /// `continue-on-error` that turns a red step into a green job.
 #[test]
-fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
-    let yaml = read(".github/workflows/quality.yml");
+fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() -> Result<(), TestError> {
+    let yaml = read(".github/workflows/quality.yml")?;
 
     // Job keys, at the two-space indent `jobs:` entries use.
     for job in ["accessibility:", "lighthouse:"] {
@@ -9151,7 +9359,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
     let axe = workflow_step_body(
         ".github/workflows/quality.yml",
         "axe-core (WCAG 2 A/AA, serious + critical)",
-    );
+    )?;
     assert!(
         axe.contains("tests/accessibility.spec.js"),
         "the axe step does not name e2e/tests/accessibility.spec.js:\n{axe}"
@@ -9163,7 +9371,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
     );
 
     // The Lighthouse step must name the config, and the config must exist.
-    let lh = workflow_step_body(".github/workflows/quality.yml", "Lighthouse budgets");
+    let lh = workflow_step_body(".github/workflows/quality.yml", "Lighthouse budgets")?;
     assert!(
         lh.contains("--config=lighthouserc.json"),
         "the Lighthouse step does not pass --config=lighthouserc.json. Without \
@@ -9186,7 +9394,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
     let layout = workflow_step_body(
         ".github/workflows/quality.yml",
         "Download page layout stability",
-    );
+    )?;
     assert!(
         layout.contains("./tests/download-layout.spec.js"),
         "the layout-stability step does not name \
@@ -9201,7 +9409,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
     let journeys = workflow_step_body(
         ".github/workflows/quality.yml",
         "Browser journeys (smoke, demo disclosure, web fonts)",
-    );
+    )?;
 
     // No runner step may be conditional or forgiving. `assert_step_enforces`
     // wants an `exit 1` in the body, which a `run: npx ...` step does not have,
@@ -9226,6 +9434,7 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
              gate stops running without its body changing:\n{body}"
         );
     }
+    Ok(())
 }
 
 /// Every Lighthouse budget is a number somebody measured, not a number somebody
@@ -9248,10 +9457,10 @@ fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
 /// violation and exits 0 -- the same shape as `continue-on-error`, and just as
 /// invisible in a green check.
 #[test]
-fn lighthouse_budgets_are_measured_not_aspirational() {
-    let raw = read("e2e/lighthouserc.json");
-    let rc: serde_json::Value =
-        serde_json::from_str(&raw).expect("e2e/lighthouserc.json is not valid JSON");
+fn lighthouse_budgets_are_measured_not_aspirational() -> Result<(), TestError> {
+    let raw = read("e2e/lighthouserc.json")?;
+    let rc: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("e2e/lighthouserc.json is not valid JSON: {e}"))?;
 
     // Provenance. Without it the numbers below are unattributable, and the
     // pairing this test performs has nothing to pair against.
@@ -9280,7 +9489,7 @@ fn lighthouse_budgets_are_measured_not_aspirational() {
     // Walk every assertion in the matrix.
     let matrix = rc["ci"]["assert"]["assertMatrix"]
         .as_array()
-        .expect("e2e/lighthouserc.json has no ci.assert.assertMatrix array");
+        .ok_or("e2e/lighthouserc.json has no ci.assert.assertMatrix array")?;
     assert!(
         !matrix.is_empty(),
         "ci.assert.assertMatrix is empty -- lhci asserts nothing and exits 0"
@@ -9299,15 +9508,15 @@ fn lighthouse_budgets_are_measured_not_aspirational() {
     for entry in matrix {
         let pattern = entry["matchingUrlPattern"]
             .as_str()
-            .expect("every assertMatrix entry needs a matchingUrlPattern");
+            .ok_or("every assertMatrix entry needs a matchingUrlPattern")?;
         let assertions = entry["assertions"]
             .as_object()
-            .unwrap_or_else(|| panic!("assertMatrix entry {pattern:?} has no assertions map"));
+            .ok_or_else(|| format!("assertMatrix entry {pattern:?} has no assertions map"))?;
 
         for (audit, spec) in assertions {
-            let pair = spec.as_array().unwrap_or_else(|| {
-                panic!("{audit} under {pattern:?} is not a [level, options] pair: {spec}")
-            });
+            let pair = spec.as_array().ok_or_else(|| {
+                format!("{audit} under {pattern:?} is not a [level, options] pair: {spec}")
+            })?;
             assert_eq!(
                 pair[0].as_str(),
                 Some("error"),
@@ -9319,7 +9528,7 @@ fn lighthouse_budgets_are_measured_not_aspirational() {
 
             let opts = pair[1]
                 .as_object()
-                .unwrap_or_else(|| panic!("{audit} under {pattern:?} carries no options object"));
+                .ok_or_else(|| format!("{audit} under {pattern:?} carries no options object"))?;
             let min_score = opts.get("minScore").and_then(serde_json::Value::as_f64);
             let max_numeric = opts
                 .get("maxNumericValue")
@@ -9351,7 +9560,7 @@ fn lighthouse_budgets_are_measured_not_aspirational() {
                 // "/docs/tui/" also contains "/docs/" and "/".
                 record
                     .as_object()
-                    .expect("checked is_object")
+                    .ok_or("checked is_object")?
                     .iter()
                     .filter(|(path, _)| pattern.contains(path.as_str()))
                     .filter_map(|(path, v)| v.as_f64().map(|f| (path.len(), f)))
@@ -9409,6 +9618,7 @@ fn lighthouse_budgets_are_measured_not_aspirational() {
          emptied, or the walk stopped seeing it -- either way a pass here means \
          nothing"
     );
+    Ok(())
 }
 
 /// The three configurations that decide WHICH page gets measured agree on one
@@ -9428,8 +9638,8 @@ fn lighthouse_budgets_are_measured_not_aspirational() {
 /// thing holding them together -- and a mismatch does not fail loudly, it
 /// produces a green run measuring an unstyled document.
 #[test]
-fn website_gates_measure_a_page_that_actually_rendered() {
-    let yaml = read(".github/workflows/quality.yml");
+fn website_gates_measure_a_page_that_actually_rendered() -> Result<(), TestError> {
+    let yaml = read(".github/workflows/quality.yml")?;
     let expected_origin = format!("http://127.0.0.1:{SITE_GATE_PORT}");
 
     // 1. Both jobs build the site for the origin they serve it from.
@@ -9464,8 +9674,8 @@ fn website_gates_measure_a_page_that_actually_rendered() {
         "The built site references its own origin, not production",
         "The built site references its own origin, not production (lighthouse)",
     ] {
-        assert_step_enforces(".github/workflows/quality.yml", step, None);
-        let body = workflow_step_body(".github/workflows/quality.yml", step);
+        assert_step_enforces(".github/workflows/quality.yml", step, None)?;
+        let body = workflow_step_body(".github/workflows/quality.yml", step)?;
         assert!(
             body.contains("sipnab") && body.contains("style") && body.contains("grep"),
             "{step:?} no longer greps the built HTML for the origin of its own \
@@ -9480,7 +9690,7 @@ fn website_gates_measure_a_page_that_actually_rendered() {
     }
 
     // 3. Playwright's default base URL uses the same port.
-    let pw = read("e2e/playwright.config.js");
+    let pw = read("e2e/playwright.config.js")?;
     assert!(
         pw.contains(&expected_origin),
         "e2e/playwright.config.js does not default to {expected_origin}. The \
@@ -9491,11 +9701,11 @@ fn website_gates_measure_a_page_that_actually_rendered() {
 
     // 4. Every Lighthouse collect URL uses the same port, and the static server
     // it starts serves on it too.
-    let rc: serde_json::Value = serde_json::from_str(&read("e2e/lighthouserc.json"))
-        .expect("e2e/lighthouserc.json is not valid JSON");
+    let rc: serde_json::Value = serde_json::from_str(&read("e2e/lighthouserc.json")?)
+        .map_err(|e| format!("e2e/lighthouserc.json is not valid JSON: {e}"))?;
     let urls = rc["ci"]["collect"]["url"]
         .as_array()
-        .expect("e2e/lighthouserc.json has no ci.collect.url array");
+        .ok_or("e2e/lighthouserc.json has no ci.collect.url array")?;
     assert!(
         !urls.is_empty(),
         "ci.collect.url is empty -- lhci measures nothing and asserts over nothing"
@@ -9511,7 +9721,7 @@ fn website_gates_measure_a_page_that_actually_rendered() {
     }
     let server = rc["ci"]["collect"]["startServerCommand"]
         .as_str()
-        .expect("e2e/lighthouserc.json has no ci.collect.startServerCommand");
+        .ok_or("e2e/lighthouserc.json has no ci.collect.startServerCommand")?;
     assert!(
         server.contains(SITE_GATE_PORT),
         "Lighthouse starts its server with {server:?}, which does not serve port \
@@ -9535,7 +9745,7 @@ fn website_gates_measure_a_page_that_actually_rendered() {
     // the string behind in the comment and this test went on passing. That was
     // caught by mutating it; the lesson is that a gate reading prose is not
     // reading the code.
-    let spec = read("e2e/tests/accessibility.spec.js");
+    let spec = read("e2e/tests/accessibility.spec.js")?;
     let code: String = spec.chars().filter(|c| !c.is_whitespace()).collect();
     for decl in [
         "constWCAG_TAGS=['wcag2a','wcag2aa'];",
@@ -9573,6 +9783,7 @@ fn website_gates_measure_a_page_that_actually_rendered() {
              and the four page tests would stay green while covering less"
         );
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -9606,15 +9817,15 @@ fn website_gates_measure_a_page_that_actually_rendered() {
 /// content, HTML-unescaped so it can be compared against the generated file.
 /// `&amp;` is undone LAST: doing it first would turn a literal `&amp;lt;` in
 /// the data into `<` and compare equal to the wrong thing.
-fn published_example_block(page: &str, name: &str) -> (Span, String) {
+fn published_example_block(page: &str, name: &str) -> Result<(Span, String), TestError> {
     let begin = format!("<!-- mcp-example:{name} BEGIN -->");
     let end = format!("<!-- mcp-example:{name} END -->");
     let open = page
         .find(&begin)
-        .unwrap_or_else(|| panic!("index.html has no {begin} — run demos/gen-mcp-examples.sh"));
+        .ok_or_else(|| format!("index.html has no {begin} — run demos/gen-mcp-examples.sh"))?;
     let close = page
         .find(&end)
-        .unwrap_or_else(|| panic!("index.html has no {end} — run demos/gen-mcp-examples.sh"));
+        .ok_or_else(|| format!("index.html has no {end} — run demos/gen-mcp-examples.sh"))?;
     assert!(
         close > open,
         "{name}: END marker precedes BEGIN in index.html"
@@ -9624,13 +9835,13 @@ fn published_example_block(page: &str, name: &str) -> (Span, String) {
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&amp;", "&");
-    (
+    Ok((
         Span {
             start: open,
             end: close + end.len(),
         },
         body,
-    )
+    ))
 }
 
 /// Every example block on the page is spliced in from a generated file, and
@@ -9648,24 +9859,26 @@ fn published_example_block(page: &str, name: &str) -> (Span, String) {
 /// showed before; marker-without-file is a hand-written block, which is the
 /// marketing-screenshot failure the whole chain exists to prevent.
 #[test]
-fn every_published_mcp_example_comes_from_its_generated_file() {
-    let page = read("website/templates/index.html");
+fn every_published_mcp_example_comes_from_its_generated_file() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let dir = repo().join("website/data/mcp-examples");
 
     let mut on_disk: BTreeSet<String> = BTreeSet::new();
-    for entry in std::fs::read_dir(&dir).expect("website/data/mcp-examples must exist") {
-        let path = entry.expect("dir entry").path();
+    for entry in
+        std::fs::read_dir(&dir).map_err(|e| format!("website/data/mcp-examples must exist: {e}"))?
+    {
+        let path = entry.map_err(|e| format!("dir entry: {e}"))?.path();
         if !path.is_file() {
             continue;
         }
         let name = path
             .file_stem()
-            .expect("file stem")
+            .ok_or("file stem")?
             .to_string_lossy()
             .to_string();
-        let generated = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        let (_, published) = published_example_block(&page, &name);
+        let generated =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let (_, published) = published_example_block(&page, &name)?;
         assert_eq!(
             published,
             generated.trim_end_matches('\n'),
@@ -9687,7 +9900,7 @@ fn every_published_mcp_example_comes_from_its_generated_file() {
         );
     }
 
-    let marker = regex::Regex::new(r"<!-- mcp-example:([a-z0-9-]+) BEGIN -->").unwrap();
+    let marker = regex::Regex::new(r"<!-- mcp-example:([a-z0-9-]+) BEGIN -->")?;
     let on_page: BTreeSet<String> = marker
         .captures_iter(&page)
         .map(|c| c[1].to_string())
@@ -9698,6 +9911,7 @@ fn every_published_mcp_example_comes_from_its_generated_file() {
          website/data/mcp-examples name different sets. A block with no file \
          is hand-written; a file with no block never reaches a reader."
     );
+    Ok(())
 }
 
 /// The lead panel shows all four stages of a call's life, without a click.
@@ -9709,12 +9923,12 @@ fn every_published_mcp_example_comes_from_its_generated_file() {
 /// names below are the requirement, not the data: they are what the panel
 /// promises a reader.
 #[test]
-fn the_lead_demo_panel_shows_a_whole_call_lifecycle() {
-    let page = read("website/templates/index.html");
-    let lead = element_span(&page, "<div class=\"demo-panel active\"", "div");
+fn the_lead_demo_panel_shows_a_whole_call_lifecycle() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let lead = element_span(&page, "<div class=\"demo-panel active\"", "div")?;
 
-    let (dialog_span, dialogs) = published_example_block(&page, "lifecycle");
-    let (ladder_span, ladder) = published_example_block(&page, "ladder");
+    let (dialog_span, dialogs) = published_example_block(&page, "lifecycle")?;
+    let (ladder_span, ladder) = published_example_block(&page, "ladder")?;
     for (what, span) in [("lifecycle", &dialog_span), ("ladder", &ladder_span)] {
         assert!(
             lead.start < span.start && span.end <= lead.end,
@@ -9727,10 +9941,10 @@ fn the_lead_demo_panel_shows_a_whole_call_lifecycle() {
     let mut rows: BTreeMap<String, String> = BTreeMap::new();
     for line in dialogs.lines().filter(|l| !l.trim().is_empty()) {
         let row: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("published dialog row is not JSON: {e}\n{line}"));
+            .map_err(|e| format!("published dialog row is not JSON: {e}\n{line}"))?;
         let method = row["method"]
             .as_str()
-            .unwrap_or_else(|| panic!("published dialog row has no method: {line}"))
+            .ok_or_else(|| format!("published dialog row has no method: {line}"))?
             .to_string();
         rows.entry(method).or_insert_with(|| line.to_string());
     }
@@ -9744,7 +9958,8 @@ fn the_lead_demo_panel_shows_a_whole_call_lifecycle() {
         );
     }
     let invite = &rows["INVITE"];
-    let invite_row: serde_json::Value = serde_json::from_str(invite).expect("checked above");
+    let invite_row: serde_json::Value =
+        serde_json::from_str(invite).map_err(|e| format!("checked above: {e}"))?;
     assert!(
         invite_row["msg_count"].as_u64().unwrap_or(0) > 2,
         "the published INVITE carries {} messages — an INVITE and one reply is \
@@ -9767,6 +9982,7 @@ fn the_lead_demo_panel_shows_a_whole_call_lifecycle() {
         "the published ladder shows no BYE transaction, so the call the lead \
          panel shows never ends:\n{ladder}"
     );
+    Ok(())
 }
 
 /// The lifecycle panel is the one a visitor sees first — no click, no arrow key.
@@ -9777,8 +9993,8 @@ fn the_lead_demo_panel_shows_a_whole_call_lifecycle() {
 /// and `class="demo-tab active"`, either of which can be left on the wrong
 /// element by an edit that reorders the wall.
 #[test]
-fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() {
-    let page = read("website/templates/index.html");
+fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
 
     let actives = page.matches("class=\"demo-panel active\"").count();
     assert_eq!(
@@ -9786,14 +10002,13 @@ fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() {
         "exactly one demo panel may ship active; {actives} do, so first paint \
          shows either nothing or two panels at once"
     );
-    let lead = element_span(&page, "<div class=\"demo-panel active\"", "div");
+    let lead = element_span(&page, "<div class=\"demo-panel active\"", "div")?;
     // `[ "]` and not a bare prefix: the panels sit inside `<div
     // class="demo-panels">`, whose open tag matches `<div class="demo-panel`
     // and is 500 bytes earlier than any panel.
-    let first_panel = regex::Regex::new(r#"<div class="demo-panel[ "]"#)
-        .unwrap()
+    let first_panel = regex::Regex::new(r#"<div class="demo-panel[ "]"#)?
         .find(&page)
-        .expect("index.html has no demo panels at all")
+        .ok_or("index.html has no demo panels at all")?
         .start();
     assert_eq!(
         first_panel, lead.start,
@@ -9817,8 +10032,8 @@ fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() {
 
     let first_tab_at = page
         .find("<button class=\"demo-tab")
-        .expect("index.html has no demo tabs at all");
-    let first_tab = element_open_tag(&page[first_tab_at..], "<button class=\"demo-tab");
+        .ok_or("index.html has no demo tabs at all")?;
+    let first_tab = element_open_tag(&page[first_tab_at..], "<button class=\"demo-tab")?;
     assert!(
         first_tab.contains("class=\"demo-tab active\"")
             && first_tab.contains("aria-selected=\"true\"")
@@ -9827,6 +10042,7 @@ fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() {
          that ships active, or the strip lights one demo while showing \
          another: {first_tab}"
     );
+    Ok(())
 }
 
 /// The published ladder came from a capture that had FINISHED loading.
@@ -9846,15 +10062,15 @@ fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() {
 /// measurement taken twice, so a run that raced disagrees with one that did
 /// not.
 #[test]
-fn the_published_ladder_shows_a_settled_capture() {
-    let page = read("website/templates/index.html");
-    let (_, dialogs) = published_example_block(&page, "lifecycle");
-    let (_, ladder) = published_example_block(&page, "ladder");
+fn the_published_ladder_shows_a_settled_capture() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let (_, dialogs) = published_example_block(&page, "lifecycle")?;
+    let (_, ladder) = published_example_block(&page, "ladder")?;
 
     let result = ladder
         .lines()
         .find(|l| l.starts_with("Result:"))
-        .unwrap_or_else(|| panic!("the published ladder has no Result line:\n{ladder}"));
+        .ok_or_else(|| format!("the published ladder has no Result line:\n{ladder}"))?;
     for in_flight in ["In Progress", "InCall", "Ringing", "Trying", "Proceeding"] {
         assert!(
             !result.contains(in_flight),
@@ -9868,10 +10084,10 @@ fn the_published_ladder_shows_a_settled_capture() {
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .find(|row| row["method"] == "INVITE")
-        .unwrap_or_else(|| panic!("the published dialog list has no INVITE:\n{dialogs}"));
+        .ok_or_else(|| format!("the published dialog list has no INVITE:\n{dialogs}"))?;
     let state = invite["state"]
         .as_str()
-        .unwrap_or_else(|| panic!("the published INVITE has no state: {invite}"));
+        .ok_or_else(|| format!("the published INVITE has no state: {invite}"))?;
     assert_eq!(
         state, "Completed",
         "the published INVITE is {state:?}, not Completed — the fleet view was \
@@ -9889,14 +10105,14 @@ fn the_published_ladder_shows_a_settled_capture() {
          call ends on its BYE"
     );
 
-    let offsets = regex::Regex::new(r"\((\d+)ms\)").unwrap();
+    let offsets = regex::Regex::new(r"\((\d+)ms\)")?;
     let last_ms = offsets
         .captures_iter(&ladder)
         .filter_map(|c| c[1].parse::<f64>().ok())
         .fold(f64::MIN, f64::max);
     let duration_ms = invite["duration_sec"]
         .as_f64()
-        .unwrap_or_else(|| panic!("the published INVITE has no duration_sec: {invite}"))
+        .ok_or_else(|| format!("the published INVITE has no duration_sec: {invite}"))?
         * 1000.0;
     assert!(
         (last_ms - duration_ms).abs() < 1.0,
@@ -9905,6 +10121,7 @@ fn the_published_ladder_shows_a_settled_capture() {
          separate runs of the server, so they only agree when both read the \
          whole capture."
     );
+    Ok(())
 }
 
 /// The committed throughput baseline and the pages that publish it are ONE
@@ -9936,15 +10153,15 @@ fn the_published_ladder_shows_a_settled_capture() {
 /// `homepage_throughput_tiles_match_the_benchmarks_page`, which derives its
 /// expected value from this file rather than restating it.
 #[test]
-fn benchmarks_pages_headline_matches_the_committed_baseline() {
-    let base = baseline();
-    let figure = baseline_four_core_figure();
+fn benchmarks_pages_headline_matches_the_committed_baseline() -> Result<(), TestError> {
+    let base = baseline()?;
+    let figure = baseline_four_core_figure()?;
     let date = base["measured"]["date"]
         .as_str()
-        .expect("bench/baseline.json has no measured.date");
+        .ok_or("bench/baseline.json has no measured.date")?;
 
     for path in ["docs/benchmarks.md", "website/content/docs/benchmarks.md"] {
-        let page = read(path);
+        let page = read(path)?;
 
         // In a TABLE ROW for four cores, not anywhere in the file -- the same
         // distinction `homepage_throughput_tiles_match_the_benchmarks_page`
@@ -9989,11 +10206,13 @@ fn benchmarks_pages_headline_matches_the_committed_baseline() {
              session than the gate is how the two separated before."
         );
     }
+    Ok(())
 }
 
 /// `bench/baseline.json`, parsed.
-fn baseline() -> serde_json::Value {
-    serde_json::from_str(&read("bench/baseline.json")).expect("bench/baseline.json is not JSON")
+fn baseline() -> Result<serde_json::Value, TestError> {
+    Ok(serde_json::from_str(&read("bench/baseline.json")?)
+        .map_err(|e| format!("bench/baseline.json is not JSON: {e}"))?)
 }
 
 /// The committed four-core baseline, rendered the way the benchmarks pages and
@@ -10001,11 +10220,11 @@ fn baseline() -> serde_json::Value {
 ///
 /// DERIVED rather than restated, so there is one place to change when the
 /// figure is re-measured.
-fn baseline_four_core_figure() -> String {
-    let pkts = baseline()["cores_4_pkts_per_s"]
+fn baseline_four_core_figure() -> Result<String, TestError> {
+    let pkts = baseline()?["cores_4_pkts_per_s"]
         .as_f64()
-        .expect("bench/baseline.json has no numeric cores_4_pkts_per_s");
-    format!("{:.2}M", pkts / 1_000_000.0)
+        .ok_or("bench/baseline.json has no numeric cores_4_pkts_per_s")?;
+    Ok(format!("{:.2}M", pkts / 1_000_000.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -10021,46 +10240,49 @@ fn baseline_four_core_figure() -> String {
 // ---------------------------------------------------------------------------
 
 /// One SCSS color variable's hex value, e.g. `$text-dim: #8a93a3;`.
-fn scss_color(scss: &str, var: &str) -> String {
+fn scss_color(scss: &str, var: &str) -> Result<String, TestError> {
     let re = regex::Regex::new(&format!(
         r"(?m)^\${}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;",
         regex::escape(var)
     ))
-    .expect("regex");
-    re.captures(scss)
+    .map_err(|e| format!("regex: {e}"))?;
+    Ok(re
+        .captures(scss)
         .map(|c| c[1].to_lowercase())
-        .unwrap_or_else(|| panic!("style.scss defines no six-digit `${var}`"))
+        .ok_or_else(|| format!("style.scss defines no six-digit `${var}`"))?)
 }
 
 /// The WCAG 2 contrast ratio between two `#rrggbb` colors.
-fn wcag_contrast(a: &str, b: &str) -> f64 {
-    fn channel(hex: &str, at: usize) -> f64 {
-        let c = f64::from(u8::from_str_radix(&hex[at..at + 2], 16).expect("hex channel")) / 255.0;
-        if c <= 0.039_28 {
+fn wcag_contrast(a: &str, b: &str) -> Result<f64, TestError> {
+    fn channel(hex: &str, at: usize) -> Result<f64, TestError> {
+        let c = f64::from(
+            u8::from_str_radix(&hex[at..at + 2], 16).map_err(|e| format!("hex channel: {e}"))?,
+        ) / 255.0;
+        Ok(if c <= 0.039_28 {
             c / 12.92
         } else {
             ((c + 0.055) / 1.055).powf(2.4)
-        }
+        })
     }
-    fn luminance(hex: &str) -> f64 {
+    fn luminance(hex: &str) -> Result<f64, TestError> {
         let h = hex.trim_start_matches('#');
-        0.2126 * channel(h, 0) + 0.7152 * channel(h, 2) + 0.0722 * channel(h, 4)
+        Ok(0.2126 * channel(h, 0)? + 0.7152 * channel(h, 2)? + 0.0722 * channel(h, 4)?)
     }
-    let (la, lb) = (luminance(a), luminance(b));
+    let (la, lb) = (luminance(a)?, luminance(b)?);
     let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-    (hi + 0.05) / (lo + 0.05)
+    Ok((hi + 0.05) / (lo + 0.05))
 }
 
 /// A rule's whole body, nested rules INCLUDED -- the counterpart to
 /// [`scss_own_declarations`], for a check that is about a nested child.
-fn scss_block(scss: &str, selector: &str) -> String {
+fn scss_block(scss: &str, selector: &str) -> Result<String, TestError> {
     let at = scss
         .find(selector)
-        .unwrap_or_else(|| panic!("style.scss has no `{selector}` rule"));
+        .ok_or_else(|| format!("style.scss has no `{selector}` rule"))?;
     let open = scss[at..]
         .find('{')
         .map(|n| at + n + 1)
-        .unwrap_or_else(|| panic!("`{selector}` has no rule body"));
+        .ok_or_else(|| format!("`{selector}` has no rule body"))?;
     let mut depth = 1usize;
     for (i, c) in scss[open..].char_indices() {
         match c {
@@ -10068,25 +10290,26 @@ fn scss_block(scss: &str, selector: &str) -> String {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return scss[open..open + i].to_owned();
+                    return Ok(scss[open..open + i].to_owned());
                 }
             }
             _ => {}
         }
     }
-    panic!("`{selector}` rule is unterminated");
+    Err(format!("`{selector}` rule is unterminated").into())
 }
 
 /// Homepage paragraphs whose class dims the text AND which carry a link inside
 /// the prose: `(class, links)`.
-fn dimmed_paragraphs_with_links() -> Vec<(String, usize)> {
-    let scss = read("website/sass/style.scss");
-    let page = read("website/templates/index.html");
+fn dimmed_paragraphs_with_links() -> Result<Vec<(String, usize)>, TestError> {
+    let scss = read("website/sass/style.scss")?;
+    let page = read("website/templates/index.html")?;
     let page = regex::Regex::new(r"(?s)\{#.*?#\}")
-        .expect("regex")
+        .map_err(|e| format!("regex: {e}"))?
         .replace_all(&page, "")
         .into_owned();
-    let para = regex::Regex::new(r#"(?s)<p class="([a-z0-9-]+)">(.*?)</p>"#).expect("regex");
+    let para = regex::Regex::new(r#"(?s)<p class="([a-z0-9-]+)">(.*?)</p>"#)
+        .map_err(|e| format!("regex: {e}"))?;
     let mut out = Vec::new();
     for c in para.captures_iter(&page) {
         let (class, body) = (c[1].to_owned(), &c[2]);
@@ -10098,11 +10321,11 @@ fn dimmed_paragraphs_with_links() -> Vec<(String, usize)> {
         if !scss.contains(&selector) {
             continue;
         }
-        if scss_own_declarations(&scss, &selector).contains("color: $text-dim") {
+        if scss_own_declarations(&scss, &selector)?.contains("color: $text-dim") {
             out.push((class, links));
         }
     }
-    out
+    Ok(out)
 }
 
 /// The contrast calculation reproduces what axe measured, before anything is
@@ -10111,27 +10334,28 @@ fn dimmed_paragraphs_with_links() -> Vec<(String, usize)> {
 /// An instrument that cannot say 21:1 for black on white, or reproduce axe's
 /// 1.79:1 for the exact pair it reported, is not measuring contrast.
 #[test]
-fn the_contrast_calculation_reproduces_what_axe_measured() {
-    let black_white = wcag_contrast("#000000", "#ffffff");
+fn the_contrast_calculation_reproduces_what_axe_measured() -> Result<(), TestError> {
+    let black_white = wcag_contrast("#000000", "#ffffff")?;
     assert!(
         (black_white - 21.0).abs() < 0.001,
         "black on white is 21:1 by definition; this computes {black_white}"
     );
     // axe run 34721159100: "link text: #73d0ff, surrounding text: #8a93a3",
     // 1.79:1. axe truncates to two places; the exact figure is 1.796.
-    let axe_pair = wcag_contrast("#73d0ff", "#8a93a3");
+    let axe_pair = wcag_contrast("#73d0ff", "#8a93a3")?;
     assert!(
         (axe_pair - 1.79).abs() < 0.02,
         "axe measured 1.79:1 for #73d0ff on #8a93a3; this computes {axe_pair:.3}"
     );
-    let scss = read("website/sass/style.scss");
-    let live = wcag_contrast(&scss_color(&scss, "link"), &scss_color(&scss, "text-dim"));
+    let scss = read("website/sass/style.scss")?;
+    let live = wcag_contrast(&scss_color(&scss, "link")?, &scss_color(&scss, "text-dim")?)?;
     assert!(
         (live - axe_pair).abs() < 0.001,
         "$link on $text-dim in style.scss computes {live:.3}, not the pair axe \
          reported -- the palette moved, and the gates below were written \
          against the old one"
     );
+    Ok(())
 }
 
 /// Every dimmed paragraph that carries a link gives the link a non-color cue.
@@ -10140,17 +10364,18 @@ fn the_contrast_calculation_reproduces_what_axe_measured() {
 /// palette ever clears it, the underline becomes optional and this passes
 /// without it -- which is the rule, not a loophole.
 #[test]
-fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() {
-    let scss = read("website/sass/style.scss");
-    let ratio = wcag_contrast(&scss_color(&scss, "link"), &scss_color(&scss, "text-dim"));
+fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() -> Result<(), TestError> {
+    let scss = read("website/sass/style.scss")?;
+    let ratio = wcag_contrast(&scss_color(&scss, "link")?, &scss_color(&scss, "text-dim")?)?;
     if ratio >= 3.0 {
-        return;
+        return Ok(());
     }
     // Compiled once, not once per paragraph: clippy's `regex_creation_in_loops`.
-    let nested_link = regex::Regex::new(r"(?s)(^|[\s;{])a\s*\{([^}]*)\}").expect("regex");
+    let nested_link =
+        regex::Regex::new(r"(?s)(^|[\s;{])a\s*\{([^}]*)\}").map_err(|e| format!("regex: {e}"))?;
     let mut unmarked = Vec::new();
-    for (class, links) in dimmed_paragraphs_with_links() {
-        let block = scss_block(&scss, &format!(".{class}"));
+    for (class, links) in dimmed_paragraphs_with_links()? {
+        let block = scss_block(&scss, &format!(".{class}"))?;
         let marked = nested_link
             .captures_iter(&block)
             .any(|c| c[2].contains("text-decoration: underline") || c[2].contains("border-bottom"));
@@ -10166,14 +10391,15 @@ fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() {
          serious. Give the link an underline inside the class's own rule: \
          {unmarked:?}"
     );
+    Ok(())
 }
 
 /// The scan finds the paragraphs that turned CI red.
 ///
 /// A scan that stopped matching would certify every paragraph on the page.
 #[test]
-fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() {
-    let found: Vec<String> = dimmed_paragraphs_with_links()
+fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() -> Result<(), TestError> {
+    let found: Vec<String> = dimmed_paragraphs_with_links()?
         .into_iter()
         .map(|(c, _)| c)
         .collect();
@@ -10184,6 +10410,7 @@ fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() {
              reported on 2026-09-12. Found: {found:?}"
         );
     }
+    Ok(())
 }
 
 /// Every page's content sits inside Cloudflare's email-obfuscation opt-out.
@@ -10198,26 +10425,26 @@ fn the_dimmed_paragraph_scan_finds_the_ones_axe_reported() {
 /// documentation), so the base template wraps the content block in that pair,
 /// and every page template must reach the reader through that block.
 #[test]
-fn every_page_body_is_inside_the_email_obfuscation_opt_out() {
+fn every_page_body_is_inside_the_email_obfuscation_opt_out() -> Result<(), TestError> {
     const OFF: &str = "<!--email_off-->";
     const ON: &str = "<!--/email_off-->";
-    let base = read("website/templates/base.html");
-    let main_open = base.find("<main").expect("base.html has no <main>");
-    let main_close = base.find("</main>").expect("base.html has no </main>");
+    let base = read("website/templates/base.html")?;
+    let main_open = base.find("<main").ok_or("base.html has no <main>")?;
+    let main_close = base.find("</main>").ok_or("base.html has no </main>")?;
     let main = &base[main_open..main_close];
 
     let off = main
         .find(OFF)
-        .unwrap_or_else(|| panic!("<main> in base.html does not open with {OFF}:\n{main}"));
+        .ok_or_else(|| format!("<main> in base.html does not open with {OFF}:\n{main}"))?;
     let on = main
         .find(ON)
-        .unwrap_or_else(|| panic!("<main> in base.html never closes the opt-out with {ON}"));
+        .ok_or_else(|| format!("<main> in base.html never closes the opt-out with {ON}"))?;
     let block = main
         .find("{% block content %}")
-        .expect("<main> no longer holds the content block");
+        .ok_or("<main> no longer holds the content block")?;
     let endblock = main
         .find("{% endblock content %}")
-        .expect("<main> no longer closes the content block");
+        .ok_or("<main> no longer closes the content block")?;
     assert!(
         off < block && endblock < on,
         "the content block is not wholly between {OFF} and {ON}, so part of \
@@ -10233,14 +10460,16 @@ fn every_page_body_is_inside_the_email_obfuscation_opt_out() {
     // Each page template reaches the reader through that block and only that
     // block: it extends base.html. One that did not would ship unwrapped.
     let mut pages = 0;
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
-        let name = p.file_name().expect("name").to_string_lossy().to_string();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
+        let name = p.file_name().ok_or("name")?.to_string_lossy().to_string();
         if !name.ends_with(".html") || name == "base.html" || name == "macros.html" {
             continue;
         }
         pages += 1;
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         assert!(
             text.trim_start().starts_with("{% extends \"base.html\" %}"),
             "{name} does not extend base.html, so its content is outside the \
@@ -10251,15 +10480,15 @@ fn every_page_body_is_inside_the_email_obfuscation_opt_out() {
         pages >= 8,
         "found {pages} page template(s); the scan is not reading them"
     );
+    Ok(())
 }
 
 /// Section open tags of the homepage, in document order, by class.
-fn homepage_section_order(page: &str) -> Vec<String> {
-    regex::Regex::new(r#"<section class="([a-z-]+)""#)
-        .unwrap()
+fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
+    Ok(regex::Regex::new(r#"<section class="([a-z-]+)""#)?
         .captures_iter(page)
         .map(|c| c[1].to_string())
-        .collect()
+        .collect())
 }
 
 /// The homepage reads in the order a newcomer needs it.
@@ -10271,9 +10500,9 @@ fn homepage_section_order(page: &str) -> Vec<String> {
 /// run it, what it does, what an agent can ask it, what it supports, the
 /// numbers, then the guides.
 #[test]
-fn the_homepage_puts_quick_start_directly_under_the_hero() {
-    let page = read("website/templates/index.html");
-    let order = homepage_section_order(&page);
+fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let order = homepage_section_order(&page)?;
     let want = [
         "hero",
         "quickstart",
@@ -10296,6 +10525,7 @@ fn the_homepage_puts_quick_start_directly_under_the_hero() {
         page.contains("Install and open your first capture"),
         "the Quick Start heading no longer says what the reader will do"
     );
+    Ok(())
 }
 
 /// Each Quick Start block holds one command, so each copy button copies one.
@@ -10304,12 +10534,12 @@ fn the_homepage_puts_quick_start_directly_under_the_hero() {
 /// the button put all of them on the clipboard, and pasting that into a shell
 /// ran `sudo sipnab -d eth0` along with the install.
 #[test]
-fn each_quick_start_block_holds_one_command() {
-    let page = read("website/templates/index.html");
-    let qs = element_span(&page, "<section class=\"quickstart\"", "section");
+fn each_quick_start_block_holds_one_command() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let qs = element_span(&page, "<section class=\"quickstart\"", "section")?;
     let body = &page[qs.start..qs.end];
-    let pre = regex::Regex::new(r"(?s)<pre[^>]*><code[^>]*>(.*?)</code></pre>").unwrap();
-    let tags = regex::Regex::new(r"<[^>]+>").unwrap();
+    let pre = regex::Regex::new(r"(?s)<pre[^>]*><code[^>]*>(.*?)</code></pre>")?;
+    let tags = regex::Regex::new(r"<[^>]+>")?;
     let mut blocks = 0;
     for c in pre.captures_iter(body) {
         blocks += 1;
@@ -10335,6 +10565,7 @@ fn each_quick_start_block_holds_one_command() {
         blocks,
         "every Quick Start block needs its own copy button"
     );
+    Ok(())
 }
 
 /// The MCP demos say they are run from a source checkout.
@@ -10344,10 +10575,10 @@ fn each_quick_start_block_holds_one_command() {
 /// repository. Presented as the first thing to try, they read as broken to
 /// anyone who installed the binary.
 #[test]
-fn the_agent_demos_say_they_run_from_a_source_checkout() {
-    let page = read("website/templates/index.html");
-    let demos = element_span(&page, "<section class=\"demos\"", "section");
-    let head = element_span(&page[demos.start..demos.end], "<header", "header");
+fn the_agent_demos_say_they_run_from_a_source_checkout() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let demos = element_span(&page, "<section class=\"demos\"", "section")?;
+    let head = element_span(&page[demos.start..demos.end], "<header", "header")?;
     let head = &page[demos.start + head.start..demos.start + head.end];
     assert!(
         head.contains("Ask an AI agent about a capture"),
@@ -10358,11 +10589,12 @@ fn the_agent_demos_say_they_run_from_a_source_checkout() {
         "the demo section does not say its commands run from a source \
          checkout:\n{head}"
     );
-    let tablist = element_open_tag(&page, "<div class=\"demo-tabs\" role=\"tablist\"");
+    let tablist = element_open_tag(&page, "<div class=\"demo-tabs\" role=\"tablist\"")?;
     assert!(
         tablist.contains("aria-label=\"Examples\""),
         "the demo tablist is labeled for videos it does not contain: {tablist}"
     );
+    Ok(())
 }
 
 /// The hero animation can be paused, and the alt text follows the image.
@@ -10372,9 +10604,9 @@ fn the_agent_demos_say_they_run_from_a_source_checkout() {
 /// more than five seconds. The alt text also kept describing the still frame
 /// while the animation played.
 #[test]
-fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
-    let page = read("website/templates/index.html");
-    let button = element_open_tag(&page, "<button type=\"button\" class=\"hero-pause\"");
+fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let button = element_open_tag(&page, "<button type=\"button\" class=\"hero-pause\"")?;
     assert!(
         button.contains("id=\"hero-pause\"") && !button.contains("is-live"),
         "the pause control must exist and ship not live, shown only once the \
@@ -10382,8 +10614,8 @@ fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
     );
     // Hidden by visibility, not by `hidden`: the box must exist from first
     // paint, or revealing it after `load` is a layout change.
-    let scss = read("website/sass/style.scss");
-    let rule = scss_block(&scss, ".hero-pause {");
+    let scss = read("website/sass/style.scss")?;
+    let rule = scss_block(&scss, ".hero-pause {")?;
     assert!(
         rule.contains("visibility: hidden") && rule.contains("&.is-live { visibility: visible; }"),
         "the pause control is not hidden by visibility until it is live:\n{rule}"
@@ -10396,7 +10628,7 @@ fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
         button.contains("aria-pressed=\"false\""),
         "the pause control does not expose its state: {button}"
     );
-    let script = &page[page.find("<script>").expect("index.html has no script")..];
+    let script = &page[page.find("<script>").ok_or("index.html has no script")?..];
     assert!(
         script.contains("getElementById('hero-pause')"),
         "nothing in the homepage script wires the pause control"
@@ -10430,6 +10662,7 @@ fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
         script.contains("pause.classList.add('is-live')"),
         "the pause control is never shown"
     );
+    Ok(())
 }
 
 /// The standards live on their own page, and the homepage links to it.
@@ -10439,13 +10672,13 @@ fn the_hero_animation_can_be_paused_and_its_alt_follows_the_image() {
 /// they moved to /standards/ whole, and every gate that reads a card reads
 /// that page.
 #[test]
-fn the_standards_cards_live_on_their_own_page() {
-    let home = read("website/templates/index.html");
+fn the_standards_cards_live_on_their_own_page() -> Result<(), TestError> {
+    let home = read("website/templates/index.html")?;
     assert!(
         !home.contains("class=\"metric-card"),
         "the homepage still carries standards cards"
     );
-    let links = anchors(&home);
+    let links = anchors(&home)?;
     assert!(
         links
             .iter()
@@ -10453,7 +10686,7 @@ fn the_standards_cards_live_on_their_own_page() {
                 && text.contains("See the standards behind every number")),
         "the homepage does not link to the standards page"
     );
-    let standards = read(STANDARDS_TEMPLATE);
+    let standards = read(STANDARDS_TEMPLATE)?;
     for id in ["metrics", "standards"] {
         assert!(
             standards.contains(&format!("<section class=\"metrics\" id=\"{id}\">")),
@@ -10461,13 +10694,14 @@ fn the_standards_cards_live_on_their_own_page() {
         );
     }
     assert!(
-        read("website/content/standards.md").contains("template = \"standards.html\""),
+        read("website/content/standards.md")?.contains("template = \"standards.html\""),
         "website/content/standards.md does not render with standards.html"
     );
+    Ok(())
 }
 
 /// Prose a reader sees, with markup, code, comments and templating removed.
-fn visible_prose(html: &str) -> String {
+fn visible_prose(html: &str) -> Result<String, TestError> {
     let mut s = html.to_string();
     for re in [
         r"(?s)<script.*?</script>",
@@ -10482,11 +10716,11 @@ fn visible_prose(html: &str) -> String {
         r"&[a-zA-Z0-9#]+;",
     ] {
         s = regex::Regex::new(re)
-            .expect("regex")
+            .map_err(|e| format!("regex: {e}"))?
             .replace_all(&s, " ")
             .into_owned();
     }
-    s
+    Ok(s)
 }
 
 /// The site's own pages write no semicolons in prose.
@@ -10495,13 +10729,13 @@ fn visible_prose(html: &str) -> String {
 /// two with a semicolon. Vale checks website/content, but the homepage and
 /// the standards page are templates and it never reads them.
 #[test]
-fn site_page_prose_carries_no_semicolons() {
+fn site_page_prose_carries_no_semicolons() -> Result<(), TestError> {
     for tpl in [
         "website/templates/index.html",
         STANDARDS_TEMPLATE,
         "website/templates/download.html",
     ] {
-        let prose = visible_prose(&read(tpl));
+        let prose = visible_prose(&read(tpl)?)?;
         assert!(
             prose.split_whitespace().count() > 200,
             "{tpl}: the prose extractor found almost nothing"
@@ -10516,6 +10750,7 @@ fn site_page_prose_carries_no_semicolons() {
             "{tpl} joins sentences with semicolons: {hits:#?}"
         );
     }
+    Ok(())
 }
 
 /// Headings are sentence case.
@@ -10524,7 +10759,7 @@ fn site_page_prose_carries_no_semicolons() {
 /// style guide reserves for names. A capitalized word after the first is
 /// allowed only when it is a name or an acronym.
 #[test]
-fn site_page_headings_are_sentence_case() {
+fn site_page_headings_are_sentence_case() -> Result<(), TestError> {
     const NAMES: &[&str] = &[
         "Homer",
         "Rust",
@@ -10543,16 +10778,16 @@ fn site_page_headings_are_sentence_case() {
         "Linux",
         "I",
     ];
-    let heading = regex::Regex::new(r"(?s)<h([1-3])[^>]*>(.*?)</h[1-3]>").unwrap();
+    let heading = regex::Regex::new(r"(?s)<h([1-3])[^>]*>(.*?)</h[1-3]>")?;
     let mut seen = 0;
     for tpl in [
         "website/templates/index.html",
         STANDARDS_TEMPLATE,
         "website/templates/download.html",
     ] {
-        let html = read(tpl);
+        let html = read(tpl)?;
         for c in heading.captures_iter(&html) {
-            let text = visible_prose(&c[2]);
+            let text = visible_prose(&c[2])?;
             // The first WORD may be capitalized; a step number such as "1."
             // before it is not a word.
             let words: Vec<&str> = text
@@ -10574,6 +10809,7 @@ fn site_page_headings_are_sentence_case() {
         }
     }
     assert!(seen >= 8, "found {seen} heading(s); the scan is broken");
+    Ok(())
 }
 
 /// Every copy button on /download copies one command.
@@ -10582,9 +10818,9 @@ fn site_page_headings_are_sentence_case() {
 /// `docker run`, and the fetch and the checksum check), so one paste ran both
 /// before the reader had read the second.
 #[test]
-fn every_download_copy_button_copies_one_command() {
-    let page = read("website/templates/download.html");
-    let attr = regex::Regex::new(r#"data-copy="([^"]*)""#).unwrap();
+fn every_download_copy_button_copies_one_command() -> Result<(), TestError> {
+    let page = read("website/templates/download.html")?;
+    let attr = regex::Regex::new(r#"data-copy="([^"]*)""#)?;
     let mut seen = 0;
     for c in attr.captures_iter(&page) {
         seen += 1;
@@ -10595,6 +10831,7 @@ fn every_download_copy_button_copies_one_command() {
         );
     }
     assert!(seen >= 5, "found {seen} copy button(s); the scan is broken");
+    Ok(())
 }
 
 /// A hand-written page does not repeat its title as a second `<h1>`.
@@ -10602,15 +10839,17 @@ fn every_download_copy_button_copies_one_command() {
 /// page.html renders the front-matter title as the page's `<h1>`, so a body
 /// that opens with `# Title` gives the page two. /api-reference/ did.
 #[test]
-fn no_hand_written_page_repeats_its_title_as_an_h1() {
+fn no_hand_written_page_repeats_its_title_as_an_h1() -> Result<(), TestError> {
     let mut seen = 0;
-    for entry in std::fs::read_dir(repo().join("website/content")).expect("content dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/content"))
+        .map_err(|e| format!("content dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
         seen += 1;
-        let text = std::fs::read_to_string(&p).expect("read page");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read page: {e}"))?;
         // The body starts after the closing `+++` of the front matter.
         let body = text.splitn(3, "+++").nth(2).unwrap_or_default();
         let mut fenced = false;
@@ -10630,6 +10869,7 @@ fn no_hand_written_page_repeats_its_title_as_an_h1() {
         seen >= 4,
         "found {seen} hand-written page(s); the scan is broken"
     );
+    Ok(())
 }
 
 /// Every hand-written or generated page description on the site is plain text.
@@ -10640,11 +10880,14 @@ fn no_hand_written_page_repeats_its_title_as_an_h1() {
 /// for GitHub showed up literally: /docs/tuning-capture/ read "decide between
 /// the `any` device", and five pages carried "--" where a dash belonged.
 #[test]
-fn no_site_description_carries_raw_markdown() {
+fn no_site_description_carries_raw_markdown() -> Result<(), TestError> {
     let mut files = Vec::new();
     let mut dirs = vec![repo().join("website/content")];
     while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).expect("read content dir").flatten() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| format!("read content dir: {e}"))?
+            .flatten()
+        {
             let p = entry.path();
             if p.is_dir() {
                 dirs.push(p);
@@ -10656,7 +10899,7 @@ fn no_site_description_carries_raw_markdown() {
     let mut seen = 0;
     let mut bad = Vec::new();
     for p in files {
-        let text = std::fs::read_to_string(&p).expect("read page");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read page: {e}"))?;
         let Some(desc) = text
             .lines()
             .take_while(|l| !l.starts_with("[extra]"))
@@ -10677,6 +10920,7 @@ fn no_site_description_carries_raw_markdown() {
         "page descriptions carry Markdown that renders literally:\n{}",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// The docs lead is skipped where the page body already opens with it.
@@ -10686,15 +10930,15 @@ fn no_site_description_carries_raw_markdown() {
 /// `lead_in_body = true`; this holds the template to honoring the mark, and
 /// holds the generated pages to carrying it where the rule says so.
 #[test]
-fn the_docs_lead_is_not_shown_twice() {
-    let page = read("website/templates/page.html");
+fn the_docs_lead_is_not_shown_twice() -> Result<(), TestError> {
+    let page = read("website/templates/page.html")?;
     let lead_at = page
         .find("<p class=\"doc-lead\">")
-        .expect("page.html no longer renders a doc-lead");
+        .ok_or("page.html no longer renders a doc-lead")?;
     let guard = &page[..lead_at];
     let open = guard
         .rfind("{% if")
-        .expect("the doc-lead is not inside any condition");
+        .ok_or("the doc-lead is not inside any condition")?;
     assert!(
         guard[open..].contains("page.extra.lead_in_body"),
         "page.html renders the lead without checking lead_in_body, so a page \
@@ -10707,19 +10951,20 @@ fn the_docs_lead_is_not_shown_twice() {
         "sip-methods.md",
     ];
     for name in marked {
-        let text = read(&format!("website/content/docs/{name}"));
+        let text = read(&format!("website/content/docs/{name}"))?;
         assert!(
             text.contains("lead_in_body = true"),
             "website/content/docs/{name} repeats its description in its first \
              paragraph and is not marked lead_in_body"
         );
     }
-    let text = read("website/content/docs/cookbook.md");
+    let text = read("website/content/docs/cookbook.md")?;
     assert!(
         !text.contains("lead_in_body"),
         "the cookbook's first paragraph says something its description does \
          not, and it was marked lead_in_body anyway"
     );
+    Ok(())
 }
 
 /// Every "Rust X.Y+" a reader is told matches the crate's `rust-version`.
@@ -10729,14 +10974,13 @@ fn the_docs_lead_is_not_shown_twice() {
 /// the build page and met a compiler error. `download_page_msrv_matches_cargo`
 /// held one page to Cargo.toml and nothing held the rest.
 #[test]
-fn every_published_rust_minimum_matches_cargo() {
-    let cargo = read("Cargo.toml");
-    let msrv = regex::Regex::new(r#"(?m)^rust-version = "([0-9]+\.[0-9]+)""#)
-        .unwrap()
+fn every_published_rust_minimum_matches_cargo() -> Result<(), TestError> {
+    let cargo = read("Cargo.toml")?;
+    let msrv = regex::Regex::new(r#"(?m)^rust-version = "([0-9]+\.[0-9]+)""#)?
         .captures(&cargo)
-        .expect("Cargo.toml has no rust-version")[1]
+        .ok_or("Cargo.toml has no rust-version")?[1]
         .to_string();
-    let claim = regex::Regex::new(r"Rust ([0-9]+\.[0-9]+)\+").unwrap();
+    let claim = regex::Regex::new(r"Rust ([0-9]+\.[0-9]+)\+")?;
     let mut roots = vec![
         repo().join("docs"),
         repo().join("website/content"),
@@ -10744,7 +10988,10 @@ fn every_published_rust_minimum_matches_cargo() {
     ];
     let mut files = vec![repo().join("README.md")];
     while let Some(dir) = roots.pop() {
-        for entry in std::fs::read_dir(&dir).expect("read dir").flatten() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| format!("read dir: {e}"))?
+            .flatten()
+        {
             let p = entry.path();
             if p.is_dir() {
                 // Design notes and the changelog-like archive record past
@@ -10777,6 +11024,7 @@ fn every_published_rust_minimum_matches_cargo() {
         "these pages state a Rust floor other than Cargo.toml's {msrv}:\n{}",
         wrong.join("\n")
     );
+    Ok(())
 }
 
 /// The analyze drop zone names every container the page actually opens.
@@ -10786,10 +11034,10 @@ fn every_published_rust_minimum_matches_cargo() {
 /// pcapng and gzip, so a reader holding a zip of captures had no reason to
 /// think it would work.
 #[test]
-fn the_analyze_drop_zone_names_the_archives_it_opens() {
-    let js = read("website/static/js/analyze.js");
-    let page = read("website/templates/analyze.html");
-    let zone = element_span(&page, "<div class=\"dropzone-formats\"", "div");
+fn the_analyze_drop_zone_names_the_archives_it_opens() -> Result<(), TestError> {
+    let js = read("website/static/js/analyze.js")?;
+    let page = read("website/templates/analyze.html")?;
+    let zone = element_span(&page, "<div class=\"dropzone-formats\"", "div")?;
     let chips = &page[zone.start..zone.end];
     for (kind, word) in [("zip", "zip"), ("tar", "tar")] {
         if js.contains(&format!("return \"{kind}\"")) {
@@ -10804,6 +11052,7 @@ fn the_analyze_drop_zone_names_the_archives_it_opens() {
         !page.contains("Drop a .pcap here"),
         "the drop zone asks for a .pcap when it takes pcapng and archives too"
     );
+    Ok(())
 }
 
 /// The homepage's "Add it to your voice stack" section links exactly the
@@ -10821,21 +11070,21 @@ fn the_analyze_drop_zone_names_the_archives_it_opens() {
 /// the nav and never the homepage, or the homepage could keep linking a guide
 /// the nav dropped.
 #[test]
-fn homepage_voice_stack_section_links_every_stack_guide() {
-    let page = read("website/templates/index.html");
+fn homepage_voice_stack_section_links_every_stack_guide() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let span = element_span(
         &page,
         "<section class=\"features stack\" id=\"voice-stack\"",
         "section",
-    );
+    )?;
     let section = &page[span.start..span.end];
-    let re = regex::Regex::new(r"@/(docs/[A-Za-z0-9_/-]+\.md)").unwrap();
+    let re = regex::Regex::new(r"@/(docs/[A-Za-z0-9_/-]+\.md)")?;
     let linked: BTreeSet<String> = re
         .captures_iter(section)
         .map(|c| c[1].to_string())
         .collect();
     const GROUPS: [&str; 2] = ["Your SIP server", "Add to your voice stack"];
-    let nav = docs_nav_list();
+    let nav = docs_nav_list()?;
     for group in GROUPS {
         assert!(
             nav.iter().any(|e| e.group == group),
@@ -10852,6 +11101,7 @@ fn homepage_voice_stack_section_links_every_stack_guide() {
         "the homepage voice-stack section (left) and the nav's voice-stack group (right) \
          list different guides"
     );
+    Ok(())
 }
 
 /// Every home-page tile draws its colored top trim without a hover.
@@ -10861,8 +11111,8 @@ fn homepage_voice_stack_section_links_every_stack_guide() {
 /// its color at rest. The Homer tile shipped without one, so its trim was
 /// blank until the pointer was over it (reported by Norm, 2026-09-28).
 #[test]
-fn every_homepage_tile_has_a_color_modifier() {
-    let page = read("website/templates/index.html");
+fn every_homepage_tile_has_a_color_modifier() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let bare: Vec<String> = page
         .lines()
         .enumerate()
@@ -10887,6 +11137,7 @@ fn every_homepage_tile_has_a_color_modifier() {
         "tiles without a color modifier show no top trim until hovered:\n{}",
         bare.join("\n")
     );
+    Ok(())
 }
 
 /// The voice-stack tile for OpenSIPS and Kamailio is headed "SIP proxy".
@@ -10895,16 +11146,17 @@ fn every_homepage_tile_has_a_color_modifier() {
 /// the row assumes exactly that (Norm, 2026-09-28: "SIP server" should be
 /// renamed to "SIP proxy").
 #[test]
-fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() {
-    let page = read("website/templates/index.html");
+fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let tile = page
         .split("class=\"feature-card")
         .find(|card| card.contains("@/docs/opensips.md") && card.contains("@/docs/kamailio.md"))
-        .expect("the home page has a tile linking both SIP proxy guides");
+        .ok_or("the home page has a tile linking both SIP proxy guides")?;
     assert!(
         tile.contains("<h3>SIP proxy</h3>"),
         "the tile's heading is not \"SIP proxy\":\n{tile}"
     );
+    Ok(())
 }
 
 /// The rtpengine tile is headed "Media relay", and each relay on it gets the
@@ -10912,12 +11164,12 @@ fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() {
 /// 2026-09-28). rtpproxy joined the tile with its own pair once its guides
 /// were verified (2026-09-30).
 #[test]
-fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
-    let page = read("website/templates/index.html");
+fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let tile = page
         .split("class=\"feature-card")
         .find(|card| card.contains("@/docs/rtpengine-relay.md"))
-        .expect("the home page has a tile linking the rtpengine guide");
+        .ok_or("the home page has a tile linking the rtpengine guide")?;
     assert!(
         tile.contains("<h3>Media relay</h3>"),
         "the tile's heading is not \"Media relay\":\n{tile}"
@@ -10931,6 +11183,7 @@ fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
         let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
         assert!(tile.contains(&link), "missing {link}:\n{tile}");
     }
+    Ok(())
 }
 
 /// The home page names no other SIP capture tool, in its text or its
@@ -10938,14 +11191,15 @@ fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
 /// homepage"), and the system map gives rtpproxy its own item, linked to its
 /// own guide, beside rtpengine's.
 #[test]
-fn the_home_page_names_no_peer_capture_tool_and_maps_rtpproxy() {
-    let page = read("website/templates/index.html");
+fn the_home_page_names_no_peer_capture_tool_and_maps_rtpproxy() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let lower = page.to_ascii_lowercase();
     for name in ["sngrep", "sipgrep"] {
         assert!(!lower.contains(name), "the home page names {name}");
     }
     let item = "<li><a href=\"{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}\">Media relay: rtpproxy</a> <code>--rtpproxy-control</code></li>";
     assert!(page.contains(item), "the map has no rtpproxy item: {item}");
+    Ok(())
 }
 
 /// TFPS and fail2ban do one job, blocking SIP scanners and fraud at the host,
@@ -10953,8 +11207,8 @@ fn the_home_page_names_no_peer_capture_tool_and_maps_rtpproxy() {
 /// "Media relay" (Norm, 2026-10-05), each with its own pair of links, and
 /// no second tile for either remains.
 #[test]
-fn the_attack_blocking_tile_pairs_each_blocker_with_its_sipnab_guide() {
-    let page = read("website/templates/index.html");
+fn the_attack_blocking_tile_pairs_each_blocker_with_its_sipnab_guide() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     let tiles: Vec<&str> = page
         .split("class=\"feature-card")
         .filter(|card| card.contains("@/docs/tfps.md") || card.contains("@/docs/fail2ban.md"))
@@ -10974,6 +11228,7 @@ fn the_attack_blocking_tile_pairs_each_blocker_with_its_sipnab_guide() {
         let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
         assert!(tile.contains(&link), "missing {link}:\n{tile}");
     }
+    Ok(())
 }
 
 /// The voice-stack tiles name the role a component plays, not the product
@@ -10981,8 +11236,8 @@ fn the_attack_blocking_tile_pairs_each_blocker_with_its_sipnab_guide() {
 /// homer."), and each pairs "Use <product>" with "Run sipnab beside it", as
 /// the SIP proxy tile does.
 #[test]
-fn the_voice_stack_tiles_name_roles_and_pair_their_guides() {
-    let page = read("website/templates/index.html");
+fn the_voice_stack_tiles_name_roles_and_pair_their_guides() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
     for (role, guide, use_text, sipnab_guide) in [
         (
             "Call history",
@@ -11018,7 +11273,7 @@ fn the_voice_stack_tiles_name_roles_and_pair_their_guides() {
         let tile = page
             .split("class=\"feature-card")
             .find(|card| card.contains(guide))
-            .unwrap_or_else(|| panic!("no tile links {guide}"));
+            .ok_or_else(|| format!("no tile links {guide}"))?;
         assert!(
             tile.contains(&format!("<h3>{role}</h3>")),
             "the tile linking {guide} is not headed \"{role}\":\n{tile}"
@@ -11028,4 +11283,5 @@ fn the_voice_stack_tiles_name_roles_and_pair_their_guides() {
             assert!(tile.contains(&link), "missing {link}:\n{tile}");
         }
     }
+    Ok(())
 }

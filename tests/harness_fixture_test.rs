@@ -16,8 +16,10 @@
 
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Run the binary and return stdout, stderr and the exit code.
-fn run(args: &[&str]) -> (String, String, i32) {
+fn run(args: &[&str]) -> Result<(String, String, i32), TestError> {
     run_at_log_level("warn", args)
 }
 
@@ -27,17 +29,16 @@ fn run(args: &[&str]) -> (String, String, i32) {
 /// across N streams" — is an `info` log line, so a test asserting on it has to
 /// ask for one. It is worth asserting on: that sentence is what an operator
 /// reads, and it is where a stream sipnab invented would appear.
-fn run_at_log_level(level: &str, args: &[&str]) -> (String, String, i32) {
+fn run_at_log_level(level: &str, args: &[&str]) -> Result<(String, String, i32), TestError> {
     let output = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("SIPNAB_LOG", level)
-        .output()
-        .expect("failed to execute sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code().unwrap_or(-1),
-    )
+    ))
 }
 
 /// `opensips-direct-media-proxy-view.pcap`: a complete dialog and no streams.
@@ -60,12 +61,12 @@ fn run_at_log_level(level: &str, args: &[&str]) -> (String, String, i32) {
 /// placed the call through the proxy with `MEDIA_ANCHOR=none`, and tcpdump —
 /// not sipnab — wrote the file inside the proxy's network namespace.
 #[test]
-fn direct_media_proxy_view_has_a_complete_dialog_and_no_streams() {
+fn direct_media_proxy_view_has_a_complete_dialog_and_no_streams() -> Result<(), TestError> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/pcap-samples/opensips-direct-media-proxy-view.pcap"
     );
-    let (stdout, stderr, code) = run(&["-N", "-I", path, "--json-dialogs", "--no-cli-print"]);
+    let (stdout, stderr, code) = run(&["-N", "-I", path, "--json-dialogs", "--no-cli-print"])?;
     assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
 
     let dialogs: Vec<serde_json::Value> = stdout
@@ -120,11 +121,12 @@ fn direct_media_proxy_view_has_a_complete_dialog_and_no_streams() {
     // The claim. A proxy that anchors nothing sees no media, and sipnab must
     // say so rather than manufacture a stream from the SDP it did see.
     let (streams, stderr, code) =
-        run_at_log_level("info", &["-N", "-I", path, "--report", "--no-cli-print"]);
+        run_at_log_level("info", &["-N", "-I", path, "--report", "--no-cli-print"])?;
     assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
     let all = format!("{streams}{stderr}");
     assert!(
         all.contains("0 RTP packets across 0 streams"),
         "a capture at a proxy with no media anchor must report no streams; got:\n{all}"
     );
+    Ok(())
 }

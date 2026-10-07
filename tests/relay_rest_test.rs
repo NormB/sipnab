@@ -18,6 +18,8 @@ mod server;
 
 use server::ApiServer;
 
+use server::TestError;
+
 const RELAY_ROUTES: &[&str] = &[
     "/v1/relay/stats",
     "/v1/relay/stats/names",
@@ -29,15 +31,15 @@ const RELAY_ROUTES: &[&str] = &[
 /// HTTP 200 with `outcome: not_configured` -- a classification in the body, not
 /// a 404, because the route is real and the relay is what is missing.
 #[test]
-fn relay_routes_answer_not_configured_without_a_relay() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
+fn relay_routes_answer_not_configured_without_a_relay() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "k"])?;
     for route in RELAY_ROUTES {
-        let resp = srv.get_bearer_or_panic(route, "k");
+        let resp = srv.get_bearer(route, "k")?;
         assert_eq!(
             resp.status, 200,
             "{route} must be 200 (a refusal is content, not a 4xx)"
         );
-        let v = resp.json_or_panic();
+        let v = resp.json()?;
         assert_eq!(
             v["outcome"], "not_configured",
             "{route} with no --rtpengine-control classifies not_configured: {}",
@@ -53,40 +55,44 @@ fn relay_routes_answer_not_configured_without_a_relay() {
             resp.body
         );
     }
+    Ok(())
 }
 
 /// The relay routes are behind the bearer gate like every other data route: an
 /// unauthenticated request is 401, never a relay query.
 #[test]
-fn relay_routes_require_auth() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
+fn relay_routes_require_auth() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "k"])?;
     for route in RELAY_ROUTES {
-        let resp = srv.get_or_panic(route);
+        let resp = srv.get(route)?;
         assert_eq!(resp.status, 401, "{route} must require a bearer credential");
     }
+    Ok(())
 }
 
 /// A wrong bearer is rejected too -- the gate is the credential, not merely its
 /// presence.
 #[test]
-fn relay_routes_reject_a_wrong_key() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "right"]);
-    let resp = srv.get_bearer_or_panic("/v1/relay/stats", "wrong");
+fn relay_routes_reject_a_wrong_key() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "right"])?;
+    let resp = srv.get_bearer("/v1/relay/stats", "wrong")?;
     assert_eq!(resp.status, 401, "a wrong key is no key");
+    Ok(())
 }
 
 /// The response is always a single JSON object carrying a top-level `outcome`,
 /// so a client branches on one field regardless of which route it called.
 #[test]
-fn every_relay_route_carries_an_outcome() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
+fn every_relay_route_carries_an_outcome() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "k"])?;
     for route in RELAY_ROUTES {
-        let v = srv.get_bearer_or_panic(route, "k").json_or_panic();
+        let v = srv.get_bearer(route, "k")?.json()?;
         assert!(
             v["outcome"].as_str().is_some(),
             "{route} must carry a string outcome: {v}"
         );
     }
+    Ok(())
 }
 
 // ── ST-S3: the REST arm of the cross-surface capability matrix ────────────────
@@ -106,17 +112,17 @@ const SURFACES_SPEC: &str = include_str!("../docs/design/relay-statistics-surfac
 
 /// The REST cell the spec gives capability `cap` (e.g. `C2`), read from the
 /// `| Surface | Spelling |` table under that capability's `### C… ` heading.
-fn rest_cell(cap: &str) -> String {
+fn rest_cell(cap: &str) -> Result<String, TestError> {
     let heading = format!("### {cap} ");
     let start = SURFACES_SPEC
         .find(&heading)
-        .unwrap_or_else(|| panic!("no `{heading}` section in the surfaces spec"));
+        .ok_or_else(|| format!("no `{heading}` section in the surfaces spec"))?;
     let rest = &SURFACES_SPEC[start + heading.len()..];
     let end = rest
         .find("\n### ")
         .or_else(|| rest.find("\n## "))
         .unwrap_or(rest.len());
-    rest[..end]
+    Ok(rest[..end]
         .lines()
         .find(|l| l.starts_with("| REST | "))
         .map(|l| {
@@ -125,32 +131,32 @@ fn rest_cell(cap: &str) -> String {
                 .trim()
                 .to_string()
         })
-        .unwrap_or_else(|| panic!("no REST row under `{cap}` in the surfaces spec"))
+        .ok_or_else(|| format!("no REST row under `{cap}` in the surfaces spec"))?)
 }
 
 /// The `GET /path` a REST cell names, pulled out of its backticks and prose.
-fn rest_path(cell: &str) -> String {
+fn rest_path(cell: &str) -> Result<String, TestError> {
     let at = cell
         .find("GET /")
-        .unwrap_or_else(|| panic!("REST cell names no `GET /path`: {cell:?}"));
-    cell[at + "GET ".len()..]
+        .ok_or_else(|| format!("REST cell names no `GET /path`: {cell:?}"))?;
+    Ok(cell[at + "GET ".len()..]
         .chars()
         .take_while(|&c| c != '`')
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string())
 }
 
 /// Every REST capability the spec lists (C1--C4) is a real route on a running
 /// server, and C5 is the one deliberate REST omission. This grounds the REST
 /// arm of the ST-S3 matrix the way the matrix test grounds the TUI arm.
 #[test]
-fn st_s3_the_rest_capability_cells_are_backed_by_real_routes() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
+fn st_s3_the_rest_capability_cells_are_backed_by_real_routes() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "k"])?;
     for cap in ["C1", "C2", "C3", "C4"] {
-        let cell = rest_cell(cap);
-        let path = rest_path(&cell).replace("{call_id}", "1-7@203.0.113.9");
-        let resp = srv.get_bearer_or_panic(&path, "k");
+        let cell = rest_cell(cap)?;
+        let path = rest_path(&cell)?.replace("{call_id}", "1-7@203.0.113.9");
+        let resp = srv.get_bearer(&path, "k")?;
         assert_eq!(
             resp.status, 200,
             "{cap}: the spec's REST route {path} must be a REAL route answering \
@@ -158,7 +164,7 @@ fn st_s3_the_rest_capability_cells_are_backed_by_real_routes() {
             resp.body
         );
         assert!(
-            resp.json_or_panic()["outcome"].as_str().is_some(),
+            resp.json()?["outcome"].as_str().is_some(),
             "{cap}: {path} answers with an outcome like every relay route: {}",
             resp.body
         );
@@ -169,9 +175,10 @@ fn st_s3_the_rest_capability_cells_are_backed_by_real_routes() {
     // The running server therefore exposes the four routes above and no poll
     // route, and the doc cell must say so -- an omission with no marker reads as
     // a capability someone forgot.
-    let c5 = rest_cell("C5");
+    let c5 = rest_cell("C5")?;
     assert!(
         c5.eq_ignore_ascii_case("not offered"),
         "C5's REST cell must be the deliberate omission `not offered`, not {c5:?}"
     );
+    Ok(())
 }

@@ -24,10 +24,12 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The workflow whose failures block a release.
-fn release_yml() -> String {
+fn release_yml() -> Result<String, TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/release.yml");
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `- name:` step in the release workflow, in file order.
@@ -106,8 +108,8 @@ const RELEASE_ONLY_GATES: &[(&str, &str)] = &[
 
 /// Every release-blocking gate is named, with a reason it cannot run earlier.
 #[test]
-fn every_release_blocking_gate_declares_why_it_cannot_run_earlier() {
-    let src = release_yml();
+fn every_release_blocking_gate_declares_why_it_cannot_run_earlier() -> Result<(), TestError> {
+    let src = release_yml()?;
     let gates = release_gates(&src);
 
     assert!(
@@ -130,6 +132,7 @@ fn every_release_blocking_gate_declares_why_it_cannot_run_earlier() {
          that runs only at release time can only be DISCOVERED at release \
          time, and discovering one costs a tag."
     );
+    Ok(())
 }
 
 /// Every declaration names a step the workflow still has, and gives a reason.
@@ -138,8 +141,8 @@ fn every_release_blocking_gate_declares_why_it_cannot_run_earlier() {
 /// and a list naming something deleted asserts nothing while looking like it
 /// asserts something.
 #[test]
-fn every_release_only_declaration_names_a_step_that_exists() {
-    let src = release_yml();
+fn every_release_only_declaration_names_a_step_that_exists() -> Result<(), TestError> {
+    let src = release_yml()?;
     let steps: BTreeSet<String> = release_steps(&src).into_iter().collect();
 
     assert!(
@@ -159,6 +162,7 @@ fn every_release_only_declaration_names_a_step_that_exists() {
              not merely that it happens later"
         );
     }
+    Ok(())
 }
 
 /// Moving the binary ceiling records the measurement that moved it.
@@ -169,13 +173,13 @@ fn every_release_only_declaration_names_a_step_that_exists() {
 /// and the failure this file exists for was preceded by exactly 79,672 bytes of
 /// headroom that nothing had written down.
 #[test]
-fn the_binary_ceiling_records_the_measurement_behind_it() {
+fn the_binary_ceiling_records_the_measurement_behind_it() -> Result<(), TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("website/config.toml");
-    let src = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    let src = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
 
     let key = src
         .find("\nbinary_size_ceiling_mb = ")
-        .expect("website/config.toml has no binary_size_ceiling_mb");
+        .ok_or("website/config.toml has no binary_size_ceiling_mb")?;
 
     // The contiguous comment block immediately above the key.
     let before = &src[..key];
@@ -204,6 +208,7 @@ fn the_binary_ceiling_records_the_measurement_behind_it() {
         "the ceiling's comment names too few figures ({digits} digits) to be \
          recording real measurements: {block}"
     );
+    Ok(())
 }
 
 /// One line of the ceiling's measurement record: a version and a byte count.
@@ -222,17 +227,18 @@ struct Measurement {
 /// record with every measurement deleted.
 ///
 /// A measurement line is `# <version>  <n,nnn,nnn> bytes` and nothing else is.
-fn measurements(block: &str) -> Vec<Measurement> {
+fn measurements(block: &str) -> Result<Vec<Measurement>, TestError> {
     let re = regex::Regex::new(r"(?m)^#\s+(\d+\.\d+\.\d+)\s+([0-9]{1,3}(?:,[0-9]{3})+)\s+bytes\b")
-        .expect("pattern");
-    re.captures_iter(block)
+        .map_err(|e| format!("pattern: {e}"))?;
+    Ok(re
+        .captures_iter(block)
         .filter_map(|c| {
             Some(Measurement {
                 version: c[1].to_string(),
                 bytes: c[2].replace(',', "").parse().ok()?,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Owed, first of two, for a release the size gate failed a second time.
@@ -249,14 +255,13 @@ fn measurements(block: &str) -> Vec<Measurement> {
 /// without re-measuring now fails here — which is the only thing that makes a
 /// hand-kept record self-refreshing.
 #[test]
-fn the_binary_ceiling_records_every_published_release() {
-    let src = ceiling_config();
-    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .unwrap()
+fn the_binary_ceiling_records_every_published_release() -> Result<(), TestError> {
+    let src = ceiling_config()?;
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
         .captures(&src)
-        .expect("website/config.toml has no published_version")[1]
+        .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
-    let found = measurements(&ceiling_comment(&src));
+    let found = measurements(&ceiling_comment(&src)?)?;
     assert!(
         found.iter().any(|m| m.version == published),
         "the ceiling's record has no measurement line for {published}, the \
@@ -265,6 +270,7 @@ fn the_binary_ceiling_records_every_published_release() {
          a measurement. Recorded: {:?}",
         found.iter().map(|m| &m.version).collect::<Vec<_>>()
     );
+    Ok(())
 }
 
 /// Owed, second of two, and the half that acts on the record.
@@ -278,17 +284,17 @@ fn the_binary_ceiling_records_every_published_release() {
 /// 118,784. It is not a target — it is the point past which "one more release"
 /// stops being a safe assumption.
 #[test]
-fn the_binary_ceiling_keeps_a_readable_margin() {
-    let src = ceiling_config();
-    let found = measurements(&ceiling_comment(&src));
+fn the_binary_ceiling_keeps_a_readable_margin() -> Result<(), TestError> {
+    let src = ceiling_config()?;
+    let found = measurements(&ceiling_comment(&src)?)?;
     assert!(
         found.len() >= 3,
         "the ceiling's record carries {} measurement line(s); with fewer than \
          three there is no trend to read a margin from",
         found.len()
     );
-    let (margin, largest, ceiling) = margin_of(&src, &found);
-    let pending: i64 = pending_growth(&src).iter().map(|p| p.bytes).sum();
+    let (margin, largest, ceiling) = margin_of(&src, &found)?;
+    let pending: i64 = pending_growth(&src)?.iter().map(|p| p.bytes).sum();
     assert!(
         margin > 0,
         "the record's largest measured binary is {largest} bytes, plus \
@@ -303,6 +309,7 @@ fn the_binary_ceiling_keeps_a_readable_margin() {
          binary_size_ceiling_mb now, with the measurement, rather than \
          discovering it when a tag has already published nothing."
     );
+    Ok(())
 }
 
 /// A change already on `main` whose size cost was measured before a release
@@ -320,19 +327,20 @@ struct Pending {
 }
 
 /// The pending-growth LINES of a config, and nothing else in it.
-fn pending_growth(src: &str) -> Vec<Pending> {
+fn pending_growth(src: &str) -> Result<Vec<Pending>, TestError> {
     let re = regex::Regex::new(
         r"(?m)^#\s+pending\s+\+([0-9]{1,3}(?:,[0-9]{3})+)\s+bytes\s+against\s+(\d+\.\d+\.\d+)\b",
     )
-    .expect("pattern");
-    re.captures_iter(src)
+    .map_err(|e| format!("pattern: {e}"))?;
+    Ok(re
+        .captures_iter(src)
         .filter_map(|c| {
             Some(Pending {
                 bytes: c[1].replace(',', "").parse().ok()?,
                 against: c[2].to_string(),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// A pending line retires with the release that measures it.
@@ -342,14 +350,13 @@ fn pending_growth(src: &str) -> Vec<Pending> {
 /// the ceiling up for nothing. `against` names the release it was measured
 /// against, which must still be the one published.
 #[test]
-fn a_pending_growth_line_retires_with_the_release_that_measures_it() {
-    let src = ceiling_config();
-    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .unwrap()
+fn a_pending_growth_line_retires_with_the_release_that_measures_it() -> Result<(), TestError> {
+    let src = ceiling_config()?;
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
         .captures(&src)
-        .expect("website/config.toml has no published_version")[1]
+        .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
-    for p in pending_growth(&ceiling_comment(&src)) {
+    for p in pending_growth(&ceiling_comment(&src)?)? {
         assert_eq!(
             p.against, published,
             "a pending line measured against {} is still in the ceiling \
@@ -359,6 +366,7 @@ fn a_pending_growth_line_retires_with_the_release_that_measures_it() {
             p.against, p.bytes
         );
     }
+    Ok(())
 }
 
 /// Measured pending growth turns a comfortable record thin.
@@ -366,16 +374,16 @@ fn a_pending_growth_line_retires_with_the_release_that_measures_it() {
 /// Without this, a `margin_of` that ignored pending lines would pass every
 /// assertion above while the known growth waited for a tag to fail on.
 #[test]
-fn pending_growth_counts_against_the_margin() {
+fn pending_growth_counts_against_the_margin() -> Result<(), TestError> {
     let src = "\
 # 0.5.001  16,000,000 bytes\n\
 # 0.5.002  16,100,000 bytes\n\
 # 0.5.003  16,050,000 bytes\n\
 #   pending  +524,800 bytes  against 0.5.003: a feature, measured elsewhere\n\
 binary_size_ceiling_mb = \"16\"\n";
-    let found = measurements(src);
+    let found = measurements(src)?;
     assert_eq!(found.len(), 3, "a pending line is not a measurement line");
-    let pending = pending_growth(src);
+    let pending = pending_growth(src)?;
     assert_eq!(
         pending,
         vec![Pending {
@@ -384,12 +392,13 @@ binary_size_ceiling_mb = \"16\"\n";
         }],
         "the parser must read the pending line's bytes and release"
     );
-    let (margin, _, _) = margin_of(src, &found);
+    let (margin, _, _) = margin_of(src, &found)?;
     assert!(
         margin < THIN_MARGIN,
         "16,100,000 bytes under a 16 MB ceiling leaves 677,216, and a pending \
          +524,800 leaves {margin}: that must read as thin"
     );
+    Ok(())
 }
 
 /// Two ordinary releases of headroom, in bytes.
@@ -401,34 +410,34 @@ const THIN_MARGIN: i64 = 256 * 1024;
 /// Measured against the LARGEST recorded binary rather than the most recent
 /// one: 0.5.158 was smaller than 0.5.157, so "the last line" is not reliably
 /// the worst case.
-fn margin_of(src: &str, found: &[Measurement]) -> (i64, i64, i64) {
-    let ceiling: i64 = regex::Regex::new(r#"(?m)^binary_size_ceiling_mb = "([0-9]+)""#)
-        .unwrap()
+fn margin_of(src: &str, found: &[Measurement]) -> Result<(i64, i64, i64), TestError> {
+    let ceiling: i64 = regex::Regex::new(r#"(?m)^binary_size_ceiling_mb = "([0-9]+)""#)?
         .captures(src)
-        .expect("no binary_size_ceiling_mb")[1]
+        .ok_or("no binary_size_ceiling_mb")?[1]
         .parse()
-        .expect("the ceiling is a number");
+        .map_err(|e| format!("the ceiling is a number: {e}"))?;
     let largest = found.iter().map(|m| m.bytes).max().unwrap_or(0);
-    let pending: i64 = pending_growth(src).iter().map(|p| p.bytes).sum();
-    (ceiling * 1024 * 1024 - largest - pending, largest, ceiling)
+    let pending: i64 = pending_growth(src)?.iter().map(|p| p.bytes).sum();
+    Ok((ceiling * 1024 * 1024 - largest - pending, largest, ceiling))
 }
 
 /// Owed, for a mutation that survived: deleting the measurement line for the
 /// published release changed nothing, because the block names that version in
 /// a sentence too.
 #[test]
-fn a_version_named_in_prose_is_not_a_measurement() {
+fn a_version_named_in_prose_is_not_a_measurement() -> Result<(), TestError> {
     let prose = "\
 # 15 -> 16 at 0.5.160, and the same shape again.\n\
 # So 0.5.159 shipped one ordinary release away from tipping, over by 19,208.\n\
 # The 118,784 bytes are a 66th MCP tool.\n";
     assert_eq!(
-        measurements(prose),
+        measurements(prose)?,
         Vec::new(),
         "a version and a byte count in the same paragraph are not a \
          measurement line, and reading them as one is what let a record with \
          every measurement deleted pass"
     );
+    Ok(())
 }
 
 /// Owed, same mutation: the parser finds the real lines and reads both fields.
@@ -437,8 +446,8 @@ fn a_version_named_in_prose_is_not_a_measurement() {
 /// and every assertion built on it, which is the failure mode this whole file
 /// is about.
 #[test]
-fn the_parser_reads_the_record_this_tree_carries() {
-    let found = measurements(&ceiling_comment(&ceiling_config()));
+fn the_parser_reads_the_record_this_tree_carries() -> Result<(), TestError> {
+    let found = measurements(&ceiling_comment(&ceiling_config()?)?)?;
     assert!(
         found.len() >= 3,
         "the parser found {} measurement line(s) in a record that has several",
@@ -452,20 +461,21 @@ fn the_parser_reads_the_record_this_tree_carries() {
             m.bytes
         );
     }
+    Ok(())
 }
 
 /// Owed, for the second survivor: cutting the record to one line still passed,
 /// because six-figure byte counts elsewhere in the prose met the count.
 #[test]
-fn a_thin_margin_is_refused_however_the_record_is_worded() {
+fn a_thin_margin_is_refused_however_the_record_is_worded() -> Result<(), TestError> {
     let src = "\
 # 0.5.001  15,000,000 bytes\n\
 # 0.5.002  16,700,000 bytes\n\
 # 0.5.003  15,100,000 bytes\n\
 binary_size_ceiling_mb = \"16\"\n";
-    let found = measurements(src);
+    let found = measurements(src)?;
     assert_eq!(found.len(), 3, "the fixture must parse as three lines");
-    let (margin, largest, _) = margin_of(src, &found);
+    let (margin, largest, _) = margin_of(src, &found)?;
     assert_eq!(
         largest, 16_700_000,
         "the margin must be measured against the LARGEST recorded binary, not \
@@ -476,6 +486,7 @@ binary_size_ceiling_mb = \"16\"\n";
         "a record whose worst binary sits {margin} bytes under the ceiling \
          must read as thin"
     );
+    Ok(())
 }
 
 /// Owed, same survivor: a comfortable record reads as comfortable.
@@ -483,39 +494,40 @@ binary_size_ceiling_mb = \"16\"\n";
 /// Without this the refusal above passes against a rule that refuses
 /// everything, which is a different way of proving nothing.
 #[test]
-fn a_comfortable_margin_is_accepted() {
+fn a_comfortable_margin_is_accepted() -> Result<(), TestError> {
     let src = "\
 # 0.5.001  10,000,000 bytes\n\
 # 0.5.002  10,100,000 bytes\n\
 # 0.5.003  10,050,000 bytes\n\
 binary_size_ceiling_mb = \"16\"\n";
-    let found = measurements(src);
+    let found = measurements(src)?;
     assert_eq!(found.len(), 3);
-    let (margin, _, _) = margin_of(src, &found);
+    let (margin, _, _) = margin_of(src, &found)?;
     assert!(
         margin >= THIN_MARGIN,
         "6.7 MB of headroom read as thin, so the floor refuses everything"
     );
+    Ok(())
 }
 
 /// `website/config.toml`, read once for the tests above.
-fn ceiling_config() -> String {
+fn ceiling_config() -> Result<String, TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("website/config.toml");
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// The contiguous comment block immediately above the ceiling key.
-fn ceiling_comment(src: &str) -> String {
+fn ceiling_comment(src: &str) -> Result<String, TestError> {
     let key = src
         .find("\nbinary_size_ceiling_mb = ")
-        .expect("website/config.toml has no binary_size_ceiling_mb");
+        .ok_or("website/config.toml has no binary_size_ceiling_mb")?;
     let mut lines: Vec<&str> = src[..key]
         .lines()
         .rev()
         .take_while(|l| l.trim_start().starts_with('#'))
         .collect();
     lines.reverse();
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// The scanners read a real workflow.
@@ -523,8 +535,8 @@ fn ceiling_comment(src: &str) -> String {
 /// Anti-vacuity. Every filter above narrows; a narrowing that reaches zero
 /// exits 0 forever and looks exactly like a tree with nothing to report.
 #[test]
-fn the_release_workflow_scan_found_a_plausible_workflow() {
-    let src = release_yml();
+fn the_release_workflow_scan_found_a_plausible_workflow() -> Result<(), TestError> {
+    let src = release_yml()?;
     let steps = release_steps(&src);
     let gates = release_gates(&src);
 
@@ -544,6 +556,7 @@ fn the_release_workflow_scan_found_a_plausible_workflow() {
         "release.yml no longer reads the ceiling; the gate this file is about \
          has moved and these declarations describe a workflow that is gone"
     );
+    Ok(())
 }
 
 /// The post-publish obligations are told to whoever pushes the tag.
@@ -559,15 +572,15 @@ fn the_release_workflow_scan_found_a_plausible_workflow() {
 /// blocked follow-up commit is the prompt `pre-push` prints when a tag goes
 /// up. A gate whose requirement is announced nowhere is discovered by failing.
 #[test]
-fn the_tag_prompt_names_every_post_publish_obligation() {
+fn the_tag_prompt_names_every_post_publish_obligation() -> Result<(), TestError> {
     let hook = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".githooks/pre-push"),
     )
-    .expect("read .githooks/pre-push");
+    .map_err(|e| format!("read .githooks/pre-push: {e}"))?;
     let prompt = hook
         .split_once("is phase ONE")
         .map(|(_, rest)| rest.to_string())
-        .expect(".githooks/pre-push must print a phase-two prompt when a tag is pushed");
+        .ok_or(".githooks/pre-push must print a phase-two prompt when a tag is pushed")?;
     let prompt = prompt
         .split_once("\ndone")
         .map(|(p, _)| p.to_string())
@@ -611,4 +624,5 @@ fn the_tag_prompt_names_every_post_publish_obligation() {
              gate that runs nowhere earlier."
         );
     }
+    Ok(())
 }

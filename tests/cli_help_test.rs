@@ -5,6 +5,8 @@
 //! and --completions must emit a usable shell completion script.
 #![cfg(feature = "native")]
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/run.rs"]
 mod run_support;
 
@@ -20,14 +22,14 @@ mod source_scan;
 ///
 /// # Returns
 /// `(stdout, stderr, exit_code)` of the finished process.
-fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    run_support::run_or_panic(args, None)
+fn run(args: &[&str]) -> Result<(String, String, Option<i32>), TestError> {
+    Ok(run_support::run(args, None)?)
 }
 
 /// --help must render section headings, not one flat Options: wall.
 #[test]
-fn help_groups_flags_under_headings() {
-    let (stdout, _, code) = run(&["--help"]);
+fn help_groups_flags_under_headings() -> Result<(), TestError> {
+    let (stdout, _, code) = run(&["--help"])?;
     assert_eq!(code, Some(0));
     for heading in [
         "Capture:",
@@ -43,13 +45,14 @@ fn help_groups_flags_under_headings() {
             "--help must contain the '{heading}' section heading:\n{stdout}"
         );
     }
+    Ok(())
 }
 
 /// --completions <shell> prints a completion script to stdout and exits 0.
 #[test]
-fn completions_emit_scripts_for_each_shell() {
+fn completions_emit_scripts_for_each_shell() -> Result<(), TestError> {
     for shell in ["bash", "zsh", "fish"] {
-        let (stdout, stderr, code) = run(&["--completions", shell]);
+        let (stdout, stderr, code) = run(&["--completions", shell])?;
         assert_eq!(code, Some(0), "--completions {shell} failed:\n{stderr}");
         assert!(
             stdout.contains("sipnab"),
@@ -61,17 +64,19 @@ fn completions_emit_scripts_for_each_shell() {
             stdout.len()
         );
     }
+    Ok(())
 }
 
 /// An unknown shell name is a usage error (exit 2), not a silent success.
 #[test]
-fn completions_reject_unknown_shell() {
-    let (_, stderr, code) = run(&["--completions", "tcsh"]);
+fn completions_reject_unknown_shell() -> Result<(), TestError> {
+    let (_, stderr, code) = run(&["--completions", "tcsh"])?;
     assert_eq!(code, Some(2), "unknown shell must be a usage error");
     assert!(
         stderr.contains("tcsh"),
         "error should echo the bad value:\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--stir-shaken` must not claim to validate anything it does not.
@@ -92,7 +97,7 @@ fn completions_reject_unknown_shell() {
 /// — a line that can never contain "validate", making the assertion dead. It
 /// was written that way first, and passed against the unfixed help text.
 #[test]
-fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
+fn stir_shaken_help_does_not_promise_verification_it_never_performs() -> Result<(), TestError> {
     /// The flag's entry: its line plus every indented continuation line, up to
     /// the next flag.
     fn block(help: &str, flag: &str) -> String {
@@ -118,7 +123,7 @@ fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
     }
 
     for args in [vec!["-h"], vec!["--help"]] {
-        let (stdout, _, code) = run(&args);
+        let (stdout, _, code) = run(&args)?;
         assert_eq!(code, Some(0), "{args:?} must succeed");
         let entry = block(&stdout, "--stir-shaken");
         assert!(
@@ -136,6 +141,7 @@ fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
             args.join(" ")
         );
     }
+    Ok(())
 }
 
 /// The other half of the same contract, and the one that makes it durable.
@@ -155,12 +161,11 @@ fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
 /// whether `Valid` is re-added as a variant or spelled some other way, because
 /// what it watches for is production code *naming* it.
 #[test]
-fn implementing_signature_verification_must_also_update_the_claims() {
+fn implementing_signature_verification_must_also_update_the_claims() -> Result<(), TestError> {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/sip/stir_shaken.rs"
-    ))
-    .expect("read stir_shaken.rs");
+    ))?;
 
     // Production code only. What makes the help wrong is shipped behavior,
     // not scaffolding: a test may name `Valid` to assert it is absent, or to
@@ -186,4 +191,5 @@ fn implementing_signature_verification_must_also_update_the_claims() {
          \x20 - src/sip/stir_shaken.rs's own module doc\n\
          Update those, then relax this gate."
     );
+    Ok(())
 }

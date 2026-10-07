@@ -24,7 +24,10 @@ use serde_json::Value;
 #[path = "support/mod.rs"]
 mod support;
 
-use support::schema::{assert_valid, load_validator_or_panic};
+use support::schema::{assert_valid, load_validator};
+
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
 
 /// The Call-ID of the one dialog in `tests/fixtures/sip_call.pcap`. Its host
 /// part moved to RFC 5737 documentation addresses in September 2026, when the
@@ -42,31 +45,31 @@ const SIP_CALL_ID: &str = "test-call-1@192.0.2.1";
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary with the deterministic env applied.
-fn run_sipnab(args: &[&str]) -> String {
+fn run_sipnab(args: &[&str]) -> Result<String, TestError> {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.current_dir(manifest).args(args);
     support::deterministic_env(&mut cmd);
-    let out = cmd.output().expect("spawn sipnab");
+    let out = cmd.output()?;
     assert!(
         out.status.success(),
         "sipnab {args:?} exited {:?}\nstderr: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).expect("utf8 stdout")
+    Ok(String::from_utf8(out.stdout)?)
 }
 
 /// Every `--json` NDJSON line from the fixture validates against
 /// `message.schema.json`, and at least 5 messages are produced.
 #[test]
-fn message_schema_validates_ndjson_output() {
-    let v = load_validator_or_panic("message.schema.json");
-    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
+fn message_schema_validates_ndjson_output() -> Result<(), TestError> {
+    let v = load_validator("message.schema.json")?;
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"])?;
     let mut n = 0;
     for line in out.lines().filter(|l| !l.trim().is_empty()) {
         let inst: Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("NDJSON line {n} not JSON: {e}\n{line}"));
+            .map_err(|e| format!("NDJSON line {n} not JSON: {e}\n{line}"))?;
         assert_valid(&v, &inst, &format!("message line {n}"));
         n += 1;
     }
@@ -74,16 +77,17 @@ fn message_schema_validates_ndjson_output() {
         n >= 5,
         "expected several SIP messages from sip_call.pcap, got {n}"
     );
+    Ok(())
 }
 
 /// Negative test (spec §13.3): corrupting a real message line — wrong-typed
 /// src_port, missing/wrong schema_version, extra field — makes validation fail.
 #[test]
-fn message_schema_rejects_malformed() {
-    let v = load_validator_or_panic("message.schema.json");
+fn message_schema_rejects_malformed() -> Result<(), TestError> {
+    let v = load_validator("message.schema.json")?;
     // Ground the negative test in a REAL good line, then corrupt it.
-    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
-    let good: Value = serde_json::from_str(out.lines().next().expect("≥1 message")).unwrap();
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"])?;
+    let good: Value = serde_json::from_str(out.lines().next().ok_or("≥1 message")?)?;
     assert!(v.is_valid(&good), "sanity: real message must validate");
 
     // (a) wrong type for a required field
@@ -93,7 +97,9 @@ fn message_schema_rejects_malformed() {
 
     // (b) missing required field
     let mut bad = good.clone();
-    bad.as_object_mut().unwrap().remove("schema_version");
+    bad.as_object_mut()
+        .ok_or("bad.as_object_mut() is None")?
+        .remove("schema_version");
     assert!(!v.is_valid(&bad), "must reject missing schema_version");
 
     // (c) wrong schema_version value
@@ -105,13 +111,14 @@ fn message_schema_rejects_malformed() {
     let mut bad = good.clone();
     bad["surprise"] = Value::Bool(true);
     assert!(!v.is_valid(&bad), "must reject unknown field");
+    Ok(())
 }
 
 /// `--call-report --json` output validates against `call_report.schema.json`
 /// for both a no-RTP call (empty timeline/streams) and an RTP G.711 call.
 #[test]
-fn call_report_schema_validates_output() {
-    let v = load_validator_or_panic("call_report.schema.json");
+fn call_report_schema_validates_output() -> Result<(), TestError> {
+    let v = load_validator("call_report.schema.json")?;
 
     // No-RTP call: exercises the base shape with empty sdp_timeline/streams.
     let out = run_sipnab(&[
@@ -122,8 +129,8 @@ fn call_report_schema_validates_output() {
         SIP_CALL_ID,
         "--json",
         "--no-cli-print",
-    ]);
-    let inst: Value = serde_json::from_str(out.trim()).expect("call-report JSON parses");
+    ])?;
+    let inst: Value = serde_json::from_str(out.trim())?;
     assert_valid(&v, &inst, "call_report (sip_call)");
 
     // RTP call: exercises sdp_timeline entries + from_display/to_display.
@@ -135,8 +142,8 @@ fn call_report_schema_validates_output() {
         "1-1966@10.0.2.20",
         "--json",
         "--no-cli-print",
-    ]);
-    let inst: Value = serde_json::from_str(out.trim()).expect("RTP call-report JSON parses");
+    ])?;
+    let inst: Value = serde_json::from_str(out.trim())?;
     assert_valid(&v, &inst, "call_report (rtp g711)");
 
     // A call that actually went wrong, which is the shape the other two cannot
@@ -153,8 +160,8 @@ fn call_report_schema_validates_output() {
         "codec-reject-synth",
         "--json",
         "--no-cli-print",
-    ]);
-    let inst: Value = serde_json::from_str(out.trim()).expect("failed-call report JSON parses");
+    ])?;
+    let inst: Value = serde_json::from_str(out.trim())?;
     assert!(
         inst.get("signaling_diagnosis")
             .is_some_and(|d| !d.is_null()),
@@ -176,8 +183,8 @@ fn call_report_schema_validates_output() {
         "1-1966@10.0.2.20",
         "--json",
         "--no-cli-print",
-    ]);
-    let inst: Value = serde_json::from_str(out.trim()).expect("retained-audio report parses");
+    ])?;
+    let inst: Value = serde_json::from_str(out.trim())?;
     assert!(
         inst["diagnosis"].get("amplitude").is_some(),
         "the fixture retained no audio, so this case proves nothing about the \
@@ -185,6 +192,7 @@ fn call_report_schema_validates_output() {
         inst["diagnosis"]
     );
     assert_valid(&v, &inst, "call_report (retained audio)");
+    Ok(())
 }
 
 /// `--json-dialogs` emits the same per-dialog document the call report does,
@@ -195,15 +203,15 @@ fn call_report_schema_validates_output() {
 /// appears on the tenth call of a capture is exactly what a single
 /// `--call-report` invocation cannot reach.
 #[test]
-fn json_dialogs_lines_validate_against_the_call_report_schema() {
-    let v = load_validator_or_panic("call_report.schema.json");
+fn json_dialogs_lines_validate_against_the_call_report_schema() -> Result<(), TestError> {
+    let v = load_validator("call_report.schema.json")?;
     let out = run_sipnab(&[
         "-N",
         "-I",
         "tests/pcap-samples/sip-auth-failure.pcapng",
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
 
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     assert!(
@@ -213,7 +221,7 @@ fn json_dialogs_lines_validate_against_the_call_report_schema() {
     let mut diagnosed = 0;
     for (i, line) in lines.iter().enumerate() {
         let inst: Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("line {i} parses: {e}"));
+            serde_json::from_str(line).map_err(|e| format!("line {i} parses: {e}"))?;
         if inst
             .get("signaling_diagnosis")
             .is_some_and(|d| !d.is_null())
@@ -227,13 +235,14 @@ fn json_dialogs_lines_validate_against_the_call_report_schema() {
         "this fixture is chosen for carrying diagnoses; without one the \
          signaling_diagnosis shape goes unvalidated again"
     );
+    Ok(())
 }
 
 /// Negative test: removing `diagnosis`, mistyping `timing.retransmits`, or
 /// adding an unknown top-level field makes the call-report schema reject.
 #[test]
-fn call_report_schema_rejects_malformed() {
-    let v = load_validator_or_panic("call_report.schema.json");
+fn call_report_schema_rejects_malformed() -> Result<(), TestError> {
+    let v = load_validator("call_report.schema.json")?;
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -242,13 +251,15 @@ fn call_report_schema_rejects_malformed() {
         SIP_CALL_ID,
         "--json",
         "--no-cli-print",
-    ]);
-    let good: Value = serde_json::from_str(out.trim()).unwrap();
+    ])?;
+    let good: Value = serde_json::from_str(out.trim())?;
     assert!(v.is_valid(&good), "sanity: real call report must validate");
 
     // (a) missing required nested object
     let mut bad = good.clone();
-    bad.as_object_mut().unwrap().remove("diagnosis");
+    bad.as_object_mut()
+        .ok_or("bad.as_object_mut() is None")?
+        .remove("diagnosis");
     assert!(!v.is_valid(&bad), "must reject missing diagnosis");
 
     // (b) wrong type on a nested required field
@@ -260,36 +271,37 @@ fn call_report_schema_rejects_malformed() {
     let mut bad = good.clone();
     bad["unexpected"] = Value::from(1);
     assert!(!v.is_valid(&bad), "must reject unknown top-level field");
+    Ok(())
 }
 
 /// `--json` (7 NDJSON lines) and `--json-pretty` (7-value concatenated JSON
 /// stream) both validate per message and agree on the message count.
 #[test]
-fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
+fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) -> Result<(), TestError> {
     // --json emits compact NDJSON (one object per line); --json-pretty emits
     // the same objects pretty-printed (multi-line, still a parseable
     // concatenated-JSON stream). Every value of each must validate, and both
     // must yield the same message count as the fixture.
-    let v = load_validator_or_panic("message.schema.json");
+    let v = load_validator("message.schema.json")?;
 
-    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"])?;
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 7, "--json: expected 7 NDJSON messages");
     for (i, line) in lines.iter().enumerate() {
         let inst: Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("--json line {i} not JSON: {e}"));
+            serde_json::from_str(line).map_err(|e| format!("--json line {i} not JSON: {e}"))?;
         assert_valid(&v, &inst, &format!("--json msg {i}"));
     }
 
-    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json-pretty"]);
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json-pretty"])?;
     let values: Vec<Value> = serde_json::Deserializer::from_str(&out)
         .into_iter::<Value>()
-        .collect::<Result<_, _>>()
-        .expect("--json-pretty must stay a parseable JSON stream");
+        .collect::<Result<_, _>>()?;
     assert_eq!(values.len(), 7, "--json-pretty: expected 7 messages");
     for (i, inst) in values.iter().enumerate() {
         assert_valid(&v, inst, &format!("--json-pretty msg {i}"));
     }
+    Ok(())
 }
 
 /// A notes file written by sipnab validates line by line against
@@ -301,12 +313,12 @@ fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
 // `sipnab::annotate` and `capture::resolve` are behind `native`.
 #[cfg(feature = "native")]
 #[test]
-fn notes_schema_validates_a_saved_notes_file() {
+fn notes_schema_validates_a_saved_notes_file() -> Result<(), TestError> {
     use sipnab::annotate::{NoteText, Notes};
     use sipnab::capture::resolve::parse_pointer;
 
-    let v = load_validator_or_panic("notes.schema.json");
-    let dir = tempfile::tempdir().expect("tempdir");
+    let v = load_validator("notes.schema.json")?;
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("session.notes.jsonl");
     let mut notes = Notes::new();
     for (pointer, text) in [
@@ -320,23 +332,19 @@ fn notes_schema_validates_a_saved_notes_file() {
             "a path holding a \"#\" and a quote\nand a newline",
         ),
     ] {
-        notes
-            .set(
-                &parse_pointer(pointer).expect("pointer"),
-                NoteText::new(text).expect("note"),
-            )
-            .expect("room");
+        notes.set(&parse_pointer(pointer)?, NoteText::new(text)?)?;
     }
-    notes.save(&path).expect("save");
+    notes.save(&path)?;
 
-    let text = std::fs::read_to_string(&path).expect("read");
+    let text = std::fs::read_to_string(&path)?;
     let mut n = 0;
     for line in text.lines() {
-        let inst: Value = serde_json::from_str(line).expect("each line is JSON");
+        let inst: Value = serde_json::from_str(line)?;
         assert_valid(&v, &inst, &format!("notes line {n}"));
         n += 1;
     }
     assert_eq!(n, 3, "every note is one line");
+    Ok(())
 }
 
 /// Negative test (spec section 13.3): each way a notes line can be wrong is
@@ -345,10 +353,10 @@ fn notes_schema_validates_a_saved_notes_file() {
 // `sipnab::annotate` and `capture::resolve` are behind `native`.
 #[cfg(feature = "native")]
 #[test]
-fn notes_schema_rejects_malformed_lines_the_loader_rejects() {
+fn notes_schema_rejects_malformed_lines_the_loader_rejects() -> Result<(), TestError> {
     use sipnab::annotate::Notes;
 
-    let v = load_validator_or_panic("notes.schema.json");
+    let v = load_validator("notes.schema.json")?;
     let good = serde_json::json!({"frame": "a.pcap#0@00000000deadbeef", "note": "ok"});
     assert!(v.is_valid(&good), "the baseline must validate");
     assert!(
@@ -357,7 +365,7 @@ fn notes_schema_rejects_malformed_lines_the_loader_rejects() {
     );
 
     let mut missing = good.clone();
-    missing.as_object_mut().expect("object").remove("note");
+    missing.as_object_mut().ok_or("object")?.remove("note");
     let mut extra = good.clone();
     extra["author"] = Value::from("n");
     let mut wrong_type = good.clone();
@@ -380,6 +388,7 @@ fn notes_schema_rejects_malformed_lines_the_loader_rejects() {
             "the loader must reject {what} too: {bad}"
         );
     }
+    Ok(())
 }
 
 /// Every schema in `tests/schemas/` compiles into a validator (well-formed),
@@ -390,21 +399,21 @@ fn notes_schema_rejects_malformed_lines_the_loader_rejects() {
 /// malformed `zzz_gate_probe.schema.json` dropped into `tests/schemas/` left
 /// this suite at 6 passed / 0 failed, because nothing ever opened it.
 #[test]
-fn all_schemas_compile() {
+fn all_schemas_compile() -> Result<(), TestError> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas");
     let mut seen = 0;
-    for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read_dir {dir:?}: {e}"))? {
+        let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
         let name = path
             .file_name()
-            .expect("file name")
+            .ok_or("file name")?
             .to_string_lossy()
             .into_owned();
         // load_validator panics with the path on read/parse/compile failure.
-        let _ = load_validator_or_panic(&name);
+        let _ = load_validator(&name)?;
         seen += 1;
     }
     // Anti-vacuity: a broken path or an empty directory must fail, not pass.
@@ -412,6 +421,7 @@ fn all_schemas_compile() {
         seen >= 4,
         "expected at least the 4 known schemas in tests/schemas/, found {seen}"
     );
+    Ok(())
 }
 
 /// Every `InputOrigin` sipnab can report is a value the message and dialog
@@ -424,7 +434,7 @@ fn all_schemas_compile() {
 /// exhaustive by construction: a fourth variant stops this file compiling
 /// until somebody adds it to both schemas.
 #[test]
-fn every_capture_origin_is_a_value_both_schemas_accept() {
+fn every_capture_origin_is_a_value_both_schemas_accept() -> Result<(), TestError> {
     use sipnab::capture::parse::InputOrigin;
 
     let all = [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe];
@@ -438,13 +448,13 @@ fn every_capture_origin_is_a_value_both_schemas_accept() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/schemas")
             .join(schema);
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-        let doc: Value = serde_json::from_str(&text).expect("schema is JSON");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?;
+        let doc: Value = serde_json::from_str(&text)?;
         let listed = doc["properties"]["input_origin"]["enum"]
             .as_array()
-            .unwrap_or_else(|| {
-                panic!("{schema} declares no input_origin enum, so it cannot validate an origin")
-            });
+            .ok_or_else(|| {
+                format!("{schema} declares no input_origin enum, so it cannot validate an origin")
+            })?;
         for origin in all {
             assert!(
                 listed.iter().any(|v| v.as_str() == Some(origin.as_str())),
@@ -461,6 +471,7 @@ fn every_capture_origin_is_a_value_both_schemas_accept() {
             all.len()
         );
     }
+    Ok(())
 }
 
 // ── The schema and the struct are one fact written twice ────────────────
@@ -482,21 +493,21 @@ fn every_capture_origin_is_a_value_both_schemas_accept() {
 /// that is `skip_serializing_if` absent on every fixture is exactly the field
 /// this is looking for — serializing one would find only the fields the
 /// fixture happened to populate, which is the weakness being paid for.
-fn struct_fields(file: &str, name: &str) -> Vec<String> {
+fn struct_fields(file: &str, name: &str) -> Result<Vec<String>, TestError> {
     let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
-        .unwrap_or_else(|e| panic!("read {file}: {e}"));
+        .map_err(|e| format!("read {file}: {e}"))?;
     let decl = format!("struct {name}");
     let start = src
         .find(&decl)
-        .unwrap_or_else(|| panic!("{file} declares no `{decl}`"));
+        .ok_or_else(|| format!("{file} declares no `{decl}`"))?;
     let body = &src[start..];
     let end = body
         .find("\n}")
-        .unwrap_or_else(|| panic!("`{decl}` has no closing brace"));
+        .ok_or_else(|| format!("`{decl}` has no closing brace"))?;
     let body = &body[..end];
 
-    let field = regex::Regex::new(r"(?m)^\s{4}(?:pub\s+)?([a-z_][a-z0-9_]*)\s*:").expect("pattern");
-    let renamed = regex::Regex::new(r#"rename\s*=\s*"([^"]+)""#).expect("rename pattern");
+    let field = regex::Regex::new(r"(?m)^\s{4}(?:pub\s+)?([a-z_][a-z0-9_]*)\s*:")?;
+    let renamed = regex::Regex::new(r#"rename\s*=\s*"([^"]+)""#)?;
     let mut out = Vec::new();
     for line in body.lines() {
         if let Some(c) = renamed.captures(line) {
@@ -513,22 +524,22 @@ fn struct_fields(file: &str, name: &str) -> Vec<String> {
          stopped matching and every census below would pass vacuously",
         out.len()
     );
-    out
+    Ok(out)
 }
 
 /// The `properties` keys of one schema.
-fn schema_properties(schema: &str) -> Vec<String> {
+fn schema_properties(schema: &str) -> Result<Vec<String>, TestError> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/schemas")
         .join(schema);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {schema}: {e}"));
-    let doc: Value = serde_json::from_str(&text).expect("schema is JSON");
-    doc["properties"]
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("read {schema}: {e}"))?;
+    let doc: Value = serde_json::from_str(&text)?;
+    Ok(doc["properties"]
         .as_object()
-        .unwrap_or_else(|| panic!("{schema} declares no properties object"))
+        .ok_or_else(|| format!("{schema} declares no properties object"))?
         .keys()
         .cloned()
-        .collect()
+        .collect())
 }
 
 /// The two sides of one census, as `(in code only, in schema only)`.
@@ -548,10 +559,10 @@ fn census(fields: &[String], properties: &[String]) -> (Vec<String>, Vec<String>
 /// schema said `additionalProperties: false`, and the first thing to notice
 /// was a fixture that happened to carry it.
 #[test]
-fn every_message_json_field_is_declared_in_the_message_schema() {
+fn every_message_json_field_is_declared_in_the_message_schema() -> Result<(), TestError> {
     let (missing, _) = census(
-        &struct_fields("src/output/json.rs", "MessageJson"),
-        &schema_properties("message.schema.json"),
+        &struct_fields("src/output/json.rs", "MessageJson")?,
+        &schema_properties("message.schema.json")?,
     );
     assert!(
         missing.is_empty(),
@@ -559,20 +570,22 @@ fn every_message_json_field_is_declared_in_the_message_schema() {
          `additionalProperties: false`, so every consumer validating sipnab's \
          output rejects a message carrying one of these."
     );
+    Ok(())
 }
 
 /// **Second of eight.** The same, for the per-dialog report.
 #[test]
-fn every_dialog_json_field_is_declared_in_the_call_report_schema() {
+fn every_dialog_json_field_is_declared_in_the_call_report_schema() -> Result<(), TestError> {
     let (missing, _) = census(
-        &struct_fields("src/output/json.rs", "DialogJson"),
-        &schema_properties("call_report.schema.json"),
+        &struct_fields("src/output/json.rs", "DialogJson")?,
+        &schema_properties("call_report.schema.json")?,
     );
     assert!(
         missing.is_empty(),
         "call_report.schema.json declares no {missing:?}, and it refuses \
          additional properties."
     );
+    Ok(())
 }
 
 /// **Third of eight.** No schema promises a field the code cannot emit.
@@ -581,7 +594,7 @@ fn every_dialog_json_field_is_declared_in_the_call_report_schema() {
 /// consumer reads the schema, writes code expecting the key, and the key never
 /// arrives. Nothing fails anywhere.
 #[test]
-fn no_schema_promises_a_field_the_code_does_not_emit() {
+fn no_schema_promises_a_field_the_code_does_not_emit() -> Result<(), TestError> {
     for (file, name, schema) in [
         ("src/output/json.rs", "MessageJson", "message.schema.json"),
         (
@@ -590,7 +603,7 @@ fn no_schema_promises_a_field_the_code_does_not_emit() {
             "call_report.schema.json",
         ),
     ] {
-        let (_, phantom) = census(&struct_fields(file, name), &schema_properties(schema));
+        let (_, phantom) = census(&struct_fields(file, name)?, &schema_properties(schema)?);
         assert!(
             phantom.is_empty(),
             "{schema} promises {phantom:?}, which `{name}` cannot emit. A \
@@ -598,11 +611,12 @@ fn no_schema_promises_a_field_the_code_does_not_emit() {
              arrives, and no validation run anywhere would notice."
         );
     }
+    Ok(())
 }
 
 /// **Fourth of eight.** The census can fail, in both directions.
 #[test]
-fn the_schema_census_fires_on_a_disagreement() {
+fn the_schema_census_fires_on_a_disagreement() -> Result<(), TestError> {
     let code: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect();
     let schema: Vec<String> = ["b", "c", "d"].iter().map(|s| (*s).to_string()).collect();
     let (missing, phantom) = census(&code, &schema);
@@ -622,6 +636,7 @@ fn the_schema_census_fires_on_a_disagreement() {
         none.is_empty() && also_none.is_empty(),
         "agreement is silent"
     );
+    Ok(())
 }
 
 /// **Fifth of eight.** Both schemas refuse an undeclared field.
@@ -631,13 +646,12 @@ fn the_schema_census_fires_on_a_disagreement() {
 /// field becomes an accidental contract. Pinned so nobody relaxes it to make a
 /// census like the ones above go away.
 #[test]
-fn both_schemas_refuse_an_undeclared_field() {
+fn both_schemas_refuse_an_undeclared_field() -> Result<(), TestError> {
     for schema in ["message.schema.json", "call_report.schema.json"] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/schemas")
             .join(schema);
-        let doc: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         assert_eq!(
             doc["additionalProperties"],
             Value::Bool(false),
@@ -645,12 +659,13 @@ fn both_schemas_refuse_an_undeclared_field() {
              consumer without ever being documented validates cleanly"
         );
     }
+    Ok(())
 }
 
 /// **Sixth of eight.** A real termination block validates.
 #[test]
-fn a_termination_block_validates_against_the_call_report_schema() {
-    let v = load_validator_or_panic("call_report.schema.json");
+fn a_termination_block_validates_against_the_call_report_schema() -> Result<(), TestError> {
+    let v = load_validator("call_report.schema.json")?;
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -659,8 +674,8 @@ fn a_termination_block_validates_against_the_call_report_schema() {
         SIP_CALL_ID,
         "--json",
         "--no-cli-print",
-    ]);
-    let mut report: Value = serde_json::from_str(out.trim()).expect("call-report JSON parses");
+    ])?;
+    let mut report: Value = serde_json::from_str(out.trim())?;
     report["termination"] = serde_json::json!({
         "cause_code": 38,
         "cause_text": "Network out of order",
@@ -669,6 +684,7 @@ fn a_termination_block_validates_against_the_call_report_schema() {
         "frame_ref": 7,
     });
     assert_valid(&v, &report, "call_report with a termination block");
+    Ok(())
 }
 
 /// **Seventh of eight.** A termination block missing what it must carry is
@@ -676,8 +692,8 @@ fn a_termination_block_validates_against_the_call_report_schema() {
 /// read from SOME header on SOME message — so a block without them is not a
 /// sparser answer, it is a broken one.
 #[test]
-fn a_termination_block_without_its_required_fields_is_refused() {
-    let v = load_validator_or_panic("call_report.schema.json");
+fn a_termination_block_without_its_required_fields_is_refused() -> Result<(), TestError> {
+    let v = load_validator("call_report.schema.json")?;
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -686,8 +702,8 @@ fn a_termination_block_without_its_required_fields_is_refused() {
         SIP_CALL_ID,
         "--json",
         "--no-cli-print",
-    ]);
-    let base: Value = serde_json::from_str(out.trim()).expect("call-report JSON parses");
+    ])?;
+    let base: Value = serde_json::from_str(out.trim())?;
 
     for bad in [
         serde_json::json!({ "cause_code": 16 }),
@@ -702,15 +718,16 @@ fn a_termination_block_without_its_required_fields_is_refused() {
             "the schema accepted a malformed termination block: {bad}"
         );
     }
+    Ok(())
 }
 
 /// **Eighth of eight.** An extension-header list validates, and a wrongly
 /// typed one does not.
 #[test]
-fn an_extension_header_list_validates_against_the_message_schema() {
-    let v = load_validator_or_panic("message.schema.json");
-    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
-    let base: Value = serde_json::from_str(out.lines().next().expect("a message")).unwrap();
+fn an_extension_header_list_validates_against_the_message_schema() -> Result<(), TestError> {
+    let v = load_validator("message.schema.json")?;
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"])?;
+    let base: Value = serde_json::from_str(out.lines().next().ok_or("a message")?)?;
 
     let mut good = base.clone();
     good["extension_headers"] = serde_json::json!([
@@ -729,6 +746,7 @@ fn an_extension_header_list_validates_against_the_message_schema() {
          strings, and the object shape is the one a name-keyed filter cannot \
          reach"
     );
+    Ok(())
 }
 
 // ── The other two schemas, and every object inside all of them ──────────
@@ -748,12 +766,12 @@ fn an_extension_header_list_validates_against_the_message_schema() {
 /// would have sat undetected exactly as the first one did, and for longer:
 /// there is not even a sample to trip over it.
 #[test]
-fn every_remaining_schema_agrees_with_the_projection_it_describes() {
+fn every_remaining_schema_agrees_with_the_projection_it_describes() -> Result<(), TestError> {
     for (file, name, schema) in [
         ("src/output/model.rs", "DialogSummary", "dialog.schema.json"),
         ("src/output/json.rs", "StreamJson", "stream.schema.json"),
     ] {
-        let (missing, phantom) = census(&struct_fields(file, name), &schema_properties(schema));
+        let (missing, phantom) = census(&struct_fields(file, name)?, &schema_properties(schema)?);
         assert!(
             missing.is_empty(),
             "{schema} declares no {missing:?}, and `{name}` emits them. Every \
@@ -767,6 +785,7 @@ fn every_remaining_schema_agrees_with_the_projection_it_describes() {
              for a key that never arrives."
         );
     }
+    Ok(())
 }
 
 /// **Eighth of ten.** Every object sipnab publishes is closed, at every depth.
@@ -785,7 +804,7 @@ fn every_remaining_schema_agrees_with_the_projection_it_describes() {
 /// really is the publisher's, so the exemption cannot be borrowed by a schema
 /// sipnab owns.
 #[test]
-fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
+fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() -> Result<(), TestError> {
     /// Paths of every `type: object` with `properties` that admits extras.
     fn open_objects(node: &Value, path: &str, out: &mut Vec<String>) {
         match node {
@@ -820,10 +839,7 @@ fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
 
     let dir = repo_schemas();
     let mut checked = 0usize;
-    for entry in std::fs::read_dir(&dir)
-        .expect("read tests/schemas")
-        .flatten()
-    {
+    for entry in std::fs::read_dir(&dir)?.flatten() {
         let path = entry.path();
         let Some(file) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -831,8 +847,7 @@ fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
         if !file.ends_with(".schema.json") {
             continue;
         }
-        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
-            .expect("schema is JSON");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
 
         if file == "vcon.schema.json" {
             // The exemption, paired with what justifies it.
@@ -869,6 +884,7 @@ fn every_object_in_a_sipnab_schema_is_closed_at_every_depth() {
         "expected sipnab's six own schemas; found {checked}. A schema added \
          without being checked here is one whose nested objects nothing closes"
     );
+    Ok(())
 }
 
 /// The directory holding the schemas this repository publishes.
@@ -907,31 +923,31 @@ const ANALYSIS_CASES: &[(&str, &[&str])] = &[
 
 /// The `--json-analyze` object for one capture.
 #[cfg(feature = "native")]
-fn json_analyze(path: &str, extra: &[&str]) -> Value {
+fn json_analyze(path: &str, extra: &[&str]) -> Result<Value, TestError> {
     let mut args = vec!["-N", "-I", path, "--json-analyze", "--no-cli-print"];
     args.extend_from_slice(extra);
-    let out = run_sipnab(&args);
+    let out = run_sipnab(&args)?;
     let line = out
         .lines()
         .find(|l| l.starts_with('{'))
-        .unwrap_or_else(|| panic!("--json-analyze emitted no object for {path}:\n{out}"));
-    serde_json::from_str(line).expect("the analysis is JSON")
+        .ok_or_else(|| format!("--json-analyze emitted no object for {path}:\n{out}"))?;
+    Ok(serde_json::from_str(line)?)
 }
 
 /// Every `--json-analyze` object validates, and the cases between them reach
 /// every shape the schema declares.
 #[cfg(feature = "native")]
 #[test]
-fn capture_analysis_schema_validates_json_analyze_output() {
-    let v = load_validator_or_panic("capture_analysis.schema.json");
+fn capture_analysis_schema_validates_json_analyze_output() -> Result<(), TestError> {
+    let v = load_validator("capture_analysis.schema.json")?;
     let mut severities = std::collections::BTreeSet::new();
     let mut evidence_keys = std::collections::BTreeSet::new();
     let mut clean = 0usize;
     let mut incomplete = 0usize;
     for (path, extra) in ANALYSIS_CASES {
-        let inst = json_analyze(path, extra);
+        let inst = json_analyze(path, extra)?;
         assert_valid(&v, &inst, &format!("--json-analyze {path} {extra:?}"));
-        let findings = inst["findings"].as_array().expect("findings is an array");
+        let findings = inst["findings"].as_array().ok_or("findings is an array")?;
         if findings.is_empty() {
             clean += 1;
         }
@@ -963,14 +979,15 @@ fn capture_analysis_schema_validates_json_analyze_output() {
             "no evidence row carried `{k}`: {evidence_keys:?}"
         );
     }
+    Ok(())
 }
 
 /// The schema refuses what the analysis never emits.
 #[cfg(feature = "native")]
 #[test]
-fn capture_analysis_schema_rejects_malformed() {
-    let v = load_validator_or_panic("capture_analysis.schema.json");
-    let good = json_analyze("tests/fixtures/stun_sdp_mismatch.pcap", &[]);
+fn capture_analysis_schema_rejects_malformed() -> Result<(), TestError> {
+    let v = load_validator("capture_analysis.schema.json")?;
+    let good = json_analyze("tests/fixtures/stun_sdp_mismatch.pcap", &[])?;
     assert!(v.is_valid(&good), "sanity: a real analysis must validate");
     assert!(
         good["findings"][0]["evidence"][0].is_object(),
@@ -979,66 +996,79 @@ fn capture_analysis_schema_rejects_malformed() {
 
     /// What the case breaks, and how. Non-capturing closures, so each
     /// coerces to a plain `fn` pointer.
-    type Corruption = (&'static str, fn(&mut Value));
+    type Corruption = (&'static str, fn(&mut Value) -> Result<(), TestError>);
     let cases: Vec<Corruption> = vec![
         ("a missing schema_version", |v: &mut Value| {
-            v.as_object_mut().unwrap().remove("schema_version");
+            v.as_object_mut()
+                .ok_or("v.as_object_mut() is None")?
+                .remove("schema_version");
+            Ok(())
         }),
         ("a schema_version other than 1", |v: &mut Value| {
-            v["schema_version"] = Value::from(2)
+            v["schema_version"] = Value::from(2);
+            Ok(())
         }),
         ("frames_read as a string", |v: &mut Value| {
-            v["frames_read"] = Value::from("12")
+            v["frames_read"] = Value::from("12");
+            Ok(())
         }),
         ("an undeclared top-level field", |v: &mut Value| {
-            v["surprise"] = Value::Bool(true)
+            v["surprise"] = Value::Bool(true);
+            Ok(())
         }),
         ("a kind the analysis does not have", |v: &mut Value| {
-            v["findings"][0]["kind"] = Value::from("no_such_kind")
+            v["findings"][0]["kind"] = Value::from("no_such_kind");
+            Ok(())
         }),
         ("a severity off the ladder", |v: &mut Value| {
-            v["findings"][0]["severity"] = Value::from("warning")
+            v["findings"][0]["severity"] = Value::from("warning");
+            Ok(())
         }),
         ("a finding without evidence_omitted", |v: &mut Value| {
             v["findings"][0]
                 .as_object_mut()
-                .unwrap()
+                .ok_or("v[\"findings\"][0].as_object_mut() is None")?
                 .remove("evidence_omitted");
+            Ok(())
         }),
         ("an undeclared evidence field", |v: &mut Value| {
-            v["findings"][0]["evidence"][0]["extra"] = Value::from(1)
+            v["findings"][0]["evidence"][0]["extra"] = Value::from(1);
+            Ok(())
         }),
         (
             "a count label the analysis never writes",
             |v: &mut Value| {
                 v["findings"][0]["evidence"][0]["counts"] = serde_json::json!({"bogus": 1});
+                Ok(())
             },
         ),
         ("a negative count", |v: &mut Value| {
             v["findings"][0]["evidence"][0]["counts"] = serde_json::json!({"streams": -1});
+            Ok(())
         }),
     ];
     for (what, corrupt) in cases {
         let mut bad = good.clone();
-        corrupt(&mut bad);
+        corrupt(&mut bad)?;
         assert!(
             !v.is_valid(&bad),
             "capture_analysis.schema.json accepted {what}"
         );
     }
+    Ok(())
 }
 
 /// The `properties` keys of one `$defs` entry in a schema.
-fn schema_def_properties(schema: &str, def: &str) -> Vec<String> {
+fn schema_def_properties(schema: &str, def: &str) -> Result<Vec<String>, TestError> {
     let text = std::fs::read_to_string(repo_schemas().join(schema))
-        .unwrap_or_else(|e| panic!("read {schema}: {e}"));
-    let doc: Value = serde_json::from_str(&text).expect("schema is JSON");
-    doc["$defs"][def]["properties"]
+        .map_err(|e| format!("read {schema}: {e}"))?;
+    let doc: Value = serde_json::from_str(&text)?;
+    Ok(doc["$defs"][def]["properties"]
         .as_object()
-        .unwrap_or_else(|| panic!("{schema} declares no $defs/{def} properties"))
+        .ok_or_else(|| format!("{schema} declares no $defs/{def} properties"))?
         .keys()
         .cloned()
-        .collect()
+        .collect())
 }
 
 /// The three structs behind the capture analysis, field for field, in both
@@ -1047,20 +1077,20 @@ fn schema_def_properties(schema: &str, def: &str) -> Vec<String> {
 /// The census the other four schemas were given after 0.5.159, applied from
 /// the first day this one exists rather than after a field slips past it.
 #[test]
-fn every_capture_analysis_field_is_declared_and_nothing_else_is() {
-    let root = schema_properties("capture_analysis.schema.json");
+fn every_capture_analysis_field_is_declared_and_nothing_else_is() -> Result<(), TestError> {
+    let root = schema_properties("capture_analysis.schema.json")?;
     for (name, declared) in [
         ("CaptureAnalysis", root),
         (
             "Finding",
-            schema_def_properties("capture_analysis.schema.json", "finding"),
+            schema_def_properties("capture_analysis.schema.json", "finding")?,
         ),
         (
             "Evidence",
-            schema_def_properties("capture_analysis.schema.json", "evidence"),
+            schema_def_properties("capture_analysis.schema.json", "evidence")?,
         ),
     ] {
-        let (missing, phantom) = census(&struct_fields("src/analysis.rs", name), &declared);
+        let (missing, phantom) = census(&struct_fields("src/analysis.rs", name)?, &declared);
         assert!(
             missing.is_empty(),
             "capture_analysis.schema.json declares no {missing:?}, which `{name}` \
@@ -1073,6 +1103,7 @@ fn every_capture_analysis_field_is_declared_and_nothing_else_is() {
              cannot emit"
         );
     }
+    Ok(())
 }
 
 /// The schema's closed vocabularies are the analysis's own tables.
@@ -1084,21 +1115,21 @@ fn every_capture_analysis_field_is_declared_and_nothing_else_is() {
 /// Both directions, so the schema cannot keep a kind the code dropped either.
 #[cfg(feature = "native")]
 #[test]
-fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
+fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() -> Result<(), TestError> {
     use sipnab::analysis::{EVIDENCE_CAP, FindingKind, Severity};
-    let doc: Value = serde_json::from_str(
-        &std::fs::read_to_string(repo_schemas().join("capture_analysis.schema.json"))
-            .expect("read capture_analysis.schema.json"),
-    )
-    .expect("schema is JSON");
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(
+        repo_schemas().join("capture_analysis.schema.json"),
+    )?)?;
     let finding = &doc["$defs"]["finding"]["properties"];
-    let listed = |v: &Value| -> Vec<String> {
+    let listed = |v: &Value| -> Result<Vec<String>, TestError> {
         v["enum"]
             .as_array()
-            .unwrap_or_else(|| panic!("expected an enum, got {v}"))
+            .ok_or_else(|| format!("expected an enum, got {v}"))?
             .iter()
-            .map(|s| s.as_str().expect("enum values are strings").to_string())
-            .collect()
+            .map(|s| -> Result<_, TestError> {
+                Ok(s.as_str().ok_or("enum values are strings")?.to_string())
+            })
+            .collect::<Result<_, TestError>>()
     };
 
     let kinds: Vec<String> = FindingKind::ALL
@@ -1106,7 +1137,7 @@ fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
         .map(|k| k.meta().id.to_string())
         .collect();
     assert_eq!(
-        listed(&finding["kind"]),
+        listed(&finding["kind"])?,
         kinds,
         "the schema's kind enum is not FindingKind::ALL in ladder order"
     );
@@ -1115,7 +1146,7 @@ fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
         .iter()
         .map(|s| s.as_str().to_string())
         .collect();
-    assert_eq!(listed(&finding["severity"]), severities);
+    assert_eq!(listed(&finding["severity"])?, severities);
 
     let mut units: Vec<String> = FindingKind::ALL
         .iter()
@@ -1123,7 +1154,7 @@ fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
         .collect();
     units.sort();
     units.dedup();
-    let mut declared_units = listed(&finding["unit"]);
+    let mut declared_units = listed(&finding["unit"])?;
     declared_units.sort();
     assert_eq!(
         declared_units, units,
@@ -1135,6 +1166,7 @@ fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
         Some(EVIDENCE_CAP as u64),
         "the schema's evidence cap is not EVIDENCE_CAP"
     );
+    Ok(())
 }
 
 /// The schema's closed `counts` object names exactly the analysis's labels.
@@ -1144,17 +1176,15 @@ fn the_capture_analysis_schema_vocabularies_are_the_analysis_tables() {
 /// the table; this holds the schema to it in both directions.
 #[cfg(feature = "native")]
 #[test]
-fn the_capture_analysis_schema_counts_are_the_count_label_table() {
+fn the_capture_analysis_schema_counts_are_the_count_label_table() -> Result<(), TestError> {
     use sipnab::analysis::CountLabel;
     let declared: std::collections::BTreeSet<String> = {
-        let doc: Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_schemas().join("capture_analysis.schema.json"))
-                .expect("read capture_analysis.schema.json"),
-        )
-        .expect("schema is JSON");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(
+            repo_schemas().join("capture_analysis.schema.json"),
+        )?)?;
         doc["$defs"]["evidence"]["properties"]["counts"]["properties"]
             .as_object()
-            .expect("the counts object declares its labels")
+            .ok_or("the counts object declares its labels")?
             .keys()
             .cloned()
             .collect()
@@ -1173,6 +1203,7 @@ fn the_capture_analysis_schema_counts_are_the_count_label_table() {
         "capture_analysis.schema.json and CountLabel::ALL disagree about the \
          count labels"
     );
+    Ok(())
 }
 
 /// The vCon working group's schema file, byte for byte as its publisher
@@ -1200,12 +1231,13 @@ const VCON_PUBLISHER_SHA256: &str =
 /// the `url` → `content_hash` dependency this copy carries; it is the
 /// repository file at the commit above.
 #[test]
-fn the_vendored_vcon_schema_is_the_publishers_file_but_for_one_deviation() {
+fn the_vendored_vcon_schema_is_the_publishers_file_but_for_one_deviation() -> Result<(), TestError>
+{
     use sha2::{Digest, Sha256};
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let bytes = std::fs::read(root.join(VCON_PUBLISHER_FILE))
-        .unwrap_or_else(|e| panic!("read {VCON_PUBLISHER_FILE}: {e}"));
+        .map_err(|e| format!("read {VCON_PUBLISHER_FILE}: {e}"))?;
     let digest: String = Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -1229,11 +1261,10 @@ fn the_vendored_vcon_schema_is_the_publishers_file_but_for_one_deviation() {
             other => other.clone(),
         }
     }
-    let publisher: Value = serde_json::from_slice(&bytes).expect("the publisher's file is JSON");
-    let ours: Value = serde_json::from_str(
-        &std::fs::read_to_string(repo_schemas().join("vcon.schema.json")).expect("read"),
-    )
-    .expect("JSON");
+    let publisher: Value = serde_json::from_slice(&bytes)?;
+    let ours: Value = serde_json::from_str(&std::fs::read_to_string(
+        repo_schemas().join("vcon.schema.json"),
+    )?)?;
     let mut ours = without_comments(&ours);
     assert_eq!(
         ours["definitions"]["Dialog"]["required"],
@@ -1251,4 +1282,5 @@ fn the_vendored_vcon_schema_is_the_publishers_file_but_for_one_deviation() {
         "tests/schemas/vcon.schema.json differs from the publisher's file at more \
          than the one documented point"
     );
+    Ok(())
 }

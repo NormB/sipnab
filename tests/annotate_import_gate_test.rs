@@ -31,6 +31,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Where the annotate module and the packet-comment type may be named.
 const PERMITTED: &[&str] = &[
     "src/annotate/",
@@ -59,7 +63,7 @@ fn repo() -> PathBuf {
 }
 
 /// Every `.rs` file under `src/`, as a repo-relative `/`-separated path.
-fn sources() -> Vec<(String, String)> {
+fn sources() -> Result<Vec<(String, String)>, TestError> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -78,14 +82,10 @@ fn sources() -> Vec<(String, String)> {
     files.sort();
     files
         .into_iter()
-        .map(|p| {
-            let rel = p
-                .strip_prefix(repo())
-                .expect("under the repo")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {rel}: {e}"));
-            (rel, text)
+        .map(|p| -> Result<(String, String), TestError> {
+            let rel = p.strip_prefix(repo())?.to_string_lossy().replace('\\', "/");
+            let text = std::fs::read_to_string(&p).map_err(|e| format!("read {rel}: {e}"))?;
+            Ok((rel, text))
         })
         .collect()
 }
@@ -266,8 +266,8 @@ fn violations_in(files: &[(String, String)]) -> (Vec<String>, usize) {
 
 /// The rule, over the real tree.
 #[test]
-fn only_the_permitted_modules_name_the_notes_module_or_the_comment_type() {
-    let files = sources();
+fn only_the_permitted_modules_name_the_notes_module_or_the_comment_type() -> Result<(), TestError> {
+    let files = sources()?;
     // 266 files when this gate was written.
     assert!(
         files.len() >= 250,
@@ -291,11 +291,12 @@ fn only_the_permitted_modules_name_the_notes_module_or_the_comment_type() {
          either nothing uses it (then this gate guards nothing) or the scan \
          cannot see code"
     );
+    Ok(())
 }
 
 /// The scanner flags an import in a forbidden module, by every spelling.
 #[test]
-fn the_scanner_flags_every_spelling_of_the_import() {
+fn the_scanner_flags_every_spelling_of_the_import() -> Result<(), TestError> {
     for source in [
         "use crate::annotate::Notes;\n",
         "use crate::{capture, annotate};\n",
@@ -307,11 +308,12 @@ fn the_scanner_flags_every_spelling_of_the_import() {
         assert_eq!(bad.len(), 1, "must flag {source:?}: {bad:?}");
         assert!(bad[0].contains("FORBIDDEN"), "{bad:?}");
     }
+    Ok(())
 }
 
 /// And it does not flag prose, strings or a longer identifier.
 #[test]
-fn the_scanner_ignores_comments_strings_and_longer_identifiers() {
+fn the_scanner_ignores_comments_strings_and_longer_identifiers() -> Result<(), TestError> {
     let source = "// use crate::annotate::Notes;\n\
                   /* nested /* crate::annotate */ still a comment */\n\
                   /// annotate the transport tag\n\
@@ -327,11 +329,12 @@ fn the_scanner_ignores_comments_strings_and_longer_identifiers() {
         bad.is_empty(),
         "prose and longer names are not imports: {bad:?}"
     );
+    Ok(())
 }
 
 /// A permitted module is permitted, and its use counts toward the floor.
 #[test]
-fn a_permitted_use_is_counted_and_not_flagged() {
+fn a_permitted_use_is_counted_and_not_flagged() -> Result<(), TestError> {
     let files = vec![
         (
             "src/capture/writer.rs".to_string(),
@@ -348,4 +351,5 @@ fn a_permitted_use_is_counted_and_not_flagged() {
         permitted_uses, 1,
         "the writer's use counts; the module's own does not"
     );
+    Ok(())
 }

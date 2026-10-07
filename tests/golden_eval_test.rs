@@ -64,6 +64,7 @@
 
 #![cfg(feature = "mcp")]
 
+use mcp::TestError;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -291,14 +292,19 @@ enum Oracle {
 
 impl Oracle {
     /// Re-derive the value from `capture`, or `None` for [`Oracle::Recorded`].
-    fn derive(&self, capture: &[u8]) -> Option<u64> {
-        match self {
+    fn derive(&self, capture: &[u8]) -> Result<Option<u64>, TestError> {
+        Ok(match self {
             Self::ByteLiteral { literal } => Some(count_occurrences(capture, literal.as_bytes())),
-            Self::ByteHex { hex } => Some(count_occurrences(capture, &decode_hex(hex))),
+            Self::ByteHex { hex } => Some(count_occurrences(capture, &decode_hex(hex)?)),
             Self::DistinctCallIds => Some(distinct_call_ids(capture)),
-            Self::Sum { of } => of.iter().map(|o| o.derive(capture)).sum(),
+            Self::Sum { of } => of
+                .iter()
+                .map(|o| o.derive(capture))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .sum(),
             Self::Recorded => None,
-        }
+        })
     }
 }
 
@@ -309,15 +315,16 @@ fn count_occurrences(haystack: &[u8], needle: &[u8]) -> u64 {
 }
 
 /// Bytes of an even-length hex string.
-fn decode_hex(hex: &str) -> Vec<u8> {
+fn decode_hex(hex: &str) -> Result<Vec<u8>, TestError> {
     assert!(
         hex.len().is_multiple_of(2) && !hex.is_empty(),
         "hex oracle {hex:?} is not an even number of digits"
     );
-    (0..hex.len())
+    let bytes = (0..hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex digit"))
-        .collect()
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()?;
+    Ok(bytes)
 }
 
 /// Distinct `Call-ID:` header values in a capture file.
@@ -443,14 +450,14 @@ impl Verdict {
 // ── running the corpus ──────────────────────────────────────────────
 
 /// Parse the embedded corpus.
-fn corpus() -> Corpus {
-    serde_json::from_str(CORPUS_JSON).expect("tests/golden-answers/mcp-eval.json is valid JSON")
+fn corpus() -> Result<Corpus, TestError> {
+    Ok(serde_json::from_str(CORPUS_JSON)?)
 }
 
 /// Read a capture named the way the corpus names it.
-fn read_capture(relative: &str) -> Vec<u8> {
+fn read_capture(relative: &str) -> Result<Vec<u8>, TestError> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    Ok(std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?)
 }
 
 /// Compare one answer, honoring the case's match kind.
@@ -470,8 +477,8 @@ fn answer_matches(expected: &Value, actual: &Value, kind: MatchKind) -> bool {
 ///
 /// Every case is reported, not just the first: an eval that stops at the first
 /// wrong answer hides how much of the surface moved.
-fn run_capture(capture: &str) {
-    let corpus = corpus();
+fn run_capture(capture: &str) -> Result<(), TestError> {
+    let corpus = corpus()?;
     let cases: Vec<&Case> = corpus
         .cases
         .iter()
@@ -483,13 +490,13 @@ fn run_capture(capture: &str) {
          capture was renamed in the corpus and not here, or the cases were deleted."
     );
 
-    let bytes = read_capture(capture);
-    let mut session = McpSession::start_or_panic(capture, &[]);
+    let bytes = read_capture(capture)?;
+    let mut session = McpSession::start(capture, &[])?;
     let mut failures: Vec<String> = Vec::new();
 
     for case in &cases {
-        let reply = session.ok_or_panic(&case.tool, case.arguments.clone());
-        let oracle = case.oracle.derive(&bytes);
+        let reply = session.ok(&case.tool, case.arguments.clone())?;
+        let oracle = case.oracle.derive(&bytes)?;
         let oracle_agrees = oracle.map(|v| case.expected.as_u64() == Some(v));
 
         let Some(actual) = case.answer.resolve(&reply) else {
@@ -558,6 +565,7 @@ fn run_capture(capture: &str) {
         cases.len(),
         failures.join("\n\n"),
     );
+    Ok(())
 }
 
 // ── the eval ────────────────────────────────────────────────────────
@@ -565,20 +573,23 @@ fn run_capture(capture: &str) {
 /// The capture big enough to exceed one page, and therefore the only one that
 /// can spring the trap PB13 names.
 #[test]
-fn golden_answers_hold_on_the_branch_scenario_capture() {
-    run_capture(BRANCH);
+fn golden_answers_hold_on_the_branch_scenario_capture() -> Result<(), TestError> {
+    run_capture(BRANCH)?;
+    Ok(())
 }
 
 /// Five calls, four failure classes, one success: per-call answers.
 #[test]
-fn golden_answers_hold_on_the_problem_call_capture() {
-    run_capture(PROBLEM);
+fn golden_answers_hold_on_the_problem_call_capture() -> Result<(), TestError> {
+    run_capture(PROBLEM)?;
+    Ok(())
 }
 
 /// Media answers, where the two calls differ from each other.
 #[test]
-fn golden_answers_hold_on_the_g711_capture() {
-    run_capture(G711);
+fn golden_answers_hold_on_the_g711_capture() -> Result<(), TestError> {
+    run_capture(G711)?;
+    Ok(())
 }
 
 // ── the corpus has to stay a corpus ─────────────────────────────────
@@ -589,8 +600,8 @@ fn golden_answers_hold_on_the_g711_capture() {
 /// a change-detector that has been let in, and it will assert a wrong number
 /// as confidently as a right one.
 #[test]
-fn every_case_records_how_its_answer_was_derived() {
-    let corpus = corpus();
+fn every_case_records_how_its_answer_was_derived() -> Result<(), TestError> {
+    let corpus = corpus()?;
     let mut offenders = Vec::new();
     for case in &corpus.cases {
         // Naming a command is the testable proxy for "somebody can repeat
@@ -612,6 +623,7 @@ fn every_case_records_how_its_answer_was_derived() {
         "these cases cannot be re-derived, which makes them change-detectors:\n  {}",
         offenders.join("\n  "),
     );
+    Ok(())
 }
 
 /// A trap case has to name a value that is actually WRONG.
@@ -621,8 +633,8 @@ fn every_case_records_how_its_answer_was_derived() {
 /// pass whether or not the tool reported its truncation. That is the vacuous
 /// eval, and it is caught here rather than shipped.
 #[test]
-fn every_trap_case_names_an_answer_the_trap_would_get_wrong() {
-    let corpus = corpus();
+fn every_trap_case_names_an_answer_the_trap_would_get_wrong() -> Result<(), TestError> {
+    let corpus = corpus()?;
     let mut traps = 0usize;
     let mut offenders = Vec::new();
     for case in &corpus.cases {
@@ -650,6 +662,7 @@ fn every_trap_case_names_an_answer_the_trap_would_get_wrong() {
          mistaken for a total, so a corpus that stops asking about it stops testing \
          the thing it was built for."
     );
+    Ok(())
 }
 
 /// The oracles run, and produce the golden answer.
@@ -660,13 +673,13 @@ fn every_trap_case_names_an_answer_the_trap_would_get_wrong() {
 /// at. Here it is the only thing under test, so a broken instrument fails
 /// before it can quietly excuse a broken tool.
 #[test]
-fn the_independent_oracles_run_and_produce_a_number() {
-    let corpus = corpus();
+fn the_independent_oracles_run_and_produce_a_number() -> Result<(), TestError> {
+    let corpus = corpus()?;
     let mut checked = 0usize;
     let mut offenders = Vec::new();
     for case in &corpus.cases {
-        let bytes = read_capture(&case.capture);
-        let Some(value) = case.oracle.derive(&bytes) else {
+        let bytes = read_capture(&case.capture)?;
+        let Some(value) = case.oracle.derive(&bytes)? else {
             continue;
         };
         checked += 1;
@@ -696,6 +709,7 @@ fn the_independent_oracles_run_and_produce_a_number() {
          failure report would read ANSWER CHANGED, which is the verdict that tells a \
          reader nothing."
     );
+    Ok(())
 }
 
 /// The corpus spans several captures and several tools.
@@ -703,8 +717,8 @@ fn the_independent_oracles_run_and_produce_a_number() {
 /// One capture and one tool would make this an expensive unit test. The whole
 /// claim is about the SURFACE an agent talks to.
 #[test]
-fn the_corpus_spans_several_captures_and_several_tools() {
-    let corpus = corpus();
+fn the_corpus_spans_several_captures_and_several_tools() -> Result<(), TestError> {
+    let corpus = corpus()?;
     let captures: std::collections::BTreeSet<&str> =
         corpus.cases.iter().map(|c| c.capture.as_str()).collect();
     let tools: std::collections::BTreeSet<&str> =
@@ -726,6 +740,7 @@ fn the_corpus_spans_several_captures_and_several_tools() {
         captures, driven,
         "a capture in the corpus has no test function of its own, so its cases never run"
     );
+    Ok(())
 }
 
 /// The questions the fixtures cannot answer are written down, with reasons.
@@ -735,8 +750,8 @@ fn the_corpus_spans_several_captures_and_several_tools() {
 /// question is answerable — which is not true of these fixtures — or that
 /// nobody wrote down the ones that are not.
 #[test]
-fn the_corpus_names_the_questions_the_fixtures_cannot_answer() {
-    let corpus = corpus();
+fn the_corpus_names_the_questions_the_fixtures_cannot_answer() -> Result<(), TestError> {
+    let corpus = corpus()?;
     assert!(
         corpus.unanswerable.len() >= 3,
         "only {} question(s) recorded as unanswerable",
@@ -770,6 +785,7 @@ fn the_corpus_names_the_questions_the_fixtures_cannot_answer() {
         "the unanswerable list is not carrying its reasons:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 // ── the classifier, driven directly ─────────────────────────────────
@@ -779,7 +795,7 @@ fn the_corpus_names_the_questions_the_fixtures_cannot_answer() {
 /// The verdict that must not be softened: the tool said something the bytes do
 /// not support, in this run, with the re-derivation right beside it.
 #[test]
-fn a_disagreement_the_oracle_contradicts_is_reported_as_a_wrong_answer() {
+fn a_disagreement_the_oracle_contradicts_is_reported_as_a_wrong_answer() -> Result<(), TestError> {
     let v = classify(false, Some(true));
     assert_eq!(v, Verdict::WrongAnswer);
     assert!(v.headline().contains("WRONG"), "{}", v.headline());
@@ -788,6 +804,7 @@ fn a_disagreement_the_oracle_contradicts_is_reported_as_a_wrong_answer() {
         "the guidance must forbid the easy fix: {}",
         v.guidance()
     );
+    Ok(())
 }
 
 /// A disagreement with no oracle is reported as a change, not as a defect.
@@ -796,7 +813,7 @@ fn a_disagreement_the_oracle_contradicts_is_reported_as_a_wrong_answer() {
 /// re-derive the answer. Overclaiming here would teach the next reader to
 /// distrust the WRONG ANSWER verdict too.
 #[test]
-fn a_disagreement_with_no_oracle_is_reported_as_a_change_not_a_defect() {
+fn a_disagreement_with_no_oracle_is_reported_as_a_change_not_a_defect() -> Result<(), TestError> {
     let v = classify(false, None);
     assert_eq!(v, Verdict::AnswerChanged);
     assert!(v.headline().contains("CHANGED"), "{}", v.headline());
@@ -810,6 +827,7 @@ fn a_disagreement_with_no_oracle_is_reported_as_a_change_not_a_defect() {
         "the guidance must admit what it does not know: {}",
         v.guidance()
     );
+    Ok(())
 }
 
 /// A moved oracle is reported even when the tool still agrees.
@@ -818,7 +836,7 @@ fn a_disagreement_with_no_oracle_is_reported_as_a_change_not_a_defect() {
 /// both the tool and the oracle would keep the suite green while nothing in it
 /// was still being checked.
 #[test]
-fn a_moved_oracle_is_reported_even_when_the_tool_still_agrees() {
+fn a_moved_oracle_is_reported_even_when_the_tool_still_agrees() -> Result<(), TestError> {
     assert_eq!(classify(true, Some(false)), Verdict::GroundTruthMoved);
     assert_eq!(
         classify(false, Some(false)),
@@ -827,4 +845,5 @@ fn a_moved_oracle_is_reported_even_when_the_tool_still_agrees() {
     // ...and the two clean cases stay clean, or the harness cries wolf.
     assert_eq!(classify(true, Some(true)), Verdict::Agrees);
     assert_eq!(classify(true, None), Verdict::Agrees);
+    Ok(())
 }

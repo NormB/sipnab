@@ -18,6 +18,8 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/corpus.rs"]
 mod corpus_support;
 
@@ -48,7 +50,7 @@ fn holds_members(path: &Path) -> bool {
 }
 
 /// `(closing counts, dialogs)` for one `-I` input.
-fn read(input: &Path, recursive: bool) -> (String, usize) {
+fn read(input: &Path, recursive: bool) -> Result<(String, usize), TestError> {
     let spec = input.display().to_string();
     let mut args = vec![
         "-N",
@@ -66,23 +68,22 @@ fn read(input: &Path, recursive: bool) -> (String, usize) {
         .args(&args)
         .env("SIPNAB_LOG", "info")
         .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let counts = stderr
         .lines()
         .find_map(|l| l.split_once("sipnab: ").map(|(_, r)| r.to_string()))
         .filter(|l| l.contains("SIP messages"))
-        .unwrap_or_else(|| panic!("no summary for {spec}:\n{stderr}"));
+        .ok_or_else(|| format!("no summary for {spec}:\n{stderr}"))?;
     let dialogs = stdout.lines().filter(|l| l.contains("\"call_id\"")).count();
-    (counts, dialogs)
+    Ok((counts, dialogs))
 }
 
 #[test]
-fn every_corpus_archive_reads_like_its_unpacked_members() {
+fn every_corpus_archive_reads_like_its_unpacked_members() -> Result<(), TestError> {
     let Some(root) = corpus_support::root() else {
-        return;
+        return Ok(());
     };
     let have_tar = Command::new("tar")
         .arg("--version")
@@ -94,7 +95,7 @@ fn every_corpus_archive_reads_like_its_unpacked_members() {
             std::io::stderr(),
             "SKIPPED every_corpus_archive_reads_like_its_unpacked_members: no `tar` on PATH"
         );
-        return;
+        return Ok(());
     }
     let archives: Vec<_> = corpus_support::walk(&root)
         .into_iter()
@@ -110,21 +111,20 @@ fn every_corpus_archive_reads_like_its_unpacked_members() {
         );
     }
     for archive in &archives {
-        let scratch = tempfile::tempdir().expect("scratch");
+        let scratch = tempfile::tempdir()?;
         let status = Command::new("tar")
             .arg("-xf")
             .arg(archive)
             .arg("-C")
             .arg(scratch.path())
-            .status()
-            .expect("run tar");
+            .status()?;
         assert!(
             status.success(),
             "tar could not unpack {}",
             archive.display()
         );
-        let from_archive = read(archive, false);
-        let from_directory = read(scratch.path(), true);
+        let from_archive = read(archive, false)?;
+        let from_directory = read(scratch.path(), true)?;
         assert_eq!(
             from_archive,
             from_directory,
@@ -132,4 +132,5 @@ fn every_corpus_archive_reads_like_its_unpacked_members() {
             archive.display()
         );
     }
+    Ok(())
 }

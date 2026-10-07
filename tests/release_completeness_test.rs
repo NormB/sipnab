@@ -28,13 +28,17 @@
 
 use std::process::Command;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// `v1.2.3` -> `(1, 2, 3)`; anything else is not a release tag.
@@ -49,28 +53,27 @@ fn release_tag(tag: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// What `website/config.toml` advertises to visitors.
-fn published_version() -> String {
-    regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .unwrap()
-        .captures(&read("website/config.toml"))
-        .expect("website/config.toml has no published_version")[1]
-        .to_string()
+fn published_version() -> Result<String, TestError> {
+    Ok(regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
+        .captures(&read("website/config.toml")?)
+        .ok_or("website/config.toml has no published_version")?[1]
+        .to_string())
 }
 
 /// Every release tag in the checkout, newest last.
-fn release_tags() -> Vec<(u32, u32, u32)> {
+fn release_tags() -> Result<Vec<(u32, u32, u32)>, TestError> {
     let out = Command::new("git")
         .args(["tag", "--list"])
         .current_dir(repo())
         .output()
-        .expect("git tag --list");
+        .map_err(|e| format!("git tag --list: {e}"))?;
     let mut v: Vec<(u32, u32, u32)> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(release_tag)
         .collect();
     v.sort_unstable();
     v.dedup();
-    v
+    Ok(v)
 }
 
 fn as_tag(v: (u32, u32, u32)) -> String {
@@ -108,15 +111,15 @@ fn published_asset_count(tag: &str) -> Option<usize> {
 /// release of lag unconditionally; this permits it only while the assets are
 /// still building, and asks rather than assumes.
 #[test]
-fn the_site_advertises_the_newest_release_whose_assets_exist() {
-    let releases = release_tags();
+fn the_site_advertises_the_newest_release_whose_assets_exist() -> Result<(), TestError> {
+    let releases = release_tags()?;
     assert!(
         releases.len() >= 5,
         "only {} release tags visible; a shallow clone cannot answer this and \
          a pass would mean nothing",
         releases.len()
     );
-    let newest = *releases.last().expect("checked non-empty");
+    let newest = *releases.last().ok_or("checked non-empty")?;
     let tag = as_tag(newest);
 
     let Some(assets) = published_asset_count(&tag) else {
@@ -129,7 +132,7 @@ fn the_site_advertises_the_newest_release_whose_assets_exist() {
             Ok(_) => format!("gh works but cannot read release {tag}"),
         };
         eprintln!("release-completeness: cannot verify assets for {tag} — {reason}");
-        return;
+        return Ok(());
     };
 
     assert!(
@@ -138,7 +141,7 @@ fn the_site_advertises_the_newest_release_whose_assets_exist() {
          after the tag went up"
     );
     assert_eq!(
-        published_version(),
+        published_version()?,
         format!("{}.{}.{}", newest.0, newest.1, newest.2),
         "{tag} has published {assets} assets, so the release is downloadable — \
          but website/config.toml still advertises {}. Every /download link, the \
@@ -147,22 +150,22 @@ fn the_site_advertises_the_newest_release_whose_assets_exist() {
          A release is finished when a visitor is offered it, not when its \
          artifacts exist. Land the follow-up commit that moves \
          published_version, release_date and the install.md download markers.",
-        published_version()
+        published_version()?
     );
+    Ok(())
 }
 
 /// 2. `release_date` belongs to `published_version`, not to the crate.
 #[test]
-fn the_advertised_release_date_belongs_to_the_advertised_version() {
-    let cfg = read("website/config.toml");
-    let date = regex::Regex::new(r#"(?m)^release_date = "([^"]+)""#)
-        .unwrap()
+fn the_advertised_release_date_belongs_to_the_advertised_version() -> Result<(), TestError> {
+    let cfg = read("website/config.toml")?;
+    let date = regex::Regex::new(r#"(?m)^release_date = "([^"]+)""#)?
         .captures(&cfg)
-        .expect("no release_date")[1]
+        .ok_or("no release_date")?[1]
         .to_string();
-    let published = published_version();
+    let published = published_version()?;
 
-    let changelog = read("CHANGELOG.md");
+    let changelog = read("CHANGELOG.md")?;
     let heading = format!("## [{published}] - {date}");
     assert!(
         changelog.contains(&heading),
@@ -172,20 +175,21 @@ fn the_advertised_release_date_belongs_to_the_advertised_version() {
          entry — pairing a version with another release's date is how a \
          changelog and a download page come to disagree."
     );
+    Ok(())
 }
 
 /// 3. Download instructions name the advertised version, never the crate's.
 #[test]
-fn every_download_instruction_names_the_advertised_version() {
-    let published = published_version();
-    let install = read("docs/install.md");
+fn every_download_instruction_names_the_advertised_version() -> Result<(), TestError> {
+    let published = published_version()?;
+    let install = read("docs/install.md")?;
     let markers = [
         r"SIPNAB_VERSION=(\d+\.\d+\.\d+)",
         r"e\.g\. (\d+\.\d+\.\d+)",
         r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.",
     ];
     for pattern in markers {
-        let re = regex::Regex::new(pattern).unwrap();
+        let re = regex::Regex::new(pattern)?;
         let mut seen = 0;
         for cap in re.captures_iter(&install) {
             seen += 1;
@@ -202,6 +206,7 @@ fn every_download_instruction_names_the_advertised_version() {
             "no `{pattern}` marker in docs/install.md — the page changed"
         );
     }
+    Ok(())
 }
 
 /// 4. The crate version is never BEHIND what the site advertises.
@@ -209,9 +214,10 @@ fn every_download_instruction_names_the_advertised_version() {
 /// The reverse mistake: shipping a site that offers a release newer than the
 /// tree it was built from means the next release silently goes backwards.
 #[test]
-fn the_crate_version_is_never_behind_the_advertised_release() {
-    let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION"))).expect("crate version");
-    let published = release_tag(&format!("v{}", published_version())).expect("published_version");
+fn the_crate_version_is_never_behind_the_advertised_release() -> Result<(), TestError> {
+    let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION"))).ok_or("crate version")?;
+    let published =
+        release_tag(&format!("v{}", published_version()?)).ok_or("published_version")?;
     assert!(
         crate_v >= published,
         "Cargo.toml is {:?} but the site advertises {:?}. The tree cannot be \
@@ -219,18 +225,20 @@ fn the_crate_version_is_never_behind_the_advertised_release() {
         crate_v,
         published
     );
+    Ok(())
 }
 
 /// 5. The changelog has an entry for whatever the site advertises.
 #[test]
-fn the_advertised_version_has_a_changelog_entry() {
-    let published = published_version();
-    let changelog = read("CHANGELOG.md");
+fn the_advertised_version_has_a_changelog_entry() -> Result<(), TestError> {
+    let published = published_version()?;
+    let changelog = read("CHANGELOG.md")?;
     assert!(
         changelog.contains(&format!("## [{published}]")),
         "the site advertises {published} and CHANGELOG.md never mentions it, \
          so a visitor who downloads it cannot find out what changed"
     );
+    Ok(())
 }
 
 /// 6. A dated changelog entry means a tag exists for it — except the one
@@ -253,19 +261,19 @@ fn the_advertised_version_has_a_changelog_entry() {
 /// on, the previously exempt entry must have a tag or this fails — so
 /// forgetting to tag is caught by the NEXT cut rather than never.
 #[test]
-fn every_dated_changelog_entry_names_a_real_tag() {
-    let changelog = read("CHANGELOG.md");
-    let re = regex::Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}").unwrap();
-    let tags = release_tags();
+fn every_dated_changelog_entry_names_a_real_tag() -> Result<(), TestError> {
+    let changelog = read("CHANGELOG.md")?;
+    let re = regex::Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}")?;
+    let tags = release_tags()?;
     assert!(tags.len() >= 5, "shallow clone: {} tags", tags.len());
     let newest_five: Vec<(u32, u32, u32)> = tags.iter().rev().take(5).copied().collect();
     let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION")))
-        .expect("Cargo.toml version is x.y.z");
+        .ok_or("Cargo.toml version is x.y.z")?;
 
     let mut checked = 0;
     let mut exempted = 0;
     for cap in re.captures_iter(&changelog).take(5) {
-        let v = release_tag(&format!("v{}", &cap[1])).expect("x.y.z");
+        let v = release_tag(&format!("v{}", &cap[1])).ok_or("x.y.z")?;
         if v == crate_v && !newest_five.contains(&v) {
             exempted += 1;
             continue;
@@ -292,6 +300,7 @@ fn every_dated_changelog_entry_names_a_real_tag() {
          or every entry took the in-flight exemption, which would make this \
          gate vacuous"
     );
+    Ok(())
 }
 
 /// 7. The in-flight exemption applies to the crate version and nothing else.
@@ -301,25 +310,24 @@ fn every_dated_changelog_entry_names_a_real_tag() {
 /// "any untagged entry", a changelog could accumulate dated releases nobody
 /// published and gate 6 would keep passing.
 #[test]
-fn only_the_crate_version_may_be_dated_without_a_tag() {
-    let changelog = read("CHANGELOG.md");
-    let re = regex::Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}").unwrap();
-    let tags = release_tags();
+fn only_the_crate_version_may_be_dated_without_a_tag() -> Result<(), TestError> {
+    let changelog = read("CHANGELOG.md")?;
+    let re = regex::Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}")?;
+    let tags = release_tags()?;
     let newest_five: Vec<(u32, u32, u32)> = tags.iter().rev().take(5).copied().collect();
     let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION")))
-        .expect("Cargo.toml version is x.y.z");
+        .ok_or("Cargo.toml version is x.y.z")?;
 
-    let untagged: Vec<String> = re
-        .captures_iter(&changelog)
-        .take(5)
-        .filter_map(|c| {
-            let v = release_tag(&format!("v{}", &c[1])).expect("x.y.z");
-            (!newest_five.contains(&v)).then(|| c[1].to_string())
-        })
-        .collect();
+    let mut untagged: Vec<String> = Vec::new();
+    for c in re.captures_iter(&changelog).take(5) {
+        let v = release_tag(&format!("v{}", &c[1])).ok_or("x.y.z")?;
+        if !newest_five.contains(&v) {
+            untagged.push(c[1].to_string());
+        }
+    }
 
     for v in &untagged {
-        let parsed = release_tag(&format!("v{v}")).expect("x.y.z");
+        let parsed = release_tag(&format!("v{v}")).ok_or("x.y.z")?;
         assert_eq!(
             parsed,
             crate_v,
@@ -335,20 +343,21 @@ fn only_the_crate_version_may_be_dated_without_a_tag() {
         "more than one dated entry has no tag: {untagged:?}. At most the \
          in-flight release can be in that state."
     );
+    Ok(())
 }
 
 /// 7. The homepage version badge agrees with the download page.
 #[test]
-fn the_homepage_badge_and_the_download_page_name_one_version() {
-    let published = published_version();
-    let index = read("website/templates/index.html");
+fn the_homepage_badge_and_the_download_page_name_one_version() -> Result<(), TestError> {
+    let published = published_version()?;
+    let index = read("website/templates/index.html")?;
     // `published_version` ONLY. A homepage version that is not drawn from the
     // config is a historical fact -- "measured v0.5.122" dates a benchmark run
     // and must not follow the current release. Two gates were deleted from
     // this repo for advancing exactly that kind of marker, which made a stale
     // measurement look freshly taken; see the comments in
     // `docs_current_version_markers_match_cargo`.
-    let re = regex::Regex::new(r"(?m)published_version").unwrap();
+    let re = regex::Regex::new(r"(?m)published_version")?;
     assert!(
         re.is_match(&index),
         "the homepage template no longer reads `published_version`, so the \
@@ -356,7 +365,7 @@ fn the_homepage_badge_and_the_download_page_name_one_version() {
     );
     // Any hardcoded 0.5.x that is NOT introduced by a word like `measured` is
     // a literal claiming to be current.
-    let literal = regex::Regex::new(r"(\w+)\s+v?(0\.5\.\d+)").unwrap();
+    let literal = regex::Regex::new(r"(\w+)\s+v?(0\.5\.\d+)")?;
     for cap in literal.captures_iter(&index) {
         let (context, version) = (&cap[1], &cap[2]);
         if context.eq_ignore_ascii_case("measured") || context.eq_ignore_ascii_case("at") {
@@ -371,6 +380,7 @@ fn the_homepage_badge_and_the_download_page_name_one_version() {
              `published_version` instead of typing it."
         );
     }
+    Ok(())
 }
 
 /// 8. `published_version` names a tag that actually exists.
@@ -379,16 +389,17 @@ fn the_homepage_badge_and_the_download_page_name_one_version() {
 /// and an assumption no test in the file states is one that can quietly stop
 /// being true.
 #[test]
-fn the_advertised_version_has_a_tag() {
-    let published = published_version();
-    let wanted = release_tag(&format!("v{published}")).expect("x.y.z");
-    let tags = release_tags();
+fn the_advertised_version_has_a_tag() -> Result<(), TestError> {
+    let published = published_version()?;
+    let wanted = release_tag(&format!("v{published}")).ok_or("x.y.z")?;
+    let tags = release_tags()?;
     assert!(tags.len() >= 5, "shallow clone: {} tags", tags.len());
     assert!(
         tags.contains(&wanted),
         "the site advertises {published}, which has no tag — every download \
          link 404s"
     );
+    Ok(())
 }
 
 /// 9. The generated site mirror agrees with its source about the version.
@@ -397,10 +408,10 @@ fn the_advertised_version_has_a_tag() {
 /// the other. That is how a tag push came to be blocked by a stale mirror
 /// carrying prose its source no longer had.
 #[test]
-fn the_install_page_and_its_mirror_agree_about_the_version() {
-    let source = read("docs/install.md");
-    let mirror = read("website/content/docs/install.md");
-    let re = regex::Regex::new(r"SIPNAB_VERSION=(\d+\.\d+\.\d+)").unwrap();
+fn the_install_page_and_its_mirror_agree_about_the_version() -> Result<(), TestError> {
+    let source = read("docs/install.md")?;
+    let mirror = read("website/content/docs/install.md")?;
+    let re = regex::Regex::new(r"SIPNAB_VERSION=(\d+\.\d+\.\d+)")?;
     let from = |t: &str| -> Vec<String> { re.captures_iter(t).map(|c| c[1].to_string()).collect() };
     let (a, b) = (from(&source), from(&mirror));
     assert!(!a.is_empty(), "no SIPNAB_VERSION in docs/install.md");
@@ -410,6 +421,7 @@ fn the_install_page_and_its_mirror_agree_about_the_version() {
          Regenerate with scripts/build-site-pages.py — editing the source \
          alone leaves the page a visitor actually reads unchanged."
     );
+    Ok(())
 }
 
 /// 10. Nothing on the site advertises a version newer than the newest tag.
@@ -419,15 +431,16 @@ fn the_install_page_and_its_mirror_agree_about_the_version() {
 /// opens this file to learn what "released" means should not have to find the
 /// other half somewhere else.
 #[test]
-fn the_site_never_advertises_a_version_that_was_never_tagged() {
-    let published = release_tag(&format!("v{}", published_version())).expect("x.y.z");
-    let tags = release_tags();
+fn the_site_never_advertises_a_version_that_was_never_tagged() -> Result<(), TestError> {
+    let published = release_tag(&format!("v{}", published_version()?)).ok_or("x.y.z")?;
+    let tags = release_tags()?;
     assert!(tags.len() >= 5, "shallow clone: {} tags", tags.len());
-    let newest = *tags.last().expect("non-empty");
+    let newest = *tags.last().ok_or("non-empty")?;
     assert!(
         published <= newest,
         "the site advertises {published:?}, which is NEWER than the newest tag \
          {newest:?}. published_version moves after a release publishes, never \
          while cutting one."
     );
+    Ok(())
 }

@@ -31,6 +31,9 @@ mod support;
 
 use support::capture_probe::{can_live_capture, interpret, loopback_for, probe, probe_device};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 const BIN: &str = env!("CARGO_BIN_EXE_sipnab");
 
 /// The probe's answer is what a real capture attempt does.
@@ -38,7 +41,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_sipnab");
 /// Both directions. A probe that always said `false` would satisfy a one-sided
 /// test on an unprivileged runner and be exactly the original bug.
 #[test]
-fn the_probe_agrees_with_what_the_binary_actually_does() {
+fn the_probe_agrees_with_what_the_binary_actually_does() -> Result<(), TestError> {
     // The REAL attempt first, so the probe is judged against an observation
     // this test made itself rather than against its own opinion.
     let out = Command::new(BIN)
@@ -52,8 +55,7 @@ fn the_probe_agrees_with_what_the_binary_actually_does() {
             "--no-cli-print",
         ])
         .env("SIPNAB_LOG", "info")
-        .output()
-        .expect("the binary under test is runnable");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     let opened = stderr.contains(&format!("Capturing on '{}'", probe_device()));
     let refused = stderr.contains("Operation not permitted")
@@ -71,7 +73,7 @@ fn the_probe_agrees_with_what_the_binary_actually_does() {
             "a real attempt neither opened nor was refused, so the probe must \
              say it cannot tell, not {answer:?}.\nstderr:\n{stderr}"
         );
-        return;
+        return Ok(());
     }
 
     // An attempt with a clear outcome makes `None` a WRONG answer, not an
@@ -88,6 +90,7 @@ fn the_probe_agrees_with_what_the_binary_actually_does() {
         probe_device(),
         if opened { "OPENED" } else { "was REFUSED" }
     );
+    Ok(())
 }
 
 /// One implementation, not one per test file.
@@ -95,7 +98,7 @@ fn the_probe_agrees_with_what_the_binary_actually_does() {
 /// The bug shipped in two places and the copies agreed, so a reader comparing
 /// them found nothing. Any new local copy fails this.
 #[test]
-fn only_one_live_capture_probe_exists_in_the_suite() {
+fn only_one_live_capture_probe_exists_in_the_suite() -> Result<(), TestError> {
     let mut definitions = Vec::new();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut stack = vec![dir];
@@ -144,6 +147,7 @@ fn only_one_live_capture_probe_exists_in_the_suite() {
          and both read the wrong process.",
         definitions.len()
     );
+    Ok(())
 }
 
 /// Probing twice returns the same answer.
@@ -152,7 +156,7 @@ fn only_one_live_capture_probe_exists_in_the_suite() {
 /// exhausted a one-shot permission -- would answer differently the second time,
 /// and every caller after the first would branch on a fiction.
 #[test]
-fn the_memo_returns_what_a_fresh_probe_returns() {
+fn the_memo_returns_what_a_fresh_probe_returns() -> Result<(), TestError> {
     let memoized = can_live_capture(BIN);
     let fresh = probe(BIN);
     assert_eq!(
@@ -166,6 +170,7 @@ fn the_memo_returns_what_a_fresh_probe_returns() {
         memoized,
         "the memo is not stable across calls"
     );
+    Ok(())
 }
 
 /// The probe must not answer from the asking process's own capabilities.
@@ -176,11 +181,10 @@ fn the_memo_returns_what_a_fresh_probe_returns() {
 /// definition, so reading it to decide what the CHILD can do is the mistake
 /// itself rather than an implementation of it.
 #[test]
-fn the_probe_does_not_decide_from_the_asking_process() {
+fn the_probe_does_not_decide_from_the_asking_process() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/capture_probe.rs"),
-    )
-    .expect("the probe module is readable");
+    )?;
     let code: String = src
         .lines()
         .filter(|l| {
@@ -202,6 +206,7 @@ fn the_probe_does_not_decide_from_the_asking_process() {
         "the probe no longer runs the binary, so it is answering from \
          something other than an observation"
     );
+    Ok(())
 }
 
 // ── The platform half, driven off-platform ───────────────────────────
@@ -224,7 +229,7 @@ const OPENED: &str = "INFO sipnab::capture::live: Capturing on 'lo' (link_type=1
 /// interpretation at all. Recorded stderr from both platforms runs through it
 /// on every machine now, including the one that cannot produce the other's.
 #[test]
-fn a_refusal_is_recognized_whichever_platform_phrased_it() {
+fn a_refusal_is_recognized_whichever_platform_phrased_it() -> Result<(), TestError> {
     assert_eq!(
         interpret(LINUX_REFUSED, "lo"),
         Some(false),
@@ -246,6 +251,7 @@ fn a_refusal_is_recognized_whichever_platform_phrased_it() {
         None,
         "an ambiguous run must say it cannot tell rather than guess"
     );
+    Ok(())
 }
 
 /// The loopback mapping is right for EVERY platform, not just this one.
@@ -255,7 +261,7 @@ fn a_refusal_is_recognized_whichever_platform_phrased_it() {
 /// Linux while the macOS branch was wrong, which is the shape of the defect
 /// this pays for.
 #[test]
-fn the_loopback_mapping_is_right_on_every_platform() {
+fn the_loopback_mapping_is_right_on_every_platform() -> Result<(), TestError> {
     for bsd in ["macos", "ios", "freebsd", "openbsd", "netbsd", "dragonfly"] {
         assert_eq!(
             loopback_for(bsd),
@@ -278,6 +284,7 @@ fn the_loopback_mapping_is_right_on_every_platform() {
         "the probe's device does not come from the mapping, so the mapping \
          being right proves nothing about the probe"
     );
+    Ok(())
 }
 
 /// Nothing decides the answer before the binary is asked.
@@ -288,11 +295,10 @@ fn the_loopback_mapping_is_right_on_every_platform() {
 /// rather than model the rules" must not open with a platform assumption of
 /// its own.
 #[test]
-fn no_platform_path_decides_before_the_binary_is_asked() {
+fn no_platform_path_decides_before_the_binary_is_asked() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/capture_probe.rs"),
-    )
-    .expect("the probe module is readable");
+    )?;
     let code: String = src
         .lines()
         .filter(|l| {
@@ -311,11 +317,12 @@ fn no_platform_path_decides_before_the_binary_is_asked() {
     }
     let spawn_at = code
         .find("Command::new(binary)")
-        .expect("the probe must still run the binary");
-    let body_at = code.find("pub fn probe(").expect("probe() exists");
+        .ok_or("the probe must still run the binary")?;
+    let body_at = code.find("pub fn probe(").ok_or("probe() exists")?;
     let before_spawn = &code[body_at..spawn_at];
     assert!(
         !before_spawn.contains("return "),
         "probe() returns before it runs the binary:\n{before_spawn}"
     );
+    Ok(())
 }

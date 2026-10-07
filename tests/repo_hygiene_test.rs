@@ -25,6 +25,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -44,10 +48,10 @@ const HOOK_LOG_PREFIX: &str = "sipnab-pre-";
 /// behind. They are invisible to `git status`, which is exactly why they
 /// accumulate: nothing that anyone looks at ever mentions them.
 #[test]
-fn the_git_directory_holds_no_stray_logs() {
+fn the_git_directory_holds_no_stray_logs() -> Result<(), TestError> {
     let gitdir = repo().join(".git");
     if !gitdir.is_dir() {
-        return; // a worktree or a bare checkout: nothing to police
+        return Ok(()); // a worktree or a bare checkout: nothing to police
     }
     let stray = stray_git_files(&gitdir);
     assert!(
@@ -59,6 +63,7 @@ fn the_git_directory_holds_no_stray_logs() {
          a durable log.",
         stray.len()
     );
+    Ok(())
 }
 
 /// The working tree holds no editor or test detritus.
@@ -67,12 +72,12 @@ fn the_git_directory_holds_no_stray_logs() {
 /// insta snapshot awaiting review. Each is legitimate for an hour and mess
 /// after that, and a stale one silently misleads the next person to look.
 #[test]
-fn the_working_tree_holds_no_conflict_or_snapshot_detritus() {
+fn the_working_tree_holds_no_conflict_or_snapshot_detritus() -> Result<(), TestError> {
     let out = Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=all"])
         .current_dir(repo())
         .output()
-        .expect("git status");
+        .map_err(|e| format!("git status: {e}"))?;
     let listing = String::from_utf8_lossy(&out.stdout);
 
     let detritus: Vec<&str> = listing
@@ -92,6 +97,7 @@ fn the_working_tree_holds_no_conflict_or_snapshot_detritus() {
          An abandoned .snap.new is how a rejected snapshot gets mistaken for \
          an accepted one."
     );
+    Ok(())
 }
 
 /// No abandoned worktree with nothing in it worth keeping.
@@ -178,7 +184,7 @@ fn idle_for(path: &str) -> std::time::Duration {
 /// every other checkout's hook: seen 2026-10-01 for a worktree another session
 /// had created seconds before. Only a clean worktree idle for a day is reported.
 #[test]
-fn a_clean_worktree_is_abandoned_only_once_it_has_sat_idle() {
+fn a_clean_worktree_is_abandoned_only_once_it_has_sat_idle() -> Result<(), TestError> {
     let hour = std::time::Duration::from_secs(3600);
     assert!(
         !is_abandoned(0, 0, hour),
@@ -192,11 +198,12 @@ fn a_clean_worktree_is_abandoned_only_once_it_has_sat_idle() {
         !is_abandoned(3, 0, 1000 * hour) && !is_abandoned(0, 1, 1000 * hour),
         "work worth keeping is never abandoned, however old"
     );
+    Ok(())
 }
 
 /// The probe must scrub the hook's variables, or it reports the wrong repo.
 #[test]
-fn the_worktree_probe_scrubs_the_hooks_git_environment() {
+fn the_worktree_probe_scrubs_the_hooks_git_environment() -> Result<(), TestError> {
     let c = worktree_git(".");
     let removed: Vec<&std::ffi::OsStr> = c
         .get_envs()
@@ -210,11 +217,13 @@ fn the_worktree_probe_scrubs_the_hooks_git_environment() {
              parent repository and call a live worktree abandoned"
         );
     }
+    Ok(())
 }
 
 /// Committed-but-unmerged work counts. Only nothing-at-all is abandoned.
 #[test]
-fn a_worktree_is_kept_for_uncommitted_or_unmerged_work_and_dropped_for_neither() {
+fn a_worktree_is_kept_for_uncommitted_or_unmerged_work_and_dropped_for_neither()
+-> Result<(), TestError> {
     assert!(
         worth_keeping(22, 0),
         "uncommitted changes are worth keeping"
@@ -228,6 +237,7 @@ fn a_worktree_is_kept_for_uncommitted_or_unmerged_work_and_dropped_for_neither()
         !worth_keeping(0, 0),
         "nothing uncommitted and nothing unmerged is disk cost"
     );
+    Ok(())
 }
 
 /// The worktrees this gate may report, out of `git worktree list --porcelain`.
@@ -287,7 +297,7 @@ fn reportable_worktrees(listing: &str, running_in: &Path) -> Vec<String> {
 /// makes the gate report nothing ever, and one that is too narrow sends a
 /// reader to a command that refuses.
 #[test]
-fn the_main_checkout_is_never_reported_and_a_linked_one_still_is() {
+fn the_main_checkout_is_never_reported_and_a_linked_one_still_is() -> Result<(), TestError> {
     let listing = "\
 worktree /srv/checkouts/sipnab
 HEAD 1111111111111111111111111111111111111111
@@ -321,6 +331,7 @@ branch refs/heads/running
             "/srv/checkouts/sipnab-running".to_string(),
         ]
     );
+    Ok(())
 }
 
 /// A LOCKED worktree is in use, and git itself refuses to remove it.
@@ -334,7 +345,7 @@ branch refs/heads/running
 /// main-checkout exclusion below answers. An unlocked clean one is still
 /// reported.
 #[test]
-fn a_locked_worktree_is_in_use_and_never_reported() {
+fn a_locked_worktree_is_in_use_and_never_reported() -> Result<(), TestError> {
     let listing = "\
 worktree /srv/checkouts/sipnab
 HEAD 1111111111111111111111111111111111111111
@@ -360,6 +371,7 @@ branch refs/heads/idle
         "both locked worktrees (with and without a reason) are in use; the \
          unlocked idle one is still reportable"
     );
+    Ok(())
 }
 
 /// **Second of two.** The exclusion cannot swallow the rule.
@@ -370,7 +382,7 @@ branch refs/heads/idle
 /// identical from the outside. This pins that the parser really is reading the
 /// listing rather than returning an empty vector whatever it is given.
 #[test]
-fn the_worktree_parser_reads_the_listing_it_is_given() {
+fn the_worktree_parser_reads_the_listing_it_is_given() -> Result<(), TestError> {
     assert!(
         reportable_worktrees("", Path::new("/nowhere")).is_empty(),
         "an empty listing has nothing to report"
@@ -399,15 +411,16 @@ HEAD 0
         4,
         "five worktrees, one of them main, leaves four reportable"
     );
+    Ok(())
 }
 
 #[test]
-fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
+fn no_worktree_is_abandoned_with_nothing_worth_keeping() -> Result<(), TestError> {
     let out = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(repo())
         .output()
-        .expect("git worktree list");
+        .map_err(|e| format!("git worktree list: {e}"))?;
     let listing = String::from_utf8_lossy(&out.stdout);
 
     let mut abandoned = Vec::new();
@@ -453,6 +466,7 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
          `scripts/clean-stale.py --apply`.",
         abandoned.len()
     );
+    Ok(())
 }
 
 /// Whether a file body still carries merge-conflict markers.
@@ -477,12 +491,12 @@ fn has_conflict_markers(body: &str) -> bool {
 /// conflict marker through to a commit is missing the one thing every reader
 /// would spot first.
 #[test]
-fn no_tracked_file_carries_a_conflict_marker() {
+fn no_tracked_file_carries_a_conflict_marker() -> Result<(), TestError> {
     let out = Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     let mut bad = Vec::new();
     for rel in String::from_utf8_lossy(&out.stdout).split('\0') {
         if rel.is_empty() {
@@ -499,12 +513,13 @@ fn no_tracked_file_carries_a_conflict_marker() {
         bad.is_empty(),
         "tracked file(s) still carry merge-conflict markers: {bad:?}"
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the predicate must see a marker when one is there, and
 /// must not mistake a Markdown underline for one.
 #[test]
-fn the_conflict_marker_predicate_sees_markers_and_not_underlines() {
+fn the_conflict_marker_predicate_sees_markers_and_not_underlines() -> Result<(), TestError> {
     assert!(has_conflict_markers(
         "a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n"
     ));
@@ -514,6 +529,7 @@ fn the_conflict_marker_predicate_sees_markers_and_not_underlines() {
         "a setext underline is not a marker"
     );
     assert!(!has_conflict_markers("no markers here\n"));
+    Ok(())
 }
 
 // ── the script: driven against fixtures, because it deletes ─────────────
@@ -524,20 +540,20 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(name: &str) -> Self {
+    fn new(name: &str) -> Result<Self, TestError> {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".git")).expect("fixture .git");
-        Self { root }
+        std::fs::create_dir_all(root.join(".git")).map_err(|e| format!("fixture .git: {e}"))?;
+        Ok(Self { root })
     }
 
-    fn write(&self, rel: &str, body: &str) -> PathBuf {
+    fn write(&self, rel: &str, body: &str) -> Result<PathBuf, TestError> {
         let p = self.root.join(rel);
         if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent).expect("fixture parent");
+            std::fs::create_dir_all(parent).map_err(|e| format!("fixture parent: {e}"))?;
         }
-        std::fs::write(&p, body).expect("fixture file");
-        p
+        std::fs::write(&p, body).map_err(|e| format!("fixture file: {e}"))?;
+        Ok(p)
     }
 
     /// Backdate a file so age-gated rules can see it as old.
@@ -550,19 +566,19 @@ impl Fixture {
     ///
     /// The write is verified, because a setup step that silently does nothing
     /// looks exactly like one that worked.
-    fn age(&self, rel: &str, days: u64) {
+    fn age(&self, rel: &str, days: u64) -> Result<(), TestError> {
         let p = self.root.join(rel);
         let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
         let f = std::fs::File::options()
             .write(true)
             .open(&p)
-            .unwrap_or_else(|e| panic!("open {} to backdate: {e}", p.display()));
+            .map_err(|e| format!("open {} to backdate: {e}", p.display()))?;
         f.set_modified(when)
-            .unwrap_or_else(|e| panic!("backdate {}: {e}", p.display()));
+            .map_err(|e| format!("backdate {}: {e}", p.display()))?;
 
         let got = std::fs::metadata(&p)
             .and_then(|m| m.modified())
-            .unwrap_or_else(|e| panic!("read back mtime of {}: {e}", p.display()));
+            .map_err(|e| format!("read back mtime of {}: {e}", p.display()))?;
         let age = std::time::SystemTime::now()
             .duration_since(got)
             .unwrap_or_default();
@@ -575,22 +591,25 @@ impl Fixture {
             age.as_secs(),
             days
         );
+        Ok(())
     }
 
-    fn run(&self, extra: &[&str]) -> (bool, String) {
+    fn run(&self, extra: &[&str]) -> Result<(bool, String), TestError> {
         let mut cmd = Command::new("python3");
         cmd.arg(repo().join("scripts/clean-stale.py"))
             .arg("--root")
             .arg(&self.root)
             .args(extra)
             .current_dir(repo());
-        let out = cmd.output().expect("run scripts/clean-stale.py");
+        let out = cmd
+            .output()
+            .map_err(|e| format!("run scripts/clean-stale.py: {e}"))?;
         let said = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        (out.status.success(), said)
+        Ok((out.status.success(), said))
     }
 
     fn exists(&self, rel: &str) -> bool {
@@ -607,11 +626,11 @@ impl Fixture {
 /// The property that makes a cleaner safe to run by accident. A tool that
 /// deletes unless told not to will one day be run without the flag.
 #[test]
-fn the_cleaner_removes_nothing_without_apply() {
-    let f = Fixture::new("clean_dryrun");
-    f.write(".git/scratch.log", "x");
-    f.age(".git/scratch.log", 30);
-    let (ok, said) = f.run(&[]);
+fn the_cleaner_removes_nothing_without_apply() -> Result<(), TestError> {
+    let f = Fixture::new("clean_dryrun")?;
+    f.write(".git/scratch.log", "x")?;
+    f.age(".git/scratch.log", 30)?;
+    let (ok, said) = f.run(&[])?;
     let survived = f.exists(".git/scratch.log");
     f.discard();
 
@@ -626,6 +645,7 @@ fn the_cleaner_removes_nothing_without_apply() {
         "a dry run must NAME what it would remove, or there is no way to \
          check it before granting it --apply:\n{said}"
     );
+    Ok(())
 }
 
 /// With `--apply`, a stray log goes and a hook's log stays.
@@ -634,14 +654,14 @@ fn the_cleaner_removes_nothing_without_apply() {
 /// Deleting `sipnab-pre-commit-tests.log` would remove the durable record
 /// CLAUDE.md tells me to read instead of making a second copy.
 #[test]
-fn apply_removes_a_stray_log_and_keeps_the_hooks_own() {
-    let f = Fixture::new("clean_apply");
-    f.write(".git/scratch.log", "x");
-    f.write(".git/sipnab-pre-commit-tests.log", "x");
-    f.age(".git/scratch.log", 30);
-    f.age(".git/sipnab-pre-commit-tests.log", 30);
+fn apply_removes_a_stray_log_and_keeps_the_hooks_own() -> Result<(), TestError> {
+    let f = Fixture::new("clean_apply")?;
+    f.write(".git/scratch.log", "x")?;
+    f.write(".git/sipnab-pre-commit-tests.log", "x")?;
+    f.age(".git/scratch.log", 30)?;
+    f.age(".git/sipnab-pre-commit-tests.log", 30)?;
 
-    let (ok, said) = f.run(&["--apply"]);
+    let (ok, said) = f.run(&["--apply"])?;
     let stray_gone = !f.exists(".git/scratch.log");
     let hook_kept = f.exists(".git/sipnab-pre-commit-tests.log");
     f.discard();
@@ -653,6 +673,7 @@ fn apply_removes_a_stray_log_and_keeps_the_hooks_own() {
         "the cleaner deleted a hook's own durable log, which is the record \
          the gates are supposed to be read from:\n{said}"
     );
+    Ok(())
 }
 
 /// A file young enough to still be in use is left alone.
@@ -660,10 +681,10 @@ fn apply_removes_a_stray_log_and_keeps_the_hooks_own() {
 /// The cleaner may run at any time, including while a build is writing. An age
 /// floor is what separates a cleaner from a race.
 #[test]
-fn a_recent_file_is_never_removed() {
-    let f = Fixture::new("clean_recent");
-    f.write(".git/scratch.log", "x"); // written just now
-    let (ok, said) = f.run(&["--apply"]);
+fn a_recent_file_is_never_removed() -> Result<(), TestError> {
+    let f = Fixture::new("clean_recent")?;
+    f.write(".git/scratch.log", "x")?; // written just now
+    let (ok, said) = f.run(&["--apply"])?;
     let survived = f.exists(".git/scratch.log");
     f.discard();
 
@@ -673,6 +694,7 @@ fn a_recent_file_is_never_removed() {
         "a file written seconds ago was deleted. The cleaner can run while a \
          build is writing, and an age floor is what keeps it from racing one."
     );
+    Ok(())
 }
 
 /// Detritus goes; source does not.
@@ -681,23 +703,23 @@ fn a_recent_file_is_never_removed() {
 /// catastrophe found long after the fact, so the negative case is asserted
 /// beside the positive one every time.
 #[test]
-fn apply_removes_detritus_and_never_source() {
-    let f = Fixture::new("clean_detritus");
+fn apply_removes_detritus_and_never_source() -> Result<(), TestError> {
+    let f = Fixture::new("clean_detritus")?;
     for (path, _) in [
         ("src/thing.rs.orig", ()),
         ("src/thing.rs.rej", ()),
         ("tests/snapshots/x.snap.new", ()),
         ("notes.bak", ()),
     ] {
-        f.write(path, "x");
-        f.age(path, 30);
+        f.write(path, "x")?;
+        f.age(path, 30)?;
     }
-    f.write("src/thing.rs", "fn main() {}");
-    f.write("tests/snapshots/x.snap", "snapshot");
-    f.age("src/thing.rs", 30);
-    f.age("tests/snapshots/x.snap", 30);
+    f.write("src/thing.rs", "fn main() {}")?;
+    f.write("tests/snapshots/x.snap", "snapshot")?;
+    f.age("src/thing.rs", 30)?;
+    f.age("tests/snapshots/x.snap", 30)?;
 
-    let (ok, said) = f.run(&["--apply"]);
+    let (ok, said) = f.run(&["--apply"])?;
     let removed = [
         "src/thing.rs.orig",
         "src/thing.rs.rej",
@@ -718,6 +740,7 @@ fn apply_removes_detritus_and_never_source() {
          undone, and the reason every positive case here has this assertion \
          beside it:\n{said}"
     );
+    Ok(())
 }
 
 /// It reports what it reclaimed.
@@ -725,11 +748,11 @@ fn apply_removes_detritus_and_never_source() {
 /// A cleanup that runs unattended and says nothing is indistinguishable from
 /// one that is not running at all — which is how the 1.6 TB accumulated.
 #[test]
-fn the_cleaner_reports_what_it_reclaimed() {
-    let f = Fixture::new("clean_report");
-    f.write(".git/scratch.log", &"x".repeat(4096));
-    f.age(".git/scratch.log", 30);
-    let (ok, said) = f.run(&["--apply"]);
+fn the_cleaner_reports_what_it_reclaimed() -> Result<(), TestError> {
+    let f = Fixture::new("clean_report")?;
+    f.write(".git/scratch.log", &"x".repeat(4096))?;
+    f.age(".git/scratch.log", 30)?;
+    let (ok, said) = f.run(&["--apply"])?;
     f.discard();
 
     assert!(ok, "the cleaner failed:\n{said}");
@@ -738,6 +761,7 @@ fn the_cleaner_reports_what_it_reclaimed() {
         "the cleaner must say what it did; a silent unattended job cannot be \
          told from one that never ran:\n{said}"
     );
+    Ok(())
 }
 
 /// It refuses a root that is not a checkout.
@@ -745,11 +769,11 @@ fn the_cleaner_reports_what_it_reclaimed() {
 /// Pointed at the wrong directory, a recursive remover is a disaster. It must
 /// decline rather than do its best.
 #[test]
-fn the_cleaner_refuses_a_root_that_is_not_a_checkout() {
+fn the_cleaner_refuses_a_root_that_is_not_a_checkout() -> Result<(), TestError> {
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("clean_notarepo");
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("mkdir");
-    std::fs::write(root.join("important.rs"), "fn main() {}").expect("write");
+    std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e}"))?;
+    std::fs::write(root.join("important.rs"), "fn main() {}").map_err(|e| format!("write: {e}"))?;
 
     let out = Command::new("python3")
         .arg(repo().join("scripts/clean-stale.py"))
@@ -758,7 +782,7 @@ fn the_cleaner_refuses_a_root_that_is_not_a_checkout() {
         .arg("--apply")
         .current_dir(repo())
         .output()
-        .expect("run cleaner");
+        .map_err(|e| format!("run cleaner: {e}"))?;
     let kept = root.join("important.rs").exists();
     let code = out.status.code().unwrap_or(-1);
     let _ = std::fs::remove_dir_all(&root);
@@ -773,6 +797,7 @@ fn the_cleaner_refuses_a_root_that_is_not_a_checkout() {
         kept,
         "the cleaner deleted from a directory it should have refused"
     );
+    Ok(())
 }
 
 /// The gate and the cleaner agree on what a hook log looks like.
@@ -781,9 +806,9 @@ fn the_cleaner_refuses_a_root_that_is_not_a_checkout() {
 /// cleaner preserves it, one of them is wrong and the disagreement shows up as
 /// a gate nobody can satisfy.
 #[test]
-fn the_gate_and_the_cleaner_share_one_definition_of_a_hook_log() {
+fn the_gate_and_the_cleaner_share_one_definition_of_a_hook_log() -> Result<(), TestError> {
     let script = std::fs::read_to_string(repo().join("scripts/clean-stale.py"))
-        .expect("read scripts/clean-stale.py");
+        .map_err(|e| format!("read scripts/clean-stale.py: {e}"))?;
     assert!(
         script.contains(HOOK_LOG_PREFIX),
         "the cleaner does not know the {HOOK_LOG_PREFIX:?} prefix this gate \
@@ -795,9 +820,9 @@ fn the_gate_and_the_cleaner_share_one_definition_of_a_hook_log() {
     let line = script
         .lines()
         .find(|l| l.starts_with("STRAY_REDIRECT_SUFFIXES = ("))
-        .expect("the cleaner declares STRAY_REDIRECT_SUFFIXES on one line");
+        .ok_or("the cleaner declares STRAY_REDIRECT_SUFFIXES on one line")?;
     let theirs: Vec<&str> = regex::Regex::new(r#""(\.[a-z]+)""#)
-        .expect("regex")
+        .map_err(|e| format!("regex: {e}"))?
         .captures_iter(line)
         .map(|c| c.get(1).map_or("", |m| m.as_str()))
         .collect();
@@ -806,6 +831,7 @@ fn the_gate_and_the_cleaner_share_one_definition_of_a_hook_log() {
         "the gate and the cleaner disagree about which extensions a stray \
          redirect target has"
     );
+    Ok(())
 }
 
 /// Build caches survive when there is room.
@@ -814,10 +840,10 @@ fn the_gate_and_the_cleaner_share_one_definition_of_a_hook_log() {
 /// makes this safe to wire to a timer instead of something run by hand after
 /// the disk already hurts.
 #[test]
-fn build_caches_are_kept_when_there_is_room() {
-    let f = Fixture::new("clean_cache_room");
-    f.write("target/debug/incremental/x.bin", "payload");
-    let (ok, said) = f.run(&["--apply", "--reclaim-build-cache", "--disk-floor-gb", "1"]);
+fn build_caches_are_kept_when_there_is_room() -> Result<(), TestError> {
+    let f = Fixture::new("clean_cache_room")?;
+    f.write("target/debug/incremental/x.bin", "payload")?;
+    let (ok, said) = f.run(&["--apply", "--reclaim-build-cache", "--disk-floor-gb", "1"])?;
     let kept = f.exists("target/debug/incremental/x.bin");
     f.discard();
 
@@ -832,6 +858,7 @@ fn build_caches_are_kept_when_there_is_room() {
         "the cleaner must say WHY it kept the caches, or a timer that never \
          reclaims looks the same as one that is not running:\n{said}"
     );
+    Ok(())
 }
 
 /// Under pressure they go — and only with `--apply`.
@@ -840,11 +867,11 @@ fn build_caches_are_kept_when_there_is_room() {
 /// hundreds of gigabytes, so it is the one whose plan most needs reading
 /// before it is granted the flag.
 #[test]
-fn build_caches_go_only_under_pressure_and_only_with_apply() {
-    let f = Fixture::new("clean_cache_pressure");
-    f.write("target/debug/incremental/x.bin", "payload");
+fn build_caches_go_only_under_pressure_and_only_with_apply() -> Result<(), TestError> {
+    let f = Fixture::new("clean_cache_pressure")?;
+    f.write("target/debug/incremental/x.bin", "payload")?;
 
-    let (ok, plan) = f.run(&["--reclaim-build-cache", "--disk-floor-gb", "99999999"]);
+    let (ok, plan) = f.run(&["--reclaim-build-cache", "--disk-floor-gb", "99999999"])?;
     let survived_dry = f.exists("target/debug/incremental/x.bin");
 
     let (ok2, done) = f.run(&[
@@ -852,7 +879,7 @@ fn build_caches_go_only_under_pressure_and_only_with_apply() {
         "--reclaim-build-cache",
         "--disk-floor-gb",
         "99999999",
-    ]);
+    ])?;
     let gone = !f.exists("target/debug/incremental/x.bin");
     let source_kept = f.exists("target/debug");
     f.discard();
@@ -868,6 +895,7 @@ fn build_caches_go_only_under_pressure_and_only_with_apply() {
         source_kept,
         "the cleaner removed more than the cache directory:\n{done}"
     );
+    Ok(())
 }
 
 /// `deps/` is never touched.
@@ -876,16 +904,16 @@ fn build_caches_go_only_under_pressure_and_only_with_apply() {
 /// partial removal leaves cargo rebuilding in confusing ways, so reclaiming it
 /// is a `cargo clean` — a decision a person makes, not a cron job.
 #[test]
-fn the_cleaner_never_touches_the_dependency_cache() {
-    let f = Fixture::new("clean_deps_safe");
-    f.write("target/debug/deps/libthing.rlib", "artifact");
-    f.write("target/debug/incremental/x.bin", "payload");
+fn the_cleaner_never_touches_the_dependency_cache() -> Result<(), TestError> {
+    let f = Fixture::new("clean_deps_safe")?;
+    f.write("target/debug/deps/libthing.rlib", "artifact")?;
+    f.write("target/debug/incremental/x.bin", "payload")?;
     let (ok, said) = f.run(&[
         "--apply",
         "--reclaim-build-cache",
         "--disk-floor-gb",
         "99999999",
-    ]);
+    ])?;
     let deps_kept = f.exists("target/debug/deps/libthing.rlib");
     f.discard();
 
@@ -895,6 +923,7 @@ fn the_cleaner_never_touches_the_dependency_cache() {
         "the cleaner removed from target/debug/deps. Partial removal there \
          leaves cargo rebuilding in ways that look like corruption:\n{said}"
     );
+    Ok(())
 }
 
 // ── portability: a fixture that no-ops is worse than one that fails ─────
@@ -915,28 +944,29 @@ fn the_cleaner_never_touches_the_dependency_cache() {
 /// wrong then every assertion above is testing the fixture rather than the
 /// cleaner -- and it will say so in the language of the cleaner.
 #[test]
-fn backdating_a_fixture_file_actually_moves_its_mtime() {
-    let f = Fixture::new("age_primitive");
-    f.write(".git/probe.log", "x");
+fn backdating_a_fixture_file_actually_moves_its_mtime() -> Result<(), TestError> {
+    let f = Fixture::new("age_primitive")?;
+    f.write(".git/probe.log", "x")?;
 
     let before = std::fs::metadata(f.root.join(".git/probe.log"))
         .and_then(|m| m.modified())
-        .expect("mtime before");
-    f.age(".git/probe.log", 30);
+        .map_err(|e| format!("mtime before: {e}"))?;
+    f.age(".git/probe.log", 30)?;
     let after = std::fs::metadata(f.root.join(".git/probe.log"))
         .and_then(|m| m.modified())
-        .expect("mtime after");
+        .map_err(|e| format!("mtime after: {e}"))?;
     f.discard();
 
     let moved = before
         .duration_since(after)
-        .expect("backdating must move the mtime BACKWARDS");
+        .map_err(|e| format!("backdating must move the mtime BACKWARDS: {e}"))?;
     assert!(
         moved.as_secs() >= 29 * 86_400,
         "backdating moved the mtime by only {}s; the age floor cannot be \
          exercised and every age-gated test is measuring the wrong thing",
         moved.as_secs()
     );
+    Ok(())
 }
 
 /// The floor separates a recent file from a backdated one, in one run.
@@ -946,13 +976,13 @@ fn backdating_a_fixture_file_actually_moves_its_mtime() {
 /// pass the retention test. Only asserting both at once catches a backdating
 /// mechanism that has quietly stopped working.
 #[test]
-fn the_age_floor_separates_recent_from_backdated_in_one_run() {
-    let f = Fixture::new("age_both_ways");
-    f.write(".git/old.log", "x");
-    f.write(".git/new.log", "x");
-    f.age(".git/old.log", 30);
+fn the_age_floor_separates_recent_from_backdated_in_one_run() -> Result<(), TestError> {
+    let f = Fixture::new("age_both_ways")?;
+    f.write(".git/old.log", "x")?;
+    f.write(".git/new.log", "x")?;
+    f.age(".git/old.log", 30)?;
 
-    let (ok, said) = f.run(&["--apply"]);
+    let (ok, said) = f.run(&["--apply"])?;
     let old_gone = !f.exists(".git/old.log");
     let new_kept = f.exists(".git/new.log");
     f.discard();
@@ -964,6 +994,7 @@ fn the_age_floor_separates_recent_from_backdated_in_one_run() {
          recent kept={new_kept}. If BOTH went the floor is not applied; if \
          NEITHER went the backdating is not taking.\n{said}"
     );
+    Ok(())
 }
 
 /// No test shells out to read or write file metadata.
@@ -972,14 +1003,14 @@ fn the_age_floor_separates_recent_from_backdated_in_one_run() {
 /// exactly the flags a test reaches for. Rust's own filesystem API is
 /// portable, so there is no reason to leave the process.
 #[test]
-fn no_test_shells_out_for_file_metadata() {
+fn no_test_shells_out_for_file_metadata() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut scanned = 0;
     let out = Command::new("git")
         .args(["ls-files", "tests/"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files tests/");
+        .map_err(|e| format!("git ls-files tests/: {e}"))?;
     for file in String::from_utf8_lossy(&out.stdout).split_whitespace() {
         if !file.ends_with(".rs") {
             continue;
@@ -1010,6 +1041,7 @@ fn no_test_shells_out_for_file_metadata() {
          on the flags. Use std::fs, which is portable:\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// No executable line uses a GNU-only spelling.
@@ -1019,7 +1051,7 @@ fn no_test_shells_out_for_file_metadata() {
 /// macOS -- it fails in whatever way that platform's tool chooses, which was
 /// "silently do nothing" for the one that started this.
 #[test]
-fn no_executable_line_uses_a_gnu_only_spelling() {
+fn no_executable_line_uses_a_gnu_only_spelling() -> Result<(), TestError> {
     // Measured 2026-09-01: one real hit, `stat -c %s` in bench/live-capture.sh,
     // now `wc -c` which is POSIX. Everything else that matches is prose
     // explaining the hazard, which is why comment lines are skipped.
@@ -1034,7 +1066,7 @@ fn no_executable_line_uses_a_gnu_only_spelling() {
         .args(["ls-files", "scripts/", ".githooks/", "bench/"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
 
     let mut offenders = Vec::new();
     let mut scanned = 0;
@@ -1066,6 +1098,7 @@ fn no_executable_line_uses_a_gnu_only_spelling() {
          macOS:\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// The cleaner leaves the process entirely alone.
@@ -1075,9 +1108,9 @@ fn no_executable_line_uses_a_gnu_only_spelling() {
 /// same platform question the fixture just tripped over -- in the tool that
 /// DELETES things.
 #[test]
-fn the_cleaner_shells_out_to_nothing() {
+fn the_cleaner_shells_out_to_nothing() -> Result<(), TestError> {
     let script = std::fs::read_to_string(repo().join("scripts/clean-stale.py"))
-        .expect("read scripts/clean-stale.py");
+        .map_err(|e| format!("read scripts/clean-stale.py: {e}"))?;
     for forbidden in ["subprocess", "os.system", "Popen", "shell=True"] {
         assert!(
             !script.contains(forbidden),
@@ -1090,6 +1123,7 @@ fn the_cleaner_shells_out_to_nothing() {
         "the cleaner no longer uses pathlib; this check is reading the wrong \
          file"
     );
+    Ok(())
 }
 
 /// Every fixture lives under the cargo temp dir and nowhere else.
@@ -1099,10 +1133,10 @@ fn the_cleaner_shells_out_to_nothing() {
 /// escape -- a bug in the cleaner would delete real files rather than a
 /// throwaway tree.
 #[test]
-fn every_fixture_is_confined_to_the_cargo_temp_dir() {
+fn every_fixture_is_confined_to_the_cargo_temp_dir() -> Result<(), TestError> {
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     for name in ["confine_a", "confine_b"] {
-        let f = Fixture::new(name);
+        let f = Fixture::new(name)?;
         let root = f.root.clone();
         f.discard();
         assert!(
@@ -1115,6 +1149,7 @@ fn every_fixture_is_confined_to_the_cargo_temp_dir() {
             "a fixture root escapes upward: {root:?}"
         );
     }
+    Ok(())
 }
 
 /// Every capture fixture says where it came from.
@@ -1141,7 +1176,7 @@ fn every_fixture_is_confined_to_the_cargo_temp_dir() {
 /// than admitting the gap. A fixture moves off that list by gaining a real
 /// manifest entry, and the two sets are disjoint so a name cannot be in both.
 #[test]
-fn every_committed_capture_fixture_says_where_it_came_from() {
+fn every_committed_capture_fixture_says_where_it_came_from() -> Result<(), TestError> {
     // Fixtures that predate PROVENANCE.md. Do not add to this list: a new
     // fixture arrives through promote.sh, which writes the manifest entry.
     const PRE_MANIFEST: &[&str] = &[
@@ -1198,7 +1233,7 @@ fn every_committed_capture_fixture_says_where_it_came_from() {
     let dir = root.join("tests/pcap-samples");
     let manifest_path = root.join("tests/pcap-samples/PROVENANCE.md");
     let manifest = std::fs::read_to_string(&manifest_path)
-        .unwrap_or_else(|e| panic!("read tests/pcap-samples/PROVENANCE.md: {e}"));
+        .map_err(|e| format!("read tests/pcap-samples/PROVENANCE.md: {e}"))?;
 
     // Sections, in order, as `### <file name>` followed by its body.
     let mut sections: Vec<(String, String)> = Vec::new();
@@ -1258,9 +1293,13 @@ fn every_committed_capture_fixture_says_where_it_came_from() {
     // 4. Nothing is undocumented.
     let mut orphans: Vec<String> = Vec::new();
     let mut present = 0usize;
-    for entry in std::fs::read_dir(&dir).expect("read tests/pcap-samples") {
-        let entry = entry.expect("dir entry");
-        if !entry.file_type().expect("file type").is_file() {
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read tests/pcap-samples: {e}"))? {
+        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
+        if !entry
+            .file_type()
+            .map_err(|e| format!("file type: {e}"))?
+            .is_file()
+        {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -1293,6 +1332,7 @@ fn every_committed_capture_fixture_says_where_it_came_from() {
          be the directory walk breaking than the tree shrinking.",
         PRE_MANIFEST.len()
     );
+    Ok(())
 }
 
 // ── What counts as a stray file in `.git/` ─────────────────────────────
@@ -1331,7 +1371,7 @@ fn stray_git_files(gitdir: &Path) -> Vec<String> {
 
 /// A redirect target is stray whatever extension it was given.
 #[test]
-fn a_redirect_target_is_stray_whatever_its_extension() {
+fn a_redirect_target_is_stray_whatever_its_extension() -> Result<(), TestError> {
     for name in [
         "sipnab-bg-commit.log", // the file that tripped this gate on 2026-09-12
         "bg-commit.out",        // the same mistake the old `.log` rule would miss
@@ -1342,11 +1382,12 @@ fn a_redirect_target_is_stray_whatever_its_extension() {
             "{name} is a redirect target nobody owns"
         );
     }
+    Ok(())
 }
 
 /// The hooks' own files, and git's, are never called stray.
 #[test]
-fn the_hooks_and_gits_own_files_are_never_called_stray() {
+fn the_hooks_and_gits_own_files_are_never_called_stray() -> Result<(), TestError> {
     for name in [
         "sipnab-pre-commit-tests.log",
         "sipnab-pre-commit-tests.live",
@@ -1358,6 +1399,7 @@ fn the_hooks_and_gits_own_files_are_never_called_stray() {
     ] {
         assert!(!is_stray_git_file(name), "{name} is owned, not stray");
     }
+    Ok(())
 }
 
 /// The scanner, driven against a real directory, reports exactly the strays.
@@ -1366,20 +1408,21 @@ fn the_hooks_and_gits_own_files_are_never_called_stray() {
 /// that filtered on the wrong field, or stopped at the first match, would pass
 /// every predicate test and miss a real file.
 #[test]
-fn the_stray_scan_reports_exactly_the_strays_in_a_real_directory() {
-    let f = Fixture::new("stray_git_scan");
+fn the_stray_scan_reports_exactly_the_strays_in_a_real_directory() -> Result<(), TestError> {
+    let f = Fixture::new("stray_git_scan")?;
     for owned in [
         "sipnab-pre-commit-tests.log",
         "sipnab-test-wedge-stacks.txt",
         "COMMIT_EDITMSG",
     ] {
-        f.write(&format!(".git/{owned}"), "x");
+        f.write(&format!(".git/{owned}"), "x")?;
     }
     for stray in ["bg-commit.out", "scratch.log", "cargo.err"] {
-        f.write(&format!(".git/{stray}"), "x");
+        f.write(&format!(".git/{stray}"), "x")?;
     }
     // A directory named like a log is not a file, and is not this rule's.
-    std::fs::create_dir_all(f.root.join(".git/weird.log")).expect("fixture dir");
+    std::fs::create_dir_all(f.root.join(".git/weird.log"))
+        .map_err(|e| format!("fixture dir: {e}"))?;
     let found = stray_git_files(&f.root.join(".git"));
     f.discard();
     assert_eq!(
@@ -1391,15 +1434,16 @@ fn the_stray_scan_reports_exactly_the_strays_in_a_real_directory() {
         ],
         "the scan must report every stray file and nothing owned"
     );
+    Ok(())
 }
 
 /// With `--apply`, a stray `.out` goes too -- the cleaner acts on the widened rule.
 #[test]
-fn apply_removes_a_stray_out_file_as_well_as_a_log() {
-    let f = Fixture::new("clean_apply_out");
-    f.write(".git/bg-commit.out", "x");
-    f.age(".git/bg-commit.out", 30);
-    let (ok, said) = f.run(&["--apply"]);
+fn apply_removes_a_stray_out_file_as_well_as_a_log() -> Result<(), TestError> {
+    let f = Fixture::new("clean_apply_out")?;
+    f.write(".git/bg-commit.out", "x")?;
+    f.age(".git/bg-commit.out", 30)?;
+    let (ok, said) = f.run(&["--apply"])?;
     let gone = !f.exists(".git/bg-commit.out");
     f.discard();
     assert!(ok, "the cleaner failed:\n{said}");
@@ -1408,4 +1452,5 @@ fn apply_removes_a_stray_out_file_as_well_as_a_log() {
         "the gate reports a stray `.out` and the cleaner kept it, so the gate \
          demands a deletion its own fixer will not do:\n{said}"
     );
+    Ok(())
 }

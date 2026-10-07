@@ -52,6 +52,9 @@ use release_logic::{
     is_advertisement_beside_dependency_bumps, is_dependency_bump,
 };
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The delivery gate whose refusal blocked the six pull requests.
 const GATE_FN: &str = "a_p0_marked_done_is_released_or_declared";
 
@@ -67,10 +70,10 @@ fn repo() -> PathBuf {
 }
 
 /// Read a repository file, naming the file when it cannot be read.
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let path = repo().join(rel);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{rel} must be readable to judge the gate: {e}"))
+    Ok(fs::read_to_string(&path)
+        .map_err(|e| format!("{rel} must be readable to judge the gate: {e}"))?)
 }
 
 /// A changeset in the shape the exemptions take.
@@ -92,10 +95,10 @@ fn sample_of(entry: &str) -> String {
 
 /// The source of one top-level function, from its `fn` line to the lone `}`
 /// that closes it.
-fn function_body(src: &str, name: &str) -> String {
+fn function_body(src: &str, name: &str) -> Result<String, TestError> {
     let start = src
         .find(&format!("fn {name}("))
-        .unwrap_or_else(|| panic!("{GATE_FILE} no longer defines fn {name}"));
+        .ok_or_else(|| format!("{GATE_FILE} no longer defines fn {name}"))?;
     let mut body = String::new();
     for line in src[start..].lines() {
         body.push_str(line);
@@ -104,7 +107,7 @@ fn function_body(src: &str, name: &str) -> String {
             break;
         }
     }
-    body
+    Ok(body)
 }
 
 /// Every name through which `needle` is reachable in `src`: the predicate
@@ -138,6 +141,9 @@ fn reaching_names(src: &str, needle: &str) -> Vec<String> {
 /// Brace depth rather than indentation: the arm this looks for carries several
 /// comment lines between the condition and the `return;`, and a rule keyed on
 /// adjacency would read that as an absent exemption.
+///
+/// The gate is a test that returns `Result`, so its early return is spelled
+/// `return Ok(());`; the bare `return;` of a `()` test is accepted too.
 fn guarded_early_return(body: &str, names: &[String]) -> bool {
     let lines: Vec<&str> = body.lines().collect();
     for (index, line) in lines.iter().enumerate() {
@@ -161,7 +167,7 @@ fn guarded_early_return(body: &str, names: &[String]) -> bool {
             if depth > 0 {
                 opened = true;
             }
-            if inner.trim() == "return;" {
+            if matches!(inner.trim(), "return;" | "return Ok(());") {
                 return true;
             }
             if opened && depth <= 0 {
@@ -183,7 +189,8 @@ fn guarded_early_return(body: &str, names: &[String]) -> bool {
 /// while the gate goes on refusing, and the next person to hit it has the same
 /// misleading `license/cla` red check to reason from.
 #[test]
-fn a_dependency_bump_is_exempt_and_the_delivery_gate_reaches_the_exemption() {
+fn a_dependency_bump_is_exempt_and_the_delivery_gate_reaches_the_exemption() -> Result<(), TestError>
+{
     assert!(
         is_dependency_bump(&changeset(&["Cargo.lock"])),
         "a lone Cargo.lock update is not recognized as a dependency bump, so \
@@ -203,7 +210,7 @@ fn a_dependency_bump_is_exempt_and_the_delivery_gate_reaches_the_exemption() {
          diff would guess"
     );
 
-    let src = read(GATE_FILE);
+    let src = read(GATE_FILE)?;
     let names = reaching_names(&src, "is_dependency_bump");
     assert!(
         names.len() >= 2,
@@ -212,7 +219,7 @@ fn a_dependency_bump_is_exempt_and_the_delivery_gate_reaches_the_exemption() {
          gate that never consults the exemption at all",
         names.len()
     );
-    let gate = function_body(&src, GATE_FN);
+    let gate = function_body(&src, GATE_FN)?;
     assert!(
         gate.lines().count() >= 20,
         "read only {} line(s) of fn {GATE_FN}; the extractor has lost the \
@@ -226,6 +233,7 @@ fn a_dependency_bump_is_exempt_and_the_delivery_gate_reaches_the_exemption() {
          every Dependabot pull request fails the one required context again, \
          and the only obvious red check is once more not the cause."
     );
+    Ok(())
 }
 
 // ── B. the exemption stays narrow ───────────────────────────────────
@@ -241,7 +249,7 @@ fn a_dependency_bump_is_exempt_and_the_delivery_gate_reaches_the_exemption() {
 /// empty changeset is not a bump either: "git reported nothing" must not read
 /// as "there is nothing to declare".
 #[test]
-fn the_dependency_exemption_refuses_a_changeset_carrying_real_work() {
+fn the_dependency_exemption_refuses_a_changeset_carrying_real_work() -> Result<(), TestError> {
     let cases: &[(&str, &[&str])] = &[
         (
             "a manifest edit beside a source file",
@@ -286,6 +294,7 @@ fn the_dependency_exemption_refuses_a_changeset_carrying_real_work() {
          work then ships past the newest tag with nothing in CHANGELOG.md \
          saying so, and the suite stays green while it happens."
     );
+    Ok(())
 }
 
 // ── C. exact match, not prefix ──────────────────────────────────────
@@ -300,7 +309,7 @@ fn the_dependency_exemption_refuses_a_changeset_carrying_real_work() {
 /// commit carrying it would read as "just a dependency bump" and skip the
 /// delivery gate entirely.
 #[test]
-fn every_dependency_path_is_matched_exactly_and_not_by_prefix() {
+fn every_dependency_path_is_matched_exactly_and_not_by_prefix() -> Result<(), TestError> {
     for named in [
         "Cargo.lock.bak",
         "Cargo.tomlx",
@@ -368,6 +377,7 @@ fn every_dependency_path_is_matched_exactly_and_not_by_prefix() {
          Anything whose name merely begins with a manifest's name then hides \
          inside a bump and ships past the delivery gate undeclared."
     );
+    Ok(())
 }
 
 // ── D. two exemptions, neither a superset of the other ──────────────
@@ -383,7 +393,8 @@ fn every_dependency_path_is_matched_exactly_and_not_by_prefix() {
 /// through as a bump. Both directions are pinned here, and so is the fact that
 /// neither table is contained in the other.
 #[test]
-fn the_advertisement_and_dependency_exemptions_disagree_in_both_directions() {
+fn the_advertisement_and_dependency_exemptions_disagree_in_both_directions() -> Result<(), TestError>
+{
     // A version triple chosen here rather than read from the tree, so the
     // question stays answerable in states this repository is not in.
     let tag = (1, 2, 3);
@@ -436,6 +447,7 @@ fn the_advertisement_and_dependency_exemptions_disagree_in_both_directions() {
          exemptions have stopped being distinct rules and one of them can be \
          deleted without any test noticing"
     );
+    Ok(())
 }
 
 /// The delivery gate reaches the exemption for both kinds at once.
@@ -447,7 +459,7 @@ fn the_advertisement_and_dependency_exemptions_disagree_in_both_directions() {
 /// `tests/gate_logic_test.rs`; this pins the other half, that the gate returns
 /// early on it rather than merely importing it.
 #[test]
-fn the_delivery_gate_reaches_the_mixture_exemption() {
+fn the_delivery_gate_reaches_the_mixture_exemption() -> Result<(), TestError> {
     let tag = (1, 2, 3);
     assert!(
         is_advertisement_beside_dependency_bumps(
@@ -459,7 +471,7 @@ fn the_delivery_gate_reaches_the_mixture_exemption() {
          phase two cannot be pushed once a Dependabot merge lands after the tag"
     );
 
-    let src = read(GATE_FILE);
+    let src = read(GATE_FILE)?;
     let names = reaching_names(&src, "is_advertisement_beside_dependency_bumps");
     assert!(
         names.len() >= 2,
@@ -467,13 +479,14 @@ fn the_delivery_gate_reaches_the_mixture_exemption() {
          in {GATE_FILE}; the gate never consults the mixture exemption",
         names.len()
     );
-    let gate = function_body(&src, GATE_FN);
+    let gate = function_body(&src, GATE_FN)?;
     assert!(
         guarded_early_return(&gate, &names),
         "fn {GATE_FN} never returns early on the mixture exemption (looked for \
          {names:?}), so an advertisement pushed after a Dependabot merge is \
          refused as undeclared work"
     );
+    Ok(())
 }
 
 // ── E. the scan is looking at something ─────────────────────────────
@@ -487,7 +500,7 @@ fn the_delivery_gate_reaches_the_mixture_exemption() {
 /// under measurements, not equalities: they must survive ordinary edits and
 /// still fail loudly on a stub.
 #[test]
-fn the_gate_and_its_decision_logic_are_present_and_non_trivial() {
+fn the_gate_and_its_decision_logic_are_present_and_non_trivial() -> Result<(), TestError> {
     assert!(
         !DEPENDENCY_PATHS.is_empty(),
         "DEPENDENCY_PATHS is empty, so is_dependency_bump refuses every \
@@ -503,8 +516,8 @@ fn the_gate_and_its_decision_logic_are_present_and_non_trivial() {
         DEPENDENCY_PATHS.len()
     );
 
-    let gate_src = read(GATE_FILE);
-    let logic_src = read(LOGIC_FILE);
+    let gate_src = read(GATE_FILE)?;
+    let logic_src = read(LOGIC_FILE)?;
     // Measured at 29680 and 6599 bytes on 2026-08-31.
     assert!(
         gate_src.len() >= 8_000,
@@ -529,4 +542,5 @@ fn the_gate_and_its_decision_logic_are_present_and_non_trivial() {
         "{LOGIC_FILE} no longer defines is_dependency_bump, so the exemption \
          the six blocked pull requests were waiting for is gone"
     );
+    Ok(())
 }

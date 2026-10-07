@@ -16,6 +16,8 @@ use sipnab::capture::parse::{TransportProto, parse_packet};
 use sipnab::capture::writer::PcapWriter;
 use sipnab::capture::{CaptureConfig, PacketProcessor, PcapExportMode};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Path to the test fixture pcap (`tests/fixtures/udp_5060.pcap`, 10 UDP
 /// SIP packets on port 5060).
 ///
@@ -36,26 +38,27 @@ fn fixture_path() -> PathBuf {
 ///
 /// # Returns
 /// All packets the capture emitted, in file order.
-fn collect_packets(config: CaptureConfig) -> Vec<Packet> {
+fn collect_packets(config: CaptureConfig) -> Result<Vec<Packet>, TestError> {
     let (tx, rx) = packet_channel(1 << 20);
-    capture_file(&fixture_path(), &config, tx, None).expect("capture_file should succeed");
-    rx.try_iter().collect()
+    capture_file(&fixture_path(), &config, tx, None)?;
+    Ok(rx.try_iter().collect())
 }
 
 // ── Reading ────────────────────────────────────────────────────────────
 
 /// A default (unfiltered, unlimited) file capture yields all 10 fixture packets.
 #[test]
-fn read_fixture_all_packets() {
-    let packets = collect_packets(CaptureConfig::default());
+fn read_fixture_all_packets() -> Result<(), TestError> {
+    let packets = collect_packets(CaptureConfig::default())?;
     assert_eq!(packets.len(), 10, "Fixture contains exactly 10 packets");
+    Ok(())
 }
 
 /// Every captured packet has non-empty data, positive caplen/origlen with no
 /// truncation, the source file it was read from, and link type DLT_EN10MB.
 #[test]
-fn packets_have_valid_metadata() {
-    let packets = collect_packets(CaptureConfig::default());
+fn packets_have_valid_metadata() -> Result<(), TestError> {
+    let packets = collect_packets(CaptureConfig::default())?;
     let source = fixture_path().display().to_string();
     for pkt in &packets {
         assert!(!pkt.data.is_empty(), "Packet data must not be empty");
@@ -72,83 +75,90 @@ fn packets_have_valid_metadata() {
         );
         assert_eq!(pkt.link_type, 1, "Fixture uses DLT_EN10MB (1)");
     }
+    Ok(())
 }
 
 // ── Count limit ────────────────────────────────────────────────────────
 
 /// `count: Some(5)` stops the capture after exactly 5 of the 10 packets.
 #[test]
-fn count_limit_stops_early() {
+fn count_limit_stops_early() -> Result<(), TestError> {
     let config = CaptureConfig {
         count: Some(5),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
     assert_eq!(packets.len(), 5, "Should stop after exactly 5 packets");
+    Ok(())
 }
 
 /// The boundary case `count: Some(1)` yields exactly one packet.
 #[test]
-fn count_limit_one() {
+fn count_limit_one() -> Result<(), TestError> {
     let config = CaptureConfig {
         count: Some(1),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
     assert_eq!(packets.len(), 1);
+    Ok(())
 }
 
 /// A count limit larger than the file (100 > 10) yields all packets without error.
 #[test]
-fn count_limit_exceeds_file() {
+fn count_limit_exceeds_file() -> Result<(), TestError> {
     let config = CaptureConfig {
         count: Some(100),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
     assert_eq!(packets.len(), 10, "Count > file size yields all packets");
+    Ok(())
 }
 
 // ── BPF filter ─────────────────────────────────────────────────────────
 
 /// The BPF filter `udp port 5060` matches all 10 fixture packets.
 #[test]
-fn bpf_filter_udp_5060() {
+fn bpf_filter_udp_5060() -> Result<(), TestError> {
     let config = CaptureConfig {
         bpf_filter: Some("udp port 5060".to_string()),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
     // All 10 fixture packets are UDP port 5060
     assert_eq!(
         packets.len(),
         10,
         "All fixture packets match 'udp port 5060'"
     );
+    Ok(())
 }
 
 /// A non-matching BPF filter (`tcp port 80`) yields zero packets.
 #[test]
-fn bpf_filter_no_match() {
+fn bpf_filter_no_match() -> Result<(), TestError> {
     let config = CaptureConfig {
         bpf_filter: Some("tcp port 80".to_string()),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
     assert_eq!(packets.len(), 0, "No packets should match 'tcp port 80'");
+    Ok(())
 }
 
 /// BPF filter and count limit compose: matching filter plus `count: 3` yields
 /// exactly 3 packets.
 #[test]
-fn bpf_filter_with_count() {
+fn bpf_filter_with_count() -> Result<(), TestError> {
     let config = CaptureConfig {
         bpf_filter: Some("udp port 5060".to_string()),
         count: Some(3),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
     assert_eq!(packets.len(), 3, "Filter + count should give exactly 3");
+    Ok(())
 }
 
 // ── Immediate mode / ring format (CT7) ─────────────────────────────────
@@ -158,8 +168,9 @@ fn bpf_filter_with_count() {
 /// whether a human is watching, turns it off — an embedder building a
 /// `CaptureConfig::default()` must not have its ring format changed under it.
 #[test]
-fn default_config_keeps_immediate_mode() {
+fn default_config_keeps_immediate_mode() -> Result<(), TestError> {
     assert!(CaptureConfig::default().immediate_mode);
+    Ok(())
 }
 
 /// Immediate mode is a live-device concern: it decides the kernel ring format
@@ -167,21 +178,22 @@ fn default_config_keeps_immediate_mode() {
 /// flag off must therefore be byte-identical to reading it with the flag on —
 /// proving the new field cannot disturb offline analysis.
 #[test]
-fn immediate_mode_does_not_affect_file_capture() {
+fn immediate_mode_does_not_affect_file_capture() -> Result<(), TestError> {
     let batched = collect_packets(CaptureConfig {
         immediate_mode: false,
         ..Default::default()
-    });
+    })?;
     let interactive = collect_packets(CaptureConfig {
         immediate_mode: true,
         ..Default::default()
-    });
+    })?;
     assert_eq!(batched.len(), 10, "the fixture still reads in full");
     assert_eq!(batched.len(), interactive.len());
     for (b, i) in batched.iter().zip(interactive.iter()) {
         assert_eq!(b.data, i.data, "file capture must ignore immediate mode");
         assert_eq!(b.timestamp, i.timestamp);
     }
+    Ok(())
 }
 
 // ── Writer roundtrip ───────────────────────────────────────────────────
@@ -189,26 +201,25 @@ fn immediate_mode_does_not_affect_file_capture() {
 /// Writing all fixture packets with `PcapWriter` and re-reading the file
 /// preserves packet count, data bytes, caplen, and origlen.
 #[test]
-fn writer_roundtrip() {
-    let dir = tempfile::tempdir().expect("create tempdir");
+fn writer_roundtrip() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let output_path = dir.path().join("roundtrip.pcap");
 
     // Read all packets from fixture
-    let packets = collect_packets(CaptureConfig::default());
+    let packets = collect_packets(CaptureConfig::default())?;
     assert_eq!(packets.len(), 10);
 
     // Write them to a new file
     {
-        let mut writer =
-            PcapWriter::new(&output_path, packets[0].link_type, None, None).expect("create writer");
+        let mut writer = PcapWriter::new(&output_path, packets[0].link_type, None, None)?;
         for pkt in &packets {
-            writer.write(pkt).expect("write packet");
+            writer.write(pkt)?;
         }
     }
 
     // Re-read the written file
     let (tx, rx) = packet_channel(1 << 20);
-    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
+    capture_file(&output_path, &CaptureConfig::default(), tx, None)?;
     let reread: Vec<Packet> = rx.try_iter().collect();
 
     assert_eq!(
@@ -223,13 +234,14 @@ fn writer_roundtrip() {
         assert_eq!(orig.caplen, copy.caplen);
         assert_eq!(orig.origlen, copy.origlen);
     }
+    Ok(())
 }
 
 /// Writing a count-limited capture (5 packets) produces a file that re-reads
 /// as exactly 5 packets.
 #[test]
-fn writer_with_count_limit() {
-    let dir = tempfile::tempdir().expect("create tempdir");
+fn writer_with_count_limit() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let output_path = dir.path().join("limited.pcap");
 
     // Read 5 packets
@@ -237,26 +249,26 @@ fn writer_with_count_limit() {
         count: Some(5),
         ..Default::default()
     };
-    let packets = collect_packets(config);
+    let packets = collect_packets(config)?;
 
     // Write them
     {
-        let mut writer =
-            PcapWriter::new(&output_path, packets[0].link_type, None, None).expect("create writer");
+        let mut writer = PcapWriter::new(&output_path, packets[0].link_type, None, None)?;
         for pkt in &packets {
-            writer.write(pkt).expect("write packet");
+            writer.write(pkt)?;
         }
     }
 
     // Re-read
     let (tx, rx) = packet_channel(1 << 20);
-    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
+    capture_file(&output_path, &CaptureConfig::default(), tx, None)?;
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(
         reread.len(),
         5,
         "Written file should have exactly 5 packets"
     );
+    Ok(())
 }
 
 // ── format roundtrip (M2 — T2.6) ─────────────────────────────────────────
@@ -269,31 +281,30 @@ fn writer_with_count_limit() {
 ///
 /// # Returns
 /// The first `n` bytes.
-fn read_magic(path: &std::path::Path, n: usize) -> Vec<u8> {
-    let bytes = std::fs::read(path).expect("read output file");
+fn read_magic(path: &std::path::Path, n: usize) -> Result<Vec<u8>, TestError> {
+    let bytes = std::fs::read(path)?;
     assert!(bytes.len() >= n, "file too short for magic check");
-    bytes[..n].to_vec()
+    Ok(bytes[..n].to_vec())
 }
 
 /// Classic pcap roundtrip must preserve the **link type** (not just the count):
 /// a wrong linktype silently corrupts every reread packet's framing.
 #[test]
-fn pcap_roundtrip_preserves_linktype_and_magic() {
-    let dir = tempfile::tempdir().expect("create tempdir");
+fn pcap_roundtrip_preserves_linktype_and_magic() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let output_path = dir.path().join("rt.pcap");
-    let packets = collect_packets(CaptureConfig::default());
+    let packets = collect_packets(CaptureConfig::default())?;
     let src_link = packets[0].link_type;
 
     {
-        let mut writer =
-            PcapWriter::new(&output_path, src_link, None, None).expect("create writer");
+        let mut writer = PcapWriter::new(&output_path, src_link, None, None)?;
         for pkt in &packets {
-            writer.write(pkt).expect("write packet");
+            writer.write(pkt)?;
         }
     }
 
     // Classic pcap magic: micro/nano-second, little/big-endian variants.
-    let magic = read_magic(&output_path, 4);
+    let magic = read_magic(&output_path, 4)?;
     let known = [
         [0xd4, 0xc3, 0xb2, 0xa1], // microsec LE
         [0xa1, 0xb2, 0xc3, 0xd4], // microsec BE
@@ -306,20 +317,21 @@ fn pcap_roundtrip_preserves_linktype_and_magic() {
     );
 
     let (tx, rx) = packet_channel(1 << 20);
-    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
+    capture_file(&output_path, &CaptureConfig::default(), tx, None)?;
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(reread.len(), packets.len(), "count must survive roundtrip");
     for pkt in &reread {
         assert_eq!(pkt.link_type, src_link, "link type must survive roundtrip");
     }
+    Ok(())
 }
 
 /// PCAP-NG output must carry the Section Header Block magic and roundtrip.
 #[test]
-fn pcapng_roundtrip_and_magic() {
-    let dir = tempfile::tempdir().expect("create tempdir");
+fn pcapng_roundtrip_and_magic() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let output_path = dir.path().join("rt.pcapng");
-    let packets = collect_packets(CaptureConfig::default());
+    let packets = collect_packets(CaptureConfig::default())?;
     let src_link = packets[0].link_type;
 
     {
@@ -330,28 +342,28 @@ fn pcapng_roundtrip_and_magic() {
             None,
             true, // pcapng
             PcapExportMode::Raw,
-        )
-        .expect("create pcapng writer");
+        )?;
         for pkt in &packets {
-            writer.write(pkt).expect("write packet");
+            writer.write(pkt)?;
         }
     }
 
     // pcapng begins with a Section Header Block: type 0x0A0D0D0A.
     assert_eq!(
-        read_magic(&output_path, 4),
+        read_magic(&output_path, 4)?,
         vec![0x0a, 0x0d, 0x0d, 0x0a],
         "pcapng Section Header Block magic missing"
     );
 
     let (tx, rx) = packet_channel(1 << 20);
-    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read pcapng");
+    capture_file(&output_path, &CaptureConfig::default(), tx, None)?;
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(
         reread.len(),
         packets.len(),
         "pcapng roundtrip must preserve packet count"
     );
+    Ok(())
 }
 
 // ── start_capture integration ──────────────────────────────────────────
@@ -359,21 +371,21 @@ fn pcapng_roundtrip_and_magic() {
 /// `start_capture` with a `CaptureSource::File` spawns a thread that reads the
 /// fixture to completion and delivers all 10 packets over the channel.
 #[test]
-fn start_capture_file_source() {
+fn start_capture_file_source() -> Result<(), TestError> {
     use sipnab::capture::{CaptureSource, start_capture};
 
     let (tx, rx) = packet_channel(1 << 20);
     let source = CaptureSource::File {
         paths: vec![fixture_path()],
     };
-    let handle =
-        start_capture(source, CaptureConfig::default(), tx, None, None).expect("start_capture");
+    let handle = start_capture(source, CaptureConfig::default(), tx, None, None)?;
 
     // Wait for the thread to finish
-    handle.thread.join().expect("join").expect("capture result");
+    handle.thread.join().map_err(|_| "a thread panicked")??;
 
     let packets: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(packets.len(), 10);
+    Ok(())
 }
 
 // ── Packet parsing integration ────────────────────────────────────────
@@ -381,13 +393,12 @@ fn start_capture_file_source() {
 /// `parse_packet` on every fixture packet yields UDP 5060→5060 from 192.0.2.1
 /// with a non-empty payload containing `SIP/2.0`.
 #[test]
-fn fixture_packets_parse_to_valid_udp() {
-    let packets = collect_packets(CaptureConfig::default());
+fn fixture_packets_parse_to_valid_udp() -> Result<(), TestError> {
+    let packets = collect_packets(CaptureConfig::default())?;
     assert_eq!(packets.len(), 10);
 
     for (i, pkt) in packets.iter().enumerate() {
-        let parsed =
-            parse_packet(pkt).unwrap_or_else(|e| panic!("Packet {i} failed to parse: {e}"));
+        let parsed = parse_packet(pkt).map_err(|e| format!("Packet {i} failed to parse: {e}"))?;
 
         // All fixture packets are UDP on port 5060
         assert_eq!(
@@ -405,7 +416,7 @@ fn fixture_packets_parse_to_valid_udp() {
         // private network.
         assert_eq!(
             parsed.src_addr,
-            "192.0.2.1".parse::<std::net::IpAddr>().unwrap(),
+            "192.0.2.1".parse::<std::net::IpAddr>()?,
             "Packet {i} src_addr"
         );
 
@@ -417,13 +428,14 @@ fn fixture_packets_parse_to_valid_udp() {
             "Packet {i} payload should contain SIP content, got: {payload_str}"
         );
     }
+    Ok(())
 }
 
 /// `PacketProcessor::process` passes all 10 UDP fixture packets straight
 /// through (no reassembly buffering), each parsed as UDP port 5060.
 #[test]
-fn packet_processor_handles_fixture() {
-    let packets = collect_packets(CaptureConfig::default());
+fn packet_processor_handles_fixture() -> Result<(), TestError> {
+    let packets = collect_packets(CaptureConfig::default())?;
     let mut processor = PacketProcessor::new();
     let mut parsed_total = 0;
 
@@ -441,13 +453,14 @@ fn packet_processor_handles_fixture() {
         parsed_total, 10,
         "All 10 UDP packets should pass through processor immediately"
     );
+    Ok(())
 }
 
 /// Zero-copy contract: a parsed packet's payload must be a VIEW into the
 /// captured frame's buffer (refcounted slice), not a fresh allocation —
 /// per-packet payload copies were the top hot-path cost.
 #[test]
-fn parsed_payload_shares_packet_buffer() {
+fn parsed_payload_shares_packet_buffer() -> Result<(), TestError> {
     // Ethernet + IPv4 + UDP + 160-byte payload
     let mut frame = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00];
     frame.extend_from_slice(&[
@@ -458,7 +471,7 @@ fn parsed_payload_shares_packet_buffer() {
     frame.extend_from_slice(&[0xaa; 160]);
 
     let packet = Packet::new(chrono::Utc::now(), frame, 202, 202, None, 1);
-    let pp = parse_packet(&packet).expect("frame parses");
+    let pp = parse_packet(&packet)?;
 
     assert_eq!(pp.payload.len(), 160);
     let buf = packet.data.as_ptr_range();
@@ -466,4 +479,5 @@ fn parsed_payload_shares_packet_buffer() {
         buf.contains(&pp.payload.as_ptr()),
         "payload must point into the packet buffer (zero-copy), not a new allocation"
     );
+    Ok(())
 }

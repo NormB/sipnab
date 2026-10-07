@@ -20,23 +20,25 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
-fn sheet() -> String {
+fn sheet() -> Result<String, TestError> {
     read("docs/design/openssf-badge-answers.md")
 }
 
 /// `license_location`, `floss_license`, `floss_license_osi` — the sheet says
 /// both license files sit at the repo root under a dual MIT/Apache-2.0 grant.
 #[test]
-fn license_claims_hold() {
+fn license_claims_hold() -> Result<(), TestError> {
     for f in ["LICENSE-MIT", "LICENSE-APACHE"] {
         assert!(
             repo().join(f).is_file(),
@@ -44,15 +46,16 @@ fn license_claims_hold() {
         );
     }
     assert!(
-        read("Cargo.toml").contains("MIT OR Apache-2.0"),
+        read("Cargo.toml")?.contains("MIT OR Apache-2.0"),
         "the sheet answers `floss_license` with a dual MIT/Apache-2.0 grant"
     );
+    Ok(())
 }
 
 /// `interact`, `contribution`, `report_process`, `vulnerability_report_process`
 /// — every community-health file the sheet points a reader at must exist.
 #[test]
-fn cited_community_files_exist() {
+fn cited_community_files_exist() -> Result<(), TestError> {
     for f in [
         "SUPPORT.md",
         "CONTRIBUTING.md",
@@ -72,6 +75,7 @@ fn cited_community_files_exist() {
              that no longer exists is a false certification"
         );
     }
+    Ok(())
 }
 
 /// `vulnerability_report_private` — a private route must actually be offered,
@@ -88,9 +92,10 @@ fn cited_community_files_exist() {
 /// different canonical channel than `SECURITY.md` — which it may not do at all,
 /// since it defers rather than restating.
 #[test]
-fn private_vulnerability_reporting_is_offered_and_described_consistently() {
-    let cfg = read(".github/ISSUE_TEMPLATE/config.yml");
-    let security = read("SECURITY.md");
+fn private_vulnerability_reporting_is_offered_and_described_consistently() -> Result<(), TestError>
+{
+    let cfg = read(".github/ISSUE_TEMPLATE/config.yml")?;
+    let security = read("SECURITY.md")?;
 
     assert!(
         cfg.contains("security/advisories/new"),
@@ -109,7 +114,7 @@ fn private_vulnerability_reporting_is_offered_and_described_consistently() {
 
     // SUPPORT.md must defer rather than restate. A second copy of "the" channel
     // is a second thing to keep in agreement, and it already fell out of sync.
-    let support = read("SUPPORT.md");
+    let support = read("SUPPORT.md")?;
     assert!(
         support.contains("SECURITY.md"),
         "SUPPORT.md must point at SECURITY.md for the reporting channel"
@@ -121,29 +126,31 @@ fn private_vulnerability_reporting_is_offered_and_described_consistently() {
              two pages disagree about where reports go"
         );
     }
+    Ok(())
 }
 
 /// `test_policy` — a MUST criterion, answered by quoting a specific line of
 /// `CONTRIBUTING.md`. Quoting a line is only evidence while the line is there.
 #[test]
-fn the_quoted_test_policy_line_is_still_in_contributing() {
+fn the_quoted_test_policy_line_is_still_in_contributing() -> Result<(), TestError> {
     const QUOTED: &str = "Add or update tests for new functionality";
     assert!(
-        read("CONTRIBUTING.md").contains(QUOTED),
+        read("CONTRIBUTING.md")?.contains(QUOTED),
         "the sheet answers `test_policy` by quoting CONTRIBUTING.md: {QUOTED:?}"
     );
     assert!(
-        sheet().contains(QUOTED),
+        sheet()?.contains(QUOTED),
         "the sheet must quote the policy verbatim, not paraphrase it — a \
          paraphrase cannot be checked against the source"
     );
+    Ok(())
 }
 
 /// `warnings`, `warnings_fixed`, `static_analysis`, `vulnerabilities_fixed_60_days`
 /// — each is answered by a CI job. The jobs must exist and still be strict.
 #[test]
-fn cited_ci_gates_exist_and_are_strict() {
-    let ci = read(".github/workflows/ci.yml");
+fn cited_ci_gates_exist_and_are_strict() -> Result<(), TestError> {
+    let ci = read(".github/workflows/ci.yml")?;
     // `--workspace` is required as well as `-D warnings`. Without it the
     // switches cover only the root package, and crates/sipnab-plugin-example
     // escaped the gate entirely while CI stayed green -- so the badge answer
@@ -167,6 +174,7 @@ fn cited_ci_gates_exist_and_are_strict() {
         "the sheet distinguishes the badge from the Scorecard workflow, which \
          it says already runs"
     );
+    Ok(())
 }
 
 /// `crypto_floss`, `crypto_call`, `crypto_published` — the sheet answers these
@@ -174,8 +182,8 @@ fn cited_ci_gates_exist_and_are_strict() {
 /// crate must actually be a dependency, or the answer is describing a different
 /// program.
 #[test]
-fn named_crypto_crates_are_real_dependencies() {
-    let manifest = read("Cargo.toml");
+fn named_crypto_crates_are_real_dependencies() -> Result<(), TestError> {
+    let manifest = read("Cargo.toml")?;
     for krate in ["rustls", "ring", "aes", "hmac", "sha2"] {
         assert!(
             manifest.contains(&format!("\n{krate} = ")),
@@ -184,10 +192,11 @@ fn named_crypto_crates_are_real_dependencies() {
              not roll its own"
         );
         assert!(
-            sheet().contains(krate),
+            sheet()?.contains(krate),
             "`{krate}` dropped out of the answer sheet's crypto evidence"
         );
     }
+    Ok(())
 }
 
 /// The dynamic-analysis answer states a fuzz-target count and lists every
@@ -201,11 +210,13 @@ fn named_crypto_crates_are_real_dependencies() {
 /// wants. Both the count and the names are checked, because a count alone goes
 /// stale silently the moment a target is renamed.
 #[test]
-fn fuzz_target_evidence_matches_the_fuzz_directory() {
+fn fuzz_target_evidence_matches_the_fuzz_directory() -> Result<(), TestError> {
     let dir = repo().join("fuzz/fuzz_targets");
     let mut targets: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .map(|e| e.expect("entry").path())
+        .map_err(|e| format!("read {}: {e}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rs"))
         .filter_map(|p: PathBuf| {
             p.file_stem()
@@ -215,7 +226,7 @@ fn fuzz_target_evidence_matches_the_fuzz_directory() {
         .collect();
     targets.sort();
 
-    let text = sheet();
+    let text = sheet()?;
     assert!(
         text.contains(&format!("{} fuzz targets", targets.len())),
         "the answer sheet must state the real fuzz-target count ({}); it \
@@ -234,6 +245,7 @@ fn fuzz_target_evidence_matches_the_fuzz_directory() {
         repo().join("tests/smoke_fuzz_test.rs").is_file(),
         "the sheet cites a no-nightly smoke tier at tests/smoke_fuzz_test.rs"
     );
+    Ok(())
 }
 
 /// The sheet's own framing must survive editing: it distinguishes the prepared
@@ -254,10 +266,10 @@ fn fuzz_target_evidence_matches_the_fuzz_directory() {
 /// is what let the homepage link go missing unnoticed until a maintainer
 /// asked where it was.
 #[test]
-fn the_badge_is_registered_and_wired_consistently() {
+fn the_badge_is_registered_and_wired_consistently() -> Result<(), TestError> {
     const PROJECT_URL: &str = "bestpractices.dev/projects/13931";
 
-    let text = sheet();
+    let text = sheet()?;
     assert!(
         text.contains("not the\nsubmission") || text.contains("not the submission"),
         "the sheet must distinguish itself from the submission form"
@@ -273,7 +285,7 @@ fn the_badge_is_registered_and_wired_consistently() {
          placeholder or a different one"
     );
 
-    let readme = read("README.md");
+    let readme = read("README.md")?;
     assert!(
         readme.contains(&format!("{PROJECT_URL}/badge")) && readme.contains(PROJECT_URL),
         "the badge is registered and passing, so README.md must carry the real \
@@ -281,13 +293,14 @@ fn the_badge_is_registered_and_wired_consistently() {
          what the maintainer could not find"
     );
 
-    let homepage = read("website/templates/index.html");
+    let homepage = read("website/templates/index.html")?;
     assert!(
         homepage.contains(PROJECT_URL),
         "the sipnab.com home page must link the same registered project — this \
          is the exact gap that went unnoticed: the badge existed in the answer \
          sheet and README but never reached the site a visitor actually looks at"
     );
+    Ok(())
 }
 
 /// The same project also holds the OpenSSF Baseline badge: level 1 achieved
@@ -301,10 +314,10 @@ fn the_badge_is_registered_and_wired_consistently() {
 /// "Level 1" after level 2 was reached, so the level it names is pinned here
 /// and moves by hand, with the JSON as the evidence.
 #[test]
-fn the_baseline_badge_is_wired_in_readme_and_homepage() {
+fn the_baseline_badge_is_wired_in_readme_and_homepage() -> Result<(), TestError> {
     const PROJECT_URL: &str = "https://www.bestpractices.dev/projects/13931";
 
-    let readme = read("README.md");
+    let readme = read("README.md")?;
     let markup = format!("[![OpenSSF Baseline]({PROJECT_URL}/baseline)]({PROJECT_URL})");
     assert!(
         readme.contains(&markup),
@@ -313,11 +326,11 @@ fn the_baseline_badge_is_wired_in_readme_and_homepage() {
     );
 
     assert!(
-        sheet().contains("OpenSSF Baseline level 3"),
+        sheet()?.contains("OpenSSF Baseline level 3"),
         "the answer sheet must record the Baseline level the project holds"
     );
 
-    let homepage = read("website/templates/index.html");
+    let homepage = read("website/templates/index.html")?;
     assert!(
         homepage.contains("OpenSSF Best Practices — Passing · Baseline 3")
             && !homepage.contains("Level 1")
@@ -337,6 +350,7 @@ fn the_baseline_badge_is_wired_in_readme_and_homepage() {
         "the home page must not load the badge image: the site CSP is \
          `img-src 'self'`, so an external badge renders as a broken image"
     );
+    Ok(())
 }
 
 /// Check every repository path a document cites.
@@ -420,14 +434,14 @@ fn cited_path_problems(doc: &str) -> (usize, Vec<String>) {
 /// 3. The sheet and SECURITY.md both point at it rather than at a document
 ///    that does not contain one.
 #[test]
-fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() {
+fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() -> Result<(), TestError> {
     const DOC: &str = "docs/threat-model.md";
     assert!(
         repo().join(DOC).is_file(),
         "{DOC} is the security assessment (Baseline SA-03.01) that \
          `know_secure_design` cites; it does not exist"
     );
-    let doc = read(DOC);
+    let doc = read(DOC)?;
 
     let headings: Vec<String> = doc
         .lines()
@@ -469,10 +483,10 @@ fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() {
          dropped or the extractor stopped matching"
     );
 
-    let row = sheet()
+    let row = sheet()?
         .lines()
         .find(|l| l.starts_with("| `know_secure_design`"))
-        .expect("the sheet has a `know_secure_design` row")
+        .ok_or("the sheet has a `know_secure_design` row")?
         .to_string();
     assert!(
         row.contains(DOC),
@@ -484,9 +498,10 @@ fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() {
         "the row still claims SECURITY.md holds the threat model: {row}"
     );
     assert!(
-        read("SECURITY.md").contains(DOC),
+        read("SECURITY.md")?.contains(DOC),
         "SECURITY.md must point a reader at {DOC}"
     );
+    Ok(())
 }
 
 /// The 2025 CWE Top 25 Most Dangerous Software Weaknesses, as MITRE published
@@ -522,13 +537,13 @@ const VERDICTS: [&str; 4] = [
 /// 3. Every path it cites exists, as for the threat model.
 /// 4. The threat model and the badge sheet point at it.
 #[test]
-fn the_assurance_case_argues_every_principle_and_every_top_25_weakness() {
+fn the_assurance_case_argues_every_principle_and_every_top_25_weakness() -> Result<(), TestError> {
     const DOC: &str = "docs/assurance-case.md";
     assert!(
         repo().join(DOC).is_file(),
         "{DOC} is the Silver `assurance_case` evidence; it does not exist"
     );
-    let doc = read(DOC);
+    let doc = read(DOC)?;
     let rows: Vec<Vec<String>> = doc
         .lines()
         .filter(|l| l.starts_with("| ") && !l.starts_with("|---"))
@@ -620,13 +635,14 @@ fn the_assurance_case_argues_every_principle_and_every_top_25_weakness() {
     );
 
     assert!(
-        read("docs/threat-model.md").contains("](assurance-case.md"),
+        read("docs/threat-model.md")?.contains("](assurance-case.md"),
         "docs/threat-model.md must link the assurance case"
     );
-    let row = sheet()
+    let row = sheet()?
         .lines()
         .find(|l| l.starts_with("| `assurance_case`"))
-        .expect("the sheet has an `assurance_case` row")
+        .ok_or("the sheet has an `assurance_case` row")?
         .to_string();
     assert!(row.contains(DOC), "`assurance_case` must cite {DOC}: {row}");
+    Ok(())
 }

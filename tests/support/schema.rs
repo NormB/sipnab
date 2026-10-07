@@ -137,18 +137,3 @@ pub fn openapi_errors(
         .map(|e| format!("at `{}`: {e}", e.instance_path()))
         .collect())
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`load_validator`], panicking on error.
-pub fn load_validator_or_panic(schema_file: &str) -> Validator {
-    load_validator(schema_file).expect("load_validator")
-}
-
-/// [`openapi_errors`], panicking on error.
-#[allow(dead_code)]
-pub fn openapi_errors_or_panic(doc_file: &str, schema_name: &str, instance: &Value) -> Vec<String> {
-    openapi_errors(doc_file, schema_name, instance).expect("openapi_errors")
-}

@@ -14,52 +14,51 @@ mod support;
 mod source_scan;
 
 use source_scan::production_source;
-use support::normalize_or_panic;
+use support::normalize;
+
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
 
 /// An RFC3339 Z-suffixed timestamp is replaced with `<TS>`.
 #[test]
-fn scrubs_rfc3339_timestamp() {
-    assert_eq!(
-        normalize_or_panic("at 2024-06-15T12:00:00Z done"),
-        "at <TS> done"
-    );
+fn scrubs_rfc3339_timestamp() -> Result<(), TestError> {
+    assert_eq!(normalize("at 2024-06-15T12:00:00Z done")?, "at <TS> done");
+    Ok(())
 }
 
 /// A timestamp with fractional seconds and a numeric offset is fully replaced with `<TS>`.
 #[test]
-fn scrubs_timestamp_with_fraction_and_offset() {
-    assert_eq!(
-        normalize_or_panic("2024-06-15T12:00:00.123456+02:00"),
-        "<TS>"
-    );
+fn scrubs_timestamp_with_fraction_and_offset() -> Result<(), TestError> {
+    assert_eq!(normalize("2024-06-15T12:00:00.123456+02:00")?, "<TS>");
+    Ok(())
 }
 
 /// A fail2ban-style space-separated timestamp is replaced with `<TS>`.
 #[test]
-fn scrubs_space_separated_timestamp() {
+fn scrubs_space_separated_timestamp() -> Result<(), TestError> {
     // fail2ban-style "%Y-%m-%d %H:%M:%S".
-    assert_eq!(
-        normalize_or_panic("ban 2024-06-15 12:00:00 ip"),
-        "ban <TS> ip"
-    );
+    assert_eq!(normalize("ban 2024-06-15 12:00:00 ip")?, "ban <TS> ip");
+    Ok(())
 }
 
 /// Second and millisecond durations (with or without a space) become `<DUR>`.
 #[test]
-fn scrubs_durations_with_units() {
+fn scrubs_durations_with_units() -> Result<(), TestError> {
     assert_eq!(
-        normalize_or_panic("setup 1.234s and 12.3 ms"),
+        normalize("setup 1.234s and 12.3 ms")?,
         "setup <DUR> and <DUR>"
     );
+    Ok(())
 }
 
 /// A `/tmp/...` path is replaced with `<TMP>`.
 #[test]
-fn scrubs_temp_paths() {
+fn scrubs_temp_paths() -> Result<(), TestError> {
     assert_eq!(
-        normalize_or_panic("wrote /tmp/abc123/out.pcap ok"),
+        normalize("wrote /tmp/abc123/out.pcap ok")?,
         "wrote <TMP> ok"
     );
+    Ok(())
 }
 
 /// ...and so is a path under the temp directory this platform ACTUALLY uses.
@@ -82,67 +81,74 @@ fn scrubs_temp_paths() {
 /// string — but the gate cannot see that, and a fixed name would be wrong the
 /// moment someone added a write.
 #[test]
-fn scrubs_paths_under_the_platform_temp_directory() {
+fn scrubs_paths_under_the_platform_temp_directory() -> Result<(), TestError> {
     let f = std::env::temp_dir().join(format!("sipnab-selftest-{}.pcap", std::process::id()));
     let line = format!("wrote {} ok", f.display());
     assert_eq!(
-        normalize_or_panic(&line),
+        normalize(&line)?,
         "wrote <TMP> ok",
-        "normalize_or_panic() left a real temp path in place; the determinism contract \
+        "normalize() left a real temp path in place; the determinism contract \
          does not hold on this platform. The path was {}",
         f.display()
     );
+    Ok(())
 }
 
 /// `pid=N` and `PID: N` both normalize to `pid=<PID>`.
 #[test]
-fn scrubs_pids_any_case() {
-    assert_eq!(normalize_or_panic("pid=12345"), "pid=<PID>");
-    assert_eq!(normalize_or_panic("PID: 678"), "pid=<PID>");
+fn scrubs_pids_any_case() -> Result<(), TestError> {
+    assert_eq!(normalize("pid=12345")?, "pid=<PID>");
+    assert_eq!(normalize("PID: 678")?, "pid=<PID>");
+    Ok(())
 }
 
 /// Loopback IPv4/IPv6 ports become `<PORT>` while the host part is kept.
 #[test]
-fn scrubs_loopback_ports_keeping_host() {
+fn scrubs_loopback_ports_keeping_host() -> Result<(), TestError> {
     assert_eq!(
-        normalize_or_panic("bound 127.0.0.1:54321"),
+        normalize("bound 127.0.0.1:54321")?,
         "bound 127.0.0.1:<PORT>"
     );
-    assert_eq!(normalize_or_panic("mcp [::1]:8731"), "mcp [::1]:<PORT>");
+    assert_eq!(normalize("mcp [::1]:8731")?, "mcp [::1]:<PORT>");
+    Ok(())
 }
 
 /// SIP URIs, version numbers, and codec clock-rates pass through unscrubbed.
 #[test]
-fn preserves_non_volatile_text() {
+fn preserves_non_volatile_text() -> Result<(), TestError> {
     // SIP, version numbers, and codec clock-rates must NOT be scrubbed.
     let s = "INVITE sip:alice@example.com SIP/2.0 v0.4.2 PCMU/8000";
-    assert_eq!(normalize_or_panic(s), s);
+    assert_eq!(normalize(s)?, s);
+    Ok(())
 }
 
 /// Normalizing an empty string yields an empty string.
 #[test]
-fn empty_input_is_empty() {
-    assert_eq!(normalize_or_panic(""), "");
+fn empty_input_is_empty() -> Result<(), TestError> {
+    assert_eq!(normalize("")?, "");
+    Ok(())
 }
 
 /// Backslashes (Windows paths) survive normalization unchanged.
 #[test]
-fn backslashes_are_preserved() {
+fn backslashes_are_preserved() -> Result<(), TestError> {
     let s = r"a\b\c windows\path";
-    assert_eq!(normalize_or_panic(s), s);
+    assert_eq!(normalize(s)?, s);
+    Ok(())
 }
 
 /// An embedded NUL byte is preserved and does not panic the normalizer.
 #[test]
-fn nul_byte_is_preserved_without_panic() {
-    let out = normalize_or_panic("a\u{0}b");
+fn nul_byte_is_preserved_without_panic() -> Result<(), TestError> {
+    let out = normalize("a\u{0}b")?;
     assert!(out.contains('\u{0}'));
     assert_eq!(out, "a\u{0}b");
+    Ok(())
 }
 
 /// `deterministic_env` stamps TZ=UTC, NO_COLOR=1, COLUMNS=120, LINES=40 onto a Command.
 #[test]
-fn deterministic_env_sets_contract_vars() {
+fn deterministic_env_sets_contract_vars() -> Result<(), TestError> {
     use std::ffi::OsStr;
     let mut c = std::process::Command::new("true");
     support::deterministic_env(&mut c);
@@ -150,20 +156,38 @@ fn deterministic_env_sets_contract_vars() {
         .get_envs()
         .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
         .collect();
-    assert_eq!(envs.get(OsStr::new("TZ")).unwrap(), "UTC");
-    assert_eq!(envs.get(OsStr::new("NO_COLOR")).unwrap(), "1");
-    assert_eq!(envs.get(OsStr::new("COLUMNS")).unwrap(), "120");
-    assert_eq!(envs.get(OsStr::new("LINES")).unwrap(), "40");
+    assert_eq!(
+        envs.get(OsStr::new("TZ"))
+            .ok_or("envs.get(OsStr::new(\"TZ\")) is None")?,
+        "UTC"
+    );
+    assert_eq!(
+        envs.get(OsStr::new("NO_COLOR"))
+            .ok_or("envs.get(OsStr::new(\"NO_COLOR\")) is None")?,
+        "1"
+    );
+    assert_eq!(
+        envs.get(OsStr::new("COLUMNS"))
+            .ok_or("envs.get(OsStr::new(\"COLUMNS\")) is None")?,
+        "120"
+    );
+    assert_eq!(
+        envs.get(OsStr::new("LINES"))
+            .ok_or("envs.get(OsStr::new(\"LINES\")) is None")?,
+        "40"
+    );
+    Ok(())
 }
 
 /// All volatile token classes on one line are scrubbed together in a single pass.
 #[test]
-fn multiple_tokens_on_one_line() {
+fn multiple_tokens_on_one_line() -> Result<(), TestError> {
     let input = "2024-06-15T12:00:00Z call took 0.05s via 127.0.0.1:5060 pid=42 -> /tmp/x";
     assert_eq!(
-        normalize_or_panic(input),
+        normalize(input)?,
         "<TS> call took <DUR> via 127.0.0.1:<PORT> pid=<PID> -> <TMP>",
     );
+    Ok(())
 }
 
 include!("support/timeout.rs");
@@ -176,7 +200,7 @@ include!("support/timeout.rs");
 /// class of bug the sanitizer job exists to find, and writing it into the
 /// sanitizer job's own self-test would be a poor advertisement.
 #[test]
-fn timeout_scaling_contract() {
+fn timeout_scaling_contract() -> Result<(), TestError> {
     // SAFETY: the only test in this binary that touches this variable, so no
     // other thread can be reading it concurrently.
     let set = |v: Option<&str>| unsafe {
@@ -209,6 +233,7 @@ fn timeout_scaling_contract() {
         );
     }
     set(None);
+    Ok(())
 }
 
 // ── production_source: where a source scan must stop reading ─────────
@@ -216,7 +241,7 @@ fn timeout_scaling_contract() {
 /// The ordinary shape: production code, then a `#[cfg(test)] mod tests`.
 /// Everything before the attribute is kept, everything from it is dropped.
 #[test]
-fn production_source_cuts_at_the_test_module() {
+fn production_source_cuts_at_the_test_module() -> Result<(), TestError> {
     let src = r"
 pub fn handle() -> char { 'k' }
 
@@ -231,13 +256,14 @@ mod tests {
         "production code must survive: {prod:?}"
     );
     assert!(!prod.contains("'z'"), "test module must be cut: {prod:?}");
+    Ok(())
 }
 
 /// The defect this rule was written for. A COMMENT that spells the attribute
 /// is prose, not a test module, and must not end the scan — `src/tui/
 /// dashboard.rs` mentions it on line 17 and truncated a 375-line view to 17.
 #[test]
-fn production_source_ignores_the_attribute_written_in_a_comment() {
+fn production_source_ignores_the_attribute_written_in_a_comment() -> Result<(), TestError> {
     let src = r"
 // fixtures -- deliberately there rather than as a #[cfg(test)] import
 pub fn handle() -> char { 'k' }
@@ -253,13 +279,14 @@ mod tests {
         "a comment naming the attribute must not stop the scan: {prod:?}"
     );
     assert!(!prod.contains("'z'"));
+    Ok(())
 }
 
 /// A real `#[cfg(test)]` guarding a test-only IMPORT is not the test module.
 /// `src/tui/controllers/mod.rs` has one on line 23, which cut a 1662-line
 /// file to 22 lines and hid every key its dispatcher handles.
 #[test]
-fn production_source_steps_over_an_attribute_on_a_use() {
+fn production_source_steps_over_an_attribute_on_a_use() -> Result<(), TestError> {
     let src = r"
 #[cfg(test)]
 use crate::tui::clipboard::spawn_clipboard_copy;
@@ -277,13 +304,14 @@ mod tests {
         "an attribute on a `use` must not stop the scan: {prod:?}"
     );
     assert!(!prod.contains("'z'"));
+    Ok(())
 }
 
 /// The attribute also guards single statements and `thread_local!` counters
 /// INSIDE production functions (`src/tui/call_list.rs`, `stream_list.rs`).
 /// Stopping there would discard the rest of the function around it.
 #[test]
-fn production_source_steps_over_an_attribute_inside_a_function() {
+fn production_source_steps_over_an_attribute_inside_a_function() -> Result<(), TestError> {
     let src = r"
 pub fn render() -> char {
     #[cfg(test)]
@@ -302,12 +330,13 @@ mod tests {
         "an attribute on a statement must not stop the scan: {prod:?}"
     );
     assert!(!prod.contains("'z'"));
+    Ok(())
 }
 
 /// `#[cfg(test)] mod tests;` — attribute and item on one line, the form used
 /// when the tests live in their own file.
 #[test]
-fn production_source_cuts_at_a_one_line_module_declaration() {
+fn production_source_cuts_at_a_one_line_module_declaration() -> Result<(), TestError> {
     let src = r"
 pub fn handle() -> char { 'k' }
 #[cfg(test)]
@@ -315,13 +344,14 @@ mod tests;
 ";
     assert!(production_source(src).contains("'k'"));
     assert!(!production_source(src).contains("mod tests;"));
+    Ok(())
 }
 
 /// Restricted visibility and further attributes between `#[cfg(test)]` and
 /// the `mod` are still the test module: `pub(crate) mod test_support` is how
 /// `src/tui/controllers/mod.rs` spells it.
 #[test]
-fn production_source_cuts_at_a_restricted_visibility_module() {
+fn production_source_cuts_at_a_restricted_visibility_module() -> Result<(), TestError> {
     for decl in [
         "pub(crate) mod test_support {",
         "pub(in crate::tui) mod test_support {",
@@ -337,25 +367,28 @@ fn production_source_cuts_at_a_restricted_visibility_module() {
         );
         assert!(prod.contains("handle"), "{decl}: {prod:?}");
     }
+    Ok(())
 }
 
 /// A file with no test module is returned whole — the anti-vacuity direction.
 /// A rule that trims something here would silently shorten every scan.
 #[test]
-fn production_source_keeps_a_file_with_no_test_module() {
+fn production_source_keeps_a_file_with_no_test_module() -> Result<(), TestError> {
     let src = "pub fn handle() -> char { 'k' }\n";
     assert_eq!(production_source(src), src);
     assert_eq!(production_source(""), "");
+    Ok(())
 }
 
 /// The result is a PREFIX, so its line count is the index of the cut and
 /// callers can slice their own line vector with it.
 #[test]
-fn production_source_line_count_is_the_cut_index() {
+fn production_source_line_count_is_the_cut_index() -> Result<(), TestError> {
     let src = "a\nb\nc\n#[cfg(test)]\nmod tests {}\n";
     let prod = production_source(src);
     assert!(src.starts_with(prod), "must be a prefix of the input");
     assert_eq!(prod.lines().count(), 3);
     let all: Vec<&str> = src.lines().collect();
     assert_eq!(&all[..prod.lines().count()], &["a", "b", "c"]);
+    Ok(())
 }

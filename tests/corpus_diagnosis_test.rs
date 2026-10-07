@@ -34,6 +34,8 @@ use sipnab::sip::diagnosis::diagnose_signaling;
 use sipnab::sip::dialog_store::{DialogStore, keep_messages_per_idle_dialog};
 use sipnab::sip::{is_sip_message, parser::parse_sip};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Files larger than this are skipped: the corpus root holds a multi-gigabyte
 /// archive that is not a capture at all, and the pure-Rust reader works from a
 /// whole-file slice. Reported, never silent — a test that quietly covers a
@@ -159,8 +161,10 @@ fn corpus_stores(root: &Path) -> Vec<(String, DialogStore)> {
 /// that could not resolve — all three appear here, and all three used to be
 /// reported as an offline endpoint.
 #[test]
-fn no_corpus_registration_rejection_claims_the_endpoint_is_offline() {
-    let Some(root) = corpus_root() else { return };
+fn no_corpus_registration_rejection_claims_the_endpoint_is_offline() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let mut rejections = 0usize;
     let mut codes: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
@@ -197,6 +201,7 @@ fn no_corpus_registration_rejection_claims_the_endpoint_is_offline() {
         "the corpus at SIPNAB_CORPUS holds no rejected REGISTER, so this test proves \
          nothing — point it at a corpus containing registration failures"
     );
+    Ok(())
 }
 
 /// The direct evidence: a `REGISTER` challenged `401`, answered with
@@ -204,8 +209,10 @@ fn no_corpus_registration_rejection_claims_the_endpoint_is_offline() {
 /// registrar answered twice, so "the endpoint is offline" was contradicted by
 /// the same four messages it was drawn from.
 #[test]
-fn corpus_forbidden_after_challenge_reads_as_a_credential_rejection() {
-    let Some(root) = corpus_root() else { return };
+fn corpus_forbidden_after_challenge_reads_as_a_credential_rejection() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let mut found = 0usize;
     for (name, store) in corpus_stores(&root) {
@@ -236,7 +243,7 @@ fn corpus_forbidden_after_challenge_reads_as_a_credential_rejection() {
                 .hints
                 .iter()
                 .find(|h| h.starts_with("Registration"))
-                .unwrap_or_else(|| panic!("{name}: 403 rejection with no registration hint"));
+                .ok_or_else(|| format!("{name}: 403 rejection with no registration hint"))?;
             let lower = hint.to_lowercase();
             assert!(
                 lower.contains("credential"),
@@ -255,6 +262,7 @@ fn corpus_forbidden_after_challenge_reads_as_a_credential_rejection() {
         "the corpus at SIPNAB_CORPUS holds no REGISTER challenged and then refused 403 — \
          the shape this test exists to pin down"
     );
+    Ok(())
 }
 
 // ── Defect 2: compaction must not eat the outcome ────────────────────
@@ -264,8 +272,10 @@ fn corpus_forbidden_after_challenge_reads_as_a_credential_rejection() {
 /// the registrar or callee actually sent to `None`, which the report renders
 /// as `-` and every failure-selecting filter reads as "no outcome".
 #[test]
-fn corpus_compaction_preserves_the_final_status_code() {
-    let Some(root) = corpus_root() else { return };
+fn corpus_compaction_preserves_the_final_status_code() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let mut checked = 0usize;
     let mut total_evicted = 0u64;
@@ -318,6 +328,7 @@ fn corpus_compaction_preserves_the_final_status_code() {
          messages with a final response, so compaction was never exercised",
         keep_messages_per_idle_dialog()
     );
+    Ok(())
 }
 
 /// The lifetime eviction counter must be readable from outside the crate.
@@ -327,8 +338,10 @@ fn corpus_compaction_preserves_the_final_status_code() {
 /// the consumer that keeps the accessor honest; wiring it into the CLI
 /// summary is a separate job with its own golden tests.
 #[test]
-fn corpus_eviction_counter_is_reachable_and_counts() {
-    let Some(root) = corpus_root() else { return };
+fn corpus_eviction_counter_is_reachable_and_counts() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let mut counted = 0u64;
     for (_, mut store) in corpus_stores(&root) {
@@ -350,4 +363,5 @@ fn corpus_eviction_counter_is_reachable_and_counts() {
     }
 
     eprintln!("corpus messages evicted by idle compaction: {counted}");
+    Ok(())
 }

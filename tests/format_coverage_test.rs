@@ -23,12 +23,16 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// Every tracked `Cargo.toml` that declares a package, as a repo-relative
@@ -36,16 +40,15 @@ fn read(rel: &str) -> String {
 ///
 /// From `git ls-files` rather than a walk, so a manifest in an ignored build
 /// directory is never mistaken for a package this repository ships.
-fn package_dirs() -> BTreeSet<String> {
+fn package_dirs() -> Result<BTreeSet<String>, TestError> {
     let out = Command::new("git")
         .args(["ls-files", "*Cargo.toml", "Cargo.toml"])
         .current_dir(repo())
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(out.status.success(), "git ls-files failed");
     let mut dirs = BTreeSet::new();
     for rel in String::from_utf8_lossy(&out.stdout).lines() {
-        let body = read(rel);
+        let body = read(rel)?;
         if !body.contains("[package]") {
             continue;
         }
@@ -60,22 +63,23 @@ fn package_dirs() -> BTreeSet<String> {
         "found {} package(s); this tree has several, so the scan is broken",
         dirs.len()
     );
-    dirs
+    Ok(dirs)
 }
 
 /// The workspace members `cargo fmt --all` covers, from the root manifest's
 /// `members` list.
-fn workspace_members() -> BTreeSet<String> {
-    let root = read("Cargo.toml");
+fn workspace_members() -> Result<BTreeSet<String>, TestError> {
+    let root = read("Cargo.toml")?;
     let list = root
         .split_once("members = [")
         .and_then(|(_, rest)| rest.split_once(']'))
         .map(|(v, _)| v.to_string())
-        .expect("the root manifest must list its members");
-    list.split(',')
+        .ok_or("the root manifest must list its members")?;
+    Ok(list
+        .split(',')
         .map(|s| s.trim().trim_matches('"').to_string())
         .filter(|s| !s.is_empty())
-        .collect()
+        .collect())
 }
 
 /// The scripts and workflows that check formatting.
@@ -94,9 +98,9 @@ const FMT_GATES: [&str; 5] = [
 /// is added rather than going unformatted until somebody runs a per-file check
 /// by hand.
 #[test]
-fn every_package_outside_the_workspace_is_checked_by_every_format_gate() {
-    let members = workspace_members();
-    let outside: Vec<String> = package_dirs()
+fn every_package_outside_the_workspace_is_checked_by_every_format_gate() -> Result<(), TestError> {
+    let members = workspace_members()?;
+    let outside: Vec<String> = package_dirs()?
         .into_iter()
         .filter(|d| !members.contains(d))
         .collect();
@@ -108,7 +112,7 @@ fn every_package_outside_the_workspace_is_checked_by_every_format_gate() {
 
     let mut missing = Vec::new();
     for gate in FMT_GATES {
-        let body = read(gate);
+        let body = read(gate)?;
         for dir in &outside {
             if !body.contains(&format!("--manifest-path {dir}/Cargo.toml")) {
                 missing.push(format!("{gate} does not format {dir}/"));
@@ -121,6 +125,7 @@ fn every_package_outside_the_workspace_is_checked_by_every_format_gate() {
          package the workspace excludes:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// What a `cargo fmt --check` run actually established.
@@ -160,23 +165,25 @@ fn classify_format_check(ok: bool, stdout: &str, stderr: &str) -> FormatCheck {
 
 /// A missing rustfmt is not a finding about the code.
 #[test]
-fn a_checker_that_could_not_run_is_not_a_verdict() {
+fn a_checker_that_could_not_run_is_not_a_verdict() -> Result<(), TestError> {
     assert_eq!(
         classify_format_check(false, "", "error: 'cargo-fmt' is not installed"),
         FormatCheck::CouldNotRun,
         "an empty diff with a non-zero exit is rustfmt failing to run; calling \
          it unformatted turns a missing component into a code defect"
     );
+    Ok(())
 }
 
 /// A real diff still is one.
 #[test]
-fn a_diff_is_still_reported_as_unformatted() {
+fn a_diff_is_still_reported_as_unformatted() -> Result<(), TestError> {
     assert_eq!(
         classify_format_check(false, "Diff in /x/src/main.rs:78:\n-a, b\n+a,\n+b", ""),
         FormatCheck::Unformatted
     );
     assert_eq!(classify_format_check(true, "", ""), FormatCheck::Clean);
+    Ok(())
 }
 
 /// And the packages themselves are actually formatted.
@@ -192,12 +199,12 @@ fn a_diff_is_still_reported_as_unformatted() {
 /// is what guarantees that — so the check is enforced there whatever this run
 /// could see.
 #[test]
-fn every_package_outside_the_workspace_is_formatted() {
-    let members = workspace_members();
+fn every_package_outside_the_workspace_is_formatted() -> Result<(), TestError> {
+    let members = workspace_members()?;
     let mut unformatted = Vec::new();
     let mut unavailable = Vec::new();
     let mut checked = 0usize;
-    for dir in package_dirs() {
+    for dir in package_dirs()? {
         if members.contains(&dir) {
             continue;
         }
@@ -207,8 +214,7 @@ fn every_package_outside_the_workspace_is_formatted() {
             .arg(&manifest)
             .args(["--", "--check"])
             .current_dir(repo())
-            .output()
-            .expect("cargo fmt");
+            .output()?;
         checked += 1;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -237,4 +243,5 @@ fn every_package_outside_the_workspace_is_formatted() {
          `cargo fmt --all` does not reach them:\n\n{}",
         unformatted.join("\n\n")
     );
+    Ok(())
 }

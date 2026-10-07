@@ -27,6 +27,8 @@
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The fixtures `tests/gen-pcap-samples.py` and
 /// `tests/gen-link-type-samples.py` write.
 ///
@@ -198,10 +200,10 @@ fn host_is_synthetic(host: &str) -> bool {
 /// Asserted on every byte rather than on the addresses sipnab parses out,
 /// because the address that leaks is the one nobody thought was an address.
 #[test]
-fn generated_fixtures_carry_no_public_routable_address() {
+fn generated_fixtures_carry_no_public_routable_address() -> Result<(), TestError> {
     for rel in GENERATED {
         let path = repo_path(rel);
-        let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let data = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let mut public: Vec<Ipv4Addr> = ipv4_literals(&data)
             .into_iter()
             .filter(|a| is_public(*a))
@@ -216,14 +218,15 @@ fn generated_fixtures_carry_no_public_routable_address() {
             &public[..public.len().min(4)]
         );
     }
+    Ok(())
 }
 
 /// No digit run in a generated fixture can be read as a telephone number.
 #[test]
-fn generated_fixtures_carry_no_phone_shaped_digit_runs() {
+fn generated_fixtures_carry_no_phone_shaped_digit_runs() -> Result<(), TestError> {
     for rel in GENERATED {
         let path = repo_path(rel);
-        let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let data = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let mut runs = phone_shaped_runs(&data);
         runs.sort();
         runs.dedup();
@@ -235,6 +238,7 @@ fn generated_fixtures_carry_no_phone_shaped_digit_runs() {
             &runs[..runs.len().min(4)]
         );
     }
+    Ok(())
 }
 
 /// Every SIP URI host is an IP literal or an RFC 2606 documentation label.
@@ -243,10 +247,10 @@ fn generated_fixtures_carry_no_phone_shaped_digit_runs() {
 /// at a domain that was neither reserved nor owned by the project. Nothing in
 /// the capture looked wrong, and no test read the host at all.
 #[test]
-fn generated_fixtures_name_only_documentation_hosts() {
+fn generated_fixtures_name_only_documentation_hosts() -> Result<(), TestError> {
     for rel in GENERATED {
         let path = repo_path(rel);
-        let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let data = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let mut offenders: Vec<String> = sip_uri_hosts(&data)
             .into_iter()
             .filter(|h| !host_is_synthetic(h))
@@ -261,6 +265,7 @@ fn generated_fixtures_name_only_documentation_hosts() {
             &offenders[..offenders.len().min(4)]
         );
     }
+    Ok(())
 }
 
 /// The fuzz seed and the sample it was copied from must stay identical.
@@ -270,15 +275,14 @@ fn generated_fixtures_name_only_documentation_hosts() {
 /// kind of drift that is only noticed when a fuzz reproducer stops
 /// reproducing.
 #[test]
-fn the_fuzz_seed_matches_the_sample_it_copies() {
-    let sample =
-        std::fs::read(repo_path("tests/pcap-samples/sip-register.pcap")).expect("read the sample");
-    let seed = std::fs::read(repo_path("fuzz/corpus/pcap_reader/sip-register.pcap"))
-        .expect("read the fuzz seed");
+fn the_fuzz_seed_matches_the_sample_it_copies() -> Result<(), TestError> {
+    let sample = std::fs::read(repo_path("tests/pcap-samples/sip-register.pcap"))?;
+    let seed = std::fs::read(repo_path("fuzz/corpus/pcap_reader/sip-register.pcap"))?;
     assert_eq!(
         sample, seed,
         "fuzz/corpus/pcap_reader/sip-register.pcap has drifted from \
          tests/pcap-samples/sip-register.pcap; regenerate both with \
          `python3 tests/gen-pcap-samples.py`"
     );
+    Ok(())
 }

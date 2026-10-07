@@ -22,41 +22,49 @@ mod pcap_build;
 #[path = "support/tar_build.rs"]
 mod tar_build;
 
-use tar_build::{Entry, gzip_or_panic, tar};
+use tar_build::{Entry, gzip, tar};
+
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
 
 /// Captures, by member name: three calls at distinct times, one of them with
 /// an RTP stream, plus an LTE-MAC-style capture sipnab cannot decode.
-fn captures() -> Vec<(&'static str, Vec<u8>)> {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn captures() -> Result<Vec<(&'static str, Vec<u8>)>, TestError> {
+    let dir = tempfile::tempdir()?;
     let mut out = Vec::new();
-    let mut at = |name: &'static str, frames: Vec<Vec<u8>>, start_usec: u64, link: u32| {
+    let mut at = |name: &'static str,
+                  frames: Vec<Vec<u8>>,
+                  start_usec: u64,
+                  link: u32|
+     -> Result<(), TestError> {
         let p = dir.path().join(name);
         let timed: Vec<(Vec<u8>, u64)> = frames
             .into_iter()
             .enumerate()
             .map(|(i, f)| (f, start_usec + i as u64 * 1_000))
             .collect();
-        pcap_build::write_pcap_at_or_panic(&p, &timed, link);
-        out.push((name, std::fs::read(&p).expect("read back")));
+        pcap_build::write_pcap_at(&p, &timed, link)?;
+        out.push((name, std::fs::read(&p)?));
+        Ok(())
     };
     at(
         "a.pcap",
         pcap_build::sip_call_frames("arch-a@test", "a1", "alice", "bob"),
         10_000_000,
         1,
-    );
+    )?;
     at(
         "b.pcap",
         pcap_build::sdp_call_with_lossy_rtp("arch-b@test", 50, 1),
         20_000_000,
         1,
-    );
+    )?;
     at(
         "c.pcap",
         pcap_build::sip_call_frames("arch-c@test", "c1", "carol", "dave"),
         30_000_000,
         1,
-    );
+    )?;
     // DLT 149 (USER2), what a test handset's MAC-NR log uses. Not decodable, and
     // it must cost the run nothing but a counted, named line.
     at(
@@ -64,8 +72,8 @@ fn captures() -> Vec<(&'static str, Vec<u8>)> {
         vec![vec![0x42; 40], vec![0x43; 40]],
         5_000_000,
         149,
-    );
-    out
+    )?;
+    Ok(out)
 }
 
 /// The members every archive form carries besides the captures: things an
@@ -80,14 +88,14 @@ fn clutter() -> Vec<(&'static str, Vec<u8>)> {
 /// Lay the fixture out every way the suite compares, under `root`.
 ///
 /// Returns `(label, path)` pairs: the directory first, then each archive form.
-fn forms(root: &Path) -> Vec<(&'static str, PathBuf)> {
-    let caps = captures();
+fn forms(root: &Path) -> Result<Vec<(&'static str, PathBuf)>, TestError> {
+    let caps = captures()?;
     let clutter = clutter();
 
     let dir = root.join("unpacked");
-    std::fs::create_dir(&dir).expect("mkdir");
+    std::fs::create_dir(&dir)?;
     for (name, bytes) in caps.iter().chain(clutter.iter()) {
-        std::fs::write(dir.join(name), bytes).expect("write member");
+        std::fs::write(dir.join(name), bytes)?;
     }
 
     let flat: Vec<Entry<'_>> = caps
@@ -97,11 +105,11 @@ fn forms(root: &Path) -> Vec<(&'static str, PathBuf)> {
         .collect();
     let plain_tar = tar(&flat);
     let tar_path = root.join("set.tar");
-    std::fs::write(&tar_path, &plain_tar).expect("tar");
+    std::fs::write(&tar_path, &plain_tar)?;
     let tgz_path = root.join("set.tgz");
-    std::fs::write(&tgz_path, gzip_or_panic(&plain_tar)).expect("tgz");
+    std::fs::write(&tgz_path, gzip(&plain_tar)?)?;
     let targz_path = root.join("set.tar.gz");
-    std::fs::write(&targz_path, gzip_or_panic(&plain_tar)).expect("tar.gz");
+    std::fs::write(&targz_path, gzip(&plain_tar)?)?;
 
     // Two layers inside a third: a `.tgz` holding a and b, and c gzipped but
     // still NAMED c.pcap — the layer is found by its bytes, not its name.
@@ -110,9 +118,9 @@ fn forms(root: &Path) -> Vec<(&'static str, PathBuf)> {
         .filter(|(n, _)| matches!(*n, "a.pcap" | "b.pcap"))
         .map(|(n, b)| Entry::file(n, b))
         .collect();
-    let inner_tgz = gzip_or_panic(&tar(&inner));
-    let c_gz = gzip_or_panic(&caps.iter().find(|(n, _)| *n == "c.pcap").expect("c").1);
-    let mac = &caps.iter().find(|(n, _)| *n == "mac.pcap").expect("mac").1;
+    let inner_tgz = gzip(&tar(&inner))?;
+    let c_gz = gzip(&caps.iter().find(|(n, _)| *n == "c.pcap").ok_or("c")?.1)?;
+    let mac = &caps.iter().find(|(n, _)| *n == "mac.pcap").ok_or("mac")?.1;
     let mut outer = vec![
         Entry::dir("nested/"),
         Entry::file("nested/inner.tgz", &inner_tgz),
@@ -123,32 +131,31 @@ fn forms(root: &Path) -> Vec<(&'static str, PathBuf)> {
         outer.push(Entry::file(n, b));
     }
     let nested_path = root.join("nested.tar");
-    std::fs::write(&nested_path, tar(&outer)).expect("nested");
+    std::fs::write(&nested_path, tar(&outer))?;
 
-    vec![
+    Ok(vec![
         ("directory", dir),
         ("tar", tar_path),
         ("tgz", tgz_path),
         ("tar.gz", targz_path),
         ("nested", nested_path),
-    ]
+    ])
 }
 
 /// Run the binary. `tmpdir` becomes its `TMPDIR`, so what it extracts can be
 /// looked for afterwards.
-fn sipnab(args: &[&str], tmpdir: &Path) -> (String, String, Option<i32>) {
+fn sipnab(args: &[&str], tmpdir: &Path) -> Result<(String, String, Option<i32>), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("TMPDIR", tmpdir)
         .env("SIPNAB_LOG", "info")
         .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// The dialogs a run printed, with every capture-location prefix removed from
@@ -171,12 +178,12 @@ fn dialogs(stdout: &str, prefixes: &[String]) -> Vec<String> {
 }
 
 /// The closing count line: packets, SIP messages, RTP packets, streams.
-fn summary(stderr: &str) -> String {
-    stderr
+fn summary(stderr: &str) -> Result<String, TestError> {
+    Ok(stderr
         .lines()
         .find_map(|l| l.split_once("sipnab: ").map(|(_, rest)| rest.to_string()))
         .filter(|l| l.contains("SIP messages"))
-        .unwrap_or_else(|| panic!("no summary line in:\n{stderr}"))
+        .ok_or_else(|| format!("no summary line in:\n{stderr}"))?)
 }
 
 fn extraction_dirs(tmpdir: &Path) -> Vec<String> {
@@ -192,10 +199,10 @@ fn extraction_dirs(tmpdir: &Path) -> Vec<String> {
 
 /// The headline property: five presentations of one capture set, one answer.
 #[test]
-fn every_archive_form_reads_exactly_like_the_directory() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let forms = forms(root.path());
+fn every_archive_form_reads_exactly_like_the_directory() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let forms = forms(root.path())?;
 
     let mut reference: Option<(Vec<String>, String)> = None;
     for (label, path) in &forms {
@@ -211,14 +218,14 @@ fn every_archive_form_reads_exactly_like_the_directory() {
                 "1-65535",
             ],
             tmp.path(),
-        );
+        )?;
         assert_eq!(code, Some(0), "{label}: exit status\n{stderr}");
         let prefixes = vec![
             format!("{spec}/nested/inner.tgz/"),
             format!("{spec}/nested/"),
             format!("{spec}/"),
         ];
-        let got = (dialogs(&stdout, &prefixes), summary(&stderr));
+        let got = (dialogs(&stdout, &prefixes), summary(&stderr)?);
         assert_eq!(got.0.len(), 3, "{label}: three calls\n{stdout}");
         match &reference {
             None => reference = Some(got),
@@ -236,22 +243,23 @@ fn every_archive_form_reads_exactly_like_the_directory() {
             extraction_dirs(tmp.path())
         );
     }
+    Ok(())
 }
 
 /// Every member that is not read is named with its reason, and the
 /// reconciling line counts them. An LTE MAC member is read, reported by link
 /// type, and costs the run nothing else.
 #[test]
-fn every_member_is_accounted_for() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let forms = forms(root.path());
-    let tgz = &forms.iter().find(|(l, _)| *l == "tgz").expect("tgz").1;
+fn every_member_is_accounted_for() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let forms = forms(root.path())?;
+    let tgz = &forms.iter().find(|(l, _)| *l == "tgz").ok_or("tgz")?.1;
     let spec = tgz.display().to_string();
     let (_, stderr, code) = sipnab(
         &["-N", "-I", &spec, "--report", "--no-cli-print"],
         tmp.path(),
-    );
+    )?;
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         stderr.contains(&format!("Skipping '{spec}/empty.pcap': empty (0 bytes)")),
@@ -270,59 +278,61 @@ fn every_member_is_accounted_for() {
         "{stderr}"
     );
     assert!(stderr.contains("4 of 4 file(s) read in full"), "{stderr}");
+    Ok(())
 }
 
 /// A BPF filter that cannot compile against the undecodable member skips it
 /// instead of ending the run, which it still does for a decodable one.
 #[test]
-fn a_filter_skips_an_undecodable_member_rather_than_ending_the_run() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let forms = forms(root.path());
-    let tgz = &forms.iter().find(|(l, _)| *l == "tgz").expect("tgz").1;
+fn a_filter_skips_an_undecodable_member_rather_than_ending_the_run() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let forms = forms(root.path())?;
+    let tgz = &forms.iter().find(|(l, _)| *l == "tgz").ok_or("tgz")?.1;
     let spec = tgz.display().to_string();
     let (_, stderr, code) = sipnab(
         &["-N", "-I", &spec, "--report", "--no-cli-print", "udp"],
         tmp.path(),
-    );
+    )?;
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         stderr.contains(&format!("Skipping '{spec}/mac.pcap': link type 149")),
         "{stderr}"
     );
+    Ok(())
 }
 
 /// A frame pointer minted from a member resolves through `--show-frame` to
 /// the same bytes as the pointer minted from the same file in a directory.
 #[test]
-fn a_frame_pointer_into_a_member_round_trips() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let forms = forms(root.path());
-    let pointer_for = |path: &Path| {
+fn a_frame_pointer_into_a_member_round_trips() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let forms = forms(root.path())?;
+    let pointer_for = |path: &Path| -> Result<String, TestError> {
         let spec = path.display().to_string();
         let (stdout, stderr, _) = sipnab(
             &["-N", "-I", &spec, "--json", "--portrange", "1-65535"],
             tmp.path(),
-        );
-        stdout
+        )?;
+        Ok(stdout
             .lines()
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .filter_map(|v| v["frame"].as_str().map(str::to_string))
             .find(|f| f.contains("c.pcap#"))
-            .unwrap_or_else(|| panic!("no pointer into c.pcap:\n{stdout}\n{stderr}"))
+            .ok_or_else(|| format!("no pointer into c.pcap:\n{stdout}\n{stderr}"))?)
     };
-    let dir_ptr = pointer_for(&forms[0].1);
-    let (dir_frame, _, dir_code) = sipnab(&["--show-frame", &dir_ptr], tmp.path());
+    let dir_ptr = pointer_for(&forms[0].1)?;
+    let (dir_frame, _, dir_code) = sipnab(&["--show-frame", &dir_ptr], tmp.path())?;
     assert_eq!(dir_code, Some(0));
 
     for (label, path) in &forms[1..] {
-        let ptr = pointer_for(path);
+        let ptr = pointer_for(path)?;
         assert!(
             ptr.starts_with(&path.display().to_string()),
             "{label}: the pointer names the archive: {ptr}"
         );
-        let (frame, stderr, code) = sipnab(&["--show-frame", &ptr], tmp.path());
+        let (frame, stderr, code) = sipnab(&["--show-frame", &ptr], tmp.path())?;
         assert_eq!(code, Some(0), "{label}: {ptr}\n{stderr}");
         assert!(frame.starts_with("VERIFIED"), "{label}: {frame}");
         let bytes = |s: &str| s.lines().skip(3).collect::<Vec<_>>().join("\n");
@@ -332,17 +342,18 @@ fn a_frame_pointer_into_a_member_round_trips() {
             "{label}: left behind"
         );
     }
+    Ok(())
 }
 
 /// `--cores` reads an archive's members the way the single-threaded reader
 /// does.
 #[test]
-fn cores_reads_an_archive_the_same_way() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let forms = forms(root.path());
+fn cores_reads_an_archive_the_same_way() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let forms = forms(root.path())?;
     let tgz = forms[2].1.display().to_string();
-    let run = |cores: &str| {
+    let run = |cores: &str| -> Result<String, TestError> {
         let (_, stderr, code) = sipnab(
             &[
                 "-N",
@@ -356,7 +367,7 @@ fn cores_reads_an_archive_the_same_way() {
                 cores,
             ],
             tmp.path(),
-        );
+        )?;
         assert_eq!(code, Some(0), "--cores {cores}: {stderr}");
         summary(&stderr)
     };
@@ -369,20 +380,21 @@ fn cores_reads_an_archive_the_same_way() {
             .map(str::to_string)
             .collect()
     };
-    assert_eq!(numbers(run("1")), numbers(run("2")));
+    assert_eq!(numbers(run("1")?), numbers(run("2")?));
     assert!(extraction_dirs(tmp.path()).is_empty());
+    Ok(())
 }
 
 /// A decompression bomb is refused at the ceiling, the refusal names the
 /// ceiling and the flag that moves it, and nothing is left on disk.
 #[test]
-fn a_bomb_is_refused_at_the_ceiling_and_cleaned_up() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let mut big = captures().remove(0).1;
+fn a_bomb_is_refused_at_the_ceiling_and_cleaned_up() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let mut big = captures()?.remove(0).1;
     big.resize(4 * 1024 * 1024, 0);
     let bomb = root.path().join("bomb.tgz");
-    std::fs::write(&bomb, gzip_or_panic(&tar(&[Entry::file("big.pcap", &big)]))).expect("bomb");
+    std::fs::write(&bomb, gzip(&tar(&[Entry::file("big.pcap", &big)]))?)?;
     let spec = bomb.display().to_string();
     let (_, stderr, code) = sipnab(
         &[
@@ -395,11 +407,12 @@ fn a_bomb_is_refused_at_the_ceiling_and_cleaned_up() {
             "65536",
         ],
         tmp.path(),
-    );
+    )?;
     assert_ne!(code, Some(0), "{stderr}");
     assert!(stderr.contains("65536-byte ceiling"), "{stderr}");
     assert!(stderr.contains("--max-gunzip-bytes"), "{stderr}");
     assert!(extraction_dirs(tmp.path()).is_empty(), "left behind");
+    Ok(())
 }
 
 /// A run that ends in a non-zero exit — here because the archive was cut off
@@ -407,10 +420,10 @@ fn a_bomb_is_refused_at_the_ceiling_and_cleaned_up() {
 /// still removes what it extracted. `std::process::exit` runs no destructors,
 /// so this is the path a missed cleanup would leave files on.
 #[test]
-fn a_run_that_exits_nonzero_still_removes_what_it_extracted() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let caps = captures();
+fn a_run_that_exits_nonzero_still_removes_what_it_extracted() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let caps = captures()?;
     let whole = tar(&[
         Entry::file("a.pcap", &caps[0].1),
         Entry::file("b.pcap", &caps[1].1),
@@ -418,7 +431,7 @@ fn a_run_that_exits_nonzero_still_removes_what_it_extracted() {
     // Cut inside b.pcap's data: the tar reads, a is whole, b is a prefix.
     let cut_at = 512 + caps[0].1.len().div_ceil(512) * 512 + 512 + 100;
     let cut = root.path().join("cut.tgz");
-    std::fs::write(&cut, gzip_or_panic(&whole[..cut_at])).expect("write");
+    std::fs::write(&cut, gzip(&whole[..cut_at])?)?;
     let spec = cut.display().to_string();
     let (_, stderr, code) = sipnab(
         &[
@@ -431,7 +444,7 @@ fn a_run_that_exits_nonzero_still_removes_what_it_extracted() {
             "1-65535",
         ],
         tmp.path(),
-    );
+    )?;
     assert_eq!(code, Some(1), "an incomplete run exits 1\n{stderr}");
     assert!(
         stderr.contains("ends before its archive says it should"),
@@ -442,13 +455,14 @@ fn a_run_that_exits_nonzero_still_removes_what_it_extracted() {
         "left behind: {:?}",
         extraction_dirs(tmp.path())
     );
+    Ok(())
 }
 
 /// An archive the system `tar` wrote — GNU or BSD, whichever is installed —
 /// reads like the directory it was made from. The one check this suite's own
 /// writer cannot give.
 #[test]
-fn an_archive_the_system_tar_wrote_reads_like_its_directory() {
+fn an_archive_the_system_tar_wrote_reads_like_its_directory() -> Result<(), TestError> {
     let have_tar = Command::new("tar")
         .arg("--version")
         .output()
@@ -459,11 +473,11 @@ fn an_archive_the_system_tar_wrote_reads_like_its_directory() {
             std::io::stderr(),
             "SKIPPED an_archive_the_system_tar_wrote_reads_like_its_directory: no `tar` on PATH"
         );
-        return;
+        return Ok(());
     }
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmpdir");
-    let forms = forms(root.path());
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let forms = forms(root.path())?;
     let dir = &forms[0].1;
     let made = root.path().join("system.tgz");
     let status = Command::new("tar")
@@ -472,11 +486,10 @@ fn an_archive_the_system_tar_wrote_reads_like_its_directory() {
         .arg("-C")
         .arg(dir)
         .arg(".")
-        .status()
-        .expect("run tar");
+        .status()?;
     assert!(status.success());
 
-    let count = |path: &Path| {
+    let count = |path: &Path| -> Result<String, TestError> {
         let spec = path.display().to_string();
         let (_, stderr, code) = sipnab(
             &[
@@ -489,9 +502,10 @@ fn an_archive_the_system_tar_wrote_reads_like_its_directory() {
                 "1-65535",
             ],
             tmp.path(),
-        );
+        )?;
         assert_eq!(code, Some(0), "{stderr}");
         summary(&stderr)
     };
-    assert_eq!(count(&made), count(dir));
+    assert_eq!(count(&made)?, count(dir)?);
+    Ok(())
 }

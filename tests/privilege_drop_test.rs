@@ -38,6 +38,10 @@
 use std::io::Write as _;
 use std::process::{Command, Output};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Set by a parent on every child role it spawns. A child that finds it unset
 /// was started by hand (`--include-ignored`) and must not change the
 /// credentials of whatever process is hosting it.
@@ -95,14 +99,14 @@ fn sudo_available() -> bool {
 ///
 /// # Side effects
 /// Writes `sipnab-priv-guard-<tag>.pcap` into the system temp directory.
-fn world_readable_fixture(tag: &str) -> std::path::PathBuf {
+fn world_readable_fixture(tag: &str) -> Result<std::path::PathBuf, TestError> {
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
     let dst = std::env::temp_dir().join(format!(
         "sipnab-priv-guard-{tag}-{}.pcap",
         std::process::id()
     ));
-    std::fs::copy(src, &dst).expect("copy fixture to temp");
-    dst
+    std::fs::copy(src, &dst)?;
+    Ok(dst)
 }
 
 /// This process's `(uid, gid, euid, egid)`.
@@ -202,15 +206,19 @@ fn root_child_command(role: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<Co
 /// # Returns
 /// `false` when the role could not be run at all (already announced as a
 /// skip); `true` when it ran and every assertion in it passed.
-fn root_child_passes(parent: &str, role: &str, env: &[(&str, &std::ffi::OsStr)]) -> bool {
+fn root_child_passes(
+    parent: &str,
+    role: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<bool, TestError> {
     let mut cmd = match root_child_command(role, env) {
         Ok(c) => c,
         Err(reason) => {
             announce_skip(parent, &reason);
-            return false;
+            return Ok(false);
         }
     };
-    let out: Output = cmd.output().expect("spawn the child role");
+    let out: Output = cmd.output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -223,7 +231,7 @@ fn root_child_passes(parent: &str, role: &str, env: &[(&str, &std::ffi::OsStr)])
         "child role `{role}` exited 0 without reaching its completion marker, so \
          its assertions did not all run\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
-    true
+    Ok(true)
 }
 
 /// Refuse to run a child role that no parent spawned.
@@ -243,16 +251,16 @@ fn spawned_by_parent(role: &str) -> bool {
 }
 
 /// Look up an account's uid and primary gid, failing loudly when it is absent.
-fn account_ids(name: &str) -> (u32, u32) {
-    let c = std::ffi::CString::new(name).expect("account name has no null byte");
+fn account_ids(name: &str) -> Result<(u32, u32), TestError> {
+    let c = std::ffi::CString::new(name)?;
     // SAFETY: getpwnam returns a pointer into a static buffer valid until the
     // next passwd-database call; the two scalar fields are copied out
     // immediately, before anything else can touch it.
-    unsafe {
+    Ok(unsafe {
         let pw = libc::getpwnam(c.as_ptr());
         assert!(!pw.is_null(), "account '{name}' must exist on this system");
         ((*pw).pw_uid, (*pw).pw_gid)
-    }
+    })
 }
 
 // ── End-to-end: the binary's behavior around the drop ────────────────────
@@ -260,27 +268,26 @@ fn account_ids(name: &str) -> (u32, u32) {
 /// Running as root with `--user` naming a nonexistent account exits non-zero
 /// with "Failed to drop privileges" — never continues capturing as root.
 #[test]
-fn failed_privilege_drop_aborts_instead_of_running_as_root() {
+fn failed_privilege_drop_aborts_instead_of_running_as_root() -> Result<(), TestError> {
     if !sudo_available() {
         announce_skip(
             "failed_privilege_drop_aborts_instead_of_running_as_root",
             "passwordless sudo is not available, so sipnab cannot be run as root here",
         );
-        return;
+        return Ok(());
     }
-    let fixture = world_readable_fixture("drop-fail");
+    let fixture = world_readable_fixture("drop-fail")?;
     let out = Command::new("sudo")
         .args([
             "-n",
             env!("CARGO_BIN_EXE_sipnab"),
             "-N",
             "-I",
-            fixture.to_str().unwrap(),
+            fixture.to_str().ok_or("path is not UTF-8")?,
             "--user",
             "no-such-user-sipnab-guard",
         ])
-        .output()
-        .expect("spawn sipnab under sudo");
+        .output()?;
     assert!(
         !out.status.success(),
         "a failed privilege drop must abort the process, not continue as root"
@@ -290,36 +297,37 @@ fn failed_privilege_drop_aborts_instead_of_running_as_root() {
         stderr.contains("Failed to drop privileges"),
         "abort must say why, got:\n{stderr}"
     );
+    Ok(())
 }
 
 /// Root dropping to `nobody` still reads and processes the fixture, exiting 0.
 #[test]
-fn successful_privilege_drop_still_processes_capture() {
+fn successful_privilege_drop_still_processes_capture() -> Result<(), TestError> {
     if !sudo_available() {
         announce_skip(
             "successful_privilege_drop_still_processes_capture",
             "passwordless sudo is not available, so sipnab cannot be run as root here",
         );
-        return;
+        return Ok(());
     }
-    let fixture = world_readable_fixture("drop-success");
+    let fixture = world_readable_fixture("drop-success")?;
     let out = Command::new("sudo")
         .args([
             "-n",
             env!("CARGO_BIN_EXE_sipnab"),
             "-N",
             "-I",
-            fixture.to_str().unwrap(),
+            fixture.to_str().ok_or("path is not UTF-8")?,
             "--user",
             "nobody",
         ])
-        .output()
-        .expect("spawn sipnab under sudo");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
         "root -> drop to nobody -> read fixture must succeed, got:\n{stderr}"
     );
+    Ok(())
 }
 
 // ── What the drop does to the process that performed it ───────────────────
@@ -335,12 +343,13 @@ fn successful_privilege_drop_still_processes_capture() {
 /// `nobody` by uid and still in the invoking user's groups has not been
 /// confined, it has been relabeled.
 #[test]
-fn privileges_are_actually_dropped_and_cannot_be_regained() {
+fn privileges_are_actually_dropped_and_cannot_be_regained() -> Result<(), TestError> {
     root_child_passes(
         "privileges_are_actually_dropped_and_cannot_be_regained",
         "child_drops_to_nobody_and_cannot_climb_back",
         &[],
-    );
+    )?;
+    Ok(())
 }
 
 /// A drop that cannot be performed returns an error and leaves the process
@@ -351,12 +360,13 @@ fn privileges_are_actually_dropped_and_cannot_be_regained() {
 /// there is an error to treat, and that the credentials did not move on the
 /// way to it.
 #[test]
-fn a_drop_that_cannot_be_performed_is_fatal_not_a_warning() {
+fn a_drop_that_cannot_be_performed_is_fatal_not_a_warning() -> Result<(), TestError> {
     root_child_passes(
         "a_drop_that_cannot_be_performed_is_fatal_not_a_warning",
         "child_reports_an_impossible_drop_and_stays_put",
         &[],
-    );
+    )?;
+    Ok(())
 }
 
 /// `--no-priv-drop` really does skip the drop.
@@ -366,21 +376,21 @@ fn a_drop_that_cannot_be_performed_is_fatal_not_a_warning() {
 /// immediately below it in `drop_privileges`, so no unprivileged test can tell
 /// a working flag from a deleted one.
 #[test]
-fn the_no_priv_drop_flag_skips_the_drop_even_as_root() {
+fn the_no_priv_drop_flag_skips_the_drop_even_as_root() -> Result<(), TestError> {
     root_child_passes(
         "the_no_priv_drop_flag_skips_the_drop_even_as_root",
         "child_keeps_its_credentials_when_the_drop_is_disabled",
         &[],
-    );
+    )?;
+    Ok(())
 }
 
 /// `do_chroot` confines the process as documented: the new root's contents
 /// appear at `/`, the old root's do not, and the working directory follows.
 #[test]
-fn chroot_confines_the_process_to_the_new_root() {
-    let jail = tempfile::tempdir().expect("a directory to confine the child to");
-    std::fs::write(jail.path().join(CHROOT_MARKER), b"visible only inside\n")
-        .expect("place the marker inside the new root");
+fn chroot_confines_the_process_to_the_new_root() -> Result<(), TestError> {
+    let jail = tempfile::tempdir()?;
+    std::fs::write(jail.path().join(CHROOT_MARKER), b"visible only inside\n")?;
     // The directory is created by this (possibly unprivileged) runner and
     // entered by a root child, which can traverse it whatever its mode; the
     // marker is written from here so the child proves visibility, not its own
@@ -389,7 +399,8 @@ fn chroot_confines_the_process_to_the_new_root() {
         "chroot_confines_the_process_to_the_new_root",
         "child_chroots_and_loses_sight_of_the_real_root",
         &[(CHROOT_DIR_ENV, jail.path().as_os_str())],
-    );
+    )?;
+    Ok(())
 }
 
 /// `disable_core_dumps` clears the dumpable flag rather than logging that it
@@ -408,8 +419,8 @@ fn chroot_confines_the_process_to_the_new_root() {
 /// root while it is set.
 #[test]
 #[cfg(target_os = "linux")]
-fn disable_core_dumps_actually_clears_the_dumpable_flag() {
-    let exe = std::env::current_exe().expect("path of this test binary");
+fn disable_core_dumps_actually_clears_the_dumpable_flag() -> Result<(), TestError> {
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args([
             "child_core_dumps_are_off_after_the_call",
@@ -419,8 +430,7 @@ fn disable_core_dumps_actually_clears_the_dumpable_flag() {
             "--test-threads=1",
         ])
         .env(CHILD_ENV, "1")
-        .output()
-        .expect("spawn the child role");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success() && stdout.contains(CHILD_COMPLETE),
@@ -429,6 +439,7 @@ fn disable_core_dumps_actually_clears_the_dumpable_flag() {
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(())
 }
 
 /// Called by a non-root process, the drop touches nothing.
@@ -440,23 +451,23 @@ fn disable_core_dumps_actually_clears_the_dumpable_flag() {
 /// syscall instead of the documented no-op that every non-root deployment
 /// depends on.
 #[test]
-fn drop_privileges_touches_no_credential_when_the_process_is_not_root() {
+fn drop_privileges_touches_no_credential_when_the_process_is_not_root() -> Result<(), TestError> {
     if credentials().2 == 0 {
         announce_skip(
             "drop_privileges_touches_no_credential_when_the_process_is_not_root",
             "this runner IS root, so the call would really drop; this gate asserts \
              the unprivileged no-op path",
         );
-        return;
+        return Ok(());
     }
     let before = credentials();
-    sipnab::privilege::drop_privileges(Some("nobody"), false)
-        .expect("with no privileges to shed, the drop is a documented no-op");
+    sipnab::privilege::drop_privileges(Some("nobody"), false)?;
     assert_eq!(
         credentials(),
         before,
         "a non-root drop must leave (uid, gid, euid, egid) untouched"
     );
+    Ok(())
 }
 
 /// `PR_SET_NO_NEW_PRIVS` is set on the path an unprivileged sipnab takes.
@@ -472,7 +483,7 @@ fn drop_privileges_touches_no_credential_when_the_process_is_not_root() {
 /// in this binary.
 #[test]
 #[cfg(target_os = "linux")]
-fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() {
+fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() -> Result<(), TestError> {
     if credentials().2 == 0 {
         announce_skip(
             "no_new_privs_is_set_even_when_there_is_nothing_to_drop",
@@ -480,9 +491,9 @@ fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() {
              gate is about is the unprivileged process that has nothing to drop. \
              The end-to-end gate on the shipped binary still covers both",
         );
-        return;
+        return Ok(());
     }
-    let exe = std::env::current_exe().expect("path of this test binary");
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args([
             "child_no_new_privs_is_set_without_root",
@@ -492,8 +503,7 @@ fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() {
             "--test-threads=1",
         ])
         .env(CHILD_ENV, "1")
-        .output()
-        .expect("spawn the child role");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success() && stdout.contains(CHILD_COMPLETE),
@@ -502,6 +512,7 @@ fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() {
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(())
 }
 
 /// The shipped binary hardens itself, observed from a process it spawned.
@@ -514,31 +525,29 @@ fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() {
 /// a log line saying so.
 #[test]
 #[cfg(target_os = "linux")]
-fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() {
+fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() -> Result<(), TestError> {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let dir = tempfile::tempdir().expect("a directory for the hook's report");
+    let dir = tempfile::tempdir()?;
     // A root runner drops to `nobody` before the hook fires, and `nobody` has
     // to be able to write the report; without this the test would report "the
     // hook never ran" for a permission error.
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))
-        .expect("make the report directory writable by the dropped-to account");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))?;
     let report = dir.path().join("no-new-privs");
-    let fixture = world_readable_fixture("no-new-privs");
+    let fixture = world_readable_fixture("no-new-privs")?;
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",
             "-I",
-            fixture.to_str().expect("fixture path is UTF-8"),
+            fixture.to_str().ok_or("fixture path is UTF-8")?,
             "--on-dialog-exec",
             &format!(
                 "grep '^NoNewPrivs' /proc/self/status > {}",
                 report.display()
             ),
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "sipnab must process the fixture, got {:?}\n{}",
@@ -554,10 +563,13 @@ fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() {
     let line = loop {
         match std::fs::read_to_string(&report) {
             Ok(s) if !s.trim().is_empty() => break s,
-            _ if std::time::Instant::now() >= deadline => panic!(
-                "the --on-dialog-exec hook never wrote {}, so nothing was measured",
-                report.display()
-            ),
+            _ if std::time::Instant::now() >= deadline => {
+                return Err(format!(
+                    "the --on-dialog-exec hook never wrote {}, so nothing was measured",
+                    report.display()
+                )
+                .into());
+            }
             _ => std::thread::sleep(std::time::Duration::from_millis(50)),
         }
     };
@@ -570,6 +582,7 @@ fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() {
          so this flag is the only thing standing between a bug in the parser and \
          a setuid binary"
     );
+    Ok(())
 }
 
 // ── Child roles ───────────────────────────────────────────────────────────
@@ -577,15 +590,14 @@ fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() {
 /// Drop to `nobody` for real, then try every way back.
 #[test]
 #[ignore = "child role: spawned by privileges_are_actually_dropped_and_cannot_be_regained"]
-fn child_drops_to_nobody_and_cannot_climb_back() {
+fn child_drops_to_nobody_and_cannot_climb_back() -> Result<(), TestError> {
     if !spawned_by_parent("child_drops_to_nobody_and_cannot_climb_back") {
-        return;
+        return Ok(());
     }
-    let (want_uid, want_gid) = account_ids("nobody");
+    let (want_uid, want_gid) = account_ids("nobody")?;
     assert_eq!(credentials().2, 0, "the parent only spawns this as root");
 
-    sipnab::privilege::drop_privileges(Some("nobody"), false)
-        .expect("root dropping to an existing account must succeed");
+    sipnab::privilege::drop_privileges(Some("nobody"), false)?;
 
     let (uid, gid, euid, egid) = credentials();
     assert_eq!(
@@ -684,23 +696,25 @@ fn child_drops_to_nobody_and_cannot_climb_back() {
     // and `the_shipped_binary_blocks_privilege_escalation_on_a_capture_run` own
     // that property now, and the second of them covers this root path too.
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Ask for a drop that cannot succeed, and check that nothing moved.
 #[test]
 #[ignore = "child role: spawned by a_drop_that_cannot_be_performed_is_fatal_not_a_warning"]
-fn child_reports_an_impossible_drop_and_stays_put() {
+fn child_reports_an_impossible_drop_and_stays_put() -> Result<(), TestError> {
     if !spawned_by_parent("child_reports_an_impossible_drop_and_stays_put") {
-        return;
+        return Ok(());
     }
     let before = credentials();
     assert_eq!(before.2, 0, "the parent only spawns this as root");
 
     let err = sipnab::privilege::drop_privileges(Some("no-such-user-sipnab-guard"), false)
-        .expect_err(
+        .err()
+        .ok_or(
             "a drop to an account that does not exist cannot be reported as done — \
              the caller would carry on as root believing otherwise",
-        );
+        )?;
     let msg = err.to_string();
     assert!(
         msg.contains("not found"),
@@ -714,20 +728,20 @@ fn child_reports_an_impossible_drop_and_stays_put() {
          worst of both outcomes, because nothing downstream can tell"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// `--no-priv-drop` from a root process keeps every credential.
 #[test]
 #[ignore = "child role: spawned by the_no_priv_drop_flag_skips_the_drop_even_as_root"]
-fn child_keeps_its_credentials_when_the_drop_is_disabled() {
+fn child_keeps_its_credentials_when_the_drop_is_disabled() -> Result<(), TestError> {
     if !spawned_by_parent("child_keeps_its_credentials_when_the_drop_is_disabled") {
-        return;
+        return Ok(());
     }
     let before = credentials();
     assert_eq!(before.2, 0, "the parent only spawns this as root");
 
-    sipnab::privilege::drop_privileges(Some("nobody"), true)
-        .expect("--no-priv-drop returns Ok without touching anything");
+    sipnab::privilege::drop_privileges(Some("nobody"), true)?;
 
     assert_eq!(
         credentials(),
@@ -736,16 +750,17 @@ fn child_keeps_its_credentials_when_the_drop_is_disabled() {
          session or an already-unprivileged deployment keeps what it started with"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Chroot into a parent-prepared directory and check the old root is gone.
 #[test]
 #[ignore = "child role: spawned by chroot_confines_the_process_to_the_new_root"]
-fn child_chroots_and_loses_sight_of_the_real_root() {
+fn child_chroots_and_loses_sight_of_the_real_root() -> Result<(), TestError> {
     if !spawned_by_parent("child_chroots_and_loses_sight_of_the_real_root") {
-        return;
+        return Ok(());
     }
-    let jail = std::env::var_os(CHROOT_DIR_ENV).expect("the parent passes the new root");
+    let jail = std::env::var_os(CHROOT_DIR_ENV).ok_or("the parent passes the new root")?;
     let jail = std::path::PathBuf::from(jail);
     assert!(
         jail.join(CHROOT_MARKER).exists(),
@@ -757,10 +772,10 @@ fn child_chroots_and_loses_sight_of_the_real_root() {
         "precondition: the real root is reachable before the chroot"
     );
 
-    sipnab::privilege::do_chroot(&jail).expect("root may chroot");
+    sipnab::privilege::do_chroot(&jail)?;
 
     assert_eq!(
-        std::env::current_dir().expect("a working directory inside the new root"),
+        std::env::current_dir()?,
         std::path::Path::new("/"),
         "the documented sequence is chroot() then chdir(\"/\"); without the chdir \
          the working directory is still an open handle onto the old tree"
@@ -774,15 +789,16 @@ fn child_chroots_and_loses_sight_of_the_real_root() {
         "the real root filesystem is still reachable — nothing was confined"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Set no-new-privs from an unprivileged process and read the flag back.
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "child role: spawned by no_new_privs_is_set_even_when_there_is_nothing_to_drop"]
-fn child_no_new_privs_is_set_without_root() {
+fn child_no_new_privs_is_set_without_root() -> Result<(), TestError> {
     if !spawned_by_parent("child_no_new_privs_is_set_without_root") {
-        return;
+        return Ok(());
     }
     // SAFETY: PR_GET_NO_NEW_PRIVS reads a flag; the trailing args are unused.
     let before = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
@@ -799,8 +815,7 @@ fn child_no_new_privs_is_set_without_root() {
          used to be skipped in"
     );
 
-    sipnab::privilege::block_privilege_escalation()
-        .expect("setting a flag that needs no privilege must work for any process");
+    sipnab::privilege::block_privilege_escalation()?;
 
     // SAFETY: as above.
     let after = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
@@ -810,15 +825,16 @@ fn child_no_new_privs_is_set_without_root() {
          everything else this module does"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Read the dumpable flag back after asking for core dumps to be disabled.
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "child role: spawned by disable_core_dumps_actually_clears_the_dumpable_flag"]
-fn child_core_dumps_are_off_after_the_call() {
+fn child_core_dumps_are_off_after_the_call() -> Result<(), TestError> {
     if !spawned_by_parent("child_core_dumps_are_off_after_the_call") {
-        return;
+        return Ok(());
     }
     // SAFETY: PR_GET_DUMPABLE reads a flag; the trailing args are unused.
     let before = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
@@ -828,8 +844,7 @@ fn child_core_dumps_are_off_after_the_call() {
          below measures the call rather than the default"
     );
 
-    sipnab::privilege::disable_core_dumps()
-        .expect("an error here now means the syscall was refused, not that it was noisy");
+    sipnab::privilege::disable_core_dumps()?;
 
     // SAFETY: as above.
     let after = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
@@ -840,6 +855,7 @@ fn child_core_dumps_are_off_after_the_call() {
          downgrades its own failures to a warning and returns Ok"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 // ── The keylog is read before the drop ────────────────────────────────────
@@ -861,40 +877,37 @@ const KEYLOG: &str = "CLIENT_TRAFFIC_SECRET_0 \
 /// the test's user: root can read it, `nobody` cannot.
 #[cfg(feature = "tls")]
 #[test]
-fn a_keylog_only_root_can_read_is_loaded_before_the_drop() {
+fn a_keylog_only_root_can_read_is_loaded_before_the_drop() -> Result<(), TestError> {
     if !sudo_available() {
         announce_skip(
             "a_keylog_only_root_can_read_is_loaded_before_the_drop",
             "passwordless sudo is not available, so sipnab cannot be run as root here",
         );
-        return;
+        return Ok(());
     }
-    let fixture = world_readable_fixture("keylog-before-drop");
+    let fixture = world_readable_fixture("keylog-before-drop")?;
     use std::os::unix::fs::PermissionsExt as _;
-    let private = tempfile::tempdir().expect("a private directory");
+    let private = tempfile::tempdir()?;
     // Set explicitly: `tempdir` honors the umask, which left it 0775 here and
     // let `nobody` read the file, so the test passed without the fix.
-    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("make the directory private");
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))?;
     let keylog = private.path().join("proxy.keys");
-    std::fs::write(&keylog, KEYLOG).expect("write the keylog");
-    std::fs::set_permissions(&keylog, std::fs::Permissions::from_mode(0o600))
-        .expect("make the keylog private");
+    std::fs::write(&keylog, KEYLOG)?;
+    std::fs::set_permissions(&keylog, std::fs::Permissions::from_mode(0o600))?;
     let out = Command::new("sudo")
         .args([
             "-n",
             env!("CARGO_BIN_EXE_sipnab"),
             "-N",
             "-I",
-            fixture.to_str().unwrap(),
+            fixture.to_str().ok_or("path is not UTF-8")?,
             "--keylog",
-            keylog.to_str().unwrap(),
+            keylog.to_str().ok_or("path is not UTF-8")?,
             "--user",
             "nobody",
         ])
         .env("SIPNAB_LOG", "info")
-        .output()
-        .expect("spawn sipnab under sudo");
+        .output()?;
     let _ = std::fs::remove_file(&fixture);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
@@ -906,6 +919,7 @@ fn a_keylog_only_root_can_read_is_loaded_before_the_drop() {
         stderr.contains("TLS decryption active"),
         "and its keys loaded:\n{stderr}"
     );
+    Ok(())
 }
 
 /// A keylog that cannot be read says WHY. The message used to stop at
@@ -913,28 +927,28 @@ fn a_keylog_only_root_can_read_is_loaded_before_the_drop() {
 /// permission problem and a file the producer has not created yet.
 #[cfg(feature = "tls")]
 #[test]
-fn a_keylog_that_cannot_be_read_names_the_cause() {
-    let fixture = world_readable_fixture("keylog-cause");
-    let dir = tempfile::tempdir().expect("a directory");
+fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
+    let fixture = world_readable_fixture("keylog-cause")?;
+    let dir = tempfile::tempdir()?;
     let missing = dir.path().join("not-written-yet.keys");
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",
             "-I",
-            fixture.to_str().unwrap(),
+            fixture.to_str().ok_or("path is not UTF-8")?,
             "--keylog",
-            missing.to_str().unwrap(),
+            missing.to_str().ok_or("path is not UTF-8")?,
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     let _ = std::fs::remove_file(&fixture);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let line = stderr
         .lines()
         .find(|l| l.contains("Failed to initialize TLS decryptor"))
-        .unwrap_or_else(|| panic!("the failure must be reported:\n{stderr}"));
+        .ok_or_else(|| format!("the failure must be reported:\n{stderr}"))?;
     assert!(
         line.contains("No such file or directory"),
         "the report must carry the operating system's reason: {line}"
     );
+    Ok(())
 }

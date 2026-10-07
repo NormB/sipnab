@@ -34,6 +34,8 @@ mod server;
 #[path = "support/mcp.rs"]
 mod mcp;
 
+use server::TestError;
+
 /// The captures `tests/analyze_test.rs` drives: every severity, a clean
 /// capture, a capture with no SIP at all, and a port-gate run that is blind.
 const CASES: &[(&str, &str, &[&str])] = &[
@@ -61,29 +63,30 @@ fn repo() -> PathBuf {
 }
 
 /// Write one export for `scripts/check-yang.py`, when it asked for them.
-fn export(door: &str, case: &str, doc: &Value) {
+fn export(door: &str, case: &str, doc: &Value) -> Result<(), TestError> {
     let Some(dir) = std::env::var_os("SIPNAB_YANG_EXPORT_DIR").filter(|d| !d.is_empty()) else {
-        return;
+        return Ok(());
     };
     let dir = PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).expect("create the export directory");
+    std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{door}-{case}.json"));
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(doc).expect("serializes"),
-    )
-    .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    std::fs::write(&path, serde_json::to_string_pretty(doc)?)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
 }
 
 /// Decode an RFC 7951 document, or fail naming the door that wrote it.
-fn decoded(door: &str, case: &str, doc: &Value) -> Value {
-    yang::decode(doc).unwrap_or_else(|e| panic!("{door} {case}: not a valid document: {e}\n{doc}"))
+fn decoded(door: &str, case: &str, doc: &Value) -> Result<Value, TestError> {
+    Ok(
+        yang::decode(doc)
+            .map_err(|e| format!("{door} {case}: not a valid document: {e}\n{doc}"))?,
+    )
 }
 
 /// `--json-analyze --yang-analyze` in ONE run: both lines describe the same
 /// analysis, computed once.
 #[test]
-fn the_cli_prints_one_analysis_in_both_encodings() {
+fn the_cli_prints_one_analysis_in_both_encodings() -> Result<(), TestError> {
     for (case, path, extra) in CASES {
         let mut args = vec![
             "-N",
@@ -98,8 +101,7 @@ fn the_cli_prints_one_analysis_in_both_encodings() {
             .current_dir(repo())
             .args(&args)
             .env("SIPNAB_LOG", "warn")
-            .output()
-            .expect("spawn sipnab");
+            .output()?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -109,24 +111,25 @@ fn the_cli_prints_one_analysis_in_both_encodings() {
         );
         let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
         assert_eq!(lines.len(), 2, "{case}: expected two objects:\n{stdout}");
-        let plain: Value = serde_json::from_str(lines[0]).expect("the plain line is JSON");
-        let doc: Value = serde_json::from_str(lines[1]).expect("the RFC 7951 line is JSON");
+        let plain: Value = serde_json::from_str(lines[0])?;
+        let doc: Value = serde_json::from_str(lines[1])?;
         assert!(
             doc.get("sipnab-diagnosis:capture-analysis").is_some(),
             "{case}: the second line is not the RFC 7951 document: {doc}"
         );
         assert_eq!(
-            decoded("cli", case, &doc),
+            decoded("cli", case, &doc)?,
             plain,
             "{case}: the two encodings of one run disagree"
         );
-        export("cli", case, &doc);
+        export("cli", case, &doc)?;
     }
+    Ok(())
 }
 
 /// `--yang-analyze` alone prints the document and nothing else.
 #[test]
-fn the_cli_prints_the_document_alone() {
+fn the_cli_prints_the_document_alone() -> Result<(), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(repo())
         .args([
@@ -137,52 +140,50 @@ fn the_cli_prints_the_document_alone() {
             "--no-cli-print",
         ])
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     assert!(out.status.success(), "{out:?}");
-    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let stdout = String::from_utf8(out.stdout)?;
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 1, "one document, one line:\n{stdout}");
-    let doc: Value = serde_json::from_str(lines[0]).expect("JSON");
-    decoded("cli", "stun_sdp_mismatch", &doc);
+    let doc: Value = serde_json::from_str(lines[0])?;
+    decoded("cli", "stun_sdp_mismatch", &doc)?;
+    Ok(())
 }
 
 /// `GET /v1/report?format=yang-json` is the same analysis as `GET /v1/report`,
 /// under the media type RFC 8040 section 11.3.2 registers for it.
 #[test]
-fn rest_serves_one_analysis_in_both_encodings() {
+fn rest_serves_one_analysis_in_both_encodings() -> Result<(), TestError> {
     for (case, path, extra) in CASES {
-        let srv = server::ApiServer::spawn_with_pcap_or_panic(path, extra);
-        let plain = srv.get_or_panic("/v1/report");
+        let srv = server::ApiServer::spawn_with_pcap(path, extra)?;
+        let plain = srv.get("/v1/report")?;
         assert_eq!(plain.status, 200, "{case}: {}", plain.body);
-        let yang_resp = srv.get_or_panic("/v1/report?format=yang-json");
+        let yang_resp = srv.get("/v1/report?format=yang-json")?;
         assert_eq!(yang_resp.status, 200, "{case}: {}", yang_resp.body);
         assert_eq!(
             yang_resp.content_type.as_deref(),
             Some("application/yang-data+json"),
             "{case}: the RFC 7951 body must say what it is"
         );
-        let doc: Value = serde_json::from_str(&yang_resp.body).expect("JSON");
+        let doc: Value = serde_json::from_str(&yang_resp.body)?;
         assert_eq!(
-            decoded("rest", case, &doc),
-            plain.json_or_panic(),
+            decoded("rest", case, &doc)?,
+            plain.json()?,
             "{case}: the two encodings disagree"
         );
         // `json` is the default spelled out, and answers exactly as the default.
-        assert_eq!(
-            srv.get_or_panic("/v1/report?format=json").json_or_panic(),
-            plain.json_or_panic()
-        );
-        export("rest", case, &doc);
+        assert_eq!(srv.get("/v1/report?format=json")?.json()?, plain.json()?);
+        export("rest", case, &doc)?;
     }
+    Ok(())
 }
 
 /// A format REST does not serve is refused, not silently answered in JSON.
 #[test]
-fn rest_refuses_a_format_it_does_not_serve() {
-    let srv = server::ApiServer::spawn_or_panic(&[]);
+fn rest_refuses_a_format_it_does_not_serve() -> Result<(), TestError> {
+    let srv = server::ApiServer::spawn(&[])?;
     for bad in ["xml", "yang-xml", "markdown", "YANG-JSON", ""] {
-        let resp = srv.get_or_panic(&format!("/v1/report?format={bad}"));
+        let resp = srv.get(&format!("/v1/report?format={bad}"))?;
         assert_eq!(resp.status, 400, "format={bad:?} answered {}", resp.status);
         assert!(
             resp.body.contains("yang-json"),
@@ -190,6 +191,7 @@ fn rest_refuses_a_format_it_does_not_serve() {
             resp.body
         );
     }
+    Ok(())
 }
 
 /// `get_capture_report {"format": "yang-json"}` is the same analysis as the
@@ -197,16 +199,16 @@ fn rest_refuses_a_format_it_does_not_serve() {
 /// JSON answer arrives beside the document rather than inside it: RFC 7951
 /// section 4 admits no unqualified member at the top of an instance document.
 #[test]
-fn mcp_answers_one_analysis_in_both_encodings() {
+fn mcp_answers_one_analysis_in_both_encodings() -> Result<(), TestError> {
     for (case, path, extra) in CASES {
-        let mut session = mcp::McpSession::start_or_panic(path, extra);
-        let mut plain = session.ok_or_panic("get_capture_report", serde_json::json!({}));
-        let msg = session.call_or_panic(
+        let mut session = mcp::McpSession::start(path, extra)?;
+        let mut plain = session.ok("get_capture_report", serde_json::json!({}))?;
+        let msg = session.call(
             "get_capture_report",
             serde_json::json!({"format": "yang-json"}),
-        );
-        let doc = mcp::ok_payload_or_panic(&msg);
-        let obj = doc.as_object().expect("the document is an object");
+        )?;
+        let doc = mcp::ok_payload(&msg)?;
+        let obj = doc.as_object().ok_or("the document is an object")?;
         assert!(
             obj.keys().all(|k| k.contains(':')),
             "{case}: every top-level member must be module-qualified: {doc}"
@@ -214,22 +216,22 @@ fn mcp_answers_one_analysis_in_both_encodings() {
         let envelope: Value = serde_json::from_str(
             msg["result"]["content"][1]["text"]
                 .as_str()
-                .unwrap_or_else(|| panic!("{case}: no envelope block beside the document: {msg}")),
-        )
-        .expect("the envelope is JSON");
+                .ok_or_else(|| format!("{case}: no envelope block beside the document: {msg}"))?,
+        )?;
         assert_eq!(envelope["source_exhausted"], true, "{case}: {envelope}");
         for key in ["source_exhausted", "source_stopped_early"] {
             assert_eq!(
                 plain[key], envelope[key],
                 "{case}: the two answers disagree about `{key}`"
             );
-            plain.as_object_mut().expect("object").remove(key);
+            plain.as_object_mut().ok_or("object")?.remove(key);
         }
         assert_eq!(
-            decoded("mcp", case, &doc),
+            decoded("mcp", case, &doc)?,
             plain,
             "{case}: the two encodings disagree"
         );
-        export("mcp", case, &doc);
+        export("mcp", case, &doc)?;
     }
+    Ok(())
 }

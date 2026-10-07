@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/executable.rs"]
 mod executable;
 
@@ -42,11 +44,10 @@ fn script(name: &str) -> PathBuf {
 /// with ETXTBSY -- the recorder's `exec` exits 126 instead of the binary's
 /// own status. Under host load that gap is long enough to hit
 /// (`a_fake_binary_runs_while_other_threads_are_forking`).
-fn fake_binary(dir: &Path, name: &str, body: &str) -> PathBuf {
+fn fake_binary(dir: &Path, name: &str, body: &str) -> Result<PathBuf, TestError> {
     let path = dir.join(name);
-    executable::write_executable(&path, &format!("#!/bin/sh\n{body}\n"))
-        .expect("write fake binary");
-    path
+    executable::write_executable(&path, &format!("#!/bin/sh\n{body}\n"))?;
+    Ok(path)
 }
 
 /// Run the real recorder the way cargo's runner hook would, from `cwd`, with
@@ -58,8 +59,8 @@ fn recorder(
     binary: &Path,
     args: &[&str],
     env: &[(&str, &str)],
-) -> Output {
-    Command::new("sh")
+) -> Result<Output, TestError> {
+    Ok(Command::new("sh")
         .arg(script("record-test-binary.sh"))
         .arg(spool)
         .arg(target)
@@ -67,15 +68,20 @@ fn recorder(
         .args(args)
         .current_dir(cwd)
         .envs(env.iter().copied())
-        .output()
-        .expect("run the recorder")
+        .output()?)
 }
 
 /// Record `binary args` (a fake test binary in the directory above `spool`,
 /// which stands in for the target directory).
-fn record(spool: &Path, cwd: &Path, binary: &Path, args: &[&str], env: &[(&str, &str)]) {
-    let target = spool.parent().expect("spool has a parent");
-    let out = recorder(spool, target, cwd, binary, args, env);
+fn record(
+    spool: &Path,
+    cwd: &Path,
+    binary: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<(), TestError> {
+    let target = spool.parent().ok_or("spool has a parent")?;
+    let out = recorder(spool, target, cwd, binary, args, env)?;
     assert!(
         out.status.success(),
         "the recorder failed: {}",
@@ -85,9 +91,10 @@ fn record(spool: &Path, cwd: &Path, binary: &Path, args: &[&str], env: &[(&str, 
         out.stdout.is_empty(),
         "the recorder must print nothing (cargo would show it as test output)"
     );
+    Ok(())
 }
 
-fn run_spool(spool: &Path, jobs: usize, durations: &Path) -> (Output, Duration) {
+fn run_spool(spool: &Path, jobs: usize, durations: &Path) -> Result<(Output, Duration), TestError> {
     let started = Instant::now();
     let out = Command::new("python3")
         .arg(script("parallel-tests.py"))
@@ -96,9 +103,8 @@ fn run_spool(spool: &Path, jobs: usize, durations: &Path) -> (Output, Duration) 
         .arg("--durations")
         .arg(durations)
         .arg(spool)
-        .output()
-        .expect("run the pool");
-    (out, started.elapsed())
+        .output()?;
+    Ok((out, started.elapsed()))
 }
 
 fn text(out: &Output) -> String {
@@ -110,31 +116,31 @@ fn text(out: &Output) -> String {
 }
 
 #[test]
-fn every_binary_runs_with_the_argv_cwd_and_env_cargo_gave_it() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn every_binary_runs_with_the_argv_cwd_and_env_cargo_gave_it() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let spool = tmp.path().join("spool");
-    std::fs::create_dir(&spool).expect("spool");
+    std::fs::create_dir(&spool)?;
     let pkg = tmp.path().join("pkg");
-    std::fs::create_dir(&pkg).expect("pkg");
+    std::fs::create_dir(&pkg)?;
     let bin = fake_binary(
         tmp.path(),
         "echoer",
         r#"echo "cwd=$(pwd)"; echo "arg1=$1"; echo "arg2=$2"; echo "multi=$MULTI_LINE_VALUE"; echo "test result: ok. 3 passed; 0 failed""#,
-    );
+    )?;
     record(
         &spool,
         &pkg,
         &bin,
         &["--quiet", "two words"],
         &[("MULTI_LINE_VALUE", "first\nsecond")],
-    );
-    let (out, _) = run_spool(&spool, 2, &tmp.path().join("durations.json"));
+    )?;
+    let (out, _) = run_spool(&spool, 2, &tmp.path().join("durations.json"))?;
     let all = text(&out);
     assert!(
         out.status.success(),
         "a passing binary failed the run:\n{all}"
     );
-    let pkg = pkg.canonicalize().expect("canonical pkg");
+    let pkg = pkg.canonicalize()?;
     for wanted in [
         format!("cwd={}", pkg.display()),
         "arg1=--quiet".to_string(),
@@ -144,27 +150,28 @@ fn every_binary_runs_with_the_argv_cwd_and_env_cargo_gave_it() {
     ] {
         assert!(all.contains(&wanted), "missing {wanted:?} in:\n{all}");
     }
+    Ok(())
 }
 
 #[test]
-fn a_failing_binary_fails_the_run_and_the_others_still_run() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_failing_binary_fails_the_run_and_the_others_still_run() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let spool = tmp.path().join("spool");
-    std::fs::create_dir(&spool).expect("spool");
+    std::fs::create_dir(&spool)?;
     let bad = fake_binary(
         tmp.path(),
         "bad",
         "echo 'test broken ... FAILED'; echo '---- broken stdout ----'; echo 'why it broke'; \
          echo 'test result: FAILED. 0 passed; 1 failed'; exit 101",
-    );
+    )?;
     let good = fake_binary(
         tmp.path(),
         "good",
         "echo 'test result: ok. 7 passed; 0 failed'",
-    );
-    record(&spool, tmp.path(), &bad, &[], &[]);
-    record(&spool, tmp.path(), &good, &[], &[]);
-    let (out, _) = run_spool(&spool, 2, &tmp.path().join("durations.json"));
+    )?;
+    record(&spool, tmp.path(), &bad, &[], &[])?;
+    record(&spool, tmp.path(), &good, &[], &[])?;
+    let (out, _) = run_spool(&spool, 2, &tmp.path().join("durations.json"))?;
     let all = text(&out);
     assert!(
         !out.status.success(),
@@ -180,6 +187,7 @@ fn a_failing_binary_fails_the_run_and_the_others_still_run() {
         all.contains("test broken ... FAILED\n---- broken stdout ----\nwhy it broke\n"),
         "a binary's output was split up:\n{all}"
     );
+    Ok(())
 }
 
 /// Overlap is asserted directly, not inferred from elapsed time: each binary
@@ -189,10 +197,10 @@ fn a_failing_binary_fails_the_run_and_the_others_still_run() {
 /// pushed that past the bound with the pool working correctly (3 of 15 runs
 /// with the one-minute load average between 63 and 129).
 #[test]
-fn binaries_run_side_by_side_up_to_the_job_limit() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn binaries_run_side_by_side_up_to_the_job_limit() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let spool = tmp.path().join("spool");
-    std::fs::create_dir(&spool).expect("spool");
+    std::fs::create_dir(&spool)?;
     let started = tmp.path().join("started");
     for n in 0..3 {
         let bin = fake_binary(
@@ -213,10 +221,10 @@ fn binaries_run_side_by_side_up_to_the_job_limit() {
                  echo 'test result: ok. 1 passed; 0 failed'",
                 marks = started.display()
             ),
-        );
-        record(&spool, tmp.path(), &bin, &[], &[]);
+        )?;
+        record(&spool, tmp.path(), &bin, &[], &[])?;
     }
-    let (out, _) = run_spool(&spool, 3, &tmp.path().join("d1.json"));
+    let (out, _) = run_spool(&spool, 3, &tmp.path().join("d1.json"))?;
     let all = text(&out);
     assert_eq!(
         all.matches("met 3 of 3").count(),
@@ -230,7 +238,7 @@ fn binaries_run_side_by_side_up_to_the_job_limit() {
     // binary brackets its run with markers; one job means strictly
     // start/end pairs, whatever the load.
     let serial_spool = tmp.path().join("serial-spool");
-    std::fs::create_dir(&serial_spool).expect("serial spool");
+    std::fs::create_dir(&serial_spool)?;
     let order = tmp.path().join("order");
     for n in 0..3 {
         let bin = fake_binary(
@@ -241,23 +249,24 @@ fn binaries_run_side_by_side_up_to_the_job_limit() {
                  echo 'test result: ok. 1 passed; 0 failed'",
                 o = order.display()
             ),
-        );
-        record(&serial_spool, tmp.path(), &bin, &[], &[]);
+        )?;
+        record(&serial_spool, tmp.path(), &bin, &[], &[])?;
     }
-    let (out, _) = run_spool(&serial_spool, 1, &tmp.path().join("d2.json"));
+    let (out, _) = run_spool(&serial_spool, 1, &tmp.path().join("d2.json"))?;
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(
-        std::fs::read_to_string(&order).expect("order file"),
+        std::fs::read_to_string(&order)?,
         "start\nend\nstart\nend\nstart\nend\n",
         "one job ran binaries that overlapped"
     );
+    Ok(())
 }
 
 #[test]
-fn the_slowest_binary_last_time_starts_first() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn the_slowest_binary_last_time_starts_first() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let spool = tmp.path().join("spool");
-    std::fs::create_dir(&spool).expect("spool");
+    std::fs::create_dir(&spool)?;
     let order = tmp.path().join("order");
     // Named so the order they load in (by path) is the opposite of the
     // order they must start in: only the duration sort can put slow first.
@@ -265,14 +274,14 @@ fn the_slowest_binary_last_time_starts_first() {
         tmp.path(),
         "a_quick",
         &format!("echo quick >> {}", order.display()),
-    );
+    )?;
     let slow = fake_binary(
         tmp.path(),
         "b_slow",
         &format!("echo slow >> {}", order.display()),
-    );
-    record(&spool, tmp.path(), &quick, &[], &[]);
-    record(&spool, tmp.path(), &slow, &[], &[]);
+    )?;
+    record(&spool, tmp.path(), &quick, &[], &[])?;
+    record(&spool, tmp.path(), &slow, &[], &[])?;
     let durations = tmp.path().join("durations.json");
     std::fs::write(
         &durations,
@@ -281,34 +290,35 @@ fn the_slowest_binary_last_time_starts_first() {
             quick.display(),
             slow.display()
         ),
-    )
-    .expect("seed durations");
-    let (out, _) = run_spool(&spool, 1, &durations);
+    )?;
+    let (out, _) = run_spool(&spool, 1, &durations)?;
     assert!(out.status.success(), "{}", text(&out));
-    let ran = std::fs::read_to_string(&order).expect("order file");
+    let ran = std::fs::read_to_string(&order)?;
     assert_eq!(
         ran, "slow\nquick\n",
         "with one job, the binary that took longest last time must start first"
     );
-    let saved = std::fs::read_to_string(&durations).expect("durations saved");
+    let saved = std::fs::read_to_string(&durations)?;
     assert!(
         saved.contains(&slow.display().to_string()) && saved.contains(&quick.display().to_string()),
         "this run's durations must be saved for the next one: {saved}"
     );
+    Ok(())
 }
 
 #[test]
-fn an_empty_spool_is_an_error_not_a_green_run() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn an_empty_spool_is_an_error_not_a_green_run() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let spool = tmp.path().join("spool");
-    std::fs::create_dir(&spool).expect("spool");
-    let (out, _) = run_spool(&spool, 2, &tmp.path().join("durations.json"));
+    std::fs::create_dir(&spool)?;
+    let (out, _) = run_spool(&spool, 2, &tmp.path().join("durations.json"))?;
     assert!(
         !out.status.success(),
         "no recorded binaries means the capture failed; passing would be a \
          vacuous green:\n{}",
         text(&out)
     );
+    Ok(())
 }
 
 /// Doctests go through the runner too (since Rust 1.89), but rustdoc builds
@@ -317,19 +327,19 @@ fn an_empty_spool_is_an_error_not_a_green_run() {
 /// binary outside the target directory is therefore run on the spot, with its
 /// output and exit status passed straight back to cargo.
 #[test]
-fn a_binary_outside_the_target_dir_runs_at_once_and_is_not_recorded() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_binary_outside_the_target_dir_runs_at_once_and_is_not_recorded() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let target = tmp.path().join("target");
     let spool = target.join("spool");
-    std::fs::create_dir_all(&spool).expect("spool");
+    std::fs::create_dir_all(&spool)?;
     let elsewhere = tmp.path().join("rustdoctestXYZ");
-    std::fs::create_dir(&elsewhere).expect("doctest dir");
+    std::fs::create_dir(&elsewhere)?;
     let doctest = fake_binary(
         &elsewhere,
         "rust_out",
         "echo \"doctest ran with $1\"; exit 3",
-    );
-    let out = recorder(&spool, &target, tmp.path(), &doctest, &["--flag"], &[]);
+    )?;
+    let out = recorder(&spool, &target, tmp.path(), &doctest, &["--flag"], &[])?;
     assert_eq!(
         out.status.code(),
         Some(3),
@@ -341,10 +351,11 @@ fn a_binary_outside_the_target_dir_runs_at_once_and_is_not_recorded() {
         "the doctest must run immediately, with its arguments"
     );
     assert_eq!(
-        std::fs::read_dir(&spool).expect("read spool").count(),
+        std::fs::read_dir(&spool)?.count(),
         0,
         "a doctest must not be recorded: its file is deleted before the pool runs"
     );
+    Ok(())
 }
 
 /// A fake binary must run the moment `fake_binary` returns, however busy the
@@ -356,17 +367,17 @@ fn a_binary_outside_the_target_dir_runs_at_once_and_is_not_recorded() {
 /// sibling children pause between fork and exec on purpose, so a writable
 /// descriptor to the fake binary, if this process ever holds one, is caught.
 #[test]
-fn a_fake_binary_runs_while_other_threads_are_forking() {
+fn a_fake_binary_runs_while_other_threads_are_forking() -> Result<(), TestError> {
     use std::os::unix::process::CommandExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = tempfile::tempdir()?;
     let target = tmp.path().join("target");
     let spool = target.join("spool");
-    std::fs::create_dir_all(&spool).expect("spool");
+    std::fs::create_dir_all(&spool)?;
     let elsewhere = tmp.path().join("elsewhere");
-    std::fs::create_dir(&elsewhere).expect("binary dir");
+    std::fs::create_dir(&elsewhere)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let forkers: Vec<_> = (0..16)
@@ -397,8 +408,8 @@ fn a_fake_binary_runs_while_other_threads_are_forking() {
     let mut failure = None;
     let mut i = 0;
     while i < MIN_RUNS || (i < MAX_RUNS && started.elapsed() < RUN_BUDGET) {
-        let bin = fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
-        let out = recorder(&spool, &target, tmp.path(), &bin, &[], &[]);
+        let bin = fake_binary(&elsewhere, &format!("bin{i}"), "exit 3")?;
+        let out = recorder(&spool, &target, tmp.path(), &bin, &[], &[])?;
         if out.status.code() != Some(3) {
             failure = Some(format!(
                 "fake binary {i} exited {:?}, not its own 3: {}",
@@ -411,11 +422,12 @@ fn a_fake_binary_runs_while_other_threads_are_forking() {
     }
     stop.store(true, Ordering::Relaxed);
     for forker in forkers {
-        forker.join().expect("forker thread");
+        forker.join().map_err(|_| "a thread panicked")?;
     }
     if let Some(failure) = failure {
-        panic!("{failure}");
+        return Err(failure.into());
     }
+    Ok(())
 }
 
 /// Fake binaries run at least, whatever the time.
@@ -445,28 +457,27 @@ const RUN_BUDGET: Duration = Duration::from_secs(2);
 /// 20. Linux only: `clone` and `/proc/self/fd`.
 #[cfg(target_os = "linux")]
 #[test]
-fn this_process_never_holds_a_fake_binary_open() {
+fn this_process_never_holds_a_fake_binary_open() -> Result<(), TestError> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = tempfile::tempdir()?;
     let elsewhere = tmp.path().join("elsewhere");
-    std::fs::create_dir(&elsewhere).expect("binary dir");
+    std::fs::create_dir(&elsewhere)?;
     let reports_path = tmp.path().join("held");
     let reports = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&reports_path)
-        .expect("reports file");
+        .open(&reports_path)?;
     let mut prefix = elsewhere.as_os_str().as_bytes().to_vec();
     prefix.push(b'/');
     let probe = Arc::new(Probe {
         prefix,
         report_fd: reports.as_raw_fd(),
     });
-    let lowest_free = std::fs::File::open("/dev/null").expect("open /dev/null");
+    let lowest_free = std::fs::File::open("/dev/null")?;
     assert!(
         lowest_free.as_raw_fd() < SCANNED_FDS / 2,
         "descriptor {} is already in use here; a probe scanning {SCANNED_FDS} \
@@ -493,11 +504,11 @@ fn this_process_never_holds_a_fake_binary_open() {
         .collect();
 
     for i in 0..CREATED {
-        fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
+        fake_binary(&elsewhere, &format!("bin{i}"), "exit 3")?;
     }
     stop.store(true, Ordering::Relaxed);
     for prober in probers {
-        prober.join().expect("prober thread");
+        prober.join().map_err(|_| "a thread panicked")?;
     }
     drop(reports);
     let probes = probes.load(Ordering::Relaxed);
@@ -506,12 +517,13 @@ fn this_process_never_holds_a_fake_binary_open() {
         "only {probes} probes ran while {CREATED} fake binaries were made: the \
          check never had a chance"
     );
-    let held = std::fs::read_to_string(&reports_path).expect("reports");
+    let held = std::fs::read_to_string(&reports_path)?;
     assert!(
         held.is_empty(),
         "a child created while fake_binary ran inherited a descriptor on a fake \
          binary ({probes} probes): {held}"
     );
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -636,20 +648,20 @@ fn report_held_descriptors(prefix: &[u8], report_fd: i32) {
 /// One binary that cannot start is that binary's failure. It must not abort
 /// the pool (a Python traceback instead of results), and the rest still run.
 #[test]
-fn a_binary_that_cannot_start_fails_that_binary_not_the_run() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_binary_that_cannot_start_fails_that_binary_not_the_run() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let spool = tmp.path().join("spool");
-    std::fs::create_dir(&spool).expect("spool");
-    let gone = fake_binary(tmp.path(), "a_gone", "echo never");
+    std::fs::create_dir(&spool)?;
+    let gone = fake_binary(tmp.path(), "a_gone", "echo never")?;
     let good = fake_binary(
         tmp.path(),
         "b_good",
         "echo 'test result: ok. 5 passed; 0 failed'",
-    );
-    record(&spool, tmp.path(), &gone, &[], &[]);
-    record(&spool, tmp.path(), &good, &[], &[]);
-    std::fs::remove_file(&gone).expect("remove");
-    let (out, _) = run_spool(&spool, 1, &tmp.path().join("durations.json"));
+    )?;
+    record(&spool, tmp.path(), &gone, &[], &[])?;
+    record(&spool, tmp.path(), &good, &[], &[])?;
+    std::fs::remove_file(&gone)?;
+    let (out, _) = run_spool(&spool, 1, &tmp.path().join("durations.json"))?;
     let all = text(&out);
     assert!(
         !out.status.success(),
@@ -667,14 +679,15 @@ fn a_binary_that_cannot_start_fails_that_binary_not_the_run() {
         all.contains(&gone.display().to_string()),
         "the failure must name the binary that could not start:\n{all}"
     );
+    Ok(())
 }
 
 /// A stand-in `cargo` on PATH: `metadata` names `target`, and anything else
 /// prints `test_output` and exits 0 without calling the runner -- the shape of
 /// a run where cargo executed everything itself.
-fn fake_cargo(dir: &Path, target: &Path, test_output: &str) -> PathBuf {
+fn fake_cargo(dir: &Path, target: &Path, test_output: &str) -> Result<PathBuf, TestError> {
     let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).expect("bin dir");
+    std::fs::create_dir_all(&bin)?;
     fake_binary(
         &bin,
         "cargo",
@@ -683,56 +696,57 @@ fn fake_cargo(dir: &Path, target: &Path, test_output: &str) -> PathBuf {
             target.display(),
             test_output
         ),
-    );
-    bin
+    )?;
+    Ok(bin)
 }
 
-fn run_capture(bin: &Path, args: &[&str]) -> Output {
+fn run_capture(bin: &Path, args: &[&str]) -> Result<Output, TestError> {
     let path = format!(
         "{}:{}",
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    Command::new("python3")
+    Ok(Command::new("python3")
         .arg(script("parallel-tests.py"))
         .args(["--jobs", "2", "--"])
         .args(args)
         .env("PATH", path)
-        .output()
-        .expect("run parallel-tests.py")
+        .output()?)
 }
 
 /// `-- --doc` records nothing -- every doctest runs on the spot -- and is a
 /// real, passing run: cargo printed the results itself.
 #[test]
-fn a_run_whose_tests_all_ran_inside_cargo_passes_on_cargos_results() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_run_whose_tests_all_ran_inside_cargo_passes_on_cargos_results() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let target = tmp.path().join("target");
     let bin = fake_cargo(
         tmp.path(),
         &target,
         "test result: ok. 4 passed; 0 failed; 0 ignored\n",
-    );
-    let out = run_capture(&bin, &["--doc"]);
+    )?;
+    let out = run_capture(&bin, &["--doc"])?;
     let all = text(&out);
     assert!(out.status.success(), "a doctest-only run failed:\n{all}");
     assert!(
         all.contains("test result: ok. 4 passed"),
         "cargo's own results must be passed through:\n{all}"
     );
+    Ok(())
 }
 
 /// ... but a run in which NOTHING reported a result is a capture that did not
 /// happen, and must not pass.
 #[test]
-fn a_run_where_nothing_ran_anywhere_fails() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_run_where_nothing_ran_anywhere_fails() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let target = tmp.path().join("target");
-    let bin = fake_cargo(tmp.path(), &target, "   Compiling sipnab\n");
-    let out = run_capture(&bin, &[]);
+    let bin = fake_cargo(tmp.path(), &target, "   Compiling sipnab\n")?;
+    let out = run_capture(&bin, &[])?;
     assert!(
         !out.status.success(),
         "no binary recorded and no result printed must fail:\n{}",
         text(&out)
     );
+    Ok(())
 }

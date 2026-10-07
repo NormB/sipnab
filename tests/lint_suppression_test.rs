@@ -12,6 +12,8 @@
 
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Lints whose suppression is refused, as written in an `allow`, with the
 /// design fix each one asks for. Clippy's carry their `clippy::` prefix;
 /// rustc's own (`unused_mut`) have none.
@@ -48,13 +50,12 @@ const REFUSED: &[(&str, &str)] = &[
 ];
 
 /// Every `allow` attribute naming a refused lint, as `path:line: lint`.
-fn suppressions() -> Vec<String> {
+fn suppressions() -> Result<Vec<String>, TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = Command::new("git")
         .args(["ls-files", "-z", "--", "*.rs"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(out.status.success(), "git ls-files failed");
     let mut found = Vec::new();
     let mut files = 0;
@@ -63,7 +64,7 @@ fn suppressions() -> Vec<String> {
             continue;
         }
         files += 1;
-        let text = std::fs::read_to_string(root.join(rel)).expect("read source");
+        let text = std::fs::read_to_string(root.join(rel))?;
         for (n, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
             if !code.contains("allow(") {
@@ -85,12 +86,12 @@ fn suppressions() -> Vec<String> {
         }
     }
     assert!(files >= 600, "read only {files} source files");
-    found
+    Ok(found)
 }
 
 #[test]
-fn no_refused_lint_is_suppressed() {
-    let found = suppressions();
+fn no_refused_lint_is_suppressed() -> Result<(), TestError> {
+    let found = suppressions()?;
     let fixes: Vec<String> = REFUSED
         .iter()
         .map(|(lint, fix)| format!("{lint}: {fix}"))
@@ -102,4 +103,5 @@ fn no_refused_lint_is_suppressed() {
         found.join("\n  "),
         fixes.join("\n  ")
     );
+    Ok(())
 }

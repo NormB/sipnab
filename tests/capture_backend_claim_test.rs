@@ -33,50 +33,53 @@
 
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The backend name the release gate greps a musl artifact for.
-fn gated_backend() -> String {
-    let workflow = read(".github/workflows/release.yml");
+fn gated_backend() -> Result<String, TestError> {
+    let workflow = read(".github/workflows/release.yml")?;
     let step = workflow
         .split_once("Record the capture backends this artifact carries")
         .map(|(_, rest)| rest.to_string())
-        .expect("release.yml must carry the capture-backend step");
+        .ok_or("release.yml must carry the capture-backend step")?;
     let line = step
         .lines()
         .find(|l| l.contains("grep -q"))
-        .expect("the step must grep the embedded banner for a backend");
+        .ok_or("the step must grep the embedded banner for a backend")?;
     // The shell line ends `grep -q netmap; then`, so take the first word
     // after the flag rather than the rest of the line.
-    line.split_once("grep -q")
+    Ok(line
+        .split_once("grep -q")
         .and_then(|(_, rest)| rest.split_whitespace().next())
         .map(|name| {
             name.trim_matches(|c: char| !c.is_ascii_alphanumeric())
                 .to_string()
         })
-        .expect("checked above")
+        .ok_or("checked above")?)
 }
 
 /// The release gate and the install page name the same backend.
 #[test]
-fn the_release_gate_and_the_install_page_name_the_same_backend() {
-    let backend = gated_backend();
+fn the_release_gate_and_the_install_page_name_the_same_backend() -> Result<(), TestError> {
+    let backend = gated_backend()?;
     assert!(
         backend.chars().all(|c| c.is_ascii_lowercase()),
         "extracted {backend:?} as a backend name, which is not one — the step's \
          shape changed and this gate is comparing nonsense"
     );
-    let doc = read("docs/install.md");
+    let doc = read("docs/install.md")?;
     let section = doc
         .split_once("### Which capture backends an artifact can reach")
         .map(|(_, rest)| rest.to_string())
-        .expect("docs/install.md must tell a reader which backends work");
+        .ok_or("docs/install.md must tell a reader which backends work")?;
     let section = section
         .split_once("\n### ")
         .map(|(s, _)| s.to_string())
@@ -87,6 +90,7 @@ fn the_release_gate_and_the_install_page_name_the_same_backend() {
          {backend:?}, and the install page's capture-backend section never \
          mentions it. One of them is describing a different release."
     );
+    Ok(())
 }
 
 /// The page distinguishes the two artifact families.
@@ -96,13 +100,13 @@ fn the_release_gate_and_the_install_page_name_the_same_backend() {
 /// end. The distinction is the content; a page that lost it would still
 /// mention the backend and still mislead.
 #[test]
-fn the_install_page_says_which_artifacts_carry_it() {
-    let doc = read("docs/install.md");
+fn the_install_page_says_which_artifacts_carry_it() -> Result<(), TestError> {
+    let doc = read("docs/install.md")?;
     let section = doc
         .split_once("### Which capture backends an artifact can reach")
         .and_then(|(_, rest)| rest.split_once("\n### "))
         .map(|(s, _)| s.to_string())
-        .expect("the capture-backend section must exist and end at the next heading");
+        .ok_or("the capture-backend section must exist and end at the next heading")?;
     for family in ["-linux-musl", "-linux-gnu"] {
         assert!(
             section.contains(family),
@@ -115,27 +119,29 @@ fn the_install_page_says_which_artifacts_carry_it() {
         "the Docker image links Debian's libpcap like the packages do, and a \
          reader running the image has no other place to learn that"
     );
+    Ok(())
 }
 
 /// The capture-backend section of the install page, up to the next heading.
-fn backend_section() -> String {
-    read("docs/install.md")
+fn backend_section() -> Result<String, TestError> {
+    Ok(read("docs/install.md")?
         .split_once("### Which capture backends an artifact can reach")
         .and_then(|(_, rest)| rest.split_once("\n### "))
         .map(|(s, _)| s.to_string())
-        .expect("the capture-backend section must exist and end at the next heading")
+        .ok_or("the capture-backend section must exist and end at the next heading")?)
 }
 
 /// The table cells of the section's row for one artifact family.
-fn row_cells(section: &str, family: &str) -> Vec<String> {
+fn row_cells(section: &str, family: &str) -> Result<Vec<String>, TestError> {
     let row = section
         .lines()
         .find(|l| l.starts_with('|') && l.contains(family))
-        .unwrap_or_else(|| panic!("the backend table has no row for {family} artifacts"));
-    row.trim_matches('|')
+        .ok_or_else(|| format!("the backend table has no row for {family} artifacts"))?;
+    Ok(row
+        .trim_matches('|')
         .split('|')
         .map(|c| c.trim().to_string())
-        .collect()
+        .collect())
 }
 
 /// The macOS family has a row of its own, and it says no alternate backend.
@@ -148,9 +154,9 @@ fn row_cells(section: &str, family: &str) -> Vec<String> {
 /// libpcap Apple builds with netmap and DPDK both undefined, so every backend
 /// column is `no`.
 #[test]
-fn the_install_page_gives_the_macos_family_its_own_row() {
-    let section = backend_section();
-    let cells = row_cells(&section, "-apple-darwin");
+fn the_install_page_gives_the_macos_family_its_own_row() -> Result<(), TestError> {
+    let section = backend_section()?;
+    let cells = row_cells(&section, "-apple-darwin")?;
     assert_eq!(
         cells.len(),
         5,
@@ -171,6 +177,7 @@ fn the_install_page_gives_the_macos_family_its_own_row() {
         "macOS's own libpcap carries no alternate backend, so netmap, DPDK and \
          AF_XDP are all `no` on the macOS row"
     );
+    Ok(())
 }
 
 /// Nothing in the macOS build or its Homebrew formula brings a libpcap of its
@@ -180,8 +187,8 @@ fn the_install_page_gives_the_macos_family_its_own_row() {
 /// that reached the macOS half of the formula, would move the darwin binaries
 /// onto a different library while the page went on naming Apple's.
 #[test]
-fn nothing_in_the_macos_build_brings_its_own_libpcap() {
-    let workflow = read(".github/workflows/release.yml");
+fn nothing_in_the_macos_build_brings_its_own_libpcap() -> Result<(), TestError> {
+    let workflow = read(".github/workflows/release.yml")?;
     for line in workflow.lines() {
         let l = line.trim();
         if l.starts_with('#') {
@@ -200,17 +207,18 @@ fn nothing_in_the_macos_build_brings_its_own_libpcap() {
         );
     }
 
-    let formula = read("packaging/homebrew/update-formula.sh");
+    let formula = read("packaging/homebrew/update-formula.sh")?;
     let macos = formula
         .split_once("on_macos do")
         .and_then(|(_, rest)| rest.split_once("on_linux do"))
         .map(|(block, _)| block.to_string())
-        .expect("the formula must carry an on_macos block before on_linux");
+        .ok_or("the formula must carry an on_macos block before on_linux")?;
     assert!(
         !macos.contains("depends_on"),
         "the formula's on_macos block gained a dependency, and docs/install.md \
          says Homebrew on macOS runs against macOS's own libpcap:\n{macos}"
     );
+    Ok(())
 }
 
 /// The page tells a reader to ask sipnab first, and keeps the `strings` probe
@@ -221,8 +229,8 @@ fn nothing_in_the_macos_build_brings_its_own_libpcap() {
 /// build's library at all — the banner lives in the host's `libpcap.so`, not
 /// in the binary.
 #[test]
-fn the_install_page_says_to_ask_sipnab_itself() {
-    let section = backend_section();
+fn the_install_page_says_to_ask_sipnab_itself() -> Result<(), TestError> {
+    let section = backend_section()?;
     assert!(
         section.contains("sipnab --version"),
         "the capture-backend section must tell the reader to run \
@@ -233,6 +241,7 @@ fn the_install_page_says_to_ask_sipnab_itself() {
         "keep the `strings` probe: a sipnab older than the report cannot answer \
          `--version` with its libpcap"
     );
+    Ok(())
 }
 
 /// Capturing on `netmap:` takes the interface away from the host, and the page
@@ -246,10 +255,10 @@ fn the_install_page_says_to_ask_sipnab_itself() {
 /// "yes" in the netmap column and points it at the interface carrying their
 /// SIP service takes that service offline.
 #[test]
-fn the_install_page_warns_that_netmap_takes_the_interface_from_the_host() {
+fn the_install_page_warns_that_netmap_takes_the_interface_from_the_host() -> Result<(), TestError> {
     // Prose wraps, and a callout wraps with `>` on every line, so compare
     // against the section as one line of words.
-    let section = backend_section()
+    let section = backend_section()?
         .lines()
         .map(|l| l.trim_start_matches('>').trim())
         .collect::<Vec<_>>()
@@ -264,4 +273,5 @@ fn the_install_page_warns_that_netmap_takes_the_interface_from_the_host() {
         "the capture-backend section must say the host stops receiving the \
          interface's traffic while a netmap capture runs"
     );
+    Ok(())
 }

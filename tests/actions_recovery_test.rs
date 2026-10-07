@@ -32,7 +32,7 @@ use sipnab::security::actions::{
 #[path = "support/fake_tfps.rs"]
 mod fake_tfps;
 
-use fake_tfps::{FakeTfps, T0, addr, enabled_or_panic};
+use fake_tfps::{FakeTfps, T0, TestError, addr, enabled};
 
 struct Rig {
     _tmp: tempfile::TempDir,
@@ -41,25 +41,30 @@ struct Rig {
     t0: Instant,
 }
 
-fn rig() -> Rig {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn rig() -> Result<Rig, TestError> {
+    let tmp = tempfile::tempdir()?;
     let dir = tmp.path().join("journal");
     let tfps = FakeTfps::new(&dir);
-    Rig {
+    Ok(Rig {
         _tmp: tmp,
         dir,
         tfps,
         t0: Instant::now(),
-    }
+    })
 }
 
 /// Limits loose enough that a test is never throttled unless it means to be.
-fn roomy() -> ActionLimits {
-    ActionLimits::new(1_000, 1_000, Duration::from_millis(1)).expect("limits")
+fn roomy() -> Result<ActionLimits, TestError> {
+    Ok(ActionLimits::new(1_000, 1_000, Duration::from_millis(1))?)
 }
 
-fn start_with(r: &Rig, policy: ActionPolicy, limits: ActionLimits, now: u64) -> ActionService {
-    ActionService::start_with(
+fn start_with(
+    r: &Rig,
+    policy: ActionPolicy,
+    limits: ActionLimits,
+    now: u64,
+) -> Result<ActionService, TestError> {
+    Ok(ActionService::start_with(
         policy,
         limits,
         &r.dir,
@@ -67,24 +72,23 @@ fn start_with(r: &Rig, policy: ActionPolicy, limits: ActionLimits, now: u64) -> 
         JournalLimits::default(),
         now,
         r.t0,
-    )
-    .expect("start")
-    .0
+    )?
+    .0)
 }
 
-fn ban(svc: &ActionService, r: &Rig, n: u8, at: u64) -> String {
-    svc.ban(ActionSurface::Rest, "token:ops", addr(n), None, at, r.t0)
-        .expect("ban")
-        .id
+fn ban(svc: &ActionService, r: &Rig, n: u8, at: u64) -> Result<String, TestError> {
+    Ok(svc
+        .ban(ActionSurface::Rest, "token:ops", addr(n), None, at, r.t0)?
+        .id)
 }
 
-fn kinds(r: &Rig) -> Vec<String> {
+fn kinds(r: &Rig) -> Result<Vec<String>, TestError> {
     r.tfps
         .journal_text()
         .lines()
         .map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).expect("record");
-            v["kind"].as_str().unwrap_or_default().to_string()
+            let v: serde_json::Value = serde_json::from_str(l)?;
+            Ok(v["kind"].as_str().unwrap_or_default().to_string())
         })
         .collect()
 }
@@ -92,27 +96,25 @@ fn kinds(r: &Rig) -> Vec<String> {
 // ── revert ───────────────────────────────────────────────────────────────
 
 #[test]
-fn revert_one_lifts_that_ban_and_journals_the_revert() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let first = ban(&svc, &r, 20, T0);
-    let _second = ban(&svc, &r, 21, T0);
-    let report = svc
-        .revert(
-            Reverter::Local,
-            RevertTarget::One(first.clone()),
-            T0 + 5,
-            r.t0,
-        )
-        .expect("revert");
+fn revert_one_lifts_that_ban_and_journals_the_revert() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let first = ban(&svc, &r, 20, T0)?;
+    let _second = ban(&svc, &r, 21, T0)?;
+    let report = svc.revert(
+        Reverter::Local,
+        RevertTarget::One(first.clone()),
+        T0 + 5,
+        r.t0,
+    )?;
     assert_eq!(report.reverted, std::slice::from_ref(&first));
     assert!(svc.owned(addr(20)).is_none(), "ownership ended");
     assert!(svc.owned(addr(21)).is_some(), "the other ban stands");
     assert_eq!(
-        r.tfps.calls_or_panic().last().map(String::as_str),
+        r.tfps.calls()?.last().map(String::as_str),
         Some("unban 198.51.100.20")
     );
-    let k = kinds(&r);
+    let k = kinds(&r)?;
     assert!(k.contains(&"revert_intent".to_string()), "{k:?}");
     assert!(k.contains(&"revert_outcome".to_string()), "{k:?}");
     assert!(
@@ -121,22 +123,21 @@ fn revert_one_lifts_that_ban_and_journals_the_revert() {
             .contains(&format!("\"reverts\":\"{first}\"")),
         "the revert names the action it backs out"
     );
+    Ok(())
 }
 
 #[test]
-fn revert_all_lifts_every_owned_ban_newest_first() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let a = ban(&svc, &r, 20, T0);
-    let b = ban(&svc, &r, 21, T0 + 1);
-    let c = ban(&svc, &r, 22, T0 + 2);
-    let report = svc
-        .revert(Reverter::Local, RevertTarget::All, T0 + 5, r.t0)
-        .expect("revert all");
+fn revert_all_lifts_every_owned_ban_newest_first() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let a = ban(&svc, &r, 20, T0)?;
+    let b = ban(&svc, &r, 21, T0 + 1)?;
+    let c = ban(&svc, &r, 22, T0 + 2)?;
+    let report = svc.revert(Reverter::Local, RevertTarget::All, T0 + 5, r.t0)?;
     assert_eq!(report.reverted, [c, b, a], "newest first");
     let unbans: Vec<String> = r
         .tfps
-        .calls_or_panic()
+        .calls()?
         .into_iter()
         .filter(|c| c.starts_with("unban"))
         .collect();
@@ -151,36 +152,31 @@ fn revert_all_lifts_every_owned_ban_newest_first() {
     for n in 20..=22 {
         assert!(svc.owned(addr(n)).is_none());
     }
+    Ok(())
 }
 
 #[test]
-fn the_local_operator_can_revert_with_actions_switched_off() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let id = ban(&svc, &r, 20, T0);
+fn the_local_operator_can_revert_with_actions_switched_off() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let id = ban(&svc, &r, 20, T0)?;
     drop(svc);
     // After abuse the first thing an operator does is switch actions off;
     // recovery must not require switching them back on.
-    let svc = start_with(&r, ActionPolicy::default(), roomy(), T0 + 10);
-    let report = svc
-        .revert(Reverter::Local, RevertTarget::All, T0 + 10, r.t0)
-        .expect("revert with actions off");
+    let svc = start_with(&r, ActionPolicy::default(), roomy()?, T0 + 10)?;
+    let report = svc.revert(Reverter::Local, RevertTarget::All, T0 + 10, r.t0)?;
     assert_eq!(report.reverted, [id]);
     assert_eq!(
-        r.tfps.calls_or_panic().last().map(String::as_str),
+        r.tfps.calls()?.last().map(String::as_str),
         Some("unban 198.51.100.20")
     );
+    Ok(())
 }
 
 #[test]
-fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() {
-    let r = rig();
-    let svc = start_with(
-        &r,
-        enabled_or_panic("tfps:mcp"),
-        ActionLimits::default(),
-        T0,
-    );
+fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:mcp")?, ActionLimits::default(), T0)?;
     let err = svc
         .revert(
             Reverter::Surface {
@@ -191,13 +187,13 @@ fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() {
             T0,
             r.t0,
         )
-        .expect_err("REST is not enabled");
+        .err()
+        .ok_or("REST is not enabled")?;
     assert!(matches!(err, ActionError::NotEnabled(_)), "{err:?}");
     // Over MCP it is an action: ban then revert the same address within the
     // cooldown, and the revert waits.
     let id = svc
-        .ban(ActionSurface::Mcp, "stdio", addr(20), None, T0, r.t0)
-        .expect("ban")
+        .ban(ActionSurface::Mcp, "stdio", addr(20), None, T0, r.t0)?
         .id;
     let err = svc
         .revert(
@@ -209,15 +205,17 @@ fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() {
             T0,
             r.t0,
         )
-        .expect_err("within the address cooldown");
+        .err()
+        .ok_or("within the address cooldown")?;
     assert!(matches!(err, ActionError::Throttled(_)), "{err:?}");
     assert!(svc.owned(addr(20)).is_some());
+    Ok(())
 }
 
 #[test]
-fn revert_of_an_id_sipnab_does_not_own_is_refused() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
+fn revert_of_an_id_sipnab_does_not_own_is_refused() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
     let err = svc
         .revert(
             Reverter::Local,
@@ -225,102 +223,95 @@ fn revert_of_an_id_sipnab_does_not_own_is_refused() {
             T0,
             r.t0,
         )
-        .expect_err("no such owned action");
+        .err()
+        .ok_or("no such owned action")?;
     assert_eq!(err, ActionError::NotOwned);
-    assert!(
-        r.tfps
-            .calls_or_panic()
-            .iter()
-            .all(|c| !c.starts_with("unban"))
-    );
+    assert!(r.tfps.calls()?.iter().all(|c| !c.starts_with("unban")));
+    Ok(())
 }
 
 #[test]
-fn revert_all_skips_a_ban_it_cannot_prove_it_placed() {
+fn revert_all_skips_a_ban_it_cannot_prove_it_placed() -> Result<(), TestError> {
     // A crash between intent and outcome, and TFPS then shows the address
     // banned with an expiry the intent does not match: `unknown`, not owned,
     // and revert-all leaves it alone and says so.
-    let r = rig();
+    let r = rig()?;
     {
-        let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-        let _ = ban(&svc, &r, 21, T0);
+        let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+        let _ = ban(&svc, &r, 21, T0)?;
     }
     // Forge the crash: an intent with no outcome, for an address TFPS shows
     // banned by someone else, until a different time.
     r.tfps
         .banned
         .lock()
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .push((Ipv4Addr::new(198, 51, 100, 30), Some(T0 + 99_999)));
     {
         // A crash between the intent and the outcome: the intent written the
         // way the service writes it, and nothing after.
-        let (mut j, _) = sipnab::journal::Journal::open(&r.dir, "crashed-run").expect("open");
+        let (mut j, _) = sipnab::journal::Journal::open(&r.dir, "crashed-run")?;
         j.append(
             "action_intent",
             serde_json::json!({"id": "a-crash", "target": "tfps", "verb": "ban",
                 "address": "198.51.100.30", "at": T0 + 1, "ttl_secs": 3600,
                 "expires": T0 + 3601, "surface": "rest", "caller": "token:ops"}),
-        )
-        .expect("intent");
+        )?;
     }
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 2);
-    let report = svc
-        .revert(Reverter::Local, RevertTarget::All, T0 + 3, r.t0)
-        .expect("revert all");
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0 + 2)?;
+    let report = svc.revert(Reverter::Local, RevertTarget::All, T0 + 3, r.t0)?;
     assert_eq!(report.skipped_unknown, ["198.51.100.30"]);
     assert!(
-        !r.tfps
-            .calls_or_panic()
-            .contains(&"unban 198.51.100.30".to_string()),
+        !r.tfps.calls()?.contains(&"unban 198.51.100.30".to_string()),
         "{:?}",
-        r.tfps.calls_or_panic()
+        r.tfps.calls()?
     );
+    Ok(())
 }
 
 // ── stale bans ───────────────────────────────────────────────────────────
 
 #[test]
-fn a_ban_tfps_dropped_early_is_journaled_as_lapsed_and_ownership_ends() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let _ = ban(&svc, &r, 20, T0);
+fn a_ban_tfps_dropped_early_is_journaled_as_lapsed_and_ownership_ends() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let _ = ban(&svc, &r, 20, T0)?;
     // TFPS restarted and forgot its manual bans.
-    r.tfps.banned.lock().unwrap().clear();
-    let report = svc.reconcile(T0 + 60).expect("reconcile");
+    r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
+    let report = svc.reconcile(T0 + 60)?;
     assert_eq!(report.lapsed, 1);
     assert!(svc.owned(addr(20)).is_none());
-    assert!(kinds(&r).contains(&"lapsed_by_peer".to_string()));
+    assert!(kinds(&r)?.contains(&"lapsed_by_peer".to_string()));
     // The next check finds nothing new to say.
-    assert_eq!(svc.reconcile(T0 + 120).expect("reconcile").lapsed, 0);
+    assert_eq!(svc.reconcile(T0 + 120)?.lapsed, 0);
+    Ok(())
 }
 
 #[test]
-fn a_ban_past_its_expiry_is_not_lapsed_by_the_peer() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let _ = svc
-        .ban(
-            ActionSurface::Rest,
-            "token:ops",
-            addr(20),
-            Some(60),
-            T0,
-            r.t0,
-        )
-        .expect("ban");
-    r.tfps.banned.lock().unwrap().clear();
-    let report = svc.reconcile(T0 + 61).expect("reconcile");
+fn a_ban_past_its_expiry_is_not_lapsed_by_the_peer() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let _ = svc.ban(
+        ActionSurface::Rest,
+        "token:ops",
+        addr(20),
+        Some(60),
+        T0,
+        r.t0,
+    )?;
+    r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
+    let report = svc.reconcile(T0 + 61)?;
     assert_eq!(
         report.lapsed, 0,
         "it expired as asked; TFPS dropped nothing"
     );
-    assert!(!kinds(&r).contains(&"lapsed_by_peer".to_string()));
+    assert!(!kinds(&r)?.contains(&"lapsed_by_peer".to_string()));
+    Ok(())
 }
 
 #[test]
-fn reconcile_with_tfps_unreachable_changes_nothing() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn reconcile_with_tfps_unreachable_changes_nothing() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let dir = tmp.path().join("journal");
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
@@ -328,76 +319,69 @@ fn reconcile_with_tfps_unreachable_changes_nothing() {
         ..FakeTfps::default()
     });
     let (svc, _) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &dir,
         tfps.clone(),
         JournalLimits::default(),
         T0,
         Instant::now(),
-    )
-    .expect("start");
-    let _ = svc
-        .ban(
-            ActionSurface::Rest,
-            "token:ops",
-            addr(20),
-            None,
-            T0,
-            Instant::now(),
-        )
-        .expect("ban");
-    let err = svc.reconcile(T0 + 60).expect_err("TFPS unreachable");
+    )?;
+    let _ = svc.ban(
+        ActionSurface::Rest,
+        "token:ops",
+        addr(20),
+        None,
+        T0,
+        Instant::now(),
+    )?;
+    let err = svc.reconcile(T0 + 60).err().ok_or("TFPS unreachable")?;
     assert!(matches!(err, ActionError::Tfps(_)), "{err:?}");
     assert!(svc.owned(addr(20)).is_some(), "nothing is assumed");
+    Ok(())
 }
 
 #[test]
-fn a_revert_of_a_ban_tfps_already_dropped_ends_ownership_as_lapsed() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let id = ban(&svc, &r, 20, T0);
-    r.tfps.banned.lock().unwrap().clear();
-    let report = svc
-        .revert(Reverter::Local, RevertTarget::One(id), T0 + 5, r.t0)
-        .expect("revert");
+fn a_revert_of_a_ban_tfps_already_dropped_ends_ownership_as_lapsed() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let id = ban(&svc, &r, 20, T0)?;
+    r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
+    let report = svc.revert(Reverter::Local, RevertTarget::One(id), T0 + 5, r.t0)?;
     assert!(report.reverted.is_empty(), "{report:?}");
     assert_eq!(report.lapsed, ["198.51.100.20"]);
     assert!(svc.owned(addr(20)).is_none());
     assert!(
-        r.tfps
-            .calls_or_panic()
-            .iter()
-            .all(|c| !c.starts_with("unban")),
+        r.tfps.calls()?.iter().all(|c| !c.starts_with("unban")),
         "the check before the revert found it gone, so TFPS is not asked"
     );
+    Ok(())
 }
 
 // ── bounds ───────────────────────────────────────────────────────────────
 
 #[test]
-fn a_full_segment_rolls_over_with_a_checkpoint_and_pruning_loses_nothing_in_force() {
-    let r = rig();
+fn a_full_segment_rolls_over_with_a_checkpoint_and_pruning_loses_nothing_in_force()
+-> Result<(), TestError> {
+    let r = rig()?;
     let small = JournalLimits {
         segment_bytes: 2_048,
         retention: Duration::ZERO,
     };
     let (svc, _) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &r.dir,
         r.tfps.clone(),
         small,
         T0,
         r.t0,
-    )
-    .expect("start");
+    )?;
     for n in 1..=30 {
-        let _ = ban(&svc, &r, n, T0 + u64::from(n));
+        let _ = ban(&svc, &r, n, T0 + u64::from(n))?;
     }
     drop(svc);
-    let segments = std::fs::read_dir(&r.dir)
-        .expect("dir")
+    let segments = std::fs::read_dir(&r.dir)?
         .filter(|e| {
             e.as_ref()
                 .is_ok_and(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
@@ -405,20 +389,21 @@ fn a_full_segment_rolls_over_with_a_checkpoint_and_pruning_loses_nothing_in_forc
         .count();
     assert!(segments >= 1, "{segments}");
     assert!(
-        kinds(&r).first().map(String::as_str) == Some("checkpoint"),
+        kinds(&r)?.first().map(String::as_str) == Some("checkpoint"),
         "the oldest segment left opens with a checkpoint: {:?}",
-        kinds(&r).first()
+        kinds(&r)?.first()
     );
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 40);
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0 + 40)?;
     for n in 1..=30 {
         assert!(svc.owned(addr(n)).is_some(), "ban {n} survived the prune");
     }
+    Ok(())
 }
 
 #[test]
-fn a_flood_of_refusals_costs_a_few_records_a_minute() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
+fn a_flood_of_refusals_costs_a_few_records_a_minute() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
     for _ in 0..500 {
         let _ = svc.ban(
             ActionSurface::Rest,
@@ -429,7 +414,7 @@ fn a_flood_of_refusals_costs_a_few_records_a_minute() {
             r.t0,
         );
     }
-    let refused = kinds(&r).iter().filter(|k| *k == "action_refused").count();
+    let refused = kinds(&r)?.iter().filter(|k| *k == "action_refused").count();
     assert_eq!(
         refused, 1,
         "the first of the minute in full, the rest counted"
@@ -446,19 +431,22 @@ fn a_flood_of_refusals_costs_a_few_records_a_minute() {
     let text = r.tfps.journal_text();
     let summary: Vec<serde_json::Value> = text
         .lines()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("record"))
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|v| v["kind"] == "refusals_summary")
         .collect();
     assert_eq!(summary.len(), 1, "{summary:?}");
     assert_eq!(summary[0]["counts"][0]["caller"], "token:flood");
     assert_eq!(summary[0]["counts"][0]["reason"], "address");
     assert_eq!(summary[0]["counts"][0]["folded"], 499);
+    Ok(())
 }
 
 #[test]
-fn folding_is_per_caller_and_reason_so_a_flood_hides_no_one_else() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
+fn folding_is_per_caller_and_reason_so_a_flood_hides_no_one_else() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
     for _ in 0..50 {
         let _ = svc.ban(
             ActionSurface::Rest,
@@ -482,24 +470,26 @@ fn folding_is_per_caller_and_reason_so_a_flood_hides_no_one_else() {
         text.contains("\"caller\":\"token:other\""),
         "another caller's first refusal is written in full"
     );
+    Ok(())
 }
 
 #[test]
-fn revert_all_is_newest_first_even_for_bans_in_the_same_second() {
+fn revert_all_is_newest_first_even_for_bans_in_the_same_second() -> Result<(), TestError> {
     // Ids end in a counter; compared as text, `-10` sorts before `-9`.
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let ids: Vec<String> = (1..=12).map(|n| ban(&svc, &r, n, T0)).collect();
-    let report = svc
-        .revert(Reverter::Local, RevertTarget::All, T0 + 5, r.t0)
-        .expect("revert all");
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let ids: Vec<String> = (1..=12)
+        .map(|n| ban(&svc, &r, n, T0))
+        .collect::<Result<_, _>>()?;
+    let report = svc.revert(Reverter::Local, RevertTarget::All, T0 + 5, r.t0)?;
     let newest_first: Vec<String> = ids.into_iter().rev().collect();
     assert_eq!(report.reverted, newest_first);
+    Ok(())
 }
 
 #[test]
-fn a_ban_that_went_between_the_check_and_the_unban_ends_as_lapsed() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_ban_that_went_between_the_check_and_the_unban_ends_as_lapsed() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let dir = tmp.path().join("journal");
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
@@ -508,45 +498,43 @@ fn a_ban_that_went_between_the_check_and_the_unban_ends_as_lapsed() {
     });
     let t0 = Instant::now();
     let (svc, _) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &dir,
         tfps.clone(),
         JournalLimits::default(),
         T0,
         t0,
-    )
-    .expect("start");
+    )?;
     let id = svc
-        .ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, t0)
-        .expect("ban")
+        .ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, t0)?
         .id;
-    let report = svc
-        .revert(Reverter::Local, RevertTarget::One(id), T0 + 5, t0)
-        .expect("revert");
+    let report = svc.revert(Reverter::Local, RevertTarget::One(id), T0 + 5, t0)?;
     assert!(report.reverted.is_empty(), "{report:?}");
     assert_eq!(report.lapsed, ["198.51.100.20"]);
     assert!(svc.owned(addr(20)).is_none());
     assert!(tfps.journal_text().contains("\"lapsed_by_peer\""));
+    Ok(())
 }
 
 #[test]
-fn a_ban_tfps_dropped_while_sipnab_was_down_is_found_at_start() {
-    let r = rig();
+fn a_ban_tfps_dropped_while_sipnab_was_down_is_found_at_start() -> Result<(), TestError> {
+    let r = rig()?;
     {
-        let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-        let _ = ban(&svc, &r, 20, T0);
+        let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+        let _ = ban(&svc, &r, 20, T0)?;
     }
-    r.tfps.banned.lock().unwrap().clear();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 30);
+    r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0 + 30)?;
     assert!(svc.owned(addr(20)).is_none());
-    assert!(kinds(&r).contains(&"lapsed_by_peer".to_string()));
+    assert!(kinds(&r)?.contains(&"lapsed_by_peer".to_string()));
+    Ok(())
 }
 
 #[test]
-fn refusals_from_many_callers_stay_bounded() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
+fn refusals_from_many_callers_stay_bounded() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
     for n in 0..6_000 {
         let _ = svc.ban(
             ActionSurface::Rest,
@@ -557,124 +545,124 @@ fn refusals_from_many_callers_stay_bounded() {
             r.t0,
         );
     }
-    let refused = kinds(&r).iter().filter(|k| *k == "action_refused").count();
+    let refused = kinds(&r)?.iter().filter(|k| *k == "action_refused").count();
     assert!(
         refused <= 4_097,
         "{refused} records for one minute's refusals"
     );
+    Ok(())
 }
 
 // ── the check while running ──────────────────────────────────────────────
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_secs()
+fn now_unix() -> Result<u64, TestError> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs())
 }
 
 #[test]
-fn the_watch_finds_a_dropped_ban_without_anyone_asking() {
-    let r = rig();
-    let now = now_unix();
-    let svc = Arc::new(start_with(&r, enabled_or_panic("tfps:rest"), roomy(), now));
-    let _ = svc
-        .ban(ActionSurface::Rest, "token:ops", addr(20), None, now, r.t0)
-        .expect("ban");
-    let _watch = ActionService::watch(&svc, Duration::from_millis(20)).expect("spawn");
-    r.tfps.banned.lock().unwrap().clear();
+fn the_watch_finds_a_dropped_ban_without_anyone_asking() -> Result<(), TestError> {
+    let r = rig()?;
+    let now = now_unix()?;
+    let svc = Arc::new(start_with(&r, enabled("tfps:rest")?, roomy()?, now)?);
+    let _ = svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, now, r.t0)?;
+    let _watch = ActionService::watch(&svc, Duration::from_millis(20))?;
+    r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
     let deadline = Instant::now() + Duration::from_secs(5);
     while svc.owned(addr(20)).is_some() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(svc.owned(addr(20)).is_none(), "the watch never noticed");
-    assert!(kinds(&r).contains(&"lapsed_by_peer".to_string()));
+    assert!(kinds(&r)?.contains(&"lapsed_by_peer".to_string()));
+    Ok(())
 }
 
 #[test]
-fn the_watch_ends_when_the_service_does() {
-    let r = rig();
+fn the_watch_ends_when_the_service_does() -> Result<(), TestError> {
+    let r = rig()?;
     let svc = Arc::new(start_with(
         &r,
-        enabled_or_panic("tfps:rest"),
-        roomy(),
-        now_unix(),
-    ));
-    let watch = ActionService::watch(&svc, Duration::from_millis(10)).expect("spawn");
+        enabled("tfps:rest")?,
+        roomy()?,
+        now_unix()?,
+    )?);
+    let watch = ActionService::watch(&svc, Duration::from_millis(10))?;
     drop(svc);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !watch.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(watch.is_finished(), "the watch outlived the service");
+    Ok(())
 }
 
 // ── stop and crash ───────────────────────────────────────────────────────
 
 #[test]
-fn a_clean_stop_is_journaled_and_the_next_start_knows() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let _ = ban(&svc, &r, 20, T0);
+fn a_clean_stop_is_journaled_and_the_next_start_knows() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let _ = ban(&svc, &r, 20, T0)?;
     assert!(
         svc.stop(T0 + 1),
         "nothing was in flight, so the record is written"
     );
     drop(svc);
-    assert!(kinds(&r).contains(&"run_stop".to_string()));
+    assert!(kinds(&r)?.contains(&"run_stop".to_string()));
     let (_, report) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &r.dir,
         r.tfps.clone(),
         JournalLimits::default(),
         T0 + 2,
         r.t0,
-    )
-    .expect("start");
+    )?;
     assert_eq!(report.previous_run, PreviousRun::Stopped);
+    Ok(())
 }
 
 #[test]
-fn without_a_stop_record_the_next_start_reads_a_crash() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let _ = ban(&svc, &r, 20, T0);
+fn without_a_stop_record_the_next_start_reads_a_crash() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let _ = ban(&svc, &r, 20, T0)?;
     drop(svc);
     let (_, report) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &r.dir,
         r.tfps.clone(),
         JournalLimits::default(),
         T0 + 2,
         r.t0,
-    )
-    .expect("start");
+    )?;
     assert_eq!(report.previous_run, PreviousRun::Ended);
+    Ok(())
 }
 
 #[test]
-fn the_first_start_has_no_previous_run() {
-    let r = rig();
+fn the_first_start_has_no_previous_run() -> Result<(), TestError> {
+    let r = rig()?;
     let (_, report) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &r.dir,
         r.tfps.clone(),
         JournalLimits::default(),
         T0,
         r.t0,
-    )
-    .expect("start");
+    )?;
     assert_eq!(report.previous_run, PreviousRun::None);
+    Ok(())
 }
 
 #[test]
-fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() {
+fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() -> Result<(), TestError> {
     // Stop means stop: an action whose TFPS call is still running is not
     // waited for. Its intent stays in doubt and the next start resolves it.
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = tempfile::tempdir()?;
     let dir = tmp.path().join("journal");
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
@@ -683,15 +671,14 @@ fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() {
     });
     let t0 = Instant::now();
     let (svc, _) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &dir,
         tfps.clone(),
         JournalLimits::default(),
         T0,
         t0,
-    )
-    .expect("start");
+    )?;
     let svc = Arc::new(svc);
     let in_flight = {
         let svc = svc.clone();
@@ -712,51 +699,52 @@ fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() {
     assert!(!written, "no stop record while an action is in flight");
     let err = svc
         .ban(ActionSurface::Rest, "token:ops", addr(21), None, T0 + 1, t0)
-        .expect_err("stopping");
+        .err()
+        .ok_or("stopping")?;
     assert!(matches!(err, ActionError::JournalUnusable(_)), "{err:?}");
-    in_flight.join().expect("join");
+    in_flight.join().map_err(|_| "thread panicked")?;
+    Ok(())
 }
 
 #[test]
-fn an_earlier_clean_stop_does_not_hide_a_later_crash() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
+fn an_earlier_clean_stop_does_not_hide_a_later_crash() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
     assert!(svc.stop(T0));
     drop(svc);
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 1);
-    let _ = ban(&svc, &r, 20, T0 + 1);
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0 + 1)?;
+    let _ = ban(&svc, &r, 20, T0 + 1)?;
     drop(svc); // no stop: this run crashed
     let (_, report) = ActionService::start_with(
-        enabled_or_panic("tfps:rest"),
-        roomy(),
+        enabled("tfps:rest")?,
+        roomy()?,
         &r.dir,
         r.tfps.clone(),
         JournalLimits::default(),
         T0 + 2,
         r.t0,
-    )
-    .expect("start");
+    )?;
     assert_eq!(report.previous_run, PreviousRun::Ended);
+    Ok(())
 }
 
 #[test]
-fn an_unban_tfps_answers_not_blocked_ends_ownership_as_lapsed() {
-    let r = rig();
-    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
-    let _ = ban(&svc, &r, 20, T0);
+fn an_unban_tfps_answers_not_blocked_ends_ownership_as_lapsed() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let _ = ban(&svc, &r, 20, T0)?;
     // TFPS dropped it, and nothing has checked since.
-    r.tfps.banned.lock().unwrap().clear();
-    let done = svc
-        .unban(
-            ActionSurface::Rest,
-            "token:ops",
-            addr(20),
-            T0 + 5,
-            r.t0 + Duration::from_secs(5),
-        )
-        .expect("unban");
+    r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
+    let done = svc.unban(
+        ActionSurface::Rest,
+        "token:ops",
+        addr(20),
+        T0 + 5,
+        r.t0 + Duration::from_secs(5),
+    )?;
     assert!(!done.applied);
     assert_eq!(done.refused.as_deref(), Some("not-blocked"));
     assert!(svc.owned(addr(20)).is_none(), "sipnab no longer holds it");
-    assert!(kinds(&r).contains(&"lapsed_by_peer".to_string()));
+    assert!(kinds(&r)?.contains(&"lapsed_by_peer".to_string()));
+    Ok(())
 }

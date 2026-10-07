@@ -152,28 +152,3 @@ pub fn make_response(
     )
     .map_err(|e| format!("parse response: {e}").into())
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`base_ts`], panicking on error.
-pub fn base_ts_or_panic() -> DateTime<Utc> {
-    base_ts().expect("base_ts")
-}
-
-/// [`make_invite`], panicking on error.
-pub fn make_invite_or_panic(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
-    make_invite(call_id, from, to, ts).expect("make_invite")
-}
-
-/// [`make_response`], panicking on error.
-pub fn make_response_or_panic(
-    call_id: &str,
-    status: u16,
-    reason: &str,
-    cseq_method: &str,
-    ts: DateTime<Utc>,
-) -> SipMessage {
-    make_response(call_id, status, reason, cseq_method, ts).expect("make_response")
-}

@@ -14,6 +14,10 @@
 //! test keeps it closed — a new flag added without two examples fails CI.
 #![cfg(feature = "native")]
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/markdown.rs"]
 mod markdown;
 
@@ -50,7 +54,7 @@ const WAIVED: &[(&str, &str)] = &[
 /// `(relative_path, file_text)` for each `.md` file in `docs/`,
 /// `website/content/docs/`, and the top-level `README.md`; panics if the
 /// corpus is suspiciously small (path resolution broken).
-fn doc_corpus() -> Vec<(String, String)> {
+fn doc_corpus() -> Result<Vec<(String, String)>, TestError> {
     let root = env!("CARGO_MANIFEST_DIR");
     let mut docs = Vec::new();
     let mut mirrors_skipped = 0usize;
@@ -82,7 +86,12 @@ fn doc_corpus() -> Vec<(String, String)> {
                     continue;
                 }
                 docs.push((
-                    format!("{dir}/{}", p.file_name().unwrap().to_string_lossy()),
+                    format!(
+                        "{dir}/{}",
+                        p.file_name()
+                            .ok_or("a .md path has a file name")?
+                            .to_string_lossy()
+                    ),
                     text,
                 ));
             }
@@ -107,7 +116,7 @@ fn doc_corpus() -> Vec<(String, String)> {
          has stopped matching, so authored examples are being double-counted \
          and MIN_EXAMPLES is effectively half what it says"
     );
-    docs
+    Ok(docs)
 }
 
 /// Concatenated text of every example command in the corpus: the body of
@@ -131,9 +140,9 @@ fn doc_corpus() -> Vec<(String, String)> {
 ///
 /// # Returns
 /// All bash-fence bodies and inline sipnab commands, joined with newlines.
-fn all_bash_blocks(corpus: &[(String, String)]) -> String {
+fn all_bash_blocks(corpus: &[(String, String)]) -> Result<String, TestError> {
     // Inline code spans, single-line only: ``…`` never wraps a line here.
-    let inline = regex::Regex::new(r"`([^`\n]+)`").unwrap();
+    let inline = regex::Regex::new(r"`([^`\n]+)`")?;
     let mut out = String::new();
     for (_, text) in corpus {
         for fence in markdown::fences(text) {
@@ -160,7 +169,7 @@ fn all_bash_blocks(corpus: &[(String, String)]) -> String {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Whether a single logical line is a runnable sipnab invocation.
@@ -253,9 +262,9 @@ fn example_count(blocks: &str, flag: &str) -> usize {
 /// Every non-waived user-facing flag appears at least `MIN_EXAMPLES` (2) times
 /// in the corpus's bash example blocks; under-demonstrated flags fail with a list.
 #[test]
-fn every_flag_has_at_least_two_examples() {
-    let corpus = doc_corpus();
-    let blocks = all_bash_blocks(&corpus);
+fn every_flag_has_at_least_two_examples() -> Result<(), TestError> {
+    let corpus = doc_corpus()?;
+    let blocks = all_bash_blocks(&corpus)?;
     let waived: BTreeMap<&str, &str> = WAIVED.iter().copied().collect();
 
     let mut under = Vec::new();
@@ -277,12 +286,13 @@ fn every_flag_has_at_least_two_examples() {
         under.len(),
         under.join("\n")
     );
+    Ok(())
 }
 
 /// Every entry in `WAIVED` still names a real flag — a waiver for a removed
 /// flag fails so it gets cleaned up.
 #[test]
-fn waived_flags_still_exist() {
+fn waived_flags_still_exist() -> Result<(), TestError> {
     // A waiver for a removed flag is dead weight — fail so it gets cleaned up.
     let real: std::collections::BTreeSet<String> = user_facing_long_flags().into_iter().collect();
     let stale: Vec<&str> = WAIVED
@@ -291,6 +301,7 @@ fn waived_flags_still_exist() {
         .filter(|f| !real.contains(*f))
         .collect();
     assert!(stale.is_empty(), "waivers for nonexistent flags: {stale:?}");
+    Ok(())
 }
 
 /// A waived flag that has since gained enough examples fails, so the waiver is
@@ -308,9 +319,9 @@ fn waived_flags_still_exist() {
 /// zero examples — so this is a latch against the drift rather than a fix for
 /// it. That is the point of a ratchet: it is installed before it is needed.
 #[test]
-fn waivers_are_removed_once_a_flag_is_documented() {
-    let corpus = doc_corpus();
-    let blocks = all_bash_blocks(&corpus);
+fn waivers_are_removed_once_a_flag_is_documented() -> Result<(), TestError> {
+    let corpus = doc_corpus()?;
+    let blocks = all_bash_blocks(&corpus)?;
 
     let unneeded: Vec<String> = WAIVED
         .iter()
@@ -335,4 +346,5 @@ fn waivers_are_removed_once_a_flag_is_documented() {
          nothing and no waiver can look stale",
         blocks.len()
     );
+    Ok(())
 }

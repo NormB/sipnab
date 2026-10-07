@@ -31,6 +31,9 @@ use sipnab::sip::dialog_store::DialogStore;
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// A selection that asks for the metrics server alone, with every ceiling at
 /// its shipped default.
 fn metrics_only() -> Selection {
@@ -81,39 +84,46 @@ fn start_metrics(cli: &Cli) -> Result<bool, String> {
 /// logged the refusal and started anyway with no credential at all, so on a
 /// loopback bind the endpoint came up open and the run exited 0.
 #[test]
-fn an_unreadable_metrics_auth_file_is_a_startup_error_not_an_open_endpoint() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_unreadable_metrics_auth_file_is_a_startup_error_not_an_open_endpoint() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
     let missing = dir.path().join("metrics.cred");
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.metrics = Some("127.0.0.1:0".into());
     cli.listener_args.metrics_auth_file = Some(missing.clone());
 
-    let err = start_metrics(&cli).expect_err("an unreadable credential file must refuse startup");
+    let err = start_metrics(&cli)
+        .err()
+        .ok_or("an unreadable credential file must refuse startup")?;
     assert!(
         err.contains("--metrics-auth-file") && err.contains(&missing.display().to_string()),
         "the refusal must name the flag and the file: {err}"
     );
+    Ok(())
 }
 
 /// An empty credential file is refused the same way: an empty secret is not a
 /// secret, and serving with none is the failure being refused.
 #[test]
-fn an_empty_metrics_auth_file_is_a_startup_error() {
-    let file = tempfile::NamedTempFile::new().expect("tempfile");
+fn an_empty_metrics_auth_file_is_a_startup_error() -> Result<(), TestError> {
+    let file = tempfile::NamedTempFile::new()?;
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.metrics = Some("127.0.0.1:0".into());
     cli.listener_args.metrics_auth_file = Some(file.path().to_path_buf());
 
-    let err = start_metrics(&cli).expect_err("an empty credential file must refuse startup");
+    let err = start_metrics(&cli)
+        .err()
+        .ok_or("an empty credential file must refuse startup")?;
     assert!(err.contains("file is empty"), "{err}");
+    Ok(())
 }
 
 /// The anti-vacuity partner: a readable credential still starts the server,
 /// so the refusals above are about the credential and not about `--metrics`.
 #[test]
-fn a_readable_metrics_auth_file_still_starts_the_server() {
-    let mut file = tempfile::NamedTempFile::new().expect("tempfile");
-    writeln!(file, "scraper:s3cret").expect("write credential");
+fn a_readable_metrics_auth_file_still_starts_the_server() -> Result<(), TestError> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    writeln!(file, "scraper:s3cret")?;
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.metrics = Some("127.0.0.1:0".into());
     cli.listener_args.metrics_auth_file = Some(file.path().to_path_buf());
@@ -123,6 +133,7 @@ fn a_readable_metrics_auth_file_still_starts_the_server() {
         Ok(false),
         "metrics runs on its own thread; no async server was selected"
     );
+    Ok(())
 }
 
 // ── Binary-driven: REST relay routes and MCP toggles ──────────────────────
@@ -142,7 +153,12 @@ impl Spawned {
     /// Spawn the binary with `args`, a private config directory, and stdio as
     /// given. `HOME` and `XDG_CONFIG_HOME` point into `home`, so no user
     /// configuration is read.
-    fn start(args: &[&str], home: &std::path::Path, stdin: Stdio, stdout: Stdio) -> Self {
+    fn start(
+        args: &[&str],
+        home: &std::path::Path,
+        stdin: Stdio,
+        stdout: Stdio,
+    ) -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args(args)
@@ -154,9 +170,8 @@ impl Spawned {
             .stdin(stdin)
             .stdout(stdout)
             .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sipnab");
-        let err = child.stderr.take().expect("piped stderr");
+            .spawn()?;
+        let err = child.stderr.take().ok_or("piped stderr")?;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
@@ -165,11 +180,11 @@ impl Spawned {
                 }
             }
         });
-        Self {
+        Ok(Self {
             child,
             stderr: rx,
             seen: Vec::new(),
-        }
+        })
     }
 
     /// Wait for a stderr line containing `needle` and return the text after it.
@@ -218,19 +233,16 @@ impl Spawned {
 /// the listening line never saw it and timed out after 30 s. This feeds the
 /// two lines in that order and asks for them in the other.
 #[test]
-fn after_finds_a_line_that_arrived_before_the_one_waited_on_first() {
+fn after_finds_a_line_that_arrived_before_the_one_waited_on_first() -> Result<(), TestError> {
     let child = Command::new("sleep")
         .arg("30")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sleep");
+        .spawn()?;
     let (tx, rx) = mpsc::channel();
-    tx.send("INFO sipnab::app::batch: API server active".to_string())
-        .unwrap();
-    tx.send("INFO sipnab::output::api: REST API listening on 127.0.0.1:49650".to_string())
-        .unwrap();
+    tx.send("INFO sipnab::app::batch: API server active".to_string())?;
+    tx.send("INFO sipnab::output::api: REST API listening on 127.0.0.1:49650".to_string())?;
     let mut run = Spawned {
         child,
         stderr: rx,
@@ -247,6 +259,7 @@ fn after_finds_a_line_that_arrived_before_the_one_waited_on_first() {
             .is_some(),
         "a line read while waiting for another is still found"
     );
+    Ok(())
 }
 
 /// A test that fails before `terminate` still reaps its child, so a red run
@@ -258,26 +271,23 @@ impl Drop for Spawned {
 }
 
 /// One HTTP/1.1 GET with a bearer token; returns the status and body.
-fn http_get(addr: &str, path: &str, bearer: &str) -> (u16, String) {
-    let mut stream = TcpStream::connect(addr).expect("connect to the API");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("read timeout");
+fn http_get(addr: &str, path: &str, bearer: &str) -> Result<(u16, String), TestError> {
+    let mut stream = TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {bearer}\r\n\
          Connection: close\r\n\r\n"
-    )
-    .expect("write request");
+    )?;
     let mut raw = String::new();
-    stream.read_to_string(&mut raw).expect("read response");
+    stream.read_to_string(&mut raw)?;
     let status = raw
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
-    (status, body)
+    Ok((status, body))
 }
 
 /// A relay named on a file-backed run is `not_permitted` over REST, and the
@@ -289,8 +299,8 @@ fn http_get(addr: &str, path: &str, bearer: &str) -> (u16, String) {
 /// `not_configured` a run that named nothing gets. Nothing is transmitted: the
 /// route refuses before any relay is asked.
 #[test]
-fn a_named_relay_on_a_file_run_answers_not_permitted_over_rest() {
-    let home = tempfile::tempdir().expect("tempdir");
+fn a_named_relay_on_a_file_run_answers_not_permitted_over_rest() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
     let mut run = Spawned::start(
         &[
             "-N",
@@ -307,10 +317,10 @@ fn a_named_relay_on_a_file_run_answers_not_permitted_over_rest() {
         home.path(),
         Stdio::null(),
         Stdio::null(),
-    );
+    )?;
     let addr = run
         .after("REST API listening on ", Duration::from_secs(30))
-        .unwrap_or_else(|| panic!("no listening line:\n{}", run.seen.join("\n")));
+        .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
     // The keep-alive loop is where SIGTERM is honored; wait until the capture
     // has drained into it, so the shutdown exercises the whole run.
     assert!(
@@ -320,9 +330,9 @@ fn a_named_relay_on_a_file_run_answers_not_permitted_over_rest() {
         run.seen.join("\n")
     );
 
-    let (status, body) = http_get(&addr, "/v1/relay/stats", "k");
+    let (status, body) = http_get(&addr, "/v1/relay/stats", "k")?;
     assert_eq!(status, 200, "a refusal is content, not a 4xx: {body}");
-    let v: serde_json::Value = serde_json::from_str(&body).expect("JSON body");
+    let v: serde_json::Value = serde_json::from_str(&body)?;
     assert_eq!(
         v["outcome"], "not_permitted",
         "a relay named on a file run is not_permitted, never not_configured: {body}"
@@ -330,12 +340,14 @@ fn a_named_relay_on_a_file_run_answers_not_permitted_over_rest() {
 
     let (code, log) = run.terminate();
     assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    Ok(())
 }
 
 /// Write one JSON-RPC message to the server's stdin.
-fn send(stdin: &mut std::process::ChildStdin, msg: &serde_json::Value) {
-    writeln!(stdin, "{msg}").expect("write JSON-RPC");
-    stdin.flush().expect("flush");
+fn send(stdin: &mut std::process::ChildStdin, msg: &serde_json::Value) -> Result<(), TestError> {
+    writeln!(stdin, "{msg}")?;
+    stdin.flush()?;
+    Ok(())
 }
 
 /// Read JSON-RPC lines until the reply to `id` arrives.
@@ -362,8 +374,8 @@ fn reply(reader: &mut BufReader<std::process::ChildStdout>, id: i64) -> serde_js
 /// `--mcp-sampling-budget`, so each toggle's arm of the builder runs on a real
 /// process; the write is the one whose effect a client can read back.
 #[test]
-fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() {
-    let home = tempfile::tempdir().expect("tempdir");
+fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
     let mut run = Spawned::start(
         &[
             "--mcp",
@@ -379,9 +391,9 @@ fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() {
         home.path(),
         Stdio::piped(),
         Stdio::piped(),
-    );
-    let mut stdin = run.child.stdin.take().expect("stdin");
-    let mut reader = BufReader::new(run.child.stdout.take().expect("stdout"));
+    )?;
+    let mut stdin = run.child.stdin.take().ok_or("stdin")?;
+    let mut reader = BufReader::new(run.child.stdout.take().ok_or("stdout")?);
     send(
         &mut stdin,
         &serde_json::json!({
@@ -389,12 +401,12 @@ fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() {
             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                        "clientInfo": {"name": "t", "version": "1"}}
         }),
-    );
+    )?;
     let _ = reply(&mut reader, 1);
     send(
         &mut stdin,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
     send(
         &mut stdin,
         &serde_json::json!({
@@ -402,12 +414,12 @@ fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() {
             "params": {"name": "save_findings",
                        "arguments": {"summary": "wiring check"}}
         }),
-    );
+    )?;
     let saved = reply(&mut reader, 2);
     let text = saved["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("save_findings must be accepted: {saved}"));
-    let v: serde_json::Value = serde_json::from_str(text).expect("payload is JSON");
+        .ok_or_else(|| format!("save_findings must be accepted: {saved}"))?;
+    let v: serde_json::Value = serde_json::from_str(text)?;
     assert_eq!(v["recorded_total"], 1, "the flag armed the write: {v}");
 
     // The stdio client owns the lifetime: closing its end is how it leaves.
@@ -424,4 +436,5 @@ fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert_eq!(code, Some(0), "a client that leaves is a clean exit");
+    Ok(())
 }

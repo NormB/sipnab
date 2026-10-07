@@ -180,12 +180,3 @@ fn port_re() -> Result<&'static Regex, regex::Error> {
         r"(?P<host>127\.0\.0\.1|\[::1\]|localhost):\d{2,5}".to_string()
     })
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`normalize`], panicking on error.
-pub fn normalize_or_panic(input: &str) -> String {
-    normalize(input).expect("normalize")
-}

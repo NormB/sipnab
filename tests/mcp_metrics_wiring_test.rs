@@ -24,6 +24,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
@@ -54,7 +58,7 @@ impl Drop for McpWithMetrics {
 /// # Returns
 ///
 /// The running child and the ephemeral address the metrics server reported.
-fn spawn() -> McpWithMetrics {
+fn spawn() -> Result<McpWithMetrics, TestError> {
     let pcap = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/sip_call.pcap")
         .to_string_lossy()
@@ -79,10 +83,9 @@ fn spawn() -> McpWithMetrics {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp --metrics");
+        .spawn()?;
 
-    let stderr = child.stderr.take().expect("piped stderr");
+    let stderr = child.stderr.take().ok_or("piped stderr")?;
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -103,29 +106,36 @@ fn spawn() -> McpWithMetrics {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(Some(status)) = child.try_wait() {
-                    panic!("sipnab exited before binding the metrics server: {status}");
+                    return Err(format!(
+                        "sipnab exited before binding the metrics server: {status}"
+                    )
+                    .into());
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    let metrics_addr = addr.unwrap_or_else(|| {
+    let Some(metrics_addr) = addr else {
         let _ = child.kill();
-        panic!("the metrics server did not report a listening address within {budget:?}")
-    });
+        return Err(format!(
+            "the metrics server did not report a listening address within {budget:?}"
+        )
+        .into());
+    };
 
-    McpWithMetrics {
+    Ok(McpWithMetrics {
         child,
         metrics_addr,
-    }
+    })
 }
 
 /// Send one JSON-RPC message on the child's stdin.
-fn send(child: &mut Child, msg: &serde_json::Value) {
-    let stdin = child.stdin.as_mut().expect("stdin");
-    writeln!(stdin, "{}", serde_json::to_string(msg).expect("serialize")).expect("write");
-    stdin.flush().expect("flush");
+fn send(child: &mut Child, msg: &serde_json::Value) -> Result<(), TestError> {
+    let stdin = child.stdin.as_mut().ok_or("stdin")?;
+    writeln!(stdin, "{}", serde_json::to_string(msg)?)?;
+    stdin.flush()?;
+    Ok(())
 }
 
 /// Read lines until one carries `id`, or the deadline passes.
@@ -133,53 +143,52 @@ fn await_id(
     reader: &mut BufReader<&mut std::process::ChildStdout>,
     id: i64,
     timeout: Duration,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, TestError> {
     let deadline = Instant::now() + timeout;
     let mut line = String::new();
     while Instant::now() < deadline {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return None,
+            Ok(0) => return Ok(None),
             Ok(_) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
                 let v: serde_json::Value = serde_json::from_str(trimmed)
-                    .unwrap_or_else(|e| panic!("stdout is the JSON-RPC wire: {e}\n{trimmed}"));
+                    .map_err(|e| format!("stdout is the JSON-RPC wire: {e}\n{trimmed}"))?;
                 if v.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
-                    return Some(v);
+                    return Ok(Some(v));
                 }
             }
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         }
     }
-    None
+    Ok(None)
 }
 
 /// `GET /metrics` over a raw socket, returning the body.
-fn scrape(addr: &str) -> String {
-    let mut sock = TcpStream::connect(addr).expect("connect to the metrics server");
-    sock.set_read_timeout(Some(test_timeout(10)))
-        .expect("read timeout");
+fn scrape(addr: &str) -> Result<String, TestError> {
+    let mut sock = TcpStream::connect(addr)?;
+    sock.set_read_timeout(Some(test_timeout(10)))?;
     write!(
         sock,
         "GET /metrics HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-    )
-    .expect("write request");
+    )?;
     let mut raw = String::new();
-    sock.read_to_string(&mut raw).expect("read response");
-    raw.split_once("\r\n\r\n")
-        .map_or(raw.clone(), |(_, body)| body.to_string())
+    sock.read_to_string(&mut raw)?;
+    Ok(raw
+        .split_once("\r\n\r\n")
+        .map_or(raw.clone(), |(_, body)| body.to_string()))
 }
 
 /// A tool call, and a call to a name no tool answers to, both reach the
 /// exposition — with the right tool label, the right outcome, a timed
 /// histogram and a byte count.
 #[test]
-fn a_tool_call_reaches_the_prometheus_exposition() {
-    let mut server = spawn();
-    let mut stdout = server.child.stdout.take().expect("piped stdout");
+fn a_tool_call_reaches_the_prometheus_exposition() -> Result<(), TestError> {
+    let mut server = spawn()?;
+    let mut stdout = server.child.stdout.take().ok_or("piped stdout")?;
     let mut reader = BufReader::new(&mut stdout);
     let budget = test_timeout(20);
 
@@ -195,12 +204,12 @@ fn a_tool_call_reaches_the_prometheus_exposition() {
                 "clientInfo": {"name": "metrics-wiring-test", "version": "0"}
             }
         }),
-    );
-    await_id(&mut reader, 1, budget).expect("initialize is answered");
+    )?;
+    await_id(&mut reader, 1, budget)?.ok_or("initialize is answered")?;
     send(
         &mut server.child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
 
     // `capture_status` takes no arguments and needs no ingested data, so its
     // outcome cannot depend on how far the replay has got.
@@ -212,8 +221,8 @@ fn a_tool_call_reaches_the_prometheus_exposition() {
             "method": "tools/call",
             "params": {"name": "capture_status", "arguments": {}}
         }),
-    );
-    let ok = await_id(&mut reader, 2, budget).expect("capture_status is answered");
+    )?;
+    let ok = await_id(&mut reader, 2, budget)?.ok_or("capture_status is answered")?;
     assert!(
         ok.get("error").is_none(),
         "capture_status must succeed for this test to be about the metric: {ok}"
@@ -227,10 +236,10 @@ fn a_tool_call_reaches_the_prometheus_exposition() {
             "method": "tools/call",
             "params": {"name": UNKNOWN_TOOL, "arguments": {}}
         }),
-    );
-    await_id(&mut reader, 3, budget).expect("the unknown tool is answered, with an error");
+    )?;
+    await_id(&mut reader, 3, budget)?.ok_or("the unknown tool is answered, with an error")?;
 
-    let body = scrape(&server.metrics_addr);
+    let body = scrape(&server.metrics_addr)?;
 
     assert!(
         body.contains(r#"sipnab_mcp_tool_calls_total{tool="capture_status",outcome="ok"} 1"#),
@@ -254,7 +263,7 @@ fn a_tool_call_reaches_the_prometheus_exposition() {
             l.strip_prefix(r#"sipnab_mcp_tool_response_bytes_total{tool="capture_status"} "#)
         })
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or_else(|| panic!("no response-byte series for capture_status:\n{body}"));
+        .ok_or_else(|| format!("no response-byte series for capture_status:\n{body}"))?;
     assert!(
         bytes > 0,
         "capture_status returned a payload, so its byte counter must have \
@@ -274,6 +283,7 @@ fn a_tool_call_reaches_the_prometheus_exposition() {
         "a refused call carries no content, so its byte counter stays at \
          zero:\n{body}"
     );
+    Ok(())
 }
 
 /// A scrape taken before any tool call publishes no MCP series at all.
@@ -282,9 +292,9 @@ fn a_tool_call_reaches_the_prometheus_exposition() {
 /// families unconditionally would make the assertions above pass on a build
 /// where nothing was ever counted.
 #[test]
-fn a_server_that_has_answered_nothing_publishes_no_mcp_series() {
-    let server = spawn();
-    let body = scrape(&server.metrics_addr);
+fn a_server_that_has_answered_nothing_publishes_no_mcp_series() -> Result<(), TestError> {
+    let server = spawn()?;
+    let body = scrape(&server.metrics_addr)?;
     assert!(
         body.contains("sipnab_"),
         "the scrape must carry the ordinary families, or this proves \
@@ -294,4 +304,5 @@ fn a_server_that_has_answered_nothing_publishes_no_mcp_series() {
         !body.contains("sipnab_mcp_tool"),
         "no tool call has been made, so no per-tool series may exist:\n{body}"
     );
+    Ok(())
 }

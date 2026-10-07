@@ -13,6 +13,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 const VEX: &str = "vex/sipnab.openvex.json";
 
 /// The OpenVEX v0.2.0 justifications for `not_affected`.
@@ -24,9 +27,9 @@ const JUSTIFICATIONS: &[&str] = &[
     "inline_mitigations_already_exist",
 ];
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// Advisory IDs quoted anywhere in `text` (RUSTSEC, GHSA or CVE form).
@@ -48,32 +51,35 @@ fn advisory_ids(text: &str) -> BTreeSet<String> {
 
 /// The IDs the scanners are told to accept: `deny.toml`'s `[advisories]
 /// ignore` list and `osv-scanner.toml`'s `id =` lines.
-fn accepted() -> BTreeSet<String> {
-    let deny = read("deny.toml");
+fn accepted() -> Result<BTreeSet<String>, TestError> {
+    let deny = read("deny.toml")?;
     let start = deny
         .find("[advisories]")
-        .expect("deny.toml has [advisories]");
+        .ok_or("deny.toml has [advisories]")?;
     let section = &deny[start..];
     let list_start = section
         .find("ignore = [")
-        .expect("[advisories] has an ignore list");
-    let list_end = section[list_start..].find(']').expect("ignore list closes") + list_start;
+        .ok_or("[advisories] has an ignore list")?;
+    let list_end = section[list_start..]
+        .find(']')
+        .ok_or("ignore list closes")?
+        + list_start;
     let mut ids = advisory_ids(&section[list_start..list_end]);
-    for line in read("osv-scanner.toml").lines() {
+    for line in read("osv-scanner.toml")?.lines() {
         if let Some(rest) = line.trim().strip_prefix("id = ") {
             ids.insert(rest.trim_matches('"').to_string());
         }
     }
-    ids
+    Ok(ids)
 }
 
-fn document() -> serde_json::Value {
-    serde_json::from_str(&read(VEX)).unwrap_or_else(|e| panic!("{VEX} is not JSON: {e}"))
+fn document() -> Result<serde_json::Value, TestError> {
+    Ok(serde_json::from_str(&read(VEX)?).map_err(|e| format!("{VEX} is not JSON: {e}"))?)
 }
 
 #[test]
-fn the_vex_document_is_openvex() {
-    let doc = document();
+fn the_vex_document_is_openvex() -> Result<(), TestError> {
+    let doc = document()?;
     let context = doc["@context"].as_str().unwrap_or_default();
     assert!(
         context.starts_with("https://openvex.dev/ns"),
@@ -82,14 +88,15 @@ fn the_vex_document_is_openvex() {
     for key in ["@id", "author", "timestamp", "version"] {
         assert!(!doc[key].is_null(), "{VEX} lacks the required `{key}`");
     }
+    Ok(())
 }
 
 #[test]
-fn every_accepted_advisory_has_a_not_affected_statement_and_no_other() {
-    let doc = document();
+fn every_accepted_advisory_has_a_not_affected_statement_and_no_other() -> Result<(), TestError> {
+    let doc = document()?;
     let statements = doc["statements"]
         .as_array()
-        .expect("statements is an array");
+        .ok_or("statements is an array")?;
     let mut stated = BTreeSet::new();
     for s in statements {
         let name = s["vulnerability"]["name"]
@@ -116,7 +123,7 @@ fn every_accepted_advisory_has_a_not_affected_statement_and_no_other() {
         );
         stated.insert(name);
     }
-    let accepted = accepted();
+    let accepted = accepted()?;
     assert!(
         !accepted.is_empty(),
         "found no accepted advisories; the reader broke"
@@ -125,12 +132,14 @@ fn every_accepted_advisory_has_a_not_affected_statement_and_no_other() {
         stated, accepted,
         "{VEX} must state exactly the advisories deny.toml and osv-scanner.toml accept"
     );
+    Ok(())
 }
 
 #[test]
-fn security_md_links_the_vex_document() {
+fn security_md_links_the_vex_document() -> Result<(), TestError> {
     assert!(
-        read("SECURITY.md").contains(VEX),
+        read("SECURITY.md")?.contains(VEX),
         "SECURITY.md must link {VEX} so a reader finds the accepted advisories"
     );
+    Ok(())
 }

@@ -17,6 +17,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+type TestError = Box<dyn std::error::Error>;
+
 // Shared deterministic xorshift PRNG (see `fuzz_corpus_replay.rs` for the
 // mirror consumer). The `mutate` helper below is a deliberately different,
 // richer 6-op strategy than corpus-replay's, so it stays local.
@@ -94,7 +96,7 @@ fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
 /// * `seeds` — structural seeds; ~half the inputs are mutations of these.
 /// * `iters` — number of inputs to drive through `f`.
 /// * `f` — closure invoking one parser on the input bytes.
-fn pound<F: Fn(&[u8])>(name: &str, seeds: &[&[u8]], iters: usize, f: F) {
+fn pound<F: Fn(&[u8])>(name: &str, seeds: &[&[u8]], iters: usize, f: F) -> Result<(), TestError> {
     let mut rng = Rng::new(0x5113_5ab0_d00d_1234u64 ^ name.bytes().map(|b| b as u64).sum::<u64>());
     for i in 0..iters {
         let input = if !seeds.is_empty() && rng.below(2) == 0 {
@@ -105,15 +107,17 @@ fn pound<F: Fn(&[u8])>(name: &str, seeds: &[&[u8]], iters: usize, f: F) {
         };
         let r = catch_unwind(AssertUnwindSafe(|| f(&input)));
         if r.is_err() {
-            panic!(
+            return Err(format!(
                 "PARSER PANIC in `{name}` on iteration {i}\n\
                  input ({} bytes): {}\n\
                  (a parser reachable from packet bytes must never panic)",
                 input.len(),
                 hex(&input),
-            );
+            )
+            .into());
         }
     }
+    Ok(())
 }
 
 /// Lowercase hex dump of `b`, used to print a replayable failure seed.
@@ -216,7 +220,7 @@ const ITERS: usize = 40_000;
 
 /// 40k random/mutated inputs (long-form + compact seeds) through `parse_sip` never panic.
 #[test]
-fn fuzz_sip_parser_no_panic() {
+fn fuzz_sip_parser_no_panic() -> Result<(), TestError> {
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
     let seed = sip_seed();
@@ -232,38 +236,42 @@ fn fuzz_sip_parser_no_panic() {
             5060,
             sipnab::capture::parse::TransportProto::Udp,
         );
-    });
+    })?;
+    Ok(())
 }
 
 /// 40k random/mutated inputs (single- and multi-media seeds) through `parse_sdp` never panic.
 #[test]
-fn fuzz_sdp_parser_no_panic() {
+fn fuzz_sdp_parser_no_panic() -> Result<(), TestError> {
     let seed = sdp_seed();
     let multi = sdp_multi_media_seed();
     let seeds: &[&[u8]] = &[&seed, &multi];
     pound("sdp_parser", seeds, ITERS, |d| {
         let _ = sipnab::sip::sdp::parse_sdp(d);
-    });
+    })?;
+    Ok(())
 }
 
 /// 40k random/mutated inputs through `parse_rtp_header` never panic.
 #[test]
-fn fuzz_rtp_parser_no_panic() {
+fn fuzz_rtp_parser_no_panic() -> Result<(), TestError> {
     let seed = rtp_seed();
     let seeds: &[&[u8]] = &[&seed];
     pound("rtp_parser", seeds, ITERS, |d| {
         let _ = sipnab::rtp::parser::parse_rtp_header(d);
-    });
+    })?;
+    Ok(())
 }
 
 /// 40k random/mutated inputs through `parse_rtcp` never panic.
 #[test]
-fn fuzz_rtcp_parser_no_panic() {
+fn fuzz_rtcp_parser_no_panic() -> Result<(), TestError> {
     let seed = rtcp_seed();
     let seeds: &[&[u8]] = &[&seed];
     pound("rtcp_parser", seeds, ITERS, |d| {
         let _ = sipnab::rtp::rtcp::parse_rtcp(d);
-    });
+    })?;
+    Ok(())
 }
 
 /// A well-formed STUN Binding Request seed: cookie, transaction ID and one
@@ -295,7 +303,7 @@ fn llmnr_seed() -> Vec<u8> {
 
 /// 40k random/mutated inputs through the STUN decoder and the ChannelData framing checks never panic.
 #[test]
-fn fuzz_stun_no_panic() {
+fn fuzz_stun_no_panic() -> Result<(), TestError> {
     // Every UDP payload that is not SIP goes through these before RTP is
     // considered, so the bytes are whatever another host sent.
     use sipnab::stun::{
@@ -316,12 +324,13 @@ fn fuzz_stun_no_panic() {
         let _ = channel_data_payload_framed(d, ChannelDataFraming::Stream);
         let _ = is_channel_data(d);
         let _ = is_channel_data_framed(d, ChannelDataFraming::Stream);
-    });
+    })?;
+    Ok(())
 }
 
 /// 40k random/mutated inputs through `is_llmnr_packet` and `parse_llmnr` never panic.
 #[test]
-fn fuzz_llmnr_parser_no_panic() {
+fn fuzz_llmnr_parser_no_panic() -> Result<(), TestError> {
     // Claimed during classification before any media check, on every
     // datagram touching port 5355; the port pair is read before the bytes.
     use sipnab::llmnr::{PORT, is_llmnr_packet, parser::parse_llmnr, parser::rtype_name};
@@ -335,29 +344,32 @@ fn fuzz_llmnr_parser_no_panic() {
                 let _ = rtype_name(answer.rtype);
             }
         }
-    });
+    })?;
+    Ok(())
 }
 
 /// 40k purely random inputs through `parse_hep` never panic.
 #[cfg(feature = "hep")]
 #[test]
-fn fuzz_hep_parser_no_panic() {
+fn fuzz_hep_parser_no_panic() -> Result<(), TestError> {
     pound("hep_parser", &[], ITERS, |d| {
         let _ = sipnab::capture::hep::parse_hep(d);
-    });
+    })?;
+    Ok(())
 }
 
 /// 40k purely random inputs through `unwrap_websocket_frame` never panic.
 #[test]
-fn fuzz_websocket_frame_no_panic() {
+fn fuzz_websocket_frame_no_panic() -> Result<(), TestError> {
     pound("websocket_frame", &[], ITERS, |d| {
         let _ = sipnab::capture::websocket::unwrap_websocket_frame(d);
-    });
+    })?;
+    Ok(())
 }
 
 /// Raw link-layer bytes through `parse_packet` never panic across five link types (EN10MB/RAW/LINUX_SLL/…).
 #[test]
-fn fuzz_full_decap_chain_no_panic() {
+fn fuzz_full_decap_chain_no_panic() -> Result<(), TestError> {
     // The real attacker surface: raw link-layer bytes through
     // parse_packet (eth/IP/UDP/TCP/encap decap). Hit a few common
     // link types so the link-layer dispatch is exercised.
@@ -375,13 +387,14 @@ fn fuzz_full_decap_chain_no_panic() {
         pound(&format!("decap_lt{lt}"), seeds, ITERS / 2, |d| {
             let pkt = Packet::new(Utc::now(), d.to_vec(), d.len(), d.len(), None, lt);
             let _ = sipnab::capture::parse::parse_packet(&pkt);
-        });
+        })?;
     }
+    Ok(())
 }
 
 /// The filter-DSL `FilterExpr::parse` never panics on 40k mutated text inputs; also compile-pins the fuzz surface signatures.
 #[test]
-fn fuzz_text_entry_points_no_panic() {
+fn fuzz_text_entry_points_no_panic() -> Result<(), TestError> {
     // The remaining fuzz/ entry points take &str or a small struct.
     // Covering them here keeps the always-on floor complete AND
     // compile-checks their signatures so the fuzz suite cannot silently
@@ -393,13 +406,14 @@ fn fuzz_text_entry_points_no_panic() {
         if let Ok(s) = std::str::from_utf8(d) {
             let _ = sipnab::sip::dsl::FilterExpr::parse(s);
         }
-    });
+    })?;
+    Ok(())
 }
 
 /// STIR/SHAKEN Identity parsing, TLS record parsing, keylog-line parsing, and SRTP key extraction never panic on mutated inputs.
 #[cfg(feature = "tls")]
 #[test]
-fn fuzz_tls_text_entry_points_no_panic() {
+fn fuzz_tls_text_entry_points_no_panic() -> Result<(), TestError> {
     let id_seed =
         b"eyJhbGciOiJFUzI1NiJ9.eyJhdHRlc3QiOiJBIn0.sig;info=<https://x/c.cer>;alg=ES256;ppt=shaken"
             .to_vec();
@@ -410,11 +424,11 @@ fn fuzz_tls_text_entry_points_no_panic() {
             // alone rather than from when the suite happened to run.
             let _ = sipnab::sip::stir_shaken::parse_identity_header(s, 1_700_000_000);
         }
-    });
+    })?;
 
     pound("tls_records", &[], ITERS, |d| {
         let _ = sipnab::capture::tls::parse_tls_records(d);
-    });
+    })?;
 
     let kl_seed = b"CLIENT_RANDOM 00112233445566778899aabbccddeeff 0011223344".to_vec();
     let kl_seeds: &[&[u8]] = &[&kl_seed];
@@ -422,7 +436,7 @@ fn fuzz_tls_text_entry_points_no_panic() {
         if let Ok(s) = std::str::from_utf8(d) {
             let _ = sipnab::capture::tls::parse_keylog_line(s);
         }
-    });
+    })?;
 
     let crypto_seed =
         b"AES_CM_128_HMAC_SHA1_80\ninline:WVNfX19zZW1jdGwgKytom9vYzj1zdGV2aW4=|2^20|1:32".to_vec();
@@ -440,12 +454,13 @@ fn fuzz_tls_text_entry_points_no_panic() {
             };
             let _ = sipnab::rtp::srtp::extract_srtp_keys(&crypto);
         }
-    });
+    })?;
+    Ok(())
 }
 
 /// Malformed pcap/pcapng file bytes never panic `PcapReader`, including draining up to 100k claimed packets.
 #[test]
-fn fuzz_pcap_reader_no_panic() {
+fn fuzz_pcap_reader_no_panic() -> Result<(), TestError> {
     // Malformed pcap/pcapng FILE input — same trust level as a packet
     // when the file comes from an untrusted source.
     let mut pcap_seed = vec![
@@ -467,5 +482,6 @@ fn fuzz_pcap_reader_no_panic() {
                 }
             }
         }
-    });
+    })?;
+    Ok(())
 }

@@ -42,17 +42,22 @@ use sipnab::rtp::heuristic::RtpHeuristic;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// A checked-in SIP + G.711 capture: one call, PCMU media both ways.
 const SAMPLE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+
+/// The stores a replay filled, and the Call-ID of the first dialog seen.
+type Replayed = (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>, String);
 
 /// Replay `SAMPLE` through the real pipeline into fresh stores, and return
 /// them with the Call-ID of the first dialog seen.
 ///
 /// `retain_audio` is the one setting under test: `true` is a stream store's
 /// default, `false` is what batch mode does to it.
-fn replay(retain_audio: bool) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>, String) {
+fn replay(retain_audio: bool) -> Result<Replayed, TestError> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = std::fs::read(&path).expect("read sample capture");
+    let bytes = std::fs::read(&path)?;
 
     let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
     let ss = Arc::new(RwLock::new(StreamStore::new(100)));
@@ -65,13 +70,13 @@ fn replay(retain_audio: bool) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamSto
         ..Default::default()
     };
 
-    let reader = PcapReader::new(&bytes).expect("open sample capture");
+    let reader = PcapReader::new(&bytes)?;
     for pkt in reader {
         let ts = chrono::DateTime::from_timestamp(
             i64::from(pkt.timestamp_secs),
             pkt.timestamp_usecs.saturating_mul(1000),
         )
-        .expect("valid capture timestamp");
+        .ok_or("valid capture timestamp")?;
         let len = pkt.data.len();
         let packet = Packet::new(
             ts,
@@ -93,32 +98,32 @@ fn replay(retain_audio: bool) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamSto
         .iter()
         .next()
         .map(|d| d.call_id.clone())
-        .expect("the sample capture holds at least one dialog");
-    (ds, ss, call_id)
+        .ok_or("the sample capture holds at least one dialog")?;
+    Ok((ds, ss, call_id))
 }
 
 /// Read a WAV header the way any player does: RIFF/WAVE magic, then the fmt
 /// chunk's channel count, sample rate and bits per sample, then the data
 /// chunk's byte length. Hand-read so the assertion does not go through the
 /// code that wrote it.
-fn wav_header(path: &std::path::Path) -> (u16, u32, u16, usize) {
-    let b = std::fs::read(path).expect("read wav");
+fn wav_header(path: &std::path::Path) -> Result<(u16, u32, u16, usize), TestError> {
+    let b = std::fs::read(path)?;
     assert!(b.len() > 44, "a WAV needs a header and some samples");
     assert_eq!(&b[0..4], b"RIFF", "not a RIFF file");
     assert_eq!(&b[8..12], b"WAVE", "not a WAVE file");
-    let channels = u16::from_le_bytes(b[22..24].try_into().expect("2 bytes"));
-    let rate = u32::from_le_bytes(b[24..28].try_into().expect("4 bytes"));
-    let bits = u16::from_le_bytes(b[34..36].try_into().expect("2 bytes"));
-    let data_len = u32::from_le_bytes(b[40..44].try_into().expect("4 bytes")) as usize;
-    (channels, rate, bits, data_len)
+    let channels = u16::from_le_bytes(b[22..24].try_into()?);
+    let rate = u32::from_le_bytes(b[24..28].try_into()?);
+    let bits = u16::from_le_bytes(b[34..36].try_into()?);
+    let data_len = u32::from_le_bytes(b[40..44].try_into()?) as usize;
+    Ok((channels, rate, bits, data_len))
 }
 
 /// With retention on, a real capture exports real audio: the samples are the
 /// call's G.711 media, decoded at its clock rate, and they are not silence.
 #[test]
-fn retained_payload_exports_the_call_audio() {
-    let (_ds, ss, call_id) = replay(true);
-    let dir = tempfile::tempdir().expect("temp dir");
+fn retained_payload_exports_the_call_audio() -> Result<(), TestError> {
+    let (_ds, ss, call_id) = replay(true)?;
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("call.wav");
 
     let store = ss.read();
@@ -128,13 +133,13 @@ fn retained_payload_exports_the_call_audio() {
         "the sample capture's call must have RTP streams"
     );
 
-    let summary = export_dialog_to_wav(&streams, &path).expect("retained audio must export");
+    let summary = export_dialog_to_wav(&streams, &path)?;
     assert!(
         summary.contains("mu-law") || summary.contains("A-law"),
         "the sample is G.711: {summary}"
     );
 
-    let (channels, rate, bits, data_len) = wav_header(&path);
+    let (channels, rate, bits, data_len) = wav_header(&path)?;
     assert!(
         (1..=2).contains(&channels),
         "mono or stereo, got {channels}"
@@ -148,20 +153,21 @@ fn retained_payload_exports_the_call_audio() {
 
     // Not a file of zeroes: an export that silently wrote silence would pass
     // every structural check above.
-    let bytes = std::fs::read(&path).expect("read wav");
+    let bytes = std::fs::read(&path)?;
     assert!(
         bytes[44..].iter().any(|&b| b != 0),
         "the exported samples must be the captured audio, not silence"
     );
+    Ok(())
 }
 
 /// With retention off — what batch mode, and so every MCP `export_audio`
 /// call, does today — the export cannot succeed, and must not pretend the
 /// call had no audio. It reports what sipnab measured and names retention.
 #[test]
-fn unretained_payload_refuses_and_names_retention() {
-    let (_ds, ss, call_id) = replay(false);
-    let dir = tempfile::tempdir().expect("temp dir");
+fn unretained_payload_refuses_and_names_retention() -> Result<(), TestError> {
+    let (_ds, ss, call_id) = replay(false)?;
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("call.wav");
 
     let store = ss.read();
@@ -189,4 +195,5 @@ fn unretained_payload_refuses_and_names_retention() {
         "the old wording denies the call had audio: {msg}"
     );
     assert!(!path.exists(), "a refused export leaves no file behind");
+    Ok(())
 }

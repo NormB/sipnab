@@ -37,20 +37,25 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Resolve the corpus in capture order, or `None` when `SIPNAB_CORPUS` is
 /// unset. A ring buffer wraps, so filename order is not capture order.
-fn corpus() -> Option<Vec<PathBuf>> {
+fn corpus() -> Result<Option<Vec<PathBuf>>, TestError> {
     // `corpus_support::root` announces the skip on stderr, once per test
     // binary. The call sites below used to `eprintln!` it, which libtest
     // captures and discards on success — so these gates reported `ok` while
     // never touching a capture.
-    let dir = corpus_support::root()?.to_string_lossy().into_owned();
+    let Some(root) = corpus_support::root() else {
+        return Ok(None);
+    };
+    let dir = root.to_string_lossy().into_owned();
     let files = sipnab::capture::input_set::resolve(
         std::slice::from_ref(&dir),
         &sipnab::capture::input_set::ResolveOptions::default(),
     )
-    .unwrap_or_else(|e| panic!("resolve SIPNAB_CORPUS '{dir}': {e:#}"));
-    Some(files.iter().map(|f| f.path.clone()).collect())
+    .map_err(|e| format!("resolve SIPNAB_CORPUS '{dir}': {e:#}"))?;
+    Ok(Some(files.iter().map(|f| f.path.clone()).collect()))
 }
 
 /// What one replay of the corpus observed about a stream. Deliberately holds
@@ -65,7 +70,10 @@ struct Observed {
 /// Replay `paths` through the real classification pipeline. When `apply_rtcp`
 /// is false, RTCP packets are parsed and then dropped instead of being handed
 /// to the store, which is the A/B that isolates their effect.
-fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, ClockGrounding)> {
+fn replay(
+    paths: &[PathBuf],
+    apply_rtcp: bool,
+) -> Result<Vec<(StreamKey, Observed, ClockGrounding)>, TestError> {
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
     let owned = paths.to_vec();
     let reader = std::thread::spawn(move || {
@@ -113,15 +121,15 @@ fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, Cloc
     streams
         .iter()
         .map(|s| {
-            (
+            Ok((
                 s.key.clone(),
                 Observed {
                     lost_packets: s.lost_packets,
                     jitter: s.jitter,
                     packet_count: s.packet_count,
                 },
-                streams.clock_grounding(&s.key).expect("stream is tracked"),
-            )
+                streams.clock_grounding(&s.key).ok_or("stream is tracked")?,
+            ))
         })
         .collect()
 }
@@ -135,12 +143,12 @@ fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, Cloc
 /// by a locally observed packet count, which is not a loss rate under any
 /// reading of RFC 3550 §6.4.1, and the report's jitter replaced the estimator's.
 #[test]
-fn corpus_rtcp_never_moves_the_measurement() {
-    let Some(paths) = corpus() else {
-        return;
+fn corpus_rtcp_never_moves_the_measurement() -> Result<(), TestError> {
+    let Some(paths) = corpus()? else {
+        return Ok(());
     };
-    let with_rtcp = replay(&paths, true);
-    let without_rtcp: std::collections::HashMap<_, _> = replay(&paths, false)
+    let with_rtcp = replay(&paths, true)?;
+    let without_rtcp: std::collections::HashMap<_, _> = replay(&paths, false)?
         .into_iter()
         .map(|(k, o, _)| (k, o))
         .collect();
@@ -181,6 +189,7 @@ fn corpus_rtcp_never_moves_the_measurement() {
          reporter's session; it belongs beside the measurement, not in it.",
         with_rtcp.len()
     );
+    Ok(())
 }
 
 /// On real traffic, a stream whose clock rate had to be guessed reports no
@@ -191,9 +200,9 @@ fn corpus_rtcp_never_moves_the_measurement() {
 /// `a=rtpmap` produced jitter figures in the millions of milliseconds, which
 /// is not an imprecise measurement of anything.
 #[test]
-fn corpus_ungrounded_clock_yields_no_jitter_measurement() {
-    let Some(paths) = corpus() else {
-        return;
+fn corpus_ungrounded_clock_yields_no_jitter_measurement() -> Result<(), TestError> {
+    let Some(paths) = corpus()? else {
+        return Ok(());
     };
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
     let owned = paths.clone();
@@ -224,7 +233,7 @@ fn corpus_ungrounded_clock_yields_no_jitter_measurement() {
     let keys: Vec<StreamKey> = streams.iter().map(|s| s.key.clone()).collect();
     let mut assumed = 0usize;
     for key in &keys {
-        match streams.clock_grounding(key).expect("tracked") {
+        match streams.clock_grounding(key).ok_or("tracked")? {
             ClockGrounding::Assumed => {
                 assumed += 1;
                 assert_eq!(
@@ -251,6 +260,7 @@ fn corpus_ungrounded_clock_yields_no_jitter_measurement() {
         "corpus: {} streams, {assumed} with an assumed clock rate",
         keys.len()
     );
+    Ok(())
 }
 
 /// Every RTCP datagram in the corpus is recognized as RTCP from its content,
@@ -262,9 +272,9 @@ fn corpus_ungrounded_clock_yields_no_jitter_measurement() {
 /// is payload type 79 — and registered as a media stream that did not exist.
 /// The XR's block header at bytes 8-11 became its SSRC.
 #[test]
-fn corpus_rtcp_is_recognized_by_content_not_by_port() {
-    let Some(paths) = corpus() else {
-        return;
+fn corpus_rtcp_is_recognized_by_content_not_by_port() -> Result<(), TestError> {
+    let Some(paths) = corpus()? else {
+        return Ok(());
     };
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
     let owned = paths.clone();
@@ -303,6 +313,7 @@ fn corpus_rtcp_is_recognized_by_content_not_by_port() {
          outside 200-204 (XR is 207); saw types {types:?}"
     );
     eprintln!("corpus: {rtcp_seen} RTCP datagrams, types {types:?}, {undecodable} with no decoder");
+    Ok(())
 }
 
 /// On real traffic, no XR VoIP Metrics block about a tracked stream is
@@ -318,9 +329,9 @@ fn corpus_rtcp_is_recognized_by_content_not_by_port() {
 ///
 /// Asserts a property, not a threshold. Counts are printed, never values.
 #[test]
-fn corpus_xr_voip_metrics_are_retained_not_discarded() {
-    let Some(paths) = corpus() else {
-        return;
+fn corpus_xr_voip_metrics_are_retained_not_discarded() -> Result<(), TestError> {
+    let Some(paths) = corpus()? else {
+        return Ok(());
     };
 
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
@@ -420,6 +431,7 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() {
         "the corpus carries VoIP Metrics blocks but none named a tracked \
          stream — the SSRC index or the RTP path regressed"
     );
+    Ok(())
 }
 
 /// On real traffic, an endpoint's XR figures never become sipnab's.
@@ -429,13 +441,13 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() {
 /// the number the endpoint claimed stay separately addressable, and the MOS
 /// sipnab scores comes only from its own.
 #[test]
-fn corpus_xr_never_becomes_the_local_measurement() {
-    let Some(paths) = corpus() else {
-        return;
+fn corpus_xr_never_becomes_the_local_measurement() -> Result<(), TestError> {
+    let Some(paths) = corpus()? else {
+        return Ok(());
     };
 
-    let with_rtcp = replay(&paths, true);
-    let without = replay(&paths, false);
+    let with_rtcp = replay(&paths, true)?;
+    let without = replay(&paths, false)?;
     let by_key: std::collections::HashMap<_, _> = without
         .iter()
         .map(|(k, o, g)| (k.clone(), (*o, *g)))
@@ -459,6 +471,7 @@ fn corpus_xr_never_becomes_the_local_measurement() {
         compared > 0,
         "no stream was comparable across the two replays"
     );
+    Ok(())
 }
 
 /// A synthesized XR on an odd port, for the case where no corpus is available.
@@ -477,7 +490,7 @@ fn corpus_xr_never_becomes_the_local_measurement() {
 /// fell through and was reported as media. RFC 3551 §6 leaves payload types
 /// 64-95 unassigned precisely so RTCP types 192-223 stay distinguishable.
 #[test]
-fn an_xr_datagram_is_rtcp_and_the_prefilter_now_rejects_it() {
+fn an_xr_datagram_is_rtcp_and_the_prefilter_now_rejects_it() -> Result<(), TestError> {
     // V=2, PT=207, length 0xF8 words → (0xF8 + 1) * 4 = 996 bytes, then the
     // originator SSRC and a Receiver Reference Time block (BT=4, 2 words).
     let mut xr = vec![0x80u8, 207, 0x00, 0xF8];
@@ -499,42 +512,43 @@ fn an_xr_datagram_is_rtcp_and_the_prefilter_now_rejects_it() {
     // The header parser is unchanged and still reads it, which is exactly why
     // the pre-filter has to be the guard: without it these two values are the
     // phantom stream an operator saw.
-    let hdr = sipnab::rtp::parser::parse_rtp_header(&xr).expect("parses as a 12-byte header");
+    let hdr = sipnab::rtp::parser::parse_rtp_header(&xr)?;
     assert_eq!(hdr.payload_type, 79, "207 & 0x7F");
     assert_eq!(
         hdr.ssrc, 0x0400_0002,
         "the XR's first block header would have been the phantom stream's identity"
     );
+    Ok(())
 }
 
 // ── Burst and gap DURATIONS are measured, not assumed ────────────────
 
 /// Burst and gap durations sipnab reports for the first stream of the first
 /// dialog, off `--json-dialogs`.
-fn reported_burst_and_gap(pcap: &std::path::Path) -> (f64, f64) {
-    let (stdout, stderr, code) = run_support::run_or_panic(
+fn reported_burst_and_gap(pcap: &std::path::Path) -> Result<(f64, f64), TestError> {
+    let (stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "-I",
-            pcap.to_str().expect("utf-8 path"),
+            pcap.to_str().ok_or("utf-8 path")?,
             "--json-dialogs",
             "--no-config",
         ],
         Some("error"),
-    );
+    )?;
     assert_eq!(code, Some(0), "sipnab must exit cleanly; stderr:\n{stderr}");
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .unwrap_or_else(|| panic!("the fixture must produce one dialog; stdout:\n{stdout}"));
-    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
+        .ok_or_else(|| format!("the fixture must produce one dialog; stdout:\n{stdout}"))?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
     let bg = &v["streams"][0]["burst_gap"];
-    (
+    Ok((
         bg["burst_duration_ms"]
             .as_f64()
-            .expect("the linked stream must carry a burst/gap analysis"),
-        bg["gap_duration_ms"].as_f64().expect("and a gap duration"),
-    )
+            .ok_or("the linked stream must carry a burst/gap analysis")?,
+        bg["gap_duration_ms"].as_f64().ok_or("and a gap duration")?,
+    ))
 }
 
 /// Burst and gap durations follow the stream's OWN packetization interval.
@@ -548,17 +562,17 @@ fn reported_burst_and_gap(pcap: &std::path::Path) -> (f64, f64) {
 /// Three identical captures differing only in cadence, so the assertion is a
 /// RATIO and cannot be satisfied by any fixed number that happens to match.
 #[test]
-fn burst_and_gap_durations_follow_the_streams_own_packetization() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn burst_and_gap_durations_follow_the_streams_own_packetization() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut measured = Vec::new();
     for ptime in [20u64, 30, 40] {
         let pcap = dir.path().join(format!("lossy-{ptime}ms.pcap"));
-        pcap_build::write_pcap_at_or_panic(
+        pcap_build::write_pcap_at(
             &pcap,
             &pcap_build::sdp_call_with_lossy_rtp_at(&format!("ptime-{ptime}"), 400, 3, ptime),
             1,
-        );
-        measured.push((ptime, reported_burst_and_gap(&pcap)));
+        )?;
+        measured.push((ptime, reported_burst_and_gap(&pcap)?));
     }
 
     let (_, (base_burst, base_gap)) = measured[0];
@@ -581,6 +595,7 @@ fn burst_and_gap_durations_follow_the_streams_own_packetization() {
             );
         }
     }
+    Ok(())
 }
 
 /// The SDP `a=ptime` reaches the stream, in both orderings of SDP and RTP.
@@ -592,7 +607,7 @@ fn burst_and_gap_durations_follow_the_streams_own_packetization() {
 /// into only one is a setting honored on offline replay and dropped on live
 /// capture, or the reverse.
 #[test]
-fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
+fn the_sdp_ptime_reaches_the_stream_in_both_orderings() -> Result<(), TestError> {
     use sipnab::capture::parse::{ParsedPacket, TransportProto};
     use sipnab::rtp::parser::RtpHeader;
     use sipnab::sip::sdp::{SdpDirection, SdpMedia};
@@ -603,7 +618,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
     let pp = ParsedPacket {
         frame_bytes: None,
         frame: None,
-        timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+        timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?,
         src_addr: media_ip,
         dst_addr: far_ip,
         src_port: 20000,
@@ -678,6 +693,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
         Some(30),
         "a=ptime:30 must reach a stream created after its SDP"
     );
+    Ok(())
 }
 
 /// A stream too short to measure its own cadence falls back to the SDP
@@ -689,7 +705,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
 /// binary because "too short to measure" means a one-packet stream, which
 /// carries no losses for a burst/gap analysis to report.
 #[test]
-fn a_stream_too_short_to_measure_uses_the_declared_ptime() {
+fn a_stream_too_short_to_measure_uses_the_declared_ptime() -> Result<(), TestError> {
     use sipnab::rtp::parser::RtpHeader;
     use sipnab::rtp::stream::RtpStream;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -711,7 +727,7 @@ fn a_stream_too_short_to_measure_uses_the_declared_ptime() {
         ssrc: key.ssrc,
         payload_offset: 12,
     };
-    let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+    let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?;
     let mut s = RtpStream::new(key, &hdr, at);
 
     assert_eq!(
@@ -753,4 +769,5 @@ fn a_stream_too_short_to_measure_uses_the_declared_ptime() {
         40.0,
         "a measurement off the wire must beat a declaration that can be stale"
     );
+    Ok(())
 }

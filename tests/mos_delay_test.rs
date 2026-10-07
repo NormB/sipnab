@@ -25,9 +25,11 @@ use sipnab::rtp::quality::{
     DEFAULT_ONE_WAY_DELAY_MS, estimate_mos, estimate_mos_with_delay, one_way_delay_from_rtt_ms,
 };
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The default is unchanged, so no existing reading moves silently.
 #[test]
-fn the_default_delay_reproduces_the_old_score() {
+fn the_default_delay_reproduces_the_old_score() -> Result<(), TestError> {
     assert_eq!(
         DEFAULT_ONE_WAY_DELAY_MS, 100.0,
         "changing the default silently re-scores every capture ever compared"
@@ -43,13 +45,14 @@ fn the_default_delay_reproduces_the_old_score() {
             "the uncapped entry point must stay exactly the old function"
         );
     }
+    Ok(())
 }
 
 /// A real long-haul delay scores WORSE than the assumed 100 ms.
 ///
 /// This is the defect: a satellite leg was scored as if it were a LAN.
 #[test]
-fn a_long_haul_delay_scores_lower_than_the_assumption() {
+fn a_long_haul_delay_scores_lower_than_the_assumption() -> Result<(), TestError> {
     let assumed = estimate_mos_with_delay(10.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
     let satellite = estimate_mos_with_delay(10.0, 0.0, Some("PCMU"), 300.0);
     assert!(
@@ -64,17 +67,19 @@ fn a_long_haul_delay_scores_lower_than_the_assumption() {
         "the assumption should cost more than a full MOS point on a 300 ms \
          path; got {assumed} vs {satellite}"
     );
+    Ok(())
 }
 
 /// Below the knee the model stays linear, so a short path is barely affected.
 #[test]
-fn a_lan_path_scores_at_or_above_the_assumption() {
+fn a_lan_path_scores_at_or_above_the_assumption() -> Result<(), TestError> {
     let lan = estimate_mos_with_delay(10.0, 0.0, Some("PCMU"), 20.0);
     let assumed = estimate_mos_with_delay(10.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
     assert!(
         lan >= assumed,
         "a 20 ms path cannot score worse than an assumed 100 ms one; got {lan} vs {assumed}"
     );
+    Ok(())
 }
 
 /// Jitter still contributes on top of whatever the path delay is.
@@ -83,7 +88,7 @@ fn a_lan_path_scores_at_or_above_the_assumption() {
 /// means a jittery long-haul leg is worse than a smooth one, which is the
 /// whole point of the term.
 #[test]
-fn jitter_still_worsens_the_score_at_any_delay() {
+fn jitter_still_worsens_the_score_at_any_delay() -> Result<(), TestError> {
     for delay in [20.0, DEFAULT_ONE_WAY_DELAY_MS, 300.0] {
         let smooth = estimate_mos_with_delay(1.0, 0.0, Some("PCMU"), delay);
         let jittery = estimate_mos_with_delay(60.0, 0.0, Some("PCMU"), delay);
@@ -103,6 +108,7 @@ fn jitter_still_worsens_the_score_at_any_delay() {
             );
         }
     }
+    Ok(())
 }
 
 /// A nonsense delay cannot produce a nonsense MOS.
@@ -111,7 +117,7 @@ fn jitter_still_worsens_the_score_at_any_delay() {
 /// and returning 7.3 or NaN would launder it into a number an operator reads
 /// as a measurement.
 #[test]
-fn an_absurd_delay_still_yields_a_mos_in_range() {
+fn an_absurd_delay_still_yields_a_mos_in_range() -> Result<(), TestError> {
     for delay in [-50.0, 0.0, 10_000.0, f64::MAX] {
         let mos = estimate_mos_with_delay(10.0, 1.0, Some("PCMU"), delay);
         assert!(
@@ -119,6 +125,7 @@ fn an_absurd_delay_still_yields_a_mos_in_range() {
             "delay {delay} produced {mos}, which is not a MOS"
         );
     }
+    Ok(())
 }
 
 /// A reported round trip becomes the one-way delay; absent means absent.
@@ -128,7 +135,7 @@ fn an_absurd_delay_still_yields_a_mos_in_range() {
 /// delay", which would score BETTER than the honest assumption and hand the
 /// operator a flattering number for a stream that measured nothing.
 #[test]
-fn a_reported_round_trip_halves_into_one_way_and_zero_means_unknown() {
+fn a_reported_round_trip_halves_into_one_way_and_zero_means_unknown() -> Result<(), TestError> {
     assert_eq!(one_way_delay_from_rtt_ms(600), Some(300.0));
     assert_eq!(one_way_delay_from_rtt_ms(40), Some(20.0));
     assert_eq!(
@@ -137,12 +144,13 @@ fn a_reported_round_trip_halves_into_one_way_and_zero_means_unknown() {
         "RFC 3611 uses 0 for not-available; treating it as a measurement of \
          zero would score an unmeasured stream better than an honest guess"
     );
+    Ok(())
 }
 
 /// The measured path changes the score — the whole point of measuring.
 #[test]
-fn a_measured_satellite_round_trip_scores_far_below_the_assumption() {
-    let measured = one_way_delay_from_rtt_ms(600).expect("600ms rtt is a measurement");
+fn a_measured_satellite_round_trip_scores_far_below_the_assumption() -> Result<(), TestError> {
+    let measured = one_way_delay_from_rtt_ms(600).ok_or("600ms rtt is a measurement")?;
     let scored = estimate_mos_with_delay(10.0, 0.0, Some("PCMU"), measured);
     let assumed = estimate_mos(10.0, 0.0, Some("PCMU"));
     assert!(
@@ -150,6 +158,7 @@ fn a_measured_satellite_round_trip_scores_far_below_the_assumption() {
         "a 600 ms round trip is a satellite hop: the assumption reports \
          {assumed:.2} where the measurement gives {scored:.2}"
     );
+    Ok(())
 }
 
 /// The operator's figure beats a remote claim, which beats what sipnab derived
@@ -160,7 +169,8 @@ fn a_measured_satellite_round_trip_scores_far_below_the_assumption() {
 /// round trip is the quantity G.114 is about while the echo-derived one is a
 /// lower bound anchored on the capture point.
 #[test]
-fn declared_delay_wins_over_reported_wins_over_derived_wins_over_assumed() {
+fn declared_delay_wins_over_reported_wins_over_derived_wins_over_assumed() -> Result<(), TestError>
+{
     use sipnab::rtp::quality::{DelaySource, resolve_one_way_delay};
 
     assert_eq!(
@@ -237,6 +247,7 @@ fn declared_delay_wins_over_reported_wins_over_derived_wins_over_assumed() {
              caveated as a guess"
         );
     }
+    Ok(())
 }
 
 // ── The echo rank, end to end ────────────────────────────────────────
@@ -258,9 +269,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// Fixed base timestamp, so the derived round trip is arithmetic rather than
 /// a race with the wall clock.
-fn ts(offset_ms: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_700_000_000, 0).expect("valid base")
-        + TimeDelta::milliseconds(offset_ms)
+fn ts(offset_ms: i64) -> Result<DateTime<Utc>, TestError> {
+    Ok(
+        DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid base")?
+            + TimeDelta::milliseconds(offset_ms),
+    )
 }
 
 /// The 5-tuple every stream in this section uses.
@@ -327,13 +340,17 @@ fn rtp_header(ssrc: u32, seq: u16) -> RtpHeader {
 /// round trip at all. Everything the E-model reads apart from the delay term
 /// (jitter, loss, codec, packet count) is identical between the two, so a
 /// difference in the score can only be the delay.
-fn store_with_rr(ssrc: u32, sr_age_ms: Option<i64>, reporter_held_ms: i64) -> StreamStore {
+fn store_with_rr(
+    ssrc: u32,
+    sr_age_ms: Option<i64>,
+    reporter_held_ms: i64,
+) -> Result<StreamStore, TestError> {
     let mut store = StreamStore::new(16);
     for seq in 0u16..8 {
-        let at = ts(i64::from(seq) * 20);
+        let at = ts(i64::from(seq) * 20)?;
         store.process_rtp(&rtp_packet(ssrc, seq, at), &rtp_header(ssrc, seq), at);
     }
-    let seen_at = ts(1_000);
+    let seen_at = ts(1_000)?;
     let last_sr = sr_age_ms.map_or(0, |age| {
         sipnab::rtp::rtcp::compact_ntp_for_test(seen_at - TimeDelta::milliseconds(age))
     });
@@ -353,7 +370,7 @@ fn store_with_rr(ssrc: u32, sr_age_ms: Option<i64>, reporter_held_ms: i64) -> St
         seen_at,
         None,
     );
-    store
+    Ok(store)
 }
 
 /// Resolve exactly as the stream-detail view does, from a store and a key.
@@ -379,14 +396,14 @@ fn resolve_from_store(store: &StreamStore, key: &StreamKey) -> (f64, DelaySource
 /// do better was already being derived from the RR's `LSR`/`DLSR` pair and
 /// shown in the RTT column beside the MOS; the MOS just did not read it.
 #[test]
-fn a_stream_with_only_receiver_reports_scores_on_a_derived_delay() {
+fn a_stream_with_only_receiver_reports_scores_on_a_derived_delay() -> Result<(), TestError> {
     let ssrc = 0x0EC4_0EC4;
     let key = key_for(ssrc);
     // The SR went out 500 ms before the RR was seen and the reporter sat on it
     // for 50 ms: a 450 ms round trip, so 225 ms one way — past G.107's 177.3 ms
     // knee, which is where the assumption does its damage, and short of the
     // MOS floor, so the number that comes out is the model's and not a clamp.
-    let store = store_with_rr(ssrc, Some(500), 50);
+    let store = store_with_rr(ssrc, Some(500), 50)?;
 
     assert!(
         store.remote_voip_metrics(&key).is_none(),
@@ -395,7 +412,7 @@ fn a_stream_with_only_receiver_reports_scores_on_a_derived_delay() {
     );
     let (rtt_ms, rtt_src) = store
         .round_trip(&key)
-        .expect("an RR echoing an SR is a round trip");
+        .ok_or("an RR echoing an SR is a round trip")?;
     assert_eq!(rtt_src, RttSource::SenderReportEcho);
     assert!((rtt_ms - 450.0).abs() < 5.0, "got {rtt_ms} ms");
 
@@ -416,7 +433,7 @@ fn a_stream_with_only_receiver_reports_scores_on_a_derived_delay() {
 
     // The effect: the score itself moves, and moves DOWN, because the assumed
     // 100 ms sat on the flat side of the Id knee and the real path does not.
-    let stream = store.get(&key).expect("stream present");
+    let stream = store.get(&key).ok_or("stream present")?;
     let derived_mos = estimate_mos_with_delay(stream.jitter, 0.0, stream.codec.as_deref(), one_way);
     let assumed_mos = estimate_mos(stream.jitter, 0.0, stream.codec.as_deref());
     assert!(
@@ -434,12 +451,13 @@ fn a_stream_with_only_receiver_reports_scores_on_a_derived_delay() {
     // Anti-vacuity: the SAME fixture with the RFC 3550 sentinel `last_sr = 0`
     // — a reporter that has heard no SR — still falls back, so what moved the
     // score is the echo and not the mere presence of a receiver report.
-    let sentinel = store_with_rr(ssrc, None, 50);
+    let sentinel = store_with_rr(ssrc, None, 50)?;
     assert_eq!(
         resolve_from_store(&sentinel, &key),
         (DEFAULT_ONE_WAY_DELAY_MS, DelaySource::Assumed),
         "an RR with nothing to measure against must still say so"
     );
+    Ok(())
 }
 
 /// The operator reads the moved score, and reads where the delay came from.
@@ -450,15 +468,16 @@ fn a_stream_with_only_receiver_reports_scores_on_a_derived_delay() {
 /// them.
 #[cfg(feature = "tui")]
 #[test]
-fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() {
+fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() -> Result<(), TestError> {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use sipnab::tui::Theme;
     use sipnab::tui::stream_detail::{StreamDetailDisplay, render_stream_detail};
 
-    fn render(store: &StreamStore, key: &StreamKey) -> String {
+    fn render(store: &StreamStore, key: &StreamKey) -> Result<String, TestError> {
         let theme = Theme::default();
-        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, 40)).map_err(|e| format!("test terminal: {e}"))?;
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -477,7 +496,7 @@ fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() {
                     },
                 );
             })
-            .expect("render");
+            .map_err(|e| format!("render: {e}"))?;
         let buf = terminal.backend().buffer();
         let mut out = String::new();
         for y in 0..buf.area.height {
@@ -486,20 +505,20 @@ fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() {
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// The `MOS: 4.4` cell, so the two renders are compared on the number and
     /// not on the whole pane.
-    fn mos_cell(screen: &str) -> String {
-        let at = screen.find("MOS: ").expect("the pane shows a MOS");
-        screen[at..].chars().take(9).collect()
+    fn mos_cell(screen: &str) -> Result<String, TestError> {
+        let at = screen.find("MOS: ").ok_or("the pane shows a MOS")?;
+        Ok(screen[at..].chars().take(9).collect())
     }
 
     let ssrc = 0x0EC4_7401;
     let key = key_for(ssrc);
-    let derived = render(&store_with_rr(ssrc, Some(500), 50), &key);
-    let assumed = render(&store_with_rr(ssrc, None, 50), &key);
+    let derived = render(&store_with_rr(ssrc, Some(500), 50)?, &key)?;
+    let assumed = render(&store_with_rr(ssrc, None, 50)?, &key)?;
 
     assert!(
         derived.contains("delay 225ms from RR echo"),
@@ -516,11 +535,12 @@ fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() {
          assumed:\n{assumed}"
     );
     assert_ne!(
-        mos_cell(&derived),
-        mos_cell(&assumed),
+        mos_cell(&derived)?,
+        mos_cell(&assumed)?,
         "the same stream must not render the same MOS with and without a \
          grounded delay — that would mean the pane ignores the resolver"
     );
+    Ok(())
 }
 
 /// The FLAG reaches the resolver, and config fills in when it is absent.
@@ -530,7 +550,7 @@ fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() {
 /// directly: a value that parses but never reaches `declared_one_way_delay_ms`
 /// would satisfy every other test in this file and change nothing a user sees.
 #[test]
-fn the_one_way_delay_flag_parses_and_beats_config() {
+fn the_one_way_delay_flag_parses_and_beats_config() -> Result<(), TestError> {
     use sipnab::cli::Cli;
     use sipnab::config::Config;
 
@@ -563,13 +583,14 @@ fn the_one_way_delay_flag_parses_and_beats_config() {
         10.0,
         0.0,
         Some("PCMU"),
-        flagged.declared_one_way_delay_ms(&cfg).expect("declared"),
+        flagged.declared_one_way_delay_ms(&cfg).ok_or("declared")?,
     );
     assert!(
         assumed - declared > 1.0,
         "a declared 280ms satellite path must score well below the 100ms \
          assumption; got {assumed:.2} vs {declared:.2}"
     );
+    Ok(())
 }
 
 // ── One stream, one MOS, every surface ───────────────────────────────
@@ -591,16 +612,16 @@ fn the_one_way_delay_flag_parses_and_beats_config() {
 /// what keeps them delegating. This is the behavioral half: the surfaces that
 /// ARE reachable must agree on a real number rather than agree on a constant.
 #[test]
-fn one_stream_scores_one_mos_on_every_surface() {
+fn one_stream_scores_one_mos_on_every_surface() -> Result<(), TestError> {
     use sipnab::rtp::quality::MosDelay;
 
     let ssrc = 0x0EC4_5A11;
     let key = key_for(ssrc);
     // 500 ms since the SR, 50 ms held by the reporter: a 450 ms round trip,
     // 225 ms one way — past the 177.3 ms `Id` knee and short of the MOS floor.
-    let store = store_with_rr(ssrc, Some(500), 50);
+    let store = store_with_rr(ssrc, Some(500), 50)?;
     let delay = MosDelay::from_capture(&store);
-    let stream = store.get(&key).expect("stream present");
+    let stream = store.get(&key).ok_or("stream present")?;
 
     // The filter DSL — `rtp.mos`, and so `--filter` and `--problems`.
     let dsl = sipnab::sip::dsl::stream_mos(stream, delay);
@@ -609,7 +630,7 @@ fn one_stream_scores_one_mos_on_every_surface() {
     let summary = sipnab::output::model::StreamSummary::of(stream, delay).mos;
 
     let mut surfaces: Vec<(&str, f64)> = vec![("filter DSL", dsl), ("StreamSummary", summary)];
-    surfaces.extend(tui_surfaces(&store));
+    surfaces.extend(tui_surfaces(&store)?);
 
     let assumed = estimate_mos(
         stream.jitter,
@@ -637,6 +658,7 @@ fn one_stream_scores_one_mos_on_every_surface() {
         "only {} surfaces were compared, so this gate asserted almost nothing",
         surfaces.len()
     );
+    Ok(())
 }
 
 /// The TUI's own MOS surfaces for `store`: the call-list row and the sparkline
@@ -647,9 +669,9 @@ fn one_stream_scores_one_mos_on_every_surface() {
 /// needlessly `mut` without the TUI, and the warning that follows is the kind
 /// a build eventually learns to ignore.
 #[cfg(feature = "tui")]
-fn tui_surfaces(store: &StreamStore) -> Vec<(&'static str, f64)> {
+fn tui_surfaces(store: &StreamStore) -> Result<Vec<(&'static str, f64)>, TestError> {
     let snap = sipnab::tui::dashboard::DashboardSnapshot::from_streams(store, None);
-    let row = snap.rows.first().expect("one row");
+    let row = snap.rows.first().ok_or("one row")?;
     let mut out = vec![("TUI call list", row.mos)];
     // The sparkline beside the row too: a pane scoring its trend on a different
     // delay from its own headline is the defect that was closed in the
@@ -657,13 +679,13 @@ fn tui_surfaces(store: &StreamStore) -> Vec<(&'static str, f64)> {
     if let Some(point) = row.trend.first() {
         out.push(("TUI call-list trend", point.mos));
     }
-    out
+    Ok(out)
 }
 
 /// No TUI compiled in, so it contributes no surface.
 #[cfg(not(feature = "tui"))]
-fn tui_surfaces(_store: &StreamStore) -> Vec<(&'static str, f64)> {
-    Vec::new()
+fn tui_surfaces(_store: &StreamStore) -> Result<Vec<(&'static str, f64)>, TestError> {
+    Ok(Vec::new())
 }
 
 /// `rtp.mos < X` now SELECTS a call the assumption would have missed.
@@ -675,17 +697,17 @@ fn tui_surfaces(_store: &StreamStore) -> Vec<(&'static str, f64)> {
 /// this is 225 ms), and until the filter read the delay it scored above 4 and
 /// was excluded from every triage sweep in the tool.
 #[test]
-fn a_measured_delay_selects_a_call_the_assumption_would_have_missed() {
+fn a_measured_delay_selects_a_call_the_assumption_would_have_missed() -> Result<(), TestError> {
     use sipnab::rtp::diagnosis::CaptureMedia;
     use sipnab::rtp::quality::MosDelay;
     use sipnab::sip::dsl::FilterExpr;
 
     let ssrc = 0x0EC4_5E1E;
     let key = key_for(ssrc);
-    let mut store = store_with_rr(ssrc, Some(500), 50);
+    let mut store = store_with_rr(ssrc, Some(500), 50)?;
     let call_id = "delay-selection@example.net";
     store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000, call_id);
-    let stream = store.get(&key).expect("stream present");
+    let stream = store.get(&key).ok_or("stream present")?;
     assert_eq!(
         stream.associated_dialog.as_deref(),
         Some(call_id),
@@ -706,10 +728,11 @@ fn a_measured_delay_selects_a_call_the_assumption_would_have_missed() {
     );
     let threshold = (scored + assumed) / 2.0;
 
-    let filter = FilterExpr::parse(&format!("rtp.mos < {threshold:.4}")).expect("parses");
+    let filter = FilterExpr::parse(&format!("rtp.mos < {threshold:.4}"))
+        .map_err(|e| format!("parses: {e}"))?;
     let mut dialogs = sipnab::sip::dialog_store::DialogStore::new(16, false);
-    dialogs.process_message(invite_for(call_id));
-    let dialog = dialogs.get(call_id).expect("dialog tracked");
+    dialogs.process_message(invite_for(call_id)?);
+    let dialog = dialogs.get(call_id).ok_or("dialog tracked")?;
     let streams = [stream];
 
     assert!(
@@ -732,11 +755,12 @@ fn a_measured_delay_selects_a_call_the_assumption_would_have_missed() {
         "`select_dialogs` is what --report and --json-dialogs narrow through; \
          it must select the same call the filter does"
     );
+    Ok(())
 }
 
 /// A parsed INVITE for `call_id`, carrying SDP for the fixture's media endpoint
 /// so the dialog and the stream describe one call.
-fn invite_for(call_id: &str) -> sipnab::sip::SipMessage {
+fn invite_for(call_id: &str) -> Result<sipnab::sip::SipMessage, TestError> {
     let body = "v=0\r\n\
                 o=- 0 0 IN IP4 10.0.0.1\r\n\
                 s=-\r\n\
@@ -762,12 +786,12 @@ fn invite_for(call_id: &str) -> sipnab::sip::SipMessage {
     raw.extend_from_slice(body.as_bytes());
     sipnab::sip::parser::parse_sip(
         &raw,
-        ts(0),
+        ts(0)?,
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
         5060,
         5060,
         sipnab::capture::parse::TransportProto::Udp,
     )
-    .expect("INVITE parses")
+    .map_err(|e| format!("INVITE parses: {e}").into())
 }

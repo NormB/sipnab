@@ -21,6 +21,9 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 use std::sync::Arc;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 fn server() -> SipnabMcp {
     SipnabMcp::new(
         Arc::new(RwLock::new(DialogStore::new(64, false))),
@@ -30,13 +33,14 @@ fn server() -> SipnabMcp {
 
 /// Without the flag, sampling is off.
 #[test]
-fn a_server_built_without_the_flag_refuses_as_disabled() {
+fn a_server_built_without_the_flag_refuses_as_disabled() -> Result<(), TestError> {
     let s = server();
     assert_eq!(
         s.may_sample("reg_flood@10.0.0.9"),
         Err(Refusal::Disabled),
         "a stock server must not send observations to any model"
     );
+    Ok(())
 }
 
 /// With a budget set, the refusal changes reason.
@@ -47,7 +51,7 @@ fn a_server_built_without_the_flag_refuses_as_disabled() {
 /// itself. `the_cli_flag_is_wired_to_the_builder` below covers the half this
 /// one cannot see.
 #[test]
-fn the_budget_builder_reaches_the_governor() {
+fn the_budget_builder_reaches_the_governor() -> Result<(), TestError> {
     let s = server().with_sampling_budget(20);
     assert_eq!(
         s.may_sample("reg_flood@10.0.0.9"),
@@ -56,6 +60,7 @@ fn the_budget_builder_reaches_the_governor() {
          advertised sampling -- but for a DIFFERENT reason, and that difference \
          is the only observable evidence the flag was read at all"
     );
+    Ok(())
 }
 
 /// The budget is shared across clones rather than copied.
@@ -64,7 +69,7 @@ fn the_budget_builder_reaches_the_governor() {
 /// copied with the server would reset on every clone, so an hourly ceiling
 /// would bound nothing: a caller reconnecting mints a fresh allowance.
 #[test]
-fn cloning_the_server_does_not_mint_a_fresh_budget() {
+fn cloning_the_server_does_not_mint_a_fresh_budget() -> Result<(), TestError> {
     let a = server().with_sampling_budget(1).with_client_sampling(true);
     let b = a.clone();
     assert!(
@@ -77,11 +82,12 @@ fn cloning_the_server_does_not_mint_a_fresh_budget() {
         "the clone must see the budget already spent. If it does not, every \
          reconnect resets the ceiling and the limit is decorative"
     );
+    Ok(())
 }
 
 /// A zero budget refuses, and says the budget is what refused it.
 #[test]
-fn a_zero_budget_is_none_rather_than_unlimited() {
+fn a_zero_budget_is_none_rather_than_unlimited() -> Result<(), TestError> {
     let s = server().with_sampling_budget(0).with_client_sampling(true);
     assert_eq!(
         s.may_sample("anything"),
@@ -91,6 +97,7 @@ fn a_zero_budget_is_none_rather_than_unlimited() {
          refusal must name the budget so the operator can tell it from a client \
          that simply cannot sample"
     );
+    Ok(())
 }
 
 /// The command-line flag is actually connected to the builder.
@@ -101,10 +108,9 @@ fn a_zero_budget_is_none_rather_than_unlimited() {
 /// sampling is off. Reading the construction site is a weaker check than
 /// driving a real process, and it is the one that fails when the wiring goes.
 #[test]
-fn the_cli_flag_is_wired_to_the_builder() {
+fn the_cli_flag_is_wired_to_the_builder() -> Result<(), TestError> {
     let servers =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/servers.rs"))
-            .expect("read src/app/servers.rs");
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/servers.rs"))?;
     assert!(
         servers.contains("mcp_sampling_budget"),
         "src/app/servers.rs never reads cli.mcp_args.mcp_sampling_budget, so \
@@ -116,4 +122,5 @@ fn the_cli_flag_is_wired_to_the_builder() {
         "src/app/servers.rs reads the flag but never calls \
          with_sampling_budget, so the value it read goes nowhere"
     );
+    Ok(())
 }

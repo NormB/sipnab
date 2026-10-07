@@ -22,6 +22,9 @@
 use sipnab::capture::packet::{FrameOrigin, FrameRef, FrameSource};
 use sipnab::capture::resolve::parse_pointer;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// A pointer naming a whole frame, as before.
 fn whole(source: &str, ordinal: u64, digest: Option<u64>) -> FrameRef {
     FrameRef {
@@ -43,7 +46,7 @@ fn whole(source: &str, ordinal: u64, digest: Option<u64>) -> FrameRef {
 /// format change that broke them would strand the provenance it was meant to
 /// improve.
 #[test]
-fn the_forms_that_already_exist_are_unchanged() {
+fn the_forms_that_already_exist_are_unchanged() -> Result<(), TestError> {
     for (source, ordinal, digest, want) in [
         ("calls.pcap", 41u64, None, "calls.pcap#41"),
         (
@@ -56,7 +59,7 @@ fn the_forms_that_already_exist_are_unchanged() {
     ] {
         let rendered = whole(source, ordinal, digest).to_string();
         assert_eq!(rendered, want, "the text form moved");
-        let back = parse_pointer(&rendered).expect("and it must still parse");
+        let back = parse_pointer(&rendered)?;
         assert_eq!(back.origin.ordinal, ordinal);
         assert_eq!(back.origin.digest, digest);
         assert!(
@@ -64,30 +67,33 @@ fn the_forms_that_already_exist_are_unchanged() {
             "no range was named, so none is invented"
         );
     }
+    Ok(())
 }
 
 /// A byte range renders and parses back to the same range.
 #[test]
-fn a_byte_range_survives_a_round_trip() {
+fn a_byte_range_survives_a_round_trip() -> Result<(), TestError> {
     let mut with_range = whole("calls.pcap", 41, Some(0x6d1f_4c0a_9b2e_7a53));
     with_range.bytes = Some(120..168);
     let rendered = with_range.to_string();
     assert_eq!(rendered, "calls.pcap#41@6d1f4c0a9b2e7a53+120-168");
 
-    let back = parse_pointer(&rendered).expect("the encoder's own output must parse");
+    let back = parse_pointer(&rendered)?;
     assert_eq!(back.bytes, Some(120..168));
     assert_eq!(back.origin.ordinal, 41);
     assert_eq!(back.origin.digest, Some(0x6d1f_4c0a_9b2e_7a53));
+    Ok(())
 }
 
 /// A range without a digest is legal too, because a human types that.
 #[test]
-fn a_range_does_not_require_a_digest() {
+fn a_range_does_not_require_a_digest() -> Result<(), TestError> {
     let mut p = whole("calls.pcap", 41, None);
     p.bytes = Some(0..16);
     let rendered = p.to_string();
     assert_eq!(rendered, "calls.pcap#41+0-16");
-    assert_eq!(parse_pointer(&rendered).expect("parses").bytes, Some(0..16));
+    assert_eq!(parse_pointer(&rendered)?.bytes, Some(0..16));
+    Ok(())
 }
 
 /// A malformed range is refused, never silently dropped.
@@ -97,7 +103,7 @@ fn a_range_does_not_require_a_digest() {
 /// asked. That is the failure this whole mechanism exists to prevent, so the
 /// pointer is refused instead.
 #[test]
-fn a_malformed_range_is_refused_rather_than_ignored() {
+fn a_malformed_range_is_refused_rather_than_ignored() -> Result<(), TestError> {
     for bad in [
         "calls.pcap#41+",
         "calls.pcap#41+120",
@@ -113,6 +119,7 @@ fn a_malformed_range_is_refused_rather_than_ignored() {
              a pointer at the whole frame"
         );
     }
+    Ok(())
 }
 
 /// A source containing `+` keeps it.
@@ -121,11 +128,12 @@ fn a_malformed_range_is_refused_rather_than_ignored() {
 /// before it is a path somebody chose, and paths contain surprising
 /// characters. `@` already had this rule and `+` gets the same one.
 #[test]
-fn a_plus_in_the_source_is_not_a_range() {
-    let p = parse_pointer("/var/captures/a+b.pcap#9").expect("parses");
+fn a_plus_in_the_source_is_not_a_range() -> Result<(), TestError> {
+    let p = parse_pointer("/var/captures/a+b.pcap#9")?;
     assert_eq!(&*p.source, "/var/captures/a+b.pcap");
     assert_eq!(p.origin.ordinal, 9);
     assert!(p.bytes.is_none());
+    Ok(())
 }
 
 /// A lint finding narrows its own citation, when the bytes sit in one place.
@@ -134,7 +142,7 @@ fn a_plus_in_the_source_is_not_a_range() {
 /// message; the malformed thing is one header, and a reader handed a whole
 /// INVITE still has to go and find it.
 #[test]
-fn a_finding_cites_the_bytes_it_observed() {
+fn a_finding_cites_the_bytes_it_observed() -> Result<(), TestError> {
     let raw = concat!(
         "INVITE sip:bob@example.com SIP/2.0\r\n",
         "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=nope\r\n",
@@ -146,20 +154,19 @@ fn a_finding_cites_the_bytes_it_observed() {
     );
     // The branch value is wire text and appears exactly once.
     let needle = "branch=nope";
-    let start = raw.find(needle).expect("the fixture contains it");
+    let start = raw.find(needle).ok_or("the fixture contains it")?;
     let mut pointer = whole("calls.pcap", 3, None);
-    pointer.bytes = Some(
-        u32::try_from(start).expect("fits")..u32::try_from(start + needle.len()).expect("fits"),
-    );
+    pointer.bytes = Some(u32::try_from(start)?..u32::try_from(start + needle.len())?);
 
     let rendered = pointer.to_string();
-    let back = parse_pointer(&rendered).expect("a narrowed pointer parses");
-    let range = back.bytes.expect("and keeps its range");
+    let back = parse_pointer(&rendered)?;
+    let range = back.bytes.ok_or("and keeps its range")?;
     assert_eq!(
         &raw[range.start as usize..range.end as usize],
         needle,
         "the range must quote the text the finding observed"
     );
+    Ok(())
 }
 
 /// Text that appears twice narrows nothing.
@@ -168,7 +175,7 @@ fn a_finding_cites_the_bytes_it_observed() {
 /// wrong header still resolves — which is exactly what would make it read as
 /// evidence. The whole-message pointer is the honest answer there.
 #[test]
-fn ambiguous_observed_text_leaves_the_pointer_at_the_whole_frame() {
+fn ambiguous_observed_text_leaves_the_pointer_at_the_whole_frame() -> Result<(), TestError> {
     use sipnab::capture::packet::unique_offset;
     assert_eq!(
         unique_offset(b"aXbXc", b"X"),
@@ -178,4 +185,5 @@ fn ambiguous_observed_text_leaves_the_pointer_at_the_whole_frame() {
     assert_eq!(unique_offset(b"aXbYc", b"X"), Some(1));
     assert_eq!(unique_offset(b"abc", b"zz"), None, "absent, no anchor");
     assert_eq!(unique_offset(b"abc", b""), None, "empty, no anchor");
+    Ok(())
 }

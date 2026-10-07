@@ -24,10 +24,9 @@ use std::path::Path;
 #[path = "support/dbgsym.rs"]
 mod dbgsym;
 
-use dbgsym::{
-    build_fixture_or_panic, build_id_or_panic, debuglink_or_panic, have, sections_or_panic,
-    split_or_panic, symbolize_or_panic, text,
-};
+use dbgsym::TestError;
+
+use dbgsym::{build_fixture, build_id, debuglink, have, sections, split, symbolize, text};
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -35,8 +34,8 @@ mod executable;
 /// Assert everything a finished split must be, on any architecture: the
 /// shipped binary has no symbols or DWARF, keeps its build ID, and links to
 /// `debug` by name; `debug` has the line table and symbols under the same ID.
-fn assert_split_is_complete(bin: &Path, debug: &Path) {
-    let bin_secs = sections_or_panic(bin);
+fn assert_split_is_complete(bin: &Path, debug: &Path) -> Result<(), TestError> {
+    let bin_secs = sections(bin)?;
     assert!(
         !bin_secs.iter().any(|s| s == ".symtab"),
         "the shipped binary still carries .symtab: {bin_secs:?}"
@@ -59,15 +58,19 @@ fn assert_split_is_complete(bin: &Path, debug: &Path) {
         bin_secs.iter().any(|s| s == ".gnu_debuglink"),
         "the shipped binary has no .gnu_debuglink: {bin_secs:?}"
     );
-    let name = debug.file_name().unwrap().to_string_lossy().into_owned();
-    let link = debuglink_or_panic(bin);
+    let name = debug
+        .file_name()
+        .ok_or("debug.file_name() was None")?
+        .to_string_lossy()
+        .into_owned();
+    let link = debuglink(bin)?;
     assert!(
         link.contains(&name),
         ".gnu_debuglink must name {name}, the file published beside the \
          binary; readelf shows:\n{link}"
     );
 
-    let dbg_secs = sections_or_panic(debug);
+    let dbg_secs = sections(debug)?;
     assert!(
         dbg_secs.iter().any(|s| s == ".debug_line"),
         "the symbol file carries no line table: {dbg_secs:?}"
@@ -77,24 +80,25 @@ fn assert_split_is_complete(bin: &Path, debug: &Path) {
         "the symbol file carries no symbol table: {dbg_secs:?}"
     );
 
-    let bin_id = build_id_or_panic(bin).expect("stripped binary has a build ID");
-    let dbg_id = build_id_or_panic(debug).expect("symbol file has a build ID");
+    let bin_id = build_id(bin)?.ok_or("stripped binary has a build ID")?;
+    let dbg_id = build_id(debug)?.ok_or("symbol file has a build ID")?;
     assert!(bin_id.len() >= 32, "implausible build ID {bin_id:?}");
     assert_eq!(
         bin_id, dbg_id,
         "the symbol file's build ID must equal the shipped binary's"
     );
+    Ok(())
 }
 
 /// (a) On the host architecture: the shipped binary loses its symbols but
 /// keeps its build ID and gains a debug link, and the symbol file carries the
 /// symbols under the same build ID.
 #[test]
-fn the_split_ships_a_stripped_binary_and_a_matching_symbol_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let bin = build_fixture_or_panic(dir.path(), None, true).expect("host fixture");
-    let before = build_id_or_panic(&bin).expect("the linker wrote a build ID");
-    let out = split_or_panic(&bin, &dir.path().join("sipnab-dev-host"));
+fn the_split_ships_a_stripped_binary_and_a_matching_symbol_file() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let bin = build_fixture(dir.path(), None, true)?.ok_or("host fixture")?;
+    let before = build_id(&bin)?.ok_or("the linker wrote a build ID")?;
+    let out = split(&bin, &dir.path().join("sipnab-dev-host"))?;
     assert!(out.status.success(), "split failed:\n{}", text(&out));
     let debug = dir.path().join("sipnab-dev-host.debug");
     assert!(
@@ -103,12 +107,13 @@ fn the_split_ships_a_stripped_binary_and_a_matching_symbol_file() {
         debug.display(),
         text(&out)
     );
-    assert_split_is_complete(&bin, &debug);
+    assert_split_is_complete(&bin, &debug)?;
     assert_eq!(
-        build_id_or_panic(&bin).as_deref(),
+        build_id(&bin)?.as_deref(),
         Some(before.as_str()),
         "stripping must not change the build ID"
     );
+    Ok(())
 }
 
 /// (a) Across architectures. The release splits aarch64 binaries on an x86_64
@@ -116,37 +121,38 @@ fn the_split_ships_a_stripped_binary_and_a_matching_symbol_file() {
 /// failed on every release without anyone seeing it. Driven here with the
 /// other 64-bit architecture's binary on whichever host runs the suite.
 #[test]
-fn the_split_handles_a_foreign_architecture() {
-    let (triple, linker) = if dbgsym::host_triple_or_panic().starts_with("aarch64-") {
+fn the_split_handles_a_foreign_architecture() -> Result<(), TestError> {
+    let (triple, linker) = if dbgsym::host_triple()?.starts_with("aarch64-") {
         ("x86_64-unknown-linux-gnu", "x86_64-linux-gnu-gcc")
     } else {
         ("aarch64-unknown-linux-gnu", "aarch64-linux-gnu-gcc")
     };
     if !have(linker) {
         eprintln!("SKIPPED: no {linker} on this host to link a {triple} fixture");
-        return;
+        return Ok(());
     }
-    let dir = tempfile::tempdir().unwrap();
-    let Some(bin) = build_fixture_or_panic(dir.path(), Some((triple, linker)), true) else {
-        return;
+    let dir = tempfile::tempdir()?;
+    let Some(bin) = build_fixture(dir.path(), Some((triple, linker)), true)? else {
+        return Ok(());
     };
-    let out = split_or_panic(&bin, &dir.path().join(format!("sipnab-dev-{triple}")));
+    let out = split(&bin, &dir.path().join(format!("sipnab-dev-{triple}")))?;
     assert!(out.status.success(), "split failed:\n{}", text(&out));
-    assert_split_is_complete(&bin, &dir.path().join(format!("sipnab-dev-{triple}.debug")));
+    assert_split_is_complete(&bin, &dir.path().join(format!("sipnab-dev-{triple}.debug")))?;
+    Ok(())
 }
 
 /// A binary with no build ID cannot be matched to anything, so the split
 /// refuses it instead of publishing a symbol file nobody can pair.
 #[test]
-fn the_split_refuses_a_binary_without_a_build_id() {
-    let dir = tempfile::tempdir().unwrap();
-    let bin = build_fixture_or_panic(dir.path(), None, false).expect("host fixture");
+fn the_split_refuses_a_binary_without_a_build_id() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let bin = build_fixture(dir.path(), None, false)?.ok_or("host fixture")?;
     assert_eq!(
-        build_id_or_panic(&bin),
+        build_id(&bin)?,
         None,
         "fixture was meant to have no build ID"
     );
-    let out = split_or_panic(&bin, &dir.path().join("x"));
+    let out = split(&bin, &dir.path().join("x"))?;
     assert!(
         !out.status.success(),
         "split accepted a binary with no build ID:\n{}",
@@ -157,22 +163,23 @@ fn the_split_refuses_a_binary_without_a_build_id() {
         "the refusal must name the missing build ID:\n{}",
         text(&out)
     );
+    Ok(())
 }
 
 /// A binary that is already stripped has nothing to split, and a symbol file
 /// made from it would be empty. That is what a build that still strips at link
 /// time produces, so it must stop the release.
 #[test]
-fn the_split_refuses_a_binary_with_no_line_tables() {
-    let dir = tempfile::tempdir().unwrap();
-    let bin = build_fixture_or_panic(dir.path(), None, true).expect("host fixture");
-    let first = split_or_panic(&bin, &dir.path().join("first"));
+fn the_split_refuses_a_binary_with_no_line_tables() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let bin = build_fixture(dir.path(), None, true)?.ok_or("host fixture")?;
+    let first = split(&bin, &dir.path().join("first"))?;
     assert!(
         first.status.success(),
         "first split failed:\n{}",
         text(&first)
     );
-    let again = split_or_panic(&bin, &dir.path().join("second"));
+    let again = split(&bin, &dir.path().join("second"))?;
     assert!(
         !again.status.success(),
         "split accepted an already-stripped binary:\n{}",
@@ -183,6 +190,7 @@ fn the_split_refuses_a_binary_with_no_line_tables() {
         "the refusal must say the line tables are missing:\n{}",
         text(&again)
     );
+    Ok(())
 }
 
 /// (b) An address inside a known function of the STRIPPED binary symbolizes,
@@ -193,29 +201,28 @@ fn the_split_refuses_a_binary_with_no_line_tables() {
 /// the stripped binary with no symbol file beside it must NOT resolve it, so
 /// the answers can only have come from the `.debug` file.
 #[test]
-fn an_address_from_the_stripped_binary_symbolizes_against_the_symbol_file() {
+fn an_address_from_the_stripped_binary_symbolizes_against_the_symbol_file() -> Result<(), TestError>
+{
     if !have("llvm-symbolizer") && !have("addr2line") {
         eprintln!("SKIPPED: neither llvm-symbolizer nor addr2line is installed");
-        return;
+        return Ok(());
     }
-    let dir = tempfile::tempdir().unwrap();
-    let bin = build_fixture_or_panic(dir.path(), None, true).expect("host fixture");
-    let out = split_or_panic(&bin, &dir.path().join("sipnab-dev-host"));
+    let dir = tempfile::tempdir()?;
+    let bin = build_fixture(dir.path(), None, true)?.ok_or("host fixture")?;
+    let out = split(&bin, &dir.path().join("sipnab-dev-host"))?;
     assert!(out.status.success(), "split failed:\n{}", text(&out));
     let debug = dir.path().join("sipnab-dev-host.debug");
 
-    let run = std::process::Command::new(&bin)
-        .output()
-        .expect("run the stripped fixture");
+    let run = std::process::Command::new(&bin).output()?;
     assert!(run.status.success(), "fixture failed:\n{}", text(&run));
     let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
     let offset = stdout
         .lines()
         .find_map(|l| l.strip_prefix("offset="))
-        .unwrap_or_else(|| panic!("fixture printed no offset:\n{stdout}"))
+        .ok_or_else(|| format!("fixture printed no offset:\n{stdout}"))?
         .to_string();
 
-    let answer = symbolize_or_panic(&debug, &offset).expect("a symbolizer is installed");
+    let answer = symbolize(&debug, &offset)?.ok_or("a symbolizer is installed")?;
     assert!(
         answer.contains("dbgsym_known_function"),
         "the symbolizer did not name the function at {offset} from the symbol file:\n{answer}"
@@ -229,7 +236,7 @@ fn an_address_from_the_stripped_binary_symbolizes_against_the_symbol_file() {
     // symbolizer follows `.gnu_debuglink` to the file of that name in the same
     // directory. That is the "put the .debug next to the binary" path the
     // troubleshooting page gives users.
-    let beside = symbolize_or_panic(&bin, &offset).expect("a symbolizer is installed");
+    let beside = symbolize(&bin, &offset)?.ok_or("a symbolizer is installed")?;
     assert!(
         beside.contains("dbgsym_known_function"),
         "the stripped binary did not find its symbol file through \
@@ -239,15 +246,16 @@ fn an_address_from_the_stripped_binary_symbolizes_against_the_symbol_file() {
     // Alone, it must NOT resolve, or nothing above proves the symbol file did
     // anything.
     let alone_dir = dir.path().join("alone");
-    std::fs::create_dir(&alone_dir).unwrap();
+    std::fs::create_dir(&alone_dir)?;
     let alone = alone_dir.join("fixture");
-    std::fs::copy(&bin, &alone).unwrap();
-    let bare = symbolize_or_panic(&alone, &offset).expect("a symbolizer is installed");
+    std::fs::copy(&bin, &alone)?;
+    let bare = symbolize(&alone, &offset)?.ok_or("a symbolizer is installed")?;
     assert!(
         !bare.contains("dbgsym_known_function"),
         "the stripped binary resolved {offset} with no symbol file beside it, \
          so this test cannot tell whether the symbol file did anything:\n{bare}"
     );
+    Ok(())
 }
 
 /// Stand-ins for the Xcode tools the macOS split uses, so the macOS branch of
@@ -299,19 +307,21 @@ const XCODE_STANDINS: &[(&str, &str)] = &[
 /// Run the script's macOS branch on a stand-in Mach-O binary with the
 /// stand-in tools first on PATH. Returns the output, the tool log, and the
 /// temp dir holding `sipnab` and `dist/`.
-fn run_macos_split(env: &[(&str, &str)]) -> (std::process::Output, String, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
+fn run_macos_split(
+    env: &[(&str, &str)],
+) -> Result<(std::process::Output, String, tempfile::TempDir), TestError> {
+    let dir = tempfile::tempdir()?;
     let w = dir.path();
     let tools = w.join("tools");
-    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::create_dir_all(&tools)?;
     for (name, body) in XCODE_STANDINS {
         let p = tools.join(name);
-        executable::write_executable(&p, &format!("#!/bin/sh\n{body}")).unwrap();
+        executable::write_executable(&p, &format!("#!/bin/sh\n{body}"))?;
     }
     let bin = w.join("sipnab");
     // MH_MAGIC_64, little-endian: the script picks its branch by magic.
-    std::fs::write(&bin, [0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]).unwrap();
-    std::fs::write(w.join("sipnab.uuid"), "AAAA-1111").unwrap();
+    std::fs::write(&bin, [0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0])?;
+    std::fs::write(w.join("sipnab.uuid"), "AAAA-1111")?;
     let log = w.join("tools.log");
     let path = format!(
         "{}:{}",
@@ -327,9 +337,9 @@ fn run_macos_split(env: &[(&str, &str)]) -> (std::process::Output, String, tempf
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("run the script");
+    let out = cmd.output()?;
     let log = std::fs::read_to_string(&log).unwrap_or_default();
-    (out, log, dir)
+    Ok((out, log, dir))
 }
 
 /// macOS: the script makes the `.dSYM` itself with `dsymutil` from the
@@ -338,8 +348,8 @@ fn run_macos_split(env: &[(&str, &str)]) -> (std::process::Output, String, tempf
 /// debug map. It no longer depends on rustc having left a `.dSYM` behind,
 /// which rustc did not do on the first CI run.
 #[test]
-fn the_macos_split_makes_the_dsym_itself_then_strips() {
-    let (out, log, dir) = run_macos_split(&[]);
+fn the_macos_split_makes_the_dsym_itself_then_strips() -> Result<(), TestError> {
+    let (out, log, dir) = run_macos_split(&[])?;
     assert!(
         out.status.success(),
         "macOS split failed:\n{}\nlog:\n{log}",
@@ -364,19 +374,22 @@ fn the_macos_split_makes_the_dsym_itself_then_strips() {
         dir.path().join("sipnab.stripped").exists(),
         "the binary was not stripped:\n{log}"
     );
-    let dsym_at = log.find("dsymutil").unwrap();
-    let strip_at = log.find("strip ").expect("strip ran");
+    let dsym_at = log
+        .find("dsymutil")
+        .ok_or("log.find(\"dsymutil\") was None")?;
+    let strip_at = log.find("strip ").ok_or("strip ran")?;
     assert!(
         dsym_at < strip_at,
         "dsymutil must read the binary before the strip:\n{log}"
     );
     assert!(log.contains("ditto"), "the bundle was not zipped:\n{log}");
+    Ok(())
 }
 
 /// A `.dSYM` whose UUID is not the binary's cannot symbolize its reports.
 #[test]
-fn the_macos_split_refuses_a_dsym_with_another_uuid() {
-    let (out, log, _dir) = run_macos_split(&[("DSYM_UUID", "BBBB-2222")]);
+fn the_macos_split_refuses_a_dsym_with_another_uuid() -> Result<(), TestError> {
+    let (out, log, _dir) = run_macos_split(&[("DSYM_UUID", "BBBB-2222")])?;
     assert!(
         !out.status.success(),
         "accepted a mismatched .dSYM:\nlog:\n{log}"
@@ -386,13 +399,14 @@ fn the_macos_split_refuses_a_dsym_with_another_uuid() {
         "the refusal must name the mismatch:\n{}",
         text(&out)
     );
+    Ok(())
 }
 
 /// A binary that still carries its debug map after the strip is not the
 /// stripped binary the release promises.
 #[test]
-fn the_macos_split_refuses_a_binary_that_keeps_its_debug_map() {
-    let (out, log, _dir) = run_macos_split(&[("KEEP_DEBUG_MAP", "1")]);
+fn the_macos_split_refuses_a_binary_that_keeps_its_debug_map() -> Result<(), TestError> {
+    let (out, log, _dir) = run_macos_split(&[("KEEP_DEBUG_MAP", "1")])?;
     assert!(
         !out.status.success(),
         "accepted an unstripped binary:\nlog:\n{log}"
@@ -402,14 +416,15 @@ fn the_macos_split_refuses_a_binary_that_keeps_its_debug_map() {
         "the refusal must name the debug map:\n{}",
         text(&out)
     );
+    Ok(())
 }
 
 /// A binary stripped at link time has no debug map, so there is nothing for
 /// dsymutil to read. That is what a build without the split flags produces,
 /// and it must stop the release rather than publish an empty bundle.
 #[test]
-fn the_macos_split_refuses_a_binary_stripped_at_link_time() {
-    let (out, log, _dir) = run_macos_split(&[("STRIPPED_AT_LINK", "1")]);
+fn the_macos_split_refuses_a_binary_stripped_at_link_time() -> Result<(), TestError> {
+    let (out, log, _dir) = run_macos_split(&[("STRIPPED_AT_LINK", "1")])?;
     assert!(
         !out.status.success(),
         "accepted a link-stripped binary:\nlog:\n{log}"
@@ -423,6 +438,7 @@ fn the_macos_split_refuses_a_binary_stripped_at_link_time() {
         !log.contains("dsymutil"),
         "dsymutil must not run on it:\n{log}"
     );
+    Ok(())
 }
 
 /// Build a one-file cargo project whose `[profile.release]` strips at link
@@ -432,20 +448,18 @@ fn cargo_build_stripping_project(
     dir: &Path,
     rustflags: &str,
     extra: &[&str],
-) -> std::path::PathBuf {
-    std::fs::create_dir_all(dir.join("src")).unwrap();
+) -> Result<std::path::PathBuf, TestError> {
+    std::fs::create_dir_all(dir.join("src"))?;
     std::fs::write(
         dir.join("Cargo.toml"),
         "[package]\nname = \"dbgsym-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
          [workspace]\n\n[profile.release]\nstrip = true\ndebug = \"line-tables-only\"\n\
          panic = \"abort\"\n",
-    )
-    .unwrap();
+    )?;
     std::fs::write(
         dir.join("src/main.rs"),
         "fn main() { println!(\"probe\"); }\n",
-    )
-    .unwrap();
+    )?;
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = std::process::Command::new(cargo)
         .args(["build", "--release", "--quiet"])
@@ -454,10 +468,9 @@ fn cargo_build_stripping_project(
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .env("RUSTFLAGS", rustflags)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .output()
-        .expect("run cargo");
+        .output()?;
     assert!(out.status.success(), "probe build failed:\n{}", text(&out));
-    dir.join("target/release/dbgsym-probe")
+    Ok(dir.join("target/release/dbgsym-probe"))
 }
 
 /// What the workflows do, on a real cargo build: with `RUSTFLAGS=-Dwarnings`
@@ -466,46 +479,43 @@ fn cargo_build_stripping_project(
 /// is what the first CI run did: the same flags only as `--config` lose to
 /// the ambient RUSTFLAGS, and the binary comes out stripped.
 #[test]
-fn the_emitted_flags_survive_an_ambient_rustflags() {
-    let host = dbgsym::host_triple_or_panic();
+fn the_emitted_flags_survive_an_ambient_rustflags() -> Result<(), TestError> {
+    let host = dbgsym::host_triple()?;
     let flags = String::from_utf8(
         std::process::Command::new("bash")
             .arg(dbgsym::script())
             .args(["--rustflags", &host])
-            .output()
-            .unwrap()
+            .output()?
             .stdout,
-    )
-    .unwrap();
+    )?;
     let config = String::from_utf8(
         std::process::Command::new("bash")
             .arg(dbgsym::script())
             .args(["--cargo-config", &host])
-            .output()
-            .unwrap()
+            .output()?
             .stdout,
-    )
-    .unwrap();
+    )?;
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir()?;
     let appended = format!("-Dwarnings {}", flags.trim());
-    let bin = cargo_build_stripping_project(dir.path(), &appended, &[]);
+    let bin = cargo_build_stripping_project(dir.path(), &appended, &[])?;
     assert!(
-        sections_or_panic(&bin).iter().any(|s| s == ".debug_line"),
+        sections(&bin)?.iter().any(|s| s == ".debug_line"),
         "RUSTFLAGS=\"-Dwarnings {}\" still stripped the line tables",
         flags.trim()
     );
-    let out = split_or_panic(&bin, &dir.path().join("probe"));
+    let out = split(&bin, &dir.path().join("probe"))?;
     assert!(out.status.success(), "split failed:\n{}", text(&out));
 
-    let control = tempfile::tempdir().unwrap();
+    let control = tempfile::tempdir()?;
     let lost =
-        cargo_build_stripping_project(control.path(), "-Dwarnings", &["--config", config.trim()]);
+        cargo_build_stripping_project(control.path(), "-Dwarnings", &["--config", config.trim()])?;
     assert!(
-        !sections_or_panic(&lost).iter().any(|s| s == ".debug_line"),
+        !sections(&lost)?.iter().any(|s| s == ".debug_line"),
         "--config alone survived an ambient RUSTFLAGS, so this test no longer \
          shows why the workflows must append to RUSTFLAGS"
     );
+    Ok(())
 }
 
 /// A real binary's `nm -ap` prints thousands of lines, and the debug map's
@@ -515,13 +525,14 @@ fn the_emitted_flags_survive_an_ambient_rustflags() {
 /// "stripped at link time". That is what failed CI's macOS leg twice, while
 /// a one-line stand-in could never show it.
 #[test]
-fn the_macos_split_reads_a_large_debug_map_and_line_table() {
-    let (out, log, _dir) = run_macos_split(&[("LARGE_OUTPUT", "1")]);
+fn the_macos_split_reads_a_large_debug_map_and_line_table() -> Result<(), TestError> {
+    let (out, log, _dir) = run_macos_split(&[("LARGE_OUTPUT", "1")])?;
     assert!(
         out.status.success(),
         "the split refused a binary whose tools print a lot:\n{}\nlog:\n{log}",
         text(&out)
     );
+    Ok(())
 }
 
 /// No `cmd | grep -q` in the script at all, not only in the two checks the
@@ -530,8 +541,8 @@ fn the_macos_split_reads_a_large_debug_map_and_line_table() {
 /// into a failure. Which commands print enough to lose that race depends on
 /// the binary, so the pattern is refused everywhere.
 #[test]
-fn the_script_never_pipes_into_grep_q() {
-    let text = std::fs::read_to_string(dbgsym::script()).unwrap();
+fn the_script_never_pipes_into_grep_q() -> Result<(), TestError> {
+    let text = std::fs::read_to_string(dbgsym::script())?;
     let offenders: Vec<(usize, &str)> = text
         .lines()
         .enumerate()
@@ -543,4 +554,5 @@ fn the_script_never_pipes_into_grep_q() {
         "split-debuginfo.sh pipes into `grep -q`, which under pipefail reports \
          a match as a failure when the writer is still printing: {offenders:?}"
     );
+    Ok(())
 }

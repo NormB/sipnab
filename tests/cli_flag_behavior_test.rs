@@ -9,6 +9,8 @@ use std::io::Write;
 
 use sipnab::auth::{TokenVerifier, VerifierConfig};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/run.rs"]
 mod run_support;
 
@@ -78,28 +80,26 @@ fn udp_ports_owned_by(pid: u32) -> Vec<u16> {
 /// socket another process holds on a port can never be mistaken for it.
 #[cfg(target_os = "linux")]
 #[test]
-fn udp_ports_owned_by_finds_this_process_socket_and_not_another() {
+fn udp_ports_owned_by_finds_this_process_socket_and_not_another() -> Result<(), TestError> {
     // Started before the socket exists, so it cannot have inherited it: a
     // child spawned after would hold the socket for an instant inside its
     // execve, which is what `listener_candidates` is for, not what this test
     // is about.
-    let mut other = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .expect("spawn a process with no sockets");
-    let mine = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
-    let port = mine.local_addr().expect("local addr").port();
+    let mut other = std::process::Command::new("sleep").arg("30").spawn()?;
+    let mine = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let port = mine.local_addr()?.port();
     assert!(
         udp_ports_owned_by(std::process::id()).contains(&port),
         "this process's own socket on {port} was not found"
     );
     let found = udp_ports_owned_by(other.id());
-    other.kill().expect("kill");
+    other.kill()?;
     let _ = other.wait();
     assert!(
         !found.contains(&port),
         "a process that holds no socket was credited with this one's port {port}"
     );
+    Ok(())
 }
 
 /// The ports `child` holds that can be its own listener: every port it holds
@@ -151,17 +151,18 @@ fn settle(previous: &[u16], now: &[u16]) -> Settled {
 }
 
 #[test]
-fn a_port_the_harness_itself_holds_is_never_the_listener() {
+fn a_port_the_harness_itself_holds_is_never_the_listener() -> Result<(), TestError> {
     assert_eq!(
         listener_candidates(&[5000, 6000], &[5000, 7000]),
         vec![6000]
     );
     assert_eq!(listener_candidates(&[5000], &[5000]), Vec::<u16>::new());
     assert_eq!(listener_candidates(&[6000], &[]), vec![6000]);
+    Ok(())
 }
 
 #[test]
-fn a_listener_port_must_hold_across_two_reads() {
+fn a_listener_port_must_hold_across_two_reads() -> Result<(), TestError> {
     assert_eq!(settle(&[], &[6000]), Settled::Pending);
     assert_eq!(settle(&[6000], &[]), Settled::Pending);
     assert_eq!(settle(&[5000], &[6000]), Settled::Pending);
@@ -171,6 +172,7 @@ fn a_listener_port_must_hold_across_two_reads() {
         settle(&[6000, 7000], &[7000, 6000]),
         Settled::Ambiguous(vec![6000, 7000])
     );
+    Ok(())
 }
 
 /// Wait until `child` holds its HEP listener's socket, and return its address.
@@ -183,25 +185,29 @@ fn a_listener_port_must_hold_across_two_reads() {
 fn wait_for_own_udp_listener(
     child: &mut std::process::Child,
     stderr: &dyn Fn() -> String,
-) -> String {
+) -> Result<String, TestError> {
     let by = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut previous = Vec::new();
     loop {
-        if let Some(status) = child.try_wait().expect("try_wait") {
-            panic!(
+        if let Some(status) = child.try_wait()? {
+            return Err(format!(
                 "sipnab exited ({status}) before its HEP listener bound:\n{}",
                 stderr()
-            );
+            )
+            .into());
         }
         let now = listener_candidates(
             &udp_ports_owned_by(child.id()),
             &udp_ports_owned_by(std::process::id()),
         );
         match settle(&previous, &now) {
-            Settled::Port(port) => return format!("127.0.0.1:{port}"),
+            Settled::Port(port) => return Ok(format!("127.0.0.1:{port}")),
             Settled::Pending => {}
             Settled::Ambiguous(many) => {
-                panic!("sipnab holds {many:?} on 127.0.0.1; which one is the HEP listener?")
+                return Err(format!(
+                    "sipnab holds {many:?} on 127.0.0.1; which one is the HEP listener?"
+                )
+                .into());
             }
         }
         previous = now;
@@ -214,10 +220,10 @@ fn wait_for_own_udp_listener(
     }
 }
 
-fn run(args: &[&str]) -> String {
-    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("off"));
+fn run(args: &[&str]) -> Result<String, TestError> {
+    let (stdout, stderr, code) = run_support::run(args, Some("off"))?;
     assert!(code == Some(0), "sipnab {args:?} failed: {stderr}");
-    stdout
+    Ok(stdout)
 }
 
 /// Parses every line of `s` that starts with `{` as a JSON value (NDJSON
@@ -228,28 +234,29 @@ fn run(args: &[&str]) -> String {
 ///
 /// # Returns
 /// The parsed JSON objects, one per emitted message.
-fn ndjson_lines(s: &str) -> Vec<serde_json::Value> {
-    s.lines()
+fn ndjson_lines(s: &str) -> Result<Vec<serde_json::Value>, TestError> {
+    Ok(s.lines()
         .filter(|l| l.starts_with('{'))
-        .map(|l| serde_json::from_str(l).expect("ndjson"))
-        .collect()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?)
 }
 
 /// `--count 3` stops capture after 3 packets, yielding exactly 3 JSON messages.
 #[test]
-fn count_limits_message_output() {
+fn count_limits_message_output() -> Result<(), TestError> {
     // --count N stops after N packets → at most N messages.
-    let msgs = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--count", "3", "--json"]));
+    let msgs = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--count", "3", "--json"])?)?;
     assert_eq!(msgs.len(), 3, "--count 3 must yield exactly 3 messages");
+    Ok(())
 }
 
 /// `--calls-only` still emits the fixture call, and every emitted message
 /// carries a `call_id` (no standalone messages).
 #[test]
-fn calls_only_emits_only_call_associated_messages() {
+fn calls_only_emits_only_call_associated_messages() -> Result<(), TestError> {
     // --calls-only suppresses standalone messages → every emitted message
     // carries a call_id.
-    let msgs = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--calls-only", "--json"]));
+    let msgs = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--calls-only", "--json"])?)?;
     assert!(!msgs.is_empty(), "--calls-only should still emit the call");
     for m in &msgs {
         assert!(
@@ -257,63 +264,63 @@ fn calls_only_emits_only_call_associated_messages() {
             "--calls-only must not emit standalone (call_id-less) messages: {m}"
         );
     }
+    Ok(())
 }
 
 /// `--text-dump` output contains the raw SIP request line and Via header.
 #[test]
-fn text_dump_emits_raw_sip() {
+fn text_dump_emits_raw_sip() -> Result<(), TestError> {
     // --text-dump prints the raw SIP message text (request line + headers).
-    let out = run(&["-N", "-I", FIXTURE, "--text-dump"]);
+    let out = run(&["-N", "-I", FIXTURE, "--text-dump"])?;
     assert!(
         out.contains("INVITE sip:1002@192.0.2.2 SIP/2.0"),
         "--text-dump must contain the raw SIP request line"
     );
     assert!(out.contains("Via: SIP/2.0/UDP"), "raw headers expected");
+    Ok(())
 }
 
 /// `-O <file> --pcapng` writes a file starting with the PCAP-NG Section
 /// Header Block magic (0x0a0d0d0a).
 #[test]
-fn pcapng_output_writes_pcapng_magic() {
+fn pcapng_output_writes_pcapng_magic() -> Result<(), TestError> {
     // -O <file> --pcapng writes a PCAP-NG file (Section Header Block magic).
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let out_path = dir.path().join("out.pcapng");
     run(&[
         "-N",
         "-I",
         FIXTURE,
         "-O",
-        out_path.to_str().unwrap(),
+        out_path.to_str().ok_or("out_path is not UTF-8")?,
         "--pcapng",
-    ]);
-    let bytes = std::fs::read(&out_path).expect("read written pcapng");
+    ])?;
+    let bytes = std::fs::read(&out_path)?;
     assert!(bytes.len() >= 4, "pcapng too short");
     assert_eq!(&bytes[..4], &[0x0a, 0x0d, 0x0d, 0x0a], "pcapng SHB magic");
+    Ok(())
 }
 
 /// A token minted via `--mint-token --api-signing-key-file --api-token-ttl 60`
 /// verifies now and is rejected at now+61.
 #[test]
-fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
+fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() -> Result<(), TestError> {
     // --api-signing-key-file (key from a file) + --api-token-ttl (lifetime):
     // mint a token via the CLI, then verify it round-trips and expires per TTL.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("api.key");
     let key = b"file-loaded-signing-key-0123456789";
-    std::fs::File::create(&key_path)
-        .unwrap()
-        .write_all(key)
-        .unwrap();
+    std::fs::File::create(&key_path)?.write_all(key)?;
 
     let token = run(&[
         "--mint-token",
         "--api-signing-key-file",
-        key_path.to_str().unwrap(),
+        key_path.to_str().ok_or("key_path is not UTF-8")?,
         "--api-token-ttl",
         "60",
         "--token-id",
         "burn-down-1",
-    ])
+    ])?
     .trim()
     .to_string();
     assert!(token.starts_with("s2."), "minted token shape: {token}");
@@ -346,6 +353,7 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
         !mcp_verifier.verify(&token, now, sipnab::auth::SCOPE_FULL),
         "an --api-signing-key token must not authenticate against HTTP MCP"
     );
+    Ok(())
 }
 
 // Minting from an MCP signing key needs the `mcp` feature (the MCP verifier
@@ -354,22 +362,19 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
 /// with exactly two dot separators, bound to the `mcp` audience.
 #[cfg(feature = "mcp")]
 #[test]
-fn mint_with_mcp_signing_key_file_produces_token() {
+fn mint_with_mcp_signing_key_file_produces_token() -> Result<(), TestError> {
     // --mcp-signing-key-file: mint using an MCP signing key loaded from a file.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("mcp.key");
-    std::fs::File::create(&key_path)
-        .unwrap()
-        .write_all(b"mcp-file-signing-key-987654321")
-        .unwrap();
+    std::fs::File::create(&key_path)?.write_all(b"mcp-file-signing-key-987654321")?;
 
     let token = run(&[
         "--mint-token",
         "--mcp-signing-key-file",
-        key_path.to_str().unwrap(),
+        key_path.to_str().ok_or("key_path is not UTF-8")?,
         "--token-id",
         "burn-down-mcp",
-    ])
+    ])?
     .trim()
     .to_string();
     assert!(
@@ -391,6 +396,7 @@ fn mint_with_mcp_signing_key_file_produces_token() {
         !api_verifier.verify(&token, now, sipnab::auth::SCOPE_FULL),
         "an --mcp-signing-key token must not authenticate against the REST API"
     );
+    Ok(())
 }
 
 /// With signing keys on both surfaces, `--mint-token` signs with the REST
@@ -398,28 +404,28 @@ fn mint_with_mcp_signing_key_file_produces_token() {
 /// and MCP is used only when the API supplies no key.
 #[cfg(all(feature = "api", feature = "mcp"))]
 #[test]
-fn with_keys_on_both_surfaces_the_api_key_signs() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn with_keys_on_both_surfaces_the_api_key_signs() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let api_path = dir.path().join("api.key");
     let mcp_path = dir.path().join("mcp.key");
     let api_key = b"both-surfaces-api-key-0123456789";
     let mcp_key = b"both-surfaces-mcp-key-9876543210";
-    std::fs::write(&api_path, api_key).expect("write");
-    std::fs::write(&mcp_path, mcp_key).expect("write");
+    std::fs::write(&api_path, api_key)?;
+    std::fs::write(&mcp_path, mcp_key)?;
 
     let token = run(&[
         "--mint-token",
         "--api-signing-key-file",
-        api_path.to_str().unwrap(),
+        api_path.to_str().ok_or("api_path is not UTF-8")?,
         "--api-token-ttl",
         "60",
         "--mcp-signing-key-file",
-        mcp_path.to_str().unwrap(),
+        mcp_path.to_str().ok_or("mcp_path is not UTF-8")?,
         "--mcp-token-ttl",
         "7200",
         "--token-id",
         "both-surfaces",
-    ])
+    ])?
     .trim()
     .to_string();
 
@@ -452,15 +458,16 @@ fn with_keys_on_both_surfaces_the_api_key_signs() {
         ),
         "the MCP key must not have signed it"
     );
+    Ok(())
 }
 
 /// `--limit 1` on a two-dialog fixture leaves exactly one dialog in the report.
 #[test]
-fn limit_caps_tracked_dialogs() {
+fn limit_caps_tracked_dialogs() -> Result<(), TestError> {
     // --limit N caps the number of dialogs tracked. The RTP fixture has 2
     // dialogs; --limit 1 must keep only 1 in the report.
     let rtp = "tests/pcap-samples/sip-rtp-g711.pcap";
-    let full = run(&["-N", "-I", rtp, "--report", "--no-cli-print"]);
+    let full = run(&["-N", "-I", rtp, "--report", "--no-cli-print"])?;
     let full_rows = full.lines().filter(|l| l.contains('@')).count();
     assert!(
         full_rows >= 2,
@@ -475,24 +482,22 @@ fn limit_caps_tracked_dialogs() {
         "1",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     let capped_rows = capped.lines().filter(|l| l.contains('@')).count();
     assert_eq!(capped_rows, 1, "--limit 1 must keep exactly one dialog");
+    Ok(())
 }
 
 /// `--config <file>` is loaded: `--dump-config` reports the source and echoes
 /// the file's `payload_limit = 99` value.
 #[test]
-fn config_file_is_loaded() {
+fn config_file_is_loaded() -> Result<(), TestError> {
     // --config: the loader reads the file and --dump-config reflects it.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let cfg = dir.path().join("c.toml");
-    std::fs::File::create(&cfg)
-        .unwrap()
-        .write_all(b"[display]\npayload_limit = 99\n")
-        .unwrap();
+    std::fs::File::create(&cfg)?.write_all(b"[display]\npayload_limit = 99\n")?;
 
-    let out = run(&["-D", "--config", cfg.to_str().unwrap()]);
+    let out = run(&["-D", "--config", cfg.to_str().ok_or("cfg is not UTF-8")?])?;
     assert!(
         out.contains("Loaded from:"),
         "must report the loaded source"
@@ -501,34 +506,29 @@ fn config_file_is_loaded() {
         out.contains("payload_limit = 99"),
         "--config values must appear in the dumped config:\n{out}"
     );
+    Ok(())
 }
 
 /// `--bpf-file` applies the filter read from the file: a matching filter
 /// passes all 7 messages, a non-matching one passes zero.
 #[test]
-fn bpf_file_filters_from_a_file() {
+fn bpf_file_filters_from_a_file() -> Result<(), TestError> {
     // --bpf-file: a matching filter passes all packets; a non-matching one
     // passes none — proving the BPF is read from the file and applied.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let matching = dir.path().join("match.bpf");
-    std::fs::File::create(&matching)
-        .unwrap()
-        .write_all(b"udp port 5060\n")
-        .unwrap();
+    std::fs::File::create(&matching)?.write_all(b"udp port 5060\n")?;
     let none = dir.path().join("none.bpf");
-    std::fs::File::create(&none)
-        .unwrap()
-        .write_all(b"tcp port 80\n")
-        .unwrap();
+    std::fs::File::create(&none)?.write_all(b"tcp port 80\n")?;
 
     let pass = ndjson_lines(&run(&[
         "-N",
         "-I",
         FIXTURE,
         "--bpf-file",
-        matching.to_str().unwrap(),
+        matching.to_str().ok_or("matching is not UTF-8")?,
         "--json",
-    ]));
+    ])?)?;
     assert_eq!(
         pass.len(),
         7,
@@ -540,40 +540,42 @@ fn bpf_file_filters_from_a_file() {
         "-I",
         FIXTURE,
         "--bpf-file",
-        none.to_str().unwrap(),
+        none.to_str().ok_or("none is not UTF-8")?,
         "--json",
-    ]));
+    ])?)?;
     assert!(drop.is_empty(), "non-matching --bpf-file must pass none");
+    Ok(())
 }
 
 /// `--on-dialog-exec` runs the command when a dialog completes, proven by a
 /// `touch`-created marker file existing afterward.
 #[test]
-fn on_dialog_exec_runs_per_dialog() {
+fn on_dialog_exec_runs_per_dialog() -> Result<(), TestError> {
     // --on-dialog-exec: the command runs as dialogs complete. Use a command
     // that creates a marker file and assert it exists afterward.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let marker = dir.path().join("fired");
     run(&[
         "-N",
         "-I",
         FIXTURE,
         "--on-dialog-exec",
-        &format!("touch {}", marker.to_str().unwrap()),
-    ]);
+        &format!("touch {}", marker.to_str().ok_or("marker is not UTF-8")?),
+    ])?;
     assert!(
         marker.exists(),
         "--on-dialog-exec command must run for the fixture's dialog"
     );
+    Ok(())
 }
 
 /// A wrong-case `--ua SIPNAB` matches nothing by default but matches the
 /// fixture's `sipnab-test/1.0` UA with `--ignore-case`.
 #[test]
-fn ignore_case_matches_case_insensitively() {
+fn ignore_case_matches_case_insensitively() -> Result<(), TestError> {
     // The fixture's User-Agent is "sipnab-test/1.0". A wrong-case --ua pattern
     // matches nothing by default but matches with --ignore-case.
-    let sensitive = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "SIPNAB", "--json"]));
+    let sensitive = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "SIPNAB", "--json"])?)?;
     assert!(
         sensitive.is_empty(),
         "case-sensitive --ua SIPNAB must not match"
@@ -586,61 +588,65 @@ fn ignore_case_matches_case_insensitively() {
         "SIPNAB",
         "--ignore-case",
         "--json",
-    ]));
+    ])?)?;
     assert!(
         !insensitive.is_empty(),
         "--ignore-case must match the differently-cased User-Agent"
     );
+    Ok(())
 }
 
 /// `--from 1001` matches all 7 messages; adding `--invert` flips the match to
 /// zero messages.
 #[test]
-fn invert_shows_non_matching() {
+fn invert_shows_non_matching() -> Result<(), TestError> {
     // Every message's From is 1001, so --from 1001 matches all; --invert flips
     // it to none.
-    let matched = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--from", "1001", "--json"]));
+    let matched = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--from", "1001", "--json"])?)?;
     assert_eq!(matched.len(), 7, "--from 1001 should match all 7 messages");
     let inverted = ndjson_lines(&run(&[
         "-N", "-I", FIXTURE, "--from", "1001", "--invert", "--json",
-    ]));
+    ])?)?;
     assert!(
         inverted.is_empty(),
         "--invert must drop the matching messages"
     );
+    Ok(())
 }
 
 /// `--ua nab` matches as a substring but yields nothing with `--word`, since
 /// "nab" is not a whole word in `sipnab-test`.
 #[test]
-fn word_matches_whole_words_only() {
+fn word_matches_whole_words_only() -> Result<(), TestError> {
     // "nab" is a substring of the UA "sipnab-test" but not a whole word, so
     // --word excludes it while a plain substring match includes it.
-    let substring = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "nab", "--json"]));
+    let substring = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "nab", "--json"])?)?;
     assert!(!substring.is_empty(), "substring --ua nab should match");
     let whole = ndjson_lines(&run(&[
         "-N", "-I", FIXTURE, "--ua", "nab", "--word", "--json",
-    ]));
+    ])?)?;
     assert!(whole.is_empty(), "--word must require a whole-word match");
+    Ok(())
 }
 
 /// `--after 2` (grep `-A` style) adds the two messages following the single
 /// UA match, growing output from 1 to 3 messages.
 #[test]
-fn after_shows_trailing_context() {
+fn after_shows_trailing_context() -> Result<(), TestError> {
     // --after N is grep -A: N messages after each match. The UA appears on one
     // request; --after 2 adds the two following messages.
-    let match_only = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "sipnab", "--json"]));
+    let match_only = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "sipnab", "--json"])?)?;
     assert_eq!(match_only.len(), 1, "exactly one message carries the UA");
     let with_after = ndjson_lines(&run(&[
         "-N", "-I", FIXTURE, "--ua", "sipnab", "--after", "2", "--json",
-    ]));
+    ])?)?;
     assert_eq!(with_after.len(), 3, "--after 2 adds two trailing messages");
+    Ok(())
 }
 
 /// The `--tag` value appears in the report's Tags column.
 #[test]
-fn tag_labels_dialogs() {
+fn tag_labels_dialogs() -> Result<(), TestError> {
     // --tag applies the given tag to dialogs; it shows in the report Tags column.
     let out = run(&[
         "-N",
@@ -650,11 +656,12 @@ fn tag_labels_dialogs() {
         "burndown-tag",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert!(
         out.contains("burndown-tag"),
         "--tag value must appear in the report:\n{out}"
     );
+    Ok(())
 }
 
 /// SNB-0004: dialog rotation is ON by default. With `--limit` below the call
@@ -663,9 +670,9 @@ fn tag_labels_dialogs() {
 /// the real binary end-to-end so a miswired call site (there are two) can't pass
 /// silently. The fixture has two sequential calls: 1-1966 (older) then 1-1968.
 #[test]
-fn dialog_rotation_defaults_on_keep_newest() {
+fn dialog_rotation_defaults_on_keep_newest() -> Result<(), TestError> {
     let fx = "tests/pcap-samples/sip-rtp-g711.pcap";
-    let default = run(&["-N", "-I", fx, "--limit", "1", "--report", "--no-cli-print"]);
+    let default = run(&["-N", "-I", fx, "--limit", "1", "--report", "--no-cli-print"])?;
     assert!(
         default.contains("1-1968@10.0.2.20") && !default.contains("1-1966@10.0.2.20"),
         "default rotation must keep the NEWEST call (1-1968), evicting 1-1966:\n{default}"
@@ -679,11 +686,12 @@ fn dialog_rotation_defaults_on_keep_newest() {
         "--no-rotate",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert!(
         no_rotate.contains("1-1966@10.0.2.20") && !no_rotate.contains("1-1968@10.0.2.20"),
         "--no-rotate must keep the OLDEST call (1-1966), dropping 1-1968:\n{no_rotate}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -698,7 +706,7 @@ mod pcap_build;
 /// `--rotate` states the default explicitly; it must behave as the default
 /// does (keep the NEWEST dialog at capacity), not merely parse.
 #[test]
-fn rotate_explicitly_keeps_the_newest_dialog() {
+fn rotate_explicitly_keeps_the_newest_dialog() -> Result<(), TestError> {
     let fx = "tests/pcap-samples/sip-rtp-g711.pcap";
     let explicit = run(&[
         "-N",
@@ -709,8 +717,8 @@ fn rotate_explicitly_keeps_the_newest_dialog() {
         "--rotate",
         "--report",
         "--no-cli-print",
-    ]);
-    let default = run(&["-N", "-I", fx, "--limit", "1", "--report", "--no-cli-print"]);
+    ])?;
+    let default = run(&["-N", "-I", fx, "--limit", "1", "--report", "--no-cli-print"])?;
     assert_eq!(
         explicit.trim(),
         default.trim(),
@@ -720,14 +728,15 @@ fn rotate_explicitly_keeps_the_newest_dialog() {
         explicit.contains("1-1968@10.0.2.20"),
         "--rotate must retain the NEWEST call:\n{explicit}"
     );
+    Ok(())
 }
 
 /// `--duration` must reject an unparseable value instead of ignoring it — a
 /// capture that silently ran forever because "5 minutes" was not "5m" is a
 /// worse outcome than a startup error.
 #[test]
-fn duration_rejects_an_unparseable_value() {
-    let (_out, err, code) = run_support::run_or_panic(
+fn duration_rejects_an_unparseable_value() -> Result<(), TestError> {
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -740,12 +749,13 @@ fn duration_rejects_an_unparseable_value() {
         // logger, so with `off` the user gets a bare exit code and no reason —
         // worth knowing, and pinned here so the message cannot quietly vanish.
         Some("error"),
-    );
+    )?;
     assert_ne!(code, Some(0), "--duration must reject 'five-minutes'");
     assert!(
         err.to_lowercase().contains("duration"),
         "rejecting --duration must say what was wrong:\n{err}"
     );
+    Ok(())
 }
 
 /// `--strip-secrets` must remove the Decryption Secrets Block and leave the
@@ -753,9 +763,9 @@ fn duration_rejects_an_unparseable_value() {
 ///
 /// No checked-in sample carries a DSB, so the fixture is built here.
 #[test]
-fn strip_secrets_removes_the_dsb_and_preserves_the_input() {
+fn strip_secrets_removes_the_dsb_and_preserves_the_input() -> Result<(), TestError> {
     const DSB: u32 = 0x0000_000a;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let input = dir.path().join("with-secrets.pcapng");
     let output = dir.path().join("stripped.pcapng");
 
@@ -766,36 +776,37 @@ fn strip_secrets_removes_the_dsb_and_preserves_the_input() {
         5060,
         b"OPTIONS sip:a@b SIP/2.0\r\nCall-ID: strip-test\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     );
-    pcap_build::write_pcapng_with_dsb_or_panic(&input, "CLIENT_RANDOM 0011 22334455\n", &frame);
-    let before = std::fs::read(&input).expect("read input");
+    pcap_build::write_pcapng_with_dsb(&input, "CLIENT_RANDOM 0011 22334455\n", &frame)?;
+    let before = std::fs::read(&input)?;
     assert_eq!(
-        pcap_build::count_pcapng_blocks_or_panic(&input, DSB),
+        pcap_build::count_pcapng_blocks(&input, DSB)?,
         1,
         "fixture must start with exactly one DSB"
     );
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
-            input.to_str().unwrap(),
+            input.to_str().ok_or("input is not UTF-8")?,
             "--strip-secrets",
-            output.to_str().unwrap(),
+            output.to_str().ok_or("output is not UTF-8")?,
             "--no-cli-print",
         ],
         Some("off"),
-    );
+    )?;
     assert_eq!(code, Some(0), "--strip-secrets must succeed:\n{err}");
     assert_eq!(
-        pcap_build::count_pcapng_blocks_or_panic(&output, DSB),
+        pcap_build::count_pcapng_blocks(&output, DSB)?,
         0,
         "the stripped copy must contain no Decryption Secrets Block"
     );
     assert_eq!(
-        std::fs::read(&input).expect("re-read input"),
+        std::fs::read(&input)?,
         before,
         "--strip-secrets must never modify its input"
     );
+    Ok(())
 }
 
 /// `-E`/`--hep-parse` must decode HEP-encapsulated SIP out of a capture.
@@ -810,7 +821,7 @@ fn strip_secrets_removes_the_dsb_and_preserves_the_input() {
 /// this a test of the flag rather than of the parser.
 #[cfg(feature = "hep")]
 #[test]
-fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
+fn hep_parse_decodes_encapsulated_sip_from_a_capture() -> Result<(), TestError> {
     use chrono::Utc;
     use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
 
@@ -827,28 +838,28 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
     );
 
     let ep = HepEndpoint {
-        src_addr: "10.1.0.1".parse().unwrap(),
-        dst_addr: "10.2.0.1".parse().unwrap(),
+        src_addr: "10.1.0.1".parse()?,
+        dst_addr: "10.2.0.1".parse()?,
         src_port: 5060,
         dst_port: 5060,
         transport: sipnab::net::TransportProto::Udp,
     };
     let hep = build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, sip.as_bytes());
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("hep.pcap");
     // HEP rides UDP/9060 by convention.
     let frame = pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 9060, 9060, &hep);
-    pcap_build::write_pcap_or_panic(&path, &[frame]);
+    pcap_build::write_pcap(&path, &[frame])?;
 
     let with_flag = run(&[
         "-N",
         "-I",
-        path.to_str().unwrap(),
+        path.to_str().ok_or("path is not UTF-8")?,
         "--hep-parse",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert!(
         with_flag.contains(CALL_ID),
         "--hep-parse must decode the encapsulated INVITE:\n{with_flag}"
@@ -857,15 +868,16 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
     let without = run(&[
         "-N",
         "-I",
-        path.to_str().unwrap(),
+        path.to_str().ok_or("path is not UTF-8")?,
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert!(
         !without.contains(CALL_ID),
         "without --hep-parse the HEP payload must stay opaque, else the flag \
          gates nothing:\n{without}"
     );
+    Ok(())
 }
 
 /// A registration flood carried by HEP is not written to the fail2ban jail
@@ -888,7 +900,7 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
 /// same flood read off the wire is written without any opt-in.
 #[cfg(all(feature = "hep", target_os = "linux"))]
 #[test]
-fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
+fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() -> Result<(), TestError> {
     use chrono::Utc;
     use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
     use std::io::Read;
@@ -935,7 +947,7 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
 
     // Run the listener, deliver `exchange` to it as HEP, stop it, and return
     // (stdout, stderr).
-    let listen = |extra: &[&str]| -> (String, String) {
+    let listen = |extra: &[&str]| -> Result<(String, String), TestError> {
         let mut args = vec![
             "-N",
             "--hep-listen",
@@ -954,14 +966,13 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
             .env("SIPNAB_LOG", "warn")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn sipnab");
+            .spawn()?;
 
         let bind = wait_for_own_udp_listener(&mut child, &|| {
             "(stderr is read when the run ends)".to_string()
-        });
+        })?;
 
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
         for (sip, src, dst) in &exchange {
             let hep = build_hep_v3(
                 &endpoint(*src, *dst),
@@ -971,7 +982,7 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
                 None,
                 sip.as_bytes(),
             );
-            sock.send_to(&hep, &bind).expect("send HEP");
+            sock.send_to(&hep, &bind)?;
         }
         // Stop the run the way an operator does, but only once the flood has
         // been analyzed. SIGTERM ends the receive loop without draining what
@@ -980,17 +991,18 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
         // saw no SIP at all. The alert is the evidence both runs assert, and
         // it is written the moment the detector fires.
         let seen = {
-            let pipe = child.stderr.take().expect("stderr piped");
+            let pipe = child.stderr.take().ok_or("stderr piped")?;
             let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
             let into = std::sync::Arc::clone(&seen);
             let reader = std::thread::spawn(move || {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(pipe).lines() {
                     let Ok(line) = line else { break };
-                    let mut all = into.lock().expect("stderr buffer");
+                    let mut all = into.lock().map_err(|e| e.to_string())?;
                     all.push_str(&line);
                     all.push('\n');
                 }
+                Ok::<(), String>(())
             });
             (seen, reader)
         };
@@ -999,7 +1011,7 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
                 .any(|l| l.contains("[ALERT]") && l.contains("reg_flood"))
         };
         let analyzed_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !alerted(&seen.0.lock().expect("stderr buffer")) {
+        while !alerted(&seen.0.lock().map_err(|e| e.to_string())?) {
             if std::time::Instant::now() >= analyzed_by {
                 break; // the assertions below report what stderr did say
             }
@@ -1007,17 +1019,16 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
         }
         let status = std::process::Command::new("kill")
             .args(["-TERM", &child.id().to_string()])
-            .status()
-            .expect("run kill");
+            .status()?;
         assert!(status.success(), "kill -TERM failed");
         let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
-            if child.try_wait().expect("try_wait").is_some() {
+            if child.try_wait()?.is_some() {
                 break;
             }
             if std::time::Instant::now() >= exit_by {
                 let _ = child.kill();
-                panic!("sipnab did not exit within 30 s of SIGTERM");
+                return Err("sipnab did not exit within 30 s of SIGTERM".into());
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -1025,16 +1036,15 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
         child
             .stdout
             .take()
-            .expect("stdout piped")
-            .read_to_string(&mut stdout)
-            .expect("read stdout");
+            .ok_or("stdout piped")?
+            .read_to_string(&mut stdout)?;
         let (seen, reader) = seen;
-        reader.join().expect("stderr reader");
-        let stderr = std::mem::take(&mut *seen.lock().expect("stderr buffer"));
-        (stdout, stderr)
+        reader.join().map_err(|_| "reader thread panicked")??;
+        let stderr = std::mem::take(&mut *seen.lock().map_err(|e| e.to_string())?);
+        Ok((stdout, stderr))
     };
 
-    let (stdout, stderr) = listen(&[]);
+    let (stdout, stderr) = listen(&[])?;
     assert!(
         stderr
             .lines()
@@ -1053,7 +1063,7 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
          at startup that the jail log stays empty by design:\n{stderr}"
     );
 
-    let (stdout, stderr) = listen(&["--hep-allow-kill"]);
+    let (stdout, stderr) = listen(&["--hep-allow-kill"])?;
     assert!(
         stdout.contains("reg_flood src=10.1.0.1 count=3"),
         "--hep-allow-kill must admit the HEP-carried flood to the jail log, the same \
@@ -1065,7 +1075,7 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
     );
 
     // Control: the same six messages read off the wire, with no opt-in.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let wire_pcap = dir.path().join("wire-flood.pcap");
     let frames: Vec<(Vec<u8>, u64)> = exchange
         .iter()
@@ -1077,25 +1087,26 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
             )
         })
         .collect();
-    pcap_build::write_pcap_at_or_panic(&wire_pcap, &frames, 1);
-    let (stdout, stderr, code) = run_support::run_or_panic(
+    pcap_build::write_pcap_at(&wire_pcap, &frames, 1)?;
+    let (stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "-I",
-            wire_pcap.to_str().expect("utf-8 path"),
+            wire_pcap.to_str().ok_or("utf-8 path")?,
             "--reg-flood",
             "--reg-flood-threshold",
             "2",
             "--fail2ban",
         ],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "the wire run failed:\n{stderr}");
     assert!(
         stdout.contains("reg_flood src=10.1.0.1 count=3"),
         "control: the same flood read off the wire must reach the jail log, else the \
          gate above is vacuous:\n{stdout}"
     );
+    Ok(())
 }
 
 /// The caller and callee addresses of [`live_hep_call`].
@@ -1210,7 +1221,7 @@ fn live_hep_endpoint(src: [u8; 4], dst: [u8; 4]) -> sipnab::capture::hep::HepEnd
 /// and only an end-of-run flush could: the container must not exist.
 #[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
 #[test]
-fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
+fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() -> Result<(), TestError> {
     use chrono::Utc;
     use sipnab::capture::hep::{HepProtocol, build_hep_v3};
     use std::io::BufRead;
@@ -1232,7 +1243,7 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
             .unwrap_or_default()
     };
 
-    let spool = tempfile::tempdir().expect("tempdir");
+    let spool = tempfile::tempdir()?;
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
@@ -1243,14 +1254,13 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
             "--export-vcon-when",
             "state == 'Completed'",
             "--export-vcon-dir",
-            spool.path().to_str().expect("utf-8 temp path"),
+            spool.path().to_str().ok_or("utf-8 temp path")?,
         ])
         .env("NO_COLOR", "1")
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab");
+        .spawn()?;
 
     // Drain both pipes on threads, so a full pipe never stalls the run and
     // the test can watch stdout for the messages it delivered.
@@ -1260,22 +1270,28 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
         let reader = std::thread::spawn(move || {
             for line in std::io::BufReader::new(pipe).lines() {
                 let Ok(line) = line else { break };
-                let mut all = into.lock().expect("pipe buffer");
+                let mut all = into.lock().map_err(|e| e.to_string())?;
                 all.push_str(&line);
                 all.push('\n');
             }
+            Ok::<(), String>(())
         });
         (text, reader)
     };
-    let (stdout, out_reader) = drain(Box::new(child.stdout.take().expect("stdout piped")));
-    let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
-    let lines_out = || stdout.lock().expect("stdout buffer").lines().count();
+    let (stdout, out_reader) = drain(Box::new(child.stdout.take().ok_or("stdout piped")?));
+    let (stderr, err_reader) = drain(Box::new(child.stderr.take().ok_or("stderr piped")?));
+    let lines_out = || -> Result<usize, TestError> {
+        Ok(stdout.lock().map_err(|e| e.to_string())?.lines().count())
+    };
 
     let bind = wait_for_own_udp_listener(&mut child, &|| {
-        stderr.lock().expect("stderr buffer").clone()
-    });
-    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
-    let deliver = |call_id: &str| {
+        stderr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    })?;
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let deliver = |call_id: &str| -> Result<_, TestError> {
         for (sip, src, dst) in call(call_id) {
             let hep = build_hep_v3(
                 &endpoint(src, dst),
@@ -1285,18 +1301,19 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
                 None,
                 sip.as_bytes(),
             );
-            sock.send_to(&hep, &bind).expect("send HEP");
+            sock.send_to(&hep, &bind)?;
         }
+        Ok(())
     };
 
     // The first call: its container must appear while the run is running.
-    deliver(FIRST);
+    deliver(FIRST)?;
     let written_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         assert!(
-            child.try_wait().expect("try_wait").is_none(),
+            child.try_wait()?.is_none(),
             "sipnab exited before writing the first container:\n{}",
-            stderr.lock().expect("stderr buffer")
+            stderr.lock().map_err(|e| e.to_string())?
         );
         if containers(spool.path()).iter().any(|t| t.contains(FIRST)) {
             break;
@@ -1305,44 +1322,43 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
             std::time::Instant::now() < written_by,
             "no container for a completed call within 30 s of a LIVE run \
              (it is only written at the end of the run):\nstdout:\n{}\nstderr:\n{}",
-            stdout.lock().expect("stdout buffer"),
-            stderr.lock().expect("stderr buffer")
+            stdout.lock().map_err(|e| e.to_string())?,
+            stderr.lock().map_err(|e| e.to_string())?
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(
-        child.try_wait().expect("try_wait").is_none(),
+        child.try_wait()?.is_none(),
         "the container must be written by a running process"
     );
 
     // The second call: confirmed read, then stopped at once.
-    let before = lines_out();
-    deliver(SECOND);
+    let before = lines_out()?;
+    deliver(SECOND)?;
     let read_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while lines_out() < before + 7 {
+    while lines_out()? < before + 7 {
         assert!(
             std::time::Instant::now() < read_by,
             "the second call was never read, so the stop below would prove \
              nothing:\n{}",
-            stdout.lock().expect("stdout buffer")
+            stdout.lock().map_err(|e| e.to_string())?
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let status = std::process::Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
-        .status()
-        .expect("run kill");
+        .status()?;
     assert!(status.success(), "kill -TERM failed");
     let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while child.try_wait().expect("try_wait").is_none() {
+    while child.try_wait()?.is_none() {
         if std::time::Instant::now() >= exit_by {
             let _ = child.kill();
-            panic!("sipnab did not exit within 30 s of SIGTERM");
+            return Err("sipnab did not exit within 30 s of SIGTERM".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    out_reader.join().expect("stdout reader");
-    err_reader.join().expect("stderr reader");
+    out_reader.join().map_err(|_| "reader thread panicked")??;
+    err_reader.join().map_err(|_| "reader thread panicked")??;
 
     let written = containers(spool.path());
     assert!(
@@ -1353,8 +1369,9 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() {
         !written.iter().any(|t| t.contains(SECOND)),
         "a stopped live run wrote the second call's container on its way out; \
          a stop must leave no residual data:\n{}",
-        stderr.lock().expect("stderr buffer")
+        stderr.lock().map_err(|e| e.to_string())?
     );
+    Ok(())
 }
 
 /// Run a live `--hep-listen` capture with `--export-vcon <call_id> --vcon-out
@@ -1372,7 +1389,7 @@ fn run_live_single_vcon_export(
     call_id: &str,
     out: &std::path::Path,
     wait_for_container: bool,
-) -> (std::process::ExitStatus, String) {
+) -> Result<(std::process::ExitStatus, String), TestError> {
     use chrono::Utc;
     use sipnab::capture::hep::{HepProtocol, build_hep_v3};
     use std::io::BufRead;
@@ -1387,34 +1404,37 @@ fn run_live_single_vcon_export(
             "--export-vcon",
             call_id,
             "--vcon-out",
-            out.to_str().expect("utf-8 temp path"),
+            out.to_str().ok_or("utf-8 temp path")?,
         ])
         .env("NO_COLOR", "1")
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab");
+        .spawn()?;
     let drain = |pipe: Box<dyn std::io::Read + Send>| {
         let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let into = std::sync::Arc::clone(&text);
         let reader = std::thread::spawn(move || {
             for line in std::io::BufReader::new(pipe).lines() {
                 let Ok(line) = line else { break };
-                let mut all = into.lock().expect("pipe buffer");
+                let mut all = into.lock().map_err(|e| e.to_string())?;
                 all.push_str(&line);
                 all.push('\n');
             }
+            Ok::<(), String>(())
         });
         (text, reader)
     };
-    let (stdout, out_reader) = drain(Box::new(child.stdout.take().expect("stdout piped")));
-    let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
+    let (stdout, out_reader) = drain(Box::new(child.stdout.take().ok_or("stdout piped")?));
+    let (stderr, err_reader) = drain(Box::new(child.stderr.take().ok_or("stderr piped")?));
 
     let bind = wait_for_own_udp_listener(&mut child, &|| {
-        stderr.lock().expect("stderr buffer").clone()
-    });
-    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
+        stderr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    })?;
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
     for (sip, src, dst) in live_hep_call(call_id) {
         let hep = build_hep_v3(
             &live_hep_endpoint(src, dst),
@@ -1424,7 +1444,7 @@ fn run_live_single_vcon_export(
             None,
             sip.as_bytes(),
         );
-        sock.send_to(&hep, &bind).expect("send HEP");
+        sock.send_to(&hep, &bind)?;
     }
 
     let container_written = || {
@@ -1436,9 +1456,9 @@ fn run_live_single_vcon_export(
     if wait_for_container {
         loop {
             assert!(
-                child.try_wait().expect("try_wait").is_none(),
+                child.try_wait()?.is_none(),
                 "sipnab exited before writing the container:\n{}",
-                stderr.lock().expect("stderr buffer")
+                stderr.lock().map_err(|e| e.to_string())?
             );
             if container_written() {
                 break;
@@ -1447,28 +1467,28 @@ fn run_live_single_vcon_export(
                 std::time::Instant::now() < by,
                 "no container for the completed call within 30 s of a LIVE run \
                  (it is only written at the end of the run):\nstdout:\n{}\nstderr:\n{}",
-                stdout.lock().expect("stdout buffer"),
-                stderr.lock().expect("stderr buffer")
+                stdout.lock().map_err(|e| e.to_string())?,
+                stderr.lock().map_err(|e| e.to_string())?
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(
-            child.try_wait().expect("try_wait").is_none(),
+            child.try_wait()?.is_none(),
             "the container must be written by a running process"
         );
     } else {
-        while stdout.lock().expect("stdout buffer").lines().count() < 7 {
+        while stdout.lock().map_err(|e| e.to_string())?.lines().count() < 7 {
             assert!(
-                child.try_wait().expect("try_wait").is_none(),
+                child.try_wait()?.is_none(),
                 "sipnab exited before reading the call:\n{}",
-                stderr.lock().expect("stderr buffer")
+                stderr.lock().map_err(|e| e.to_string())?
             );
             assert!(
                 std::time::Instant::now() < by,
                 "the call was never read, so the stop below would prove \
                  nothing:\nstdout:\n{}\nstderr:\n{}",
-                stdout.lock().expect("stdout buffer"),
-                stderr.lock().expect("stderr buffer")
+                stdout.lock().map_err(|e| e.to_string())?,
+                stderr.lock().map_err(|e| e.to_string())?
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -1476,24 +1496,23 @@ fn run_live_single_vcon_export(
 
     let status = std::process::Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
-        .status()
-        .expect("run kill");
+        .status()?;
     assert!(status.success(), "kill -TERM failed");
     let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let exit = loop {
-        if let Some(exit) = child.try_wait().expect("try_wait") {
+        if let Some(exit) = child.try_wait()? {
             break exit;
         }
         if std::time::Instant::now() >= exit_by {
             let _ = child.kill();
-            panic!("sipnab did not exit within 30 s of SIGTERM");
+            return Err("sipnab did not exit within 30 s of SIGTERM".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    out_reader.join().expect("stdout reader");
-    err_reader.join().expect("stderr reader");
-    let stderr = std::mem::take(&mut *stderr.lock().expect("stderr buffer"));
-    (exit, stderr)
+    out_reader.join().map_err(|_| "reader thread panicked")??;
+    err_reader.join().map_err(|_| "reader thread panicked")??;
+    let stderr = std::mem::take(&mut *stderr.lock().map_err(|e| e.to_string())?);
+    Ok((exit, stderr))
 }
 
 /// STOP-AUDIT-1: a live `--export-vcon <CALL-ID> --vcon-out <FILE>` writes the
@@ -1504,20 +1523,21 @@ fn run_live_single_vcon_export(
 /// now appear while the process runs, and the stop must leave it as written.
 #[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
 #[test]
-fn a_live_single_vcon_export_writes_when_the_call_ends() {
+fn a_live_single_vcon_export_writes_when_the_call_ends() -> Result<(), TestError> {
     const CALL: &str = "live-single-ended@10.1.0.1";
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("one.json");
-    let (exit, stderr) = run_live_single_vcon_export(CALL, &out, true);
+    let (exit, stderr) = run_live_single_vcon_export(CALL, &out, true)?;
     assert!(exit.success(), "the run failed ({exit}):\n{stderr}");
-    let text = std::fs::read_to_string(&out).expect("the container is still there");
-    let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let text = std::fs::read_to_string(&out)?;
+    let json: serde_json::Value = serde_json::from_str(&text)?;
     assert!(json["uuid"].is_string(), "not a vCon: {json}");
     assert!(json["parties"].is_array(), "not a vCon: {json}");
     assert!(
         text.contains(CALL),
         "the container is for another call: {text}"
     );
+    Ok(())
 }
 
 /// STOP-AUDIT-1: a live `--export-vcon` stopped by a signal before its call
@@ -1527,11 +1547,11 @@ fn a_live_single_vcon_export_writes_when_the_call_ends() {
 /// export used to create its `--vcon-out` file at the stop.
 #[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
 #[test]
-fn a_stopped_live_single_vcon_export_writes_nothing() {
+fn a_stopped_live_single_vcon_export_writes_nothing() -> Result<(), TestError> {
     const CALL: &str = "live-single-stopped@10.1.0.1";
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("one.json");
-    let (exit, stderr) = run_live_single_vcon_export(CALL, &out, false);
+    let (exit, stderr) = run_live_single_vcon_export(CALL, &out, false)?;
     assert!(
         exit.success(),
         "a stop that writes nothing is what was asked for, not a failure ({exit}):\n{stderr}"
@@ -1541,6 +1561,7 @@ fn a_stopped_live_single_vcon_export_writes_nothing() {
         "a stopped live run wrote the call's container on its way out; a stop \
          must leave no residual data:\n{stderr}"
     );
+    Ok(())
 }
 
 /// PCAPX-DEC D4: a live `--pcap-export-mode decrypted` run stopped by a signal
@@ -1550,13 +1571,13 @@ fn a_stopped_live_single_vcon_export_writes_nothing() {
 /// five-second window, so every one of them is still held at the stop.
 #[cfg(all(feature = "hep", feature = "tls", target_os = "linux"))]
 #[test]
-fn a_stopped_live_decrypted_export_writes_nothing_it_held() {
+fn a_stopped_live_decrypted_export_writes_nothing_it_held() -> Result<(), TestError> {
     use chrono::Utc;
     use sipnab::capture::hep::{HepProtocol, build_hep_v3};
     use std::io::BufRead;
     const CALL: &str = "live-decrypted-stopped@10.1.0.1";
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("held.pcapng");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -1567,7 +1588,7 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() {
             "--hep-parse",
             "--pcapng",
             "-O",
-            out.to_str().expect("utf-8 temp path"),
+            out.to_str().ok_or("utf-8 temp path")?,
             "--pcap-export-mode",
             "decrypted",
         ])
@@ -1575,27 +1596,30 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() {
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab");
+        .spawn()?;
     let drain = |pipe: Box<dyn std::io::Read + Send>| {
         let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let into = std::sync::Arc::clone(&text);
         let reader = std::thread::spawn(move || {
             for line in std::io::BufReader::new(pipe).lines() {
                 let Ok(line) = line else { break };
-                let mut all = into.lock().expect("pipe buffer");
+                let mut all = into.lock().map_err(|e| e.to_string())?;
                 all.push_str(&line);
                 all.push('\n');
             }
+            Ok::<(), String>(())
         });
         (text, reader)
     };
-    let (stdout, out_reader) = drain(Box::new(child.stdout.take().expect("stdout piped")));
-    let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
+    let (stdout, out_reader) = drain(Box::new(child.stdout.take().ok_or("stdout piped")?));
+    let (stderr, err_reader) = drain(Box::new(child.stderr.take().ok_or("stderr piped")?));
     let bind = wait_for_own_udp_listener(&mut child, &|| {
-        stderr.lock().expect("stderr buffer").clone()
-    });
-    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
+        stderr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    })?;
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let call = live_hep_call(CALL);
     for (sip, src, dst) in &call {
         let hep = build_hep_v3(
@@ -1606,62 +1630,62 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() {
             None,
             sip.as_bytes(),
         );
-        sock.send_to(&hep, &bind).expect("send HEP");
+        sock.send_to(&hep, &bind)?;
     }
     let by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while stdout.lock().expect("stdout buffer").lines().count() < call.len() {
+    while stdout.lock().map_err(|e| e.to_string())?.lines().count() < call.len() {
         assert!(
-            child.try_wait().expect("try_wait").is_none(),
+            child.try_wait()?.is_none(),
             "sipnab exited before reading the call:\n{}",
-            stderr.lock().expect("stderr buffer")
+            stderr.lock().map_err(|e| e.to_string())?
         );
         assert!(
             std::time::Instant::now() < by,
             "the call was never read, so the stop below would prove nothing:\n{}",
-            stderr.lock().expect("stderr buffer")
+            stderr.lock().map_err(|e| e.to_string())?
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let status = std::process::Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
-        .status()
-        .expect("run kill");
+        .status()?;
     assert!(status.success(), "kill -TERM failed");
     let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let exit = loop {
-        if let Some(exit) = child.try_wait().expect("try_wait") {
+        if let Some(exit) = child.try_wait()? {
             break exit;
         }
         if std::time::Instant::now() >= exit_by {
             let _ = child.kill();
-            panic!("sipnab did not exit within 30 s of SIGTERM");
+            return Err("sipnab did not exit within 30 s of SIGTERM".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    out_reader.join().expect("stdout reader");
-    err_reader.join().expect("stderr reader");
-    let stderr = std::mem::take(&mut *stderr.lock().expect("stderr buffer"));
+    out_reader.join().map_err(|_| "reader thread panicked")??;
+    err_reader.join().map_err(|_| "reader thread panicked")??;
+    let stderr = std::mem::take(&mut *stderr.lock().map_err(|e| e.to_string())?);
     assert!(exit.success(), "a stop is not an error ({exit}):\n{stderr}");
 
-    let frames = std::fs::read(&out).map_or(0, |raw| {
-        let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..]).expect("pcapng");
-        let mut n = 0;
-        while let Some(block) = reader.next_block() {
-            if matches!(
-                block.expect("a block"),
-                pcap_file::pcapng::Block::EnhancedPacket(_)
-            ) {
-                n += 1;
+    let frames = match std::fs::read(&out) {
+        Err(_) => 0,
+        Ok(raw) => {
+            let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
+            let mut n = 0;
+            while let Some(block) = reader.next_block() {
+                if matches!(block?, pcap_file::pcapng::Block::EnhancedPacket(_)) {
+                    n += 1;
+                }
             }
+            n
         }
-        n
-    });
+    };
     assert_eq!(frames, 0, "a stopped run wrote frames it held:\n{stderr}");
     let discarded = format!("{} discarded at stop", call.len());
     assert!(
         stderr.contains(&discarded),
         "expected {discarded:?}:\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--alert reg-flood:50/10s:5m` end to end: once the rule fires for a source,
@@ -1678,7 +1702,7 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() {
 /// fires on every burst, and a broken cooldown fires on every finding past the
 /// fiftieth, so both regressions change the count.
 #[test]
-fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
+fn reg_flood_rule_cooldown_suppresses_repeat_alert() -> Result<(), TestError> {
     const SBC: [u8; 4] = [10, 1, 0, 1];
     const REGISTRAR: [u8; 4] = [10, 2, 0, 1];
     let register = |i: usize| {
@@ -1721,16 +1745,16 @@ fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
             ));
         }
     }
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("reg-flood-cooldown.pcap");
-    pcap_build::write_pcap_at_or_panic(&pcap, &frames, 1);
+    pcap_build::write_pcap_at(&pcap, &frames, 1)?;
 
-    let (_, stderr, code) = run_support::run_or_panic(
+    let (_, stderr, code) = run_support::run(
         &[
             "--no-config",
             "-N",
             "-I",
-            pcap.to_str().expect("utf-8 path"),
+            pcap.to_str().ok_or("utf-8 path")?,
             "--reg-flood",
             "--reg-flood-threshold",
             "1",
@@ -1738,7 +1762,7 @@ fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
             "reg-flood:50/10s:5m",
         ],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "the run failed:\n{stderr}");
     let alerts: Vec<&str> = stderr
         .lines()
@@ -1751,6 +1775,7 @@ fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
          the one at 400 s is past it:\n{}",
         alerts.join("\n")
     );
+    Ok(())
 }
 
 /// `--reg-flood --fail2ban` arms a producer of jail lines, so the startup
@@ -1763,13 +1788,13 @@ fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
 /// and this pins that the run consults it with the flood detector it
 /// actually built rather than with the flag alone.
 #[test]
-fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() {
+fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() -> Result<(), TestError> {
     const SILENCE_WARNING: &str = "An empty jail log means";
 
-    let (_, stderr, code) = run_support::run_or_panic(
+    let (_, stderr, code) = run_support::run(
         &["-N", "-I", FIXTURE, "--reg-flood", "--fail2ban"],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "the --reg-flood run failed:\n{stderr}");
     assert!(
         !stderr.contains(SILENCE_WARNING),
@@ -1779,13 +1804,13 @@ fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() {
 
     // Control: with no producer armed, the warning is the one thing the run
     // can say about the empty log it is about to leave behind.
-    let (_, stderr, code) =
-        run_support::run_or_panic(&["-N", "-I", FIXTURE, "--fail2ban"], Some("warn"));
+    let (_, stderr, code) = run_support::run(&["-N", "-I", FIXTURE, "--fail2ban"], Some("warn"))?;
     assert_eq!(code, Some(0), "the unarmed run failed:\n{stderr}");
     assert!(
         stderr.contains(SILENCE_WARNING),
         "control: nothing armed must still warn of the coming silence:\n{stderr}"
     );
+    Ok(())
 }
 
 /// A capture truncated by a full disk must not report success.
@@ -1805,28 +1830,28 @@ fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() {
 /// the same `target_os = "linux"` the writer's own ENOSPC module uses.
 #[cfg(target_os = "linux")]
 #[test]
-fn output_write_failure_exits_nonzero() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn output_write_failure_exits_nonzero() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let big = dir.path().join("big.pcap");
     let frames: Vec<Vec<u8>> = (0..600)
         .flat_map(|i| {
             pcap_build::sip_call_frames(&format!("wf-{i}@t"), &format!("{i:06x}"), "a", "b")
         })
         .collect();
-    pcap_build::write_pcap_or_panic(&big, &frames);
+    pcap_build::write_pcap(&big, &frames)?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
-            big.to_str().unwrap(),
+            big.to_str().ok_or("big is not UTF-8")?,
             "-O",
             "/dev/full",
             "--pcapng",
             "--no-cli-print",
         ],
         Some("error"),
-    );
+    )?;
     assert_ne!(
         code,
         Some(0),
@@ -1841,23 +1866,24 @@ fn output_write_failure_exits_nonzero() {
     // And the same run against a writable path must still succeed, so the
     // gate cannot be satisfied by failing everything.
     let good = dir.path().join("good.pcapng");
-    let (_o2, e2, code2) = run_support::run_or_panic(
+    let (_o2, e2, code2) = run_support::run(
         &[
             "-N",
             "-I",
-            big.to_str().unwrap(),
+            big.to_str().ok_or("big is not UTF-8")?,
             "-O",
-            good.to_str().unwrap(),
+            good.to_str().ok_or("good is not UTF-8")?,
             "--pcapng",
             "--no-cli-print",
         ],
         Some("error"),
-    );
+    )?;
     assert_eq!(code2, Some(0), "a writable output must still exit 0:\n{e2}");
     assert!(
-        std::fs::metadata(&good).expect("output written").len() > 0,
+        std::fs::metadata(&good)?.len() > 0,
         "the control run must actually produce a file"
     );
+    Ok(())
 }
 
 /// Emitted output that could not be written must fail — unless the reader
@@ -1876,44 +1902,39 @@ fn output_write_failure_exits_nonzero() {
 /// Linux-gated for /dev/full, as above.
 #[cfg(target_os = "linux")]
 #[test]
-fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
+fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() -> Result<(), TestError> {
     use std::process::{Command, Stdio};
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let cap = dir.path().join("cap.pcap");
     let frames: Vec<Vec<u8>> = (0..400)
         .flat_map(|i| {
             pcap_build::sip_call_frames(&format!("js-{i}@t"), &format!("{i:06x}"), "a", "b")
         })
         .collect();
-    pcap_build::write_pcap_or_panic(&cap, &frames);
-    let input = cap.to_str().expect("utf-8 path");
+    pcap_build::write_pcap(&cap, &frames)?;
+    let input = cap.to_str().ok_or("utf-8 path")?;
 
     // 1. A writable destination succeeds and actually emits.
     let good = dir.path().join("out.ndjson");
     let status = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", input, "--json"])
-        .stdout(std::fs::File::create(&good).expect("create out"))
+        .stdout(std::fs::File::create(&good)?)
         .stderr(Stdio::null())
-        .status()
-        .expect("spawn");
+        .status()?;
     assert!(status.success(), "writable output must exit 0");
     assert!(
-        std::fs::metadata(&good).expect("out written").len() > 0,
+        std::fs::metadata(&good)?.len() > 0,
         "the control must actually emit NDJSON, or the other two prove nothing"
     );
 
     // 2. A full disk is data loss and must fail.
-    let full = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/full")
-        .expect("open /dev/full");
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full")?;
     let status = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", input, "--json"])
         .stdout(full)
         .stderr(Stdio::null())
-        .status()
-        .expect("spawn");
+        .status()?;
     assert!(
         !status.success(),
         "--json to a full disk must not report success"
@@ -1924,16 +1945,16 @@ fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
         .args(["-N", "-I", input, "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn");
+        .spawn()?;
     // Drop the read end immediately: the next write gets EPIPE.
     drop(child.stdout.take());
-    let status = child.wait().expect("wait");
+    let status = child.wait()?;
     assert!(
         status.success() || status.code().is_none(),
         "a closed downstream pipe must not fail the capture (got {status:?}) — \
          this is the case a naive ENOSPC fix breaks"
     );
+    Ok(())
 }
 
 /// `--report` must fail cleanly on an unwritable stdout, not panic — and a
@@ -1944,30 +1965,26 @@ fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
 /// while `-O` and `--json` reported the identical condition as a clean error.
 #[cfg(target_os = "linux")]
 #[test]
-fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() {
+fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() -> Result<(), TestError> {
     use std::process::{Command, Stdio};
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let cap = dir.path().join("cap.pcap");
     let frames: Vec<Vec<u8>> = (0..400)
         .flat_map(|i| {
             pcap_build::sip_call_frames(&format!("rp-{i}@t"), &format!("{i:06x}"), "a", "b")
         })
         .collect();
-    pcap_build::write_pcap_or_panic(&cap, &frames);
-    let input = cap.to_str().expect("utf-8 path");
+    pcap_build::write_pcap(&cap, &frames)?;
+    let input = cap.to_str().ok_or("utf-8 path")?;
 
     // Full disk: a clean non-zero, and specifically NOT a panic (101).
-    let full = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/full")
-        .expect("open /dev/full");
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full")?;
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", input, "--report"])
         .stdout(full)
         .stderr(Stdio::piped())
-        .output()
-        .expect("spawn");
+        .output()?;
     assert!(
         !out.status.success(),
         "--report to a full disk must not exit 0"
@@ -1988,14 +2005,14 @@ fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() {
         .args(["-N", "-I", input, "--report"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn");
+        .spawn()?;
     drop(child.stdout.take());
-    let status = child.wait().expect("wait");
+    let status = child.wait()?;
     assert!(
         status.success() || status.code().is_none(),
         "a closed pipe must not fail --report (got {status:?})"
     );
+    Ok(())
 }
 
 /// A report that could not be produced must exit non-zero on the `--cores`
@@ -2006,8 +2023,8 @@ fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() {
 /// but the two multi-core callers discarded the value, so an unknown
 /// `--call-report` id exited 0 there and 1 everywhere else.
 #[test]
-fn unknown_call_report_fails_on_the_multicore_path() {
-    let (_out, err, code) = run_support::run_or_panic(
+fn unknown_call_report_fails_on_the_multicore_path() -> Result<(), TestError> {
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -2018,12 +2035,13 @@ fn unknown_call_report_fails_on_the_multicore_path() {
             "definitely-not-a-call-id",
         ],
         Some("error"),
-    );
+    )?;
     assert_ne!(
         code,
         Some(0),
         "an unknown --call-report id must fail on --cores too:\n{err}"
     );
+    Ok(())
 }
 
 // ── --dialog-track (docs/design/dialog-tracking-modes.md) ──────────────────
@@ -2037,10 +2055,10 @@ fn unknown_call_report_fails_on_the_multicore_path() {
 /// only "coverage" was a test asserting its default was None, which passed
 /// precisely because it did nothing.
 #[test]
-fn dialog_track_branch_splits_what_call_id_merges() {
+fn dialog_track_branch_splits_what_call_id_merges() -> Result<(), TestError> {
     let fx = "tests/pcap-samples/sipp-branch-scenario.pcapng";
-    let count = |mode: &str| -> usize {
-        run(&[
+    let count = |mode: &str| -> Result<_, TestError> {
+        Ok(run(&[
             "-N",
             "-I",
             fx,
@@ -2048,13 +2066,13 @@ fn dialog_track_branch_splits_what_call_id_merges() {
             mode,
             "--report",
             "--no-cli-print",
-        ])
+        ])?
         .lines()
         .filter(|l| l.split_whitespace().next().is_some_and(|w| w.contains('@')))
-        .count()
+        .count())
     };
-    let by_call_id = count("call-id");
-    let by_branch = count("branch");
+    let by_call_id = count("call-id")?;
+    let by_branch = count("branch")?;
     assert!(
         by_call_id > 0 && by_branch > 0,
         "both modes must track something"
@@ -2063,11 +2081,12 @@ fn dialog_track_branch_splits_what_call_id_merges() {
         by_branch > by_call_id,
         "branch must split what call-id merges ({by_branch} vs {by_call_id})"
     );
+    Ok(())
 }
 
 /// `call-id` is the default, so passing it explicitly must change nothing.
 #[test]
-fn dialog_track_call_id_is_the_default() {
+fn dialog_track_call_id_is_the_default() -> Result<(), TestError> {
     let fx = "tests/pcap-samples/sipp-branch-scenario.pcapng";
     let explicit = run(&[
         "-N",
@@ -2077,12 +2096,13 @@ fn dialog_track_call_id_is_the_default() {
         "call-id",
         "--report",
         "--no-cli-print",
-    ]);
-    let default = run(&["-N", "-I", fx, "--report", "--no-cli-print"]);
+    ])?;
+    let default = run(&["-N", "-I", fx, "--report", "--no-cli-print"])?;
     assert_eq!(
         explicit, default,
         "--dialog-track call-id must be the default"
     );
+    Ok(())
 }
 
 /// One ordinary call is one dialog but SEVERAL transactions.
@@ -2091,14 +2111,14 @@ fn dialog_track_call_id_is_the_default() {
 /// another, so `branch` reports more units for a single call. Asserted here
 /// rather than left to be discovered as an apparent miscount.
 #[test]
-fn dialog_track_branch_splits_a_single_call_into_transactions() {
-    let count = |args: &[&str]| -> usize {
-        run(args)
+fn dialog_track_branch_splits_a_single_call_into_transactions() -> Result<(), TestError> {
+    let count = |args: &[&str]| -> Result<_, TestError> {
+        Ok(run(args)?
             .lines()
             .filter(|l| l.split_whitespace().next().is_some_and(|w| w.contains('@')))
-            .count()
+            .count())
     };
-    let as_dialog = count(&["-N", "-I", FIXTURE, "--report", "--no-cli-print"]);
+    let as_dialog = count(&["-N", "-I", FIXTURE, "--report", "--no-cli-print"])?;
     let as_txns = count(&[
         "-N",
         "-I",
@@ -2107,12 +2127,13 @@ fn dialog_track_branch_splits_a_single_call_into_transactions() {
         "branch",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(as_dialog, 1, "the fixture is one dialog");
     assert!(
         as_txns > as_dialog,
         "one call is several transactions ({as_txns} vs {as_dialog})"
     );
+    Ok(())
 }
 
 /// An unknown method is rejected at startup.
@@ -2120,8 +2141,8 @@ fn dialog_track_branch_splits_a_single_call_into_transactions() {
 /// The removed flag accepted `--dialog-track telepathy` and exited 0, so a
 /// typo silently selected the default.
 #[test]
-fn dialog_track_rejects_an_unknown_method() {
-    let (_out, err, code) = run_support::run_or_panic(
+fn dialog_track_rejects_an_unknown_method() -> Result<(), TestError> {
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -2131,25 +2152,26 @@ fn dialog_track_rejects_an_unknown_method() {
             "--no-cli-print",
         ],
         Some("error"),
-    );
+    )?;
     assert_ne!(code, Some(0), "an unknown method must fail");
     assert!(
         err.contains("telepathy") || err.to_lowercase().contains("dialog-track"),
         "the error must name the rejected value:\n{err}"
     );
+    Ok(())
 }
 
 /// The `--cores` path builds its own per-worker stores, so the flag has to be
 /// carried through the parallel config — a separate code path that would
 /// otherwise ignore it silently.
 #[test]
-fn dialog_track_applies_on_the_multicore_path() {
+fn dialog_track_applies_on_the_multicore_path() -> Result<(), TestError> {
     let fx = "tests/pcap-samples/sipp-branch-scenario.pcapng";
-    let count = |args: &[&str]| -> usize {
-        run(args)
+    let count = |args: &[&str]| -> Result<_, TestError> {
+        Ok(run(args)?
             .lines()
             .filter(|l| l.split_whitespace().next().is_some_and(|w| w.contains('@')))
-            .count()
+            .count())
     };
     let single = count(&[
         "-N",
@@ -2159,7 +2181,7 @@ fn dialog_track_applies_on_the_multicore_path() {
         "branch",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     let parallel = count(&[
         "-N",
         "-I",
@@ -2170,11 +2192,12 @@ fn dialog_track_applies_on_the_multicore_path() {
         "branch",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
         single, parallel,
         "--cores must group identically to single-core ({parallel} vs {single})"
     );
+    Ok(())
 }
 
 /// A Call-ID still resolves in branch mode, where it names several units.
@@ -2182,8 +2205,8 @@ fn dialog_track_applies_on_the_multicore_path() {
 /// `--call-report`, the REST API, the MCP tools and the TUI all look a dialog
 /// up by Call-ID; branch mode must not break that.
 #[test]
-fn call_report_resolves_by_call_id_in_branch_mode() {
-    let (_out, err, code) = run_support::run_or_panic(
+fn call_report_resolves_by_call_id_in_branch_mode() -> Result<(), TestError> {
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -2195,12 +2218,13 @@ fn call_report_resolves_by_call_id_in_branch_mode() {
             "--no-cli-print",
         ],
         Some("error"),
-    );
+    )?;
     assert_eq!(
         code,
         Some(0),
         "a Call-ID must still resolve under branch tracking:\n{err}"
     );
+    Ok(())
 }
 
 /// A startup failure after the capture thread is spawned exits cleanly.
@@ -2221,7 +2245,7 @@ fn call_report_resolves_by_call_id_in_branch_mode() {
 /// `-I <missing>` is the everyday version (a mistyped filename), which is why
 /// it earns a test rather than being left to the exotic ones.
 #[test]
-fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
+fn startup_failures_after_the_capture_thread_starts_exit_cleanly() -> Result<(), TestError> {
     // A missing file is now rejected during planning, BEFORE any thread is
     // spawned — `-I` resolves directories and globs into a file list, and that
     // resolution validates what it is handed. Still exit 1, and the message is
@@ -2231,8 +2255,7 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
     // path, so the thread-leak contract described above now rests ENTIRELY on
     // the chroot case below. Do not delete that one as redundant — it is the
     // only remaining probe that gets past the hand-shake.
-    let (_out, err, code) =
-        run_support::run_or_panic(&["-N", "-I", "/nonexistent.pcap"], Some("error"));
+    let (_out, err, code) = run_support::run(&["-N", "-I", "/nonexistent.pcap"], Some("error"))?;
     assert_eq!(
         code,
         Some(1),
@@ -2245,10 +2268,10 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
 
     // Post-hand-shake failure: the file opens, the capture thread is running,
     // and a later startup step fails.
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", FIXTURE, "--chroot", "/nonexistent-dir"],
         Some("error"),
-    );
+    )?;
     assert_eq!(
         code,
         Some(1),
@@ -2258,6 +2281,7 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
         err.contains("Failed to chroot"),
         "the failure must name chroot as the cause:\n{err}"
     );
+    Ok(())
 }
 
 /// `--token-scope metrics` mints a token the verifier treats as scrape-only,
@@ -2269,27 +2293,24 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
 /// while the operator believed they were scoping them, which is the failure
 /// worth catching: it is silent, and it fails open.
 #[test]
-fn token_scope_flag_mints_a_scope_the_verifier_honors() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn token_scope_flag_mints_a_scope_the_verifier_honors() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("api.key");
     let key = b"scope-flag-signing-key-0123456789";
-    std::fs::File::create(&key_path)
-        .unwrap()
-        .write_all(key)
-        .unwrap();
+    std::fs::File::create(&key_path)?.write_all(key)?;
 
-    let mint = |scope: &str| {
-        run(&[
+    let mint = |scope: &str| -> Result<_, TestError> {
+        Ok(run(&[
             "--mint-token",
             "--token-scope",
             scope,
             "--api-signing-key-file",
-            key_path.to_str().unwrap(),
+            key_path.to_str().ok_or("utf-8 key path")?,
             "--token-id",
             "scope-flag",
-        ])
+        ])?
         .trim()
-        .to_string()
+        .to_string())
     };
 
     let verifier = TokenVerifier::new(VerifierConfig {
@@ -2300,7 +2321,7 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() {
     });
     let now = chrono::Utc::now().timestamp();
 
-    let scoped = mint("metrics");
+    let scoped = mint("metrics")?;
     assert!(
         verifier.verify(&scoped, now, sipnab::auth::SCOPE_METRICS),
         "--token-scope metrics must mint a token accepted for metrics"
@@ -2311,7 +2332,7 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() {
          the flag would otherwise be decorative"
     );
 
-    let full = mint("full");
+    let full = mint("full")?;
     assert!(
         verifier.verify(&full, now, sipnab::auth::SCOPE_FULL),
         "--token-scope full must mint a full-access token"
@@ -2322,7 +2343,7 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() {
          changing another system"
     );
 
-    let actions = mint("actions");
+    let actions = mint("actions")?;
     assert!(
         verifier.verify(&actions, now, sipnab::auth::SCOPE_ACTIONS),
         "--token-scope actions must mint a token accepted for actions"
@@ -2331,6 +2352,7 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() {
         verifier.verify(&actions, now, sipnab::auth::SCOPE_FULL),
         "and one that reads everything a full token can"
     );
+    Ok(())
 }
 
 /// `--token-scope metrics` is refused for the MCP surface at mint time.
@@ -2346,7 +2368,7 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() {
 /// made a bare `100 Trying` show up under a failure query. One line per call is
 /// the shape an operator triaging failures actually wants.
 #[test]
-fn json_dialogs_emits_one_object_per_dialog() {
+fn json_dialogs_emits_one_object_per_dialog() -> Result<(), TestError> {
     let out = run(&[
         "-N",
         "-I",
@@ -2354,7 +2376,7 @@ fn json_dialogs_emits_one_object_per_dialog() {
         "--json-dialogs",
         "--no-cli-print",
         "--quiet",
-    ]);
+    ])?;
     let lines: Vec<&str> = out.trim().lines().filter(|l| l.starts_with('{')).collect();
     assert!(
         !lines.is_empty(),
@@ -2363,7 +2385,7 @@ fn json_dialogs_emits_one_object_per_dialog() {
     let mut failed_with_a_code = 0;
     for line in &lines {
         let v: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("line is not JSON: {e}\n{line}"));
+            serde_json::from_str(line).map_err(|e| format!("line is not JSON: {e}\n{line}"))?;
         assert!(v.get("call_id").is_some(), "every record names its dialog");
         assert!(v.get("state").is_some(), "every record carries its state");
         if v.get("state").and_then(serde_json::Value::as_str) == Some("Failed") {
@@ -2380,6 +2402,7 @@ fn json_dialogs_emits_one_object_per_dialog() {
         "this capture contains a 488-rejected call; if none is Failed the \
          fixture or the state machine changed"
     );
+    Ok(())
 }
 
 // Mints and inspects an MCP token, so it needs the surface that
@@ -2388,30 +2411,28 @@ fn json_dialogs_emits_one_object_per_dialog() {
 // reads that correct refusal as a wrong claim.
 #[cfg(feature = "mcp")]
 #[test]
-fn token_scope_metrics_is_refused_for_the_mcp_surface() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn token_scope_metrics_is_refused_for_the_mcp_surface() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("mcp.key");
-    std::fs::File::create(&key_path)
-        .unwrap()
-        .write_all(b"mcp-scope-signing-key-0123456789")
-        .unwrap();
+    std::fs::File::create(&key_path)?.write_all(b"mcp-scope-signing-key-0123456789")?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &[
             "--mint-token",
             "--token-scope",
             "metrics",
             "--mcp-signing-key-file",
-            key_path.to_str().unwrap(),
+            key_path.to_str().ok_or("key_path is not UTF-8")?,
         ],
         Some("error"),
-    );
+    )?;
 
     assert_ne!(code, Some(0), "minting must fail, got success:\n{err}");
     assert!(
         err.contains("/metrics"),
         "the error must say why — MCP has no metrics endpoint:\n{err}"
     );
+    Ok(())
 }
 
 /// `--token-scope read` is refused for the REST API surface at mint time.
@@ -2421,30 +2442,28 @@ fn token_scope_metrics_is_refused_for_the_mcp_surface() {
 /// refused by every route. Failing at mint beats shipping a token that opens
 /// nothing.
 #[test]
-fn token_scope_read_is_refused_for_the_api_surface() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn token_scope_read_is_refused_for_the_api_surface() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("api.key");
-    std::fs::File::create(&key_path)
-        .unwrap()
-        .write_all(b"api-read-scope-signing-key-01234")
-        .unwrap();
+    std::fs::File::create(&key_path)?.write_all(b"api-read-scope-signing-key-01234")?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &[
             "--mint-token",
             "--token-scope",
             "read",
             "--api-signing-key-file",
-            key_path.to_str().unwrap(),
+            key_path.to_str().ok_or("key_path is not UTF-8")?,
         ],
         Some("error"),
-    );
+    )?;
 
     assert_ne!(code, Some(0), "minting must fail, got success:\n{err}");
     assert!(
         err.contains("MCP surface only"),
         "the error must say the scope belongs to MCP:\n{err}"
     );
+    Ok(())
 }
 
 /// `--token-scope read` mints an MCP token whose claim survives verification
@@ -2459,24 +2478,21 @@ fn token_scope_read_is_refused_for_the_api_surface() {
 // reads that correct refusal as a wrong claim.
 #[cfg(feature = "mcp")]
 #[test]
-fn token_scope_read_mints_an_mcp_token_carrying_the_read_claim() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn token_scope_read_mints_an_mcp_token_carrying_the_read_claim() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("mcp.key");
     let key = b"mcp-read-scope-signing-key-01234";
-    std::fs::File::create(&key_path)
-        .unwrap()
-        .write_all(key)
-        .unwrap();
+    std::fs::File::create(&key_path)?.write_all(key)?;
 
     let token = run(&[
         "--mint-token",
         "--token-scope",
         "read",
         "--mcp-signing-key-file",
-        key_path.to_str().unwrap(),
+        key_path.to_str().ok_or("key_path is not UTF-8")?,
         "--token-id",
         "read-scope-flag",
-    ])
+    ])?
     .trim()
     .to_string();
 
@@ -2498,6 +2514,7 @@ fn token_scope_read_mints_an_mcp_token_carrying_the_read_claim() {
         "a read token must NOT satisfy a full requirement — the flag would \
          otherwise be decorative"
     );
+    Ok(())
 }
 
 /// `-I` silently beats `-d`, so sipnab must say so.
@@ -2509,7 +2526,7 @@ fn token_scope_read_mints_an_mcp_token_carrying_the_read_claim() {
 /// capture with total confidence. For a diagnostic tool a confident wrong
 /// answer is worse than a crash — nobody has reason to doubt it.
 #[test]
-fn passing_both_input_and_device_warns_that_the_file_wins() {
+fn passing_both_input_and_device_warns_that_the_file_wins() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
@@ -2520,8 +2537,7 @@ fn passing_both_input_and_device_warns_that_the_file_wins() {
             "tests/fixtures/sip_call.pcap",
             "--no-cli-print",
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -2532,6 +2548,7 @@ fn passing_both_input_and_device_warns_that_the_file_wins() {
         stderr.contains("Drop -I"),
         "the warning must say how to fix it, not merely that it happened:\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--alert syslog` must enable syslog, not warn and do nothing.
@@ -2547,7 +2564,7 @@ fn passing_both_input_and_device_warns_that_the_file_wins() {
 /// not a wrong answer, but an operator who believes alerting is on. Nothing
 /// fires and nothing says so.
 #[test]
-fn alert_channel_names_are_accepted_not_parsed_as_rules() {
+fn alert_channel_names_are_accepted_not_parsed_as_rules() -> Result<(), TestError> {
     for channel in ["syslog", "json"] {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -2559,8 +2576,7 @@ fn alert_channel_names_are_accepted_not_parsed_as_rules() {
                 channel,
                 "--no-cli-print",
             ])
-            .output()
-            .expect("spawn sipnab");
+            .output()?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !stderr.contains("Skipping invalid alert rule"),
@@ -2571,13 +2587,14 @@ fn alert_channel_names_are_accepted_not_parsed_as_rules() {
             "--alert {channel} is a documented channel and must not be rejected:\n{stderr}"
         );
     }
+    Ok(())
 }
 
 /// An unrecognized channel says what the valid ones are.
 ///
 /// Silently ignoring it would reproduce the original bug in a new place.
 #[test]
-fn an_unknown_alert_channel_names_the_valid_ones() {
+fn an_unknown_alert_channel_names_the_valid_ones() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
@@ -2588,19 +2605,19 @@ fn an_unknown_alert_channel_names_the_valid_ones() {
             "definitely-not-a-channel",
             "--no-cli-print",
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("Unknown alert channel") && stderr.contains("syslog"),
         "an unknown channel must be reported AND the valid ones listed:\n{stderr}"
     );
+    Ok(())
 }
 
 /// The old rule grammar still parses, so anyone who found it in the source
 /// keeps working. A value containing ':' is a rule; a bare word is a channel.
 #[test]
-fn alert_rule_syntax_still_parses() {
+fn alert_rule_syntax_still_parses() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
@@ -2613,8 +2630,7 @@ fn alert_rule_syntax_still_parses() {
             "scanner:10/60s",
             "--no-cli-print",
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("Skipping invalid alert rule"),
@@ -2624,6 +2640,7 @@ fn alert_rule_syntax_still_parses() {
         !stderr.contains("Unknown alert channel"),
         "a value with ':' is a rule, not a channel:\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--cores N` refuses the outputs it cannot produce instead of emitting none.
@@ -2640,7 +2657,7 @@ fn alert_rule_syntax_still_parses() {
 /// is the one conclusion the run had already disproved. Refusing is not the
 /// whole answer — these could be implemented — but it is the honest answer.
 #[test]
-fn cores_refuses_the_outputs_it_cannot_produce() {
+fn cores_refuses_the_outputs_it_cannot_produce() -> Result<(), TestError> {
     for flag in ["--json", "--text-dump", "--fail2ban"] {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args([
@@ -2651,8 +2668,7 @@ fn cores_refuses_the_outputs_it_cannot_produce() {
                 "tests/fixtures/sip_call.pcap",
                 flag,
             ])
-            .output()
-            .expect("spawn sipnab");
+            .output()?;
         assert_eq!(
             out.status.code(),
             Some(2),
@@ -2669,12 +2685,13 @@ fn cores_refuses_the_outputs_it_cannot_produce() {
              knows which one to drop; got:\n{stderr}"
         );
     }
+    Ok(())
 }
 
 /// The whole-capture views still work under `--cores`, so the refusal above is
 /// specific rather than a blanket ban on combining the flags.
 #[test]
-fn cores_still_produces_the_whole_capture_views() {
+fn cores_still_produces_the_whole_capture_views() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",
@@ -2684,8 +2701,7 @@ fn cores_still_produces_the_whole_capture_views() {
             "tests/fixtures/sip_call.pcap",
             "--json-dialogs",
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -2695,6 +2711,7 @@ fn cores_still_produces_the_whole_capture_views() {
         !out.stdout.is_empty(),
         "--json-dialogs under --cores must still emit dialogs"
     );
+    Ok(())
 }
 
 /// `--retain-audio` works without `--mcp`, and the audit reaches the reader.
@@ -2712,8 +2729,8 @@ fn cores_still_produces_the_whole_capture_views() {
 /// EFFECT rather than by refusing the flag: the run must produce the
 /// measurement, not merely accept the argument.
 #[test]
-fn retain_audio_without_mcp_produces_the_amplitude_measurement() {
-    let (stdout, stderr, code) = run_support::run_or_panic(
+fn retain_audio_without_mcp_produces_the_amplitude_measurement() -> Result<(), TestError> {
+    let (stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -2723,7 +2740,7 @@ fn retain_audio_without_mcp_produces_the_amplitude_measurement() {
             "--no-cli-print",
         ],
         Some("off"),
-    );
+    )?;
     assert_eq!(
         code,
         Some(0),
@@ -2732,14 +2749,14 @@ fn retain_audio_without_mcp_produces_the_amplitude_measurement() {
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{') && l.contains("\"amplitude\""))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "no dialog carried an amplitude object, so the flag parsed and \
                  did nothing — which is the defect the old refusal existed to \
                  prevent.\nstdout: {stdout}"
             )
-        });
-    let v: serde_json::Value = serde_json::from_str(line).expect("dialog JSON parses");
+        })?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
     let amplitude = &v["diagnosis"]["amplitude"];
     assert!(
         amplitude["streams_measured"].as_u64().unwrap_or(0) >= 1,
@@ -2750,6 +2767,7 @@ fn retain_audio_without_mcp_produces_the_amplitude_measurement() {
         amplitude["streams"][0]["report"]["floor_dbfs"].is_number(),
         "the floor that decided the finding is missing: {amplitude}"
     );
+    Ok(())
 }
 
 /// A capture big enough to rotate several times at `--split filesize:1`
@@ -2763,18 +2781,13 @@ const BIG_FIXTURE: &str = "tests/pcap-samples/sipp-branch-scenario.pcapng";
 ///
 /// # Returns
 /// The file names in `dir`, sorted.
-fn split_family(dir: &std::path::Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .expect("read output dir")
-        .map(|e| {
-            e.expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
+fn split_family(dir: &std::path::Path) -> Result<Vec<String>, TestError> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)?
+        .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<_, _>>()?;
+
     names.sort();
-    names
+    Ok(names)
 }
 
 /// `--split` with no `--split-keep` writes every rotation and deletes none of
@@ -2785,25 +2798,25 @@ fn split_family(dir: &std::path::Path) -> Vec<String> {
 /// there will ever be, so an operator who never asked for a ring buffer keeps
 /// every file the run produced.
 #[test]
-fn split_without_a_bound_keeps_every_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn split_without_a_bound_keeps_every_file() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("out.pcap");
-    let (_stdout, stderr, code) = run_support::run_or_panic(
+    let (_stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "--no-cli-print",
             "-I",
             BIG_FIXTURE,
             "-O",
-            out.to_str().unwrap(),
+            out.to_str().ok_or("out is not UTF-8")?,
             "--split",
             "filesize:1",
         ],
         Some("info"),
-    );
+    )?;
     assert_eq!(code, Some(0), "run failed: {stderr}");
 
-    let family = split_family(dir.path());
+    let family = split_family(dir.path())?;
     assert!(
         family.len() >= 4,
         "the fixture must rotate at least three times for this to prove \
@@ -2820,6 +2833,7 @@ fn split_without_a_bound_keeps_every_file() {
         !stderr.contains("deleted by --split-keep"),
         "an unbounded run must not report a deletion: {stderr}"
     );
+    Ok(())
 }
 
 /// `--split-keep 2` leaves exactly the two newest files and reports what it
@@ -2830,31 +2844,31 @@ fn split_without_a_bound_keeps_every_file() {
 /// last two sequence numbers of that set. A bound that kept the right NUMBER
 /// of files while deleting the wrong ones fails here.
 #[test]
-fn split_keep_leaves_the_newest_files_and_reports_the_deletions() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn split_keep_leaves_the_newest_files_and_reports_the_deletions() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("out.pcap");
-    let (_stdout, stderr, code) = run_support::run_or_panic(
+    let (_stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "--no-cli-print",
             "-I",
             BIG_FIXTURE,
             "-O",
-            out.to_str().unwrap(),
+            out.to_str().ok_or("out is not UTF-8")?,
             "--split",
             "filesize:1",
             "--split-keep",
             "2",
         ],
         Some("info"),
-    );
+    )?;
     assert_eq!(code, Some(0), "run failed: {stderr}");
 
     let deleted: usize = stderr
         .split_once(" older split file(s) deleted by --split-keep")
         .and_then(|(before, _)| before.rsplit(' ').next())
         .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("the run must say what it deleted: {stderr}"));
+        .ok_or_else(|| format!("the run must say what it deleted: {stderr}"))?;
     assert!(
         deleted >= 2,
         "the fixture must produce more than two files, or the bound proves \
@@ -2864,13 +2878,14 @@ fn split_keep_leaves_the_newest_files_and_reports_the_deletions() {
     // `deleted + 2` files were created, numbered 0 (`out.pcap`) upward, so the
     // survivors are the last two of that run.
     assert_eq!(
-        split_family(dir.path()),
+        split_family(dir.path())?,
         vec![
             format!("out_{deleted:05}.pcap"),
             format!("out_{:05}.pcap", deleted + 1),
         ],
         "the survivors are the newest two files the run wrote"
     );
+    Ok(())
 }
 
 /// `--evidence-out` publishes one JSON line per source-naming finding, and
@@ -2880,8 +2895,8 @@ fn split_keep_leaves_the_newest_files_and_reports_the_deletions() {
 /// has to be driven end to end and not merely parsed: an operator who pipes
 /// it into `tfps_ctl ingest` is trusting these bytes.
 #[test]
-fn evidence_out_writes_a_line_per_finding_and_nothing_without_the_flag() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn evidence_out_writes_a_line_per_finding_and_nothing_without_the_flag() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("evidence.jsonl");
     let target = path.to_string_lossy().to_string();
 
@@ -2894,26 +2909,27 @@ fn evidence_out_writes_a_line_per_finding_and_nothing_without_the_flag() {
         "--kill-scanner",
         "--evidence-out",
         &target,
-    ]);
+    ])?;
     assert!(path.exists(), "the sink is opened when the run starts");
 
     // Standard output carries the same lines when the target is `-`, and a
     // run without the flag carries none of them.
-    let with = run(&["-N", "-I", FIXTURE, "--kill-scanner", "--evidence-out", "-"]);
-    let without = run(&["-N", "-I", FIXTURE, "--kill-scanner"]);
+    let with = run(&["-N", "-I", FIXTURE, "--kill-scanner", "--evidence-out", "-"])?;
+    let without = run(&["-N", "-I", FIXTURE, "--kill-scanner"])?;
     let evidence = |s: &str| s.lines().filter(|l| l.contains("\"src_ip\"")).count();
     assert_eq!(evidence(&without), 0, "no flag, no evidence: {without}");
     assert!(
         evidence(&with) >= evidence(&without),
         "the flag never publishes less than its absence"
     );
+    Ok(())
 }
 
 /// A path sipnab cannot write is refused before the first packet, not after
 /// the first finding an hour later.
 #[test]
-fn evidence_out_refuses_an_unwritable_path_at_startup() {
-    let (_, stderr, code) = run_support::run_or_panic(
+fn evidence_out_refuses_an_unwritable_path_at_startup() -> Result<(), TestError> {
+    let (_, stderr, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -2922,19 +2938,20 @@ fn evidence_out_refuses_an_unwritable_path_at_startup() {
             "/nonexistent-dir/evidence.jsonl",
         ],
         Some("error"),
-    );
+    )?;
     assert_eq!(code, Some(2), "an unwritable sink is an argument error");
     assert!(
         stderr.contains("--evidence-out"),
         "the message names the flag and the path: {stderr}"
     );
+    Ok(())
 }
 
 /// sngrep and sipgrep take a match expression before the capture filter;
 /// sipnab takes only the filter. `sipnab -I call.pcap INVITE` fails to
 /// compile `INVITE` as BPF, and the error says how to match SIP text instead.
 #[test]
-fn a_positional_filter_that_does_not_compile_points_at_dash_e() {
+fn a_positional_filter_that_does_not_compile_points_at_dash_e() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "--no-config",
@@ -2944,23 +2961,23 @@ fn a_positional_filter_that_does_not_compile_points_at_dash_e() {
             "INVITE",
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "INVITE is not a BPF filter:\n{err}");
     assert!(
         err.contains("-e '<pattern>'"),
         "the error must point at -e:\n{err}"
     );
+    Ok(())
 }
 
 /// The same bad filter from --bpf-file names no match expression: that
 /// operator wrote a filter file, not a sngrep command line.
 #[test]
-fn a_bpf_file_that_does_not_compile_gets_no_match_expression_hint() {
-    let dir = tempfile::tempdir().unwrap();
+fn a_bpf_file_that_does_not_compile_gets_no_match_expression_hint() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let f = dir.path().join("f.bpf");
-    std::fs::write(&f, "INVITE\n").unwrap();
+    std::fs::write(&f, "INVITE\n")?;
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "--no-config",
@@ -2968,26 +2985,26 @@ fn a_bpf_file_that_does_not_compile_gets_no_match_expression_hint() {
             "-I",
             "tests/fixtures/sip_call.pcap",
             "--bpf-file",
-            f.to_str().unwrap(),
+            f.to_str().ok_or("f is not UTF-8")?,
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{err}");
     assert!(!err.contains("-e '<pattern>'"), "{err}");
+    Ok(())
 }
 
 /// `sipnab call.pcap`, as sngrep users type it, names a file where sipnab
 /// expects a capture filter. It is refused before any capture opens.
 #[test]
-fn a_lone_file_argument_asks_for_dash_i() {
+fn a_lone_file_argument_asks_for_dash_i() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["--no-config", "-N", "tests/fixtures/sip_call.pcap"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{err}");
     assert!(err.contains("-I tests/fixtures/sip_call.pcap"), "{err}");
+    Ok(())
 }

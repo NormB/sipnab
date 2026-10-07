@@ -23,11 +23,13 @@
 
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The `//!` lines at the top of `src/lib.rs`, without the marker.
-fn front_page() -> Vec<String> {
-    let lib = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
-        .expect("read src/lib.rs");
-    lib.lines()
+fn front_page() -> Result<Vec<String>, TestError> {
+    let lib = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))?;
+    Ok(lib
+        .lines()
         .skip_while(|l| !l.starts_with("//!"))
         .take_while(|l| l.starts_with("//!"))
         .map(|l| {
@@ -36,7 +38,7 @@ fn front_page() -> Vec<String> {
                 .trim_start_matches(' ')
                 .to_string()
         })
-        .collect()
+        .collect())
 }
 
 /// Every fenced code block on the page: its fence attributes and its body.
@@ -70,8 +72,8 @@ fn is_rust(attrs: &str) -> bool {
 }
 
 #[test]
-fn every_front_page_example_runs_and_asserts_something() {
-    let blocks: Vec<(String, String)> = code_blocks(&front_page())
+fn every_front_page_example_runs_and_asserts_something() -> Result<(), TestError> {
+    let blocks: Vec<(String, String)> = code_blocks(&front_page()?)
         .into_iter()
         .filter(|(attrs, _)| is_rust(attrs))
         .collect();
@@ -95,11 +97,12 @@ fn every_front_page_example_runs_and_asserts_something() {
              nothing:\n{body}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn the_front_page_examples_cover_the_crate() {
-    let page = front_page();
+fn the_front_page_examples_cover_the_crate() -> Result<(), TestError> {
+    let page = front_page()?;
     let code: String = code_blocks(&page)
         .into_iter()
         .filter(|(attrs, _)| is_rust(attrs))
@@ -122,11 +125,12 @@ fn the_front_page_examples_cover_the_crate() {
              of the crate a new user reaches for"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn the_front_page_says_the_library_api_is_unstable() {
-    let page = front_page().join("\n");
+fn the_front_page_says_the_library_api_is_unstable() -> Result<(), TestError> {
+    let page = front_page()?.join("\n");
     assert!(
         !page.contains("semver contract"),
         "the front page promises a semver contract; the library API is declared \
@@ -137,6 +141,7 @@ fn the_front_page_says_the_library_api_is_unstable() {
         "the front page must say the library API is not stable, as \
          docs/library.md does, and tell a dependent to pin the exact release"
     );
+    Ok(())
 }
 
 // ── sipnab-bpf-types ─────────────────────────────────────────────────
@@ -148,57 +153,55 @@ fn bpf_types() -> std::path::PathBuf {
 
 /// The crate's README, which is both its crates.io page and its docs.rs front
 /// page.
-fn bpf_types_readme() -> Vec<String> {
-    std::fs::read_to_string(bpf_types().join("README.md"))
-        .expect("read crates/sipnab-bpf-types/README.md")
+fn bpf_types_readme() -> Result<Vec<String>, TestError> {
+    Ok(std::fs::read_to_string(bpf_types().join("README.md"))?
         .lines()
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
 /// Every `///` and `//!` line in the crate's `src/lib.rs`, without the marker:
 /// the item documentation docs.rs renders under the front page.
-fn bpf_types_item_docs() -> Vec<String> {
-    std::fs::read_to_string(bpf_types().join("src/lib.rs"))
-        .expect("read crates/sipnab-bpf-types/src/lib.rs")
+fn bpf_types_item_docs() -> Result<Vec<String>, TestError> {
+    Ok(std::fs::read_to_string(bpf_types().join("src/lib.rs"))?
         .lines()
         .map(str::trim_start)
         .filter_map(|l| l.strip_prefix("///").or_else(|| l.strip_prefix("//!")))
         .map(|l| l.strip_prefix(' ').unwrap_or(l).to_string())
-        .collect()
+        .collect())
 }
 
 /// A fenced code block: its fence attributes and its body.
 type Block = (String, String);
 
 /// The Rust examples on the README and in the item docs, in that order.
-fn bpf_types_examples() -> (Vec<Block>, Vec<Block>) {
+fn bpf_types_examples() -> Result<(Vec<Block>, Vec<Block>), TestError> {
     let rust = |page: &[String]| {
         code_blocks(page)
             .into_iter()
             .filter(|(attrs, _)| is_rust(attrs))
             .collect::<Vec<_>>()
     };
-    (rust(&bpf_types_readme()), rust(&bpf_types_item_docs()))
+    Ok((rust(&bpf_types_readme()?), rust(&bpf_types_item_docs()?)))
 }
 
 /// The README is the docs.rs front page as well as the crates.io page, so the
 /// examples on it run as doctests and the two pages cannot drift apart.
 #[test]
-fn the_bpf_types_front_page_is_its_readme() {
-    let lib = std::fs::read_to_string(bpf_types().join("src/lib.rs"))
-        .expect("read crates/sipnab-bpf-types/src/lib.rs");
+fn the_bpf_types_front_page_is_its_readme() -> Result<(), TestError> {
+    let lib = std::fs::read_to_string(bpf_types().join("src/lib.rs"))?;
     assert!(
         lib.contains(r#"#![doc = include_str!("../README.md")]"#),
         "crates/sipnab-bpf-types/src/lib.rs must include its README as the \
          crate documentation, so docs.rs shows the same page as crates.io and \
          the README's examples run as doctests"
     );
+    Ok(())
 }
 
 #[test]
-fn every_bpf_types_example_runs_and_asserts_something() {
-    let (readme, items) = bpf_types_examples();
+fn every_bpf_types_example_runs_and_asserts_something() -> Result<(), TestError> {
+    let (readme, items) = bpf_types_examples()?;
     assert!(
         readme.len() >= 3,
         "the sipnab-bpf-types README has {} Rust examples; it needs several, \
@@ -219,11 +222,12 @@ fn every_bpf_types_example_runs_and_asserts_something() {
              nothing:\n{body}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn the_bpf_types_examples_cover_the_crate() {
-    let (readme, items) = bpf_types_examples();
+fn the_bpf_types_examples_cover_the_crate() -> Result<(), TestError> {
+    let (readme, items) = bpf_types_examples()?;
     let code: String = readme.into_iter().chain(items).map(|(_, b)| b).collect();
     for item in [
         "TlsRecord::read",
@@ -242,13 +246,14 @@ fn the_bpf_types_examples_cover_the_crate() {
              part of the record a reader has to get right"
         );
     }
+    Ok(())
 }
 
 /// Operator first: the page opens with how to turn the capture on, and every
 /// flag it names is one sipnab actually has.
 #[test]
-fn the_bpf_types_readme_tells_an_operator_how_to_turn_the_capture_on() {
-    let readme = bpf_types_readme().join("\n");
+fn the_bpf_types_readme_tells_an_operator_how_to_turn_the_capture_on() -> Result<(), TestError> {
+    let readme = bpf_types_readme()?.join("\n");
     for needle in [
         "--uprobe-backend bpf",
         "docs/uprobe-walkthrough.md",
@@ -260,8 +265,7 @@ fn the_bpf_types_readme_tells_an_operator_how_to_turn_the_capture_on() {
              who lands on the crate page learns what it powers and where to read on"
         );
     }
-    let cli = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"))
-        .expect("read src/cli.rs");
+    let cli = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"))?;
     let mut flags: Vec<&str> = readme
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter_map(|w| w.strip_prefix("--"))
@@ -283,4 +287,5 @@ fn the_bpf_types_readme_tells_an_operator_how_to_turn_the_capture_on() {
              not define"
         );
     }
+    Ok(())
 }

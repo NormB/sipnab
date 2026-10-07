@@ -29,6 +29,8 @@
 use sipnab::relay::{ControlDecoder, ControlDelivery};
 use sipnab::rtpengine::NgControlDecoder;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The only port a sniffed mirror is believed on.
 const MIRROR_PORT: u16 = 9060;
 
@@ -97,10 +99,10 @@ fn hep(body: &[u8], correlation_id: Option<&str>) -> Vec<u8> {
 /// not believed on any port, so there is no gate verdict to report, and
 /// reporting one would be inventing an answer nobody produced.
 #[test]
-fn a_bare_datagram_decodes_and_reports_no_port_verdict() {
+fn a_bare_datagram_decodes_and_reports_no_port_verdict() -> Result<(), TestError> {
     let got = NgControlDecoder
         .decode(&offer(), MIRROR_PORT)
-        .expect("a bare ng offer is a control message");
+        .ok_or("a bare ng offer is a control message")?;
 
     assert_eq!(got.delivery, ControlDelivery::BareDatagram);
     assert_eq!(got.message.command.as_deref(), Some("offer"));
@@ -111,14 +113,15 @@ fn a_bare_datagram_decodes_and_reports_no_port_verdict() {
         "a bare datagram is believed on no port, so there is no verdict to give"
     );
     assert_eq!(got.correlation_id, None);
+    Ok(())
 }
 
 /// An encapsulated message on the mirror port reports the port verdict it earned.
 #[test]
-fn an_encapsulated_message_on_the_mirror_port_is_reported_as_such() {
+fn an_encapsulated_message_on_the_mirror_port_is_reported_as_such() -> Result<(), TestError> {
     let got = NgControlDecoder
         .decode(&hep(&offer(), Some("km-670bd208@sipnab")), MIRROR_PORT)
-        .expect("a HEP-wrapped ng offer is a control message");
+        .ok_or("a HEP-wrapped ng offer is a control message")?;
 
     assert_eq!(got.delivery, ControlDelivery::Encapsulated);
     assert_eq!(got.message.command.as_deref(), Some("offer"));
@@ -127,6 +130,7 @@ fn an_encapsulated_message_on_the_mirror_port_is_reported_as_such() {
         Some(true),
         "9060 is the believed mirror port"
     );
+    Ok(())
 }
 
 /// The SAME datagram off the mirror port must not be reported as believed.
@@ -136,11 +140,15 @@ fn an_encapsulated_message_on_the_mirror_port_is_reported_as_such() {
 /// from the HEP envelope, which the SENDER writes, rather than from where the
 /// datagram actually landed — would pass the test above and fail this one.
 #[test]
-fn the_same_datagram_off_the_mirror_port_is_not_reported_as_believed() {
+fn the_same_datagram_off_the_mirror_port_is_not_reported_as_believed() -> Result<(), TestError> {
     let datagram = hep(&offer(), Some("km-670bd208@sipnab"));
 
-    let believed = NgControlDecoder.decode(&datagram, MIRROR_PORT).unwrap();
-    let not = NgControlDecoder.decode(&datagram, OTHER_PORT).unwrap();
+    let believed = NgControlDecoder
+        .decode(&datagram, MIRROR_PORT)
+        .ok_or("NgControlDecoder.decode(&datagram, MIRROR_PORT) returned None")?;
+    let not = NgControlDecoder
+        .decode(&datagram, OTHER_PORT)
+        .ok_or("NgControlDecoder.decode(&datagram, OTHER_PORT) returned None")?;
 
     assert_eq!(believed.on_believed_mirror_port, Some(true));
     assert_eq!(
@@ -152,6 +160,7 @@ fn the_same_datagram_off_the_mirror_port_is_not_reported_as_believed() {
         believed.message.command, not.message.command,
         "the MESSAGE is the same; only where it landed differs"
     );
+    Ok(())
 }
 
 /// A reply names its call only through the envelope, and that must survive.
@@ -160,10 +169,10 @@ fn the_same_datagram_off_the_mirror_port_is_not_reported_as_believed() {
 /// no `call-id` of its own. Drop the correlation-id and the answer is a decode
 /// of a message about no call at all — every field returned still correct.
 #[test]
-fn a_reply_keeps_the_correlation_id_that_names_its_call() {
+fn a_reply_keeps_the_correlation_id_that_names_its_call() -> Result<(), TestError> {
     let got = NgControlDecoder
         .decode(&hep(&reply(), Some("km-670bd208@sipnab")), MIRROR_PORT)
-        .expect("a HEP-wrapped ng reply is a control message");
+        .ok_or("a HEP-wrapped ng reply is a control message")?;
 
     assert_eq!(
         got.message.command, None,
@@ -180,6 +189,7 @@ fn a_reply_keeps_the_correlation_id_that_names_its_call() {
          the decode"
     );
     assert!(got.message.sdp_bytes.is_some_and(|n| n > 0));
+    Ok(())
 }
 
 /// A media-creating command keeps its name rather than collapsing to a verb.
@@ -188,10 +198,10 @@ fn a_reply_keeps_the_correlation_id_that_names_its_call() {
 /// the relay used, and the seam reports it verbatim. Mapping either to a fixed
 /// string would tell an analyst "a command happened" while withholding which.
 #[test]
-fn a_media_creating_command_keeps_the_name_the_relay_used() {
+fn a_media_creating_command_keeps_the_name_the_relay_used() -> Result<(), TestError> {
     let got = NgControlDecoder
         .decode(&start_recording(), MIRROR_PORT)
-        .expect("start recording is a control message");
+        .ok_or("start recording is a control message")?;
 
     assert_eq!(got.message.command.as_deref(), Some("start recording"));
     assert_eq!(got.message.call_id.as_deref(), Some("rec-1234"));
@@ -199,6 +209,7 @@ fn a_media_creating_command_keeps_the_name_the_relay_used() {
         got.message.sdp_bytes, None,
         "this command carries no SDP, and a zero would read as an empty body"
     );
+    Ok(())
 }
 
 /// Anything that is not a control message decodes to nothing.
@@ -207,7 +218,7 @@ fn a_media_creating_command_keeps_the_name_the_relay_used() {
 /// answer to all of them: a partial decode of a non-message is a claim about a
 /// call that was never named.
 #[test]
-fn a_payload_that_is_not_a_control_message_decodes_to_nothing() {
+fn a_payload_that_is_not_a_control_message_decodes_to_nothing() -> Result<(), TestError> {
     for (what, bytes) in [
         ("empty", Vec::new()),
         ("a SIP request", b"OPTIONS sip:a@b SIP/2.0\r\n\r\n".to_vec()),
@@ -223,4 +234,5 @@ fn a_payload_that_is_not_a_control_message_decodes_to_nothing() {
             "{what} is not a control message and must decode to nothing"
         );
     }
+    Ok(())
 }

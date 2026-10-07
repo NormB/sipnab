@@ -21,6 +21,10 @@ use sipnab::output::prometheus_server::start_metrics_server;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Where every server here is bound: loopback, port 0, so the kernel chooses
 /// and the address the server reports back is the one to scrape.
 ///
@@ -37,15 +41,19 @@ const EPHEMERAL: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0
 ///
 /// # Returns
 /// The response, status line and headers included.
-fn http_request(addr: SocketAddr, raw: &str) -> String {
-    let mut stream = TcpStream::connect(addr).expect("connect");
+fn http_request(addr: SocketAddr, raw: &str) -> Result<String, TestError> {
+    let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout");
-    stream.write_all(raw.as_bytes()).expect("write request");
+        .map_err(|e| format!("read timeout: {e}"))?;
+    stream
+        .write_all(raw.as_bytes())
+        .map_err(|e| format!("write request: {e}"))?;
     let mut resp = String::new();
-    stream.read_to_string(&mut resp).expect("read response");
-    resp
+    stream
+        .read_to_string(&mut resp)
+        .map_err(|e| format!("read response: {e}"))?;
+    Ok(resp)
 }
 
 /// Parse one SIP message and fold it into `store`.
@@ -53,7 +61,7 @@ fn http_request(addr: SocketAddr, raw: &str) -> String {
 /// # Arguments
 /// * `store` — the dialog store to populate.
 /// * `raw` — the message bytes.
-fn feed(store: &mut DialogStore, raw: &'static [u8]) {
+fn feed(store: &mut DialogStore, raw: &'static [u8]) -> Result<(), TestError> {
     let data = bytes::Bytes::from_static(raw);
     let msg = sipnab::sip::parser::parse_sip_bytes(
         &data,
@@ -64,15 +72,16 @@ fn feed(store: &mut DialogStore, raw: &'static [u8]) {
         5060,
         sipnab::capture::parse::TransportProto::Udp,
     )
-    .expect("fixture message parses");
+    .map_err(|e| format!("fixture message parses: {e}"))?;
     store.process_message(msg);
+    Ok(())
 }
 
 /// One INVITE answered by a `200 OK` — a dialog with a 2xx response in it.
 ///
 /// # Returns
 /// A shared dialog store holding that dialog.
-fn answered_call() -> Arc<RwLock<DialogStore>> {
+fn answered_call() -> Result<Arc<RwLock<DialogStore>>, TestError> {
     let mut ds = DialogStore::new(100, false);
     feed(
         &mut ds,
@@ -85,7 +94,7 @@ fn answered_call() -> Arc<RwLock<DialogStore>> {
           Max-Forwards: 70\r\n\
           Contact: <sip:alice@10.0.0.1:5060>\r\n\
           Content-Length: 0\r\n\r\n",
-    );
+    )?;
     feed(
         &mut ds,
         b"SIP/2.0 200 OK\r\n\
@@ -96,14 +105,14 @@ fn answered_call() -> Arc<RwLock<DialogStore>> {
           CSeq: 1 INVITE\r\n\
           Contact: <sip:bob@10.0.0.2:5060>\r\n\
           Content-Length: 0\r\n\r\n",
-    );
-    Arc::new(RwLock::new(ds))
+    )?;
+    Ok(Arc::new(RwLock::new(ds)))
 }
 
 /// The standalone server's scrape carries the live capture counter and the
 /// zero-initialized label sets, not the zeros of a `Default` collector.
 #[test]
-fn standalone_scrape_publishes_wired_counters() {
+fn standalone_scrape_publishes_wired_counters() -> Result<(), TestError> {
     // Move the process-wide capture counter, exactly as a capture would.
     let mut processor = PacketProcessor::new();
     let packet = Packet::new(chrono::Utc::now(), vec![0x00; 14], 14, 14, None, 1);
@@ -111,23 +120,23 @@ fn standalone_scrape_publishes_wired_counters() {
 
     let (addr, _handle) = start_metrics_server(
         EPHEMERAL,
-        answered_call(),
+        answered_call()?,
         Arc::new(RwLock::new(StreamStore::new(100))),
         None,
         None,
         None,
         sipnab::output::prometheus_server::DEFAULT_MAX_CONCURRENT_CONNECTIONS,
     )
-    .expect("metrics server binds");
+    .map_err(|e| format!("metrics server binds: {e}"))?;
 
-    let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+    let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")?;
     assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
 
     let packets = resp
         .lines()
         .find_map(|l| l.strip_prefix("sipnab_capture_packets_total "))
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .expect("scrape must expose sipnab_capture_packets_total");
+        .ok_or("scrape must expose sipnab_capture_packets_total")?;
     assert!(
         packets > 0,
         "the standalone collector must read the live capture counter, got {packets}"
@@ -149,6 +158,7 @@ fn standalone_scrape_publishes_wired_counters() {
             "diagnosis type {kind} must be present even at zero"
         );
     }
+    Ok(())
 }
 
 /// The undecodable-frame series must be readable HERE, on the standalone
@@ -166,7 +176,7 @@ fn standalone_scrape_publishes_wired_counters() {
 /// test in this binary moves the same counter, and pinning an exact total
 /// here would make the two order-dependent.
 #[test]
-fn standalone_scrape_publishes_the_undecodable_series() {
+fn standalone_scrape_publishes_the_undecodable_series() -> Result<(), TestError> {
     // A link type with no decoder, driven through the real swallow site.
     let mut processor = PacketProcessor::new();
     let packet = Packet::new(chrono::Utc::now(), vec![0x00; 64], 64, 64, None, 147);
@@ -174,16 +184,16 @@ fn standalone_scrape_publishes_the_undecodable_series() {
 
     let (addr, _handle) = start_metrics_server(
         EPHEMERAL,
-        answered_call(),
+        answered_call()?,
         Arc::new(RwLock::new(StreamStore::new(100))),
         None,
         None,
         None,
         sipnab::output::prometheus_server::DEFAULT_MAX_CONCURRENT_CONNECTIONS,
     )
-    .expect("metrics server binds");
+    .map_err(|e| format!("metrics server binds: {e}"))?;
 
-    let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+    let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")?;
     assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
 
     let frames = resp
@@ -194,7 +204,7 @@ fn standalone_scrape_publishes_the_undecodable_series() {
             )
         })
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .expect("the standalone scrape must carry the per-reason series, with its DLT number");
+        .ok_or("the standalone scrape must carry the per-reason series, with its DLT number")?;
     assert!(
         frames >= 1,
         "the reason series must count the frame this test fed, got {frames}"
@@ -205,4 +215,5 @@ fn standalone_scrape_publishes_the_undecodable_series() {
             .any(|l| l.starts_with("sipnab_capture_undecoded_fraction ")),
         "the fraction gauge must be on this surface too; body was:\n{resp}"
     );
+    Ok(())
 }

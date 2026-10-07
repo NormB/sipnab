@@ -34,6 +34,9 @@ use sipnab::security::tfps::{
     TfpsDropped, TfpsError, TfpsLabel, TfpsListAnswer, TfpsLocator, TfpsStatus, TfpsStatusAnswer,
 };
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/executable.rs"]
 mod executable;
 
@@ -94,14 +97,15 @@ const PINNED: &[(&str, &str, &str)] = &[
 /// A permit to act on TFPS: what `--allow-action tfps:rest` grants. The
 /// contract under test is the argv and the reply, so these calls are made as
 /// an enabled server would make them.
-fn permit() -> sipnab::security::actions::ActionPermit {
-    sipnab::security::actions::ActionPolicy::from_settings(&["tfps:rest".to_string()], &[])
-        .expect("a valid value")
-        .permit(
-            sipnab::security::actions::ActionTarget::Tfps,
-            sipnab::security::actions::ActionSurface::Rest,
-        )
-        .expect("enabled")
+fn permit() -> Result<sipnab::security::actions::ActionPermit, TestError> {
+    Ok(
+        sipnab::security::actions::ActionPolicy::from_settings(&["tfps:rest".to_string()], &[])?
+            .permit(
+                sipnab::security::actions::ActionTarget::Tfps,
+                sipnab::security::actions::ActionSurface::Rest,
+            )
+            .map_err(|e| e.to_string())?,
+    )
 }
 
 /// The source most fixtures are about.
@@ -110,15 +114,16 @@ fn the_ip() -> IpAddr {
 }
 
 /// The first non-empty line of a JSON Lines fixture.
-fn first_line(text: &str) -> &str {
-    text.lines()
+fn first_line(text: &str) -> Result<&str, TestError> {
+    Ok(text
+        .lines()
         .find(|l| !l.trim().is_empty())
-        .expect("the fixture has a line")
+        .ok_or("the fixture has a line")?)
 }
 
 /// Line `n` (1-based) of a JSON Lines fixture.
-fn line(text: &str, n: usize) -> &str {
-    text.lines().nth(n - 1).expect("the fixture has that line")
+fn line(text: &str, n: usize) -> Result<&str, TestError> {
+    Ok(text.lines().nth(n - 1).ok_or("the fixture has that line")?)
 }
 
 /// A directory holding one executable named `tfps_ctl`, or nothing.
@@ -128,33 +133,32 @@ struct FakeCtl {
 
 impl FakeCtl {
     /// A `tfps_ctl` that runs `body` under `/bin/sh`.
-    fn with_body(body: &str) -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn with_body(body: &str) -> Result<Self, TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("tfps_ctl");
-        executable::write_executable(&path, &format!("#!/bin/sh\n{body}\n"))
-            .expect("write the fake");
-        Self { dir }
+        executable::write_executable(&path, &format!("#!/bin/sh\n{body}\n"))?;
+        Ok(Self { dir })
     }
 
     /// A `tfps_ctl` that prints `text` and exits 0, whatever it is asked.
-    fn echoing(text: &str) -> Self {
+    fn echoing(text: &str) -> Result<Self, TestError> {
         Self::with_body(&format!("cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"))
     }
 
     /// A `tfps_ctl` that prints `text` and exits `code` -- TFPS's refusal
     /// convention: the structured result on stdout, the tally on stderr,
     /// exit 1.
-    fn echoing_then_exiting(text: &str, code: i32, stderr: &str) -> Self {
+    fn echoing_then_exiting(text: &str, code: i32, stderr: &str) -> Result<Self, TestError> {
         Self::with_body(&format!(
             "cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE\necho '{stderr}' >&2\nexit {code}"
         ))
     }
 
     /// A directory with no `tfps_ctl` in it at all.
-    fn absent() -> Self {
-        Self {
-            dir: tempfile::tempdir().expect("tempdir"),
-        }
+    fn absent() -> Result<Self, TestError> {
+        Ok(Self {
+            dir: tempfile::tempdir()?,
+        })
     }
 
     fn path(&self) -> PathBuf {
@@ -173,16 +177,16 @@ impl FakeCtl {
 }
 
 /// The keys of every JSON object in `text` (one per line), as one set.
-fn keys_of_every_line(text: &str) -> BTreeSet<String> {
+fn keys_of_every_line(text: &str) -> Result<BTreeSet<String>, TestError> {
     let mut all = BTreeSet::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let v: serde_json::Value = serde_json::from_str(line).expect("fixture line is JSON");
-        let o = v.as_object().expect("fixture line is an object");
+        let v: serde_json::Value = serde_json::from_str(line)?;
+        let o = v.as_object().ok_or("fixture line is an object")?;
         for k in o.keys() {
             all.insert(k.clone());
         }
     }
-    all
+    Ok(all)
 }
 
 /// `expected`, as a set.
@@ -193,7 +197,7 @@ fn set(expected: &[&str]) -> BTreeSet<String> {
 // ── The fixtures are what the emitter really prints ──────────────────
 
 #[test]
-fn every_fixture_is_pinned_to_its_verified_bytes() {
+fn every_fixture_is_pinned_to_its_verified_bytes() -> Result<(), TestError> {
     use sha2::{Digest, Sha256};
     for (name, text, expected) in PINNED {
         let digest: String = Sha256::digest(text.as_bytes())
@@ -210,6 +214,7 @@ fn every_fixture_is_pinned_to_its_verified_bytes() {
         );
     }
     assert_eq!(PINNED.len(), 8, "every shared fixture is pinned");
+    Ok(())
 }
 
 /// The `--json` lines upstream's own unit tests assert, copied verbatim from
@@ -226,20 +231,21 @@ const UPSTREAM_BAN: &str = r#"{"ip":"198.51.100.20","action":"ban","applied":tru
 /// with, and read into the right fields: a renamed key on either side leaves
 /// an `Option` field `None` and still parses, so the VALUES are asserted.
 #[test]
-fn upstreams_own_goldens_read_through_sipnabs_readers() {
-    fn answered<T>(reply: Reply<T>) -> T {
-        match reply {
+fn upstreams_own_goldens_read_through_sipnabs_readers() -> Result<(), TestError> {
+    fn answered<T>(reply: Reply<T>) -> Result<T, TestError> {
+        Ok(match reply {
             Reply::Answered { value, .. } => value,
-            Reply::NotInstalled { reason } => panic!("an explicit fake is installed: {reason}"),
-        }
+            Reply::NotInstalled { reason } => {
+                return Err(format!("an explicit fake is installed: {reason}").into());
+            }
+        })
     }
 
     let s = answered(
-        FakeCtl::echoing(UPSTREAM_STATUS_ACTIVE)
+        FakeCtl::echoing(UPSTREAM_STATUS_ACTIVE)?
             .explicit()
-            .status()
-            .expect("status"),
-    );
+            .status()?,
+    )?;
     assert_eq!(
         (
             s.enforcement.as_str(),
@@ -264,11 +270,10 @@ fn upstreams_own_goldens_read_through_sipnabs_readers() {
         "upstream never fills these"
     );
     let s = answered(
-        FakeCtl::echoing(UPSTREAM_STATUS_INACTIVE)
+        FakeCtl::echoing(UPSTREAM_STATUS_INACTIVE)?
             .explicit()
-            .status()
-            .expect("status"),
-    );
+            .status()?,
+    )?;
     assert_eq!(
         (s.enforcement.as_str(), s.map, s.blocked_now),
         ("inactive", None, 0)
@@ -277,11 +282,10 @@ fn upstreams_own_goldens_read_through_sipnabs_readers() {
     let banned = answered(
         FakeCtl::echoing(&format!(
             "{UPSTREAM_BANNED_ATTRIBUTED}\n{UPSTREAM_BANNED_UNATTRIBUTED}"
-        ))
+        ))?
         .explicit()
-        .banned()
-        .expect("banned"),
-    );
+        .banned()?,
+    )?;
     assert_eq!(banned.len(), 2);
     assert_eq!(
         (
@@ -307,12 +311,7 @@ fn upstreams_own_goldens_read_through_sipnabs_readers() {
         (None, None, None, true)
     );
 
-    let log = answered(
-        FakeCtl::echoing(UPSTREAM_LOG)
-            .explicit()
-            .labels(50)
-            .expect("log"),
-    );
+    let log = answered(FakeCtl::echoing(UPSTREAM_LOG)?.explicit().labels(50)?)?;
     assert_eq!(
         (
             log[0].reason.as_str(),
@@ -323,12 +322,11 @@ fn upstreams_own_goldens_read_through_sipnabs_readers() {
         ("scanner", "sipvicious", Some(1_756_803_600), "block")
     );
 
-    let ban = answered(
-        FakeCtl::echoing(UPSTREAM_BAN)
-            .explicit()
-            .ban(&permit(), the_ip(), Some(3600))
-            .expect("ban"),
-    );
+    let ban = answered(FakeCtl::echoing(UPSTREAM_BAN)?.explicit().ban(
+        &permit()?,
+        the_ip(),
+        Some(3600),
+    )?)?;
     assert_eq!(
         (
             ban.action.as_str(),
@@ -339,12 +337,13 @@ fn upstreams_own_goldens_read_through_sipnabs_readers() {
         ),
         ("ban", true, None, Some(1_756_921_210), "operator")
     );
+    Ok(())
 }
 
 /// Where a fixture line and an upstream golden describe the same case they
 /// are the same bytes, so the fixtures cannot drift from what upstream asserts.
 #[test]
-fn the_fixtures_repeat_upstreams_goldens_byte_for_byte() {
+fn the_fixtures_repeat_upstreams_goldens_byte_for_byte() -> Result<(), TestError> {
     for (fixture, name, golden) in [
         (
             BANNED,
@@ -364,13 +363,14 @@ fn the_fixtures_repeat_upstreams_goldens_byte_for_byte() {
             "tests/fixtures/{name} no longer carries upstream's golden {golden}"
         );
     }
+    Ok(())
 }
 
 // ── Each fixture parses into the type, and carries exactly the agreed keys ──
 
 #[test]
-fn the_status_fixture_parses_and_carries_every_agreed_field() {
-    let s: TfpsStatus = serde_json::from_str(STATUS).expect("status parses");
+fn the_status_fixture_parses_and_carries_every_agreed_field() -> Result<(), TestError> {
+    let s: TfpsStatus = serde_json::from_str(STATUS)?;
     assert_eq!(s.enforcement, "active");
     // A released `tfps_ctl` opens the block map, not the XDP program, so it
     // cannot see either of these and always answers null. `map` is the one
@@ -385,7 +385,7 @@ fn the_status_fixture_parses_and_carries_every_agreed_field() {
     assert_eq!(s.db, "/var/lib/tfps/tfps.db");
     assert_eq!(s.version, "0.2.1");
     assert_eq!(
-        keys_of_every_line(STATUS),
+        keys_of_every_line(STATUS)?,
         set(&[
             "enforcement",
             "mode",
@@ -402,19 +402,19 @@ fn the_status_fixture_parses_and_carries_every_agreed_field() {
     // `null` where TFPS could not look, per its own contract.
     let inactive: TfpsStatus = serde_json::from_str(
         r#"{"enforcement":"inactive","mode":null,"interface":null,"map":null,"blocked_now":0,"pairs":null,"peers":null,"last_checkpoint":null,"db":"/x","version":"0.2.1"}"#,
-    )
-    .expect("an inactive status parses");
+    )?;
     assert_eq!(inactive.mode, None);
+    Ok(())
 }
 
 /// Every row of the ban table, including the one that is all `null` but the
 /// address: a block that predates any audit row.
 #[test]
-fn the_banned_fixture_parses_and_carries_every_agreed_field() {
+fn the_banned_fixture_parses_and_carries_every_agreed_field() -> Result<(), TestError> {
     let rows: Vec<TfpsBanned> = BANNED
         .lines()
-        .map(|l| serde_json::from_str(l).expect("banned row parses"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].ip, "198.51.100.10");
     assert_eq!(rows[0].reason.as_deref(), Some("user-agent"));
@@ -436,7 +436,7 @@ fn the_banned_fixture_parses_and_carries_every_agreed_field() {
         "a block with no audit row is all null but the address"
     );
     assert_eq!(
-        keys_of_every_line(BANNED),
+        keys_of_every_line(BANNED)?,
         set(&[
             "ip",
             "reason",
@@ -446,14 +446,15 @@ fn the_banned_fixture_parses_and_carries_every_agreed_field() {
             "enforced"
         ])
     );
+    Ok(())
 }
 
 #[test]
-fn the_dropped_fixture_parses_and_carries_every_agreed_field() {
+fn the_dropped_fixture_parses_and_carries_every_agreed_field() -> Result<(), TestError> {
     let rows: Vec<TfpsDropped> = DROPPED
         .lines()
-        .map(|l| serde_json::from_str(l).expect("dropped row parses"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].ip, "198.51.100.10");
     assert_eq!(rows[0].dropped, 30);
@@ -467,7 +468,7 @@ fn the_dropped_fixture_parses_and_carries_every_agreed_field() {
     assert_eq!(rows[1].rule, None);
     assert_eq!(rows[1].last_request, None, "no request recorded is null");
     assert_eq!(
-        keys_of_every_line(DROPPED),
+        keys_of_every_line(DROPPED)?,
         set(&[
             "ip",
             "dropped",
@@ -477,17 +478,18 @@ fn the_dropped_fixture_parses_and_carries_every_agreed_field() {
             "last_request"
         ])
     );
+    Ok(())
 }
 
 /// Every outcome `ban` can answer with: applied with an expiry, applied
 /// forever, refused as the host's own address, refused by `ignoreip`, and
 /// refused as invalid with no address at all.
 #[test]
-fn the_ban_fixture_parses_every_outcome() {
+fn the_ban_fixture_parses_every_outcome() -> Result<(), TestError> {
     let rows: Vec<TfpsAction> = BAN
         .lines()
-        .map(|l| serde_json::from_str(l).expect("ban row parses"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(rows.len(), 5);
     assert!(
         rows.iter()
@@ -511,17 +513,18 @@ fn the_ban_fixture_parses_every_outcome() {
     // aborts the whole command instead of producing a line.
     assert!(rows.iter().all(|r| r.ip.is_some()));
     assert_eq!(
-        keys_of_every_line(BAN),
+        keys_of_every_line(BAN)?,
         set(&["ip", "action", "applied", "refused", "expires", "source"])
     );
+    Ok(())
 }
 
 #[test]
-fn the_unban_fixture_parses_every_outcome() {
+fn the_unban_fixture_parses_every_outcome() -> Result<(), TestError> {
     let rows: Vec<TfpsAction> = UNBAN
         .lines()
-        .map(|l| serde_json::from_str(l).expect("unban row parses"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(rows.len(), 2);
     assert!(
         rows.iter()
@@ -532,20 +535,21 @@ fn the_unban_fixture_parses_every_outcome() {
     // No `invalid` row: `unban` parses with `?` too, so an unparseable address
     // aborts the command rather than producing a line.
     assert_eq!(
-        keys_of_every_line(UNBAN),
+        keys_of_every_line(UNBAN)?,
         set(&["ip", "action", "applied", "refused", "expires", "source"])
     );
+    Ok(())
 }
 
 /// The label export parses into the typed row too. `tfps_label_corpus_test`
 /// reads it structurally for the harness; `tfps_labels` hands it to an agent
 /// through this type, and both must accept the same bytes.
 #[test]
-fn the_labels_fixture_parses_into_the_typed_row() {
+fn the_labels_fixture_parses_into_the_typed_row() -> Result<(), TestError> {
     let rows: Vec<TfpsLabel> = LABELS
         .lines()
-        .map(|l| serde_json::from_str(l).expect("label row parses"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(rows.len(), 3);
     // A released TFPS writes only `block`: `block_log` has four columns and no
     // way to record the exempt or would-block classes. The vocabulary is
@@ -558,6 +562,7 @@ fn the_labels_fixture_parses_into_the_typed_row() {
             && rows.iter().any(|r| r.unbanned_at.is_some()),
         "all three meanings of expires and the operator lift must survive the typed read"
     );
+    Ok(())
 }
 
 /// What `tfps_ctl ingest` answers, per evidence line, is an action with
@@ -565,11 +570,11 @@ fn the_labels_fixture_parses_into_the_typed_row() {
 /// read that stream back today; the fixture is pinned so that when it does,
 /// the type is already the right one.
 #[test]
-fn the_evidence_result_fixture_is_an_action_per_line_from_sipnab() {
+fn the_evidence_result_fixture_is_an_action_per_line_from_sipnab() -> Result<(), TestError> {
     let rows: Vec<TfpsAction> = EVIDENCE_RESULT
         .lines()
-        .map(|l| serde_json::from_str(l).expect("result row parses"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(rows.len(), 5);
     assert!(
         rows.iter()
@@ -580,39 +585,43 @@ fn the_evidence_result_fixture_is_an_action_per_line_from_sipnab() {
         2,
         "two findings became bans; the host, the ignoreip entry and the torn line did not"
     );
+    Ok(())
 }
 
 // ── Locating the executable ──────────────────────────────────────────
 
 #[test]
-fn an_empty_search_path_finds_nothing() {
-    let fake = FakeCtl::absent();
+fn an_empty_search_path_finds_nothing() -> Result<(), TestError> {
+    let fake = FakeCtl::absent()?;
     assert_eq!(fake.on_path().locate(), None);
     assert_eq!(
         TfpsLocator::new(None, None).locate_in(None),
         None,
         "no PATH at all is the same answer"
     );
+    Ok(())
 }
 
 #[test]
-fn an_executable_on_the_search_path_is_found() {
-    let fake = FakeCtl::echoing(STATUS);
+fn an_executable_on_the_search_path_is_found() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing(STATUS)?;
     assert_eq!(fake.on_path().locate(), Some(fake.path()));
+    Ok(())
 }
 
 /// A directory entry that is not a regular file is not the program.
 #[test]
-fn a_directory_named_tfps_ctl_is_not_the_program() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::create_dir(dir.path().join("tfps_ctl")).expect("mkdir");
+fn a_directory_named_tfps_ctl_is_not_the_program() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir(dir.path().join("tfps_ctl"))?;
     let locator = TfpsLocator::new(None, None).with_search_path(dir.path().as_os_str());
     assert_eq!(locator.locate(), None);
+    Ok(())
 }
 
 #[test]
-fn an_explicit_path_wins_over_the_search_path() {
-    let on_path = FakeCtl::echoing(STATUS);
+fn an_explicit_path_wins_over_the_search_path() -> Result<(), TestError> {
+    let on_path = FakeCtl::echoing(STATUS)?;
     let named = PathBuf::from("/opt/tfps/bin/tfps_ctl");
     let locator = TfpsLocator::new(Some(named.clone()), None)
         .with_search_path(on_path.dir.path().as_os_str());
@@ -621,10 +630,11 @@ fn an_explicit_path_wins_over_the_search_path() {
         Some(named),
         "the operator named a program; PATH is not consulted"
     );
+    Ok(())
 }
 
 #[test]
-fn the_flag_wins_over_the_config_file() {
+fn the_flag_wins_over_the_config_file() -> Result<(), TestError> {
     let flag = Path::new("/from/flag");
     let cfg = Path::new("/from/config");
     let db = Path::new("/var/lib/tfps/tfps.db");
@@ -640,6 +650,7 @@ fn the_flag_wins_over_the_config_file() {
         TfpsLocator::default(),
         "nothing configured is the default"
     );
+    Ok(())
 }
 
 // ── The argument shapes sipnab sends, in tfps_ctl's grammar ─────────
@@ -653,7 +664,7 @@ fn the_flag_wins_over_the_config_file() {
 /// on a million-row log (debug build, 2026-09-18). And there is no "every
 /// row" value to send instead: TFPS reads `--limit 0` as zero rows.
 #[test]
-fn the_labels_request_never_asks_for_more_than_a_page() {
+fn the_labels_request_never_asks_for_more_than_a_page() -> Result<(), TestError> {
     use sipnab::security::tfps::labels_request;
     assert_eq!(
         labels_request(None, 1000),
@@ -677,10 +688,11 @@ fn the_labels_request_never_asks_for_more_than_a_page() {
         "more than a page is a page"
     );
     assert_eq!(labels_request(None, 2), 3);
+    Ok(())
 }
 
 #[test]
-fn every_command_has_the_agreed_argv() {
+fn every_command_has_the_agreed_argv() -> Result<(), TestError> {
     let argv = |cmd: &TfpsCommand, db: Option<&Path>| -> Vec<String> {
         cmd.argv(db)
             .into_iter()
@@ -737,28 +749,27 @@ fn every_command_has_the_agreed_argv() {
             && !TfpsCommand::Labels { limit: 50 }.refusal_carries_a_result(),
         "only the two actions answer a refusal with a result"
     );
+    Ok(())
 }
 
 /// The database path is one `argv` element after `--db`, whatever it holds.
 /// Proved on the wire: the fake records what it received, one per line.
 #[test]
-fn the_database_path_arrives_as_its_own_argument() {
+fn the_database_path_arrives_as_its_own_argument() -> Result<(), TestError> {
     let fake = FakeCtl::with_body(&format!(
         "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$(dirname \"$0\")/argv\"\n\
          cat <<'SIPNAB_FIXTURE'\n{STATUS}\nSIPNAB_FIXTURE"
-    ));
+    ))?;
     let db = PathBuf::from("/var/lib/tfps/space in name.db");
     let locator = TfpsLocator::new(Some(fake.path()), Some(db));
-    assert!(matches!(
-        locator.status().expect("answers"),
-        Reply::Answered { .. }
-    ));
-    let recorded = std::fs::read_to_string(fake.dir.path().join("argv")).expect("argv recorded");
+    assert!(matches!(locator.status()?, Reply::Answered { .. }));
+    let recorded = std::fs::read_to_string(fake.dir.path().join("argv"))?;
     assert_eq!(
         recorded.lines().collect::<Vec<_>>(),
         ["status", "--json", "--db", "/var/lib/tfps/space in name.db"],
         "the path reached the program as one argument and no shell saw it"
     );
+    Ok(())
 }
 
 // ── Invoking it ──────────────────────────────────────────────────────
@@ -766,12 +777,9 @@ fn the_database_path_arrives_as_its_own_argument() {
 /// The ordinary case on a bare machine: an answer, with the one agreed
 /// reason, and no error.
 #[test]
-fn an_absent_peer_is_an_answer_not_an_error() {
-    let fake = FakeCtl::absent();
-    let got = fake
-        .on_path()
-        .invoke(&TfpsCommand::Status)
-        .expect("absent is Ok");
+fn an_absent_peer_is_an_answer_not_an_error() -> Result<(), TestError> {
+    let fake = FakeCtl::absent()?;
+    let got = fake.on_path().invoke(&TfpsCommand::Status)?;
     assert_eq!(
         got,
         Invocation::NotInstalled {
@@ -782,24 +790,27 @@ fn an_absent_peer_is_an_answer_not_an_error() {
         NOT_INSTALLED_REASON, "tfps_ctl not found on PATH; pass --tfps-ctl or [tfps] ctl",
         "the reason is part of the contract: both doors and the docs quote it"
     );
-    let typed = fake.on_path().status().expect("absent is Ok");
+    let typed = fake.on_path().status()?;
     assert!(matches!(typed, Reply::NotInstalled { .. }));
+    Ok(())
 }
 
 /// An explicit path that does not run is a misconfiguration, reported as
 /// one -- not folded into "not installed", which would tell the operator to
 /// pass the flag they already passed.
 #[test]
-fn an_explicit_path_that_cannot_run_is_an_error_naming_it() {
+fn an_explicit_path_that_cannot_run_is_an_error_naming_it() -> Result<(), TestError> {
     let missing = PathBuf::from("/nonexistent/sipnab-test/tfps_ctl");
     let err = TfpsLocator::new(Some(missing.clone()), None)
         .invoke(&TfpsCommand::Status)
-        .expect_err("a path that does not exist cannot be spawned");
+        .err()
+        .ok_or("a path that does not exist cannot be spawned")?;
     assert!(
         matches!(&err, TfpsError::Spawn { ctl, .. } if *ctl == missing),
         "{err}"
     );
     assert!(err.to_string().contains(&missing.display().to_string()));
+    Ok(())
 }
 
 /// A freshly written executable can be open for writing at the moment sipnab
@@ -818,37 +829,28 @@ fn an_explicit_path_that_cannot_run_is_an_error_naming_it() {
 /// provoking it is.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_peer_busy_being_written_is_retried_not_refused() {
-    let fake = FakeCtl::echoing(STATUS);
-    let held = std::fs::OpenOptions::new()
-        .append(true)
-        .open(fake.path())
-        .expect("hold the executable open for writing");
+fn a_peer_busy_being_written_is_retried_not_refused() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing(STATUS)?;
+    let held = std::fs::OpenOptions::new().append(true).open(fake.path())?;
     let release = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(50));
         drop(held);
     });
     let started = std::time::Instant::now();
-    let reply = fake
-        .explicit()
-        .status()
-        .expect("ETXTBSY is a moment, not a missing peer");
+    let reply = fake.explicit().status()?;
     assert!(matches!(reply, Reply::Answered { .. }), "{reply:?}");
     assert!(
         started.elapsed() >= Duration::from_millis(40),
         "the answer arrived before the handle was released, so nothing was retried"
     );
-    release.join().expect("release thread");
+    release.join().map_err(|_| "thread panicked")?;
+    Ok(())
 }
 
 #[test]
-fn a_zero_exit_is_answered_with_its_stdout() {
-    let fake = FakeCtl::echoing(STATUS);
-    match fake
-        .explicit()
-        .invoke(&TfpsCommand::Status)
-        .expect("answered")
-    {
+fn a_zero_exit_is_answered_with_its_stdout() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing(STATUS)?;
+    match fake.explicit().invoke(&TfpsCommand::Status)? {
         Invocation::Answered {
             ctl,
             status,
@@ -859,16 +861,17 @@ fn a_zero_exit_is_answered_with_its_stdout() {
             assert_eq!(status, Some(0));
             assert_eq!(stdout.trim(), STATUS.trim());
         }
-        other => panic!("expected an answer, got {other:?}"),
+        other => return Err(format!("expected an answer, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// The peer's own diagnosis, verbatim. Paraphrasing it would lose the part
 /// that says what to fix.
 #[test]
-fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() {
-    let fake = FakeCtl::with_body("echo 'database is locked: /var/lib/tfps/tfps.db' >&2; exit 3");
-    let err = fake.explicit().banned().expect_err("exit 3 is an error");
+fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() -> Result<(), TestError> {
+    let fake = FakeCtl::with_body("echo 'database is locked: /var/lib/tfps/tfps.db' >&2; exit 3")?;
+    let err = fake.explicit().banned().err().ok_or("exit 3 is an error")?;
     match &err {
         TfpsError::Failed {
             status,
@@ -880,13 +883,14 @@ fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() {
             assert_eq!(stderr.trim(), "database is locked: /var/lib/tfps/tfps.db");
             assert_eq!(subcommand, "banned");
         }
-        other => panic!("expected Failed, got {other:?}"),
+        other => return Err(format!("expected Failed, got {other:?}").into()),
     }
     assert!(
         err.to_string()
             .contains("database is locked: /var/lib/tfps/tfps.db"),
         "the rendered error carries stderr: {err}"
     );
+    Ok(())
 }
 
 /// TFPS's `ban` exits 1 when the request was refused and still prints the
@@ -900,14 +904,15 @@ fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() {
 /// TFPS meets on every question sipnab asks. They get the peer's own words
 /// AND what to install.
 #[test]
-fn a_released_peer_without_json_is_told_where_json_is() {
+fn a_released_peer_without_json_is_told_where_json_is() -> Result<(), TestError> {
     let fake = FakeCtl::with_body(
         "printf 'error: unknown option: --json\\n\\nUSAGE: tfps_ctl <command> [options]\\n' >&2\nexit 2",
-    );
+    )?;
     let msg = fake
         .explicit()
         .status()
-        .expect_err("a tfps_ctl without --json cannot answer")
+        .err()
+        .ok_or("a tfps_ctl without --json cannot answer")?
         .to_string();
     assert!(
         msg.contains("unknown option: --json"),
@@ -917,6 +922,7 @@ fn a_released_peer_without_json_is_told_where_json_is() {
         msg.contains("sippulse/tfps#6") && msg.contains("master") && msg.contains("v0.2.1"),
         "the operator must be told where --json is and that no release has it: {msg}"
     );
+    Ok(())
 }
 
 /// `dropped` is on no TFPS build: upstream `master` at `984577dc` answers
@@ -924,12 +930,13 @@ fn a_released_peer_without_json_is_told_where_json_is() {
 /// has no such arm either. An operator asking sipnab for kernel drops is told
 /// that no TFPS can answer yet, not only that this one failed.
 #[test]
-fn a_peer_without_dropped_is_told_no_build_has_it() {
-    let fake = FakeCtl::with_body("echo 'error: unknown command: dropped' >&2\nexit 1");
+fn a_peer_without_dropped_is_told_no_build_has_it() -> Result<(), TestError> {
+    let fake = FakeCtl::with_body("echo 'error: unknown command: dropped' >&2\nexit 1")?;
     let msg = fake
         .explicit()
         .dropped()
-        .expect_err("no TFPS build has dropped")
+        .err()
+        .ok_or("no TFPS build has dropped")?
         .to_string();
     assert!(
         msg.contains("unknown command: dropped"),
@@ -939,26 +946,29 @@ fn a_peer_without_dropped_is_told_no_build_has_it() {
         msg.contains("no TFPS build has"),
         "the operator must be told that no TFPS answers this yet: {msg}"
     );
+    Ok(())
 }
 
 /// The hints are for the two capability gaps and nothing else. A failure
 /// that is the operator's to fix -- here the database path -- keeps the
 /// peer's words alone, so a hint never points at the wrong cause.
 #[test]
-fn an_ordinary_peer_failure_carries_no_capability_hint() {
+fn an_ordinary_peer_failure_carries_no_capability_hint() -> Result<(), TestError> {
     let fake = FakeCtl::with_body(
         "echo 'error: opening /var/lib/tfps/tfps.db read-only: unable to open database file' >&2\nexit 1",
-    );
+    )?;
     let msg = fake
         .explicit()
         .labels(50)
-        .expect_err("an unreadable database is a failure")
+        .err()
+        .ok_or("an unreadable database is a failure")?
         .to_string();
     assert!(msg.contains("unable to open database file"), "{msg}");
     assert!(
         !msg.contains("sippulse/tfps#6") && !msg.contains("no TFPS build has"),
         "a database error must not be dressed up as a missing capability: {msg}"
     );
+    Ok(())
 }
 
 /// The `dropped` hint names one missing subcommand, so it is given for that
@@ -966,64 +976,67 @@ fn an_ordinary_peer_failure_carries_no_capability_hint() {
 /// different gap, and telling its operator that no TFPS reports kernel drops
 /// would send them after the wrong thing.
 #[test]
-fn another_missing_subcommand_is_not_reported_as_the_dropped_gap() {
-    let fake = FakeCtl::with_body("echo 'error: unknown command: log' >&2\nexit 1");
+fn another_missing_subcommand_is_not_reported_as_the_dropped_gap() -> Result<(), TestError> {
+    let fake = FakeCtl::with_body("echo 'error: unknown command: log' >&2\nexit 1")?;
     let msg = fake
         .explicit()
         .labels(50)
-        .expect_err("a tfps_ctl without log cannot answer")
+        .err()
+        .ok_or("a tfps_ctl without log cannot answer")?
         .to_string();
     assert!(msg.contains("unknown command: log"), "{msg}");
     assert!(
         !msg.contains("no TFPS build has"),
         "a missing log subcommand is not the dropped gap: {msg}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_refused_ban_exits_one_and_is_still_an_answer() {
-    let fake = FakeCtl::echoing_then_exiting(line(BAN, 3), 1, "error: 1 of 1 refused");
+fn a_refused_ban_exits_one_and_is_still_an_answer() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing_then_exiting(line(BAN, 3)?, 1, "error: 1 of 1 refused")?;
     let reply = fake
         .explicit()
-        .ban(&permit(), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), None)
-        .expect("a refusal is a result, not an error");
+        .ban(&permit()?, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), None)?;
     match reply {
         Reply::Answered { value, .. } => {
             assert!(!value.applied);
             assert_eq!(value.refused.as_deref(), Some("local"));
         }
-        other => panic!("expected an answer, got {other:?}"),
+        other => return Err(format!("expected an answer, got {other:?}").into()),
     }
-    let fake = FakeCtl::echoing_then_exiting(line(UNBAN, 2), 1, "error: 1 of 1 not lifted");
+    let fake = FakeCtl::echoing_then_exiting(line(UNBAN, 2)?, 1, "error: 1 of 1 not lifted")?;
     let reply = fake
         .explicit()
-        .unban(&permit(), IpAddr::V4(Ipv4Addr::new(198, 51, 100, 21)))
-        .expect("a refusal is a result, not an error");
+        .unban(&permit()?, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 21)))?;
     assert!(
         matches!(reply, Reply::Answered { value, .. } if value.refused.as_deref() == Some("not-blocked"))
     );
+    Ok(())
 }
 
 /// Exit 1 with NOTHING readable on stdout is a failure, stderr and all --
 /// the refusal convention does not turn every crash of `ban` into a result.
 #[test]
-fn a_ban_that_exits_one_without_a_result_is_a_failure() {
-    let fake = FakeCtl::with_body("echo 'error: cannot open block map: CAP_BPF' >&2; exit 1");
+fn a_ban_that_exits_one_without_a_result_is_a_failure() -> Result<(), TestError> {
+    let fake = FakeCtl::with_body("echo 'error: cannot open block map: CAP_BPF' >&2; exit 1")?;
     let err = fake
         .explicit()
-        .ban(&permit(), the_ip(), None)
-        .expect_err("no result line means it failed");
+        .ban(&permit()?, the_ip(), None)
+        .err()
+        .ok_or("no result line means it failed")?;
     assert!(
         matches!(&err, TfpsError::Failed { status: Some(1), stderr, .. } if stderr.contains("CAP_BPF")),
         "{err}"
     );
     // And exit 1 on a command with no refusal convention is a failure even
     // with something parseable on stdout.
-    let fake = FakeCtl::echoing_then_exiting(STATUS, 1, "error: whatever");
+    let fake = FakeCtl::echoing_then_exiting(STATUS, 1, "error: whatever")?;
     let err = fake
         .explicit()
         .status()
-        .expect_err("status has no refusal convention");
+        .err()
+        .ok_or("status has no refusal convention")?;
     assert!(
         matches!(
             err,
@@ -1034,34 +1047,37 @@ fn a_ban_that_exits_one_without_a_result_is_a_failure() {
         ),
         "{err}"
     );
+    Ok(())
 }
 
 #[test]
-fn output_that_is_not_the_contract_is_an_error() {
-    let fake = FakeCtl::echoing("this is not json");
-    let err = fake.explicit().status().expect_err("not JSON");
+fn output_that_is_not_the_contract_is_an_error() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing("this is not json")?;
+    let err = fake.explicit().status().err().ok_or("not JSON")?;
     assert!(matches!(err, TfpsError::Unparseable { .. }), "{err}");
     // A list with one bad line among good ones is refused whole, for the
     // reason the label harness gives: a quietly shortened list describes a
     // smaller world than the peer reported.
-    let fake = FakeCtl::echoing(&format!("{BANNED}not json\n"));
-    let err = fake.explicit().banned().expect_err("one bad line");
+    let fake = FakeCtl::echoing(&format!("{BANNED}not json\n"))?;
+    let err = fake.explicit().banned().err().ok_or("one bad line")?;
     match err {
         TfpsError::Unparseable { what, .. } => {
             assert!(what.contains("line 4"), "names the line: {what}");
         }
-        other => panic!("expected Unparseable, got {other:?}"),
+        other => return Err(format!("expected Unparseable, got {other:?}").into()),
     }
     // One address asked, two results answered: reported, not resolved.
-    let fake = FakeCtl::echoing(&format!("{}\n{}", line(BAN, 1), line(BAN, 2)));
+    let fake = FakeCtl::echoing(&format!("{}\n{}", line(BAN, 1)?, line(BAN, 2)?))?;
     let err = fake
         .explicit()
-        .ban(&permit(), the_ip(), None)
-        .expect_err("two lines");
+        .ban(&permit()?, the_ip(), None)
+        .err()
+        .ok_or("two lines")?;
     assert!(
         matches!(&err, TfpsError::Unparseable { what, .. } if what.contains("2 result lines")),
         "{err}"
     );
+    Ok(())
 }
 
 /// The whole tree is stopped, not just the peer. The fake is a shell whose
@@ -1071,13 +1087,13 @@ fn output_that_is_not_the_contract_is_an_error() {
 /// running. So the fake records the grandchild's pid and the test checks it
 /// is dead, not merely that the call came back.
 #[test]
-fn a_peer_that_hangs_is_stopped_and_reported() {
+fn a_peer_that_hangs_is_stopped_and_reported() -> Result<(), TestError> {
     let fake = FakeCtl::with_body(
         "echo 'still opening the database' >&2\n\
          sleep 30 &\n\
          echo $! > \"$(dirname \"$0\")/sleep.pid\"\n\
          wait",
-    );
+    )?;
     // The premise is a grandchild holding the pipe. On a loaded host the
     // shell can be stopped before it starts `sleep`, and then there is no
     // grandchild to check, so a run without one is repeated with a longer
@@ -1090,7 +1106,8 @@ fn a_peer_that_hangs_is_stopped_and_reported() {
         let err = fake
             .explicit()
             .invoke_with(&TfpsCommand::Status, Duration::from_millis(timeout_ms))
-            .expect_err("a hang is an error");
+            .err()
+            .ok_or("a hang is an error")?;
         let elapsed = started.elapsed();
         if let Ok(text) = std::fs::read_to_string(&pid_file)
             && !text.trim().is_empty()
@@ -1100,13 +1117,13 @@ fn a_peer_that_hangs_is_stopped_and_reported() {
         }
     }
     let (err, elapsed, timeout_ms, text) =
-        outcome.expect("the fake never started its grandchild, even with a 3 s timeout");
+        outcome.ok_or("the fake never started its grandchild, even with a 3 s timeout")?;
     assert!(
         elapsed < Duration::from_millis(timeout_ms) + Duration::from_secs(5),
         "the call took {elapsed:?} against a {timeout_ms} ms timeout: the reader \
          waited on a pipe the grandchild held",
     );
-    let pid: i32 = text.trim().parse().expect("a pid");
+    let pid: i32 = text.trim().parse()?;
     // `kill(pid, 0)` asks whether the process exists without signaling it.
     // A moment's grace: the group kill is asynchronous with the wait.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -1124,56 +1141,45 @@ fn a_peer_that_hangs_is_stopped_and_reported() {
         unsafe {
             libc::kill(pid, libc::SIGKILL);
         }
-        panic!(
+        return Err(format!(
             "the grandchild sleep (pid {pid}) survived the timeout: the process group was not killed"
-        );
+        ).into());
     }
     match &err {
         TfpsError::TimedOut { after, stderr, .. } => {
             assert_eq!(*after, Duration::from_millis(timeout_ms));
             assert!(stderr.contains("still opening"), "{stderr}");
         }
-        other => panic!("expected TimedOut, got {other:?}"),
+        other => return Err(format!("expected TimedOut, got {other:?}").into()),
     }
+    Ok(())
 }
 
 #[test]
-fn the_typed_readers_reach_every_shape() {
-    let status = FakeCtl::echoing(STATUS)
-        .explicit()
-        .status()
-        .expect("status");
+fn the_typed_readers_reach_every_shape() -> Result<(), TestError> {
+    let status = FakeCtl::echoing(STATUS)?.explicit().status()?;
     assert!(matches!(status, Reply::Answered { value, .. } if value.blocked_now == 3));
 
-    let banned = FakeCtl::echoing(BANNED)
-        .explicit()
-        .banned()
-        .expect("banned");
+    let banned = FakeCtl::echoing(BANNED)?.explicit().banned()?;
     assert!(matches!(banned, Reply::Answered { value, .. } if value.len() == 3));
 
-    let dropped = FakeCtl::echoing(DROPPED)
-        .explicit()
-        .dropped()
-        .expect("dropped");
+    let dropped = FakeCtl::echoing(DROPPED)?.explicit().dropped()?;
     assert!(matches!(dropped, Reply::Answered { value, .. } if value[0].dropped == 30));
 
-    let labels = FakeCtl::echoing(LABELS)
-        .explicit()
-        .labels(50)
-        .expect("labels");
+    let labels = FakeCtl::echoing(LABELS)?.explicit().labels(50)?;
     assert!(matches!(labels, Reply::Answered { value, .. } if value.len() == 3));
 
-    let ban = FakeCtl::echoing(first_line(BAN))
-        .explicit()
-        .ban(&permit(), the_ip(), Some(3600))
-        .expect("ban");
+    let ban =
+        FakeCtl::echoing(first_line(BAN)?)?
+            .explicit()
+            .ban(&permit()?, the_ip(), Some(3600))?;
     assert!(matches!(ban, Reply::Answered { value, .. } if value.applied));
 
-    let unban = FakeCtl::echoing(first_line(UNBAN))
+    let unban = FakeCtl::echoing(first_line(UNBAN)?)?
         .explicit()
-        .unban(&permit(), the_ip())
-        .expect("unban");
+        .unban(&permit()?, the_ip())?;
     assert!(matches!(unban, Reply::Answered { value, .. } if value.action == "unban"));
+    Ok(())
 }
 
 // ── What both doors answer with ──────────────────────────────────────
@@ -1181,11 +1187,11 @@ fn the_typed_readers_reach_every_shape() {
 /// `installed: false` carries the reason and NOTHING else. A client keyed on
 /// the presence of `status` must not find an empty one.
 #[test]
-fn the_absent_answer_is_exactly_installed_false_and_a_reason() {
+fn the_absent_answer_is_exactly_installed_false_and_a_reason() -> Result<(), TestError> {
     let answer = TfpsStatusAnswer::from(Reply::<TfpsStatus>::NotInstalled {
         reason: NOT_INSTALLED_REASON.to_string(),
     });
-    let v = serde_json::to_value(&answer).expect("serializes");
+    let v = serde_json::to_value(&answer)?;
     assert_eq!(
         v,
         serde_json::json!({"installed": false, "reason": NOT_INSTALLED_REASON})
@@ -1198,7 +1204,7 @@ fn the_absent_answer_is_exactly_installed_false_and_a_reason() {
         50,
     );
     assert_eq!(
-        serde_json::to_value(&list).expect("serializes"),
+        serde_json::to_value(&list)?,
         serde_json::json!({"installed": false, "reason": NOT_INSTALLED_REASON})
     );
 
@@ -1206,19 +1212,20 @@ fn the_absent_answer_is_exactly_installed_false_and_a_reason() {
         reason: NOT_INSTALLED_REASON.to_string(),
     });
     assert_eq!(
-        serde_json::to_value(&action).expect("serializes"),
+        serde_json::to_value(&action)?,
         serde_json::json!({"installed": false, "reason": NOT_INSTALLED_REASON})
     );
+    Ok(())
 }
 
 #[test]
-fn a_present_answer_names_the_executable_and_carries_the_value() {
-    let s: TfpsStatus = serde_json::from_str(STATUS).expect("status");
+fn a_present_answer_names_the_executable_and_carries_the_value() -> Result<(), TestError> {
+    let s: TfpsStatus = serde_json::from_str(STATUS)?;
     let answer = TfpsStatusAnswer::from(Reply::Answered {
         ctl: PathBuf::from("/usr/local/bin/tfps_ctl"),
         value: s.clone(),
     });
-    let v = serde_json::to_value(&answer).expect("serializes");
+    let v = serde_json::to_value(&answer)?;
     assert_eq!(v["installed"], true);
     assert_eq!(v["tfps_ctl"], "/usr/local/bin/tfps_ctl");
     assert_eq!(v["status"]["blocked_now"], 3);
@@ -1226,16 +1233,17 @@ fn a_present_answer_names_the_executable_and_carries_the_value() {
         v.get("reason").is_none(),
         "no reason when there is an answer"
     );
+    Ok(())
 }
 
 /// The door's row cap bounds a list the same way every page on the MCP
 /// surface is bounded, and says so.
 #[test]
-fn a_list_answer_is_bounded_by_the_row_cap_and_says_so() {
+fn a_list_answer_is_bounded_by_the_row_cap_and_says_so() -> Result<(), TestError> {
     let rows: Vec<TfpsLabel> = LABELS
         .lines()
-        .map(|l| serde_json::from_str(l).expect("label row"))
-        .collect();
+        .map(|l| -> Result<_, TestError> { Ok(serde_json::from_str(l)?) })
+        .collect::<Result<_, TestError>>()?;
     let reply = Reply::Answered {
         ctl: PathBuf::from("/x/tfps_ctl"),
         value: rows.clone(),
@@ -1258,4 +1266,5 @@ fn a_list_answer_is_bounded_by_the_row_cap_and_says_so() {
         Some(false),
         "a cap that withheld nothing says so rather than staying silent"
     );
+    Ok(())
 }

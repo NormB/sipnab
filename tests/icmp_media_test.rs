@@ -40,6 +40,9 @@ use sipnab::pipeline::{self, MediaMatch, QuotedMediaKind};
 use sipnab::rtp::parser::RtpHeader;
 use sipnab::rtp::stream_store::StreamStore;
 
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
 // ── Fixtures ─────────────────────────────────────────────────────────
 
 /// Ethernet link type (DLT_EN10MB).
@@ -121,7 +124,7 @@ fn icmpv4_error(
     icmp_type: u8,
     icmp_code: u8,
     quoted: &[u8],
-) -> Packet {
+) -> Result<Packet, TestError> {
     let mut icmp = Vec::with_capacity(8 + quoted.len());
     icmp.push(icmp_type);
     icmp.push(icmp_code);
@@ -147,16 +150,16 @@ fn icmpv4_error(
     pkt.extend_from_slice(&icmp);
 
     let len = pkt.len();
-    Packet::new(
+    Ok(Packet::new(
         Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
             .single()
-            .expect("fixture timestamp"),
+            .ok_or("fixture timestamp")?,
         pkt,
         len,
         len,
         None,
         DLT_EN10MB,
-    )
+    ))
 }
 
 /// Feed one ICMP error through the real parser, which is where evidence is
@@ -175,7 +178,7 @@ fn store_with_stream(
     dst_port: u16,
     ssrc: u32,
     call_id: Option<&str>,
-) -> StreamStore {
+) -> Result<StreamStore, TestError> {
     let mut store = StreamStore::new(64);
     if let Some(call_id) = call_id {
         store.link_endpoint(IpAddr::V4(dead_peer()), dst_port, call_id, &[]);
@@ -186,7 +189,7 @@ fn store_with_stream(
         timestamp: Utc
             .with_ymd_and_hms(2024, 1, 15, 11, 59, 0)
             .single()
-            .expect("fixture timestamp"),
+            .ok_or("fixture timestamp")?,
         tcp_seq: None,
         tcp_flags: None,
         src_addr: IpAddr::V4(sender()),
@@ -220,9 +223,9 @@ fn store_with_stream(
         &rtp,
         Utc.with_ymd_and_hms(2024, 1, 15, 11, 59, 0)
             .single()
-            .expect("fixture timestamp"),
+            .ok_or("fixture timestamp")?,
     );
-    store
+    Ok(store)
 }
 
 // ── Recording ────────────────────────────────────────────────────────
@@ -232,11 +235,11 @@ fn store_with_stream(
 /// no audio" and every surface said nothing.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn an_icmp_error_quoting_rtp_is_recorded_not_dropped() {
+fn an_icmp_error_quoting_rtp_is_recorded_not_dropped() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
     assert_eq!(report.errors, 1, "the error must reach a report");
@@ -249,6 +252,7 @@ fn an_icmp_error_quoting_rtp_is_recorded_not_dropped() {
     assert_eq!(report.endpoints[0].port, Some(RTP_DST));
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// The quoted payload is read for what it is. An RTP header in the quote is
@@ -256,14 +260,14 @@ fn an_icmp_error_quoting_rtp_is_recorded_not_dropped() {
 /// carries is a second, independent key onto a tracked stream.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn the_quoted_payload_is_recognized_as_rtp() {
+fn the_quoted_payload_is_recognized_as_rtp() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(
         f.payload,
         QuotedMediaKind::Rtp {
@@ -274,6 +278,7 @@ fn the_quoted_payload_is_recognized_as_rtp() {
     assert_eq!(report.media, 1, "an RTP quote is media whatever it matched");
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// A quote of something that is neither SIP nor media is still recorded and
@@ -281,7 +286,7 @@ fn the_quoted_payload_is_recognized_as_rtp() {
 /// as a media blackhole would be a fabricated diagnosis.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_non_media_quote_is_recorded_but_not_claimed_as_media() {
+fn a_non_media_quote_is_recorded_but_not_claimed_as_media() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     // A DNS query: not SIP, not RTP, not RTCP.
@@ -289,17 +294,18 @@ fn a_non_media_quote_is_recorded_but_not_claimed_as_media() {
         0x12u8, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), 53000, 53, &dns);
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
     assert_eq!(report.errors, 1, "still recorded — the endpoint is real");
     assert_eq!(report.media, 0, "and not reported as a media failure");
     assert_eq!(
-        report.flows.first().expect("one flow").payload,
+        report.flows.first().ok_or("one flow")?.payload,
         QuotedMediaKind::NotMedia
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 // ── Association ──────────────────────────────────────────────────────
@@ -308,17 +314,17 @@ fn a_non_media_quote_is_recorded_but_not_claimed_as_media() {
 /// exactly a stream sipnab tracked. The finding then names the call.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_media_quote_is_matched_to_the_stream_whose_five_tuple_it_carries() {
+fn a_media_quote_is_matched_to_the_stream_whose_five_tuple_it_carries() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
-    let store = store_with_stream(RTP_SRC, RTP_DST, SSRC, Some("media-icmp-1@test"));
+    let store = store_with_stream(RTP_SRC, RTP_DST, SSRC, Some("media-icmp-1@test"))?;
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&store);
     assert_eq!(report.attributed, 1);
     assert_eq!(report.unattributed, 0);
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(f.matched, MediaMatch::Flow);
     assert_eq!(f.call_ids, vec!["media-icmp-1@test".to_string()]);
     assert!(
@@ -328,6 +334,7 @@ fn a_media_quote_is_matched_to_the_stream_whose_five_tuple_it_carries() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// RTCP runs one port above RTP, so an ICMP error about RTCP can never match a
@@ -336,10 +343,10 @@ fn a_media_quote_is_matched_to_the_stream_whose_five_tuple_it_carries() {
 /// media errors are predominantly RTCP.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn an_rtcp_quote_is_matched_by_the_ssrc_it_carries() {
+fn an_rtcp_quote_is_matched_by_the_ssrc_it_carries() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
-    let store = store_with_stream(RTP_SRC, RTP_DST, SSRC, Some("media-icmp-2@test"));
+    let store = store_with_stream(RTP_SRC, RTP_DST, SSRC, Some("media-icmp-2@test"))?;
     // RTCP: source and destination ports are both one above the RTP pair, so
     // neither the 5-tuple nor either socket is a stream endpoint.
     let quoted = quoted_ipv4_udp(
@@ -349,10 +356,10 @@ fn an_rtcp_quote_is_matched_by_the_ssrc_it_carries() {
         RTP_DST + 1,
         &rtcp_datagram(SSRC),
     );
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&store);
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(
         f.matched,
         MediaMatch::Ssrc,
@@ -362,6 +369,7 @@ fn an_rtcp_quote_is_matched_by_the_ssrc_it_carries() {
     assert_eq!(report.attributed, 1);
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// When no RTP was captured at all — a one-sided capture, or media that never
@@ -369,7 +377,7 @@ fn an_rtcp_quote_is_matched_by_the_ssrc_it_carries() {
 /// media port one below it (RFC 3550 §11).
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn an_rtcp_quote_falls_back_to_the_sdp_media_port_one_below() {
+fn an_rtcp_quote_falls_back_to_the_sdp_media_port_one_below() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let mut store = StreamStore::new(64);
@@ -389,10 +397,10 @@ fn an_rtcp_quote_falls_back_to_the_sdp_media_port_one_below() {
         // Truncated to the RFC 792 minimum: no payload, so no SSRC either.
         &[],
     );
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&store);
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(f.matched, MediaMatch::SdpEndpoint);
     assert_eq!(f.call_ids, vec!["media-icmp-3@test".to_string()]);
     assert_eq!(
@@ -402,6 +410,7 @@ fn an_rtcp_quote_falls_back_to_the_sdp_media_port_one_below() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// A quote that matches nothing is counted as unattributed and reported with
@@ -409,14 +418,14 @@ fn an_rtcp_quote_falls_back_to_the_sdp_media_port_one_below() {
 /// answered — the exact defect this whole feature exists to remove.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_quote_matching_no_stream_is_unattributed_not_dropped() {
+fn a_quote_matching_no_stream_is_unattributed_not_dropped() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     // A store with an unrelated stream, so "no match" is a real decision
     // rather than an empty store trivially matching nothing.
-    let store = store_with_stream(41000, 21000, 0xFEED_FACE, Some("other-call@test"));
+    let store = store_with_stream(41000, 21000, 0xFEED_FACE, Some("other-call@test"))?;
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&store);
     assert_eq!(report.errors, 1);
@@ -425,7 +434,7 @@ fn a_quote_matching_no_stream_is_unattributed_not_dropped() {
         report.unattributed, 1,
         "attributed + unattributed must always equal errors"
     );
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(f.matched, MediaMatch::None);
     assert!(f.call_ids.is_empty());
     assert!(
@@ -435,17 +444,18 @@ fn a_quote_matching_no_stream_is_unattributed_not_dropped() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// Repeated errors against one flow collapse to one finding with an exact
 /// count. Thirty blackholed packets is a different picture from one.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn repeated_errors_on_one_flow_are_one_finding_with_an_exact_count() {
+fn repeated_errors_on_one_flow_are_one_finding_with_an_exact_count() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
     for _ in 0..30 {
         feed(&pkt);
     }
@@ -459,6 +469,7 @@ fn repeated_errors_on_one_flow_are_one_finding_with_an_exact_count() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// Routers on one path do not all quote the same number of bytes. One quote
@@ -467,16 +478,16 @@ fn repeated_errors_on_one_flow_are_one_finding_with_an_exact_count() {
 /// least.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn one_generous_quote_settles_what_the_flow_carries() {
+fn one_generous_quote_settles_what_the_flow_carries() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     // First: a full RTP header. Then two RFC 792 minimum quotes of the same
     // flow, which carry no payload at all.
     let full = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &full));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &full)?);
     let bare = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &[]);
-    feed(&icmpv4_error(router(), sender(), 3, 3, &bare));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &bare));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &bare)?);
+    feed(&icmpv4_error(router(), sender(), 3, 3, &bare)?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
     assert_eq!(report.flows.len(), 1, "one flow");
@@ -491,6 +502,7 @@ fn one_generous_quote_settles_what_the_flow_carries() {
     assert_eq!(report.media, 3, "every error on the flow is media");
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// A quote that stopped before the transport header names no flow at all —
@@ -499,13 +511,13 @@ fn one_generous_quote_settles_what_the_flow_carries() {
 /// router that quotes too little from media this capture does not hold.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_quote_stopping_before_the_ports_is_counted_as_unkeyed() {
+fn a_quote_stopping_before_the_ports_is_counted_as_unkeyed() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let full = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
     // The IPv4 header and nothing else: both addresses are readable, neither
     // port is.
-    feed(&icmpv4_error(router(), sender(), 3, 1, &full[..20]));
+    feed(&icmpv4_error(router(), sender(), 3, 1, &full[..20])?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
     assert_eq!(report.errors, 1);
@@ -526,6 +538,7 @@ fn a_quote_stopping_before_the_ports_is_counted_as_unkeyed() {
     assert_eq!(report.endpoints[0].port, None);
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 // ── Accounting ───────────────────────────────────────────────────────
@@ -535,15 +548,15 @@ fn a_quote_stopping_before_the_ports_is_counted_as_unkeyed() {
 /// signaling side holds, on the media side.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_media_quote_never_becomes_a_stream_or_a_sip_message() {
+fn a_media_quote_never_becomes_a_stream_or_a_sip_message() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
-    let store = store_with_stream(RTP_SRC, RTP_DST, SSRC, None);
+    let store = store_with_stream(RTP_SRC, RTP_DST, SSRC, None)?;
     let before = store.len();
 
     for payload in [rtp_datagram(SSRC), rtcp_datagram(SSRC)] {
         let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &payload);
-        feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+        feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
     }
 
     assert_eq!(
@@ -559,20 +572,21 @@ fn a_media_quote_never_becomes_a_stream_or_a_sip_message() {
     assert_eq!(pipeline::icmp_media_report(&store).errors, 2);
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// The reporter is the device that noticed, not the device that failed. Naming
 /// it as the fault sends an operator to debug a working router.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn the_reporter_is_never_reported_as_the_failure() {
+fn the_reporter_is_never_reported_as_the_failure() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(
         f.unreachable_endpoint,
         SocketAddr::new(IpAddr::V4(dead_peer()), RTP_DST).to_string()
@@ -589,6 +603,7 @@ fn the_reporter_is_never_reported_as_the_failure() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// Two routers reporting the same dead socket is one broken endpoint, not two.
@@ -597,18 +612,18 @@ fn the_reporter_is_never_reported_as_the_failure() {
 /// under-state every one of them.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn two_reporters_naming_one_dead_socket_are_one_endpoint() {
+fn two_reporters_naming_one_dead_socket_are_one_endpoint() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 1, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 1, &quoted)?);
     feed(&icmpv4_error(
         Ipv4Addr::new(203, 0, 113, 2),
         sender(),
         3,
         1,
         &quoted,
-    ));
+    )?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
     assert_eq!(report.errors, 2);
@@ -621,20 +636,21 @@ fn two_reporters_naming_one_dead_socket_are_one_endpoint() {
     assert_eq!(report.endpoints[0].errors, 2);
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// Administratively prohibited is a firewall, not a dead media port, and it
 /// changes who the operator calls.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn an_administratively_prohibited_media_error_names_the_filter() {
+fn an_administratively_prohibited_media_error_names_the_filter() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));
-    feed(&icmpv4_error(router(), sender(), 3, 13, &quoted));
+    feed(&icmpv4_error(router(), sender(), 3, 13, &quoted)?);
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
-    let f = report.flows.first().expect("one flow");
+    let f = report.flows.first().ok_or("one flow")?;
     assert_eq!(f.description, "communication administratively prohibited");
     assert!(
         f.hint.contains("filtering") || f.hint.contains("firewall"),
@@ -643,6 +659,7 @@ fn an_administratively_prohibited_media_error_names_the_filter() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// The flow map is keyed by addresses and ports a remote party chooses, so it
@@ -651,7 +668,7 @@ fn an_administratively_prohibited_media_error_names_the_filter() {
 /// flood costs memory nothing and costs the report only detail it names.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_flood_of_unique_flows_is_bounded_and_says_so() {
+fn a_flood_of_unique_flows_is_bounded_and_says_so() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let over = pipeline::MAX_ICMP_MEDIA_FLOWS + 64;
@@ -659,7 +676,7 @@ fn a_flood_of_unique_flows_is_bounded_and_says_so() {
         // A distinct destination port per error, which is a distinct flow.
         let port = 1024u16.wrapping_add(i as u16);
         let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, port, &rtp_datagram(SSRC));
-        feed(&icmpv4_error(router(), sender(), 3, 3, &quoted));
+        feed(&icmpv4_error(router(), sender(), 3, 3, &quoted)?);
     }
 
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
@@ -682,14 +699,16 @@ fn a_flood_of_unique_flows_is_bounded_and_says_so() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// With no ICMP recorded the report is empty and costs nothing — the common
 /// case for a healthy capture.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_capture_without_icmp_reports_nothing() {
+fn a_capture_without_icmp_reports_nothing() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
     let report = pipeline::icmp_media_report(&StreamStore::new(8));
     assert_eq!(report, Default::default());
+    Ok(())
 }

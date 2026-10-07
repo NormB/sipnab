@@ -33,16 +33,18 @@ mod release_logic;
 
 use release_logic::LOAD_VERIFICATION_RECORD;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// Run the classifier over `text`, returning (exit code, stdout).
-fn classify(text: &str) -> (i32, String) {
+fn classify(text: &str) -> Result<(i32, String), TestError> {
     let mut child = Command::new("bash")
         .arg(repo().join("scripts/verify-bpf-load.sh"))
         .arg("--classify")
@@ -51,18 +53,18 @@ fn classify(text: &str) -> (i32, String) {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn verify-bpf-load.sh");
+        .map_err(|e| format!("spawn verify-bpf-load.sh: {e}"))?;
     child
         .stdin
         .as_mut()
-        .expect("stdin")
+        .ok_or("stdin")?
         .write_all(text.as_bytes())
-        .expect("write");
-    let out = child.wait_with_output().expect("wait");
-    (
+        .map_err(|e| format!("write: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("wait: {e}"))?;
+    Ok((
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
-    )
+    ))
 }
 
 /// The line a successful load-and-attach actually prints.
@@ -79,8 +81,8 @@ const REJECTED: &str =
     "Error: verifier rejected the uprobe: BPF_PROG_LOAD returned Permission denied";
 
 #[test]
-fn an_attach_is_recognized_from_the_message_sipnab_actually_prints() {
-    let (code, verdict) = classify(ATTACHED);
+fn an_attach_is_recognized_from_the_message_sipnab_actually_prints() -> Result<(), TestError> {
+    let (code, verdict) = classify(ATTACHED)?;
     assert_eq!(
         code, 0,
         "the classifier did not accept a real attach; it said {verdict:?}"
@@ -89,11 +91,12 @@ fn an_attach_is_recognized_from_the_message_sipnab_actually_prints() {
         verdict.contains("ATTACHED"),
         "expected an ATTACHED verdict, got {verdict:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_verifier_rejection_is_not_reported_as_a_pass() {
-    let (code, verdict) = classify(REJECTED);
+fn a_verifier_rejection_is_not_reported_as_a_pass() -> Result<(), TestError> {
+    let (code, verdict) = classify(REJECTED)?;
     assert_ne!(
         code, 0,
         "the classifier passed a verifier rejection: {verdict:?}"
@@ -102,6 +105,7 @@ fn a_verifier_rejection_is_not_reported_as_a_pass() {
         verdict.contains("REFUSED"),
         "expected a REFUSED verdict, got {verdict:?}"
     );
+    Ok(())
 }
 
 /// Silence is the failure this whole entry is about.
@@ -111,9 +115,9 @@ fn a_verifier_rejection_is_not_reported_as_a_pass() {
 /// feature nobody had exercised — which is exactly what an empty verdict
 /// treated as a pass would recreate.
 #[test]
-fn output_with_no_verdict_is_not_a_pass() {
+fn output_with_no_verdict_is_not_a_pass() -> Result<(), TestError> {
     for text in ["", "sipnab: 0 packets captured, 0 SIP messages", "hello"] {
-        let (code, verdict) = classify(text);
+        let (code, verdict) = classify(text)?;
         assert_ne!(
             code, 0,
             "the classifier passed output that says nothing about loading: \
@@ -124,6 +128,7 @@ fn output_with_no_verdict_is_not_a_pass() {
             "expected NO VERDICT for {text:?}, got {verdict:?}"
         );
     }
+    Ok(())
 }
 
 /// A rejection buried in an otherwise chatty run still fails.
@@ -132,12 +137,13 @@ fn output_with_no_verdict_is_not_a_pass() {
 /// summary around the line that matters. A classifier that only reads the
 /// first or last line would call this a pass.
 #[test]
-fn a_rejection_is_found_among_the_ordinary_logging() {
+fn a_rejection_is_found_among_the_ordinary_logging() -> Result<(), TestError> {
     let noisy =
         format!("INFO sipnab: starting\n{REJECTED}\nsipnab: 0 packets captured, 0 SIP messages\n");
-    let (code, verdict) = classify(&noisy);
+    let (code, verdict) = classify(&noisy)?;
     assert_ne!(code, 0, "a buried rejection was passed: {verdict:?}");
     assert!(verdict.contains("REFUSED"), "got {verdict:?}");
+    Ok(())
 }
 
 /// The record names the release the site currently offers.
@@ -150,13 +156,13 @@ fn a_rejection_is_found_among_the_ordinary_logging() {
 /// This is deliberately a POST-release gate. The artifact has to exist before
 /// anybody can download and run it, so it cannot be satisfied while cutting.
 #[test]
-fn the_load_verification_record_names_the_published_release() {
-    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .expect("pattern")
-        .captures(&read("website/config.toml"))
-        .expect("website/config.toml has no published_version")[1]
+fn the_load_verification_record_names_the_published_release() -> Result<(), TestError> {
+    let config = read("website/config.toml")?;
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
+        .captures(&config)
+        .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
-    let doc = read(LOAD_VERIFICATION_RECORD);
+    let doc = read(LOAD_VERIFICATION_RECORD)?;
     let rows: Vec<&str> = doc
         .lines()
         .map(str::trim)
@@ -173,6 +179,7 @@ fn the_load_verification_record_names_the_published_release() {
          site offers. Run `scripts/verify-bpf-load.sh` on a privileged host \
          with BTF and add the row. Recorded: {rows:?}"
     );
+    Ok(())
 }
 
 /// Every recorded row says where it was run.
@@ -182,8 +189,8 @@ fn the_load_verification_record_names_the_published_release() {
 /// host that was never covered — the question that took a full elimination
 /// matrix to answer the first time.
 #[test]
-fn every_recorded_verification_names_its_artifact_and_kernel() {
-    let doc = read(LOAD_VERIFICATION_RECORD);
+fn every_recorded_verification_names_its_artifact_and_kernel() -> Result<(), TestError> {
+    let doc = read(LOAD_VERIFICATION_RECORD)?;
     let mut rows = 0usize;
     let mut thin = Vec::new();
     for line in doc.lines().map(str::trim) {
@@ -206,4 +213,5 @@ fn every_recorded_verification_names_its_artifact_and_kernel() {
         "no verification rows were found, so this gate passed by checking \
          nothing -- the same silence the record exists to break"
     );
+    Ok(())
 }

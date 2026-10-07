@@ -12,6 +12,8 @@ use sipnab::relay::rtpproxy::{Meaning, RtpproxyControl, decode_command, decode_r
 use sipnab::relay_vocab::{ControlDelivery, RelayImplementation};
 use sipnab::rtp::stream_store::EndpointAssertion;
 
+type TestError = Box<dyn std::error::Error>;
+
 // ── The command table, which I part-invented ─────────────────────────────────
 
 /// GIVEN every command letter
@@ -23,7 +25,7 @@ use sipnab::rtp::stream_store::EndpointAssertion;
 /// of one wearing a bound's clothes, and it let a five-line reply decode as a
 /// stop-play command with fourteen arguments.
 #[test]
-fn no_command_accepts_the_invented_default_range() {
+fn no_command_accepts_the_invented_default_range() -> Result<(), TestError> {
     // `S` takes 3..4. Under the invented default it accepted up to twenty.
     for too_many in [
         b"1 S a b c d e".as_slice(),
@@ -38,6 +40,7 @@ fn no_command_accepts_the_invented_default_range() {
         decode_command(b"1 S call-id ftag ttag").is_some(),
         "and the real shape must still decode"
     );
+    Ok(())
 }
 
 /// GIVEN the feature query
@@ -49,7 +52,7 @@ fn no_command_accepts_the_invented_default_range() {
 /// bare `V` takes one. One rule for both refused `VF 20040107`, which a real
 /// relay answers with `1`.
 #[test]
-fn the_feature_query_is_its_own_command() {
+fn the_feature_query_is_its_own_command() -> Result<(), TestError> {
     assert!(decode_command(b"s2 VF 20040107").is_some(), "VF takes two");
     assert!(decode_command(b"s1 V").is_some(), "bare V takes one");
     assert!(
@@ -60,6 +63,7 @@ fn the_feature_query_is_its_own_command() {
         decode_command(b"s2 VF").is_none(),
         "a feature query with nothing to ask about is not a command"
     );
+    Ok(())
 }
 
 /// GIVEN a feature query and a version query
@@ -69,17 +73,18 @@ fn the_feature_query_is_its_own_command() {
 /// Both answer with an integer, and only the modifier separates them. Reading
 /// `VF`'s `0` as a version would report a relay speaking protocol zero.
 #[test]
-fn a_feature_answer_is_never_read_as_a_protocol_version() {
-    let vf = decode_command(b"s3 VF 99999").expect("decodes");
-    let v = decode_command(b"s1 V").expect("decodes");
+fn a_feature_answer_is_never_read_as_a_protocol_version() -> Result<(), TestError> {
+    let vf = decode_command(b"s3 VF 99999").ok_or("decodes")?;
+    let v = decode_command(b"s1 V").ok_or("decodes")?;
     assert_eq!(
-        interpret(&vf, &decode_reply(b"s3 0").expect("reply")),
+        interpret(&vf, &decode_reply(b"s3 0").ok_or("reply")?),
         Some(Meaning::FeatureAbsent)
     );
     assert_eq!(
-        interpret(&v, &decode_reply(b"s1 0").expect("reply")),
+        interpret(&v, &decode_reply(b"s1 0").ok_or("reply")?),
         Some(Meaning::ProtocolVersion(0))
     );
+    Ok(())
 }
 
 /// GIVEN the relay's own refusal of a short command
@@ -90,16 +95,17 @@ fn a_feature_answer_is_never_read_as_a_protocol_version() {
 /// rtpproxy rather than my reading of it. Observed: `U short-args` returned
 /// `E1`.
 #[test]
-fn the_decoder_and_the_relay_agree_on_what_is_malformed() {
+fn the_decoder_and_the_relay_agree_on_what_is_malformed() -> Result<(), TestError> {
     assert!(decode_command(b"s4 U short-args").is_none());
     assert_eq!(
-        match decode_reply(b"s4 E1").expect("reply") {
+        match decode_reply(b"s4 E1").ok_or("reply")? {
             RtpproxyControl::Reply { reply, .. } => format!("{reply:?}"),
-            other => panic!("{other:?}"),
+            other => return Err(format!("{other:?}").into()),
         },
         "Error(1)",
         "and the relay's own answer was an error, not a session"
     );
+    Ok(())
 }
 
 // ── The two paths a blanket answer got wrong ─────────────────────────────────
@@ -113,20 +119,21 @@ fn the_decoder_and_the_relay_agree_on_what_is_malformed() {
 /// blanket answer was wrong in both directions — which is the distinction the
 /// whole change exists for.
 #[test]
-fn an_answer_to_a_question_sipnab_asked_is_encapsulated() {
+fn an_answer_to_a_question_sipnab_asked_is_encapsulated() -> Result<(), TestError> {
     let asked = EndpointAssertion::media_relay(
         RelayImplementation::Rtpengine,
         ControlDelivery::Encapsulated,
     );
     assert!(asked.is_authenticated());
     assert_eq!(asked.delivery(), Some(ControlDelivery::Encapsulated));
+    Ok(())
 }
 
 /// GIVEN an assertion sipnab SNIFFED off the wire
 /// WHEN its delivery is read
 /// THEN it is a bare datagram, whatever relay sent it.
 #[test]
-fn a_message_read_off_the_wire_is_a_bare_datagram() {
+fn a_message_read_off_the_wire_is_a_bare_datagram() -> Result<(), TestError> {
     for relay in [
         RelayImplementation::Rtpengine,
         RelayImplementation::Rtpproxy,
@@ -134,6 +141,7 @@ fn a_message_read_off_the_wire_is_a_bare_datagram() {
         let sniffed = EndpointAssertion::media_relay(relay, ControlDelivery::BareDatagram);
         assert!(!sniffed.is_authenticated(), "{relay:?}");
     }
+    Ok(())
 }
 
 /// GIVEN the two delivery paths
@@ -143,7 +151,7 @@ fn a_message_read_off_the_wire_is_a_bare_datagram() {
 /// Stated as a property so the next bulk edit cannot satisfy it by picking a
 /// side.
 #[test]
-fn no_single_delivery_answer_is_right_for_both_paths() {
+fn no_single_delivery_answer_is_right_for_both_paths() -> Result<(), TestError> {
     let asked = EndpointAssertion::media_relay(
         RelayImplementation::Rtpengine,
         ControlDelivery::Encapsulated,
@@ -154,6 +162,7 @@ fn no_single_delivery_answer_is_right_for_both_paths() {
     );
     assert_ne!(asked, sniffed);
     assert_ne!(asked.is_authenticated(), sniffed.is_authenticated());
+    Ok(())
 }
 
 /// GIVEN the portable vocabulary
@@ -163,9 +172,10 @@ fn no_single_delivery_answer_is_right_for_both_paths() {
 /// The re-export must not become a second definition: two enums with one name
 /// would compare unequal and no compiler error would say why.
 #[test]
-fn the_seam_reexports_the_vocabulary_rather_than_redefining_it() {
+fn the_seam_reexports_the_vocabulary_rather_than_redefining_it() -> Result<(), TestError> {
     let via_vocab = RelayImplementation::Rtpproxy;
     let via_seam = sipnab::relay::RelayImplementation::Rtpproxy;
     assert_eq!(via_vocab, via_seam);
     assert_eq!(via_vocab.as_str(), via_seam.as_str());
+    Ok(())
 }

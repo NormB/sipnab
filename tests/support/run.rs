@@ -71,12 +71,3 @@ pub fn run(args: &[&str], log: Option<&str>) -> std::io::Result<(String, String,
         out.status.code(),
     ))
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`run`], panicking on error.
-pub fn run_or_panic(args: &[&str], log: Option<&str>) -> (String, String, Option<i32>) {
-    run(args, log).expect("run")
-}

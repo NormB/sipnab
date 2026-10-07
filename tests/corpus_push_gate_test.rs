@@ -23,6 +23,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/executable.rs"]
 mod executable;
 
@@ -44,16 +47,16 @@ fn repo_root() -> PathBuf {
 /// If either marker is missing, or the block between them is implausibly
 /// short. Both are failures of this test's own premise: a silent empty
 /// extraction would make every assertion below pass against nothing.
-fn extract_gate() -> String {
-    let hook = std::fs::read_to_string(repo_root().join(HOOK))
-        .unwrap_or_else(|e| panic!("read {HOOK}: {e}"));
+fn extract_gate() -> Result<String, TestError> {
+    let hook =
+        std::fs::read_to_string(repo_root().join(HOOK)).map_err(|e| format!("read {HOOK}: {e}"))?;
 
-    let start = hook.find(BEGIN).unwrap_or_else(|| {
-        panic!("{HOOK} no longer carries {BEGIN:?} — the corpus gate has been moved or deleted")
-    });
-    let end = hook.find(END).unwrap_or_else(|| {
-        panic!("{HOOK} no longer carries {END:?} — the corpus gate has been moved or deleted")
-    });
+    let start = hook.find(BEGIN).ok_or_else(|| {
+        format!("{HOOK} no longer carries {BEGIN:?} — the corpus gate has been moved or deleted")
+    })?;
+    let end = hook.find(END).ok_or_else(|| {
+        format!("{HOOK} no longer carries {END:?} — the corpus gate has been moved or deleted")
+    })?;
     assert!(
         end > start,
         "{HOOK} has the corpus-gate markers in the wrong order"
@@ -66,24 +69,24 @@ fn extract_gate() -> String {
          wrapped around the whole block, so these tests would drive a fragment",
         block.lines().count()
     );
-    block.to_string()
+    Ok(block.to_string())
 }
 
 /// Build a runnable script from the shipped block plus the environment the
 /// hook itself supplies above it (colors only — everything else the block
 /// needs, it defines).
-fn runnable_gate() -> String {
-    format!(
+fn runnable_gate() -> Result<String, TestError> {
+    Ok(format!(
         "set -eu\n\
          GREEN=''; RED=''; YELLOW=''; NC=''\n\
          {}\n",
-        extract_gate()
-    )
+        extract_gate()?
+    ))
 }
 
 /// Write a `cargo` stub that exits with `code`, and return the directory to
 /// put on `PATH`.
-fn stub_cargo(dir: &Path, code: i32, stdout: &str) {
+fn stub_cargo(dir: &Path, code: i32, stdout: &str) -> Result<(), TestError> {
     let bin = dir.join("cargo");
     executable::write_executable(
         &bin,
@@ -91,8 +94,8 @@ fn stub_cargo(dir: &Path, code: i32, stdout: &str) {
             "#!/bin/sh\nprintf '%s\\n' {}\nexit {code}\n",
             shell_quote(stdout)
         ),
-    )
-    .expect("write cargo stub");
+    )?;
+    Ok(())
 }
 
 /// Single-quote for `sh`.
@@ -123,7 +126,7 @@ impl GateRun {
 
 /// Run the extracted gate with a stubbed `cargo` and a corpus directory that
 /// exists, so the gate takes its `run)` arm.
-fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> GateRun {
+fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> Result<GateRun, TestError> {
     run_gate_seeded(cargo_exit, cargo_stdout, None)
 }
 
@@ -141,20 +144,23 @@ fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> GateRun {
 /// back to `.` on a non-zero rev-parse — which, with the cwd below, would put
 /// the log in the WORKING TREE. That is worse than the bug this replaces, so
 /// the directory is initialized rather than just created.
-fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) -> GateRun {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn run_gate_seeded(
+    cargo_exit: i32,
+    cargo_stdout: &str,
+    seed_log: Option<&str>,
+) -> Result<GateRun, TestError> {
+    let tmp = tempfile::tempdir()?;
     let bindir = tmp.path().join("bin");
     let corpus = tmp.path().join("corpus");
     let gitdir = tmp.path().join("gitdir");
-    std::fs::create_dir_all(&bindir).expect("mkdir bin");
-    std::fs::create_dir_all(&corpus).expect("mkdir corpus");
-    stub_cargo(&bindir, cargo_exit, cargo_stdout);
+    std::fs::create_dir_all(&bindir)?;
+    std::fs::create_dir_all(&corpus)?;
+    stub_cargo(&bindir, cargo_exit, cargo_stdout)?;
 
     let init = Command::new("git")
         .args(["init", "--bare", "-q"])
         .arg(&gitdir)
-        .output()
-        .expect("git init the throwaway gitdir");
+        .output()?;
     assert!(
         init.status.success(),
         "could not initialize a throwaway gitdir, so this run would write its log \
@@ -163,11 +169,11 @@ fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) 
     );
 
     if let Some(body) = seed_log {
-        std::fs::write(gitdir.join("sipnab-pre-push-corpus.log"), body).expect("seed stale log");
+        std::fs::write(gitdir.join("sipnab-pre-push-corpus.log"), body)?;
     }
 
     let script = tmp.path().join("gate.sh");
-    std::fs::write(&script, runnable_gate()).expect("write gate");
+    std::fs::write(&script, runnable_gate()?)?;
 
     let path = format!(
         "{}:{}",
@@ -185,17 +191,16 @@ fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) 
         .env("PATH", path)
         .env("SIPNAB_CORPUS", &corpus)
         .env_remove("SKIP_CORPUS_HOOK")
-        .output()
-        .expect("run corpus gate");
+        .output()?;
 
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    GateRun {
+    Ok(GateRun {
         code: out.status.code(),
         text,
         gitdir,
         _tmp: tmp,
-    }
+    })
 }
 
 /// A failing corpus run blocks the push.
@@ -204,12 +209,12 @@ fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) 
 /// honest: it asserts the effect — a non-zero exit — rather than the presence
 /// of an `exit 1` in the source, which survives being commented out.
 #[test]
-fn a_failing_corpus_run_blocks_the_push() {
+fn a_failing_corpus_run_blocks_the_push() -> Result<(), TestError> {
     let run = run_gate(
         101,
         "test corpus_diagnosis::every_dialog_diagnoses ... FAILED\n\
          test result: FAILED. 0 passed; 1 failed; 0 ignored",
-    );
+    )?;
     let text = &run.text;
     assert_ne!(
         run.code,
@@ -222,6 +227,7 @@ fn a_failing_corpus_run_blocks_the_push() {
         text.contains("FAIL"),
         "a blocked push must say the corpus failed: {text}"
     );
+    Ok(())
 }
 
 /// The failure log lands in the gitdir the gate was GIVEN, never this repo's.
@@ -232,12 +238,12 @@ fn a_failing_corpus_run_blocks_the_push() {
 /// a self-test for a gate must not write into the tree it is gating, and for
 /// one release this one did.
 #[test]
-fn a_failing_run_writes_its_log_into_the_gitdir_it_was_given() {
+fn a_failing_run_writes_its_log_into_the_gitdir_it_was_given() -> Result<(), TestError> {
     let run = run_gate(
         101,
         "test corpus_diagnosis::every_dialog_diagnoses ... FAILED\n\
          test result: FAILED. 0 passed; 1 failed; 0 ignored",
-    );
+    )?;
     let log = run.corpus_log();
     assert!(
         log.is_file(),
@@ -247,11 +253,12 @@ fn a_failing_run_writes_its_log_into_the_gitdir_it_was_given() {
         log.display(),
         run.text
     );
-    let body = std::fs::read_to_string(&log).expect("read corpus log");
+    let body = std::fs::read_to_string(&log)?;
     assert!(
         body.contains("every_dialog_diagnoses"),
         "the log exists but does not hold the run's output: {body}"
     );
+    Ok(())
 }
 
 /// A clean run leaves NO failure log behind.
@@ -260,7 +267,7 @@ fn a_failing_run_writes_its_log_into_the_gitdir_it_was_given() {
 /// a failure written weeks ago outlives every green push after it, and the
 /// gitdir goes on asserting a regression that is already fixed.
 #[test]
-fn a_clean_corpus_run_clears_a_stale_failure_log() {
+fn a_clean_corpus_run_clears_a_stale_failure_log() -> Result<(), TestError> {
     let run = run_gate_seeded(
         0,
         "test result: ok. 25 passed; 0 failed; 0 ignored",
@@ -268,7 +275,7 @@ fn a_clean_corpus_run_clears_a_stale_failure_log() {
             "test corpus_diagnosis::every_dialog_diagnoses ... FAILED\n\
              test result: FAILED. 0 passed; 1 failed; 0 ignored\n",
         ),
-    );
+    )?;
     assert_eq!(
         run.code,
         Some(0),
@@ -284,6 +291,7 @@ fn a_clean_corpus_run_clears_a_stale_failure_log() {
         log.display(),
         std::fs::read_to_string(&log).unwrap_or_default()
     );
+    Ok(())
 }
 
 /// A clean corpus run does not block, and says so.
@@ -291,8 +299,8 @@ fn a_clean_corpus_run_clears_a_stale_failure_log() {
 /// The other half of the mutation: a gate hard-wired to `exit 1` would pass
 /// the test above and fail this one, so neither alone is enough.
 #[test]
-fn a_clean_corpus_run_passes_and_reports_validated() {
-    let run = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored");
+fn a_clean_corpus_run_passes_and_reports_validated() -> Result<(), TestError> {
+    let run = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored")?;
     let text = &run.text;
     assert_eq!(
         run.code,
@@ -304,25 +312,26 @@ fn a_clean_corpus_run_passes_and_reports_validated() {
         "a clean corpus run must report VALIDATED, or a reader cannot tell it from \
          a skip: {text}"
     );
+    Ok(())
 }
 
 /// The gate names every corpus binary it will drive, and the count is real.
 #[test]
-fn the_gate_reports_the_number_of_binaries_it_drives() {
-    let text = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored").text;
-    let expected = corpus_binaries().len();
+fn the_gate_reports_the_number_of_binaries_it_drives() -> Result<(), TestError> {
+    let text = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored")?.text;
+    let expected = corpus_binaries()?.len();
     assert!(
         text.contains(&format!("corpus: {expected} test binaries")),
         "the gate must announce how many binaries it drives, and it must match the \
          {expected} sources that read SIPNAB_CORPUS: {text}"
     );
+    Ok(())
 }
 
 /// Every `tests/*.rs` that reads the corpus variable — the set the hook derives.
-fn corpus_binaries() -> Vec<String> {
+fn corpus_binaries() -> Result<Vec<String>, TestError> {
     let dir = repo_root().join("tests");
-    let mut out: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read tests/")
+    let mut out: Vec<String> = std::fs::read_dir(&dir)?
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .map(|e| e.path())
@@ -332,10 +341,14 @@ fn corpus_binaries() -> Vec<String> {
                 .unwrap_or_default()
                 .contains("SIPNAB_CORPUS")
         })
-        .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
-        .collect();
+        .map(|p| {
+            p.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .ok_or_else(|| format!("{} has no file stem", p.display()))
+        })
+        .collect::<Result<_, _>>()?;
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The target list is DERIVED from the tree, never hand-listed.
@@ -345,8 +358,8 @@ fn corpus_binaries() -> Vec<String> {
 /// have been skipped while the gate printed VALIDATED. A hand-written list
 /// cannot catch a NEW member, which is the one thing this gate is for.
 #[test]
-fn the_gate_derives_its_targets_rather_than_naming_them() {
-    let gate = extract_gate();
+fn the_gate_derives_its_targets_rather_than_naming_them() -> Result<(), TestError> {
+    let gate = extract_gate()?;
     assert!(
         gate.contains("grep -lE") && gate.contains("SIPNAB_CORPUS") && gate.contains("tests/*.rs"),
         "the corpus gate no longer derives its target list from tests/*.rs"
@@ -354,7 +367,7 @@ fn the_gate_derives_its_targets_rather_than_naming_them() {
 
     // A literal `--test <name>` for a real corpus binary is the signature of a
     // hand-kept list creeping back in.
-    for name in corpus_binaries() {
+    for name in corpus_binaries()? {
         assert!(
             !gate.contains(&format!("--test {name}")),
             "the corpus gate names {name} literally; the list must stay derived so a \
@@ -363,11 +376,12 @@ fn the_gate_derives_its_targets_rather_than_naming_them() {
     }
 
     assert!(
-        corpus_binaries().len() >= 11,
+        corpus_binaries()?.len() >= 11,
         "only {} tests/*.rs read SIPNAB_CORPUS; the corpus suite is being removed, or \
          this test is now measuring nothing",
-        corpus_binaries().len()
+        corpus_binaries()?.len()
     );
+    Ok(())
 }
 
 /// The bypass exists, is its own variable, and says the corpus was not validated.
@@ -375,8 +389,8 @@ fn the_gate_derives_its_targets_rather_than_naming_them() {
 /// A bypass that printed nothing would be indistinguishable from a clean run,
 /// which is the same silent-zero shape the whole ticket is about.
 #[test]
-fn the_bypass_is_loud_and_separate_from_the_blanket_skip() {
-    let gate = extract_gate();
+fn the_bypass_is_loud_and_separate_from_the_blanket_skip() -> Result<(), TestError> {
+    let gate = extract_gate()?;
     assert!(
         gate.contains("SKIP_CORPUS_HOOK"),
         "the corpus gate has no dedicated bypass, so the only way past it is \
@@ -388,16 +402,15 @@ fn the_bypass_is_loud_and_separate_from_the_blanket_skip() {
          skip the corpus silently drops the five other gates as well"
     );
 
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = tempfile::tempdir()?;
     let script = tmp.path().join("gate.sh");
-    std::fs::write(&script, runnable_gate()).expect("write gate");
+    std::fs::write(&script, runnable_gate()?)?;
     let out = Command::new("sh")
         .arg(&script)
         .current_dir(repo_root())
         .env("SKIP_CORPUS_HOOK", "1")
         .env_remove("SIPNAB_CORPUS")
-        .output()
-        .expect("run corpus gate");
+        .output()?;
 
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(
@@ -410,21 +423,21 @@ fn the_bypass_is_loud_and_separate_from_the_blanket_skip() {
         "a bypassed corpus must say so on the record, or the push it let through \
          reads exactly like a validated one: {text}"
     );
+    Ok(())
 }
 
 /// An unset corpus is a skip that announces itself, not a silent pass.
 #[test]
-fn an_unset_corpus_is_announced_rather_than_passed_over() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn an_unset_corpus_is_announced_rather_than_passed_over() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let script = tmp.path().join("gate.sh");
-    std::fs::write(&script, runnable_gate()).expect("write gate");
+    std::fs::write(&script, runnable_gate()?)?;
     let out = Command::new("sh")
         .arg(&script)
         .current_dir(repo_root())
         .env_remove("SIPNAB_CORPUS")
         .env_remove("SKIP_CORPUS_HOOK")
-        .output()
-        .expect("run corpus gate");
+        .output()?;
 
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(
@@ -437,4 +450,5 @@ fn an_unset_corpus_is_announced_rather_than_passed_over() {
         "an unset corpus must name itself and deny validation, or a wall of OK lines \
          reads as 'corpus validated': {text}"
     );
+    Ok(())
 }

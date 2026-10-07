@@ -14,14 +14,17 @@
 //! These drive `build_script/git_triggers.rs`, the function `build.rs`
 //! itself calls, against each layout git produces.
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "../build_script/git_triggers.rs"]
 mod git_triggers;
 
 use std::path::{Path, PathBuf};
 
-fn write(path: &Path, text: &str) {
-    std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
-    std::fs::write(path, text).expect("write");
+fn write(path: &Path, text: &str) -> Result<(), TestError> {
+    std::fs::create_dir_all(path.parent().ok_or("a parent")?)?;
+    std::fs::write(path, text)?;
+    Ok(())
 }
 
 /// Every watched path must exist, or cargo rebuilds on every invocation.
@@ -37,42 +40,42 @@ fn assert_all_exist(paths: &[PathBuf]) {
 /// A main repository plus a linked worktree on branch `feature`, the way
 /// `git worktree add` lays them out. `gitdir` is what the worktree's `.git`
 /// file says: absolute by default, relative under `worktree.useRelativePaths`.
-fn worktree_fixture(root: &Path, relative: bool) -> PathBuf {
+fn worktree_fixture(root: &Path, relative: bool) -> Result<PathBuf, TestError> {
     let common = root.join("main/.git");
-    write(&common.join("HEAD"), "ref: refs/heads/main\n");
+    write(&common.join("HEAD"), "ref: refs/heads/main\n")?;
     write(
         &common.join("refs/heads/main"),
         "1111111111111111111111111111111111111111\n",
-    );
+    )?;
     write(
         &common.join("refs/heads/feature"),
         "2222222222222222222222222222222222222222\n",
-    );
+    )?;
     let admin = common.join("worktrees/wt");
-    write(&admin.join("HEAD"), "ref: refs/heads/feature\n");
-    write(&admin.join("commondir"), "../..\n");
+    write(&admin.join("HEAD"), "ref: refs/heads/feature\n")?;
+    write(&admin.join("commondir"), "../..\n")?;
     let checkout = root.join("wt");
     let gitdir = if relative {
         "../main/.git/worktrees/wt".to_string()
     } else {
         admin.display().to_string()
     };
-    write(&checkout.join(".git"), &format!("gitdir: {gitdir}\n"));
-    checkout
+    write(&checkout.join(".git"), &format!("gitdir: {gitdir}\n"))?;
+    Ok(checkout)
 }
 
-fn assert_worktree_triggers(root: &Path, checkout: &Path) {
+fn assert_worktree_triggers(root: &Path, checkout: &Path) -> Result<(), TestError> {
     let paths = git_triggers::rerun_paths(checkout);
     assert_all_exist(&paths);
     let canon: Vec<PathBuf> = paths
         .iter()
-        .map(|p| p.canonicalize().expect("canonicalize"))
-        .collect();
+        .map(|p| p.canonicalize())
+        .collect::<Result<_, _>>()?;
     for wanted in [
         root.join("main/.git/worktrees/wt/HEAD"),
         root.join("main/.git/refs/heads/feature"),
     ] {
-        let wanted = wanted.canonicalize().expect("fixture file");
+        let wanted = wanted.canonicalize()?;
         assert!(
             canon.contains(&wanted),
             "a worktree build must watch {} (a commit or branch switch there \
@@ -80,31 +83,34 @@ fn assert_worktree_triggers(root: &Path, checkout: &Path) {
             wanted.display()
         );
     }
+    Ok(())
 }
 
 #[test]
-fn a_worktree_with_an_absolute_gitdir_watches_its_own_head_and_branch() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let checkout = worktree_fixture(tmp.path(), false);
-    assert_worktree_triggers(tmp.path(), &checkout);
+fn a_worktree_with_an_absolute_gitdir_watches_its_own_head_and_branch() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
+    let checkout = worktree_fixture(tmp.path(), false)?;
+    assert_worktree_triggers(tmp.path(), &checkout)?;
+    Ok(())
 }
 
 #[test]
-fn a_worktree_with_a_relative_gitdir_watches_its_own_head_and_branch() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let checkout = worktree_fixture(tmp.path(), true);
-    assert_worktree_triggers(tmp.path(), &checkout);
+fn a_worktree_with_a_relative_gitdir_watches_its_own_head_and_branch() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
+    let checkout = worktree_fixture(tmp.path(), true)?;
+    assert_worktree_triggers(tmp.path(), &checkout)?;
+    Ok(())
 }
 
 #[test]
-fn a_repository_that_never_packed_its_refs_watches_no_missing_file() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_repository_that_never_packed_its_refs_watches_no_missing_file() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let git = tmp.path().join(".git");
-    write(&git.join("HEAD"), "ref: refs/heads/main\n");
+    write(&git.join("HEAD"), "ref: refs/heads/main\n")?;
     write(
         &git.join("refs/heads/main"),
         "1111111111111111111111111111111111111111\n",
-    );
+    )?;
     let paths = git_triggers::rerun_paths(tmp.path());
     assert_all_exist(&paths);
     for wanted in [git.join("HEAD"), git.join("refs/heads/main")] {
@@ -114,19 +120,21 @@ fn a_repository_that_never_packed_its_refs_watches_no_missing_file() {
             wanted.display()
         );
     }
+    Ok(())
 }
 
 #[test]
-fn a_tarball_build_watches_nothing() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_tarball_build_watches_nothing() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     assert!(git_triggers::rerun_paths(tmp.path()).is_empty());
+    Ok(())
 }
 
 /// The checkout this test runs in, whatever its layout: a worktree locally, a
 /// plain clone in CI. The hook's `GIT_*` variables are removed so git
 /// describes this checkout rather than the hook's idea of one.
 #[test]
-fn this_checkout_watches_its_head_and_nothing_missing() {
+fn this_checkout_watches_its_head_and_nothing_missing() -> Result<(), TestError> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut git = std::process::Command::new("git");
     for var in [
@@ -140,15 +148,12 @@ fn this_checkout_watches_its_head_and_nothing_missing() {
     let out = git
         .args(["rev-parse", "--path-format=absolute", "--git-path", "HEAD"])
         .current_dir(repo)
-        .output()
-        .expect("run git");
+        .output()?;
     if !out.status.success() {
         eprintln!("SKIPPED: not a git checkout");
-        return;
+        return Ok(());
     }
-    let head = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
-        .canonicalize()
-        .expect("HEAD exists");
+    let head = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize()?;
     let paths = git_triggers::rerun_paths(repo);
     assert_all_exist(&paths);
     assert!(
@@ -158,4 +163,5 @@ fn this_checkout_watches_its_head_and_nothing_missing() {
         "must watch this checkout's HEAD {}; watches {paths:?}",
         head.display()
     );
+    Ok(())
 }

@@ -28,14 +28,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Read a repo-relative file, panicking with the path on failure.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The dedented `run:` script of one named workflow step.
@@ -43,8 +45,8 @@ fn read(rel: &str) -> String {
 /// Panics when the step is missing or duplicated: a scan that takes the first
 /// of two identically named steps reads whichever an author put first, and the
 /// real one can be neutered behind a decoy.
-fn step_script(workflow: &str, step_name: &str) -> String {
-    let text = read(workflow);
+fn step_script(workflow: &str, step_name: &str) -> Result<String, TestError> {
+    let text = read(workflow)?;
     let lines: Vec<&str> = text.lines().collect();
     let needle = format!("- name: {step_name}");
     let starts: Vec<usize> = lines
@@ -78,7 +80,7 @@ fn step_script(workflow: &str, step_name: &str) -> String {
     let run_at = body
         .iter()
         .position(|l| l.trim_start().starts_with("run:"))
-        .unwrap_or_else(|| panic!("{workflow} step {step_name:?} has no `run:` block"));
+        .ok_or_else(|| format!("{workflow} step {step_name:?} has no `run:` block"))?;
     let run_indent = body[run_at].len() - body[run_at].trim_start().len();
     let block: Vec<&str> = body[run_at + 1..]
         .iter()
@@ -104,15 +106,15 @@ fn step_script(workflow: &str, step_name: &str) -> String {
         "{workflow} step {step_name:?}: extracted an empty script — this gate \
          would be executing nothing"
     );
-    script
+    Ok(script)
 }
 
 /// Every `(target, variant)` pair `release.yml`'s build matrix produces.
 ///
 /// `variant` is the empty string for the ordinary entries, matching what
 /// GitHub substitutes for an unset matrix key.
-fn release_matrix() -> Vec<(String, String)> {
-    let text = read(".github/workflows/release.yml");
+fn release_matrix() -> Result<Vec<(String, String)>, TestError> {
+    let text = read(".github/workflows/release.yml")?;
     let mut out: Vec<(String, String)> = Vec::new();
     for line in text.lines() {
         let t = line.trim();
@@ -130,7 +132,7 @@ fn release_matrix() -> Vec<(String, String)> {
          shape changed, and every assertion below would be checking nothing",
         out.len()
     );
-    out
+    Ok(out)
 }
 
 /// Run `release.yml`'s "Compute feature set" step for one matrix entry and
@@ -139,8 +141,11 @@ fn release_matrix() -> Vec<(String, String)> {
 /// Executing the step is the point. Every text-level check on a `case` arm
 /// stays true through the ways of getting the arm wrong — a missing `;;`, an
 /// arm ordered after the catch-all, a variable assigned and never read.
-fn feature_step_outputs(target: &str, variant: &str) -> BTreeMap<String, String> {
-    let script = step_script(".github/workflows/release.yml", "Compute feature set")
+fn feature_step_outputs(
+    target: &str,
+    variant: &str,
+) -> Result<BTreeMap<String, String>, TestError> {
+    let script = step_script(".github/workflows/release.yml", "Compute feature set")?
         .replace("${{ matrix.target }}", target)
         .replace("${{ matrix.variant }}", variant);
 
@@ -156,17 +161,16 @@ fn feature_step_outputs(target: &str, variant: &str) -> BTreeMap<String, String>
         if variant.is_empty() { "plain" } else { variant }
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::create_dir_all(&dir)?;
     let out_file = dir.join("github_output");
-    std::fs::write(&out_file, "").expect("seed GITHUB_OUTPUT");
+    std::fs::write(&out_file, "")?;
 
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(&script)
         .current_dir(&dir)
         .env("GITHUB_OUTPUT", &out_file)
-        .output()
-        .expect("run the feature-computing step");
+        .output()?;
     let written = std::fs::read_to_string(&out_file).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -188,13 +192,13 @@ fn feature_step_outputs(target: &str, variant: &str) -> BTreeMap<String, String>
         "the feature-computing step wrote no `features=` output for \
          target={target} variant={variant:?}; it wrote:\n{written}"
     );
-    map
+    Ok(map)
 }
 
 /// `Cargo.toml`'s `[features]` table as name -> direct members, with `dep:`
 /// and `crate/feature` entries dropped (they name packages, not features).
-fn feature_table() -> BTreeMap<String, Vec<String>> {
-    let toml = read("Cargo.toml");
+fn feature_table() -> Result<BTreeMap<String, Vec<String>>, TestError> {
+    let toml = read("Cargo.toml")?;
     let mut map = BTreeMap::new();
     let mut in_features = false;
     for line in toml.lines() {
@@ -226,7 +230,7 @@ fn feature_table() -> BTreeMap<String, Vec<String>> {
         "could not parse [features] from Cargo.toml — got {:?}",
         map.keys().collect::<Vec<_>>()
     );
-    map
+    Ok(map)
 }
 
 /// Expand a comma-separated cargo feature list into the leaf features it
@@ -262,14 +266,14 @@ fn expand(list: &str, table: &BTreeMap<String, Vec<String>>) -> BTreeSet<String>
 /// targets. `bpf` is orthogonal to `audio`, so the headless packages — the ones
 /// most likely to be pointed at a TLS-terminating proxy — must carry it too.
 #[test]
-fn every_published_linux_gnu_binary_carries_the_bpf_uprobe_backend() {
-    let table = feature_table();
+fn every_published_linux_gnu_binary_carries_the_bpf_uprobe_backend() -> Result<(), TestError> {
+    let table = feature_table()?;
     let mut checked = 0usize;
-    for (target, variant) in release_matrix() {
+    for (target, variant) in release_matrix()? {
         if !target.ends_with("-linux-gnu") {
             continue;
         }
-        let outputs = feature_step_outputs(&target, &variant);
+        let outputs = feature_step_outputs(&target, &variant)?;
         let features = &outputs["features"];
         assert!(
             expand(features, &table).contains("bpf"),
@@ -286,6 +290,7 @@ fn every_published_linux_gnu_binary_carries_the_bpf_uprobe_backend() {
          plain/noaudio), examined {checked}. Fewer means the scan went blind, \
          not that the gnu builds stopped shipping."
     );
+    Ok(())
 }
 
 /// No musl or macOS artefact pays for `bpf`.
@@ -301,14 +306,14 @@ fn every_published_linux_gnu_binary_carries_the_bpf_uprobe_backend() {
 /// under `[target.'cfg(target_os = "linux")'.dependencies]`, so the feature
 /// would compile to nothing but still be advertised by `--version`.
 #[test]
-fn no_musl_or_macos_artifact_pays_for_the_bpf_backend() {
-    let table = feature_table();
+fn no_musl_or_macos_artifact_pays_for_the_bpf_backend() -> Result<(), TestError> {
+    let table = feature_table()?;
     let mut checked = 0usize;
-    for (target, variant) in release_matrix() {
+    for (target, variant) in release_matrix()? {
         if target.ends_with("-linux-gnu") {
             continue;
         }
-        let outputs = feature_step_outputs(&target, &variant);
+        let outputs = feature_step_outputs(&target, &variant)?;
         let features = &outputs["features"];
         assert!(
             !expand(features, &table).contains("bpf"),
@@ -323,6 +328,7 @@ fn no_musl_or_macos_artifact_pays_for_the_bpf_backend() {
         checked >= 4,
         "expected at least the two musl and two macOS entries, examined {checked}"
     );
+    Ok(())
 }
 
 /// The notices and the SBOM are generated from a feature set that covers every
@@ -338,12 +344,12 @@ fn no_musl_or_macos_artifact_pays_for_the_bpf_backend() {
 /// "over-covers rather than under-covers every sipnab binary published here",
 /// which is a claim about the release matrix that nothing checked.
 #[test]
-fn the_notices_and_sbom_cover_every_released_feature_set() {
-    let table = feature_table();
+fn the_notices_and_sbom_cover_every_released_feature_set() -> Result<(), TestError> {
+    let table = feature_table()?;
 
     let mut shipped: BTreeSet<String> = BTreeSet::new();
-    for (target, variant) in release_matrix() {
-        let outputs = feature_step_outputs(&target, &variant);
+    for (target, variant) in release_matrix()? {
+        let outputs = feature_step_outputs(&target, &variant)?;
         shipped.extend(expand(&outputs["features"], &table));
     }
     assert!(
@@ -352,15 +358,15 @@ fn the_notices_and_sbom_cover_every_released_feature_set() {
          covering generator from a lucky one"
     );
 
-    let notices_src = read("scripts/build-third-party-notices.py");
+    let notices_src = read("scripts/build-third-party-notices.py")?;
     let declared = notices_src
         .lines()
         .find_map(|l| l.trim().strip_prefix("RELEASE_FEATURES = "))
         .map(|v| v.trim().trim_matches('"').to_string())
-        .expect(
+        .ok_or(
             "scripts/build-third-party-notices.py declares no RELEASE_FEATURES — \
              the feature set it walks must be named in one place this gate can read",
-        );
+        )?;
     let covered = expand(&declared, &table);
     let missing: Vec<&String> = shipped.difference(&covered).collect();
     assert!(
@@ -372,13 +378,13 @@ fn the_notices_and_sbom_cover_every_released_feature_set() {
          which compares against this same generator — stays green."
     );
 
-    let release = read(".github/workflows/release.yml");
+    let release = read(".github/workflows/release.yml")?;
     let sbom_features = release
         .lines()
         .find(|l| l.contains("cargo cyclonedx"))
         .and_then(|l| l.split("--features ").nth(1))
         .and_then(|rest| rest.split_whitespace().next())
-        .expect("release.yml has no `cargo cyclonedx ... --features` invocation")
+        .ok_or("release.yml has no `cargo cyclonedx ... --features` invocation")?
         .to_string();
     let sbom_covered = expand(&sbom_features, &table);
     let sbom_missing: Vec<&String> = shipped.difference(&sbom_covered).collect();
@@ -389,6 +395,7 @@ fn the_notices_and_sbom_cover_every_released_feature_set() {
          binaries. A vulnerability scan of that document under-covers the \
          artefact it claims to describe."
     );
+    Ok(())
 }
 
 /// `sipnab --version` names every feature the crate can be built with.
@@ -399,16 +406,16 @@ fn the_notices_and_sbom_cover_every_released_feature_set() {
 /// `Cargo.toml` rather than from a list here, so the next feature is covered
 /// the day it is declared.
 #[test]
-fn compiled_features_names_every_feature_cargo_declares() {
-    let table = feature_table();
-    let cli = read("src/cli.rs");
+fn compiled_features_names_every_feature_cargo_declares() -> Result<(), TestError> {
+    let table = feature_table()?;
+    let cli = read("src/cli.rs")?;
     let start = cli
         .find("fn compiled_features()")
-        .expect("src/cli.rs has no compiled_features()");
+        .ok_or("src/cli.rs has no compiled_features()")?;
     let body = &cli[start..];
     let end = body
         .find("\n}\n")
-        .expect("compiled_features() body is not delimited");
+        .ok_or("compiled_features() body is not delimited")?;
     let body = &body[..end];
 
     let mut missing = Vec::new();
@@ -429,21 +436,24 @@ fn compiled_features_names_every_feature_cargo_declares() {
         "compiled_features() omits {missing:?}, so `sipnab --version` cannot \
          tell an operator whether the binary they hold carries them"
     );
+    Ok(())
 }
 
 /// The combinations of ci.yml's `features:` matrix, as written.
-fn ci_feature_combos() -> Vec<String> {
-    let ci = read(".github/workflows/ci.yml");
-    // The JOB is also called `features`, so anchoring on `trim() == "features:"`
-    // alone stops at the job header and reads nothing. The matrix key is
-    // nested; require the indent.
-    ci.lines()
-        .skip_while(|l| l.trim() != "features:" || l.len() - l.trim_start().len() < 6)
-        .skip(1)
-        .take_while(|l| l.trim_start().starts_with("- ") || l.trim_start().starts_with('#'))
-        .filter_map(|l| l.trim().strip_prefix("- "))
-        .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
-        .collect()
+fn ci_feature_combos() -> Result<Vec<String>, TestError> {
+    let ci = read(".github/workflows/ci.yml")?;
+    Ok(
+        // The JOB is also called `features`, so anchoring on `trim() == "features:"`
+        // alone stops at the job header and reads nothing. The matrix key is
+        // nested; require the indent.
+        ci.lines()
+            .skip_while(|l| l.trim() != "features:" || l.len() - l.trim_start().len() < 6)
+            .skip(1)
+            .take_while(|l| l.trim_start().starts_with("- ") || l.trim_start().starts_with('#'))
+            .filter_map(|l| l.trim().strip_prefix("- "))
+            .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
+            .collect(),
+    )
 }
 
 /// CI compiles the `bpf` combination, with its test files.
@@ -452,9 +462,9 @@ fn ci_feature_combos() -> Vec<String> {
 /// `#[cfg]`-gating rot. `--tests` is what makes it real: without it no test
 /// file is built and the leg passes over nothing.
 #[test]
-fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() {
-    let ci = read(".github/workflows/ci.yml");
-    let combos = ci_feature_combos();
+fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() -> Result<(), TestError> {
+    let ci = read(".github/workflows/ci.yml")?;
+    let combos = ci_feature_combos()?;
     assert!(
         combos.len() >= 11,
         "found {} feature combinations in ci.yml ({combos:?}) — the matrix \
@@ -472,6 +482,7 @@ fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() {
         "the feature-matrix check no longer passes `--tests`, so no test file \
          is compiled and every leg is green over nothing"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +503,7 @@ fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() {
 ///   and `rustup` appear to exist.
 /// * `required` — sets `SIPNAB_BPF_REQUIRED=1` when true.
 #[cfg(target_os = "linux")]
-fn run_build_script(path: &str, required: bool) -> (bool, String) {
+fn run_build_script(path: &str, required: bool) -> Result<(bool, String), TestError> {
     static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
         "sipnab-buildrs-{}-{}-{required}",
@@ -500,7 +511,7 @@ fn run_build_script(path: &str, required: bool) -> (bool, String) {
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::create_dir_all(&dir)?;
     let exe = dir.join("build_script");
 
     let compile = std::process::Command::new("rustc")
@@ -508,8 +519,7 @@ fn run_build_script(path: &str, required: bool) -> (bool, String) {
         .arg(&exe)
         .arg(repo().join("build.rs"))
         .current_dir(&dir)
-        .output()
-        .expect("compile build.rs with rustc");
+        .output()?;
     assert!(
         compile.status.success(),
         "could not compile build.rs standalone:\n{}",
@@ -517,7 +527,7 @@ fn run_build_script(path: &str, required: bool) -> (bool, String) {
     );
 
     let out_dir = dir.join("out");
-    std::fs::create_dir_all(&out_dir).expect("OUT_DIR");
+    std::fs::create_dir_all(&out_dir)?;
     let mut cmd = std::process::Command::new(&exe);
     cmd.current_dir(&dir)
         .env_clear()
@@ -528,7 +538,7 @@ fn run_build_script(path: &str, required: bool) -> (bool, String) {
     if required {
         cmd.env("SIPNAB_BPF_REQUIRED", "1");
     }
-    let run = cmd.output().expect("run the compiled build script");
+    let run = cmd.output()?;
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&run.stdout),
@@ -536,23 +546,23 @@ fn run_build_script(path: &str, required: bool) -> (bool, String) {
     );
     let ok = run.status.success();
     let _ = std::fs::remove_dir_all(&dir);
-    (ok, combined)
+    Ok((ok, combined))
 }
 
 /// A `PATH` holding only the stubs this test creates, plus optionally a fake
 /// `bpf-linker` that answers `--version`.
 #[cfg(target_os = "linux")]
-fn stub_path(with_linker: bool) -> (tempfile::TempDir, String) {
-    let dir = tempfile::tempdir().expect("stub dir");
+fn stub_path(with_linker: bool) -> Result<(tempfile::TempDir, String), TestError> {
+    let dir = tempfile::tempdir()?;
     if with_linker {
         let p = dir.path().join("bpf-linker");
-        std::fs::write(&p, "#!/bin/sh\necho 'fake bpf-linker 0.11.0'\n").expect("write stub");
-        let mut perms = std::fs::metadata(&p).expect("stat stub").permissions();
+        std::fs::write(&p, "#!/bin/sh\necho 'fake bpf-linker 0.11.0'\n")?;
+        let mut perms = std::fs::metadata(&p)?.permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&p, perms).expect("chmod stub");
+        std::fs::set_permissions(&p, perms)?;
     }
     let path = dir.path().display().to_string();
-    (dir, path)
+    Ok((dir, path))
 }
 
 /// Without the opt-in, a machine that cannot build the kernel half still
@@ -566,9 +576,9 @@ fn stub_path(with_linker: bool) -> (tempfile::TempDir, String) {
 /// for a missing nightly, which is one rule applied to one side.
 #[test]
 #[cfg(target_os = "linux")]
-fn a_contributor_build_degrades_when_either_bpf_prerequisite_is_missing() {
-    let (_keep, no_tools) = stub_path(false);
-    let (ok, out) = run_build_script(&no_tools, false);
+fn a_contributor_build_degrades_when_either_bpf_prerequisite_is_missing() -> Result<(), TestError> {
+    let (_keep, no_tools) = stub_path(false)?;
+    let (ok, out) = run_build_script(&no_tools, false)?;
     assert!(
         ok,
         "build.rs failed without bpf-linker in the default mode; a contributor \
@@ -580,8 +590,8 @@ fn a_contributor_build_degrades_when_either_bpf_prerequisite_is_missing() {
          are absent.\n{out}"
     );
 
-    let (_keep2, linker_only) = stub_path(true);
-    let (ok, out) = run_build_script(&linker_only, false);
+    let (_keep2, linker_only) = stub_path(true)?;
+    let (ok, out) = run_build_script(&linker_only, false)?;
     assert!(
         ok,
         "build.rs failed with bpf-linker present but no nightly toolchain, in \
@@ -592,6 +602,7 @@ fn a_contributor_build_degrades_when_either_bpf_prerequisite_is_missing() {
         out.contains("cargo:warning"),
         "the missing-toolchain degrade is silent.\n{out}"
     );
+    Ok(())
 }
 
 /// With `SIPNAB_BPF_REQUIRED=1`, a build that cannot produce the kernel
@@ -604,9 +615,9 @@ fn a_contributor_build_degrades_when_either_bpf_prerequisite_is_missing() {
 /// capability it does not have. `release.yml` sets the variable.
 #[test]
 #[cfg(target_os = "linux")]
-fn a_release_build_refuses_to_ship_without_the_kernel_programs() {
-    let (_keep, no_tools) = stub_path(false);
-    let (ok, out) = run_build_script(&no_tools, true);
+fn a_release_build_refuses_to_ship_without_the_kernel_programs() -> Result<(), TestError> {
+    let (_keep, no_tools) = stub_path(false)?;
+    let (ok, out) = run_build_script(&no_tools, true)?;
     assert!(
         !ok,
         "SIPNAB_BPF_REQUIRED=1 with no bpf-linker on PATH still succeeded. The \
@@ -618,21 +629,22 @@ fn a_release_build_refuses_to_ship_without_the_kernel_programs() {
         "the refusal does not name the missing tool.\n{out}"
     );
 
-    let (_keep2, linker_only) = stub_path(true);
-    let (ok, out) = run_build_script(&linker_only, true);
+    let (_keep2, linker_only) = stub_path(true)?;
+    let (ok, out) = run_build_script(&linker_only, true)?;
     assert!(
         !ok,
         "SIPNAB_BPF_REQUIRED=1 with bpf-linker present but no nightly toolchain \
          still succeeded — the same empty placeholder, reached down the other \
          branch.\n{out}"
     );
+    Ok(())
 }
 
 /// The release workflow asks for the strict mode on the targets that ship
 /// `bpf`, and only there.
 #[test]
-fn the_release_build_opts_into_the_strict_bpf_mode() {
-    let release = read(".github/workflows/release.yml");
+fn the_release_build_opts_into_the_strict_bpf_mode() -> Result<(), TestError> {
+    let release = read(".github/workflows/release.yml")?;
     assert!(
         release.contains("SIPNAB_BPF_REQUIRED"),
         "release.yml never sets SIPNAB_BPF_REQUIRED, so a release built on a \
@@ -640,9 +652,9 @@ fn the_release_build_opts_into_the_strict_bpf_mode() {
          with nothing failing"
     );
     // Derived from the same step the other gates run, so the two cannot drift.
-    let table = feature_table();
-    for (target, variant) in release_matrix() {
-        let outputs = feature_step_outputs(&target, &variant);
+    let table = feature_table()?;
+    for (target, variant) in release_matrix()? {
+        let outputs = feature_step_outputs(&target, &variant)?;
         if !expand(&outputs["features"], &table).contains("bpf") {
             continue;
         }
@@ -654,6 +666,7 @@ fn the_release_build_opts_into_the_strict_bpf_mode() {
              stays in the degrading mode"
         );
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +687,7 @@ fn the_release_build_opts_into_the_strict_bpf_mode() {
 /// that the checker actually fails on input it should reject. The second is
 /// what stops it becoming a step that downloads a file and exits 0.
 #[test]
-fn the_homebrew_generator_meets_a_real_sums_file_in_ci() {
+fn the_homebrew_generator_meets_a_real_sums_file_in_ci() -> Result<(), TestError> {
     let checker = repo().join("packaging/homebrew/test-real-sums.sh");
     assert!(
         checker.is_file(),
@@ -682,7 +695,7 @@ fn the_homebrew_generator_meets_a_real_sums_file_in_ci() {
          meets real input for the first time on a release tag"
     );
 
-    let ci = read(".github/workflows/ci.yml");
+    let ci = read(".github/workflows/ci.yml")?;
     assert!(
         ci.contains("packaging/homebrew/test-real-sums.sh"),
         "no CI job runs the real-input check, so it exists and proves nothing"
@@ -698,7 +711,7 @@ fn the_homebrew_generator_meets_a_real_sums_file_in_ci() {
 
     // Mutation: real input, one platform missing. A generator that emitted a
     // blank checksum here would publish a formula every `brew install` rejects.
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir()?;
     let full = "\
 3aff883c628f9e4205a5e8ce114da485f6059658f98f431b781802279367322d  sipnab-9.9.9-aarch64-apple-darwin.tar.gz
 b2c6195d628599ad947401346bf826c987271ee3f3b7253e52ed06223e9774dd  sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz
@@ -718,7 +731,7 @@ a593140488b02315cdf326d12768de38c93b775e17e3a05a8748f4ed82f6ecb7  sipnab-9.9.9.c
 ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9.9.9.cdx.json
 ";
     let good = dir.path().join("SHA256SUMS.txt");
-    std::fs::write(&good, full).expect("write sums");
+    std::fs::write(&good, full)?;
     let run = |file: &std::path::Path| {
         std::process::Command::new("bash")
             .arg(repo().join("packaging/homebrew/test-real-sums.sh"))
@@ -726,10 +739,9 @@ ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9
             .arg("9.9.9")
             .current_dir(repo())
             .output()
-            .expect("run test-real-sums.sh")
     };
 
-    let out = run(&good);
+    let out = run(&good)?;
     assert!(
         out.status.success(),
         "the real-input checker rejected a manifest with the exact shape the \
@@ -744,8 +756,8 @@ ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9
         .collect::<Vec<_>>()
         .join("\n");
     let broken = dir.path().join("missing.txt");
-    std::fs::write(&broken, missing_platform).expect("write sums");
-    let out = run(&broken);
+    std::fs::write(&broken, missing_platform)?;
+    let out = run(&broken)?;
     assert!(
         !out.status.success(),
         "a release manifest missing the x86_64 Linux tarball was accepted. That \
@@ -764,9 +776,8 @@ ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9
             .filter(|l| l.contains(".tar.gz") && !l.contains("musl"))
             .collect::<Vec<_>>()
             .join("\n"),
-    )
-    .expect("write sums");
-    let out = run(&stub);
+    )?;
+    let out = run(&stub)?;
     assert!(
         !out.status.success(),
         "a four-line stub passed as a real release manifest, so a truncated or \
@@ -787,9 +798,8 @@ ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9
             .filter(|l| !l.ends_with(".rpm"))
             .collect::<Vec<_>>()
             .join("\n"),
-    )
-    .expect("write sums");
-    let out = run(&no_rpm);
+    )?;
+    let out = run(&no_rpm)?;
     assert!(
         !out.status.success(),
         "a manifest with no .rpm at all was accepted as a real release. \
@@ -797,6 +807,7 @@ ee5cc4e74838d322291a815c511c790723a4bfd37ac548cbed78640e4b2bb2a6  sipnab-audio-9
          so a missing kind means a build leg failed.\nstdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
+    Ok(())
 }
 
 /// What `strings` shows of a musl binary around the banner: sipnab's own
@@ -823,36 +834,35 @@ const REAL_WITHOUT_NETMAP: &[u8] =
 /// step for `target` over a binary made of `parts`, placed where the step
 /// reads it. Returns whether it passed and what it printed. `None` when this
 /// host has no `strings`, which the step itself needs.
-fn backend_record(target: &str, parts: &[&[u8]]) -> Option<(bool, String)> {
+fn backend_record(target: &str, parts: &[&[u8]]) -> Result<Option<(bool, String)>, TestError> {
     if std::process::Command::new("strings")
         .arg("--version")
         .output()
         .is_err()
     {
         eprintln!("SKIPPED: no `strings` on this host; the release runner has binutils");
-        return None;
+        return Ok(None);
     }
     let script = step_script(
         ".github/workflows/release.yml",
         "Record the capture backends this artifact carries",
-    )
+    )?
     .replace("${{ matrix.target }}", target);
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let bin_dir = dir.path().join(format!("target/{target}/release"));
-    std::fs::create_dir_all(&bin_dir).expect("create the binary's directory");
-    std::fs::write(bin_dir.join("sipnab"), parts.concat()).expect("write the fixture binary");
+    std::fs::create_dir_all(&bin_dir)?;
+    std::fs::write(bin_dir.join("sipnab"), parts.concat())?;
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(&script)
         .current_dir(dir.path())
-        .output()
-        .expect("run the step with bash");
+        .output()?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    Some((out.status.success(), text))
+    Ok(Some((out.status.success(), text)))
 }
 
 /// The step reads libpcap's banner, not sipnab's own text that happens to say
@@ -860,10 +870,10 @@ fn backend_record(target: &str, parts: &[&[u8]]) -> Option<(bool, String)> {
 /// 0.5.185's two musl builds, which carried netmap, before any asset was
 /// published.
 #[test]
-fn the_backend_record_reads_libpcap_s_banner_not_sipnab_s_own_text() {
-    let Some((ok, out)) = backend_record("x86_64-unknown-linux-musl", &[DECOY, REAL_WITH_NETMAP])
+fn the_backend_record_reads_libpcap_s_banner_not_sipnab_s_own_text() -> Result<(), TestError> {
+    let Some((ok, out)) = backend_record("x86_64-unknown-linux-musl", &[DECOY, REAL_WITH_NETMAP])?
     else {
-        return;
+        return Ok(());
     };
     assert!(
         ok,
@@ -875,34 +885,37 @@ fn the_backend_record_reads_libpcap_s_banner_not_sipnab_s_own_text() {
         ),
         "the step must report libpcap's banner:\n{out}"
     );
+    Ok(())
 }
 
 /// Reading the right line must not cost the check its point: a musl libpcap
 /// without netmap still fails the release.
 #[test]
-fn the_backend_record_still_refuses_a_musl_libpcap_without_netmap() {
+fn the_backend_record_still_refuses_a_musl_libpcap_without_netmap() -> Result<(), TestError> {
     let Some((ok, out)) =
-        backend_record("x86_64-unknown-linux-musl", &[DECOY, REAL_WITHOUT_NETMAP])
+        backend_record("x86_64-unknown-linux-musl", &[DECOY, REAL_WITHOUT_NETMAP])?
     else {
-        return;
+        return Ok(());
     };
     assert!(
         !ok,
         "a musl libpcap without netmap must fail the release:\n{out}"
     );
     assert!(out.contains("has no netmap module"), "{out}");
+    Ok(())
 }
 
 /// sipnab's own text is not a libpcap banner, so a musl binary carrying only
 /// that is reported as carrying no libpcap at all.
 #[test]
-fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() {
-    let Some((ok, out)) = backend_record("x86_64-unknown-linux-musl", &[DECOY, LINE_START_DECOY])
+fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() -> Result<(), TestError> {
+    let Some((ok, out)) = backend_record("x86_64-unknown-linux-musl", &[DECOY, LINE_START_DECOY])?
     else {
-        return;
+        return Ok(());
     };
     assert!(!ok, "no banner must fail a musl build:\n{out}");
     assert!(out.contains("embeds no libpcap version banner"), "{out}");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -925,11 +938,11 @@ const NO_AUDIO_EXCLUSIONS: [&str; 3] = ["audio", "plugins", "vcon"];
 /// `-noaudio` .deb/.rpm refused it with "archive passwords need the 'archive'
 /// feature". The cli reference told readers "the release binaries include it".
 #[test]
-fn every_published_binary_reads_password_protected_archives() {
-    let table = feature_table();
+fn every_published_binary_reads_password_protected_archives() -> Result<(), TestError> {
+    let table = feature_table()?;
     let mut checked = 0usize;
-    for (target, variant) in release_matrix() {
-        let outputs = feature_step_outputs(&target, &variant);
+    for (target, variant) in release_matrix()? {
+        let outputs = feature_step_outputs(&target, &variant)?;
         let features = &outputs["features"];
         assert!(
             expand(features, &table).contains("archive"),
@@ -943,6 +956,7 @@ fn every_published_binary_reads_password_protected_archives() {
         checked >= 8,
         "expected every release matrix entry, examined {checked}"
     );
+    Ok(())
 }
 
 /// The no-audio set is `full` minus the named exclusions, and nothing else.
@@ -952,18 +966,18 @@ fn every_published_binary_reads_password_protected_archives() {
 /// means a feature added to `full` reaches the musl and `-noaudio` artifacts
 /// unless it is excluded here by name.
 #[test]
-fn the_no_audio_set_is_full_minus_its_named_exclusions() {
-    let table = feature_table();
+fn the_no_audio_set_is_full_minus_its_named_exclusions() -> Result<(), TestError> {
+    let table = feature_table()?;
     // The aggregate's own name is not a feature any binary lacks.
     let mut full = expand("full", &table);
     full.remove("full");
     let excluded: BTreeSet<String> = NO_AUDIO_EXCLUSIONS.iter().map(|s| s.to_string()).collect();
     let mut checked = 0usize;
-    for (target, variant) in release_matrix() {
+    for (target, variant) in release_matrix()? {
         if !target.ends_with("-linux-musl") && variant != "noaudio" {
             continue;
         }
-        let outputs = feature_step_outputs(&target, &variant);
+        let outputs = feature_step_outputs(&target, &variant)?;
         let features = &outputs["features"];
         let got = expand(features, &table);
         let missing: BTreeSet<String> = full.difference(&got).cloned().collect();
@@ -980,6 +994,7 @@ fn the_no_audio_set_is_full_minus_its_named_exclusions() {
         checked, 4,
         "expected two musl entries and two gnu noaudio entries, examined {checked}"
     );
+    Ok(())
 }
 
 /// CI compiles every reduced feature set the release publishes, with its tests.
@@ -988,16 +1003,16 @@ fn the_no_audio_set_is_full_minus_its_named_exclusions() {
 /// runs after a tag is public. A published set that is not `full` or a superset
 /// of it must be a leg of ci.yml's feature matrix, which pre-push also runs.
 #[test]
-fn ci_compiles_every_reduced_feature_set_the_release_publishes() {
-    let table = feature_table();
+fn ci_compiles_every_reduced_feature_set_the_release_publishes() -> Result<(), TestError> {
+    let table = feature_table()?;
     let full = expand("full", &table);
-    let legs: Vec<BTreeSet<String>> = ci_feature_combos()
+    let legs: Vec<BTreeSet<String>> = ci_feature_combos()?
         .iter()
         .map(|c| expand(c, &table))
         .collect();
     let mut reduced = 0usize;
-    for (target, variant) in release_matrix() {
-        let outputs = feature_step_outputs(&target, &variant);
+    for (target, variant) in release_matrix()? {
+        let outputs = feature_step_outputs(&target, &variant)?;
         let features = &outputs["features"];
         let got = expand(features, &table);
         if got.is_superset(&full) {
@@ -1016,4 +1031,5 @@ fn ci_compiles_every_reduced_feature_set_the_release_publishes() {
         reduced >= 4,
         "expected the musl and gnu noaudio entries to be reduced sets, found {reduced}"
     );
+    Ok(())
 }

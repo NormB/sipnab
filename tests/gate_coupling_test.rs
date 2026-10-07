@@ -58,6 +58,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/source_scan.rs"]
 mod source_scan;
 
@@ -71,25 +73,25 @@ fn repo() -> PathBuf {
 }
 
 /// Read a file, naming it on failure.
-fn read(p: &Path) -> String {
-    std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+fn read(p: &Path) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `.rs` file directly under `tests/`, sorted.
 ///
 /// Deliberately not recursive: `tests/support/` and `tests/cli/` are shared
 /// modules compiled into many binaries, not gates in their own right.
-fn test_files() -> Vec<PathBuf> {
+fn test_files() -> Result<Vec<PathBuf>, TestError> {
     let mut out = Vec::new();
     let dir = repo().join("tests");
-    for e in std::fs::read_dir(&dir).expect("read tests/").flatten() {
+    for e in std::fs::read_dir(&dir)?.flatten() {
         let p = e.path();
         if p.is_file() && p.extension().is_some_and(|x| x == "rs") {
             out.push(p);
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Every file under `rel` with extension `ext`, recursively, sorted.
@@ -167,18 +169,16 @@ struct SymbolClaim {
 /// A claim built by `format!`, or spelled with its parameter list, is missed.
 /// That is the conservative direction: this gate certifies the claims it can
 /// see and makes no assertion about the ones it cannot.
-fn symbol_claims() -> (Vec<SymbolClaim>, usize) {
+fn symbol_claims() -> Result<(Vec<SymbolClaim>, usize), TestError> {
     // The path literal must be an argument of the reading call: `[^;{}]`
     // cannot leave the expression, so an unrelated `"src/…"` string later in
     // the function is not pulled in.
     let read_re = regex::Regex::new(
         r#"(?:read_to_string|include_str!|\bread)\s*\([^;{}]{0,200}?"(?:\./)?src/[A-Za-z0-9_/.\-]*""#,
-    )
-    .expect("read regex");
-    let sym_re =
-        regex::Regex::new(r#""(?:pub )?(?:async )?fn ([a-z_][a-z0-9_]*)""#).expect("symbol regex");
+    )?;
+    let sym_re = regex::Regex::new(r#""(?:pub )?(?:async )?fn ([a-z_][a-z0-9_]*)""#)?;
 
-    let files = test_files();
+    let files = test_files()?;
     // A walk that reached nothing would report a tree with no stale claims.
     assert!(
         files.len() >= 40,
@@ -190,7 +190,7 @@ fn symbol_claims() -> (Vec<SymbolClaim>, usize) {
     let mut claims = Vec::new();
     let mut reads = 0usize;
     for path in &files {
-        let src = read(path);
+        let src = read(path)?;
         let read_lines: Vec<usize> = read_re
             .find_iter(&src)
             .map(|m| line_of(&src, m.start()))
@@ -203,9 +203,9 @@ fn symbol_claims() -> (Vec<SymbolClaim>, usize) {
             }
             let symbol = sym_re
                 .captures(m.as_str())
-                .expect("captures on a match")
+                .ok_or("captures on a match")?
                 .get(1)
-                .expect("group 1")
+                .ok_or("group 1")?
                 .as_str()
                 .to_string();
             claims.push(SymbolClaim {
@@ -215,7 +215,7 @@ fn symbol_claims() -> (Vec<SymbolClaim>, usize) {
             });
         }
     }
-    (claims, reads)
+    Ok((claims, reads))
 }
 
 /// Files under `src/` in which `name` is DEFINED as a function.
@@ -224,14 +224,15 @@ fn symbol_claims() -> (Vec<SymbolClaim>, usize) {
 /// is satisfied by `fn run_offline_parallel`, so a gate could name a function
 /// that has never existed and resolve against a real one whose name merely
 /// starts the same way.
-fn defining_files(name: &str) -> Vec<String> {
-    let def = regex::Regex::new(&format!(r"\bfn\s+{}\s*[(<]", regex::escape(name)))
-        .expect("definition regex");
-    files_under("src", "rs")
-        .into_iter()
-        .filter(|p| def.is_match(&read(p)))
-        .map(|p| rel(&p))
-        .collect()
+fn defining_files(name: &str) -> Result<Vec<String>, TestError> {
+    let def = regex::Regex::new(&format!(r"\bfn\s+{}\s*[(<]", regex::escape(name)))?;
+    let mut defining = Vec::new();
+    for p in files_under("src", "rs") {
+        if def.is_match(&read(&p)?) {
+            defining.push(rel(&p));
+        }
+    }
+    Ok(defining)
 }
 
 // ---------------------------------------------------------------------------
@@ -290,11 +291,12 @@ fn markdown_prose(src: &str) -> String {
 }
 
 /// The text of every ATX heading in a markdown source.
-fn headings(src: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"(?m)^#{1,6}[ \t]+(.+?)[ \t#]*$").expect("heading regex");
-    re.captures_iter(&markdown_prose(src))
+fn headings(src: &str) -> Result<Vec<String>, TestError> {
+    let re = regex::Regex::new(r"(?m)^#{1,6}[ \t]+(.+?)[ \t#]*$")?;
+    Ok(re
+        .captures_iter(&markdown_prose(src))
         .map(|c| c[1].to_string())
-        .collect()
+        .collect())
 }
 
 /// The GitHub anchor slug for a heading.
@@ -323,12 +325,12 @@ fn slug(heading: &str, keep_underscore: bool) -> String {
 /// Headings that slugify identically within one page, plus the corpus size.
 ///
 /// Returns `(clashes, pages with headings, headings seen)`.
-fn slug_clashes(keep_underscore: bool) -> (Vec<String>, usize, usize) {
+fn slug_clashes(keep_underscore: bool) -> Result<(Vec<String>, usize, usize), TestError> {
     let mut clashes = Vec::new();
     let mut pages = 0usize;
     let mut total = 0usize;
     for path in files_under("docs", "md") {
-        let hs = headings(&read(&path));
+        let hs = headings(&read(&path)?)?;
         if hs.is_empty() {
             continue;
         }
@@ -350,7 +352,7 @@ fn slug_clashes(keep_underscore: bool) -> (Vec<String>, usize, usize) {
             }
         }
     }
-    (clashes, pages, total)
+    Ok((clashes, pages, total))
 }
 
 // ---------------------------------------------------------------------------
@@ -380,12 +382,11 @@ const EXEMPTION_LIST_CEILING: usize = 3;
 /// Comment blocks are joined and whitespace-collapsed before the phrases are
 /// searched, because the sentence that hid the bug wrapped across lines — a
 /// line-oriented search would have matched none of it.
-fn exemptions_beside_a_hardcoded_list(src: &str) -> Vec<String> {
+fn exemptions_beside_a_hardcoded_list(src: &str) -> Result<Vec<String>, TestError> {
     let list_re = regex::Regex::new(
         r"\[\s*DialogState::[A-Za-z0-9_]+\s*(?:,\s*DialogState::[A-Za-z0-9_]+\s*)*,?\s*\]",
-    )
-    .expect("list regex");
-    let variant_re = regex::Regex::new(r"DialogState::[A-Za-z0-9_]+").expect("variant regex");
+    )?;
+    let variant_re = regex::Regex::new(r"DialogState::[A-Za-z0-9_]+")?;
     let lines: Vec<&str> = src.lines().collect();
 
     let mut out = Vec::new();
@@ -424,7 +425,7 @@ fn exemptions_beside_a_hardcoded_list(src: &str) -> Vec<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -432,16 +433,16 @@ fn exemptions_beside_a_hardcoded_list(src: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Every variant of `DialogState`, read out of the enum in `src/sip/dialog.rs`.
-fn dialog_state_variants() -> Vec<String> {
-    let src = read(&repo().join("src/sip/dialog.rs"));
+fn dialog_state_variants() -> Result<Vec<String>, TestError> {
+    let src = read(&repo().join("src/sip/dialog.rs"))?;
     let at = src
         .find("pub enum DialogState {")
-        .expect("src/sip/dialog.rs no longer declares `pub enum DialogState`");
+        .ok_or("src/sip/dialog.rs no longer declares `pub enum DialogState`")?;
     let body = &src[at..];
     let end = body
         .find("\n}")
-        .expect("the DialogState enum has no closing brace");
-    body[..end]
+        .ok_or("the DialogState enum has no closing brace")?;
+    Ok(body[..end]
         .lines()
         .map(str::trim)
         .filter_map(|l| l.strip_suffix(','))
@@ -449,7 +450,7 @@ fn dialog_state_variants() -> Vec<String> {
             n.starts_with(|c: char| c.is_ascii_uppercase()) && n.chars().all(char::is_alphanumeric)
         })
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
 /// For each variant, the production sites that produce it.
@@ -459,11 +460,11 @@ fn dialog_state_variants() -> Vec<String> {
 /// match under the three assignment forms is `d.state = DialogState::Trying`
 /// inside `src/sip/dialog.rs`'s own test module, so the match-arm form —
 /// `_ => DialogState::Trying` in the initial-state dispatch — is scanned too.
-fn dialog_state_producers(variants: &[String]) -> BTreeMap<String, Vec<String>> {
+fn dialog_state_producers(variants: &[String]) -> Result<BTreeMap<String, Vec<String>>, TestError> {
     let mut out: BTreeMap<String, Vec<String>> =
         variants.iter().map(|v| (v.clone(), Vec::new())).collect();
     for path in files_under("src", "rs") {
-        let full = read(&path);
+        let full = read(&path)?;
         let prod = source_scan::production_source(&full);
         for v in variants {
             let forms = [
@@ -475,13 +476,13 @@ fn dialog_state_producers(variants: &[String]) -> BTreeMap<String, Vec<String>> 
             for form in forms {
                 if prod.contains(&form) {
                     out.get_mut(v)
-                        .expect("variant key")
+                        .ok_or("variant key")?
                         .push(format!("{} ({form})", rel(&path)));
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -489,16 +490,16 @@ fn dialog_state_producers(variants: &[String]) -> BTreeMap<String, Vec<String>> 
 // ---------------------------------------------------------------------------
 
 /// Every tool name registered under `src/mcp/`, and the files walked.
-fn registered_mcp_tools() -> (BTreeSet<String>, usize) {
-    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#).expect("registration regex");
+fn registered_mcp_tools() -> Result<(BTreeSet<String>, usize), TestError> {
+    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#)?;
     let files = files_under("src/mcp", "rs");
     let mut names = BTreeSet::new();
     for path in &files {
-        for c in re.captures_iter(&read(path)) {
+        for c in re.captures_iter(&read(path)?) {
             names.insert(c[1].to_string());
         }
     }
-    (names, files.len())
+    Ok((names, files.len()))
 }
 
 /// Every tool named in the index of `docs/mcp-tools.md`.
@@ -511,19 +512,18 @@ fn registered_mcp_tools() -> (BTreeSet<String>, usize) {
 /// A row's name may be plain or a link into the tool's own section, so both
 /// spellings are matched: pinning the plain form alone made a formatting
 /// change read as every tool disappearing.
-fn documented_mcp_tools() -> BTreeSet<String> {
-    let doc = read(&repo().join("docs/mcp-tools.md"));
+fn documented_mcp_tools() -> Result<BTreeSet<String>, TestError> {
+    let doc = read(&repo().join("docs/mcp-tools.md"))?;
     let start = doc
         .find("| Tool | Parameters | Returns |")
-        .expect("docs/mcp-tools.md has no tool table");
+        .ok_or("docs/mcp-tools.md has no tool table")?;
     let end = doc[start..].find("\n## ").map_or(doc.len(), |i| start + i);
-    regex::RegexBuilder::new(r"^\| \[?`([a-z0-9_]+)`")
+    Ok(regex::RegexBuilder::new(r"^\| \[?`([a-z0-9_]+)`")
         .multi_line(true)
-        .build()
-        .expect("row regex")
+        .build()?
         .captures_iter(&doc[start..end])
         .map(|c| c[1].to_string())
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -566,8 +566,8 @@ const MIN_MCP_TOOLS: usize = 40;
 /// The scan's limits are documented on `symbol_claims`. It is conservative by
 /// construction: a claim it cannot see is uncovered, never falsely accused.
 #[test]
-fn every_symbol_a_gate_names_in_a_source_file_still_exists() {
-    let (claims, _) = symbol_claims();
+fn every_symbol_a_gate_names_in_a_source_file_still_exists() -> Result<(), TestError> {
+    let (claims, _) = symbol_claims()?;
     assert!(
         claims.len() >= MIN_SYMBOL_CLAIMS,
         "the symbol-claim scan found only {} claim(s); its pattern no longer \
@@ -577,7 +577,7 @@ fn every_symbol_a_gate_names_in_a_source_file_still_exists() {
 
     let mut missing = Vec::new();
     for c in &claims {
-        if defining_files(&c.symbol).is_empty() {
+        if defining_files(&c.symbol)?.is_empty() {
             missing.push(format!(
                 "  {}:{} names `fn {}`, which is defined nowhere under src/",
                 c.file, c.line, c.symbol
@@ -593,6 +593,7 @@ fn every_symbol_a_gate_names_in_a_source_file_still_exists() {
          a substring.",
         missing.join("\n")
     );
+    Ok(())
 }
 
 /// No page under `docs/` mints the same GitHub anchor twice.
@@ -615,7 +616,7 @@ fn every_symbol_a_gate_names_in_a_source_file_still_exists() {
 /// task-spec form) and GitHub's own (underscores kept), because a collision
 /// under either is a broken bookmark for the readers using that renderer.
 #[test]
-fn no_docs_page_mints_two_headings_with_the_same_github_slug() {
+fn no_docs_page_mints_two_headings_with_the_same_github_slug() -> Result<(), TestError> {
     // The slugifier first, on the cases that make it non-obvious. A slug
     // function that returned the empty string for everything would report a
     // tree with no collisions, since empty slugs are skipped.
@@ -645,7 +646,7 @@ fn no_docs_page_mints_two_headings_with_the_same_github_slug() {
 
     // The gate this reproduces must still be there. Deleting it should be a
     // visible act, not a quiet narrowing that leaves this copy alone.
-    let peer = read(&repo().join("tests/link_integrity_test.rs"));
+    let peer = read(&repo().join("tests/link_integrity_test.rs"))?;
     assert!(
         peer.contains("fn no_page_mints_a_positional_anchor"),
         "tests/link_integrity_test.rs no longer defines the anchor gate this \
@@ -653,7 +654,7 @@ fn no_docs_page_mints_two_headings_with_the_same_github_slug() {
     );
 
     for keep_underscore in [false, true] {
-        let (clashes, pages, total) = slug_clashes(keep_underscore);
+        let (clashes, pages, total) = slug_clashes(keep_underscore)?;
         assert!(
             pages >= MIN_DOC_PAGES && total >= MIN_DOC_HEADINGS,
             "the walk found {pages} page(s) and {total} heading(s) under \
@@ -670,6 +671,7 @@ fn no_docs_page_mints_two_headings_with_the_same_github_slug() {
             clashes.join("\n  ")
         );
     }
+    Ok(())
 }
 
 /// The dialog state machine records no exemption beside a hardcoded list.
@@ -692,7 +694,8 @@ fn no_docs_page_mints_two_headings_with_the_same_github_slug() {
 /// The scanner is driven from both sides below, because a scanner that matches
 /// nothing agrees with any file.
 #[test]
-fn the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list() {
+fn the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list()
+-> Result<(), TestError> {
     // Built by concatenation: a fixture line must never start with the test
     // marker, and the same discipline keeps this fixture out of any
     // line-oriented scan of the real tree.
@@ -707,7 +710,7 @@ fn the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list() 
         + "    DialogState::Canceled,\n"
         + "];\n";
     assert!(
-        !exemptions_beside_a_hardcoded_list(&bad).is_empty(),
+        !exemptions_beside_a_hardcoded_list(&bad)?.is_empty(),
         "the scanner did not flag the exact shape it exists for; it would \
          agree with any file, including the one that shipped the bug"
     );
@@ -718,20 +721,20 @@ fn the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list() 
         + "// initial state, so nothing may produce it.\n"
         + "const INITIAL_ONLY: &[DialogState] = &[DialogState::Trying];\n";
     assert!(
-        exemptions_beside_a_hardcoded_list(&ok).is_empty(),
+        exemptions_beside_a_hardcoded_list(&ok)?.is_empty(),
         "one named exception, checked by its own assertion, is the shape that \
          is correct — a scanner that flags it will be narrowed until it flags \
          nothing"
     );
 
     let path = repo().join("src/sip/dialog_state_machine.rs");
-    let src = read(&path);
+    let src = read(&path)?;
     assert!(
         src.contains("DialogState::"),
         "src/sip/dialog_state_machine.rs no longer names DialogState; this \
          gate is reading the wrong file"
     );
-    let found = exemptions_beside_a_hardcoded_list(&src);
+    let found = exemptions_beside_a_hardcoded_list(&src)?;
     assert!(
         found.is_empty(),
         "src/sip/dialog_state_machine.rs records a known gap as an accepted \
@@ -746,14 +749,13 @@ fn the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list() 
     // And the exception that survived must still be checked, not just named.
     if src.contains("INITIAL_ONLY") {
         assert!(
-            regex::Regex::new(r"!\s*reached\.contains\(")
-                .expect("assertion regex")
-                .is_match(&src),
+            regex::Regex::new(r"!\s*reached\.contains\(")?.is_match(&src),
             "INITIAL_ONLY is declared but nothing asserts its members are \
              UNREACHABLE. An exemption that is not itself checked is the \
              defect this test exists for, wearing a shorter list."
         );
     }
+    Ok(())
 }
 
 /// Every `DialogState` variant is produced by production code.
@@ -771,8 +773,8 @@ fn the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list() 
 /// them would have certified `Expired` as produced during the whole period
 /// nothing produced it.
 #[test]
-fn every_dialog_state_variant_is_produced_by_production_code() {
-    let variants = dialog_state_variants();
+fn every_dialog_state_variant_is_produced_by_production_code() -> Result<(), TestError> {
+    let variants = dialog_state_variants()?;
     assert!(
         variants.len() >= MIN_DIALOG_STATES,
         "read only {} DialogState variant(s) from src/sip/dialog.rs — the enum \
@@ -785,7 +787,7 @@ fn every_dialog_state_variant_is_produced_by_production_code() {
          parsed list, so the parse is wrong: {variants:?}"
     );
 
-    let producers = dialog_state_producers(&variants);
+    let producers = dialog_state_producers(&variants)?;
     let orphans: Vec<&String> = variants
         .iter()
         .filter(|v| producers.get(*v).is_some_and(Vec::is_empty))
@@ -800,6 +802,7 @@ fn every_dialog_state_variant_is_produced_by_production_code() {
          supported everywhere and observed nowhere, which is how a phone that \
          unregistered kept reporting `Registered`."
     );
+    Ok(())
 }
 
 /// The MCP tool index lists every registered tool, across all its tables.
@@ -812,8 +815,8 @@ fn every_dialog_state_variant_is_produced_by_production_code() {
 /// the first `## ` heading rather than the first blank line, because the index
 /// became eight tables and a blank-line slice read only the first.
 #[test]
-fn the_mcp_tool_index_lists_every_registered_tool_across_all_its_tables() {
-    let (registered, files) = registered_mcp_tools();
+fn the_mcp_tool_index_lists_every_registered_tool_across_all_its_tables() -> Result<(), TestError> {
+    let (registered, files) = registered_mcp_tools()?;
     assert!(
         files >= MIN_MCP_FILES && registered.len() >= MIN_MCP_TOOLS,
         "the walk found {} registration(s) across {files} file(s) under \
@@ -822,7 +825,7 @@ fn the_mcp_tool_index_lists_every_registered_tool_across_all_its_tables() {
         registered.len()
     );
 
-    let documented = documented_mcp_tools();
+    let documented = documented_mcp_tools()?;
     assert!(
         documented.len() >= MIN_MCP_TOOLS,
         "the index extractor found only {} row(s) — its pattern no longer \
@@ -848,6 +851,7 @@ fn the_mcp_tool_index_lists_every_registered_tool_across_all_its_tables() {
          A caller reading the page gets `method not found`. Remove the row, or \
          restore the registration it describes."
     );
+    Ok(())
 }
 
 /// Every scan in this file found a plausible number of items.
@@ -861,10 +865,10 @@ fn the_mcp_tool_index_lists_every_registered_tool_across_all_its_tables() {
 /// A floor moving down is the alarm this exists for: attribute the drop per
 /// file before touching the number.
 #[test]
-fn every_scan_in_this_file_found_a_plausible_number_of_items() {
+fn every_scan_in_this_file_found_a_plausible_number_of_items() -> Result<(), TestError> {
     let mut report = Vec::new();
 
-    let (claims, reads) = symbol_claims();
+    let (claims, reads) = symbol_claims()?;
     report.push(format!("symbol claims: {}", claims.len()));
     report.push(format!("src reads paired against: {reads}"));
     assert!(
@@ -880,7 +884,7 @@ fn every_scan_in_this_file_found_a_plausible_number_of_items() {
          so no claim can be found near one."
     );
 
-    let (_, pages, total) = slug_clashes(false);
+    let (_, pages, total) = slug_clashes(false)?;
     report.push(format!("doc pages: {pages}, headings: {total}"));
     assert!(
         pages >= MIN_DOC_PAGES,
@@ -894,7 +898,7 @@ fn every_scan_in_this_file_found_a_plausible_number_of_items() {
          heading regex stopped matching."
     );
 
-    let variants = dialog_state_variants();
+    let variants = dialog_state_variants()?;
     report.push(format!("DialogState variants: {}", variants.len()));
     assert!(
         variants.len() >= MIN_DIALOG_STATES,
@@ -902,7 +906,7 @@ fn every_scan_in_this_file_found_a_plausible_number_of_items() {
          (measured 13). The enum moved or changed shape.",
         variants.len()
     );
-    let producers = dialog_state_producers(&variants);
+    let producers = dialog_state_producers(&variants)?;
     let sites: usize = producers.values().map(Vec::len).sum();
     report.push(format!("state producer sites: {sites}"));
     assert!(
@@ -913,8 +917,8 @@ fn every_scan_in_this_file_found_a_plausible_number_of_items() {
         variants.len()
     );
 
-    let (registered, files) = registered_mcp_tools();
-    let documented = documented_mcp_tools();
+    let (registered, files) = registered_mcp_tools()?;
+    let documented = documented_mcp_tools()?;
     report.push(format!(
         "MCP: {} registered across {files} file(s), {} documented",
         registered.len(),
@@ -939,7 +943,7 @@ fn every_scan_in_this_file_found_a_plausible_number_of_items() {
     // proved by the fixture in
     // `the_state_machine_records_no_exemption_beside_a_hardcoded_destination_list`;
     // what is checkable here is that the file it reads is still the one.
-    let sm = read(&repo().join("src/sip/dialog_state_machine.rs"));
+    let sm = read(&repo().join("src/sip/dialog_state_machine.rs"))?;
     assert!(
         sm.lines().count() > 200 && sm.contains("DialogState::"),
         "src/sip/dialog_state_machine.rs is {} line(s) and may no longer hold \
@@ -947,4 +951,5 @@ fn every_scan_in_this_file_found_a_plausible_number_of_items() {
         sm.lines().count(),
         report.join("\n")
     );
+    Ok(())
 }

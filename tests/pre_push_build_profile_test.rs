@@ -17,38 +17,43 @@
 
 use std::path::Path;
 
-fn read(rel: &str) -> String {
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
+fn read(rel: &str) -> Result<String, TestError> {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?)
 }
 
 /// The profile the corpus gate passes to `cargo test`.
-fn gate_profile() -> String {
-    let hook = read(".githooks/pre-push");
+fn gate_profile() -> Result<String, TestError> {
+    let hook = read(".githooks/pre-push")?;
     let line = hook
         .lines()
         .map(str::trim)
         .find(|l| l.starts_with("set -- --all-features --profile "))
-        .expect("the corpus gate's `set -- --all-features --profile <name>` line");
-    line.split_whitespace()
+        .ok_or("the corpus gate's `set -- --all-features --profile <name>` line")?;
+    Ok(line
+        .split_whitespace()
         .nth(4)
-        .expect("a profile name after --profile")
-        .to_string()
+        .ok_or("a profile name after --profile")?
+        .to_string())
 }
 
 /// `key = value` lines of `[profile.<name>]` in Cargo.toml, verbatim.
-fn profile_table(name: &str) -> Vec<(String, String)> {
-    let cargo = read("Cargo.toml");
+fn profile_table(name: &str) -> Result<Vec<(String, String)>, TestError> {
+    let cargo = read("Cargo.toml")?;
     let header = format!("[profile.{name}]");
     let Some(start) = cargo.find(&format!("\n{header}\n")) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    cargo[start + header.len() + 2..]
+    Ok(cargo[start + header.len() + 2..]
         .lines()
         .take_while(|l| !l.starts_with('['))
         .filter_map(|l| l.split_once(" = "))
         .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-        .collect()
+        .collect())
 }
 
 fn setting(table: &[(String, String)], key: &str) -> Option<String> {
@@ -56,9 +61,9 @@ fn setting(table: &[(String, String)], key: &str) -> Option<String> {
 }
 
 #[test]
-fn the_corpus_gate_profile_exists_and_unwinds() {
-    let name = gate_profile();
-    let table = profile_table(&name);
+fn the_corpus_gate_profile_exists_and_unwinds() -> Result<(), TestError> {
+    let name = gate_profile()?;
+    let table = profile_table(&name)?;
     assert!(
         !table.is_empty(),
         "the corpus gate runs `--profile {name}`, and Cargo.toml has no [profile.{name}]"
@@ -69,25 +74,28 @@ fn the_corpus_gate_profile_exists_and_unwinds() {
         "[profile.{name}] must set panic = \"unwind\": under abort a failing corpus \
          test dies before libtest names it"
     );
+    Ok(())
 }
 
 #[test]
-fn the_corpus_gate_profile_skips_full_lto() {
-    let name = gate_profile();
-    let table = profile_table(&name);
+fn the_corpus_gate_profile_skips_full_lto() -> Result<(), TestError> {
+    let name = gate_profile()?;
+    let table = profile_table(&name)?;
     assert_eq!(
         setting(&table, "lto").as_deref(),
         Some("false"),
         "[profile.{name}] must set lto = false: full LTO made the corpus binaries \
          rebuild in 827 s after a library change, against 83 s without it"
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the table reader sees a profile Cargo.toml really has,
 /// so an empty result above means a missing profile, not a broken reader.
 #[test]
-fn the_profile_reader_finds_the_release_profile() {
-    let release = profile_table("release");
+fn the_profile_reader_finds_the_release_profile() -> Result<(), TestError> {
+    let release = profile_table("release")?;
     assert_eq!(setting(&release, "lto").as_deref(), Some("true"));
     assert_eq!(setting(&release, "panic").as_deref(), Some("\"abort\""));
+    Ok(())
 }

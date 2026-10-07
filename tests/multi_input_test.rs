@@ -20,31 +20,32 @@ use std::process::Command;
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn samples() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples")
 }
 
 /// The `--json-dialogs` records sipnab reports for the given arguments.
-fn dialog_records(args: &[&str]) -> Vec<serde_json::Value> {
+fn dialog_records(args: &[&str]) -> Result<Vec<serde_json::Value>, TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(["-N", "--json-dialogs", "--no-cli-print", "--quiet"])
         .args(args)
-        .output()
-        .expect("spawn sipnab");
-    String::from_utf8_lossy(&out.stdout)
+        .output()?;
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| l.trim_start().starts_with('{'))
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .collect()
+        .collect())
 }
 
 /// Dialog Call-IDs sipnab reports for the given arguments.
-fn dialog_ids(args: &[&str]) -> Vec<String> {
-    dialog_records(args)
+fn dialog_ids(args: &[&str]) -> Result<Vec<String>, TestError> {
+    Ok(dialog_records(args)?
         .iter()
         .filter_map(|v| v["call_id"].as_str().map(str::to_string))
-        .collect()
+        .collect())
 }
 
 /// Dialog fingerprints — `call_id state msg_count`, sorted.
@@ -57,13 +58,13 @@ fn dialog_ids(args: &[&str]) -> Vec<String> {
 /// `sip-rtp-g711.pcap` cut at packet 400 the call reads `InCall 4` in the head
 /// and `Completed 2` in the tail, but `Completed 6` when the halves are read as
 /// one set.
-fn dialog_fingerprints(args: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = dialog_records(args)
+fn dialog_fingerprints(args: &[&str]) -> Result<Vec<String>, TestError> {
+    let mut out: Vec<String> = dialog_records(args)?
         .iter()
         .map(|v| format!("{} {} {}", v["call_id"], v["state"], v["msg_count"]))
         .collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Split a capture into two files at `first_count` packets, preserving order.
@@ -71,7 +72,12 @@ fn dialog_fingerprints(args: &[&str]) -> Vec<String> {
 /// `editcap -r` selects a packet range, so two calls carve the file in two
 /// without rewriting timestamps — the halves stay a genuine sequence rather
 /// than a synthetic one.
-fn split_capture(src: &Path, first_count: usize, total: usize, dir: &Path) -> (PathBuf, PathBuf) {
+fn split_capture(
+    src: &Path,
+    first_count: usize,
+    total: usize,
+    dir: &Path,
+) -> Result<(PathBuf, PathBuf), TestError> {
     let head = dir.join("part-a.pcap");
     let tail = dir.join("part-b.pcap");
     for (out, range) in [
@@ -80,11 +86,10 @@ fn split_capture(src: &Path, first_count: usize, total: usize, dir: &Path) -> (P
     ] {
         let status = Command::new("editcap")
             .args(["-r", &src.to_string_lossy(), &out.to_string_lossy(), &range])
-            .status()
-            .expect("run editcap");
+            .status()?;
         assert!(status.success(), "editcap failed for range {range}");
     }
-    (head, tail)
+    Ok((head, tail))
 }
 
 /// Write `src` to `dest` cut INSIDE a packet's data, the way an interrupted
@@ -98,8 +103,8 @@ fn split_capture(src: &Path, first_count: usize, total: usize, dir: &Path) -> (P
 ///
 /// pcap layout: 24-byte global header, then per record a 16-byte header
 /// (ts_sec, ts_usec, incl_len, orig_len) followed by incl_len bytes.
-fn truncate_mid_record(src: &Path, dest: &Path) {
-    let whole = std::fs::read(src).expect("read");
+fn truncate_mid_record(src: &Path, dest: &Path) -> Result<(), TestError> {
+    let whole = std::fs::read(src)?;
     let mut off = 24usize;
     let mut cut = None;
     // Walk to the third record, then keep its header and half its data.
@@ -107,15 +112,16 @@ fn truncate_mid_record(src: &Path, dest: &Path) {
         if off + 16 > whole.len() {
             break;
         }
-        let incl = u32::from_le_bytes(whole[off + 8..off + 12].try_into().unwrap()) as usize;
+        let incl = u32::from_le_bytes(whole[off + 8..off + 12].try_into()?) as usize;
         if off + 16 + incl > whole.len() {
             break;
         }
         cut = Some(off + 16 + incl / 2);
         off += 16 + incl;
     }
-    let cut = cut.expect("fixture must hold at least one full record");
-    std::fs::write(dest, &whole[..cut]).expect("write truncated");
+    let cut = cut.ok_or("fixture must hold at least one full record")?;
+    std::fs::write(dest, &whole[..cut])?;
+    Ok(())
 }
 
 /// Lay out a three-file set whose MIDDLE member is truncated, returning the
@@ -126,19 +132,18 @@ fn truncate_mid_record(src: &Path, dest: &Path) {
 /// (1312180642) < sip-proxy (1312180650) < sip-rtp-g711 (1480171979). `-I`
 /// order does not decide this — resolution sorts by packet time regardless —
 /// so the fixtures have to be picked for it.
-fn set_with_a_truncated_middle(dir: &Path) -> PathBuf {
+fn set_with_a_truncated_middle(dir: &Path) -> Result<PathBuf, TestError> {
     let after = dir.join("read-after-the-break.pcap");
     std::fs::copy(
         samples().join("sip-register.pcap"),
         dir.join("read-first.pcap"),
-    )
-    .expect("copy");
-    std::fs::copy(samples().join("sip-rtp-g711.pcap"), &after).expect("copy");
+    )?;
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), &after)?;
     truncate_mid_record(
         &samples().join("sip-proxy.pcap"),
         &dir.join("truncated-in-the-middle.pcap"),
-    );
-    after
+    )?;
+    Ok(after)
 }
 
 /// A call cut in half by a file boundary is reported ONCE, whole.
@@ -148,21 +153,21 @@ fn set_with_a_truncated_middle(dir: &Path) -> PathBuf {
 /// only "at least one dialog" would pass on a build that reset state between
 /// files and reported two fragments.
 #[test]
-fn a_call_split_across_two_files_is_stitched_back_together() {
+fn a_call_split_across_two_files_is_stitched_back_together() -> Result<(), TestError> {
     if Command::new("editcap").arg("--version").output().is_err() {
         eprintln!("editcap not installed — skipping");
-        return;
+        return Ok(());
     }
     let src = samples().join("sip-rtp-g711.pcap");
-    let whole = dialog_ids(&["-I", &src.to_string_lossy()]);
+    let whole = dialog_ids(&["-I", &src.to_string_lossy()])?;
     assert!(!whole.is_empty(), "fixture must hold dialogs");
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     // 852 packets in this fixture; cut near the middle so the INVITE and the
     // BYE of at least one call land on opposite sides.
-    let (head, tail) = split_capture(&src, 400, 852, dir.path());
+    let (head, tail) = split_capture(&src, 400, 852, dir.path())?;
 
-    let together = dialog_ids(&["-I", &head.to_string_lossy(), "-I", &tail.to_string_lossy()]);
+    let together = dialog_ids(&["-I", &head.to_string_lossy(), "-I", &tail.to_string_lossy()])?;
     let mut a = whole.clone();
     let mut b = together.clone();
     a.sort();
@@ -174,8 +179,8 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
     );
 
     // And the failure it prevents: each half alone tells a different story.
-    let head_only = dialog_ids(&["-I", &head.to_string_lossy()]);
-    let tail_only = dialog_ids(&["-I", &tail.to_string_lossy()]);
+    let head_only = dialog_ids(&["-I", &head.to_string_lossy()])?;
+    let tail_only = dialog_ids(&["-I", &tail.to_string_lossy()])?;
     assert!(
         head_only.len() + tail_only.len() >= together.len(),
         "per-file analysis should count at least as many dialog fragments as \
@@ -184,6 +189,7 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
         tail_only.len(),
         together.len()
     );
+    Ok(())
 }
 
 /// A call that traverses a PROXY must reconstruct identically under `--cores`.
@@ -205,11 +211,11 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
 /// The baseline is anchored to the literal message count so the test cannot be
 /// satisfied by both paths regressing to the same wrong answer.
 #[test]
-fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() {
+fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() -> Result<(), TestError> {
     let src = samples().join("sip-proxy.pcap");
     let file = src.to_string_lossy().into_owned();
 
-    let records = dialog_records(&["-I", &file]);
+    let records = dialog_records(&["-I", &file])?;
     assert_eq!(records.len(), 1, "the fixture is one proxied call");
     assert_eq!(
         records[0]["msg_count"].as_u64(),
@@ -218,9 +224,9 @@ fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() {
          the single-threaded path sees all of them"
     );
 
-    let single = dialog_fingerprints(&["-I", &file]);
+    let single = dialog_fingerprints(&["-I", &file])?;
     for cores in ["2", "3", "4", "8"] {
-        let cores_out = dialog_fingerprints(&["-I", &file, "--cores", cores]);
+        let cores_out = dialog_fingerprints(&["-I", &file, "--cores", cores])?;
         assert_eq!(
             cores_out, single,
             "--cores {cores} must reconstruct the proxied call from EVERY leg, \
@@ -228,6 +234,7 @@ fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() {
              {cores_out:?}"
         );
     }
+    Ok(())
 }
 
 /// `--cores N` must read the whole `-I` set, and stitch a call across a file
@@ -248,27 +255,27 @@ fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() {
 /// Call-IDs — the split call appears in both halves, so an ID set cannot tell a
 /// stitched dialog from two fragments (see [`dialog_fingerprints`]).
 #[test]
-fn the_cores_path_reads_a_whole_set_and_stitches_across_a_file_boundary() {
+fn the_cores_path_reads_a_whole_set_and_stitches_across_a_file_boundary() -> Result<(), TestError> {
     if Command::new("editcap").arg("--version").output().is_err() {
         eprintln!("editcap not installed — skipping");
-        return;
+        return Ok(());
     }
     let src = samples().join("sip-rtp-g711.pcap");
-    let whole = dialog_fingerprints(&["-I", &src.to_string_lossy()]);
+    let whole = dialog_fingerprints(&["-I", &src.to_string_lossy()])?;
     assert!(!whole.is_empty(), "fixture must hold dialogs");
 
     // 852 packets; cut near the middle so a call's INVITE and BYE land on
     // opposite sides. The halves go in a directory, so `-I` is given exactly
     // the shape `--cores` could not read at all.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (head, tail) = split_capture(&src, 400, 852, dir.path());
+    let dir = tempfile::tempdir()?;
+    let (head, tail) = split_capture(&src, 400, 852, dir.path())?;
     let dir_spec = dir.path().to_string_lossy().into_owned();
 
     // The split has to actually cut a call, or this test proves nothing about
     // stitching. Read separately the halves must disagree with the whole —
     // a call that never ends in one, a stray half-call in the other.
-    let head_only = dialog_fingerprints(&["-I", &head.to_string_lossy()]);
-    let tail_only = dialog_fingerprints(&["-I", &tail.to_string_lossy()]);
+    let head_only = dialog_fingerprints(&["-I", &head.to_string_lossy()])?;
+    let tail_only = dialog_fingerprints(&["-I", &tail.to_string_lossy()])?;
     assert!(
         head_only
             .iter()
@@ -279,8 +286,8 @@ fn the_cores_path_reads_a_whole_set_and_stitches_across_a_file_boundary() {
          \n  head:  {head_only:?}\n  tail:  {tail_only:?}"
     );
 
-    let single = dialog_fingerprints(&["-I", &dir_spec]);
-    let cores = dialog_fingerprints(&["-I", &dir_spec, "--cores", "4"]);
+    let single = dialog_fingerprints(&["-I", &dir_spec])?;
+    let cores = dialog_fingerprints(&["-I", &dir_spec, "--cores", "4"])?;
 
     assert_eq!(
         cores, whole,
@@ -293,6 +300,7 @@ fn the_cores_path_reads_a_whole_set_and_stitches_across_a_file_boundary() {
         "--cores must report the same dialogs as the single-threaded path.\n  \
          single: {single:?}\n  cores:  {cores:?}"
     );
+    Ok(())
 }
 
 /// The other two `-I` shapes — a glob and repeated `-I` — under `--cores`.
@@ -304,7 +312,7 @@ fn the_cores_path_reads_a_whole_set_and_stitches_across_a_file_boundary() {
 /// plausible output, silently missing every file after the first — so it is
 /// asserted against the single-threaded result rather than against non-empty.
 #[test]
-fn the_cores_path_handles_globs_and_repeated_input_flags() {
+fn the_cores_path_handles_globs_and_repeated_input_flags() -> Result<(), TestError> {
     let glob = format!("{}/sip-rtp-g7*.pcap", samples().display());
     let a = samples().join("sip-rtp-g711.pcap");
     let b = samples().join("sip-register.pcap");
@@ -317,12 +325,12 @@ fn the_cores_path_handles_globs_and_repeated_input_flags() {
 
     for spec in [vec!["-I".to_string(), glob], repeated] {
         let args: Vec<&str> = spec.iter().map(String::as_str).collect();
-        let single = dialog_fingerprints(&args);
+        let single = dialog_fingerprints(&args)?;
         assert!(!single.is_empty(), "{args:?} must resolve to dialogs");
 
         let mut with_cores = args.clone();
         with_cores.extend_from_slice(&["--cores", "4"]);
-        let cores = dialog_fingerprints(&with_cores);
+        let cores = dialog_fingerprints(&with_cores)?;
 
         assert_eq!(
             cores, single,
@@ -330,6 +338,7 @@ fn the_cores_path_handles_globs_and_repeated_input_flags() {
              {args:?}.\n  single: {single:?}\n  cores:  {cores:?}"
         );
     }
+    Ok(())
 }
 
 /// A truncated file in the MIDDLE of a set must not hide the files after it.
@@ -350,17 +359,17 @@ fn the_cores_path_handles_globs_and_repeated_input_flags() {
 /// the reasoning is identical: losing one file of a set is bad, losing the
 /// analysis of the others is worse.
 #[test]
-fn a_truncated_file_does_not_hide_the_files_after_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let after = set_with_a_truncated_middle(dir.path());
+fn a_truncated_file_does_not_hide_the_files_after_it() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let after = set_with_a_truncated_middle(dir.path())?;
 
-    let after_alone = dialog_ids(&["-I", &after.to_string_lossy()]);
+    let after_alone = dialog_ids(&["-I", &after.to_string_lossy()])?;
     assert!(
         !after_alone.is_empty(),
         "the trailing fixture must hold dialogs"
     );
 
-    let together = dialog_ids(&["-I", &dir.path().to_string_lossy()]);
+    let together = dialog_ids(&["-I", &dir.path().to_string_lossy()])?;
 
     // Assert on the file read AFTER the break. Checking the leading file would
     // pass whether or not the abort happens, since it is already read by then
@@ -374,6 +383,7 @@ fn a_truncated_file_does_not_hide_the_files_after_it() {
              the set.\n  got: {together:?}"
         );
     }
+    Ok(())
 }
 
 /// `--cores` must survive a truncated file exactly as the single-threaded path
@@ -391,19 +401,20 @@ fn a_truncated_file_does_not_hide_the_files_after_it() {
 /// The parallel reader now mirrors `capture::file::capture_files`: a read error
 /// stops that file, not the set, and is logged naming the file.
 #[test]
-fn the_cores_path_survives_a_truncated_file_like_the_single_threaded_path() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let after = set_with_a_truncated_middle(dir.path());
+fn the_cores_path_survives_a_truncated_file_like_the_single_threaded_path() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let after = set_with_a_truncated_middle(dir.path())?;
     let dir_spec = dir.path().to_string_lossy().into_owned();
 
-    let after_alone = dialog_fingerprints(&["-I", &after.to_string_lossy()]);
+    let after_alone = dialog_fingerprints(&["-I", &after.to_string_lossy()])?;
     assert!(
         !after_alone.is_empty(),
         "the trailing fixture must hold dialogs"
     );
 
-    let single = dialog_fingerprints(&["-I", &dir_spec]);
-    let cores = dialog_fingerprints(&["-I", &dir_spec, "--cores", "4"]);
+    let single = dialog_fingerprints(&["-I", &dir_spec])?;
+    let cores = dialog_fingerprints(&["-I", &dir_spec, "--cores", "4"])?;
 
     for d in &after_alone {
         assert!(
@@ -418,6 +429,7 @@ fn the_cores_path_survives_a_truncated_file_like_the_single_threaded_path() {
         "--cores must recover from the truncated member exactly as the \
          single-threaded path does.\n  single: {single:?}\n  cores:  {cores:?}"
     );
+    Ok(())
 }
 
 /// Lay out a two-file set in `dir` whose SECOND member has a link type the
@@ -429,11 +441,11 @@ fn the_cores_path_survives_a_truncated_file_like_the_single_threaded_path() {
 /// Ethernet) < `loopback-dlt-loop` (1400000000, `DLT_LOOP`). `-I` order does not
 /// decide this. No `editcap` and no synthesized capture is involved, so the
 /// scenario is available on every machine that can run the suite.
-fn set_whose_second_file_rejects_an_ether_filter(dir: &Path) -> &'static str {
+fn set_whose_second_file_rejects_an_ether_filter(dir: &Path) -> Result<&'static str, TestError> {
     for name in ["sip-register.pcap", "loopback-dlt-loop.pcap"] {
-        std::fs::copy(samples().join(name), dir.join(name)).expect("copy");
+        std::fs::copy(samples().join(name), dir.join(name))?;
     }
-    "loopback-dlt-loop.pcap"
+    Ok("loopback-dlt-loop.pcap")
 }
 
 /// A BPF filter that compiles against file 1 and not file 2 REFUSES on the
@@ -466,21 +478,22 @@ fn set_whose_second_file_rejects_an_ether_filter(dir: &Path) -> &'static str {
 /// Equality alone would be too weak: it holds when both exit 0, which is the
 /// state this test exists to forbid. Both are pinned to 1 as well.
 #[test]
-fn a_bpf_filter_that_fails_on_a_later_file_refuses_the_cores_path_and_names_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let offender = set_whose_second_file_rejects_an_ether_filter(dir.path());
+fn a_bpf_filter_that_fails_on_a_later_file_refuses_the_cores_path_and_names_it()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let offender = set_whose_second_file_rejects_an_ether_filter(dir.path())?;
     let spec = dir.path().to_string_lossy().into_owned();
     // Compiles against Ethernet; libpcap rejects ethernet addresses on DLT_LOOP.
     let bpf = "ether host 00:00:00:00:00:01";
 
-    let (_out, single_err, single_code) = run_support::run_or_panic(
+    let (_out, single_err, single_code) = run_support::run(
         &["-N", "-I", &spec, "--no-cli-print", "--cores", "1", bpf],
         Some("info"),
-    );
-    let (_out, cores_err, cores_code) = run_support::run_or_panic(
+    )?;
+    let (_out, cores_err, cores_code) = run_support::run(
         &["-N", "-I", &spec, "--no-cli-print", "--cores", "4", bpf],
         Some("info"),
-    );
+    )?;
 
     assert_eq!(
         cores_code,
@@ -512,71 +525,71 @@ fn a_bpf_filter_that_fails_on_a_later_file_refuses_the_cores_path_and_names_it()
              got:\n{err}"
         );
     }
+    Ok(())
 }
 
 /// A directory reads every capture inside it.
 #[test]
-fn a_directory_reads_every_capture_in_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_directory_reads_every_capture_in_it() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     for name in ["sip-rtp-g711.pcap", "sip-register.pcap"] {
-        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+        std::fs::copy(samples().join(name), dir.path().join(name))?;
     }
-    let combined = dialog_ids(&["-I", &dir.path().to_string_lossy()]);
-    let a = dialog_ids(&["-I", &samples().join("sip-rtp-g711.pcap").to_string_lossy()]);
-    let b = dialog_ids(&["-I", &samples().join("sip-register.pcap").to_string_lossy()]);
+    let combined = dialog_ids(&["-I", &dir.path().to_string_lossy()])?;
+    let a = dialog_ids(&["-I", &samples().join("sip-rtp-g711.pcap").to_string_lossy()])?;
+    let b = dialog_ids(&["-I", &samples().join("sip-register.pcap").to_string_lossy()])?;
     assert_eq!(
         combined.len(),
         a.len() + b.len(),
         "the directory must yield both files' dialogs"
     );
+    Ok(())
 }
 
 /// `--recursive` is required to reach a subdirectory, and reaches it.
 #[test]
-fn recursive_is_needed_to_reach_a_subdirectory() {
-    let root = tempfile::tempdir().expect("tempdir");
+fn recursive_is_needed_to_reach_a_subdirectory() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
     let sub = root.path().join("archive");
-    std::fs::create_dir(&sub).expect("mkdir");
+    std::fs::create_dir(&sub)?;
     std::fs::copy(
         samples().join("sip-rtp-g711.pcap"),
         root.path().join("top.pcap"),
-    )
-    .expect("copy");
-    std::fs::copy(samples().join("sip-register.pcap"), sub.join("buried.pcap")).expect("copy");
+    )?;
+    std::fs::copy(samples().join("sip-register.pcap"), sub.join("buried.pcap"))?;
 
-    let shallow = dialog_ids(&["-I", &root.path().to_string_lossy()]);
-    let deep = dialog_ids(&["-I", &root.path().to_string_lossy(), "--recursive"]);
+    let shallow = dialog_ids(&["-I", &root.path().to_string_lossy()])?;
+    let deep = dialog_ids(&["-I", &root.path().to_string_lossy(), "--recursive"])?;
     assert!(
         deep.len() > shallow.len(),
         "--recursive must reach the subdirectory: {} vs {}",
         deep.len(),
         shallow.len()
     );
+    Ok(())
 }
 
 /// `--input-name` narrows a directory to the matching files.
 #[test]
-fn input_name_filters_a_directory() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn input_name_filters_a_directory() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     std::fs::copy(
         samples().join("sip-rtp-g711.pcap"),
         dir.path().join("keep-me.pcap"),
-    )
-    .expect("copy");
+    )?;
     std::fs::copy(
         samples().join("sip-register.pcap"),
         dir.path().join("skip-me.pcap"),
-    )
-    .expect("copy");
+    )?;
 
-    let all = dialog_ids(&["-I", &dir.path().to_string_lossy()]);
+    let all = dialog_ids(&["-I", &dir.path().to_string_lossy()])?;
     let filtered = dialog_ids(&[
         "-I",
         &dir.path().to_string_lossy(),
         "--input-name",
         "keep-*.pcap",
-    ]);
-    let only_kept = dialog_ids(&["-I", &dir.path().join("keep-me.pcap").to_string_lossy()]);
+    ])?;
+    let only_kept = dialog_ids(&["-I", &dir.path().join("keep-me.pcap").to_string_lossy()])?;
 
     assert!(filtered.len() < all.len(), "the filter must exclude a file");
     assert_eq!(
@@ -584,6 +597,7 @@ fn input_name_filters_a_directory() {
         only_kept.len(),
         "the filtered read must match reading the kept file alone"
     );
+    Ok(())
 }
 
 /// A glob is expanded by sipnab, not the shell.
@@ -592,28 +606,30 @@ fn input_name_filters_a_directory() {
 /// argument here, exactly as it would arrive from an MCP config or an
 /// `ssh host 'sipnab -I ...'` command line where no shell expands it.
 #[test]
-fn a_glob_is_expanded_without_a_shell() {
+fn a_glob_is_expanded_without_a_shell() -> Result<(), TestError> {
     let pattern = format!("{}/sip-rtp-g7*.pcap", samples().display());
-    let ids = dialog_ids(&["-I", &pattern]);
+    let ids = dialog_ids(&["-I", &pattern])?;
     assert!(
         !ids.is_empty(),
         "the glob must expand internally; an unexpanded literal would have \
          failed to open"
     );
+    Ok(())
 }
 
 /// A directory that holds no readable capture fails loudly.
 #[test]
-fn a_directory_with_nothing_readable_is_an_error() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join("notes.txt"), "no packets here").expect("write");
+fn a_directory_with_nothing_readable_is_an_error() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("notes.txt"), "no packets here")?;
     let (_out, err, code) =
-        run_support::run_or_panic(&["-N", "-I", &dir.path().to_string_lossy()], Some("error"));
+        run_support::run(&["-N", "-I", &dir.path().to_string_lossy()], Some("error"))?;
     assert_eq!(code, Some(1), "must exit 1:\n{err}");
     assert!(
         err.contains("no readable capture") || err.contains("no files"),
         "the error must say the directory yielded nothing usable:\n{err}"
     );
+    Ok(())
 }
 
 /// Write two OVERLAPPING slices of `src` into `dir`, returning them in read
@@ -622,17 +638,16 @@ fn a_directory_with_nothing_readable_is_an_error() {
 /// The second slice starts inside the first, which is what two capture runs —
 /// or the same traffic collected on two interfaces — look like once they are
 /// mixed into one directory: every packet in the shared span is read twice.
-fn overlapping_slices(src: &Path, dir: &Path) -> (PathBuf, PathBuf) {
+fn overlapping_slices(src: &Path, dir: &Path) -> Result<(PathBuf, PathBuf), TestError> {
     let early = dir.join("early.pcap");
     let late = dir.join("late.pcap");
     for (out, range) in [(&early, "1-600"), (&late, "400-852")] {
         let status = Command::new("editcap")
             .args(["-r", &src.to_string_lossy(), &out.to_string_lossy(), range])
-            .status()
-            .expect("run editcap");
+            .status()?;
         assert!(status.success(), "editcap failed for range {range}");
     }
-    (early, late)
+    Ok((early, late))
 }
 
 /// A capture reached through a symlink is read, not silently dropped.
@@ -643,19 +658,20 @@ fn overlapping_slices(src: &Path, dir: &Path) -> (PathBuf, PathBuf) {
 /// disappear from the set with nothing logged.
 #[cfg(unix)]
 #[test]
-fn a_symlinked_capture_in_a_directory_is_read() {
-    let store = tempfile::tempdir().expect("tempdir");
-    let view = tempfile::tempdir().expect("tempdir");
+fn a_symlinked_capture_in_a_directory_is_read() -> Result<(), TestError> {
+    let store = tempfile::tempdir()?;
+    let view = tempfile::tempdir()?;
     let real = store.path().join("real.pcap");
-    std::fs::copy(samples().join("sip-rtp-g711.pcap"), &real).expect("copy");
-    std::os::unix::fs::symlink(&real, view.path().join("link.pcap")).expect("symlink");
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), &real)?;
+    std::os::unix::fs::symlink(&real, view.path().join("link.pcap"))?;
 
-    let through_link = dialog_ids(&["-I", &view.path().to_string_lossy()]);
-    let direct = dialog_ids(&["-I", &real.to_string_lossy()]);
+    let through_link = dialog_ids(&["-I", &view.path().to_string_lossy()])?;
+    let direct = dialog_ids(&["-I", &real.to_string_lossy()])?;
     assert_eq!(
         through_link, direct,
         "a symlinked capture must yield exactly what the file itself does"
     );
+    Ok(())
 }
 
 /// A subdirectory that cannot be read is NAMED, not quietly dropped.
@@ -665,35 +681,34 @@ fn a_symlinked_capture_in_a_directory_is_read() {
 /// was never captured.
 #[cfg(unix)]
 #[test]
-fn an_unreadable_subdirectory_is_named_not_silently_skipped() {
+fn an_unreadable_subdirectory_is_named_not_silently_skipped() -> Result<(), TestError> {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir()?;
     std::fs::copy(
         samples().join("sip-rtp-g711.pcap"),
         root.path().join("top.pcap"),
-    )
-    .expect("copy");
+    )?;
     let locked = root.path().join("locked");
-    std::fs::create_dir(&locked).expect("mkdir");
+    std::fs::create_dir(&locked)?;
     std::fs::copy(
         samples().join("sip-register.pcap"),
         locked.join("buried.pcap"),
-    )
-    .expect("copy");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    )?;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &root.path().to_string_lossy(), "--recursive"],
         Some("warn"),
-    );
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    )?;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))?;
 
     assert_eq!(code, Some(0), "the readable file still analyzes:\n{err}");
     assert!(
         err.contains("locked") && err.contains("Skipping"),
         "the unreadable directory must be named:\n{err}"
     );
+    Ok(())
 }
 
 /// A symlink whose target is gone is named too.
@@ -703,54 +718,54 @@ fn an_unreadable_subdirectory_is_named_not_silently_skipped() {
 /// nothing said, looking exactly like traffic that was never captured.
 #[cfg(unix)]
 #[test]
-fn a_symlink_with_no_target_is_named() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_symlink_with_no_target_is_named() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     std::fs::copy(
         samples().join("sip-rtp-g711.pcap"),
         dir.path().join("real.pcap"),
-    )
-    .expect("copy");
+    )?;
     std::os::unix::fs::symlink(
         dir.path().join("rotated-away.pcap"),
         dir.path().join("dangling.pcap"),
-    )
-    .expect("symlink");
+    )?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "the real capture still analyzes:\n{err}");
     assert!(
         err.contains("dangling.pcap") && err.contains("Skipping"),
         "a symlink with no target must be named:\n{err}"
     );
+    Ok(())
 }
 
 /// The same, for a glob match that cannot be read.
 #[cfg(unix)]
 #[test]
-fn a_glob_match_that_cannot_be_read_is_named() {
+fn a_glob_match_that_cannot_be_read_is_named() -> Result<(), TestError> {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir()?;
     let open_dir = root.path().join("open");
     let locked = root.path().join("locked");
-    std::fs::create_dir(&open_dir).expect("mkdir");
-    std::fs::create_dir(&locked).expect("mkdir");
-    std::fs::copy(samples().join("sip-rtp-g711.pcap"), open_dir.join("a.pcap")).expect("copy");
-    std::fs::copy(samples().join("sip-register.pcap"), locked.join("b.pcap")).expect("copy");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    std::fs::create_dir(&open_dir)?;
+    std::fs::create_dir(&locked)?;
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), open_dir.join("a.pcap"))?;
+    std::fs::copy(samples().join("sip-register.pcap"), locked.join("b.pcap"))?;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))?;
 
     let pattern = format!("{}/*/*.pcap", root.path().display());
-    let (_out, err, code) = run_support::run_or_panic(&["-N", "-I", &pattern], Some("warn"));
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let (_out, err, code) = run_support::run(&["-N", "-I", &pattern], Some("warn"))?;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))?;
 
     assert_eq!(code, Some(0), "the readable match still analyzes:\n{err}");
     assert!(
         err.contains("locked") && err.contains("Skipping"),
         "a glob match that cannot be read must be named:\n{err}"
     );
+    Ok(())
 }
 
 /// `--input-name` narrows a GLOB, not only a directory.
@@ -759,29 +774,28 @@ fn a_glob_match_that_cannot_be_read_is_named() {
 /// with a glob was accepted and did nothing at all: the operator believes they
 /// filtered and did not.
 #[test]
-fn input_name_filters_a_glob_too() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn input_name_filters_a_glob_too() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     std::fs::copy(
         samples().join("sip-rtp-g711.pcap"),
         dir.path().join("keep-me.pcap"),
-    )
-    .expect("copy");
+    )?;
     std::fs::copy(
         samples().join("sip-register.pcap"),
         dir.path().join("skip-me.pcap"),
-    )
-    .expect("copy");
+    )?;
 
     let pattern = format!("{}/*.pcap", dir.path().display());
-    let filtered = dialog_ids(&["-I", &pattern, "--input-name", "keep-*"]);
-    let only_kept = dialog_ids(&["-I", &dir.path().join("keep-me.pcap").to_string_lossy()]);
-    let all = dialog_ids(&["-I", &pattern]);
+    let filtered = dialog_ids(&["-I", &pattern, "--input-name", "keep-*"])?;
+    let only_kept = dialog_ids(&["-I", &dir.path().join("keep-me.pcap").to_string_lossy()])?;
+    let all = dialog_ids(&["-I", &pattern])?;
 
     assert!(filtered.len() < all.len(), "the filter must exclude a file");
     assert_eq!(
         filtered, only_kept,
         "the filtered glob must read exactly the kept file"
     );
+    Ok(())
 }
 
 /// `--input-name` against a directly named file is refused instead of ignored.
@@ -789,17 +803,18 @@ fn input_name_filters_a_glob_too() {
 /// There is no silent option: dropping the file loses a capture the operator
 /// named, and ignoring the pattern leaves them believing they filtered.
 #[test]
-fn input_name_against_a_named_file_is_refused() {
+fn input_name_against_a_named_file_is_refused() -> Result<(), TestError> {
     let f = samples().join("sip-rtp-g711.pcap");
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &f.to_string_lossy(), "--input-name", "tg.pcap*"],
         Some("error"),
-    );
+    )?;
     assert_eq!(code, Some(1), "the combination must fail:\n{err}");
     assert!(
         err.contains("--input-name"),
         "the error must point at the flag:\n{err}"
     );
+    Ok(())
 }
 
 /// A glob matching DIRECTORIES reads the captures inside them.
@@ -807,26 +822,27 @@ fn input_name_against_a_named_file_is_refused() {
 /// `-I '/caps/*'` over a tree of per-host subdirectories kept only
 /// `path.is_file()`, so it resolved to nothing and said nothing.
 #[test]
-fn a_glob_over_per_host_directories_reads_their_captures() {
-    let root = tempfile::tempdir().expect("tempdir");
+fn a_glob_over_per_host_directories_reads_their_captures() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
     for (sub, sample) in [
         ("host-a", "sip-rtp-g711.pcap"),
         ("host-b", "sip-register.pcap"),
     ] {
         let dir = root.path().join(sub);
-        std::fs::create_dir(&dir).expect("mkdir");
-        std::fs::copy(samples().join(sample), dir.join("cap.pcap")).expect("copy");
+        std::fs::create_dir(&dir)?;
+        std::fs::copy(samples().join(sample), dir.join("cap.pcap"))?;
     }
 
     let pattern = format!("{}/*", root.path().display());
-    let via_glob = dialog_ids(&["-I", &pattern]);
-    let a = dialog_ids(&["-I", &samples().join("sip-rtp-g711.pcap").to_string_lossy()]);
-    let b = dialog_ids(&["-I", &samples().join("sip-register.pcap").to_string_lossy()]);
+    let via_glob = dialog_ids(&["-I", &pattern])?;
+    let a = dialog_ids(&["-I", &samples().join("sip-rtp-g711.pcap").to_string_lossy()])?;
+    let b = dialog_ids(&["-I", &samples().join("sip-register.pcap").to_string_lossy()])?;
     assert_eq!(
         via_glob.len(),
         a.len() + b.len(),
         "both per-host directories must contribute: {via_glob:?}"
     );
+    Ok(())
 }
 
 /// The run summary counts the files that were READ, not the files that were
@@ -836,14 +852,14 @@ fn a_glob_over_per_host_directories_reads_their_captures() {
 /// a run that opened 3 of 27 still claimed 27 — which is what made an earlier
 /// truncation bug nearly invisible.
 #[test]
-fn the_run_summary_counts_files_read_not_files_offered() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let _after = set_with_a_truncated_middle(dir.path());
+fn the_run_summary_counts_files_read_not_files_offered() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let _after = set_with_a_truncated_middle(dir.path())?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
-    );
+    )?;
     // Since 0.5.131 a truncated member FAILS the run (backlog VAL2). This
     // assertion used to demand exit 0, which is the behavior this test's own
     // doc comment blames for making a truncation bug "nearly invisible" —
@@ -862,17 +878,18 @@ fn the_run_summary_counts_files_read_not_files_offered() {
         err.contains("1 stopped early"),
         "the truncated member must be reported as such:\n{err}"
     );
+    Ok(())
 }
 
 /// A limit that leaves files unread says so, without calling it a loss.
 #[test]
-fn the_run_summary_reports_files_a_limit_never_reached() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_run_summary_reports_files_a_limit_never_reached() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
-        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+        std::fs::copy(samples().join(name), dir.path().join(name))?;
     }
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -882,13 +899,14 @@ fn the_run_summary_reports_files_a_limit_never_reached() {
             "--no-cli-print",
         ],
         Some("info"),
-    );
+    )?;
     assert_eq!(code, Some(0), "{err}");
     assert!(
         err.contains("2 not reached"),
         "files a limit never opened must be counted, not folded into the set \
          size:\n{err}"
     );
+    Ok(())
 }
 
 /// The closing summary a run printed, as `(was it a warning, the sentence)`.
@@ -902,8 +920,8 @@ fn the_run_summary_reports_files_a_limit_never_reached() {
 /// Returns `None` when the run printed no summary at all — which is what the
 /// `--cores` path did for its entire existence, and is a different failure from
 /// printing the wrong one.
-fn read_summary(args: &[&str]) -> Option<(bool, String)> {
-    let (_out, err, code) = run_support::run_or_panic(args, Some("info"));
+fn read_summary(args: &[&str]) -> Result<Option<(bool, String)>, TestError> {
+    let (_out, err, code) = run_support::run(args, Some("info"))?;
     // 0 or 1: this helper is called with sets that deliberately include a
     // truncated member, and since 0.5.131 a partial read exits 1 (backlog
     // VAL2). What must never happen is a crash or a usage error, because
@@ -917,9 +935,10 @@ fn read_summary(args: &[&str]) -> Option<(bool, String)> {
     err.lines()
         .find(|l| l.contains("file(s) read in full"))
         .map(|l| {
-            let at = l.find("Read ").expect("the summary opens with the count");
-            (l.contains("WARN"), l[at..].to_string())
+            let at = l.find("Read ").ok_or("the summary opens with the count")?;
+            Ok((l.contains("WARN"), l[at..].to_string()))
         })
+        .transpose()
 }
 
 /// `--cores N` and `--cores 1` must give the same account of the same set.
@@ -935,17 +954,17 @@ fn read_summary(args: &[&str]) -> Option<(bool, String)> {
 /// parallel path that reports its own idea of "read in full". The sentence is
 /// produced by one `ReadTally` for exactly this reason.
 #[test]
-fn both_readers_report_the_same_summary_of_the_set_they_read() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn both_readers_report_the_same_summary_of_the_set_they_read() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
-        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+        std::fs::copy(samples().join(name), dir.path().join(name))?;
     }
     let spec = dir.path().to_string_lossy().into_owned();
 
-    let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])
-        .expect("the single-threaded reader must summarize what it read");
-    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])
-        .expect("--cores read three files and must say so; a reader that reports nothing leaves the operator no way to tell a whole set from a partial one");
+    let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])?
+        .ok_or("the single-threaded reader must summarize what it read")?;
+    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])?
+        .ok_or("--cores read three files and must say so; a reader that reports nothing leaves the operator no way to tell a whole set from a partial one")?;
 
     assert_eq!(
         cores, single,
@@ -958,6 +977,7 @@ fn both_readers_report_the_same_summary_of_the_set_they_read() {
         "all three files are readable and must be counted as read: {single:?}"
     );
     assert!(!single.0, "a set read in full is not a warning: {single:?}");
+    Ok(())
 }
 
 /// A member that stopped short is reported identically by both readers, at the
@@ -970,15 +990,15 @@ fn both_readers_report_the_same_summary_of_the_set_they_read() {
 /// filter. A parallel reader that tallied a stopped read as a completed one
 /// would still print a sentence, and it would be a reassuring one.
 #[test]
-fn both_readers_report_a_truncated_member_at_the_same_severity() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let _after = set_with_a_truncated_middle(dir.path());
+fn both_readers_report_a_truncated_member_at_the_same_severity() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let _after = set_with_a_truncated_middle(dir.path())?;
     let spec = dir.path().to_string_lossy().into_owned();
 
-    let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])
-        .expect("the single-threaded reader must summarize what it read");
-    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])
-        .expect("--cores must summarize what it read, truncated member included");
+    let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])?
+        .ok_or("the single-threaded reader must summarize what it read")?;
+    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])?
+        .ok_or("--cores must summarize what it read, truncated member included")?;
 
     assert_eq!(
         cores, single,
@@ -996,6 +1016,7 @@ fn both_readers_report_a_truncated_member_at_the_same_severity() {
          paths, or the run that needs looking at is filtered out of the log.\n \
          single: {single:?}\n  cores:  {cores:?}"
     );
+    Ok(())
 }
 
 /// Two captures of the same traffic in one directory are reported.
@@ -1007,23 +1028,24 @@ fn both_readers_report_a_truncated_member_at_the_same_severity() {
 /// START, and here the two slices share 200 packets — every count spanning
 /// them is inflated.
 #[test]
-fn overlapping_captures_in_one_directory_are_reported() {
+fn overlapping_captures_in_one_directory_are_reported() -> Result<(), TestError> {
     if Command::new("editcap").arg("--version").output().is_err() {
         eprintln!("editcap not installed — skipping");
-        return;
+        return Ok(());
     }
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (_early, _late) = overlapping_slices(&samples().join("sip-rtp-g711.pcap"), dir.path());
+    let dir = tempfile::tempdir()?;
+    let (_early, _late) = overlapping_slices(&samples().join("sip-rtp-g711.pcap"), dir.path())?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "{err}");
     assert!(
         err.contains("overlap") && err.contains("counted twice"),
         "an overlapping pair must be reported, with the consequence stated:\n{err}"
     );
+    Ok(())
 }
 
 /// A clean ring-buffer set is NOT reported as overlapping.
@@ -1031,31 +1053,33 @@ fn overlapping_captures_in_one_directory_are_reported() {
 /// The other half of the tolerance: a warning that fires on every ordinary
 /// multi-file read is as useless as one that never fires.
 #[test]
-fn a_clean_multi_file_set_reports_no_overlap() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_clean_multi_file_set_reports_no_overlap() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
-        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+        std::fs::copy(samples().join(name), dir.path().join(name))?;
     }
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "{err}");
     assert!(
         !err.contains("overlap") && !err.contains("same instant"),
         "three unrelated captures do not overlap:\n{err}"
     );
+    Ok(())
 }
 
 /// Single-file input is untouched by any of this.
 #[test]
-fn a_single_file_still_behaves_exactly_as_before() {
+fn a_single_file_still_behaves_exactly_as_before() -> Result<(), TestError> {
     let src = samples().join("sip-rtp-g711.pcap");
-    let ids = dialog_ids(&["-I", &src.to_string_lossy()]);
+    let ids = dialog_ids(&["-I", &src.to_string_lossy()])?;
     assert_eq!(
         ids.len(),
         2,
         "this fixture has always reported 2 dialogs; multi-file support must \
          not change the overwhelmingly common case"
     );
+    Ok(())
 }

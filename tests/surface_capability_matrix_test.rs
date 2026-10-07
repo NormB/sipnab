@@ -29,6 +29,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 const INVENTORY: &str = "docs/design/surface-capability-inventory.md";
 const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 
@@ -47,14 +51,14 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = root().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Bullets `- `item`` under the inventory doc's `## <title> (...)` heading.
-fn inventory(title_prefix: &str) -> BTreeSet<String> {
-    let doc = read(INVENTORY);
+fn inventory(title_prefix: &str) -> Result<BTreeSet<String>, TestError> {
+    let doc = read(INVENTORY)?;
     let mut out = BTreeSet::new();
     let mut inside = false;
     for line in doc.lines() {
@@ -69,7 +73,7 @@ fn inventory(title_prefix: &str) -> BTreeSet<String> {
             out.insert(rest[..end].to_string());
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every backtick-quoted token in a string.
@@ -142,18 +146,18 @@ impl Capability {
 }
 
 /// The `## Capabilities` block, one Capability per `### ` section.
-fn capabilities() -> Vec<Capability> {
-    let doc = read(MATRIX);
+fn capabilities() -> Result<Vec<Capability>, TestError> {
+    let doc = read(MATRIX)?;
     let start = doc
         .find("\n## Capabilities")
-        .expect("matrix has no `## Capabilities` heading");
+        .ok_or("matrix has no `## Capabilities` heading")?;
     let block = &doc[start..];
     let mut caps = Vec::new();
     for section in block.split("\n### ").skip(1) {
         let name = section
             .lines()
             .next()
-            .expect("capability section has no heading")
+            .ok_or("capability section has no heading")?
             .trim()
             .to_string();
         let mut cli = None;
@@ -181,24 +185,24 @@ fn capabilities() -> Vec<Capability> {
             }
         }
         caps.push(Capability {
-            cli: cli.unwrap_or_else(|| panic!("capability `{name}` has no CLI row")),
-            tui: tui.unwrap_or_else(|| panic!("capability `{name}` has no TUI row")),
-            rest: rest.unwrap_or_else(|| panic!("capability `{name}` has no REST row")),
-            mcp: mcp.unwrap_or_else(|| panic!("capability `{name}` has no MCP row")),
+            cli: cli.ok_or_else(|| format!("capability `{name}` has no CLI row"))?,
+            tui: tui.ok_or_else(|| format!("capability `{name}` has no TUI row"))?,
+            rest: rest.ok_or_else(|| format!("capability `{name}` has no REST row"))?,
+            mcp: mcp.ok_or_else(|| format!("capability `{name}` has no MCP row"))?,
             name,
         });
     }
-    caps
+    Ok(caps)
 }
 
 /// Backticked tokens under an `### <subheading>` inside the operational block
 /// (before `## Capabilities`), for the routes and views that carry no
 /// capability but must still be accounted for.
-fn operational_bullets(subheading: &str) -> BTreeSet<String> {
-    let doc = read(MATRIX);
+fn operational_bullets(subheading: &str) -> Result<BTreeSet<String>, TestError> {
+    let doc = read(MATRIX)?;
     let s = doc
         .find("## Operational routes and views")
-        .expect("matrix has no operational section");
+        .ok_or("matrix has no operational section")?;
     let e = doc[s..]
         .find("\n## Capabilities")
         .map(|i| s + i)
@@ -215,18 +219,18 @@ fn operational_bullets(subheading: &str) -> BTreeSet<String> {
             out.extend(backticks(line));
         }
     }
-    out
+    Ok(out)
 }
 
 #[test]
-fn every_present_spelling_is_a_real_inventory_item() {
-    let cli = inventory("CLI flags");
-    let tui = inventory("TUI views");
-    let rest = inventory("REST routes");
-    let mcp = inventory("MCP tools");
+fn every_present_spelling_is_a_real_inventory_item() -> Result<(), TestError> {
+    let cli = inventory("CLI flags")?;
+    let tui = inventory("TUI views")?;
+    let rest = inventory("REST routes")?;
+    let mcp = inventory("MCP tools")?;
 
     let mut bad = Vec::new();
-    for c in capabilities() {
+    for c in capabilities()? {
         if c.cli.status() == Status::Present {
             let flags: Vec<_> = backticks(&c.cli.detail)
                 .into_iter()
@@ -271,13 +275,14 @@ fn every_present_spelling_is_a_real_inventory_item() {
         "matrix spellings that are not real PAR1 inventory items:\n  {}",
         bad.join("\n  ")
     );
+    Ok(())
 }
 
 #[test]
-fn every_mcp_tool_is_claimed_by_exactly_one_capability() {
-    let mcp = inventory("MCP tools");
+fn every_mcp_tool_is_claimed_by_exactly_one_capability() -> Result<(), TestError> {
+    let mcp = inventory("MCP tools")?;
     let mut claimed: Vec<String> = Vec::new();
-    for c in capabilities() {
+    for c in capabilities()? {
         if c.mcp.status() == Status::Present {
             for t in backticks(&c.mcp.detail) {
                 if mcp.contains(&t) {
@@ -312,23 +317,24 @@ fn every_mcp_tool_is_claimed_by_exactly_one_capability() {
         "only {} MCP tools claimed; the anchor scan has stopped working",
         seen.len()
     );
+    Ok(())
 }
 
 #[test]
-fn every_rest_route_and_tui_view_is_claimed_or_operational() {
-    let rest = inventory("REST routes");
-    let tui = inventory("TUI views");
+fn every_rest_route_and_tui_view_is_claimed_or_operational() -> Result<(), TestError> {
+    let rest = inventory("REST routes")?;
+    let tui = inventory("TUI views")?;
 
-    let mut claimed_rest: BTreeSet<String> = operational_bullets("Operational REST routes")
+    let mut claimed_rest: BTreeSet<String> = operational_bullets("Operational REST routes")?
         .into_iter()
         .filter(|t| t.starts_with('/'))
         .collect();
-    let mut claimed_tui: BTreeSet<String> = operational_bullets("Operational TUI views")
+    let mut claimed_tui: BTreeSet<String> = operational_bullets("Operational TUI views")?
         .into_iter()
         .filter(|t| tui.contains(t))
         .collect();
 
-    for c in capabilities() {
+    for c in capabilities()? {
         if c.rest.status() == Status::Present {
             for t in backticks(&c.rest.detail) {
                 if t.starts_with('/') {
@@ -359,12 +365,13 @@ fn every_rest_route_and_tui_view_is_claimed_or_operational() {
         tui_missing.len(),
         tui_missing.join(", ")
     );
+    Ok(())
 }
 
 #[test]
-fn every_absence_carries_a_reason() {
+fn every_absence_carries_a_reason() -> Result<(), TestError> {
     let mut bad = Vec::new();
-    for c in capabilities() {
+    for c in capabilities()? {
         for (surface, cell) in c.cells() {
             match cell.status() {
                 Status::Gap => {
@@ -392,11 +399,12 @@ fn every_absence_carries_a_reason() {
         "absences without a recorded reason (a gap or decision must say why):\n  {}",
         bad.join("\n  ")
     );
+    Ok(())
 }
 
 #[test]
-fn the_gap_count_matches_the_ledger() {
-    let gaps = capabilities()
+fn the_gap_count_matches_the_ledger() -> Result<(), TestError> {
+    let gaps = capabilities()?
         .iter()
         .flat_map(|c| c.cells())
         .filter(|(_, cell)| cell.status() == Status::Gap)
@@ -408,11 +416,12 @@ fn the_gap_count_matches_the_ledger() {
          spelling and decrementing this. A NEW gap means PAR2 named a hole \
          PAR3/PAR4/PAR5 must close -- raise this and add it to the plan."
     );
+    Ok(())
 }
 
 #[test]
-fn the_matrix_is_not_vacuous() {
-    let caps = capabilities();
+fn the_matrix_is_not_vacuous() -> Result<(), TestError> {
+    let caps = capabilities()?;
     assert!(
         caps.len() >= 45,
         "only {} capabilities parsed; the matrix reader has stopped working",
@@ -447,4 +456,5 @@ fn the_matrix_is_not_vacuous() {
         "MCP present on only {} capabilities",
         present[3]
     );
+    Ok(())
 }

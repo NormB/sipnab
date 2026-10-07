@@ -26,6 +26,8 @@
 
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -58,8 +60,8 @@ fn string_values(prefix: &str, value: &toml::Value, out: &mut Vec<(String, Strin
 /// `<script>` element. This is the whole gate; both tests below drive it so
 /// the assertion on the shipped config and the proof of the mechanism can
 /// never drift apart.
-fn script_closing_values(doc: &str) -> Vec<(String, String)> {
-    let parsed: toml::Value = toml::from_str(doc).expect("config must stay parseable TOML");
+fn script_closing_values(doc: &str) -> Result<Vec<(String, String)>, TestError> {
+    let parsed: toml::Value = toml::from_str(doc)?;
     let mut strings = Vec::new();
     string_values("", &parsed, &mut strings);
     assert!(
@@ -67,10 +69,10 @@ fn script_closing_values(doc: &str) -> Vec<(String, String)> {
         "the TOML document parsed to no string values at all — the sweep read \
          nothing and this gate would pass vacuously"
     );
-    strings
+    Ok(strings
         .into_iter()
         .filter(|(_, v)| v.contains("</"))
-        .collect()
+        .collect())
 }
 
 /// The config keys `base.html` interpolates into the JSON-LD block today.
@@ -86,11 +88,10 @@ const JSON_LD_KEYS: [&str; 4] = [
 /// No string value in the shipped `website/config.toml` can close the
 /// `<script>` element that holds the JSON-LD block.
 #[test]
-fn no_site_config_string_survives_parsing_with_a_script_closer_in_it() {
-    let cfg = std::fs::read_to_string(repo().join("website/config.toml"))
-        .expect("read website/config.toml");
+fn no_site_config_string_survives_parsing_with_a_script_closer_in_it() -> Result<(), TestError> {
+    let cfg = std::fs::read_to_string(repo().join("website/config.toml"))?;
 
-    let violations = script_closing_values(&cfg);
+    let violations = script_closing_values(&cfg)?;
     assert!(
         violations.is_empty(),
         "these website/config.toml values contain `</`, which Tera's \
@@ -101,20 +102,20 @@ fn no_site_config_string_survives_parsing_with_a_script_closer_in_it() {
 
     // The four values the block renders must actually be present under the
     // names the template uses, or the sweep above proved nothing about them.
-    let parsed: toml::Value = toml::from_str(&cfg).expect("parse website/config.toml");
+    let parsed: toml::Value = toml::from_str(&cfg)?;
     let mut strings = Vec::new();
     string_values("", &parsed, &mut strings);
     for key in JSON_LD_KEYS {
         let value = strings
             .iter()
             .find(|(path, _)| path == key)
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                format!(
                     "website/config.toml no longer has a string at `{key}`, \
                      which base.html interpolates into the JSON-LD block — \
                      update JSON_LD_KEYS to follow the template"
                 )
-            });
+            })?;
         // Stricter than `</` for the values that provably feed the block:
         // nothing there needs an angle bracket, and allowing one is what
         // makes the `</script>` case reachable at all.
@@ -131,6 +132,7 @@ fn no_site_config_string_survives_parsing_with_a_script_closer_in_it() {
          stopped reading the real file and this gate checked almost nothing",
         strings.len()
     );
+    Ok(())
 }
 
 /// The gate rejects a `</script>` payload in every TOML quoting form, and
@@ -140,7 +142,7 @@ fn no_site_config_string_survives_parsing_with_a_script_closer_in_it() {
 /// this gate passed the literal-quoted form of exactly this payload, so the
 /// mechanism — not just the current values — is what must stay proven.
 #[test]
-fn the_gate_rejects_a_script_closer_in_every_toml_quoting_form() {
+fn the_gate_rejects_a_script_closer_in_every_toml_quoting_form() -> Result<(), TestError> {
     let injected: [(&str, String); 4] = [
         (
             "basic string",
@@ -160,7 +162,7 @@ fn the_gate_rejects_a_script_closer_in_every_toml_quoting_form() {
         ),
     ];
     for (form, doc) in &injected {
-        let violations = script_closing_values(doc);
+        let violations = script_closing_values(doc)?;
         assert_eq!(
             violations.len(),
             1,
@@ -183,10 +185,11 @@ base_url = "https://sipnab.com"
 [extra]
 published_version = "0.5.82"
 "#;
-    let violations = script_closing_values(clean);
+    let violations = script_closing_values(clean)?;
     assert!(
         violations.is_empty(),
         "a clean config was flagged: {violations:?} — a gate that fails on \
          good input gets deleted, not fixed"
     );
+    Ok(())
 }

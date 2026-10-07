@@ -27,10 +27,12 @@
 //! legitimately need it.
 #![cfg(feature = "native")]
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
 use std::process::Command;
 
 /// A GTPv2-C message: flags with the TEID bit set, message type, length
@@ -40,11 +42,11 @@ use std::process::Command;
 /// `msg_type` is the caller's so a test can build the specific messages the
 /// real capture carried. `body_len` sets the declared length, which is what
 /// makes the frame satisfy ChannelData's whole-datagram check.
-fn gtpv2_c(msg_type: u8, body_len: usize) -> Vec<u8> {
+fn gtpv2_c(msg_type: u8, body_len: usize) -> Result<Vec<u8>, TestError> {
     // 8 octets follow the 4-octet preamble before the body: TEID and sequence.
     let declared = 8 + body_len;
     let mut m = vec![0x48, msg_type];
-    m.extend_from_slice(&u16::try_from(declared).expect("fits").to_be_bytes());
+    m.extend_from_slice(&u16::try_from(declared)?.to_be_bytes());
     m.extend_from_slice(&[0x80, 0x00, 0x00, 0x01]); // TEID
     m.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]); // sequence + spare
     // A body whose first four bytes are what the defect reported as the SSRC.
@@ -55,25 +57,24 @@ fn gtpv2_c(msg_type: u8, body_len: usize) -> Vec<u8> {
         4 + declared,
         "the length field must cover the rest"
     );
-    m
+    Ok(m)
 }
 
 /// Run sipnab over `frames` and return its stderr, which carries the summary.
-fn run_over(frames: &[Vec<u8>]) -> String {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn run_over(frames: &[Vec<u8>]) -> Result<String, TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("c.pcap");
-    write_pcap_or_panic(&pcap, frames);
+    write_pcap(&pcap, frames)?;
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I"])
         .arg(&pcap)
         .arg("--report")
-        .output()
-        .expect("sipnab runs");
-    format!(
+        .output()?;
+    Ok(format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
-    )
+    ))
 }
 
 /// A capture of nothing but GTPv2-C yields no stream at all.
@@ -82,13 +83,21 @@ fn run_over(frames: &[Vec<u8>]) -> String {
 /// which is above the heuristic's three-packet promotion threshold, so a
 /// capture that produced a stream here would produce one in the field.
 #[test]
-fn gtp_c_control_traffic_produces_no_media_stream() {
+fn gtp_c_control_traffic_produces_no_media_stream() -> Result<(), TestError> {
     let frames: Vec<Vec<u8>> = [0x21u8, 0x23, 0x21, 0x23]
         .iter()
-        .map(|t| udp_frame([127, 0, 0, 3], [127, 0, 0, 2], 2123, 2123, &gtpv2_c(*t, 99)))
-        .collect();
+        .map(|t| -> Result<Vec<u8>, TestError> {
+            Ok(udp_frame(
+                [127, 0, 0, 3],
+                [127, 0, 0, 2],
+                2123,
+                2123,
+                &gtpv2_c(*t, 99)?,
+            ))
+        })
+        .collect::<Result<_, _>>()?;
 
-    let out = run_over(&frames);
+    let out = run_over(&frames)?;
     assert!(
         out.contains("0 RTP packets across 0 streams"),
         "GTP-C must not become media. Got:\n{out}"
@@ -97,6 +106,7 @@ fn gtp_c_control_traffic_produces_no_media_stream() {
         !out.contains("0x02000200"),
         "the first information element must never surface as an SSRC:\n{out}"
     );
+    Ok(())
 }
 
 /// The same bytes on ports that are not GTP still unwrap.
@@ -106,25 +116,26 @@ fn gtp_c_control_traffic_produces_no_media_stream() {
 /// two protocols apart. If this test ever fails, the fix stopped being a port
 /// rule and became a byte rule that also rejects real relayed media.
 #[test]
-fn the_same_bytes_on_relay_ports_are_still_unwrapped() {
+fn the_same_bytes_on_relay_ports_are_still_unwrapped() -> Result<(), TestError> {
     let frames: Vec<Vec<u8>> = (0..4)
-        .map(|_| {
-            udp_frame(
+        .map(|_| -> Result<Vec<u8>, TestError> {
+            Ok(udp_frame(
                 [198, 51, 100, 3],
                 [198, 51, 100, 2],
                 49152,
                 50000,
-                &gtpv2_c(0x21, 99),
-            )
+                &gtpv2_c(0x21, 99)?,
+            ))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
-    let out = run_over(&frames);
+    let out = run_over(&frames)?;
     assert!(
         !out.contains("0 RTP packets across 0 streams"),
         "on non-GTP ports the wrapper is still a wrapper, so sipnab must look \
          inside it. Got:\n{out}"
     );
+    Ok(())
 }
 
 /// GTP-U is refused too, and its user plane still reaches the parsers.
@@ -133,22 +144,23 @@ fn the_same_bytes_on_relay_ports_are_still_unwrapped() {
 /// defect has a REGISTER inside one — so refusing ChannelData on 2152 must not
 /// disturb the tunnel decapsulator, which runs on a different path.
 #[test]
-fn gtp_u_port_is_refused_without_touching_tunnel_decapsulation() {
+fn gtp_u_port_is_refused_without_touching_tunnel_decapsulation() -> Result<(), TestError> {
     let frames: Vec<Vec<u8>> = (0..4)
-        .map(|_| {
-            udp_frame(
+        .map(|_| -> Result<Vec<u8>, TestError> {
+            Ok(udp_frame(
                 [127, 0, 0, 3],
                 [127, 0, 0, 2],
                 2152,
                 2152,
-                &gtpv2_c(0x21, 99),
-            )
+                &gtpv2_c(0x21, 99)?,
+            ))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
-    let out = run_over(&frames);
+    let out = run_over(&frames)?;
     assert!(
         out.contains("0 RTP packets across 0 streams"),
         "a ChannelData-shaped datagram on the GTP-U port is not media:\n{out}"
     );
+    Ok(())
 }

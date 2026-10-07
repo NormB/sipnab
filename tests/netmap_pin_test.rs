@@ -19,6 +19,9 @@
 
 use std::path::Path;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The lowest `NETMAP_API` netmap master accepts (`NETMAP_MIN_API` in its
 /// `sys/net/netmap.h` at 389daea).
 const NETMAP_MIN_API_ACCEPTED: u32 = 14;
@@ -29,9 +32,11 @@ const MUSL_IMAGES: [&str; 2] = [
     "docker/cross/Dockerfile.aarch64-unknown-linux-musl",
 ];
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
-        .unwrap_or_else(|e| panic!("{rel} must be readable: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .map_err(|e| format!("{rel} must be readable: {e}"))?,
+    )
 }
 
 /// The value of `ARG <name>=<value>` in a Dockerfile, if declared.
@@ -45,18 +50,18 @@ fn arg(dockerfile: &str, name: &str) -> Option<String> {
 /// Each musl image declares the netmap API its pinned headers speak, and it is
 /// one current netmap accepts.
 #[test]
-fn the_musl_images_pin_a_netmap_api_current_modules_accept() {
+fn the_musl_images_pin_a_netmap_api_current_modules_accept() -> Result<(), TestError> {
     for image in MUSL_IMAGES {
-        let text = read(image);
+        let text = read(image)?;
         let api: u32 = arg(&text, "NETMAP_API")
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                format!(
                     "{image} does not declare ARG NETMAP_API, so nothing says which netmap \
                      API its libpcap requests"
                 )
-            })
+            })?
             .parse()
-            .unwrap_or_else(|e| panic!("{image}: NETMAP_API is not a number: {e}"));
+            .map_err(|e| format!("{image}: NETMAP_API is not a number: {e}"))?;
         assert!(
             api >= NETMAP_MIN_API_ACCEPTED,
             "{image} pins netmap API {api}; current netmap modules refuse anything below \
@@ -64,14 +69,15 @@ fn the_musl_images_pin_a_netmap_api_current_modules_accept() {
              can build netmap today"
         );
     }
+    Ok(())
 }
 
 /// The declared API is checked against the header that arrived, so the ARG
 /// cannot drift from the bytes the way a comment can.
 #[test]
-fn the_musl_images_check_the_fetched_header_against_the_declared_api() {
+fn the_musl_images_check_the_fetched_header_against_the_declared_api() -> Result<(), TestError> {
     for image in MUSL_IMAGES {
-        let text = read(image);
+        let text = read(image)?;
         let checked = text.lines().any(|l| {
             l.contains("grep")
                 && l.contains("NETMAP_API")
@@ -84,15 +90,16 @@ fn the_musl_images_check_the_fetched_header_against_the_declared_api() {
              ARG nobody checks against the bytes is a comment"
         );
     }
+    Ok(())
 }
 
 /// Both images pin the same netmap: an x86_64 and an aarch64 binary of one
 /// release must not speak different netmap APIs.
 #[test]
-fn both_musl_images_pin_the_same_netmap() {
-    let pins = |image: &str| -> Vec<Option<String>> {
-        let text = read(image);
-        [
+fn both_musl_images_pin_the_same_netmap() -> Result<(), TestError> {
+    let pins = |image: &str| -> Result<Vec<Option<String>>, TestError> {
+        let text = read(image)?;
+        Ok([
             "NETMAP_COMMIT",
             "NETMAP_API",
             "NETMAP_H_SHA256",
@@ -101,11 +108,12 @@ fn both_musl_images_pin_the_same_netmap() {
         ]
         .iter()
         .map(|name| arg(&text, name))
-        .collect()
+        .collect())
     };
     assert_eq!(
-        pins(MUSL_IMAGES[0]),
-        pins(MUSL_IMAGES[1]),
+        pins(MUSL_IMAGES[0])?,
+        pins(MUSL_IMAGES[1])?,
         "the x86_64 and aarch64 musl images pin different netmap headers"
     );
+    Ok(())
 }

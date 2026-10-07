@@ -34,6 +34,9 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -104,7 +107,7 @@ fn vendor_code_lines(src: &str) -> Vec<String> {
 /// matcher blind to the form the code uses is not a weaker gate, it is a gate
 /// that is off for the case that matters.
 #[test]
-fn the_vendor_scan_sees_every_case_a_leak_would_use() {
+fn the_vendor_scan_sees_every_case_a_leak_would_use() -> Result<(), TestError> {
     for spelling in [
         "pub struct RtpengineLeak;",
         "pub struct RtpEngineSession;",
@@ -119,6 +122,7 @@ fn the_vendor_scan_sees_every_case_a_leak_would_use() {
              intact."
         );
     }
+    Ok(())
 }
 
 /// It still ignores what is not a vendor name.
@@ -127,7 +131,7 @@ fn the_vendor_scan_sees_every_case_a_leak_would_use() {
 /// something that flags `PcapNgReader` -- the reason `ng` is not a bare token
 /// in the first place. A gate trained away is a gate switched off.
 #[test]
-fn the_vendor_scan_ignores_names_that_merely_look_similar() {
+fn the_vendor_scan_ignores_names_that_merely_look_similar() -> Result<(), TestError> {
     for innocent in [
         "let r = PcapNgReader::new(f);",
         "// rtpengine is on the other side of this boundary",
@@ -140,11 +144,12 @@ fn the_vendor_scan_ignores_names_that_merely_look_similar() {
             "the vendor scan flagged {innocent:?}, which names no vendor"
         );
     }
+    Ok(())
 }
 
 /// The scanners read a real tree.
 #[test]
-fn the_seam_scanners_read_a_real_tree() {
+fn the_seam_scanners_read_a_real_tree() -> Result<(), TestError> {
     for layer in CONSUMING_LAYERS {
         let files = rust_files(layer);
         assert!(
@@ -162,6 +167,7 @@ fn the_seam_scanners_read_a_real_tree() {
         !VENDOR_TOKENS.is_empty() && !CONSUMING_LAYERS.is_empty(),
         "the token or layer list is empty, so the scan matches nothing"
     );
+    Ok(())
 }
 
 /// No consuming layer names a relay vendor in code.
@@ -170,7 +176,7 @@ fn the_seam_scanners_read_a_real_tree() {
 /// file whose job is rendering or answering, and the second relay will land as
 /// a parallel code path rather than behind the seam.
 #[test]
-fn no_consuming_layer_names_a_relay_vendor() {
+fn no_consuming_layer_names_a_relay_vendor() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     for layer in CONSUMING_LAYERS {
         for path in rust_files(layer) {
@@ -193,6 +199,7 @@ fn no_consuming_layer_names_a_relay_vendor() {
          second relay a second code path.",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// No MCP tool is named after a relay vendor.
@@ -200,8 +207,8 @@ fn no_consuming_layer_names_a_relay_vendor() {
 /// Acceptance condition 1. The agent surface describes what a caller wants to
 /// know -- attribution, orphans, a relay query -- not which daemon answers.
 #[test]
-fn no_mcp_tool_is_named_after_a_relay_vendor() {
-    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#).expect("pattern");
+fn no_mcp_tool_is_named_after_a_relay_vendor() -> Result<(), TestError> {
+    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#)?;
     let mut tools = BTreeSet::new();
     for path in rust_files("src/mcp") {
         let src = std::fs::read_to_string(&path).unwrap_or_default();
@@ -231,6 +238,7 @@ fn no_mcp_tool_is_named_after_a_relay_vendor() {
          question is twice the surface, twice the documentation, and two things \
          for the parity gate to keep in step."
     );
+    Ok(())
 }
 
 /// The vendor module depends on the seam, not the other way round.
@@ -239,7 +247,7 @@ fn no_mcp_tool_is_named_after_a_relay_vendor() {
 /// `src/rtpengine/`, the abstraction is a folder rather than a boundary and a
 /// second implementation has nowhere to attach.
 #[test]
-fn the_seam_does_not_depend_on_an_implementation() {
+fn the_seam_does_not_depend_on_an_implementation() -> Result<(), TestError> {
     let mut wrong = Vec::new();
     for path in rust_files("src/relay") {
         let src = std::fs::read_to_string(&path).unwrap_or_default();
@@ -260,6 +268,7 @@ fn the_seam_does_not_depend_on_an_implementation() {
          second one.",
         wrong.join("\n")
     );
+    Ok(())
 }
 
 /// The seam writes down what an implementation owes.
@@ -269,8 +278,8 @@ fn the_seam_does_not_depend_on_an_implementation() {
 /// definition, not just a trait" -- because the next person adding a relay
 /// needs to know what to provide and, just as much, what will never be asked.
 #[test]
-fn the_seam_states_what_an_implementation_owes() {
-    let doc = std::fs::read_to_string(repo().join("src/relay/mod.rs")).expect("read relay/mod.rs");
+fn the_seam_states_what_an_implementation_owes() -> Result<(), TestError> {
+    let doc = std::fs::read_to_string(repo().join("src/relay/mod.rs"))?;
     for owed in [
         "Decode a control message",
         "creates media",
@@ -289,4 +298,5 @@ fn the_seam_states_what_an_implementation_owes() {
         "the seam no longer says what a relay must not be asked for. That half \
          is what keeps `delete` and `start recording` unreachable."
     );
+    Ok(())
 }

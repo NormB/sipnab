@@ -29,14 +29,18 @@
 
 use sipnab::relay::rtpproxy::{Reply, RtpproxyControl, Stream, decode_command, decode_reply};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// A command, decoded.
-fn cmd(text: &str) -> RtpproxyControl {
-    decode_command(text.as_bytes()).unwrap_or_else(|| panic!("{text:?} did not decode"))
+fn cmd(text: &str) -> Result<RtpproxyControl, TestError> {
+    Ok(decode_command(text.as_bytes()).ok_or_else(|| format!("{text:?} did not decode"))?)
 }
 
 /// A reply, decoded.
-fn reply(text: &str) -> RtpproxyControl {
-    decode_reply(text.as_bytes()).unwrap_or_else(|| panic!("{text:?} did not decode"))
+fn reply(text: &str) -> Result<RtpproxyControl, TestError> {
+    Ok(decode_reply(text.as_bytes()).ok_or_else(|| format!("{text:?} did not decode"))?)
 }
 
 /// The cookie is the first token, and it comes back.
@@ -44,24 +48,26 @@ fn reply(text: &str) -> RtpproxyControl {
 /// It is what pairs a reply with its command, and RP4 is built on seeing the
 /// same one twice.
 #[test]
-fn the_cookie_is_the_first_token() {
+fn the_cookie_is_the_first_token() -> Result<(), TestError> {
     let RtpproxyControl::Command { cookie, verb, .. } =
-        cmd("24393_4 U call-id 192.0.2.1 16384 from-tag to-tag")
+        cmd("24393_4 U call-id 192.0.2.1 16384 from-tag to-tag")?
     else {
-        panic!("expected a command");
+        return Err("expected a command".into());
     };
     assert_eq!(cookie, "24393_4");
     assert_eq!(verb, 'U');
+    Ok(())
 }
 
 /// Command letters are case-insensitive, as the parser in rtpproxy is.
 #[test]
-fn a_lowercase_verb_is_the_same_verb() {
-    let RtpproxyControl::Command { verb, .. } = cmd("1 u call-id 192.0.2.1 16384 from-tag to-tag")
+fn a_lowercase_verb_is_the_same_verb() -> Result<(), TestError> {
+    let RtpproxyControl::Command { verb, .. } = cmd("1 u call-id 192.0.2.1 16384 from-tag to-tag")?
     else {
-        panic!("expected a command");
+        return Err("expected a command".into());
     };
     assert_eq!(verb, 'U', "the verb is normalized, not echoed");
+    Ok(())
 }
 
 /// `U` and `L` may create media; the rest may not.
@@ -70,7 +76,7 @@ fn a_lowercase_verb_is_the_same_verb() {
 /// inverts `find_stream` for every op except `UPDATE`, which is the one that
 /// can create the session.
 #[test]
-fn only_update_and_lookup_create_ordinary_media() {
+fn only_update_and_lookup_create_ordinary_media() -> Result<(), TestError> {
     for (verb, want) in [
         ('U', Some(Stream::Ordinary)),
         ('L', Some(Stream::Ordinary)),
@@ -92,6 +98,7 @@ fn only_update_and_lookup_create_ordinary_media() {
             "verb {verb} classified wrongly"
         );
     }
+    Ok(())
 }
 
 /// A recording stream is NOT an ordinary leg, and the type says so.
@@ -100,7 +107,7 @@ fn only_update_and_lookup_create_ordinary_media() {
 /// attributing a recording or forking stream as an ordinary leg invents a
 /// participant the call never had.
 #[test]
-fn a_recording_stream_is_never_an_ordinary_one() {
+fn a_recording_stream_is_never_an_ordinary_one() -> Result<(), TestError> {
     assert_ne!(Stream::Recording, Stream::Ordinary);
     assert_eq!(
         sipnab::relay::rtpproxy::creates('R'),
@@ -111,23 +118,25 @@ fn a_recording_stream_is_never_an_ordinary_one() {
         Some(Stream::Ordinary),
         "a recording stream attributed as a leg invents a participant"
     );
+    Ok(())
 }
 
 /// An error reply carries its code.
 #[test]
-fn an_error_reply_is_read_as_an_error() {
-    let RtpproxyControl::Reply { cookie, reply } = reply("24393_4 E8\n") else {
-        panic!("expected a reply");
+fn an_error_reply_is_read_as_an_error() -> Result<(), TestError> {
+    let RtpproxyControl::Reply { cookie, reply } = reply("24393_4 E8\n")? else {
+        return Err("expected a reply".into());
     };
     assert_eq!(cookie, "24393_4");
     assert_eq!(reply, Reply::Error(8));
+    Ok(())
 }
 
 /// A media reply carries the port and address `U`/`L` return.
 #[test]
-fn a_media_reply_carries_the_port_and_address() {
-    let RtpproxyControl::Reply { reply, .. } = reply("7 16384 192.0.2.10\n") else {
-        panic!("expected a reply");
+fn a_media_reply_carries_the_port_and_address() -> Result<(), TestError> {
+    let RtpproxyControl::Reply { reply, .. } = reply("7 16384 192.0.2.10\n")? else {
+        return Err("expected a reply".into());
     };
     assert_eq!(
         reply,
@@ -136,15 +145,17 @@ fn a_media_reply_carries_the_port_and_address() {
             address: "192.0.2.10".to_string()
         }
     );
+    Ok(())
 }
 
 /// A numeric reply is its own shape, not a media reply missing an address.
 #[test]
-fn a_numeric_reply_is_not_a_truncated_media_reply() {
-    let RtpproxyControl::Reply { reply, .. } = reply("7 20040702\n") else {
-        panic!("expected a reply");
+fn a_numeric_reply_is_not_a_truncated_media_reply() -> Result<(), TestError> {
+    let RtpproxyControl::Reply { reply, .. } = reply("7 20040702\n")? else {
+        return Err("expected a reply".into());
     };
     assert_eq!(reply, Reply::Number(20_040_702));
+    Ok(())
 }
 
 /// Argument counts outside the documented bounds are refused.
@@ -154,7 +165,7 @@ fn a_numeric_reply_is_not_a_truncated_media_reply() {
 /// missing field: decoding it anyway would report a call-id read out of the
 /// wrong position.
 #[test]
-fn a_command_outside_its_argument_bounds_is_refused() {
+fn a_command_outside_its_argument_bounds_is_refused() -> Result<(), TestError> {
     assert!(
         decode_command(b"1 U call-id").is_none(),
         "UPDATE with two args must not decode"
@@ -171,11 +182,12 @@ fn a_command_outside_its_argument_bounds_is_refused() {
         decode_command(b"1 U call-id 192.0.2.1 16384 from-tag").is_some(),
         "and a command INSIDE its bounds must decode, or this proves nothing"
     );
+    Ok(())
 }
 
 /// Garbage is refused rather than half-read.
 #[test]
-fn malformed_input_is_refused() {
+fn malformed_input_is_refused() -> Result<(), TestError> {
     let cases: [&[u8]; 6] = [
         b"",
         b"\n",
@@ -187,6 +199,7 @@ fn malformed_input_is_refused() {
     for bad in cases {
         assert!(decode_command(bad).is_none(), "{bad:?} was accepted");
     }
+    Ok(())
 }
 
 /// An unterminated line of unbounded length is refused, not buffered.
@@ -195,12 +208,13 @@ fn malformed_input_is_refused() {
 /// The NG path's sweep asserts RSS growth under 0.8 MB over 20,000 rounds;
 /// this is the same concern at the parser's own boundary.
 #[test]
-fn an_unbounded_token_is_refused() {
+fn an_unbounded_token_is_refused() -> Result<(), TestError> {
     let huge = format!("{} U call-id 192.0.2.1 16384 f t", "9".repeat(100_000));
     assert!(
         decode_command(huge.as_bytes()).is_none(),
         "a cookie of unbounded length must not decode"
     );
+    Ok(())
 }
 
 // ── Against a real relay ─────────────────────────────────────────────────────
@@ -221,19 +235,20 @@ fn an_unbounded_token_is_refused() {
 /// Direction decides now: a datagram from the relay is a reply, whatever its
 /// second token happens to start with.
 #[test]
-fn the_info_reply_is_text_and_not_a_stop_play_command() {
+fn the_info_reply_is_text_and_not_a_stop_play_command() -> Result<(), TestError> {
     let observed = "c3 sessions created: 0\nactive sessions: 0\nactive streams: 0\npackets received: 0\npackets transmitted: 0\n";
-    let RtpproxyControl::Reply { cookie, reply: r } = reply(observed) else {
-        panic!("the info reply must decode as a reply");
+    let RtpproxyControl::Reply { cookie, reply: r } = reply(observed)? else {
+        return Err("the info reply must decode as a reply".into());
     };
     assert_eq!(cookie, "c3");
     let Reply::Text(body) = r else {
-        panic!("the info reply is free text, not a number or a media pair");
+        return Err("the info reply is free text, not a number or a media pair".into());
     };
     assert!(
         body.contains("sessions created:") && body.contains("packets transmitted:"),
         "the report must come back whole: {body:?}"
     );
+    Ok(())
 }
 
 /// The media reply a real `U` produced, port and all.
@@ -242,9 +257,9 @@ fn the_info_reply_is_text_and_not_a_stop_play_command() {
 /// inside 41000-51000, which is rtpproxy's range on that host and deliberately
 /// clear of rtpengine's 30000-40000.
 #[test]
-fn a_real_update_reply_decodes_to_the_port_it_allocated() {
-    let RtpproxyControl::Reply { reply: r, .. } = reply("c4 50282 10.0.0.40\n") else {
-        panic!("expected a reply");
+fn a_real_update_reply_decodes_to_the_port_it_allocated() -> Result<(), TestError> {
+    let RtpproxyControl::Reply { reply: r, .. } = reply("c4 50282 10.0.0.40\n")? else {
+        return Err("expected a reply".into());
     };
     assert_eq!(
         r,
@@ -253,24 +268,26 @@ fn a_real_update_reply_decodes_to_the_port_it_allocated() {
             address: "10.0.0.40".to_string()
         }
     );
+    Ok(())
 }
 
 /// Real error and version replies, exactly as the relay wrote them.
 #[test]
-fn real_error_and_version_replies_decode() {
-    let RtpproxyControl::Reply { reply: e, .. } = reply("c7 E50\n") else {
-        panic!("expected a reply");
+fn real_error_and_version_replies_decode() -> Result<(), TestError> {
+    let RtpproxyControl::Reply { reply: e, .. } = reply("c7 E50\n")? else {
+        return Err("expected a reply".into());
     };
     assert_eq!(e, Reply::Error(50), "a Q for an unknown call answered E50");
 
-    let RtpproxyControl::Reply { reply: v, .. } = reply("c1 20040107\n") else {
-        panic!("expected a reply");
+    let RtpproxyControl::Reply { reply: v, .. } = reply("c1 20040107\n")? else {
+        return Err("expected a reply".into());
     };
     assert_eq!(
         v,
         Reply::Number(20_040_107),
         "the protocol version it reports"
     );
+    Ok(())
 }
 
 /// The command parser refuses the real `I` reply, on content.
@@ -287,7 +304,7 @@ fn real_error_and_version_replies_decode() {
 /// Either alone is decisive. The argument count settles it a third time: `S`
 /// takes 3..4 and this carries fifteen.
 #[test]
-fn the_command_parser_refuses_the_real_info_reply() {
+fn the_command_parser_refuses_the_real_info_reply() -> Result<(), TestError> {
     let observed = b"c3 sessions created: 0\nactive sessions: 0\nactive streams: 0\npackets received: 0\npackets transmitted: 0\n";
     assert!(
         decode_command(observed).is_none(),
@@ -298,6 +315,7 @@ fn the_command_parser_refuses_the_real_info_reply() {
         matches!(decode_reply(observed), Some(RtpproxyControl::Reply { .. })),
         "and it must still decode as what it is"
     );
+    Ok(())
 }
 
 /// A command carrying an embedded newline is refused.
@@ -307,7 +325,7 @@ fn the_command_parser_refuses_the_real_info_reply() {
 /// what let a multi-line datagram parse as one command with its later lines as
 /// arguments.
 #[test]
-fn a_command_may_not_span_lines() {
+fn a_command_may_not_span_lines() -> Result<(), TestError> {
     assert!(
         decode_command(b"1 U call-id 192.0.2.1 16384 ftag\n").is_some(),
         "a trailing newline is fine, or this proves nothing"
@@ -316,6 +334,7 @@ fn a_command_may_not_span_lines() {
         decode_command(b"1 U call-id 192.0.2.1\n16384 ftag").is_none(),
         "a command split across two lines must not decode"
     );
+    Ok(())
 }
 
 /// A command that takes no modifiers gets none.
@@ -324,7 +343,7 @@ fn a_command_may_not_span_lines() {
 /// those was what made `Sessions` look like stop-play, and the rule is the
 /// relay's rather than one invented here.
 #[test]
-fn a_command_without_modifiers_refuses_a_suffix() {
+fn a_command_without_modifiers_refuses_a_suffix() -> Result<(), TestError> {
     assert!(
         decode_command(b"1 S call-id ftag ttag").is_some(),
         "bare S is a real command"
@@ -343,6 +362,7 @@ fn a_command_without_modifiers_refuses_a_suffix() {
         decode_command(b"1 Ib").is_some(),
         "and I DOES take modifiers, so the rule must not be a blanket ban"
     );
+    Ok(())
 }
 
 /// Every command's bounds come from the parser's own table.
@@ -351,7 +371,7 @@ fn a_command_without_modifiers_refuses_a_suffix() {
 /// `(1, 20)` for the other ten. A default that generous is not a bound; it is
 /// the absence of one, wearing a bound's clothes.
 #[test]
-fn every_command_carries_the_bounds_the_relay_enforces() {
+fn every_command_carries_the_bounds_the_relay_enforces() -> Result<(), TestError> {
     // (verb, a shape inside its bounds, a shape outside)
     for (ok, bad) in [
         ("1 P call-id prompt ftag ttag", "1 P call-id"),
@@ -370,6 +390,7 @@ fn every_command_carries_the_bounds_the_relay_enforces() {
             "{bad:?} is outside the bounds the relay enforces"
         );
     }
+    Ok(())
 }
 
 // ── Behind the seam ──────────────────────────────────────────────────────────
@@ -379,14 +400,14 @@ fn every_command_carries_the_bounds_the_relay_enforces() {
 /// RP2 built the seam and left it with no implementer. This is the proof it
 /// works, which is what that entry asked RP1 to be.
 #[test]
-fn the_decoder_answers_the_seam() {
+fn the_decoder_answers_the_seam() -> Result<(), TestError> {
     use sipnab::relay::rtpproxy::RtpproxyDecoder;
     use sipnab::relay::{ControlDecoder, ControlDelivery};
 
     let d = RtpproxyDecoder::on_port(7722);
     let out = d
         .decode(b"c4 U call-abc 10.0.0.99 12000 ftag\n", 7722)
-        .expect("a command to the control port decodes");
+        .ok_or("a command to the control port decodes")?;
     assert_eq!(out.message.command.as_deref(), Some("U"));
     assert_eq!(out.message.call_id.as_deref(), Some("call-abc"));
     assert_eq!(out.correlation_id.as_deref(), Some("c4"));
@@ -405,24 +426,26 @@ fn the_decoder_answers_the_seam() {
         "a bare datagram is believed on no port, which is not the same as \
          being disbelieved on this one"
     );
+    Ok(())
 }
 
 /// The same bytes from the other direction decode as a reply, not a command.
 #[test]
-fn the_seam_reads_direction_from_the_port() {
+fn the_seam_reads_direction_from_the_port() -> Result<(), TestError> {
     use sipnab::relay::ControlDecoder;
     use sipnab::relay::rtpproxy::RtpproxyDecoder;
 
     let d = RtpproxyDecoder::on_port(7722);
     let from_relay = d
         .decode(b"c4 50282 10.0.0.40\n", 40000)
-        .expect("a reply from the relay decodes");
+        .ok_or("a reply from the relay decodes")?;
     assert!(
         from_relay.message.command.is_none(),
         "a reply names no command: {:?}",
         from_relay.message.command
     );
     assert_eq!(from_relay.correlation_id.as_deref(), Some("c4"));
+    Ok(())
 }
 
 /// A command with no call-id does not borrow one from its arguments.
@@ -430,19 +453,20 @@ fn the_seam_reads_direction_from_the_port() {
 /// `V`, `I`, `X` and `G` carry `has_call_id = 0`. Reading the first argument
 /// as a call-id would name a call from whatever happened to sit there.
 #[test]
-fn a_command_without_a_call_id_names_no_call() {
+fn a_command_without_a_call_id_names_no_call() -> Result<(), TestError> {
     use sipnab::relay::ControlDecoder;
     use sipnab::relay::rtpproxy::RtpproxyDecoder;
 
     let d = RtpproxyDecoder::on_port(7722);
     for bytes in [b"1 V".as_slice(), b"1 X".as_slice(), b"1 I".as_slice()] {
-        let out = d.decode(bytes, 7722).expect("decodes");
+        let out = d.decode(bytes, 7722).ok_or("decodes")?;
         assert!(
             out.message.call_id.is_none(),
             "{bytes:?} named a call it does not carry: {:?}",
             out.message.call_id
         );
     }
+    Ok(())
 }
 
 /// Only ordinary media counts toward the unattributed tally.
@@ -460,7 +484,7 @@ fn a_command_without_a_call_id_names_no_call() {
 /// (see `src/relay/rtpproxy.rs`), so proving the classification proves the
 /// tally behavior without reading shared state.
 #[test]
-fn recording_commands_do_not_inflate_the_media_tally() {
+fn recording_commands_do_not_inflate_the_media_tally() -> Result<(), TestError> {
     use sipnab::relay::rtpproxy::{Stream, creates};
 
     // The recording verbs are Recording, not Ordinary, so the decoder's
@@ -487,4 +511,5 @@ fn recording_commands_do_not_inflate_the_media_tally() {
         Some(Stream::Ordinary),
         "an update/offer creates ordinary media and DOES count"
     );
+    Ok(())
 }

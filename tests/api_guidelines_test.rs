@@ -8,6 +8,9 @@
 //! attribute's effect is only observable from *another* crate, so a
 //! compile-time assertion here would vacuously pass).
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Every growth-prone public enum on the library surface, with the file
 /// that defines it. Closed sets (e.g. `SdpDirection` — RFC 4566's four
 /// direction attributes, `G711Codec` — PCMU/PCMA) are deliberately NOT
@@ -51,12 +54,12 @@ fn enum_is_non_exhaustive(text: &str, name: &str) -> bool {
 /// Scans each source file in `NON_EXHAUSTIVE_ENUMS` and asserts every listed
 /// `pub enum` still exists and carries `#[non_exhaustive]` in its attribute block.
 #[test]
-fn growth_prone_public_enums_are_non_exhaustive() {
+fn growth_prone_public_enums_are_non_exhaustive() -> Result<(), TestError> {
     let root = env!("CARGO_MANIFEST_DIR");
     let mut missing = Vec::new();
     for (file, name) in NON_EXHAUSTIVE_ENUMS {
         let path = format!("{root}/{file}");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read {file}: {e}"))?;
         assert!(
             text.contains(&format!("pub enum {name} ")),
             "{file} no longer defines `pub enum {name}` — update this list"
@@ -70,15 +73,17 @@ fn growth_prone_public_enums_are_non_exhaustive() {
         "growth-prone public enums missing #[non_exhaustive]:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// Compile-time check that `DialogStore` and `StreamStore` implement `Debug`
 /// (API guideline C-DEBUG) so embedders can log them.
 #[test]
-fn shared_stores_are_debug() {
+fn shared_stores_are_debug() -> Result<(), TestError> {
     // Compile-time: both stores must implement Debug (C-DEBUG) so
     // embedding applications can log them.
     fn assert_debug<T: std::fmt::Debug>() {}
     assert_debug::<sipnab::DialogStore>();
     assert_debug::<sipnab::StreamStore>();
+    Ok(())
 }

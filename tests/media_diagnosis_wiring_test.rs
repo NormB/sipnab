@@ -28,11 +28,13 @@ use sipnab::sip::dialog_store::DialogStore;
 use sipnab::sip::dsl::{FilterExpr, select_dialogs};
 use sipnab::sip::parser::parse_sip;
 
+type TestError = Box<dyn std::error::Error>;
+
 // ── Fixtures ────────────────────────────────────────────────────────────
 
 /// Deterministic timestamp `secs` seconds after a fixed base.
-fn ts(secs: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+fn ts(secs: i64) -> Result<DateTime<Utc>, TestError> {
+    Ok(DateTime::from_timestamp(1_700_000_000 + secs, 0).ok_or("valid timestamp")?)
 }
 
 /// An IPv4 address from four octets.
@@ -72,7 +74,12 @@ fn sdp_body(addr: &str, port: u16, direction: &str) -> String {
 }
 
 /// Feed an INVITE carrying `body` into `store` under `call_id`.
-fn offer(store: &mut DialogStore, call_id: &str, body: &str, at: DateTime<Utc>) {
+fn offer(
+    store: &mut DialogStore,
+    call_id: &str,
+    body: &str,
+    at: DateTime<Utc>,
+) -> Result<(), TestError> {
     let raw = build_sip_message(
         "INVITE sip:b@example.net SIP/2.0",
         &[
@@ -94,13 +101,18 @@ fn offer(store: &mut DialogStore, call_id: &str, body: &str, at: DateTime<Utc>) 
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("INVITE should parse");
+    )?;
     store.process_message(msg);
+    Ok(())
 }
 
 /// Feed a 200 OK carrying `body` into `store` under `call_id`.
-fn answer(store: &mut DialogStore, call_id: &str, body: &str, at: DateTime<Utc>) {
+fn answer(
+    store: &mut DialogStore,
+    call_id: &str,
+    body: &str,
+    at: DateTime<Utc>,
+) -> Result<(), TestError> {
     let raw = build_sip_message(
         "SIP/2.0 200 OK",
         &[
@@ -122,15 +134,19 @@ fn answer(store: &mut DialogStore, call_id: &str, body: &str, at: DateTime<Utc>)
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("200 OK should parse");
+    )?;
     store.process_message(msg);
+    Ok(())
 }
 
 /// Feed a bodiless 200 OK into `store` under `call_id`.
 ///
 /// The call is answered, but the offer in the INVITE never got its answer.
-fn answer_without_sdp(store: &mut DialogStore, call_id: &str, at: DateTime<Utc>) {
+fn answer_without_sdp(
+    store: &mut DialogStore,
+    call_id: &str,
+    at: DateTime<Utc>,
+) -> Result<(), TestError> {
     let raw = build_sip_message(
         "SIP/2.0 200 OK",
         &[
@@ -151,13 +167,18 @@ fn answer_without_sdp(store: &mut DialogStore, call_id: &str, at: DateTime<Utc>)
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("200 OK should parse");
+    )?;
     store.process_message(msg);
+    Ok(())
 }
 
 /// Feed a re-INVITE (CSeq 2) carrying `body` into `store` under `call_id`.
-fn reoffer(store: &mut DialogStore, call_id: &str, body: &str, at: DateTime<Utc>) {
+fn reoffer(
+    store: &mut DialogStore,
+    call_id: &str,
+    body: &str,
+    at: DateTime<Utc>,
+) -> Result<(), TestError> {
     let raw = build_sip_message(
         "INVITE sip:b@example.net SIP/2.0",
         &[
@@ -179,9 +200,9 @@ fn reoffer(store: &mut DialogStore, call_id: &str, body: &str, at: DateTime<Utc>
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("re-INVITE should parse");
+    )?;
     store.process_message(msg);
+    Ok(())
 }
 
 /// One synthetic PCMU packet on the given 4-tuple.
@@ -192,7 +213,7 @@ fn rtp_packet(
     dst_port: u16,
     ssrc: u32,
     seq: u16,
-) -> ParsedPacket {
+) -> Result<ParsedPacket, TestError> {
     let mut payload = Vec::with_capacity(172);
     payload.push(0x80);
     payload.push(0x00); // PT 0, PCMU
@@ -201,10 +222,10 @@ fn rtp_packet(
     payload.extend_from_slice(&ssrc.to_be_bytes());
     payload.extend_from_slice(&[0x7F; 160]);
 
-    ParsedPacket {
+    Ok(ParsedPacket {
         frame_bytes: None,
         frame: None,
-        timestamp: ts(0),
+        timestamp: ts(0)?,
         src_addr: src,
         dst_addr: dst,
         src_port,
@@ -220,7 +241,7 @@ fn rtp_packet(
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
         hep: None,
-    }
+    })
 }
 
 /// Record ten RTP packets on the given 4-tuple into `store`.
@@ -231,22 +252,23 @@ fn record_stream(
     dst: IpAddr,
     dst_port: u16,
     ssrc: u32,
-) {
+) -> Result<(), TestError> {
     for i in 0..10u16 {
-        let parsed = rtp_packet(src, src_port, dst, dst_port, ssrc, 100 + i);
-        let hdr = parse_rtp_header(&parsed.payload).expect("synthetic RTP header");
-        store.process_rtp(&parsed, &hdr, ts(i as i64));
+        let parsed = rtp_packet(src, src_port, dst, dst_port, ssrc, 100 + i)?;
+        let hdr = parse_rtp_header(&parsed.payload)?;
+        store.process_rtp(&parsed, &hdr, ts(i as i64)?);
     }
+    Ok(())
 }
 
 /// Call-IDs selected by `expr` over the two stores.
-fn selected(expr: &str, ds: &DialogStore, ss: &StreamStore) -> Vec<String> {
-    let filter = FilterExpr::parse(expr).expect("filter should parse");
-    select_dialogs(Some(&filter), ds, ss)
+fn selected(expr: &str, ds: &DialogStore, ss: &StreamStore) -> Result<Vec<String>, TestError> {
+    let filter = FilterExpr::parse(expr)?;
+    Ok(select_dialogs(Some(&filter), ds, ss)
         .dialogs
         .iter()
         .map(|(d, _)| d.call_id.clone())
-        .collect()
+        .collect())
 }
 
 // ── nat_mismatch ────────────────────────────────────────────────────────
@@ -259,7 +281,7 @@ fn selected(expr: &str, ds: &DialogStore, ss: &StreamStore) -> Vec<String> {
 /// most common media fault on a SIP trunk, and it is the case the unwired
 /// diagnosis could never report.
 #[test]
-fn nat_rewritten_rtp_source_is_selected_by_nat_mismatch() {
+fn nat_rewritten_rtp_source_is_selected_by_nat_mismatch() -> Result<(), TestError> {
     let call_id = "nat-rewrite@example.net";
     let mut ds = DialogStore::new(64, false);
     // Caller advertises 192.168.1.10 (pre-NAT); callee advertises 203.0.113.9.
@@ -267,14 +289,14 @@ fn nat_rewritten_rtp_source_is_selected_by_nat_mismatch() {
         &mut ds,
         call_id,
         &sdp_body("192.168.1.10", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.9", 30000, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([192, 168, 1, 10]), 20000, call_id, &[]);
@@ -287,7 +309,7 @@ fn nat_rewritten_rtp_source_is_selected_by_nat_mismatch() {
         ip([198, 51, 100, 7]),
         20000,
         0x2222,
-    );
+    )?;
     // Caller → callee: sourced from 198.51.100.7, which NO SDP advertised.
     record_stream(
         &mut ss,
@@ -296,13 +318,14 @@ fn nat_rewritten_rtp_source_is_selected_by_nat_mismatch() {
         ip([203, 0, 113, 9]),
         30000,
         0x1111,
-    );
+    )?;
 
     assert_eq!(
-        selected("nat_mismatch == true", &ds, &ss),
+        selected("nat_mismatch == true", &ds, &ss)?,
         vec![call_id.to_string()],
         "RTP from an address no SDP advertised is the NAT mismatch --nat-issues exists to find"
     );
+    Ok(())
 }
 
 /// A healthy bidirectional call is NOT a NAT mismatch.
@@ -312,21 +335,21 @@ fn nat_rewritten_rtp_source_is_selected_by_nat_mismatch() {
 /// every two-way call ever captured, so the check compares against the
 /// addresses the dialog advertised as a set.
 #[test]
-fn healthy_bidirectional_call_is_not_a_nat_mismatch() {
+fn healthy_bidirectional_call_is_not_a_nat_mismatch() -> Result<(), TestError> {
     let call_id = "healthy@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.1", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.2", 30000, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 1]), 20000, call_id, &[]);
@@ -338,7 +361,7 @@ fn healthy_bidirectional_call_is_not_a_nat_mismatch() {
         ip([203, 0, 113, 2]),
         30000,
         0x1111,
-    );
+    )?;
     record_stream(
         &mut ss,
         ip([203, 0, 113, 2]),
@@ -346,12 +369,13 @@ fn healthy_bidirectional_call_is_not_a_nat_mismatch() {
         ip([203, 0, 113, 1]),
         20000,
         0x2222,
-    );
+    )?;
 
     assert!(
-        selected("nat_mismatch == true", &ds, &ss).is_empty(),
+        selected("nat_mismatch == true", &ds, &ss)?.is_empty(),
         "both legs sourced RTP from an address their own SDP advertised"
     );
+    Ok(())
 }
 
 /// A re-INVITE that moves the media anchor is not a NAT mismatch.
@@ -361,28 +385,28 @@ fn healthy_bidirectional_call_is_not_a_nat_mismatch() {
 /// resume and codec renegotiation as a NAT fault, so every exchange in the
 /// dialog contributes to the advertised set.
 #[test]
-fn re_invite_anchor_change_does_not_invalidate_earlier_rtp() {
+fn re_invite_anchor_change_does_not_invalidate_earlier_rtp() -> Result<(), TestError> {
     let call_id = "anchor-move@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.1", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.2", 30000, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
     // Mid-call the caller re-anchors onto a different address.
     reoffer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.5", 21000, "sendrecv"),
-        ts(30),
-    );
+        ts(30)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 1]), 20000, call_id, &[]);
@@ -396,7 +420,7 @@ fn re_invite_anchor_change_does_not_invalidate_earlier_rtp() {
         ip([203, 0, 113, 2]),
         30000,
         0x1111,
-    );
+    )?;
     // Media from after the move.
     record_stream(
         &mut ss,
@@ -405,7 +429,7 @@ fn re_invite_anchor_change_does_not_invalidate_earlier_rtp() {
         ip([203, 0, 113, 2]),
         30000,
         0x3333,
-    );
+    )?;
     record_stream(
         &mut ss,
         ip([203, 0, 113, 2]),
@@ -413,12 +437,13 @@ fn re_invite_anchor_change_does_not_invalidate_earlier_rtp() {
         ip([203, 0, 113, 5]),
         21000,
         0x2222,
-    );
+    )?;
 
     assert!(
-        selected("nat_mismatch == true", &ds, &ss).is_empty(),
+        selected("nat_mismatch == true", &ds, &ss)?.is_empty(),
         "RTP from an anchor a re-INVITE replaced was advertised while it flowed"
     );
+    Ok(())
 }
 
 // ── no_media ────────────────────────────────────────────────────────────
@@ -426,21 +451,21 @@ fn re_invite_anchor_change_does_not_invalidate_earlier_rtp() {
 /// An answered call that negotiated active media and carried no RTP is
 /// `no_media`, and the filter must select it.
 #[test]
-fn answered_call_with_no_rtp_is_selected_by_no_media() {
+fn answered_call_with_no_rtp_is_selected_by_no_media() -> Result<(), TestError> {
     let silent = "silent@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         silent,
         &sdp_body("203.0.113.1", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         silent,
         &sdp_body("203.0.113.2", 30000, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     // A second call in the same capture DID carry media, so the capture is
     // demonstrably on a media path and the silence of the first is evidence.
@@ -449,14 +474,14 @@ fn answered_call_with_no_rtp_is_selected_by_no_media() {
         &mut ds,
         noisy,
         &sdp_body("203.0.113.3", 22000, "sendrecv"),
-        ts(2),
-    );
+        ts(2)?,
+    )?;
     answer(
         &mut ds,
         noisy,
         &sdp_body("203.0.113.4", 32000, "sendrecv"),
-        ts(3),
-    );
+        ts(3)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 3]), 22000, noisy, &[]);
@@ -468,7 +493,7 @@ fn answered_call_with_no_rtp_is_selected_by_no_media() {
         ip([203, 0, 113, 4]),
         32000,
         0x4444,
-    );
+    )?;
     record_stream(
         &mut ss,
         ip([203, 0, 113, 4]),
@@ -476,13 +501,14 @@ fn answered_call_with_no_rtp_is_selected_by_no_media() {
         ip([203, 0, 113, 3]),
         22000,
         0x5555,
-    );
+    )?;
 
     assert_eq!(
-        selected("no_media == true", &ds, &ss),
+        selected("no_media == true", &ds, &ss)?,
         vec![silent.to_string()],
         "the answered call that carried no RTP is the one with no media"
     );
+    Ok(())
 }
 
 /// A call whose media was negotiated `a=inactive` for its whole life is NOT
@@ -493,35 +519,35 @@ fn answered_call_with_no_rtp_is_selected_by_no_media() {
 /// avoid, so `no_media` requires that some exchange in the dialog described
 /// media that was actually expected to flow.
 #[test]
-fn call_held_inactive_throughout_is_not_no_media() {
+fn call_held_inactive_throughout_is_not_no_media() -> Result<(), TestError> {
     let held = "held@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         held,
         &sdp_body("203.0.113.1", 20000, "inactive"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         held,
         &sdp_body("203.0.113.2", 30000, "inactive"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     let carrier = "carrier@example.net";
     offer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.3", 22000, "sendrecv"),
-        ts(2),
-    );
+        ts(2)?,
+    )?;
     answer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.4", 32000, "sendrecv"),
-        ts(3),
-    );
+        ts(3)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 3]), 22000, carrier, &[]);
@@ -532,47 +558,48 @@ fn call_held_inactive_throughout_is_not_no_media() {
         ip([203, 0, 113, 4]),
         32000,
         0x4444,
-    );
+    )?;
 
     assert!(
-        !selected("no_media == true", &ds, &ss).contains(&held.to_string()),
+        !selected("no_media == true", &ds, &ss)?.contains(&held.to_string()),
         "media negotiated inactive was never expected to flow"
     );
+    Ok(())
 }
 
 /// A hold offer that black-holes the connection address (`c=0.0.0.0`, the
 /// RFC 2543 hold form still emitted by older gateways) is not `no_media`
 /// either.
 #[test]
-fn call_held_with_black_holed_address_is_not_no_media() {
+fn call_held_with_black_holed_address_is_not_no_media() -> Result<(), TestError> {
     let held = "blackhole@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         held,
         &sdp_body("0.0.0.0", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         held,
         &sdp_body("0.0.0.0", 30000, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     let carrier = "carrier2@example.net";
     offer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.3", 22000, "sendrecv"),
-        ts(2),
-    );
+        ts(2)?,
+    )?;
     answer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.4", 32000, "sendrecv"),
-        ts(3),
-    );
+        ts(3)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 3]), 22000, carrier, &[]);
@@ -583,40 +610,41 @@ fn call_held_with_black_holed_address_is_not_no_media() {
         ip([203, 0, 113, 4]),
         32000,
         0x4444,
-    );
+    )?;
 
     assert!(
-        !selected("no_media == true", &ds, &ss).contains(&held.to_string()),
+        !selected("no_media == true", &ds, &ss)?.contains(&held.to_string()),
         "a black-holed connection address asks for no RTP"
     );
+    Ok(())
 }
 
 /// An offer that was never answered did not negotiate media, so its silence
 /// is not a media failure.
 #[test]
-fn unanswered_offer_is_not_no_media() {
+fn unanswered_offer_is_not_no_media() -> Result<(), TestError> {
     let ringing = "ringing@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         ringing,
         &sdp_body("203.0.113.1", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
 
     let carrier = "carrier3@example.net";
     offer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.3", 22000, "sendrecv"),
-        ts(2),
-    );
+        ts(2)?,
+    )?;
     answer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.4", 32000, "sendrecv"),
-        ts(3),
-    );
+        ts(3)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 3]), 22000, carrier, &[]);
@@ -627,12 +655,13 @@ fn unanswered_offer_is_not_no_media() {
         ip([203, 0, 113, 4]),
         32000,
         0x4444,
-    );
+    )?;
 
     assert!(
-        !selected("no_media == true", &ds, &ss).contains(&ringing.to_string()),
+        !selected("no_media == true", &ds, &ss)?.contains(&ringing.to_string()),
         "an unanswered INVITE never completed an offer/answer"
     );
+    Ok(())
 }
 
 /// A call answered with a bodiless 200 is not `no_media`.
@@ -647,30 +676,30 @@ fn unanswered_offer_is_not_no_media() {
 /// would also let an INVITE plus its own retransmission look like an
 /// offer/answer.
 #[test]
-fn call_answered_without_an_sdp_answer_is_not_no_media() {
+fn call_answered_without_an_sdp_answer_is_not_no_media() -> Result<(), TestError> {
     let unanswered_offer = "no-answer-sdp@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         unanswered_offer,
         &sdp_body("203.0.113.1", 20000, "sendrecv"),
-        ts(0),
-    );
-    answer_without_sdp(&mut ds, unanswered_offer, ts(1));
+        ts(0)?,
+    )?;
+    answer_without_sdp(&mut ds, unanswered_offer, ts(1)?)?;
 
     let carrier = "carrier4@example.net";
     offer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.3", 22000, "sendrecv"),
-        ts(2),
-    );
+        ts(2)?,
+    )?;
     answer(
         &mut ds,
         carrier,
         &sdp_body("203.0.113.4", 32000, "sendrecv"),
-        ts(3),
-    );
+        ts(3)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 3]), 22000, carrier, &[]);
@@ -681,12 +710,13 @@ fn call_answered_without_an_sdp_answer_is_not_no_media() {
         ip([203, 0, 113, 4]),
         32000,
         0x4444,
-    );
+    )?;
 
     assert!(
-        !selected("no_media == true", &ds, &ss).contains(&unanswered_offer.to_string()),
+        !selected("no_media == true", &ds, &ss)?.contains(&unanswered_offer.to_string()),
         "an offer the 2xx never answered did not negotiate a media path"
     );
+    Ok(())
 }
 
 /// On a capture that carried no RTP at all, `no_media` stays silent.
@@ -696,7 +726,7 @@ fn call_answered_without_an_sdp_answer_is_not_no_media() {
 /// capture's vantage point rather than the call, and selects every answered
 /// call in the file.
 #[test]
-fn signaling_only_capture_reports_no_no_media() {
+fn signaling_only_capture_reports_no_no_media() -> Result<(), TestError> {
     let mut ds = DialogStore::new(64, false);
     for n in 0..3 {
         let call_id = format!("sig-only-{n}@example.net");
@@ -704,21 +734,22 @@ fn signaling_only_capture_reports_no_no_media() {
             &mut ds,
             &call_id,
             &sdp_body("203.0.113.1", 20000, "sendrecv"),
-            ts(n),
-        );
+            ts(n)?,
+        )?;
         answer(
             &mut ds,
             &call_id,
             &sdp_body("203.0.113.2", 30000, "sendrecv"),
-            ts(n + 1),
-        );
+            ts(n + 1)?,
+        )?;
     }
     let ss = StreamStore::new(64);
 
     assert!(
-        selected("no_media == true", &ds, &ss).is_empty(),
+        selected("no_media == true", &ds, &ss)?.is_empty(),
         "a capture holding no RTP cannot show that a particular call had none"
     );
+    Ok(())
 }
 
 // ── The alias operators actually type ───────────────────────────────────
@@ -726,21 +757,21 @@ fn signaling_only_capture_reports_no_no_media() {
 /// `--nat-issues` expands to `nat_mismatch == true`, so the alias must select
 /// the NAT-rewritten call too. The flag is the surface operators reach for.
 #[test]
-fn the_nat_issues_alias_selects_the_rewritten_call() {
+fn the_nat_issues_alias_selects_the_rewritten_call() -> Result<(), TestError> {
     let call_id = "alias-nat@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         call_id,
         &sdp_body("192.168.1.10", 20000, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         call_id,
         &sdp_body("203.0.113.9", 30000, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([203, 0, 113, 9]), 30000, call_id, &[]);
@@ -751,16 +782,17 @@ fn the_nat_issues_alias_selects_the_rewritten_call() {
         ip([203, 0, 113, 9]),
         30000,
         0x1111,
-    );
+    )?;
 
     let expr =
         sipnab::sip::dsl::expand_alias("nat-issues", &sipnab::sip::dsl::AliasThresholds::default())
-            .expect("alias exists");
+            .ok_or("alias exists")?;
     assert_eq!(
-        selected(&expr, &ds, &ss),
+        selected(&expr, &ds, &ss)?,
         vec![call_id.to_string()],
         "the --nat-issues alias must find what nat_mismatch finds"
     );
+    Ok(())
 }
 
 // ── The port evidence must reach the surfaces, not just the MCP tool ─────
@@ -786,21 +818,21 @@ fn the_nat_issues_alias_selects_the_rewritten_call() {
 /// combinations CI builds and `--features full` cannot see.
 #[cfg(feature = "native")]
 #[test]
-fn the_text_call_report_carries_the_port_evidence() {
+fn the_text_call_report_carries_the_port_evidence() -> Result<(), TestError> {
     let call_id = "one-way-ports@example.net";
     let mut ds = DialogStore::new(64, false);
     offer(
         &mut ds,
         call_id,
         &sdp_body("10.0.2.15", 16384, "sendrecv"),
-        ts(0),
-    );
+        ts(0)?,
+    )?;
     answer(
         &mut ds,
         call_id,
         &sdp_body("10.0.2.20", 16386, "sendrecv"),
-        ts(1),
-    );
+        ts(1)?,
+    )?;
 
     let mut ss = StreamStore::new(64);
     ss.link_endpoint(ip([10, 0, 2, 20]), 16386, call_id, &[]);
@@ -811,9 +843,9 @@ fn the_text_call_report_carries_the_port_evidence() {
         ip([10, 0, 2, 20]),
         16386,
         0x343d_a99b,
-    );
+    )?;
 
-    let dialog = ds.get(call_id).expect("dialog was stored");
+    let dialog = ds.get(call_id).ok_or("dialog was stored")?;
     let streams: Vec<&sipnab::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
     assert_eq!(streams.len(), 1, "one direction only, by construction");
     let ctx = sipnab::rtp::diagnosis::MediaContext::for_dialog(
@@ -843,4 +875,5 @@ fn the_text_call_report_carries_the_port_evidence() {
         "the report must name the port the reply goes to, where the pinhole is \
          missing:\n{report}"
     );
+    Ok(())
 }

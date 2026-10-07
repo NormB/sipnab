@@ -44,6 +44,8 @@ use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 // -- Harness ---------------------------------------------------------
 
 fn repo() -> &'static Path {
@@ -75,12 +77,14 @@ fn is_vendored(rel: &str) -> bool {
 /// Through `git ls-files` rather than by walking: an untracked scratch file is
 /// not published and is not this gate's business, and walking would pull in
 /// `target/` and every worktree artefact besides.
-fn tracked_text() -> Vec<(String, String)> {
+fn tracked_text() -> Result<Vec<(String, String)>, TestError> {
     let out = Command::new("git")
         .args(["ls-files"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files -- the scan is over what is tracked, not what is present");
+        .map_err(|e| {
+            format!("git ls-files -- the scan is over what is tracked, not what is present: {e}")
+        })?;
     assert!(
         out.status.success(),
         "git ls-files failed: {}",
@@ -103,7 +107,7 @@ fn tracked_text() -> Vec<(String, String)> {
             files.push((rel.to_string(), text));
         }
     }
-    files
+    Ok(files)
 }
 
 /// Surfaces a reader of the project sees.
@@ -201,10 +205,10 @@ fn corpus_size(files: &[(String, String)], keep: impl Fn(&str) -> bool) -> usize
 }
 
 /// The contributing guide, which is where a writer meets these rules first.
-fn contributing() -> String {
-    std::fs::read_to_string(repo().join("CONTRIBUTING.md"))
-        .expect("CONTRIBUTING.md is where a contributor is told the rules")
-        .to_ascii_lowercase()
+fn contributing() -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join("CONTRIBUTING.md"))
+        .map_err(|e| format!("CONTRIBUTING.md is where a contributor is told the rules: {e}"))?
+        .to_ascii_lowercase())
 }
 
 /// Does the scan reach this file at all?
@@ -371,8 +375,8 @@ mod guidance {
 
 /// A1. No published page names the aarch64 development host.
 #[test]
-fn a1_no_published_page_names_the_development_host() {
-    let files = tracked_text();
+fn a1_no_published_page_names_the_development_host() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, is_published, rule::lab_host);
     assert!(
         found.is_empty(),
@@ -381,24 +385,27 @@ fn a1_no_published_page_names_the_development_host() {
         capped(&found, 25),
         guidance::HOST
     );
+    Ok(())
 }
 
 /// A2. The rule flags the exact name that leaked.
 #[test]
-fn a2_the_host_rule_flags_the_name_that_leaked() {
+fn a2_the_host_rule_flags_the_name_that_leaked() -> Result<(), TestError> {
     assert!(
         rule::lab_host("## 2026-08-15 - thor-02 (aarch64, 14 cores), rustc 1.97.1"),
         "the benchmark heading that leaked must be caught if it returns"
     );
+    Ok(())
 }
 
 /// A3. It flags the undashed spelling, which reads as a different word.
 #[test]
-fn a3_the_host_rule_flags_the_undashed_spelling() {
+fn a3_the_host_rule_flags_the_undashed_spelling() -> Result<(), TestError> {
     assert!(
         rule::lab_host("measured on thor02 overnight"),
         "`thor02` names the same machine as `thor-02`"
     );
+    Ok(())
 }
 
 /// A4. It flags the name inside sample JSON, which is how it actually leaked.
@@ -407,7 +414,7 @@ fn a3_the_host_rule_flags_the_undashed_spelling() {
 /// the hostname was in the documented OUTPUT FORMAT, not in a sentence about
 /// the lab, which is why reading the prose would never have found it.
 #[test]
-fn a4_the_host_rule_flags_it_inside_sample_output() {
+fn a4_the_host_rule_flags_it_inside_sample_output() -> Result<(), TestError> {
     assert!(
         rule::lab_host(r#"    "node": "thor-02","#),
         "the leak was inside a JSON sample, not in prose"
@@ -416,11 +423,12 @@ fn a4_the_host_rule_flags_it_inside_sample_output() {
         rule::lab_host(r#""sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)""#),
         "and inside a User-Agent string in the same document"
     );
+    Ok(())
 }
 
 /// A5. It spares the hardware, which a benchmark cannot do without.
 #[test]
-fn a5_the_host_rule_spares_the_hardware_it_runs_on() {
+fn a5_the_host_rule_spares_the_hardware_it_runs_on() -> Result<(), TestError> {
     for legitimate in [
         "- **Host:** NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT",
         "meaningful on Jetson AGX Thor",
@@ -431,11 +439,12 @@ fn a5_the_host_rule_spares_the_hardware_it_runs_on() {
             "a benchmark that cannot say what it ran on is not a benchmark: {legitimate}"
         );
     }
+    Ok(())
 }
 
 /// A6. The bare lowercase form is the box, and is caught.
 #[test]
-fn a6_a_lowercase_bare_name_is_the_box_not_the_board() {
+fn a6_a_lowercase_bare_name_is_the_box_not_the_board() -> Result<(), TestError> {
     assert!(
         rule::bare_host("shares thor's kernel - so it has no BTF either"),
         "`thor's kernel` names a machine"
@@ -444,12 +453,13 @@ fn a6_a_lowercase_bare_name_is_the_box_not_the_board() {
         rule::bare_host(r#"the initial "+8.3% on thor" compared a build"#),
         "`on thor` names a machine"
     );
+    Ok(())
 }
 
 /// A7. No published page carries the bare lowercase form either.
 #[test]
-fn a7_no_published_page_carries_the_bare_lowercase_form() {
-    let files = tracked_text();
+fn a7_no_published_page_carries_the_bare_lowercase_form() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, is_published, rule::bare_host);
     assert!(
         found.is_empty(),
@@ -457,6 +467,7 @@ fn a7_no_published_page_carries_the_bare_lowercase_form() {
         capped(&found, 25),
         guidance::HOST
     );
+    Ok(())
 }
 
 /// A8. The scan reaches the generated mirrors, where the leak also lands.
@@ -465,8 +476,8 @@ fn a7_no_published_page_carries_the_bare_lowercase_form() {
 /// `website/static/llms-full.txt`. Fixing the source and forgetting the mirror
 /// leaves the leak on the site, which is the copy the public actually reads.
 #[test]
-fn a8_the_scan_reaches_the_generated_site_mirrors() {
-    let files = tracked_text();
+fn a8_the_scan_reaches_the_generated_site_mirrors() -> Result<(), TestError> {
+    let files = tracked_text()?;
     for mirror in [
         "website/content/docs/vcon.md",
         "website/static/llms-full.txt",
@@ -477,12 +488,13 @@ fn a8_the_scan_reaches_the_generated_site_mirrors() {
         );
         assert!(is_published(mirror), "{mirror} must count as published");
     }
+    Ok(())
 }
 
 /// A9. The scan reaches the pages this class actually leaked on.
 #[test]
-fn a9_the_scan_reaches_the_pages_this_class_leaked_on() {
-    let files = tracked_text();
+fn a9_the_scan_reaches_the_pages_this_class_leaked_on() -> Result<(), TestError> {
+    let files = tracked_text()?;
     for surface in [
         "CHANGELOG.md",
         "benches/BASELINES.md",
@@ -495,12 +507,13 @@ fn a9_the_scan_reaches_the_pages_this_class_leaked_on() {
             "{surface} carried this leak and must be in the scan"
         );
     }
+    Ok(())
 }
 
 /// A10. The guide tells a writer what to put in a benchmark heading.
 #[test]
-fn a10_the_guide_names_the_hardware_alternative() {
-    let guide = contributing();
+fn a10_the_guide_names_the_hardware_alternative() -> Result<(), TestError> {
+    let guide = contributing()?;
     assert!(
         guide.contains("hostname") && guide.contains("jetson agx thor"),
         "CONTRIBUTING.md must show the hardware form, or a writer meets this \
@@ -510,14 +523,15 @@ fn a10_the_guide_names_the_hardware_alternative() {
         guidance::HOST.contains("aarch64 self-hosted runner"),
         "the failure message must carry the replacement, not just the refusal"
     );
+    Ok(())
 }
 
 // -- Class B: the lab's VMs, containers and host ----------------------
 
 /// B1. No published page names a lab VM or container.
 #[test]
-fn b1_no_published_page_names_a_lab_machine() {
-    let files = tracked_text();
+fn b1_no_published_page_names_a_lab_machine() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, is_published, rule::lab_machine);
     assert!(
         found.is_empty(),
@@ -525,26 +539,29 @@ fn b1_no_published_page_names_a_lab_machine() {
         capped(&found, 25),
         guidance::MACHINE
     );
+    Ok(())
 }
 
 /// B2. The rule flags the name that leaked, in the heading form it leaked in.
 #[test]
-fn b2_the_machine_rule_flags_the_baseline_heading() {
+fn b2_the_machine_rule_flags_the_baseline_heading() -> Result<(), TestError> {
     assert!(
         rule::lab_machine("## 2026-07-06 - opensips-1, rustc 1.96, WS5f result"),
         "five benchmark headings named this VM"
     );
+    Ok(())
 }
 
 /// B3. It flags the other machines in the same family.
 #[test]
-fn b3_the_machine_rule_flags_the_rest_of_the_family() {
+fn b3_the_machine_rule_flags_the_rest_of_the_family() -> Result<(), TestError> {
     for host in ["nas2", "miner1", "norm2"] {
         assert!(
             rule::lab_machine(&format!("copied from {host} overnight")),
             "{host} is a machine in the same lab"
         );
     }
+    Ok(())
 }
 
 /// B4. It does not fire inside a longer identifier.
@@ -552,7 +569,7 @@ fn b3_the_machine_rule_flags_the_rest_of_the_family() {
 /// The boundary is what keeps this rule usable: `opensips-1` must not match
 /// inside `opensips-1234`, and `norm2` must not match inside `normalize2`.
 #[test]
-fn b4_the_machine_rule_does_not_fire_inside_a_longer_word() {
+fn b4_the_machine_rule_does_not_fire_inside_a_longer_word() -> Result<(), TestError> {
     for benign in [
         "opensips-1234 is a different thing entirely",
         "let normalize2 = normalize(x);",
@@ -563,6 +580,7 @@ fn b4_the_machine_rule_does_not_fire_inside_a_longer_word() {
             "a substring match would make this rule unusable: {benign}"
         );
     }
+    Ok(())
 }
 
 /// B5. It spares the software the project integrates with.
@@ -570,7 +588,7 @@ fn b4_the_machine_rule_does_not_fire_inside_a_longer_word() {
 /// `opensips` and `OpenSIPS` are a project sipnab decodes; only the numbered
 /// instance is a machine.
 #[test]
-fn b5_the_machine_rule_spares_the_software_it_names() {
+fn b5_the_machine_rule_spares_the_software_it_names() -> Result<(), TestError> {
     for benign in [
         "OpenSIPS answered and rtpengine anchored media for it",
         "a packaged opensips on the VM",
@@ -581,6 +599,7 @@ fn b5_the_machine_rule_spares_the_software_it_names() {
             "the software is not the machine: {benign}"
         );
     }
+    Ok(())
 }
 
 /// B6. The runner-label exception still matches something.
@@ -589,8 +608,8 @@ fn b5_the_machine_rule_spares_the_software_it_names() {
 /// something else, or a dead rule that will be read as permission the next time
 /// the string appears.
 #[test]
-fn b6_the_runner_label_exception_is_still_in_use() {
-    let files = tracked_text();
+fn b6_the_runner_label_exception_is_still_in_use() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let mut labels = Vec::new();
     for (rel, text) in &files {
         if !rel.starts_with(".github/") {
@@ -608,12 +627,13 @@ fn b6_the_runner_label_exception_is_still_in_use() {
          hostname exception is permission nobody is using. Delete it, or find \
          out what happened to the runner."
     );
+    Ok(())
 }
 
 /// B7. The exception is confined to workflows.
 #[test]
-fn b7_the_runner_label_exception_is_confined_to_workflows() {
-    let files = tracked_text();
+fn b7_the_runner_label_exception_is_confined_to_workflows() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let outside = scan(
         &files,
         |rel| !rel.starts_with(".github/"),
@@ -625,6 +645,7 @@ fn b7_the_runner_label_exception_is_confined_to_workflows() {
          not what it is for:\n{}",
         capped(&outside, 25)
     );
+    Ok(())
 }
 
 /// B8. The exception is recognized by shape, not by the hostname it carries.
@@ -632,7 +653,7 @@ fn b7_the_runner_label_exception_is_confined_to_workflows() {
 /// So relabelling the runner does not silently widen the exception to whatever
 /// the new label is called somewhere else.
 #[test]
-fn b8_the_exception_is_recognized_by_shape() {
+fn b8_the_exception_is_recognized_by_shape() -> Result<(), TestError> {
     assert!(
         is_runner_label("    runs-on: [self-hosted, thor-02]"),
         "the label form must be recognized"
@@ -645,6 +666,7 @@ fn b8_the_exception_is_recognized_by_shape() {
         !is_runner_label("    runs-on: ubuntu-latest"),
         "a hosted runner is not the exception"
     );
+    Ok(())
 }
 
 /// B9. `harness/` and `demos/` keep the name, because there it is a service.
@@ -653,8 +675,8 @@ fn b8_the_exception_is_recognized_by_shape() {
 /// their own machine. Banning it there would be renaming their container to
 /// protect a hostname that is not theirs.
 #[test]
-fn b9_a_compose_service_name_is_not_a_machine() {
-    let files = tracked_text();
+fn b9_a_compose_service_name_is_not_a_machine() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let harness: Vec<&(String, String)> = files
         .iter()
         .filter(|(rel, _)| rel.starts_with("harness/") || rel.starts_with("demos/"))
@@ -668,13 +690,14 @@ fn b9_a_compose_service_name_is_not_a_machine() {
         "harness/ and demos/ must stay outside the published set, or the \
          service name becomes a violation"
     );
+    Ok(())
 }
 
 /// B10. The guide names the role form to use instead.
 #[test]
-fn b10_the_guide_names_the_role_alternative() {
+fn b10_the_guide_names_the_role_alternative() -> Result<(), TestError> {
     assert!(
-        contributing().contains("opensips-1"),
+        contributing()?.contains("opensips-1"),
         "CONTRIBUTING.md must show the machine names it is asking writers to \
          avoid, or the rule is abstract and gets guessed at"
     );
@@ -682,6 +705,7 @@ fn b10_the_guide_names_the_role_alternative() {
         guidance::MACHINE.contains("x86_64 OpenSIPS VM"),
         "the failure message must carry the role form"
     );
+    Ok(())
 }
 
 // -- Class C: the lab's DNS domain ------------------------------------
@@ -692,8 +716,8 @@ fn b10_the_guide_names_the_role_alternative() {
 /// disclosed as a domain in a page, and unlike a service name it is not
 /// something a reader reproduces.
 #[test]
-fn c1_no_file_names_the_private_domain() {
-    let files = tracked_text();
+fn c1_no_file_names_the_private_domain() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, |_| true, rule::private_domain);
     assert!(
         found.is_empty(),
@@ -701,26 +725,29 @@ fn c1_no_file_names_the_private_domain() {
         capped(&found, 25),
         guidance::DOMAIN
     );
+    Ok(())
 }
 
 /// C2. The rule flags the fully qualified form that leaked.
 #[test]
-fn c2_the_domain_rule_flags_the_fqdn_that_leaked() {
+fn c2_the_domain_rule_flags_the_fqdn_that_leaked() -> Result<(), TestError> {
     assert!(
         rule::private_domain("`opensips-1.goes.com` (Debian 13, kernel 6.12.101, x86_64)"),
         "the FQDN in the backlog must be caught if it returns"
     );
+    Ok(())
 }
 
 /// C3. It flags the domain with a port, and in a URL.
 #[test]
-fn c3_the_domain_rule_flags_it_with_a_port_or_in_a_url() {
+fn c3_the_domain_rule_flags_it_with_a_port_or_in_a_url() -> Result<(), TestError> {
     assert!(rule::private_domain(
         "`opensips-1.goes.com:5063`, returned both"
     ));
     assert!(rule::private_domain(
         "https://git.goes.com/user/vcon-backend"
     ));
+    Ok(())
 }
 
 /// C4. It flags a bare subdomain nobody has used yet.
@@ -728,14 +755,15 @@ fn c3_the_domain_rule_flags_it_with_a_port_or_in_a_url() {
 /// The class is the domain, not the one host that happened to leak: the next
 /// one will be a different label under the same zone.
 #[test]
-fn c4_the_domain_rule_flags_a_subdomain_not_yet_used() {
+fn c4_the_domain_rule_flags_a_subdomain_not_yet_used() -> Result<(), TestError> {
     assert!(rule::private_domain("ns1.goes.com"));
     assert!(rule::private_domain("mail.goes.com"));
+    Ok(())
 }
 
 /// C5. It spares words that merely contain the label.
 #[test]
-fn c5_the_domain_rule_spares_ordinary_prose() {
+fn c5_the_domain_rule_spares_ordinary_prose() -> Result<(), TestError> {
     for benign in [
         "everything goes, and the commit lands",
         "it goes; completion follows",
@@ -746,12 +774,13 @@ fn c5_the_domain_rule_spares_ordinary_prose() {
             "the rule must not fire on prose: {benign}"
         );
     }
+    Ok(())
 }
 
 /// C6. The repo-wide scan really is repo-wide.
 #[test]
-fn c6_the_domain_scan_covers_more_than_the_published_set() {
-    let files = tracked_text();
+fn c6_the_domain_scan_covers_more_than_the_published_set() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let all = corpus_size(&files, |_| true);
     let published = corpus_size(&files, is_published);
     assert!(
@@ -759,12 +788,13 @@ fn c6_the_domain_scan_covers_more_than_the_published_set() {
         "the repo-wide scan ({all}) covers no more than the published one \
          ({published}), so `keep` has stopped widening it"
     );
+    Ok(())
 }
 
 /// C7. The scan reaches configuration, where a domain would sit if it returned.
 #[test]
-fn c7_the_domain_scan_reaches_configuration() {
-    let files = tracked_text();
+fn c7_the_domain_scan_reaches_configuration() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let config = files
         .iter()
         .filter(|(rel, _)| {
@@ -776,11 +806,12 @@ fn c7_the_domain_scan_reaches_configuration() {
         "only {config} configuration files are in the scan, too few for this \
          tree -- the binary or vendored filter has widened"
     );
+    Ok(())
 }
 
 /// C8. A reserved example domain is never flagged.
 #[test]
-fn c8_reserved_example_domains_are_not_flagged() {
+fn c8_reserved_example_domains_are_not_flagged() -> Result<(), TestError> {
     for benign in [
         "opensips.example.com runs a packaged OpenSIPS",
         "sip:alice@example.org",
@@ -791,12 +822,13 @@ fn c8_reserved_example_domains_are_not_flagged() {
             "RFC 2606 names are the fix, not the violation: {benign}"
         );
     }
+    Ok(())
 }
 
 /// C9. The replacement the sweep used is itself a reserved name.
 #[test]
-fn c9_the_replacement_is_a_reserved_name() {
-    let files = tracked_text();
+fn c9_the_replacement_is_a_reserved_name() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let used = files
         .iter()
         .any(|(_, text)| text.contains("opensips.example.com"));
@@ -805,25 +837,27 @@ fn c9_the_replacement_is_a_reserved_name() {
         "the sweep replaced the FQDN with `opensips.example.com`; if that has \
          gone, check that whatever replaced it is also reserved"
     );
+    Ok(())
 }
 
 /// C10. The guide names the reserved-domain rule.
 #[test]
-fn c10_the_guide_names_the_reserved_domain_rule() {
-    let guide = contributing();
+fn c10_the_guide_names_the_reserved_domain_rule() -> Result<(), TestError> {
+    let guide = contributing()?;
     assert!(
         guide.contains("rfc 2606") || guide.contains("example.com"),
         "CONTRIBUTING.md must point at the reserved domains"
     );
     assert!(guidance::DOMAIN.contains("example.com"));
+    Ok(())
 }
 
 // -- Class D: the lab's LAN -------------------------------------------
 
 /// D1. No prose page carries an address from the lab's LAN.
 #[test]
-fn d1_no_prose_page_carries_a_lab_address() {
-    let files = tracked_text();
+fn d1_no_prose_page_carries_a_lab_address() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, is_prose, rule::lab_address);
     assert!(
         found.is_empty(),
@@ -831,15 +865,17 @@ fn d1_no_prose_page_carries_a_lab_address() {
         capped(&found, 25),
         guidance::ADDRESS
     );
+    Ok(())
 }
 
 /// D2. The rule flags the relay and endpoint addresses that leaked.
 #[test]
-fn d2_the_address_rule_flags_the_addresses_that_leaked() {
+fn d2_the_address_rule_flags_the_addresses_that_leaked() -> Result<(), TestError> {
     assert!(rule::lab_address(
         "0x0a0a0a0a   10.0.0.60:40001          10.0.0.40:38156          10       0s"
     ));
     assert!(rule::lab_address("`--hep-allow 10.0.0.40` exited with"));
+    Ok(())
 }
 
 /// D3. It flags one embedded in a URL-encoded Call-ID.
@@ -848,11 +884,12 @@ fn d2_the_address_rule_flags_the_addresses_that_leaked() {
 /// the address. A word-boundary sweep walked straight past it, and that is
 /// exactly where one survived the first pass of the cleanup.
 #[test]
-fn d3_the_address_rule_flags_one_inside_an_encoded_call_id() {
+fn d3_the_address_rule_flags_one_inside_an_encoded_call_id() -> Result<(), TestError> {
     assert!(
         rule::lab_address("\"http://127.0.0.1:8080/v1/dialogs/test-call-1%4010.0.0.1/vcon\""),
         "an address glued to a percent-escape is still an address"
     );
+    Ok(())
 }
 
 /// D4. It spares QEMU's default guest network.
@@ -860,18 +897,19 @@ fn d3_the_address_rule_flags_one_inside_an_encoded_call_id() {
 /// `10.0.2.15` is what every `qemu-system-*` guest gets, so it belongs in
 /// sample output and says nothing about this lab.
 #[test]
-fn d4_the_address_rule_spares_the_qemu_guest_range() {
+fn d4_the_address_rule_spares_the_qemu_guest_range() -> Result<(), TestError> {
     for benign in ["10.0.2.15:5060", "sip:1001@10.0.2.20", "10.0.2.2"] {
         assert!(
             !rule::lab_address(benign),
             "RFC 1918 as a class is not the rule: {benign}"
         );
     }
+    Ok(())
 }
 
 /// D5. It spares the documentation ranges the sweep moved everything to.
 #[test]
-fn d5_the_address_rule_spares_the_documentation_ranges() {
+fn d5_the_address_rule_spares_the_documentation_ranges() -> Result<(), TestError> {
     for benign in [
         "192.0.2.40:38156",
         "198.51.100.20",
@@ -883,11 +921,12 @@ fn d5_the_address_rule_spares_the_documentation_ranges() {
             "the fix must not be a violation"
         );
     }
+    Ok(())
 }
 
 /// D6. It needs a digit after the prefix, and the network itself counts.
 #[test]
-fn d6_the_address_rule_needs_a_digit_after_the_prefix() {
+fn d6_the_address_rule_needs_a_digit_after_the_prefix() -> Result<(), TestError> {
     assert!(
         !rule::lab_address("version 10.0.0. is not an address"),
         "a prefix with nothing after it is not an address"
@@ -896,6 +935,7 @@ fn d6_the_address_rule_needs_a_digit_after_the_prefix() {
         rule::lab_address("10.0.0.0/24 dev veth"),
         "but the network itself is one"
     );
+    Ok(())
 }
 
 /// D7. Fixtures are deliberately out of scope, and stay that way.
@@ -905,12 +945,13 @@ fn d6_the_address_rule_needs_a_digit_after_the_prefix() {
 /// and publish nothing, so the rule runs over prose and the exclusion is
 /// asserted rather than assumed.
 #[test]
-fn d7_fixtures_are_outside_the_address_rule() {
+fn d7_fixtures_are_outside_the_address_rule() -> Result<(), TestError> {
     assert!(!is_prose("tests/snapshots/foo.snap"));
     assert!(!is_prose("benches/parser_bench.rs"));
     assert!(!is_prose("bench/live-capture.sh"));
     assert!(is_prose("docs/rtpengine.md"));
     assert!(is_prose("CHANGELOG.md"));
+    Ok(())
 }
 
 /// D8. Published IPv6 literals are RFC 3849 documentation addresses.
@@ -922,8 +963,8 @@ fn d7_fixtures_are_outside_the_address_rule() {
 /// cries about `f64::E` gets skimmed. The cost is that a leak written `fd12::5`
 /// goes unseen; the prefixes that appear in documents are written long.
 #[test]
-fn d8_published_ipv6_literals_are_documentation_addresses() {
-    let files = tracked_text();
+fn d8_published_ipv6_literals_are_documentation_addresses() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let mut checked = 0usize;
     let mut found = Vec::new();
 
@@ -967,6 +1008,7 @@ fn d8_published_ipv6_literals_are_documentation_addresses() {
          2001:db8::/32 ({checked} literal(s) checked):\n{}",
         capped(&found, 25)
     );
+    Ok(())
 }
 
 /// D9. The rendered social-preview image is in scope too.
@@ -975,8 +1017,8 @@ fn d8_published_ipv6_literals_are_documentation_addresses() {
 /// addresses as text. An SVG is markup, so it is scanned; a PNG would not be,
 /// which is worth knowing before somebody exports one.
 #[test]
-fn d9_the_social_preview_image_is_scanned() {
-    let files = tracked_text();
+fn d9_the_social_preview_image_is_scanned() -> Result<(), TestError> {
+    let files = tracked_text()?;
     assert!(
         reaches(&files, "website/og-image.svg"),
         "the social-preview image is markup and carried two LAN addresses; it \
@@ -987,25 +1029,27 @@ fn d9_the_social_preview_image_is_scanned() {
         !BINARY_EXT.contains(&"svg"),
         "SVG must not be treated as binary, or the image's text stops being read"
     );
+    Ok(())
 }
 
 /// D10. The guide names the documentation ranges.
 #[test]
-fn d10_the_guide_names_the_documentation_ranges() {
-    let guide = contributing();
+fn d10_the_guide_names_the_documentation_ranges() -> Result<(), TestError> {
+    let guide = contributing()?;
     assert!(
         guide.contains("rfc 5737") && guide.contains("192.0.2.0/24"),
         "CONTRIBUTING.md must name the ranges, not just forbid the LAN"
     );
     assert!(guide.contains("2001:db8"), "and the IPv6 one");
+    Ok(())
 }
 
 // -- Class E: accounts and the private capture corpus -----------------
 
 /// E1. No file carries a path under a real account's home directory.
 #[test]
-fn e1_no_file_carries_an_account_path() {
-    let files = tracked_text();
+fn e1_no_file_carries_an_account_path() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, |_| true, rule::account_path);
     assert!(
         found.is_empty(),
@@ -1014,25 +1058,28 @@ fn e1_no_file_carries_an_account_path() {
         capped(&found, 25),
         guidance::PATH
     );
+    Ok(())
 }
 
 /// E2. The rule flags the corpus path that leaked, in a command.
 #[test]
-fn e2_the_account_rule_flags_the_command_that_leaked() {
+fn e2_the_account_rule_flags_the_command_that_leaked() -> Result<(), TestError> {
     assert!(rule::account_path(
         "$BIN -N -I /home/gator/pcaps --cores 1 --no-cli-print"
     ));
     assert!(rule::account_path(
         "`/home/gator/pcaps` - 15 files, 1,383 MB, 4,532,272 packets"
     ));
+    Ok(())
 }
 
 /// E3. It flags a checkout path as well as a corpus path.
 #[test]
-fn e3_the_account_rule_flags_a_checkout_path() {
+fn e3_the_account_rule_flags_a_checkout_path() -> Result<(), TestError> {
     assert!(rule::account_path(
         "hardcoded `root = /home/gator/Development/sipnab`, so everywhere else"
     ));
+    Ok(())
 }
 
 /// E4. It spares a placeholder every reader substitutes.
@@ -1040,7 +1087,7 @@ fn e3_the_account_rule_flags_a_checkout_path() {
 /// The rule is the ACCOUNT, not the shape. Banning `/home/user/capture.pcap`
 /// would churn a dozen synopses to say nothing.
 #[test]
-fn e4_the_account_rule_spares_a_placeholder() {
+fn e4_the_account_rule_spares_a_placeholder() -> Result<(), TestError> {
     for benign in [
         "sipnab -I /home/user/capture.pcap",
         "/home/<you>/pcaps",
@@ -1052,6 +1099,7 @@ fn e4_the_account_rule_spares_a_placeholder() {
             "a placeholder is not a disclosure: {benign}"
         );
     }
+    Ok(())
 }
 
 /// E5. Nothing names where the private capture corpus lives.
@@ -1060,8 +1108,8 @@ fn e4_the_account_rule_spares_a_placeholder() {
 /// this repo already gets right -- but a path to it is the one part of it a
 /// public page can still disclose.
 #[test]
-fn e5_nothing_locates_the_private_capture_corpus() {
-    let files = tracked_text();
+fn e5_nothing_locates_the_private_capture_corpus() -> Result<(), TestError> {
+    let files = tracked_text()?;
     let found = scan(&files, |_| true, rule::corpus_path);
     assert!(
         found.is_empty(),
@@ -1069,17 +1117,19 @@ fn e5_nothing_locates_the_private_capture_corpus() {
          Name the capability, not the address.",
         capped(&found, 25)
     );
+    Ok(())
 }
 
 /// E6. The corpus rule flags both spellings that appeared.
 #[test]
-fn e6_the_corpus_rule_flags_both_forms() {
+fn e6_the_corpus_rule_flags_both_forms() -> Result<(), TestError> {
     assert!(rule::corpus_path(
         "the corpus at /home/gator/pcaps carries PII"
     ));
     assert!(rule::corpus_path(
         "export CORPUS=/home/gator/captures/x.pcap"
     ));
+    Ok(())
 }
 
 /// E7. The corpus rule spares a corpus that is not under an account.
@@ -1087,7 +1137,7 @@ fn e6_the_corpus_rule_flags_both_forms() {
 /// The capability to point sipnab at a corpus is the whole point of the bench
 /// harness; only this corpus's address is the problem.
 #[test]
-fn e7_the_corpus_rule_spares_a_neutral_location() {
+fn e7_the_corpus_rule_spares_a_neutral_location() -> Result<(), TestError> {
     for benign in [
         "st_try parse_args --bin /srv/pcaps/x.pcap",
         "-I $PCAP_CORPUS --cores 4",
@@ -1098,12 +1148,13 @@ fn e7_the_corpus_rule_spares_a_neutral_location() {
             "the capability stays; only the address goes: {benign}"
         );
     }
+    Ok(())
 }
 
 /// E8. The scan reaches shell and Python, where these paths actually sat.
 #[test]
-fn e8_the_account_scan_reaches_scripts() {
-    let files = tracked_text();
+fn e8_the_account_scan_reaches_scripts() -> Result<(), TestError> {
+    let files = tracked_text()?;
     for surface in [
         "bench/live-capture.sh",
         "scripts/rfc-links.py",
@@ -1115,6 +1166,7 @@ fn e8_the_account_scan_reaches_scripts() {
             "{surface} carried an account path and must be in the scan"
         );
     }
+    Ok(())
 }
 
 /// E8b. The rule reaches every home root the account has actually appeared
@@ -1123,7 +1175,7 @@ fn e8_the_account_scan_reaches_scripts() {
 /// Each string below was in the tree on 2026-08-31 and each walked past the
 /// `/home/{account}` form of this rule.
 #[test]
-fn e8b_the_account_rule_reaches_the_other_home_roots() {
+fn e8b_the_account_rule_reaches_the_other_home_roots() -> Result<(), TestError> {
     for leaked in [
         "# /Users/gator/Development/sipnab: `git ls-files` ran with `cwd=` a path",
         "  Only Rust was added, user-local under `~gator`; no system package changed.",
@@ -1136,6 +1188,7 @@ fn e8b_the_account_rule_reaches_the_other_home_roots() {
              list: {leaked}"
         );
     }
+    Ok(())
 }
 
 /// E8c. Widening it did not make it fire on a different account, or on prose.
@@ -1145,7 +1198,7 @@ fn e8b_the_account_rule_reaches_the_other_home_roots() {
 /// starts the same way, and the tree already contains `aggregator`,
 /// `navigator` and `investigator`.
 #[test]
-fn e8c_the_widened_account_rule_still_spares_the_words_around_it() {
+fn e8c_the_widened_account_rule_still_spares_the_words_around_it() -> Result<(), TestError> {
     for benign in [
         "/home/gatorade/pcaps",
         "user-local under `~gatorade`",
@@ -1160,11 +1213,12 @@ fn e8c_the_widened_account_rule_still_spares_the_words_around_it() {
              English, gets suppressed and then catches nothing: {benign}"
         );
     }
+    Ok(())
 }
 
 /// E9. The account list is not empty, which is how this class goes vacuous.
 #[test]
-fn e9_the_account_list_is_not_empty() {
+fn e9_the_account_list_is_not_empty() -> Result<(), TestError> {
     assert!(
         !rule::PRIVATE_ACCOUNTS.is_empty(),
         "with no accounts listed, `account_path` returns false for everything \
@@ -1176,17 +1230,19 @@ fn e9_the_account_list_is_not_empty() {
             .all(|a| !a.is_empty() && !a.contains('/')),
         "an account is a name, not a path fragment"
     );
+    Ok(())
 }
 
 /// E10. The guide names the corpus rule and the path alternatives.
 #[test]
-fn e10_the_guide_names_the_corpus_rule() {
-    let guide = contributing();
+fn e10_the_guide_names_the_corpus_rule() -> Result<(), TestError> {
+    let guide = contributing()?;
     assert!(guide.contains("$home"), "CONTRIBUTING.md must name `$HOME`");
     assert!(
         guide.contains("corpora") || guide.contains("corpus"),
         "and must say that capture corpora live outside the tree"
     );
+    Ok(())
 }
 
 // -- Class F: tracked transcripts -------------------------------------
@@ -1198,12 +1254,12 @@ fn e10_the_guide_names_the_corpus_rule() {
 /// than by decision. `.git-docsgate.log` was tracked and carried a worktree
 /// path under the maintainer's home directory.
 #[test]
-fn f1_no_transcript_or_backup_file_is_tracked() {
+fn f1_no_transcript_or_backup_file_is_tracked() -> Result<(), TestError> {
     let out = Command::new("git")
         .args(["ls-files"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     let bad: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|f| rule::transcript_file(f))
@@ -1215,20 +1271,22 @@ fn f1_no_transcript_or_backup_file_is_tracked() {
         capped(&bad, 25),
         guidance::TRANSCRIPT
     );
+    Ok(())
 }
 
 /// F2. The rule flags the file that leaked.
 #[test]
-fn f2_the_transcript_rule_flags_the_file_that_leaked() {
+fn f2_the_transcript_rule_flags_the_file_that_leaked() -> Result<(), TestError> {
     assert!(
         rule::transcript_file(".git-docsgate.log"),
         "the gate log that was tracked must be caught if it returns"
     );
+    Ok(())
 }
 
 /// F3. It flags the editor and merge artefacts too.
 #[test]
-fn f3_the_transcript_rule_flags_editor_and_merge_artefacts() {
+fn f3_the_transcript_rule_flags_editor_and_merge_artefacts() -> Result<(), TestError> {
     for f in [
         "src/pipeline.rs.bak",
         "docs/x.md.orig",
@@ -1238,6 +1296,7 @@ fn f3_the_transcript_rule_flags_editor_and_merge_artefacts() {
     ] {
         assert!(rule::transcript_file(f), "{f} is a working artefact");
     }
+    Ok(())
 }
 
 /// Real files in this tree whose names contain `log` without being one.
@@ -1257,15 +1316,16 @@ const LOGGY_BUT_NOT_LOGS: &[&str] = &[
 
 /// F4. It spares source files whose names merely contain the words.
 #[test]
-fn f4_the_transcript_rule_spares_source_files() {
+fn f4_the_transcript_rule_spares_source_files() -> Result<(), TestError> {
     for f in LOGGY_BUT_NOT_LOGS {
         assert!(!rule::transcript_file(f), "{f} is source, not a transcript");
     }
+    Ok(())
 }
 
 /// F4b. Those files exist, so the control is about this tree.
 #[test]
-fn f4b_the_negative_controls_name_files_that_exist() {
+fn f4b_the_negative_controls_name_files_that_exist() -> Result<(), TestError> {
     for f in LOGGY_BUT_NOT_LOGS {
         assert!(
             repo().join(f).exists(),
@@ -1273,6 +1333,7 @@ fn f4b_the_negative_controls_name_files_that_exist() {
              Name a file that is really here."
         );
     }
+    Ok(())
 }
 
 /// F5. `.gitignore` carries the pattern, so the next one is never staged.
@@ -1280,13 +1341,15 @@ fn f4b_the_negative_controls_name_files_that_exist() {
 /// The gate catches a tracked transcript; the ignore rule stops it becoming
 /// one. Without both, the fix lasts until the next run writes the file again.
 #[test]
-fn f5_gitignore_carries_the_transcript_pattern() {
-    let ignore = std::fs::read_to_string(repo().join(".gitignore")).expect(".gitignore");
+fn f5_gitignore_carries_the_transcript_pattern() -> Result<(), TestError> {
+    let ignore = std::fs::read_to_string(repo().join(".gitignore"))
+        .map_err(|e| format!(".gitignore: {e}"))?;
     assert!(
         ignore.contains("*.log"),
         ".gitignore must ignore transcripts, or the gate is the only thing \
          standing between a run and a commit"
     );
+    Ok(())
 }
 
 /// F6. The hooks write their logs outside the worktree.
@@ -1296,13 +1359,15 @@ fn f5_gitignore_carries_the_transcript_pattern() {
 /// its log into the worktree instead is one `git add -A` away from publishing
 /// it.
 #[test]
-fn f6_the_hooks_write_their_logs_outside_the_worktree() {
-    let hook = std::fs::read_to_string(repo().join(".githooks/pre-commit")).expect("pre-commit");
+fn f6_the_hooks_write_their_logs_outside_the_worktree() -> Result<(), TestError> {
+    let hook = std::fs::read_to_string(repo().join(".githooks/pre-commit"))
+        .map_err(|e| format!("pre-commit: {e}"))?;
     assert!(
         hook.contains("git rev-parse --git-dir") || hook.contains(".git/"),
         "the pre-commit hook must write its transcript under .git/, where a \
          commit cannot reach it"
     );
+    Ok(())
 }
 
 /// F7. The scan is over what is tracked, not over the tree.
@@ -1312,13 +1377,14 @@ fn f6_the_hooks_write_their_logs_outside_the_worktree() {
 /// the scan into walking the tree, which would read `target/` and every
 /// worktree artefact besides.
 #[test]
-fn f7_the_scan_is_over_what_is_tracked() {
-    let files = tracked_text();
+fn f7_the_scan_is_over_what_is_tracked() -> Result<(), TestError> {
+    let files = tracked_text()?;
     assert!(
         !files.iter().any(|(rel, _)| rel.starts_with("target/")),
         "the scan is reading build output, which means it walked the tree \
          instead of asking git what is tracked"
     );
+    Ok(())
 }
 
 /// F8. A renamed transcript still fails on its contents.
@@ -1326,33 +1392,36 @@ fn f7_the_scan_is_over_what_is_tracked() {
 /// Defense in depth: the filename rule is the cheap one, and the path rule is
 /// what makes renaming it to `notes.md` not a way through.
 #[test]
-fn f8_a_renamed_transcript_still_fails_on_its_contents() {
+fn f8_a_renamed_transcript_still_fails_on_its_contents() -> Result<(), TestError> {
     let line = "  Full output: /home/gator/Development/sipnab/.git/worktrees/agent-a5e/x.log";
     assert!(
         rule::account_path(line),
         "renaming a transcript must not make its contents acceptable"
     );
+    Ok(())
 }
 
 /// F9. The transcript patterns are not empty.
 #[test]
-fn f9_the_transcript_rule_has_patterns_to_match() {
+fn f9_the_transcript_rule_has_patterns_to_match() -> Result<(), TestError> {
     assert!(
         rule::transcript_file("x.log") && rule::transcript_file("x~"),
         "with no patterns the rule returns false for everything and F1 passes \
          by proving nothing"
     );
+    Ok(())
 }
 
 /// F10. The guide says not to commit them.
 #[test]
-fn f10_the_guide_says_not_to_commit_transcripts() {
-    let guide = contributing();
+fn f10_the_guide_says_not_to_commit_transcripts() -> Result<(), TestError> {
+    let guide = contributing()?;
     assert!(
         guide.contains("gate log") || guide.contains("scratch file"),
         "CONTRIBUTING.md must say a transcript is not committed"
     );
     assert!(guidance::TRANSCRIPT.contains(".gitignore"));
+    Ok(())
 }
 
 // -- Class G: addresses that reach a real person ----------------------
@@ -1363,9 +1432,9 @@ fn f10_the_guide_says_not_to_commit_transcripts() {
 /// someone, and it is already on crates.io. Any OTHER address is somebody who
 /// did not choose to be in this repository.
 #[test]
-fn g1_no_address_reaches_a_real_mailbox() {
-    let files = tracked_text();
-    let addr = regex::Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
+fn g1_no_address_reaches_a_real_mailbox() -> Result<(), TestError> {
+    let files = tracked_text()?;
+    let addr = regex::Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")?;
     let mut found = Vec::new();
     for (rel, text) in &files {
         if rel == "tests/private_identity_test.rs" {
@@ -1385,6 +1454,7 @@ fn g1_no_address_reaches_a_real_mailbox() {
         capped(&found, 25),
         guidance::MAILBOX
     );
+    Ok(())
 }
 
 /// G2. The rule flags the sample-output URI that leaked.
@@ -1393,19 +1463,21 @@ fn g1_no_address_reaches_a_real_mailbox() {
 /// fixture data AND in the expected output beside it, so it was in sample
 /// output a reader could copy.
 #[test]
-fn g2_the_mailbox_rule_flags_the_sample_uri_that_leaked() {
+fn g2_the_mailbox_rule_flags_the_sample_uri_that_leaked() -> Result<(), TestError> {
     assert!(rule::live_address("1002@carrier.net"));
+    Ok(())
 }
 
 /// G3. It flags the fixture address that leaked.
 #[test]
-fn g3_the_mailbox_rule_flags_the_fixture_that_leaked() {
+fn g3_the_mailbox_rule_flags_the_fixture_that_leaked() -> Result<(), TestError> {
     assert!(rule::live_address("evil@attacker.com"));
+    Ok(())
 }
 
 /// G4. It spares RFC 2606's reserved TLDs, which are the fix.
 #[test]
-fn g4_the_mailbox_rule_spares_reserved_tlds() {
+fn g4_the_mailbox_rule_spares_reserved_tlds() -> Result<(), TestError> {
     for benign in [
         "evil@attacker.test",
         "alice@real.test",
@@ -1417,6 +1489,7 @@ fn g4_the_mailbox_rule_spares_reserved_tlds() {
             "a reserved name cannot reach anyone, which is the point: {benign}"
         );
     }
+    Ok(())
 }
 
 /// G5. It spares subdomains of the reserved example domains.
@@ -1424,7 +1497,7 @@ fn g4_the_mailbox_rule_spares_reserved_tlds() {
 /// `deploy@web01.example.com` is a deployment example, and an allowlist that
 /// only knew the bare domain flagged it.
 #[test]
-fn g5_the_mailbox_rule_spares_reserved_subdomains() {
+fn g5_the_mailbox_rule_spares_reserved_subdomains() -> Result<(), TestError> {
     for benign in [
         "deploy@web01.example.com",
         "ops@ci.example.org",
@@ -1432,6 +1505,7 @@ fn g5_the_mailbox_rule_spares_reserved_subdomains() {
     ] {
         assert!(!rule::live_address(benign), "{benign} is reserved too");
     }
+    Ok(())
 }
 
 /// G6. It spares a SIP Call-ID, which is not a mailbox.
@@ -1439,7 +1513,7 @@ fn g5_the_mailbox_rule_spares_reserved_subdomains() {
 /// `call-NNNN@sipnab.bench` has the shape and none of the meaning. The rule
 /// runs off REAL top-level domains for this reason: `.bench` resolves nowhere.
 #[test]
-fn g6_the_mailbox_rule_spares_a_sip_call_id() {
+fn g6_the_mailbox_rule_spares_a_sip_call_id() -> Result<(), TestError> {
     for benign in [
         "call-NNNN@sipnab.bench",
         "a84b4c76e66710@pc33.atlanta.invalid",
@@ -1450,11 +1524,12 @@ fn g6_the_mailbox_rule_spares_a_sip_call_id() {
             "a Call-ID is not an address: {benign}"
         );
     }
+    Ok(())
 }
 
 /// G7. The published identities are spared, and the list is not empty.
 #[test]
-fn g7_the_published_identities_are_spared() {
+fn g7_the_published_identities_are_spared() -> Result<(), TestError> {
     for published in rule::PUBLISHED_IDENTITIES {
         assert!(
             !rule::live_address(published),
@@ -1466,11 +1541,12 @@ fn g7_the_published_identities_are_spared() {
         "a crate has to name a maintainer; an empty list means the manifest \
          address is about to be reported as a leak"
     );
+    Ok(())
 }
 
 /// G8. The real-TLD list is what makes the rule decidable, and is populated.
 #[test]
-fn g8_the_real_tld_list_is_populated() {
+fn g8_the_real_tld_list_is_populated() -> Result<(), TestError> {
     assert!(
         rule::REAL_TLDS.len() > 10,
         "with a short list, an address at an unlisted TLD is silently allowed"
@@ -1481,6 +1557,7 @@ fn g8_the_real_tld_list_is_populated() {
             "`{must}` is where a leaked address will be"
         );
     }
+    Ok(())
 }
 
 /// G9. The scan reaches source, not only documentation.
@@ -1488,8 +1565,8 @@ fn g8_the_real_tld_list_is_populated() {
 /// Both addresses in this class leaked from `src/`, inside test fixtures -- a
 /// documentation-only scan would have found neither.
 #[test]
-fn g9_the_mailbox_scan_reaches_source_files() {
-    let files = tracked_text();
+fn g9_the_mailbox_scan_reaches_source_files() -> Result<(), TestError> {
+    let files = tracked_text()?;
     for surface in ["src/output/call_report.rs", "src/sip/message.rs"] {
         assert!(
             reaches(&files, surface),
@@ -1498,17 +1575,19 @@ fn g9_the_mailbox_scan_reaches_source_files() {
     }
     let rust = files.iter().filter(|(r, _)| r.ends_with(".rs")).count();
     assert!(rust > 50, "only {rust} Rust files in the scan is too few");
+    Ok(())
 }
 
 /// G10. The guide names the reserved names a fixture should use.
 #[test]
-fn g10_the_guide_names_the_reserved_fixture_domains() {
-    let guide = contributing();
+fn g10_the_guide_names_the_reserved_fixture_domains() -> Result<(), TestError> {
+    let guide = contributing()?;
     assert!(
         guide.contains(".test") || guide.contains(".invalid"),
         "CONTRIBUTING.md must name the reserved forms a fixture should use"
     );
     assert!(guidance::MAILBOX.contains(".test"));
+    Ok(())
 }
 
 // -- Structural: the scan itself --------------------------------------
@@ -1520,8 +1599,8 @@ fn g10_the_guide_names_the_reserved_fixture_domains() {
 /// `is_published` stops matching. A clean-looking gate and a broken one are
 /// indistinguishable, so the corpus is asserted rather than assumed.
 #[test]
-fn the_scan_reads_the_files_it_claims_to_cover() {
-    let files = tracked_text();
+fn the_scan_reads_the_files_it_claims_to_cover() -> Result<(), TestError> {
+    let files = tracked_text()?;
     assert!(
         files.len() > 300,
         "the scan read {} tracked text files, far short of this tree",
@@ -1550,6 +1629,7 @@ fn the_scan_reads_the_files_it_claims_to_cover() {
         "only {published} files count as published -- `is_published` has \
          stopped matching"
     );
+    Ok(())
 }
 
 // -- The guide and the gate say the same thing ------------------------
@@ -1562,8 +1642,8 @@ fn the_scan_reads_the_files_it_claims_to_cover() {
 /// for the first time as a rejected commit -- which is the cost this whole file
 /// exists to avoid paying twice.
 #[test]
-fn the_guide_names_every_class_the_gate_enforces() {
-    let guide = contributing();
+fn the_guide_names_every_class_the_gate_enforces() -> Result<(), TestError> {
+    let guide = contributing()?;
     // Each class, and a string from the guide that can only be there because
     // somebody wrote that row.
     for (class, clause) in [
@@ -1581,6 +1661,7 @@ fn the_guide_names_every_class_the_gate_enforces() {
              `{clause}`, so a writer cannot know the rule before tripping it"
         );
     }
+    Ok(())
 }
 
 /// The guide promises nothing the gate does not enforce.
@@ -1590,7 +1671,7 @@ fn the_guide_names_every_class_the_gate_enforces() {
 /// it is a promise that reads as a guarantee. Each rule named below is invoked,
 /// so deleting the rule breaks this test rather than leaving the guide lying.
 #[test]
-fn the_guide_promises_nothing_the_gate_does_not_enforce() {
+fn the_guide_promises_nothing_the_gate_does_not_enforce() -> Result<(), TestError> {
     assert!(
         rule::lab_host("thor-02"),
         "the guide promises hostnames are caught"
@@ -1619,4 +1700,5 @@ fn the_guide_promises_nothing_the_gate_does_not_enforce() {
         rule::live_address("a@real-domain.com"),
         "the guide promises live mailboxes are caught"
     );
+    Ok(())
 }

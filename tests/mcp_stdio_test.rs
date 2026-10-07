@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 
 include!("support/timeout.rs");
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Absolute path to a file under `tests/fixtures/`.
 ///
 /// # Arguments
@@ -36,11 +39,12 @@ fn fixture(path: &str) -> std::path::PathBuf {
 ///
 /// # Side effects
 /// Writes to the child process's stdin.
-fn send(child: &mut std::process::Child, msg: &serde_json::Value) {
-    let stdin = child.stdin.as_mut().expect("stdin");
-    let line = serde_json::to_string(msg).expect("serialize");
-    writeln!(stdin, "{line}").expect("write");
-    stdin.flush().expect("flush");
+fn send(child: &mut std::process::Child, msg: &serde_json::Value) -> Result<(), TestError> {
+    let stdin = child.stdin.as_mut().ok_or("stdin")?;
+    let line = serde_json::to_string(msg)?;
+    writeln!(stdin, "{line}")?;
+    stdin.flush()?;
+    Ok(())
 }
 
 /// Read JSON-RPC response lines from the child up to `timeout`. Each line
@@ -56,33 +60,33 @@ fn read_response_with_id(
     reader: &mut BufReader<&mut std::process::ChildStdout>,
     target_id: i64,
     timeout: Duration,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, TestError> {
     let deadline = Instant::now() + timeout;
     let mut line = String::new();
     while Instant::now() < deadline {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return None,
+            Ok(0) => return Ok(None),
             Ok(_) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                let v: serde_json::Value = serde_json::from_str(trimmed).unwrap_or_else(|e| {
-                    panic!(
+                let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+                    format!(
                         "stdout line did not parse as JSON-RPC (Gotcha 1 regression?): \
                          {e}\nline: {trimmed}"
                     )
-                });
+                })?;
                 if v.get("id").and_then(|i| i.as_i64()) == Some(target_id) {
-                    return Some(v);
+                    return Ok(Some(v));
                 }
                 // Notification or other id — keep reading.
             }
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         }
     }
-    None
+    Ok(None)
 }
 
 /// The payload text block of a `tools/call` response.
@@ -95,16 +99,16 @@ fn read_response_with_id(
 /// a real client: `resp["result"]["content"][0]["text"]` is exactly what an
 /// external consumer would write, and it is exactly what the note broke. Any
 /// client outside this repo that indexes block 0 needs the same change.
-fn payload_text(resp: &serde_json::Value) -> String {
+fn payload_text(resp: &serde_json::Value) -> Result<String, TestError> {
     let note = sipnab::mcp::shape::untrusted_note();
-    resp["result"]["content"]
+    Ok(resp["result"]["content"]
         .as_array()
-        .unwrap_or_else(|| panic!("tool result must carry content: {resp}"))
+        .ok_or_else(|| format!("tool result must carry content: {resp}"))?
         .iter()
         .filter_map(|c| c["text"].as_str())
         .find(|t| *t != note)
-        .unwrap_or_else(|| panic!("no payload block besides the provenance note: {resp}"))
-        .to_string()
+        .ok_or_else(|| format!("no payload block besides the provenance note: {resp}"))?
+        .to_string())
 }
 
 /// Call `list_dialogs` repeatedly (reusing `id`) until it returns a
@@ -136,7 +140,7 @@ fn list_dialogs_until_nonempty(
     reader: &mut BufReader<&mut std::process::ChildStdout>,
     id: i64,
     timeout: Duration,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, TestError> {
     let deadline = Instant::now() + timeout;
     loop {
         send(
@@ -145,25 +149,25 @@ fn list_dialogs_until_nonempty(
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
                 "params": {"name": "list_dialogs", "arguments": {}}
             }),
-        );
-        let resp = read_response_with_id(reader, id, test_timeout(5))
-            .expect("list_dialogs response within 5s");
+        )?;
+        let resp = read_response_with_id(reader, id, test_timeout(5))?
+            .ok_or("list_dialogs response within 5s")?;
         assert!(
             resp["result"].is_object(),
             "list_dialogs must succeed: {resp}"
         );
-        let body = payload_text(&resp);
-        let parsed: serde_json::Value = serde_json::from_str(&body).expect("inner JSON parses");
+        let body = payload_text(&resp)?;
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
         let dialogs = parsed["dialogs"]
             .as_array()
-            .unwrap_or_else(|| panic!("list_dialogs page must carry `dialogs`: {parsed}"));
+            .ok_or_else(|| format!("list_dialogs page must carry `dialogs`: {parsed}"))?;
         // The count that makes a short page readable has to be there too.
         assert!(
             parsed["total_matched"].is_u64(),
             "a page without total_matched is a silently truncated answer: {parsed}"
         );
         if !dialogs.is_empty() && parsed["source_exhausted"] == serde_json::json!(true) {
-            return parsed["dialogs"].clone();
+            return Ok(parsed["dialogs"].clone());
         }
         assert!(
             Instant::now() < deadline,
@@ -179,7 +183,7 @@ fn list_dialogs_until_nonempty(
 /// Spawn `sipnab --mcp` with the given pcap and verify the stdio JSON-RPC
 /// session round-trips correctly for all three v0.4 tools.
 #[test]
-fn stdio_mcp_round_trips_three_tools() {
+fn stdio_mcp_round_trips_three_tools() -> Result<(), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -199,11 +203,10 @@ fn stdio_mcp_round_trips_three_tools() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
     // Take stdout out of the child for buffered reading.
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
 
     // 1. initialize
@@ -217,10 +220,10 @@ fn stdio_mcp_round_trips_three_tools() {
             "clientInfo": {"name": "sipnab-test", "version": "0"}
         }
     });
-    send(&mut child, &init);
+    send(&mut child, &init)?;
 
-    let init_resp = read_response_with_id(&mut reader, 1, test_timeout(5))
-        .expect("initialize response within 5s");
+    let init_resp = read_response_with_id(&mut reader, 1, test_timeout(5))?
+        .ok_or("initialize response within 5s")?;
     assert!(
         init_resp.get("result").is_some(),
         "initialize must succeed; got: {init_resp}"
@@ -231,7 +234,7 @@ fn stdio_mcp_round_trips_three_tools() {
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
     });
-    send(&mut child, &initd);
+    send(&mut child, &initd)?;
 
     // 2. tools/list — verify the three tools are advertised
     let list = serde_json::json!({
@@ -239,13 +242,13 @@ fn stdio_mcp_round_trips_three_tools() {
         "id": 2,
         "method": "tools/list"
     });
-    send(&mut child, &list);
+    send(&mut child, &list)?;
 
-    let list_resp = read_response_with_id(&mut reader, 2, test_timeout(5))
-        .expect("tools/list response within 5s");
+    let list_resp = read_response_with_id(&mut reader, 2, test_timeout(5))?
+        .ok_or("tools/list response within 5s")?;
     let tools = list_resp["result"]["tools"]
         .as_array()
-        .expect("tools array");
+        .ok_or("tools array")?;
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(
         names.contains(&"list_dialogs"),
@@ -263,11 +266,11 @@ fn stdio_mcp_round_trips_three_tools() {
     // 3. tools/call list_dialogs with no filter — poll until the fixture
     //    pcap's dialog appears (sip_call.pcap has 1 dialog; ingestion is
     //    asynchronous, so the first reply may be empty on a slow runner).
-    let parsed = list_dialogs_until_nonempty(&mut child, &mut reader, 3, test_timeout(10));
-    let arr = parsed.as_array().expect("dialog summaries array");
+    let parsed = list_dialogs_until_nonempty(&mut child, &mut reader, 3, test_timeout(10))?;
+    let arr = parsed.as_array().ok_or("dialog summaries array")?;
 
     // 4. tools/call get_dialog_report with the call_id from the list — round-trip
-    let call_id = arr[0]["call_id"].as_str().expect("call_id field");
+    let call_id = arr[0]["call_id"].as_str().ok_or("call_id field")?;
     let call_report = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 4,
@@ -277,10 +280,10 @@ fn stdio_mcp_round_trips_three_tools() {
             "arguments": {"call_id": call_id, "format": "json"}
         }
     });
-    send(&mut child, &call_report);
+    send(&mut child, &call_report)?;
 
-    let report_resp = read_response_with_id(&mut reader, 4, test_timeout(5))
-        .expect("get_dialog_report response within 5s");
+    let report_resp = read_response_with_id(&mut reader, 4, test_timeout(5))?
+        .ok_or("get_dialog_report response within 5s")?;
     assert!(
         report_resp["result"].is_object(),
         "get_dialog_report must succeed: {report_resp}"
@@ -297,10 +300,10 @@ fn stdio_mcp_round_trips_three_tools() {
             "arguments": {"call_id": "does-not-exist@nowhere", "format": "json"}
         }
     });
-    send(&mut child, &call_unknown);
+    send(&mut child, &call_unknown)?;
 
-    let err_resp =
-        read_response_with_id(&mut reader, 5, test_timeout(5)).expect("error response within 5s");
+    let err_resp = read_response_with_id(&mut reader, 5, test_timeout(5))?
+        .ok_or("error response within 5s")?;
     assert!(
         err_resp["error"].is_object(),
         "unknown call_id must return error: {err_resp}"
@@ -322,11 +325,12 @@ fn stdio_mcp_round_trips_three_tools() {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
     let _ = child.wait();
+    Ok(())
 }
 
 /// Phase 8.3 — verify the seven new tools are advertised and round-trip.
 #[test]
-fn stdio_mcp_phase_8_3_tools_round_trip() {
+fn stdio_mcp_phase_8_3_tools_round_trip() -> Result<(), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -345,10 +349,9 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
 
     send(
@@ -358,23 +361,23 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
-    );
-    let _ = read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize response");
+    )?;
+    let _ = read_response_with_id(&mut reader, 1, test_timeout(5))?.ok_or("initialize response")?;
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
 
     // tools/list — verify all 10 tools
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
-    );
+    )?;
     let list_resp =
-        read_response_with_id(&mut reader, 2, test_timeout(5)).expect("tools/list response");
+        read_response_with_id(&mut reader, 2, test_timeout(5))?.ok_or("tools/list response")?;
     let names: Vec<String> = list_resp["result"]["tools"]
         .as_array()
-        .unwrap()
+        .ok_or("list_resp[\"result\"][\"tools\"].as_array() is None")?
         .iter()
         .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
         .collect();
@@ -399,8 +402,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     // Get the call_id we'll use for tool calls. Poll: replay ingestion is
     // asynchronous, so the dialog may not be visible yet (macOS CI flake,
     // run 29791219683: dialogs[0] was None on the first call).
-    let dialogs = list_dialogs_until_nonempty(&mut child, &mut reader, 3, test_timeout(10));
-    let call_id = dialogs[0]["call_id"].as_str().unwrap().to_string();
+    let dialogs = list_dialogs_until_nonempty(&mut child, &mut reader, 3, test_timeout(10))?;
+    let call_id = dialogs[0]["call_id"]
+        .as_str()
+        .ok_or("dialogs[0][\"call_id\"].as_str() is None")?
+        .to_string();
 
     // get_dialog
     send(
@@ -410,10 +416,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "get_dialog",
                        "arguments": {"call_id": call_id, "max_messages": 100}}
         }),
-    );
-    let resp = read_response_with_id(&mut reader, 4, test_timeout(5)).expect("get_dialog response");
-    let dialog_text = payload_text(&resp);
-    let payload: serde_json::Value = serde_json::from_str(&dialog_text).unwrap();
+    )?;
+    let resp =
+        read_response_with_id(&mut reader, 4, test_timeout(5))?.ok_or("get_dialog response")?;
+    let dialog_text = payload_text(&resp)?;
+    let payload: serde_json::Value = serde_json::from_str(&dialog_text)?;
     assert!(
         payload["messages"].is_array(),
         "get_dialog must return messages: {payload}"
@@ -428,11 +435,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "get_message",
                        "arguments": {"call_id": call_id, "index": 0}}
         }),
-    );
+    )?;
     let resp =
-        read_response_with_id(&mut reader, 5, test_timeout(5)).expect("get_message response");
-    let msg_text = payload_text(&resp);
-    let msg: serde_json::Value = serde_json::from_str(&msg_text).unwrap();
+        read_response_with_id(&mut reader, 5, test_timeout(5))?.ok_or("get_message response")?;
+    let msg_text = payload_text(&resp)?;
+    let msg: serde_json::Value = serde_json::from_str(&msg_text)?;
     assert_eq!(msg["call_id"].as_str(), Some(call_id.as_str()));
 
     // get_message out-of-range index → error
@@ -443,9 +450,9 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "get_message",
                        "arguments": {"call_id": call_id, "index": 9999}}
         }),
-    );
-    let resp =
-        read_response_with_id(&mut reader, 6, test_timeout(5)).expect("get_message OOR response");
+    )?;
+    let resp = read_response_with_id(&mut reader, 6, test_timeout(5))?
+        .ok_or("get_message OOR response")?;
     assert_eq!(resp["error"]["code"].as_i64(), Some(-32602));
 
     // render_ladder markdown
@@ -456,10 +463,10 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "render_ladder",
                        "arguments": {"call_id": call_id, "format": "markdown"}}
         }),
-    );
+    )?;
     let resp =
-        read_response_with_id(&mut reader, 7, test_timeout(5)).expect("render_ladder response");
-    let text = payload_text(&resp);
+        read_response_with_id(&mut reader, 7, test_timeout(5))?.ok_or("render_ladder response")?;
+    let text = payload_text(&resp)?;
     assert!(!text.is_empty(), "ladder must not be empty");
 
     // rtp_stats
@@ -470,10 +477,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "rtp_stats",
                        "arguments": {"call_id": call_id}}
         }),
-    );
-    let resp = read_response_with_id(&mut reader, 8, test_timeout(5)).expect("rtp_stats response");
-    let body_text = payload_text(&resp);
-    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
+    )?;
+    let resp =
+        read_response_with_id(&mut reader, 8, test_timeout(5))?.ok_or("rtp_stats response")?;
+    let body_text = payload_text(&resp)?;
+    let body: serde_json::Value = serde_json::from_str(&body_text)?;
     assert!(body["streams"].is_array());
 
     // search_messages with a known token from the fixture
@@ -484,11 +492,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "search_messages",
                        "arguments": {"query": "INVITE"}}
         }),
-    );
-    let resp =
-        read_response_with_id(&mut reader, 9, test_timeout(5)).expect("search_messages response");
-    let hits_text = payload_text(&resp);
-    let page: serde_json::Value = serde_json::from_str(&hits_text).unwrap();
+    )?;
+    let resp = read_response_with_id(&mut reader, 9, test_timeout(5))?
+        .ok_or("search_messages response")?;
+    let hits_text = payload_text(&resp)?;
+    let page: serde_json::Value = serde_json::from_str(&hits_text)?;
     assert!(
         page["hits"]
             .as_array()
@@ -509,11 +517,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "jsonrpc": "2.0", "id": 10, "method": "tools/call",
             "params": {"name": "tail_dialogs", "arguments": {}}
         }),
-    );
+    )?;
     let resp =
-        read_response_with_id(&mut reader, 10, test_timeout(5)).expect("tail_dialogs response");
-    let body_text = payload_text(&resp);
-    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
+        read_response_with_id(&mut reader, 10, test_timeout(5))?.ok_or("tail_dialogs response")?;
+    let body_text = payload_text(&resp)?;
+    let body: serde_json::Value = serde_json::from_str(&body_text)?;
     assert!(
         body["dialogs"]
             .as_array()
@@ -529,11 +537,11 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "tail_dialogs",
                        "arguments": {"cursor": next_cursor}}
         }),
-    );
-    let resp = read_response_with_id(&mut reader, 11, test_timeout(5))
-        .expect("tail_dialogs cursor response");
-    let body_text = payload_text(&resp);
-    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
+    )?;
+    let resp = read_response_with_id(&mut reader, 11, test_timeout(5))?
+        .ok_or("tail_dialogs cursor response")?;
+    let body_text = payload_text(&resp)?;
+    let body: serde_json::Value = serde_json::from_str(&body_text)?;
     assert_eq!(
         body["dialogs"].as_array().map(|a| a.len()),
         Some(0),
@@ -547,10 +555,10 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "jsonrpc": "2.0", "id": 12, "method": "tools/call",
             "params": {"name": "capture_status", "arguments": {}}
         }),
-    );
-    let resp = read_response_with_id(&mut reader, 12, test_timeout(5)).expect("stats response");
-    let body_text = payload_text(&resp);
-    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
+    )?;
+    let resp = read_response_with_id(&mut reader, 12, test_timeout(5))?.ok_or("stats response")?;
+    let body_text = payload_text(&resp)?;
+    let body: serde_json::Value = serde_json::from_str(&body_text)?;
     assert!(body["dialog_count"].as_u64().unwrap_or(0) >= 1);
 
     // Clean shutdown
@@ -564,13 +572,14 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
     let _ = child.wait();
+    Ok(())
 }
 
 /// `tail_dialogs.source_exhausted` must flip to true once the pcap replay
 /// drains — a polling client (typically an LLM) relies on it to know the
 /// replay is complete and stop polling. It was a hardcoded `false` stub.
 #[test]
-fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
+fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() -> Result<(), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -589,10 +598,9 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
 
     send(
@@ -602,12 +610,12 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
-    );
-    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize");
+    )?;
+    read_response_with_id(&mut reader, 1, test_timeout(5))?.ok_or("initialize")?;
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
 
     // Poll tail_dialogs until the tiny fixture replay drains. The contract
     // is polling-shaped, so the test polls exactly like a real client.
@@ -625,11 +633,11 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
                 "params": {"name": "tail_dialogs", "arguments": {}}
             }),
-        );
-        let resp =
-            read_response_with_id(&mut reader, id, test_timeout(5)).expect("tail_dialogs response");
-        let body_text = payload_text(&resp);
-        let body: serde_json::Value = serde_json::from_str(&body_text).expect("inner JSON");
+        )?;
+        let resp = read_response_with_id(&mut reader, id, test_timeout(5))?
+            .ok_or("tail_dialogs response")?;
+        let body_text = payload_text(&resp)?;
+        let body: serde_json::Value = serde_json::from_str(&body_text)?;
         if body["source_exhausted"].as_bool() == Some(true) {
             break true;
         }
@@ -647,6 +655,7 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
     let _ = child.wait();
+    Ok(())
 }
 
 /// M3 — T3.5: assert the COMPLETE MCP tool set (count + exact names) and
@@ -655,7 +664,7 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
 /// exposes 11 — this test pins that exact set so adding/removing a tool (drift)
 /// fails loudly and the plan stays honest.
 #[test]
-fn stdio_mcp_full_tool_set_and_remaining_tools() {
+fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -674,10 +683,9 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
 
     send(
@@ -687,22 +695,22 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
-    );
-    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize");
+    )?;
+    read_response_with_id(&mut reader, 1, test_timeout(5))?.ok_or("initialize")?;
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
 
     // tools/list — assert the EXACT advertised set (catches missing AND extra).
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
-    );
-    let list_resp = read_response_with_id(&mut reader, 2, test_timeout(5)).expect("tools/list");
+    )?;
+    let list_resp = read_response_with_id(&mut reader, 2, test_timeout(5))?.ok_or("tools/list")?;
     let mut names: Vec<String> = list_resp["result"]["tools"]
         .as_array()
-        .expect("tools array")
+        .ok_or("tools array")?
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect();
@@ -800,11 +808,11 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {"name": "find_problems", "arguments": {}}
         }),
-    );
-    let resp = read_response_with_id(&mut reader, 3, test_timeout(5)).expect("find_problems");
+    )?;
+    let resp = read_response_with_id(&mut reader, 3, test_timeout(5))?.ok_or("find_problems")?;
     assert!(resp.get("error").is_none(), "find_problems errored: {resp}");
-    let text = payload_text(&resp);
-    let page: serde_json::Value = serde_json::from_str(&text).expect("find_problems JSON");
+    let text = payload_text(&resp)?;
+    let page: serde_json::Value = serde_json::from_str(&text)?;
     assert!(
         page["dialogs"].is_array(),
         "find_problems must return a page object carrying `dialogs`: {page}"
@@ -823,14 +831,15 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": {"name": "security_findings", "arguments": {}}
         }),
-    );
-    let resp = read_response_with_id(&mut reader, 4, test_timeout(5)).expect("security_findings");
+    )?;
+    let resp =
+        read_response_with_id(&mut reader, 4, test_timeout(5))?.ok_or("security_findings")?;
     assert!(
         resp.get("error").is_none(),
         "security_findings errored: {resp}"
     );
-    let text = payload_text(&resp);
-    let page = serde_json::from_str::<serde_json::Value>(&text).expect("security_findings JSON");
+    let text = payload_text(&resp)?;
+    let page = serde_json::from_str::<serde_json::Value>(&text)?;
     assert_eq!(
         page["findings"].as_array().map(Vec::len),
         Some(0),
@@ -851,9 +860,9 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
             "jsonrpc": "2.0", "id": 5, "method": "tools/call",
             "params": {"name": "security_findings", "arguments": {"kinds": ["reg-flood"]}}
         }),
-    );
-    let resp =
-        read_response_with_id(&mut reader, 5, test_timeout(5)).expect("security_findings refusal");
+    )?;
+    let resp = read_response_with_id(&mut reader, 5, test_timeout(5))?
+        .ok_or("security_findings refusal")?;
     assert_eq!(
         resp["error"]["code"], -32602,
         "the hyphenated spelling --alert uses must be an error, not an empty \
@@ -870,6 +879,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
     let _ = child.wait();
+    Ok(())
 }
 
 /// Every tool call leaves an audit line on stderr — success and refusal alike.
@@ -889,7 +899,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
 /// 3. One line per call, not two — double-logging would make every count an
 ///    operator derives from this log wrong.
 #[test]
-fn every_tool_call_leaves_an_audit_line_on_stderr() {
+fn every_tool_call_leaves_an_audit_line_on_stderr() -> Result<(), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -910,10 +920,9 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
 
     send(
@@ -926,12 +935,12 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
                 "clientInfo": {"name": "sipnab-test", "version": "0"}
             }
         }),
-    );
-    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize response");
+    )?;
+    read_response_with_id(&mut reader, 1, test_timeout(5))?.ok_or("initialize response")?;
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
 
     // One call that succeeds…
     send(
@@ -940,8 +949,9 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {"name": "capture_status", "arguments": {}}
         }),
-    );
-    let ok_resp = read_response_with_id(&mut reader, 2, test_timeout(5)).expect("stats response");
+    )?;
+    let ok_resp =
+        read_response_with_id(&mut reader, 2, test_timeout(5))?.ok_or("stats response")?;
     assert!(
         ok_resp["result"].is_object(),
         "stats must succeed: {ok_resp}"
@@ -954,9 +964,9 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {"name": "no_such_tool", "arguments": {}}
         }),
-    );
+    )?;
     let err_resp =
-        read_response_with_id(&mut reader, 3, test_timeout(5)).expect("refusal response");
+        read_response_with_id(&mut reader, 3, test_timeout(5))?.ok_or("refusal response")?;
     assert!(
         err_resp["error"].is_object(),
         "an unknown tool must be refused on the wire too: {err_resp}"
@@ -976,10 +986,8 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
     let mut stderr_text = String::new();
     {
         use std::io::Read;
-        let mut stderr = child.stderr.take().expect("stderr");
-        stderr
-            .read_to_string(&mut stderr_text)
-            .expect("read child stderr");
+        let mut stderr = child.stderr.take().ok_or("stderr")?;
+        stderr.read_to_string(&mut stderr_text)?;
     }
     let _ = child.wait();
 
@@ -1036,6 +1044,7 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
         "a refusal must be distinguishable from a success in the record: {}",
         refused_lines[0]
     );
+    Ok(())
 }
 
 /// `--mcp-rate-limit-per-peer` refuses a looping caller, on the wire and in
@@ -1054,7 +1063,7 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
 /// allowance. It cannot hand back three, so the gate is both tight enough to
 /// fail if the limiter is not wired and loose enough never to flake on it.
 #[test]
-fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
+fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() -> Result<(), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -1075,10 +1084,9 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
 
     send(
@@ -1091,12 +1099,12 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
                 "clientInfo": {"name": "sipnab-test", "version": "0"}
             }
         }),
-    );
-    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize response");
+    )?;
+    read_response_with_id(&mut reader, 1, test_timeout(5))?.ok_or("initialize response")?;
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
 
     let mut admitted = 0;
     let mut refused = 0;
@@ -1107,10 +1115,10 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
                 "params": {"name": "capture_status", "arguments": {}}
             }),
-        );
-        let resp = read_response_with_id(&mut reader, id, test_timeout(5)).unwrap_or_else(|| {
-            panic!("no response to call {id} — a rate limit must REFUSE, not hang")
-        });
+        )?;
+        let resp = read_response_with_id(&mut reader, id, test_timeout(5))?.ok_or_else(|| {
+            format!("no response to call {id} — a rate limit must REFUSE, not hang")
+        })?;
         if let Some(error) = resp.get("error") {
             refused += 1;
             assert_eq!(
@@ -1150,10 +1158,8 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
     let mut stderr_text = String::new();
     {
         use std::io::Read;
-        let mut stderr = child.stderr.take().expect("stderr");
-        stderr
-            .read_to_string(&mut stderr_text)
-            .expect("read child stderr");
+        let mut stderr = child.stderr.take().ok_or("stderr")?;
+        stderr.read_to_string(&mut stderr_text)?;
     }
     let _ = child.wait();
 
@@ -1179,4 +1185,5 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
          confused client read identically:\n{}",
         limited.join("\n")
     );
+    Ok(())
 }

@@ -20,7 +20,9 @@ mod pcap_build;
 use std::path::Path;
 use std::process::Command;
 
-use pcap_build::{udp_frame, write_pcap_or_panic, write_pcapng_with_dsb_or_panic};
+use pcap_build::{udp_frame, write_pcap, write_pcapng_with_dsb};
+
+type TestError = Box<dyn std::error::Error>;
 
 /// The committed two-party call every flag-only case reads.
 const SIP_CALL: &str = "tests/fixtures/sip_call.pcap";
@@ -44,13 +46,13 @@ impl Outcome {
 }
 
 /// Run the binary to completion with a private home and `SIPNAB_LOG=info`.
-fn sipnab(args: &[&str]) -> Outcome {
+fn sipnab(args: &[&str]) -> Result<Outcome, TestError> {
     sipnab_env(args, &[])
 }
 
 /// As [`sipnab`], with extra environment variables.
-fn sipnab_env(args: &[&str], env: &[(&str, &str)]) -> Outcome {
-    let home = tempfile::tempdir().expect("tempdir");
+fn sipnab_env(args: &[&str], env: &[(&str, &str)]) -> Result<Outcome, TestError> {
+    let home = tempfile::tempdir()?;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
@@ -63,17 +65,17 @@ fn sipnab_env(args: &[&str], env: &[(&str, &str)]) -> Outcome {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("run sipnab");
-    Outcome {
+    let out = cmd.output()?;
+    Ok(Outcome {
         code: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-    }
+    })
 }
 
 /// A path as the `&str` the argument list wants.
-fn s(p: &Path) -> &str {
-    p.to_str().expect("utf-8 path")
+fn s(p: &Path) -> Result<&str, TestError> {
+    Ok(p.to_str().ok_or("utf-8 path")?)
 }
 
 /// One SIP message as a wire payload: start line, headers, empty body.
@@ -109,7 +111,7 @@ fn invite(call_id: &str, extra: &[&str]) -> Vec<u8> {
 /// Every relay ask on a run that names no relay says which flag to add, and
 /// the run still completes.
 #[test]
-fn relay_asks_naming_no_relay_are_told_which_flag_to_add() {
+fn relay_asks_naming_no_relay_are_told_which_flag_to_add() -> Result<(), TestError> {
     let run = sipnab(&[
         "-N",
         "-I",
@@ -119,7 +121,7 @@ fn relay_asks_naming_no_relay_are_told_which_flag_to_add() {
         "5",
         "--relay-compare",
         SIP_CALL_ID,
-    ]);
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     for needle in [
         "--relay-stats needs a relay to ask",
@@ -128,15 +130,16 @@ fn relay_asks_naming_no_relay_are_told_which_flag_to_add() {
     ] {
         assert!(run.stderr.contains(needle), "{needle}\n{}", run.dump());
     }
+    Ok(())
 }
 
 /// With a relay named, every ask on a file run is refused as offline -- and
 /// nothing reaches the address named, which this test owns and watches.
 #[test]
-fn relay_asks_on_a_file_run_are_refused_and_nothing_is_sent() {
-    let watch = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind the watched port");
-    watch.set_nonblocking(true).expect("nonblocking");
-    let relay = watch.local_addr().expect("address").to_string();
+fn relay_asks_on_a_file_run_are_refused_and_nothing_is_sent() -> Result<(), TestError> {
+    let watch = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    watch.set_nonblocking(true)?;
+    let relay = watch.local_addr()?.to_string();
     let run = sipnab(&[
         "-N",
         "-I",
@@ -148,7 +151,7 @@ fn relay_asks_on_a_file_run_are_refused_and_nothing_is_sent() {
         "5",
         "--relay-compare",
         SIP_CALL_ID,
-    ]);
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     for needle in [
         "--relay-stats will not ask a relay on a run that reads a file",
@@ -162,13 +165,14 @@ fn relay_asks_on_a_file_run_are_refused_and_nothing_is_sent() {
         watch.recv_from(&mut buf).is_err(),
         "a file run must not transmit to the relay it names"
     );
+    Ok(())
 }
 
 // ── End-of-run summaries ──────────────────────────────────────────────────
 
 /// Write a classic Ethernet pcap whose records carry explicit timestamps and
 /// captured lengths: `(frame, ts_sec, ts_usec, captured)`.
-fn write_raw_pcap(path: &Path, records: &[(Vec<u8>, u32, u32, usize)]) {
+fn write_raw_pcap(path: &Path, records: &[(Vec<u8>, u32, u32, usize)]) -> Result<(), TestError> {
     let mut b: Vec<u8> = Vec::new();
     b.extend_from_slice(&0xa1b2_c3d4_u32.to_le_bytes());
     b.extend_from_slice(&2u16.to_le_bytes());
@@ -185,15 +189,16 @@ fn write_raw_pcap(path: &Path, records: &[(Vec<u8>, u32, u32, usize)]) {
         b.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         b.extend_from_slice(&frame[..incl]);
     }
-    std::fs::write(path, b).expect("write pcap");
+    std::fs::write(path, b)?;
+    Ok(())
 }
 
 /// A record whose microseconds field is out of range is stamped with the wall
 /// clock, and the capture-quality summary says so: every timing figure drawn
 /// from that capture is unreliable, even though every frame decoded.
 #[test]
-fn a_misdated_record_is_named_in_the_capture_quality_summary() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_misdated_record_is_named_in_the_capture_quality_summary() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("quality.pcap");
     let frame = udp_frame(
         [192, 0, 2, 10],
@@ -209,8 +214,8 @@ fn a_misdated_record_is_named_in_the_capture_quality_summary() {
             // 1.5 million microseconds is not a time of day.
             (frame, 1_700_000_001, 1_500_000, usize::MAX),
         ],
-    );
-    let run = sipnab(&["-N", "-I", s(&pcap)]);
+    )?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(
@@ -220,11 +225,12 @@ fn a_misdated_record_is_named_in_the_capture_quality_summary() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// One LLMNR message: a query for `name` from its sender, or a response
 /// claiming `name` for `owner`.
-fn llmnr(id: u16, name: &str, answer: Option<[u8; 4]>) -> Vec<u8> {
+fn llmnr(id: u16, name: &str, answer: Option<[u8; 4]>) -> Result<Vec<u8>, TestError> {
     let mut m = Vec::new();
     m.extend_from_slice(&id.to_be_bytes());
     m.extend_from_slice(&(if answer.is_some() { 0x8000u16 } else { 0 }).to_be_bytes());
@@ -232,7 +238,7 @@ fn llmnr(id: u16, name: &str, answer: Option<[u8; 4]>) -> Vec<u8> {
     m.extend_from_slice(&u16::from(answer.is_some()).to_be_bytes());
     m.extend_from_slice(&0u16.to_be_bytes());
     m.extend_from_slice(&0u16.to_be_bytes());
-    m.push(u8::try_from(name.len()).expect("short label"));
+    m.push(u8::try_from(name.len())?);
     m.extend_from_slice(name.as_bytes());
     m.push(0);
     m.extend_from_slice(&1u16.to_be_bytes()); // A
@@ -245,15 +251,15 @@ fn llmnr(id: u16, name: &str, answer: Option<[u8; 4]>) -> Vec<u8> {
         m.extend_from_slice(&4u16.to_be_bytes());
         m.extend_from_slice(&addr);
     }
-    m
+    Ok(m)
 }
 
 /// LLMNR on the segment is summarized as a host roster: who answered for
 /// which name, which lookups nothing answered, what each host looked up, and
 /// -- past eight -- how many more there were rather than a silent cut.
 #[test]
-fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("llmnr.pcap");
     let group = [224, 0, 0, 252];
     let mut frames = Vec::new();
@@ -264,7 +270,7 @@ fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() {
             group,
             51_000 + n,
             5355,
-            &llmnr(100 + n, &format!("printer{n}"), None),
+            &llmnr(100 + n, &format!("printer{n}"), None)?,
         ));
     }
     // Ten more hosts each look up a name nothing answers.
@@ -274,7 +280,7 @@ fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() {
             group,
             50_000 + u16::from(h),
             5355,
-            &llmnr(u16::from(h), &format!("share{h}"), None),
+            &llmnr(u16::from(h), &format!("share{h}"), None)?,
         ));
     }
     frames.push(udp_frame(
@@ -282,11 +288,11 @@ fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() {
         [10, 9, 0, 99],
         5355,
         51_000,
-        &llmnr(100, "printer0", Some([10, 9, 0, 200])),
+        &llmnr(100, "printer0", Some([10, 9, 0, 200]))?,
     ));
-    write_pcap_or_panic(&pcap, &frames);
+    write_pcap(&pcap, &frames)?;
 
-    let run = sipnab(&["-N", "-I", s(&pcap)]);
+    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     let err = &run.stderr;
     assert!(
@@ -316,6 +322,7 @@ fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() {
         "twelve hosts were seen, eight are listed:\n{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// An Ethernet/IPv4 ICMP port-unreachable from a router, quoting a UDP
@@ -351,11 +358,11 @@ fn icmp_quoting_sip(quoted_sip: &[u8]) -> Vec<u8> {
 /// and a quote cut before its Call-ID is counted as evidence against no call
 /// rather than dropped.
 #[test]
-fn icmp_errors_quoting_sip_name_the_unreachable_endpoint() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn icmp_errors_quoting_sip_name_the_unreachable_endpoint() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("icmp.pcap");
     let full = invite("icmp@192.0.2.10", &[]);
-    write_pcap_or_panic(
+    write_pcap(
         &pcap,
         &[
             udp_frame([192, 0, 2, 10], [192, 0, 2, 20], 5060, 5060, &full),
@@ -364,8 +371,8 @@ fn icmp_errors_quoting_sip_name_the_unreachable_endpoint() {
             // after the request line, before any Call-ID.
             icmp_quoting_sip(b"INVITE sip:bob@example.com SIP/2.0\r\n"),
         ],
-    );
-    let run = sipnab(&["-N", "-I", s(&pcap)]);
+    )?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(
@@ -381,6 +388,7 @@ fn icmp_errors_quoting_sip_name_the_unreachable_endpoint() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 // ── Key files loaded at startup ───────────────────────────────────────────
@@ -388,10 +396,10 @@ fn icmp_errors_quoting_sip_name_the_unreachable_endpoint() {
 /// An `--srtp-keys` file that cannot be read refuses the run with exit 1 and
 /// names the file, rather than analyzing encrypted media as noise.
 #[test]
-fn an_unreadable_srtp_key_file_refuses_the_run() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_unreadable_srtp_key_file_refuses_the_run() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let missing = dir.path().join("absent.keys");
-    let run = sipnab(&["-N", "-I", SIP_CALL, "--srtp-keys", s(&missing)]);
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--srtp-keys", s(&missing)?])?;
     assert_eq!(run.code, Some(1), "{}", run.dump());
     assert!(
         run.stderr
@@ -399,16 +407,17 @@ fn an_unreadable_srtp_key_file_refuses_the_run() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// A readable `--srtp-keys` file is loaded and announced with its key count.
 #[test]
-fn a_readable_srtp_key_file_is_loaded_and_announced() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_readable_srtp_key_file_is_loaded_and_announced() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let keys = dir.path().join("media.keys");
     // 30 bytes of key||salt, base64: AES_CM_128_HMAC_SHA1_80's master length.
-    std::fs::write(&keys, format!("ssrc=4660 key={}\n", "A".repeat(40))).expect("write keys");
-    let run = sipnab(&["-N", "-I", SIP_CALL, "--srtp-keys", s(&keys)]);
+    std::fs::write(&keys, format!("ssrc=4660 key={}\n", "A".repeat(40)))?;
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--srtp-keys", s(&keys)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(&format!(
@@ -418,6 +427,7 @@ fn a_readable_srtp_key_file_is_loaded_and_announced() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// Loading a manual `--srtp-keys` file prints a WARNING, not only an info
@@ -425,24 +435,25 @@ fn a_readable_srtp_key_file_is_loaded_and_announced() {
 /// the warn level (`-q`, or `SIPNAB_LOG=warn`) must still be told that
 /// hand-supplied key material is in use.
 #[test]
-fn srtp_keys_prints_warning() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn srtp_keys_prints_warning() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let keys = dir.path().join("media.keys");
-    std::fs::write(&keys, format!("ssrc=4660 key={}\n", "A".repeat(40))).expect("write keys");
+    std::fs::write(&keys, format!("ssrc=4660 key={}\n", "A".repeat(40)))?;
     let run = sipnab_env(
-        &["-N", "-I", SIP_CALL, "--srtp-keys", s(&keys)],
+        &["-N", "-I", SIP_CALL, "--srtp-keys", s(&keys)?],
         &[("SIPNAB_LOG", "warn")],
-    );
+    )?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     let line = run
         .stderr
         .lines()
         .find(|l| l.contains("manual SRTP keys loaded"))
-        .unwrap_or_else(|| panic!("no manual-keys warning at the warn level:\n{}", run.dump()));
+        .ok_or_else(|| format!("no manual-keys warning at the warn level:\n{}", run.dump()))?;
     assert!(
         line.contains("WARN") && line.contains("use only in test environments"),
         "the manual-keys line must be a WARNING that says where the keys belong: {line}"
     );
+    Ok(())
 }
 
 /// One NSS key-log line with a client random and a master secret.
@@ -456,11 +467,11 @@ fn keylog_line(fill: char) -> String {
 
 /// A `--dtls-keylog` file is loaded and announced with its entry count.
 #[test]
-fn a_dtls_keylog_is_loaded_and_announced() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_dtls_keylog_is_loaded_and_announced() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let keylog = dir.path().join("dtls.keylog");
-    std::fs::write(&keylog, keylog_line('a') + &keylog_line('b')).expect("write keylog");
-    let run = sipnab(&["-N", "-I", SIP_CALL, "--dtls-keylog", s(&keylog)]);
+    std::fs::write(&keylog, keylog_line('a') + &keylog_line('b'))?;
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--dtls-keylog", s(&keylog)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(&format!(
@@ -470,13 +481,14 @@ fn a_dtls_keylog_is_loaded_and_announced() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// A capture carrying its own TLS secrets in a Decryption Secrets Block
 /// decrypts with no `--keylog`: the secrets are found and announced.
 #[test]
-fn secrets_embedded_in_the_capture_arm_decryption_without_a_keylog() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn secrets_embedded_in_the_capture_arm_decryption_without_a_keylog() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("dsb.pcapng");
     let frame = udp_frame(
         [192, 0, 2, 10],
@@ -485,8 +497,8 @@ fn secrets_embedded_in_the_capture_arm_decryption_without_a_keylog() {
         5060,
         &invite("dsb@192.0.2.10", &[]),
     );
-    write_pcapng_with_dsb_or_panic(&pcap, &keylog_line('c'), &frame);
-    let run = sipnab(&["-N", "-I", s(&pcap)]);
+    write_pcapng_with_dsb(&pcap, &keylog_line('c'), &frame)?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(&format!(
@@ -496,16 +508,17 @@ fn secrets_embedded_in_the_capture_arm_decryption_without_a_keylog() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// With a `--keylog` already loaded, the embedded secrets are ADDED to it and
 /// the addition is announced -- neither source replaces the other.
 #[test]
-fn embedded_secrets_are_added_to_a_keylog_already_loaded() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn embedded_secrets_are_added_to_a_keylog_already_loaded() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("dsb.pcapng");
     let keylog = dir.path().join("session.keylog");
-    std::fs::write(&keylog, keylog_line('d')).expect("write keylog");
+    std::fs::write(&keylog, keylog_line('d'))?;
     let frame = udp_frame(
         [192, 0, 2, 10],
         [192, 0, 2, 20],
@@ -513,8 +526,8 @@ fn embedded_secrets_are_added_to_a_keylog_already_loaded() {
         5060,
         &invite("dsb2@192.0.2.10", &[]),
     );
-    write_pcapng_with_dsb_or_panic(&pcap, &keylog_line('e'), &frame);
-    let run = sipnab(&["-N", "-I", s(&pcap), "--keylog", s(&keylog)]);
+    write_pcapng_with_dsb(&pcap, &keylog_line('e'), &frame)?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?, "--keylog", s(&keylog)?])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(&format!(
@@ -524,6 +537,7 @@ fn embedded_secrets_are_added_to_a_keylog_already_loaded() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 // ── vCon export: redaction map and digests ────────────────────────────────
@@ -532,9 +546,10 @@ fn embedded_secrets_are_added_to_a_keylog_already_loaded() {
 /// reports the redaction it applied.
 #[cfg(unix)]
 #[test]
-fn the_redaction_map_is_written_owner_readable_and_the_redaction_reported() {
+fn the_redaction_map_is_written_owner_readable_and_the_redaction_reported() -> Result<(), TestError>
+{
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("call.vcon.json");
     let map = dir.path().join("tokens.map");
     let run = sipnab(&[
@@ -544,11 +559,11 @@ fn the_redaction_map_is_written_owner_readable_and_the_redaction_reported() {
         "--export-vcon",
         SIP_CALL_ID,
         "--vcon-out",
-        s(&out),
+        s(&out)?,
         "--redact",
         "--redact-map",
-        s(&map),
-    ]);
+        s(&map)?,
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains("Redaction: ") && run.stderr.contains("classes, key "),
@@ -563,22 +578,20 @@ fn the_redaction_map_is_written_owner_readable_and_the_redaction_reported() {
         "{}",
         run.dump()
     );
-    let mode = std::fs::metadata(&map)
-        .expect("map written")
-        .permissions()
-        .mode();
+    let mode = std::fs::metadata(&map)?.permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "the map reverses every pseudonym");
     assert!(out.exists(), "the container is written too");
+    Ok(())
 }
 
 /// An existing `--redact-map` is never overwritten: it may be the only way
 /// back from tokens already sent somewhere. The run fails and writes nothing.
 #[test]
-fn an_existing_redaction_map_is_refused_and_nothing_is_exported() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_existing_redaction_map_is_refused_and_nothing_is_exported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("call.vcon.json");
     let map = dir.path().join("tokens.map");
-    std::fs::write(&map, "earlier export's table\n").expect("write map");
+    std::fs::write(&map, "earlier export's table\n")?;
     let run = sipnab(&[
         "-N",
         "-I",
@@ -586,11 +599,11 @@ fn an_existing_redaction_map_is_refused_and_nothing_is_exported() {
         "--export-vcon",
         SIP_CALL_ID,
         "--vcon-out",
-        s(&out),
+        s(&out)?,
         "--redact",
         "--redact-map",
-        s(&map),
-    ]);
+        s(&map)?,
+    ])?;
     assert_eq!(run.code, Some(1), "{}", run.dump());
     assert!(
         run.stderr
@@ -599,18 +612,19 @@ fn an_existing_redaction_map_is_refused_and_nothing_is_exported() {
         run.dump()
     );
     assert_eq!(
-        std::fs::read_to_string(&map).expect("map still there"),
+        std::fs::read_to_string(&map)?,
         "earlier export's table\n",
         "the earlier table is untouched"
     );
     assert!(!out.exists(), "nothing is exported after the refusal");
+    Ok(())
 }
 
 /// A `--redact-key-file` that cannot be read is fatal: a fresh key would make
 /// tokens that join against nothing, silently.
 #[test]
-fn an_unreadable_redaction_key_file_refuses_the_export() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_unreadable_redaction_key_file_refuses_the_export() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("call.vcon.json");
     let key = dir.path().join("absent.key");
     let run = sipnab(&[
@@ -620,11 +634,11 @@ fn an_unreadable_redaction_key_file_refuses_the_export() {
         "--export-vcon",
         SIP_CALL_ID,
         "--vcon-out",
-        s(&out),
+        s(&out)?,
         "--redact",
         "--redact-key-file",
-        s(&key),
-    ]);
+        s(&key)?,
+    ])?;
     assert_eq!(run.code, Some(1), "{}", run.dump());
     assert!(
         run.stderr.contains(&format!(
@@ -635,14 +649,15 @@ fn an_unreadable_redaction_key_file_refuses_the_export() {
         run.dump()
     );
     assert!(!out.exists(), "nothing is exported after the refusal");
+    Ok(())
 }
 
 /// `--vcon-digest` prints one `sha256sum`-format line per container on
 /// stdout, and the digest is the digest of the bytes written.
 #[test]
-fn vcon_digest_prints_a_sha256sum_line_for_each_container_written() {
+fn vcon_digest_prints_a_sha256sum_line_for_each_container_written() -> Result<(), TestError> {
     use sha2::Digest;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let export = dir.path().join("vcons");
     let run = sipnab(&[
         "-N",
@@ -652,19 +667,20 @@ fn vcon_digest_prints_a_sha256sum_line_for_each_container_written() {
         "--export-vcon-when",
         "response_code >= 200",
         "--export-vcon-dir",
-        s(&export),
+        s(&export)?,
         "--vcon-digest",
-    ]);
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     let lines: Vec<&str> = run.stdout.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 1, "one container, one line:\n{}", run.dump());
-    let (digest, name) = lines[0].split_once("  ").expect("two-space separator");
-    let bytes = std::fs::read(export.join(name)).expect("the named container exists");
+    let (digest, name) = lines[0].split_once("  ").ok_or("two-space separator")?;
+    let bytes = std::fs::read(export.join(name))?;
     let expected: String = sha2::Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     assert_eq!(digest, expected, "the digest is of the bytes on disk");
+    Ok(())
 }
 
 /// `--export-vcon-when` puts the call's audio in each container, as
@@ -677,10 +693,10 @@ fn vcon_digest_prints_a_sha256sum_line_for_each_container_written() {
 /// The body is compared with the single-call export's, so the two paths
 /// cannot drift apart again.
 #[test]
-fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
+fn export_vcon_when_carries_the_calls_audio_like_export_vcon() -> Result<(), TestError> {
     const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
     const CALL: &str = "1-1966@10.0.2.20";
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let spool = dir.path().join("vcons");
     let one = dir.path().join("one.json");
 
@@ -693,8 +709,8 @@ fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
         "--export-vcon-when",
         "state == 'Completed'",
         "--export-vcon-dir",
-        s(&spool),
-    ]);
+        s(&spool)?,
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     let single = sipnab(&[
         "-N",
@@ -705,8 +721,8 @@ fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
         "--export-vcon",
         CALL,
         "--vcon-out",
-        s(&one),
-    ]);
+        s(&one)?,
+    ])?;
     assert_eq!(single.code, Some(0), "{}", single.dump());
 
     let recording = |v: &serde_json::Value| -> Option<serde_json::Value> {
@@ -716,26 +732,28 @@ fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
             .find(|d| d["type"] == "recording")
             .cloned()
     };
-    let read = |p: &Path| -> serde_json::Value {
-        serde_json::from_slice(&std::fs::read(p).expect("read container")).expect("json")
+    let read = |p: &Path| -> Result<serde_json::Value, TestError> {
+        Ok(serde_json::from_slice(&std::fs::read(p)?)?)
     };
-    let spooled = std::fs::read_dir(&spool)
-        .expect("the spool exists")
-        .map(|e| e.expect("entry").path())
+    let spooled = std::fs::read_dir(&spool)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .find(|p| {
             p.file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with("1-1966"))
         })
-        .expect("a container for the call");
-    let from_spool = recording(&read(&spooled))
-        .unwrap_or_else(|| panic!("the --export-vcon-when container carries no recording"));
+        .ok_or("a container for the call")?;
+    let from_spool = recording(&read(&spooled)?)
+        .ok_or("the --export-vcon-when container carries no recording")?;
     let from_single =
-        recording(&read(&one)).expect("the --export-vcon container carries a recording");
+        recording(&read(&one)?).ok_or("the --export-vcon container carries a recording")?;
     assert_eq!(from_spool["mediatype"], "audio/x-wav");
     assert_eq!(
         from_spool["body"], from_single["body"],
         "the two export paths inline different audio for the same call"
     );
+    Ok(())
 }
 
 // ── Output switches ───────────────────────────────────────────────────────
@@ -743,10 +761,10 @@ fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
 /// `--wireshark` on a capture holding no SIP says so, rather than printing an
 /// empty display filter that matches nothing.
 #[test]
-fn wireshark_with_no_dialogs_says_there_is_nothing_to_filter() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn wireshark_with_no_dialogs_says_there_is_nothing_to_filter() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("rtp-only.pcap");
-    write_pcap_or_panic(
+    write_pcap(
         &pcap,
         &[udp_frame(
             [192, 0, 2, 10],
@@ -755,8 +773,8 @@ fn wireshark_with_no_dialogs_says_there_is_nothing_to_filter() {
             40_002,
             &[0u8; 32],
         )],
-    );
-    let run = sipnab(&["-N", "-I", s(&pcap), "--wireshark"]);
+    )?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?, "--wireshark"])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr
@@ -769,6 +787,7 @@ fn wireshark_with_no_dialogs_says_there_is_nothing_to_filter() {
         "no filter is printed:\n{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// Base64url without padding, as a JWT segment.
@@ -780,7 +799,7 @@ fn b64url(bytes: &[u8]) -> String {
 /// `--stir-shaken` reports each Identity header's attestation and numbers,
 /// and warns about one that does not parse instead of treating it as absent.
 #[test]
-fn stir_shaken_reports_each_identity_and_warns_on_a_corrupt_one() {
+fn stir_shaken_reports_each_identity_and_warns_on_a_corrupt_one() -> Result<(), TestError> {
     let header = b64url(
         br#"{"alg":"ES256","ppt":"shaken","typ":"passport","x5u":"https://cert.example.com/sp.pem"}"#,
     );
@@ -791,9 +810,9 @@ fn stir_shaken_reports_each_identity_and_warns_on_a_corrupt_one() {
         "Identity: {header}.{claims}.{};info=<https://cert.example.com/sp.pem>;alg=ES256;ppt=shaken",
         b64url(b"not-a-real-signature")
     );
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("shaken.pcap");
-    write_pcap_or_panic(
+    write_pcap(
         &pcap,
         &[
             udp_frame(
@@ -814,8 +833,8 @@ fn stir_shaken_reports_each_identity_and_warns_on_a_corrupt_one() {
                 ),
             ),
         ],
-    );
-    let run = sipnab(&["-N", "-I", s(&pcap), "--stir-shaken"]);
+    )?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?, "--stir-shaken"])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains("STIR/SHAKEN: attest=")
@@ -830,30 +849,33 @@ fn stir_shaken_reports_each_identity_and_warns_on_a_corrupt_one() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// `SIPNAB_PERF_STATS` prints the per-run work counters that scale with call
 /// count, and the dialog and stream counts are this capture's.
 #[test]
-fn the_perf_stats_probe_prints_this_runs_work_counters() {
+fn the_perf_stats_probe_prints_this_runs_work_counters() -> Result<(), TestError> {
     let run = sipnab_env(
         &["-N", "-I", SIP_CALL, "--no-cli-print"],
         &[("SIPNAB_PERF_STATS", "1")],
-    );
+    )?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains("[perf-stats] dialogs=1 streams="),
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// The probe is off unless asked for: an ordinary run prints no counters.
 #[test]
-fn the_perf_stats_probe_is_silent_unless_asked() {
-    let run = sipnab(&["-N", "-I", SIP_CALL, "--no-cli-print"]);
+fn the_perf_stats_probe_is_silent_unless_asked() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--no-cli-print"])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(!run.stderr.contains("[perf-stats]"), "{}", run.dump());
+    Ok(())
 }
 
 // ── Startup refusals and notices ──────────────────────────────────────────
@@ -862,10 +884,10 @@ fn the_perf_stats_probe_is_silent_unless_asked() {
 /// so the run is refused with exit 2 and the flag named, instead of writing an
 /// empty file and exiting 0.
 #[test]
-fn cores_with_an_output_file_is_refused_and_names_the_flag() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn cores_with_an_output_file_is_refused_and_names_the_flag() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("out.pcap");
-    let run = sipnab(&["-N", "-I", SIP_CALL, "--cores", "2", "-O", s(&out)]);
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--cores", "2", "-O", s(&out)?])?;
     assert_eq!(run.code, Some(2), "{}", run.dump());
     assert!(
         run.stderr.contains("--cores 2 cannot produce -O/--output"),
@@ -873,12 +895,13 @@ fn cores_with_an_output_file_is_refused_and_names_the_flag() {
         run.dump()
     );
     assert!(!out.exists(), "nothing is written after the refusal");
+    Ok(())
 }
 
 /// `--metrics` on the `--cores` path is said out loud as not served, rather
 /// than left to be discovered by an empty dashboard.
 #[test]
-fn metrics_on_the_parallel_reader_is_reported_as_not_served() {
+fn metrics_on_the_parallel_reader_is_reported_as_not_served() -> Result<(), TestError> {
     let run = sipnab(&[
         "-N",
         "-I",
@@ -888,7 +911,7 @@ fn metrics_on_the_parallel_reader_is_reported_as_not_served() {
         "--no-cli-print",
         "--metrics",
         "127.0.0.1:0",
-    ]);
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr
@@ -901,18 +924,19 @@ fn metrics_on_the_parallel_reader_is_reported_as_not_served() {
         "the parallel reader ran and reported its core count:\n{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// Several inputs are read in capture-time order, and the run says how many
 /// files it is about to read and which comes first.
 #[test]
-fn several_inputs_are_announced_with_their_count_and_the_first_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn several_inputs_are_announced_with_their_count_and_the_first_file() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let early = dir.path().join("early.pcap");
     let late = dir.path().join("late.pcap");
-    std::fs::copy(SIP_CALL, &early).expect("copy fixture");
-    std::fs::copy(SIP_CALL, &late).expect("copy fixture");
-    let run = sipnab(&["-N", "-I", s(&late), "-I", s(&early), "--no-cli-print"]);
+    std::fs::copy(SIP_CALL, &early)?;
+    std::fs::copy(SIP_CALL, &late)?;
+    let run = sipnab(&["-N", "-I", s(&late)?, "-I", s(&early)?, "--no-cli-print"])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr
@@ -920,13 +944,14 @@ fn several_inputs_are_announced_with_their_count_and_the_first_file() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// `--sandbox best-effort` reports what it installed either way: enforced
 /// where the kernel has Landlock, not active (and why) where it does not --
 /// and the file run completes under it.
 #[test]
-fn a_best_effort_sandbox_reports_its_state_and_the_run_completes() {
+fn a_best_effort_sandbox_reports_its_state_and_the_run_completes() -> Result<(), TestError> {
     let run = sipnab(&[
         "-N",
         "-I",
@@ -934,7 +959,7 @@ fn a_best_effort_sandbox_reports_its_state_and_the_run_completes() {
         "--no-cli-print",
         "--sandbox",
         "best-effort",
-    ]);
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains("path sandbox ENFORCED")
@@ -942,18 +967,17 @@ fn a_best_effort_sandbox_reports_its_state_and_the_run_completes() {
         "{}",
         run.dump()
     );
+    Ok(())
 }
 
 /// `--hep-send` with an inline secret forwards the capture's SIP to the
 /// collector named -- a loopback socket this test owns -- and says the stream
 /// is authenticated.
 #[test]
-fn hep_send_with_a_secret_forwards_authenticated_hep_to_the_collector() {
-    let collector = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    collector
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .expect("read timeout");
-    let addr = collector.local_addr().expect("address").to_string();
+fn hep_send_with_a_secret_forwards_authenticated_hep_to_the_collector() -> Result<(), TestError> {
+    let collector = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    collector.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let addr = collector.local_addr()?.to_string();
     let run = sipnab(&[
         "-N",
         "-I",
@@ -963,7 +987,7 @@ fn hep_send_with_a_secret_forwards_authenticated_hep_to_the_collector() {
         &addr,
         "--hep-auth",
         "collector-secret",
-    ]);
+    ])?;
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
         run.stderr.contains(&format!(
@@ -973,14 +997,13 @@ fn hep_send_with_a_secret_forwards_authenticated_hep_to_the_collector() {
         run.dump()
     );
     let mut buf = [0u8; 65536];
-    let (n, _) = collector
-        .recv_from(&mut buf)
-        .expect("a HEP datagram arrives");
+    let (n, _) = collector.recv_from(&mut buf)?;
     assert_eq!(&buf[..4], b"HEP3", "HEP v3 framing");
     assert!(
         buf[..n].windows(16).any(|w| w == b"collector-secret"),
         "the auth chunk carries the configured secret"
     );
+    Ok(())
 }
 
 /// An unreadable `--hep-auth-file` refuses the run instead of forwarding the
@@ -990,11 +1013,11 @@ fn hep_send_with_a_secret_forwards_authenticated_hep_to_the_collector() {
 /// instead of silently disabling authentication", and `-L` already turns the
 /// same refusal into exit 2. `--hep-send` logged it and sent anyway.
 #[test]
-fn an_unreadable_hep_auth_file_refuses_the_run_and_sends_nothing() {
-    let collector = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    collector.set_nonblocking(true).expect("nonblocking");
-    let addr = collector.local_addr().expect("address").to_string();
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_unreadable_hep_auth_file_refuses_the_run_and_sends_nothing() -> Result<(), TestError> {
+    let collector = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    collector.set_nonblocking(true)?;
+    let addr = collector.local_addr()?.to_string();
+    let dir = tempfile::tempdir()?;
     let missing = dir.path().join("hep.secret");
     let run = sipnab(&[
         "-N",
@@ -1004,8 +1027,8 @@ fn an_unreadable_hep_auth_file_refuses_the_run_and_sends_nothing() {
         "--hep-send",
         &addr,
         "--hep-auth-file",
-        s(&missing),
-    ]);
+        s(&missing)?,
+    ])?;
     assert_eq!(run.code, Some(2), "{}", run.dump());
     assert!(
         run.stderr.contains("HEP auth: --hep-auth-file"),
@@ -1017,6 +1040,7 @@ fn an_unreadable_hep_auth_file_refuses_the_run_and_sends_nothing() {
         collector.recv_from(&mut buf).is_err(),
         "no unauthenticated HEP may reach the collector"
     );
+    Ok(())
 }
 
 // ── Snapped frames and the packet count ───────────────────────────────────
@@ -1024,7 +1048,7 @@ fn an_unreadable_hep_auth_file_refuses_the_run_and_sends_nothing() {
 /// Three INVITEs on UDP 5060 with the middle one recorded `cut` bytes short of
 /// its wire length -- `incl_len` below `orig_len`, which is what a snaplen
 /// does -- or all three whole when `cut` is zero.
-fn three_invites_one_cut(path: &Path, cut: usize) {
+fn three_invites_one_cut(path: &Path, cut: usize) -> Result<(), TestError> {
     let frames: Vec<Vec<u8>> = (0..3)
         .map(|i| {
             udp_frame(
@@ -1044,15 +1068,19 @@ fn three_invites_one_cut(path: &Path, cut: usize) {
             (frames[1].clone(), 1_700_000_001, 0, kept),
             (frames[2].clone(), 1_700_000_002, 0, usize::MAX),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 /// The default reader, then `--cores 2`, over the same capture.
-fn on_both_readers(pcap: &Path) -> [(&'static str, Outcome); 2] {
-    [
-        ("default reader", sipnab(&["-N", "-I", s(pcap)])),
-        ("--cores 2", sipnab(&["-N", "-I", s(pcap), "--cores", "2"])),
-    ]
+fn on_both_readers(pcap: &Path) -> Result<[(&'static str, Outcome); 2], TestError> {
+    Ok([
+        ("default reader", sipnab(&["-N", "-I", s(pcap)?])?),
+        (
+            "--cores 2",
+            sipnab(&["-N", "-I", s(pcap)?, "--cores", "2"])?,
+        ),
+    ])
 }
 
 /// A frame the capture cut short is reported as cut short on the default
@@ -1065,11 +1093,11 @@ fn on_both_readers(pcap: &Path) -> [(&'static str, Outcome); 2] {
 /// bytes its IP header promises were never captured, as a "decode error" that
 /// had "reached sipnab intact".
 #[test]
-fn a_snapped_frame_is_reported_as_snapped_on_every_reader() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_snapped_frame_is_reported_as_snapped_on_every_reader() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("snapped.pcap");
-    three_invites_one_cut(&pcap, 20);
-    for (reader, run) in on_both_readers(&pcap) {
+    three_invites_one_cut(&pcap, 20)?;
+    for (reader, run) in on_both_readers(&pcap)? {
         assert_eq!(run.code, Some(0), "{reader}\n{}", run.dump());
         assert!(
             run.stderr
@@ -1089,16 +1117,17 @@ fn a_snapped_frame_is_reported_as_snapped_on_every_reader() {
             run.dump()
         );
     }
+    Ok(())
 }
 
 /// The negative control: a capture with nothing cut short reports no truncated
 /// frame on either reader.
 #[test]
-fn an_intact_capture_reports_no_truncated_frame_on_either_reader() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_intact_capture_reports_no_truncated_frame_on_either_reader() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("intact.pcap");
-    three_invites_one_cut(&pcap, 0);
-    for (reader, run) in on_both_readers(&pcap) {
+    three_invites_one_cut(&pcap, 0)?;
+    for (reader, run) in on_both_readers(&pcap)? {
         assert_eq!(run.code, Some(0), "{reader}\n{}", run.dump());
         assert!(
             !run.stderr.contains("arrived truncated"),
@@ -1111,6 +1140,7 @@ fn an_intact_capture_reports_no_truncated_frame_on_either_reader() {
             run.dump()
         );
     }
+    Ok(())
 }
 
 /// An Ethernet ARP who-has, captured whole: a frame no decoder here turns into
@@ -1132,8 +1162,8 @@ fn arp_frame() -> Vec<u8> {
 /// on the default reader, and put the undecodable frame at "1 of 2" -- 50%,
 /// which is the share at which the notice declares the run mostly blind.
 #[test]
-fn a_cores_run_counts_every_record_it_read_as_the_default_reader_does() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_cores_run_counts_every_record_it_read_as_the_default_reader_does() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("with-arp.pcap");
     let sip = |i: u32| {
         udp_frame(
@@ -1151,8 +1181,8 @@ fn a_cores_run_counts_every_record_it_read_as_the_default_reader_does() {
             (arp_frame(), 1_700_000_001, 0, usize::MAX),
             (sip(1), 1_700_000_002, 0, usize::MAX),
         ],
-    );
-    for (reader, run) in on_both_readers(&pcap) {
+    )?;
+    for (reader, run) in on_both_readers(&pcap)? {
         assert_eq!(run.code, Some(0), "{reader}\n{}", run.dump());
         assert!(
             run.stderr.contains("sipnab: 3 packets"),
@@ -1165,4 +1195,5 @@ fn a_cores_run_counts_every_record_it_read_as_the_default_reader_does() {
             run.dump()
         );
     }
+    Ok(())
 }

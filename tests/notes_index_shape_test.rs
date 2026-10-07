@@ -18,13 +18,16 @@
 
 use std::path::{Path, PathBuf};
 
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 const TEMPLATE: &str = "website/templates/notes.html";
@@ -41,11 +44,11 @@ const DISCLOSURE_TAG: &str = "<details class=\"note-archive\"";
 const RENDERED_KINDS: &[&str] = &["howto", "feature", "postmortem"];
 
 /// Every note's `kind`, with the file it came from.
-fn note_kinds() -> Vec<(String, String)> {
+fn note_kinds() -> Result<Vec<(String, String)>, TestError> {
     let dir = repo().join("website/content/notes");
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir)
-        .expect("read website/content/notes")
+        .map_err(|e| format!("read website/content/notes: {e}"))?
         .flatten()
     {
         let path = entry.path();
@@ -68,7 +71,7 @@ fn note_kinds() -> Vec<(String, String)> {
         out.push((name, kind));
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Post-mortems are behind a disclosure, and it starts closed.
@@ -76,15 +79,15 @@ fn note_kinds() -> Vec<(String, String)> {
 /// `<details>` without `open` is the whole mechanism: the titles are reachable
 /// and the page does not open onto them.
 #[test]
-fn the_postmortems_sit_behind_a_closed_disclosure() {
-    let tpl = read(TEMPLATE);
+fn the_postmortems_sit_behind_a_closed_disclosure() -> Result<(), TestError> {
+    let tpl = read(TEMPLATE)?;
     // The real tag, not the word `<details>` inside the Tera comment that
     // explains the design. Matching the prose made this gate read a comment
     // and pass for a reason unrelated to the markup.
     let at = tpl
         .find(DISCLOSURE_TAG)
-        .expect("the notes index no longer has a disclosure at all");
-    let tag_end = tpl[at..].find('>').expect("unterminated <details") + at;
+        .ok_or("the notes index no longer has a disclosure at all")?;
+    let tag_end = tpl[at..].find('>').ok_or("unterminated <details")? + at;
     let tag = &tpl[at..=tag_end];
 
     assert!(
@@ -98,6 +101,7 @@ fn the_postmortems_sit_behind_a_closed_disclosure() {
         "the disclosure does not contain the post-mortem list; it is \
          collapsing something else"
     );
+    Ok(())
 }
 
 /// How-tos and features are NOT behind it.
@@ -106,9 +110,9 @@ fn the_postmortems_sit_behind_a_closed_disclosure() {
 /// the disclosure hides it while every page still builds and every link still
 /// resolves.
 #[test]
-fn howtos_and_features_render_outside_the_disclosure() {
-    let tpl = read(TEMPLATE);
-    let details_at = tpl.find(DISCLOSURE_TAG).expect("no disclosure");
+fn howtos_and_features_render_outside_the_disclosure() -> Result<(), TestError> {
+    let tpl = read(TEMPLATE)?;
+    let details_at = tpl.find(DISCLOSURE_TAG).ok_or("no disclosure")?;
     let before = &tpl[..details_at];
 
     for kind in ["howto", "feature"] {
@@ -125,6 +129,7 @@ fn howtos_and_features_render_outside_the_disclosure() {
             "a {kind} group is rendered INSIDE the post-mortem disclosure"
         );
     }
+    Ok(())
 }
 
 /// Every note has a kind the index actually renders.
@@ -135,8 +140,8 @@ fn howtos_and_features_render_outside_the_disclosure() {
 /// resolves from the sidebar, and it is absent from the index with nothing
 /// saying so.
 #[test]
-fn every_note_has_a_kind_the_index_renders() {
-    let notes = note_kinds();
+fn every_note_has_a_kind_the_index_renders() -> Result<(), TestError> {
+    let notes = note_kinds()?;
     assert!(
         notes.len() >= 10,
         "only {} note(s) found; the scan is wrong and this gate proves nothing",
@@ -155,6 +160,7 @@ fn every_note_has_a_kind_the_index_renders() {
          Add a group to {TEMPLATE} or give the note one of {RENDERED_KINDS:?}.",
         orphaned.join("\n")
     );
+    Ok(())
 }
 
 /// The template renders a group for every kind it claims to.
@@ -163,9 +169,9 @@ fn every_note_has_a_kind_the_index_renders() {
 /// a `RENDERED_KINDS` entry that matches nothing makes the gate above vacuous
 /// for that kind.
 #[test]
-fn every_rendered_kind_is_a_kind_some_note_uses() {
-    let tpl = read(TEMPLATE);
-    let notes = note_kinds();
+fn every_rendered_kind_is_a_kind_some_note_uses() -> Result<(), TestError> {
+    let tpl = read(TEMPLATE)?;
+    let notes = note_kinds()?;
     for kind in RENDERED_KINDS {
         assert!(
             tpl.contains(&format!("value=\"{kind}\"")),
@@ -178,6 +184,7 @@ fn every_rendered_kind_is_a_kind_some_note_uses() {
              and the orphan gate is vacuous for that kind"
         );
     }
+    Ok(())
 }
 
 /// The disclosure says how many it holds.
@@ -186,12 +193,12 @@ fn every_rendered_kind_is_a_kind_some_note_uses() {
 /// and no sense of what is behind it. The count is the difference between a
 /// heading and an affordance.
 #[test]
-fn the_disclosure_states_how_many_it_holds() {
-    let tpl = read(TEMPLATE);
-    let at = tpl.find(DISCLOSURE_TAG).expect("no disclosure");
+fn the_disclosure_states_how_many_it_holds() -> Result<(), TestError> {
+    let tpl = read(TEMPLATE)?;
+    let at = tpl.find(DISCLOSURE_TAG).ok_or("no disclosure")?;
     let summary_end = tpl[at..]
         .find("</summary>")
-        .expect("the disclosure has no summary")
+        .ok_or("the disclosure has no summary")?
         + at;
     let summary = &tpl[at..summary_end];
     assert!(
@@ -199,6 +206,7 @@ fn the_disclosure_states_how_many_it_holds() {
         "the disclosure's summary does not render a count, so a reader cannot \
          tell whether it hides two notes or forty:\n{summary}"
     );
+    Ok(())
 }
 
 /// One row renderer, not two.
@@ -207,8 +215,8 @@ fn the_disclosure_states_how_many_it_holds() {
 /// of that markup drift, and the one that drifts is whichever nobody looks at
 /// — which, by construction, is the collapsed one.
 #[test]
-fn the_open_groups_and_the_archive_share_one_row_renderer() {
-    let tpl = read(TEMPLATE);
+fn the_open_groups_and_the_archive_share_one_row_renderer() -> Result<(), TestError> {
+    let tpl = read(TEMPLATE)?;
     let rows = tpl.matches("macros::note_row").count();
     assert!(
         rows >= 3,
@@ -220,11 +228,12 @@ fn the_open_groups_and_the_archive_share_one_row_renderer() {
         "the index writes a note row inline instead of calling the shared \
          macro; that is the second copy this gate exists to prevent"
     );
-    let macros = read("website/templates/macros.html");
+    let macros = read("website/templates/macros.html")?;
     assert!(
         macros.contains("macro note_row"),
         "the shared row macro is gone from macros.html"
     );
+    Ok(())
 }
 
 /// The scan reads the real template.
@@ -233,8 +242,8 @@ fn the_open_groups_and_the_archive_share_one_row_renderer() {
 /// class or a rewritten template would simply not contain, and a `find` that
 /// misses panics with a message about the wrong thing.
 #[test]
-fn the_notes_index_scan_reads_a_real_template() {
-    let tpl = read(TEMPLATE);
+fn the_notes_index_scan_reads_a_real_template() -> Result<(), TestError> {
+    let tpl = read(TEMPLATE)?;
     assert!(
         tpl.len() > 500,
         "{TEMPLATE} is {} bytes; that is not the index template",
@@ -248,18 +257,19 @@ fn the_notes_index_scan_reads_a_real_template() {
         Path::new(&repo().join("website/content/notes")).is_dir(),
         "website/content/notes is not a directory"
     );
+    Ok(())
 }
 
 /// The span of `html` from `open` to the first `close` after it.
-fn span_between<'a>(html: &'a str, open: &str, close: &str) -> &'a str {
+fn span_between<'a>(html: &'a str, open: &str, close: &str) -> Result<&'a str, TestError> {
     let at = html
         .find(open)
-        .unwrap_or_else(|| panic!("no `{open}` in the template"));
+        .ok_or_else(|| format!("no `{open}` in the template"))?;
     let end = html[at..]
         .find(close)
-        .unwrap_or_else(|| panic!("`{open}` is never followed by `{close}`"))
+        .ok_or_else(|| format!("`{open}` is never followed by `{close}`"))?
         + at;
-    &html[at..end]
+    Ok(&html[at..end])
 }
 
 /// The homepage's notes teaser shows how-tos and features, never post-mortems.
@@ -271,14 +281,14 @@ fn span_between<'a>(html: &'a str, open: &str, close: &str) -> &'a str {
 /// teaser must iterate a list selected by kind, and the selection must name
 /// both kinds a reader came for and not the one they did not.
 #[test]
-fn the_homepage_notes_teaser_leaves_out_the_postmortems() {
-    let page = read("website/templates/index.html");
-    let block = span_between(&page, "<section class=\"notes-callout\"", "</section>");
+fn the_homepage_notes_teaser_leaves_out_the_postmortems() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let block = span_between(&page, "<section class=\"notes-callout\"", "</section>")?;
 
-    let for_re = regex::Regex::new(r"\{%-?\s*for\s+\w+\s+in\s+([^%]+?)\s*-?%\}").unwrap();
+    let for_re = regex::Regex::new(r"\{%-?\s*for\s+\w+\s+in\s+([^%]+?)\s*-?%\}")?;
     let iterated = for_re
         .captures(block)
-        .unwrap_or_else(|| panic!("the notes teaser has no for loop:\n{block}"))[1]
+        .ok_or_else(|| format!("the notes teaser has no for loop:\n{block}"))?[1]
         .to_string();
     assert!(
         !iterated.contains("notes.pages"),
@@ -296,11 +306,10 @@ fn the_homepage_notes_teaser_leaves_out_the_postmortems() {
     let set_re = regex::Regex::new(&format!(
         r"(?s)\{{%-?\s*set\s+{}\s*=\s*(.+?)-?%\}}",
         regex::escape(&var)
-    ))
-    .unwrap();
+    ))?;
     let selection = set_re
         .captures(&page)
-        .unwrap_or_else(|| panic!("the teaser iterates `{var}`, which no `set` defines"))[1]
+        .ok_or_else(|| format!("the teaser iterates `{var}`, which no `set` defines"))?[1]
         .to_string();
     for kind in ["howto", "feature"] {
         assert!(
@@ -316,6 +325,7 @@ fn the_homepage_notes_teaser_leaves_out_the_postmortems() {
         block.contains("How-tos and walkthroughs"),
         "the teaser is no longer titled for what it shows:\n{block}"
     );
+    Ok(())
 }
 
 /// The notes sidebar collapses its post-mortem group, as the index does.
@@ -324,13 +334,13 @@ fn the_homepage_notes_teaser_leaves_out_the_postmortems() {
 /// uncollapsed under the how-tos and features, so the arrangement the index
 /// makes was undone on every page a reader opened from it.
 #[test]
-fn the_notes_sidebar_collapses_the_postmortems() {
-    let macros = read("website/templates/macros.html");
-    let nav = span_between(&macros, "macro notes_nav(", "endmacro");
+fn the_notes_sidebar_collapses_the_postmortems() -> Result<(), TestError> {
+    let macros = read("website/templates/macros.html")?;
+    let nav = span_between(&macros, "macro notes_nav(", "endmacro")?;
 
     let details_at = nav
         .find("<details")
-        .unwrap_or_else(|| panic!("the notes sidebar has no disclosure:\n{nav}"));
+        .ok_or_else(|| format!("the notes sidebar has no disclosure:\n{nav}"))?;
     // The tag ends at the first `>` outside a Tera tag: the condition that
     // opens it is itself `... | length > 0`.
     let mut in_tera = false;
@@ -346,7 +356,7 @@ fn the_notes_sidebar_collapses_the_postmortems() {
             break;
         }
     }
-    let tag_end = tag_end.expect("unterminated <details");
+    let tag_end = tag_end.ok_or("unterminated <details")?;
     let tag = &nav[details_at..=tag_end];
     // Open only for a reader already on a post-mortem, so the page they are
     // on stays visible in its own sidebar. Never unconditionally.
@@ -377,6 +387,7 @@ fn the_notes_sidebar_collapses_the_postmortems() {
             "the {kind} group is inside the sidebar's post-mortem disclosure"
         );
     }
+    Ok(())
 }
 
 /// A kind chip reads "How-to", "Feature" or "Post-mortem", never the slug.
@@ -385,9 +396,9 @@ fn the_notes_sidebar_collapses_the_postmortems() {
 /// `postmortem`: identifiers, not words. The label comes from one macro so the
 /// index rows and a note's own header cannot spell it two ways.
 #[test]
-fn a_kind_chip_shows_a_word_not_a_slug() {
-    let macros = read("website/templates/macros.html");
-    let label = span_between(&macros, "macro kind_label", "endmacro");
+fn a_kind_chip_shows_a_word_not_a_slug() -> Result<(), TestError> {
+    let macros = read("website/templates/macros.html")?;
+    let label = span_between(&macros, "macro kind_label", "endmacro")?;
     for (kind, word) in [
         ("howto", "How-to"),
         ("feature", "Feature"),
@@ -399,13 +410,13 @@ fn a_kind_chip_shows_a_word_not_a_slug() {
         );
     }
 
-    let chip = regex::Regex::new(r#"(?s)<span class="note-kind[^>]*>(.*?)</span>"#).unwrap();
+    let chip = regex::Regex::new(r#"(?s)<span class="note-kind[^>]*>(.*?)</span>"#)?;
     let mut seen = 0;
     for tpl in [
         "website/templates/macros.html",
         "website/templates/note.html",
     ] {
-        let text = read(tpl);
+        let text = read(tpl)?;
         for c in chip.captures_iter(&text) {
             seen += 1;
             assert!(
@@ -420,6 +431,7 @@ fn a_kind_chip_shows_a_word_not_a_slug() {
         seen >= 2,
         "found {seen} kind chip(s); the scan is not reading them"
     );
+    Ok(())
 }
 
 /// Dates are not space-padded.
@@ -428,14 +440,16 @@ fn a_kind_chip_shows_a_word_not_a_slug() {
 /// rendered as " 1 September 2026" -- a stray leading gap in every list.
 /// `%-d` is the unpadded day.
 #[test]
-fn no_template_formats_a_space_padded_day() {
+fn no_template_formats_a_space_padded_day() -> Result<(), TestError> {
     let mut seen = 0;
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))
+        .map_err(|e| format!("templates dir: {e}"))?
+    {
+        let p = entry.map_err(|e| format!("entry: {e}"))?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("read template: {e}"))?;
         seen += text.matches("date(format=").count();
         assert!(
             !text.contains("%e"),
@@ -447,6 +461,7 @@ fn no_template_formats_a_space_padded_day() {
         seen >= 5,
         "found {seen} date filter(s); the scan is not reading the templates"
     );
+    Ok(())
 }
 
 /// A note's description is plain text.
@@ -456,11 +471,14 @@ fn no_template_formats_a_space_padded_day() {
 /// none of them renders Markdown. A link written into one showed the reader
 /// its brackets and its URL.
 #[test]
-fn no_note_description_carries_markdown() {
+fn no_note_description_carries_markdown() -> Result<(), TestError> {
     let dir = repo().join("website/content/notes");
-    let link = regex::Regex::new(r"\]\(|`|\*\*").unwrap();
+    let link = regex::Regex::new(r"\]\(|`|\*\*")?;
     let mut seen = 0;
-    for entry in std::fs::read_dir(&dir).expect("read notes").flatten() {
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| format!("read notes: {e}"))?
+        .flatten()
+    {
         let path = entry.path();
         if path.extension().is_none_or(|x| x != "md") {
             continue;
@@ -480,4 +498,5 @@ fn no_note_description_carries_markdown() {
         seen >= 10,
         "read {seen} description(s); the scan is not reading the notes"
     );
+    Ok(())
 }

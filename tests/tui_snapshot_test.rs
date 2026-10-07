@@ -16,12 +16,14 @@
 // Low-level SIP fixture builders shared with `tui_state_test.rs` so the two
 // suites can't drift. Declared at file scope (not nested) so the `#[path]`
 // resolves against `tests/`.
+
 #[cfg(feature = "tui")]
 #[path = "support/tui_fixtures.rs"]
 mod fixtures;
 
 #[cfg(feature = "tui")]
 mod tui_snapshots {
+    use super::fixtures::TestError;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
 
@@ -49,13 +51,13 @@ mod tui_snapshots {
     ///
     /// # Returns
     /// The newline-joined visible text of the buffer.
-    fn buffer_to_string(terminal: &Terminal<TestBackend>) -> String {
+    fn buffer_to_string(terminal: &Terminal<TestBackend>) -> Result<String, TestError> {
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut output = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = buf.cell((x, y)).unwrap();
+                let cell = buf.cell((x, y)).ok_or("cell outside the buffer")?;
                 output.push_str(cell.symbol());
             }
             // Trim trailing spaces for stable snapshots
@@ -63,7 +65,7 @@ mod tui_snapshots {
             output.truncate(trimmed.len());
             output.push('\n');
         }
-        output
+        Ok(output)
     }
 
     // ── Helper: SIP message constructors ───────────────────────────────
@@ -73,16 +75,13 @@ mod tui_snapshots {
     // `tui_state_test.rs` via the file-scoped `fixtures` module above so the
     // two suites can't drift. Snapshot-specific builders (BYE, SDP variants,
     // dialog assemblers) stay below.
-    use super::fixtures::{
-        base_ts_or_panic, build_sip, endpoint_a, endpoint_b, make_invite_or_panic,
-        make_response_or_panic,
-    };
+    use super::fixtures::{base_ts, build_sip, endpoint_a, endpoint_b, make_invite, make_response};
 
     /// Parse a BYE (A-side to B-side, CSeq 2) that completes a dialog.
     ///
     /// # Returns
-    /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    /// The parsed `SipMessage`, or an error if parsing fails.
+    fn make_bye(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
             &[
@@ -93,7 +92,7 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -101,8 +100,7 @@ mod tui_snapshots {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse BYE")
+        )?)
     }
 
     // ── Helper: create App with 3 test dialogs ─────────────────────────
@@ -116,46 +114,46 @@ mod tui_snapshots {
     /// # Returns
     /// The `App` with all eight messages (including 180 and BYE for dialog 1)
     /// already processed into its dialog store.
-    fn test_app_with_dialogs() -> App {
-        let t0 = base_ts_or_panic();
+    fn test_app_with_dialogs() -> Result<App, TestError> {
+        let t0 = base_ts()?;
         let messages = vec![
             // Dialog 1: Completed
-            make_invite_or_panic("call-1@test", "1001", "1002", t0),
-            make_response_or_panic(
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_response(
                 "call-1@test",
                 180,
                 "Ringing",
                 "INVITE",
                 t0 + TimeDelta::seconds(1),
-            ),
-            make_response_or_panic(
+            )?,
+            make_response(
                 "call-1@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(2),
-            ),
-            make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
+            )?,
+            make_bye("call-1@test", t0 + TimeDelta::seconds(62))?,
             // Dialog 2: Failed
-            make_invite_or_panic("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_response_or_panic(
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5))?,
+            make_response(
                 "call-2@test",
                 503,
                 "Service Unavailable",
                 "INVITE",
                 t0 + TimeDelta::seconds(6),
-            ),
+            )?,
             // Dialog 3: Active (InCall)
-            make_invite_or_panic("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
-            make_response_or_panic(
+            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10))?,
+            make_response(
                 "call-3@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(12),
-            ),
+            )?,
         ];
-        App::with_processed_messages(messages)
+        Ok(App::with_processed_messages(messages))
     }
 
     /// Create an App with streams for stream list tests.
@@ -165,14 +163,14 @@ mod tui_snapshots {
     ///
     /// # Returns
     /// An `App` built over the populated dialog and stream stores.
-    fn test_app_with_streams() -> App {
+    fn test_app_with_streams() -> Result<App, TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
 
         // Add two RTP streams via the store
         {
             let mut store = ss.write();
-            let ts = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            let ts = DateTime::from_timestamp(1_700_000_000, 0).ok_or("timestamp out of range")?;
 
             // Stream 1: healthy, linked to dialog
             let parsed1 = sipnab::capture::ParsedPacket {
@@ -252,12 +250,12 @@ mod tui_snapshots {
             store.process_rtp(&parsed2, &rtp2, ts);
         }
 
-        App::new(
+        Ok(App::new(
             ds,
             ss,
             sipnab::tui::Theme::default(),
             sipnab::tui::Keymap::default(),
-        )
+        ))
     }
 
     /// Feed one RTP packet (`ssrc`, `seq`) A→B into `store` at `ts`.
@@ -307,13 +305,13 @@ mod tui_snapshots {
     /// An App with a single PCMU stream whose loss is one contiguous burst
     /// (a 100-packet sequence gap) surrounded by clean traffic — the
     /// clustered signature the loss map draws as a dark run.
-    fn test_app_with_clustered_loss() -> App {
+    fn test_app_with_clustered_loss() -> Result<App, TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let ssrc = 0xAAAA_BBBB;
         {
             let mut store = ss.write();
-            let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("timestamp out of range")?;
             // Arrival time follows the SEQUENCE NUMBER, not the count of
             // packets pushed. The hundred lost packets still occupied their
             // 20 ms slots on the wire, so a clock advanced per received packet
@@ -334,23 +332,23 @@ mod tui_snapshots {
                 push_rtp(&mut store, ssrc, seq, at(seq));
             }
         }
-        App::new(
+        Ok(App::new(
             ds,
             ss,
             sipnab::tui::Theme::default(),
             sipnab::tui::Keymap::default(),
-        )
+        ))
     }
 
     /// An App with a single loss-free PCMU stream — the loss map's
     /// degraded, empty-window path.
-    fn test_app_with_clean_stream() -> App {
+    fn test_app_with_clean_stream() -> Result<App, TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let ssrc = 0xAAAA_BBBB;
         {
             let mut store = ss.write();
-            let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("timestamp out of range")?;
             for (i, seq) in (1..40u16).enumerate() {
                 push_rtp(
                     &mut store,
@@ -360,12 +358,12 @@ mod tui_snapshots {
                 );
             }
         }
-        App::new(
+        Ok(App::new(
             ds,
             ss,
             sipnab::tui::Theme::default(),
             sipnab::tui::Keymap::default(),
-        )
+        ))
     }
 
     /// Navigate an app holding one stream to that stream's packet loss map:
@@ -381,10 +379,10 @@ mod tui_snapshots {
     /// Snapshot: the packet loss map of a stream whose loss is one contiguous
     /// burst — the strip must show a dark run of density glyphs.
     #[test]
-    fn loss_map_clustered() {
+    fn loss_map_clustered() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 18);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_clustered_loss();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_clustered_loss()?;
         open_loss_map(&mut app);
         assert!(
             matches!(app.current_view(), sipnab::tui::View::StreamLossMap(_)),
@@ -392,70 +390,75 @@ mod tui_snapshots {
             app.current_view()
         );
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         assert!(
             output.contains('\u{2588}') || output.contains('\u{2593}'),
             "clustered loss must draw a heavy density glyph:\n{output}"
         );
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the packet loss map of a loss-free stream — the centered
     /// empty-window message replaces the density strip.
     #[test]
-    fn loss_map_no_loss() {
+    fn loss_map_no_loss() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 18);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_clean_stream();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_clean_stream()?;
         open_loss_map(&mut app);
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         assert!(
             output.contains("No packet loss recorded in the retained window"),
             "empty-window message missing:\n{output}"
         );
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: empty call list at 80x24.
     #[test]
-    fn call_list_empty() {
+    fn call_list_empty() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call list with the three fixture dialogs at 80x24.
     #[test]
-    fn call_list_with_dialogs() {
+    fn call_list_with_dialogs() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the same call list at 130x40, where the wide layout fits more columns.
     #[test]
-    fn call_list_with_dialogs_wide() {
+    fn call_list_with_dialogs_wide() -> Result<(), TestError> {
         let backend = TestBackend::new(130, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Hide the given call-list columns through the real F10 selector, the
@@ -494,12 +497,12 @@ mod tui_snapshots {
     ///
     /// # Returns
     /// The flattened buffer text.
-    fn render_call_list_at(width: u16, hide: &[usize]) -> String {
+    fn render_call_list_at(width: u16, hide: &[usize]) -> Result<String, TestError> {
         let backend = TestBackend::new(width, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         hide_columns(&mut app, hide);
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
         buffer_to_string(&terminal)
     }
 
@@ -523,14 +526,15 @@ mod tui_snapshots {
     /// and shift every column after it, so the two buffers could not match —
     /// which is exactly how this test fails if the behavior comes back.
     #[test]
-    fn narrow_call_list_drops_unshowable_columns_instead_of_laying_them_out_empty() {
+    fn narrow_call_list_drops_unshowable_columns_instead_of_laying_them_out_empty()
+    -> Result<(), TestError> {
         // 62 is the width the ticket named: below it From/To/Source/Dest are
         // all zero. 80 is the default terminal, where the address pair was
         // five cells wide — enough to draw `10.0.` and no more.
         // Indices are COLUMN_LABELS order: 2 From, 3 To, 4 Source, 5 Dest.
         for (width, unshowable) in [(62u16, &[2usize, 3, 4, 5][..]), (80, &[4usize, 5][..])] {
-            let laid_out_by_width = render_call_list_at(width, &[]);
-            let hidden_by_user = render_call_list_at(width, unshowable);
+            let laid_out_by_width = render_call_list_at(width, &[])?;
+            let hidden_by_user = render_call_list_at(width, unshowable)?;
             assert_eq!(
                 laid_out_by_width, hidden_by_user,
                 "at {width} cols the columns {unshowable:?} cannot be shown legibly, so \
@@ -541,6 +545,7 @@ mod tui_snapshots {
                  \n--- unshowable columns hidden ---\n{hidden_by_user}"
             );
         }
+        Ok(())
     }
 
     /// The dropped columns leave no header behind, and the ones that survive
@@ -552,8 +557,8 @@ mod tui_snapshots {
     /// cells, so the fixture user parts render whole instead of as the
     /// four-cell stubs the old layout allowed.
     #[test]
-    fn dropped_columns_leave_no_header_and_the_survivors_take_the_space() {
-        let narrow = render_call_list_at(62, &[]);
+    fn dropped_columns_leave_no_header_and_the_survivors_take_the_space() -> Result<(), TestError> {
+        let narrow = render_call_list_at(62, &[])?;
         for label in ["From", "Source", "Destination"] {
             assert!(
                 !narrow.contains(label),
@@ -566,7 +571,7 @@ mod tui_snapshots {
             "the fixed columns must still be drawn at 62 cols:\n{narrow}"
         );
 
-        let default_width = render_call_list_at(80, &[]);
+        let default_width = render_call_list_at(80, &[])?;
         assert!(
             !default_width.contains("Sourc"),
             "at 80 cols a Source column is at most five cells wide — it cannot hold any \
@@ -577,6 +582,7 @@ mod tui_snapshots {
             "at 80 cols From/To inherit the address columns' cells and must render the \
              caller whole:\n{default_width}"
         );
+        Ok(())
     }
 
     /// The call list's timing column is headed by what it shows, and the
@@ -588,8 +594,8 @@ mod tui_snapshots {
     /// check ties each header to the values under it, so a header that
     /// changed while the column did not would still fail.
     #[test]
-    fn the_timing_column_header_names_the_timestamp_mode() {
-        let mut app = test_app_with_dialogs();
+    fn the_timing_column_header_names_the_timestamp_mode() -> Result<(), TestError> {
+        let mut app = test_app_with_dialogs()?;
         // The default, then each press of `t`. Scaled has no call-list
         // rendering of its own and prints the previous-dialog delta, so it
         // carries that header.
@@ -604,13 +610,13 @@ mod tui_snapshots {
             if presses > 0 {
                 app.handle_key(KeyCode::Char('t'));
             }
-            let mut terminal = Terminal::new(TestBackend::new(130, 40)).unwrap();
-            terminal.draw(|frame| app.render(frame)).unwrap();
-            let screen = buffer_to_string(&terminal);
+            let mut terminal = Terminal::new(TestBackend::new(130, 40))?;
+            terminal.draw(|frame| app.render(frame))?;
+            let screen = buffer_to_string(&terminal)?;
             let header = screen
                 .lines()
                 .find(|l| l.contains("Msgs"))
-                .unwrap_or_else(|| panic!("no call-list header row:\n{screen}"));
+                .ok_or_else(|| format!("no call-list header row:\n{screen}"))?;
             assert!(
                 header.split_whitespace().any(|w| w == *label),
                 "{when}: the timing column must be headed {label}:\n{header}"
@@ -647,88 +653,94 @@ mod tui_snapshots {
                 );
             }
         }
+        Ok(())
     }
 
     /// Snapshot: empty stream list.
     #[test]
-    fn stream_list_empty() {
+    fn stream_list_empty() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(crossterm::event::KeyCode::Tab); // switch to stream list
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: quality dashboard (`D`) with dialogs but no RTP streams.
     #[test]
-    fn quality_dashboard_no_streams() {
+    fn quality_dashboard_no_streams() -> Result<(), TestError> {
         let backend = TestBackend::new(130, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('D')); // open dashboard
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: quality dashboard with the two fixture RTP streams.
     #[test]
-    fn quality_dashboard_with_streams() {
+    fn quality_dashboard_with_streams() -> Result<(), TestError> {
         let backend = TestBackend::new(130, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_streams();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_streams()?;
         app.handle_key(crossterm::event::KeyCode::Char('D')); // open dashboard
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Rendering the dashboard on a 10x3 terminal must not panic or underflow (no snapshot taken).
     #[test]
-    fn quality_dashboard_survives_tiny_terminal() {
+    fn quality_dashboard_survives_tiny_terminal() -> Result<(), TestError> {
         // render-robustness: a 10x3 terminal must not panic or underflow
         let backend = TestBackend::new(10, 3);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_streams();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_streams()?;
         app.handle_key(crossterm::event::KeyCode::Char('D'));
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
+        Ok(())
     }
 
     /// Snapshot: stream list showing a dialog-linked stream and an orphaned one.
     #[test]
-    fn stream_list_with_streams() {
+    fn stream_list_with_streams() -> Result<(), TestError> {
         let backend = TestBackend::new(130, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_streams();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_streams()?;
         app.handle_key(crossterm::event::KeyCode::Tab); // switch to stream list
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // M4/T4.2: the StreamDetail view was the one view with no snapshot.
     /// Snapshot: `StreamDetail` view, under per-feature names because the audio build adds a "P Play" footer entry.
     #[test]
-    fn stream_detail_view() {
+    fn stream_detail_view() -> Result<(), TestError> {
         let backend = TestBackend::new(130, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_streams();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_streams()?;
         app.handle_key(crossterm::event::KeyCode::Tab); // CallList -> StreamList
         app.handle_key(crossterm::event::KeyCode::Enter); // open StreamDetail of selected stream
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         // The F-key footer hint differs by feature: the `audio` build adds a
         // "P Play" entry. Snapshot under a feature-specific name so both the
         // headless (no-audio) build and the full (audio) build stay green.
@@ -736,41 +748,42 @@ mod tui_snapshots {
         insta::assert_snapshot!("stream_detail_view_audio", output);
         #[cfg(not(feature = "audio"))]
         insta::assert_snapshot!("stream_detail_view_noaudio", output);
+        Ok(())
     }
 
     /// Snapshot: call flow ladder of the first fixture dialog.
     #[test]
-    fn call_flow_basic() {
+    fn call_flow_basic() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         // Select first dialog and open call flow
         app.handle_key(crossterm::event::KeyCode::Enter);
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: an operator note on the INVITE. The ladder marks the row
     /// with `✎` beside its timestamp, and the note sits in its own pane under
     /// the flow, titled as not being sipnab's analysis.
     #[test]
-    fn call_flow_operator_note_pane() {
-        let t0 = base_ts_or_panic();
-        let mut invite = make_invite_or_panic("note-snap@test", "1001", "1002", t0);
-        invite.frame = Some(
-            sipnab::capture::resolve::parse_pointer("call.pcap#0@00000000000000a1")
-                .expect("a test pointer"),
-        );
-        let ok = make_response_or_panic(
+    fn call_flow_operator_note_pane() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let mut invite = make_invite("note-snap@test", "1001", "1002", t0)?;
+        invite.frame = Some(sipnab::capture::resolve::parse_pointer(
+            "call.pcap#0@00000000000000a1",
+        )?);
+        let ok = make_response(
             "note-snap@test",
             200,
             "OK",
             "INVITE",
             t0 + TimeDelta::milliseconds(80),
-        );
+        )?;
         let mut app = App::with_processed_messages(vec![invite, ok]);
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::Char('C'));
@@ -779,14 +792,15 @@ mod tui_snapshots {
         }
         app.handle_key(KeyCode::Enter);
 
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         assert!(
             output.contains("operator note — not sipnab analysis"),
             "the pane's title must say what it is:\n{output}"
         );
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// The `h` key cycles header-name display (as captured → expanded →
@@ -794,21 +808,21 @@ mod tui_snapshots {
     /// with `f:`/`i:` in compact mode and `From:`/`Call-ID:` again after
     /// cycling back, regardless of the wire form in the capture.
     #[test]
-    fn raw_message_header_form_toggle_is_display_only() {
-        let mut app = test_app_with_dialogs();
+    fn raw_message_header_form_toggle_is_display_only() -> Result<(), TestError> {
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('r')); // open raw view
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let as_captured = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let as_captured = buffer_to_string(&terminal)?;
         assert!(as_captured.contains("From:"), "got:\n{as_captured}");
 
         // h, h → compact display.
         app.handle_key(crossterm::event::KeyCode::Char('h'));
         app.handle_key(crossterm::event::KeyCode::Char('h'));
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let compact = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let compact = buffer_to_string(&terminal)?;
         assert!(
             compact.contains("f: \"1001\"") && compact.contains("i: call-1@test"),
             "compact forms shown, got:\n{compact}"
@@ -818,9 +832,10 @@ mod tui_snapshots {
         // h → back to as-captured: the full names return (display only,
         // nothing was mutated).
         app.handle_key(crossterm::event::KeyCode::Char('h'));
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let restored = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let restored = buffer_to_string(&terminal)?;
         assert!(restored.contains("From:"), "got:\n{restored}");
+        Ok(())
     }
 
     /// Field report: OpenSIPS' default provisional reason ("100 trying --
@@ -828,105 +843,110 @@ mod tui_snapshots {
     /// in the ladder because labels wider than the pipe gap were dropped.
     /// The truncated label must be visible on the arrow row.
     #[test]
-    fn call_flow_long_reason_phrase_stays_visible() {
-        let t0 = base_ts_or_panic();
+    fn call_flow_long_reason_phrase_stays_visible() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let messages = vec![
-            make_invite_or_panic("long-reason@test", "1001", "1002", t0),
-            make_response_or_panic(
+            make_invite("long-reason@test", "1001", "1002", t0)?,
+            make_response(
                 "long-reason@test",
                 100,
                 "trying -- your call is important to us",
                 "INVITE",
                 t0 + chrono::TimeDelta::milliseconds(20),
-            ),
+            )?,
         ];
         let mut app = App::with_processed_messages(messages);
         app.handle_key(crossterm::event::KeyCode::Enter);
 
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         assert!(
             output.contains("100 trying"),
             "the 100's reason must be visible (truncated) on the arrow, got:\n{output}"
         );
+        Ok(())
     }
 
     /// Snapshot: Tab moves focus to the detail pane; asserts the "Focus: Detail" indicator first.
     #[test]
-    fn call_flow_split_focus_detail() {
+    fn call_flow_split_focus_detail() -> Result<(), TestError> {
         // Open the call flow split, then Tab to focus the detail pane. The
         // status line should read "Focus: Detail" and the detail border should
         // be highlighted — locked in by the snapshot.
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Tab); // focus detail pane
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         assert!(
             output.contains("Focus: Detail"),
             "focus indicator missing:\n{output}"
         );
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: on a 100x10 terminal the detail pane overflows, so the scrollbar thumb must appear.
     #[test]
-    fn call_flow_detail_scrollbar_on_overflow() {
+    fn call_flow_detail_scrollbar_on_overflow() -> Result<(), TestError> {
         // A short terminal forces the detail pane to overflow, so the vertical
         // scrollbar (thumb glyph) must appear on the right border.
         let backend = TestBackend::new(100, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow (split on by default)
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         assert!(
             output.contains('\u{2588}'),
             "scrollbar thumb missing:\n{output}"
         );
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: raw message view reached via call list, call flow, Enter.
     #[test]
-    fn raw_message_view() {
+    fn raw_message_view() -> Result<(), TestError> {
         let backend = TestBackend::new(90, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         // Navigate: call list -> call flow -> raw message
         app.handle_key(crossterm::event::KeyCode::Enter); // open call flow
         app.handle_key(crossterm::event::KeyCode::Enter); // open raw message at scroll 0
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: Help view (version pinned to "0.0.0-test" keeps it deterministic).
     #[test]
-    fn help_view() {
+    fn help_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(crossterm::event::KeyCode::F(1)); // open help
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
         // `App::new_test()` pins the version to a fixed "0.0.0-test", so the
         // help view no longer embeds the build's git commit / feature list and
         // the snapshot is deterministic without any post-render redaction.
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// A long version string (release tag + dirty marker + the full feature
@@ -937,17 +957,17 @@ mod tui_snapshots {
     /// help down. (The help itself is scrollable, so not every binding is on
     /// screen at once — this asserts the *version line* behavior specifically.)
     #[test]
-    fn help_view_long_version_does_not_wrap() {
+    fn help_view_long_version_does_not_wrap() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.set_version_for_test(
             "0.4.3 (v0.4.3 a84ac0ca-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http",
         );
         app.handle_key(crossterm::event::KeyCode::F(1)); // open help
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
 
         // The version line is present (truncated to one row).
         assert!(
@@ -965,15 +985,16 @@ mod tui_snapshots {
             output.contains("CALL LIST:"),
             "a wrapped version line pushed the help body down:\n{output}"
         );
+        Ok(())
     }
 
     /// The help view names the libpcap this binary runs, on its own row under
     /// the version, so an operator at the console can see whether its libpcap
     /// names netmap before typing a `netmap:` device.
     #[test]
-    fn help_view_shows_the_libpcap_line() {
+    fn help_view_shows_the_libpcap_line() -> Result<(), TestError> {
         let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.set_libpcap_for_test(
             "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); \
@@ -981,13 +1002,13 @@ mod tui_snapshots {
         );
         app.handle_key(crossterm::event::KeyCode::F(1)); // open help
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         let rows: Vec<&str> = output.lines().collect();
         let version_row = rows
             .iter()
             .position(|r| r.contains("v0.0.0-test"))
-            .unwrap_or_else(|| panic!("version row missing:\n{output}"));
+            .ok_or_else(|| format!("version row missing:\n{output}"))?;
         assert!(
             rows[version_row + 1].contains(
                 "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap); \
@@ -995,40 +1016,42 @@ mod tui_snapshots {
             ),
             "the row under the version must be the libpcap line:\n{output}"
         );
+        Ok(())
     }
 
     /// The F1 help exceeds an 80x40 screen, so it must be scrollable: bindings
     /// in later sections become visible after scrolling down.
     #[test]
-    fn help_view_scrolls_to_later_sections() {
+    fn help_view_scrolls_to_later_sections() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(crossterm::event::KeyCode::F(1)); // open help
 
         // At the top, a CALL FLOW-only binding is below the fold.
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        assert!(!buffer_to_string(&terminal).contains("Export Mermaid sequence diagram"));
+        terminal.draw(|frame| app.render(frame))?;
+        assert!(!buffer_to_string(&terminal)?.contains("Export Mermaid sequence diagram"));
 
         // Scroll down a page; the later section comes into view.
         for _ in 0..40 {
             app.handle_key(crossterm::event::KeyCode::PageDown);
         }
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let scrolled = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let scrolled = buffer_to_string(&terminal)?;
         assert!(
             scrolled.contains("COPY & PASTE:")
                 && scrolled.contains("Shift+drag bypasses capture in many terminals."),
             "scrolling did not reveal the end of the help:\n{scrolled}"
         );
+        Ok(())
     }
 
     /// Snapshot: call list narrowed by an applied From filter of "1003".
     #[test]
-    fn call_list_with_filter_active() {
+    fn call_list_with_filter_active() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
 
         // Open filter dialog, type From filter "1003", and apply it
         app.handle_key(crossterm::event::KeyCode::F(7)); // open filter
@@ -1038,10 +1061,11 @@ mod tui_snapshots {
         }
         app.handle_key(crossterm::event::KeyCode::Enter); // apply filter
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Status line 2: the BPF slot ────────────────────────────────────
@@ -1055,7 +1079,7 @@ mod tui_snapshots {
 
     /// Build the session `App` from options exactly as the TUI's event loop
     /// does, then draw one frame and return status line 2 (the second row).
-    fn status_line2_for(bpf_filter: &str, width: u16) -> String {
+    fn status_line2_for(bpf_filter: &str, width: u16) -> Result<String, TestError> {
         let options = sipnab::tui::TuiOptions {
             bpf_filter: bpf_filter.to_string(),
             ..Default::default()
@@ -1064,25 +1088,26 @@ mod tui_snapshots {
             Arc::new(RwLock::new(DialogStore::new(100, false))),
             Arc::new(RwLock::new(StreamStore::new(100))),
         );
-        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        buffer_to_string(&terminal)
+        let mut terminal = Terminal::new(TestBackend::new(width, 12))?;
+        terminal.draw(|frame| app.render(frame))?;
+        Ok(buffer_to_string(&terminal)?
             .lines()
             .nth(1)
             .unwrap_or_default()
-            .to_string()
+            .to_string())
     }
 
     /// The filter the capture is running with is drawn in the BPF slot. An
     /// operator asking why the call list is short reads this row, and for
     /// every session before this wiring existed it was blank.
     #[test]
-    fn the_capture_filter_is_drawn_in_the_bpf_slot() {
-        let row = status_line2_for("udp port 5060", 80);
+    fn the_capture_filter_is_drawn_in_the_bpf_slot() -> Result<(), TestError> {
+        let row = status_line2_for("udp port 5060", 80)?;
         assert!(
             row.contains("Capture filter (BPF): udp port 5060"),
             "the filter the capture compiled is not on the row: {row:?}"
         );
+        Ok(())
     }
 
     /// A live capture given no filter still runs one — `bootstrap::plan`
@@ -1091,9 +1116,10 @@ mod tui_snapshots {
     /// keep meaning "no filter was compiled". It is wider than any terminal,
     /// so the row ends in the cut marker rather than at an arbitrary column.
     #[test]
-    fn the_generated_live_filter_fills_the_slot_instead_of_leaving_it_blank() {
+    fn the_generated_live_filter_fills_the_slot_instead_of_leaving_it_blank()
+    -> Result<(), TestError> {
         let generated = sipnab::app::bootstrap::auto_bpf_filter(5060, 5061, &[]);
-        let row = status_line2_for(&generated, 80);
+        let row = status_line2_for(&generated, 80)?;
         assert!(
             row.contains("Capture filter (BPF): portrange 5060-5061 or"),
             "the generated filter is not on the row: {row:?}"
@@ -1102,6 +1128,7 @@ mod tui_snapshots {
             row.ends_with('…'),
             "an expression too wide for the row was cut without a marker: {row:?}"
         );
+        Ok(())
     }
 
     /// A capture with no compiled filter says `none` in the slot, which is
@@ -1109,19 +1136,20 @@ mod tui_snapshots {
     /// was filtered" has to stay true, and a bare label read as a rendering
     /// fault.
     #[test]
-    fn a_capture_with_no_filter_says_none_in_the_bpf_slot() {
-        let row = status_line2_for("", 80);
+    fn a_capture_with_no_filter_says_none_in_the_bpf_slot() -> Result<(), TestError> {
+        let row = status_line2_for("", 80)?;
         assert!(
             row.trim_end().ends_with("Capture filter (BPF): none"),
             "something was drawn for a capture that compiled no filter: {row:?}"
         );
+        Ok(())
     }
 
     /// The capture-mode label resolved at startup reaches status line 1. The
     /// bar said `Online (any)` for every session, a `-I` file read included,
     /// because nothing handed the label to the `App`.
     #[test]
-    fn the_startup_capture_label_reaches_status_line1() {
+    fn the_startup_capture_label_reaches_status_line1() -> Result<(), TestError> {
         let options = sipnab::tui::TuiOptions {
             capture_mode: Some("Offline (incident.pcap)".to_string()),
             ..Default::default()
@@ -1130,86 +1158,91 @@ mod tui_snapshots {
             Arc::new(RwLock::new(DialogStore::new(100, false))),
             Arc::new(RwLock::new(StreamStore::new(100))),
         );
-        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let row = buffer_to_string(&terminal)
+        let mut terminal = Terminal::new(TestBackend::new(100, 12))?;
+        terminal.draw(|frame| app.render(frame))?;
+        let row = buffer_to_string(&terminal)?
             .lines()
             .next()
             .unwrap_or_default()
             .to_string();
         assert!(row.contains("File: incident.pcap"), "{row:?}");
+        Ok(())
     }
 
     /// Snapshot: a list containing only a failed (503) dialog, locking in the failure styling.
     #[test]
-    fn call_list_failed_dialog_styling() {
+    fn call_list_failed_dialog_styling() -> Result<(), TestError> {
         // Render with only failed dialogs to verify the styling appears
-        let t0 = base_ts_or_panic();
+        let t0 = base_ts()?;
         let messages = vec![
-            make_invite_or_panic("fail-only@test", "1003", "1004", t0),
-            make_response_or_panic(
+            make_invite("fail-only@test", "1003", "1004", t0)?,
+            make_response(
                 "fail-only@test",
                 503,
                 "Service Unavailable",
                 "INVITE",
                 t0 + TimeDelta::seconds(1),
-            ),
+            )?,
         ];
         let mut app = App::with_processed_messages(messages);
 
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: statistics view over the three fixture dialogs at 60x20.
     #[test]
-    fn statistics_view() {
+    fn statistics_view() -> Result<(), TestError> {
         let backend = TestBackend::new(60, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('s')); // open stats
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the top-talkers ranking, opened with `p`. Ranks the fixture's
     /// participants by source IP (PAR4).
     #[test]
-    fn talkers_view() {
+    fn talkers_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('g')); // open talkers
         assert_eq!(app.current_view(), &sipnab::tui::View::Talkers);
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the carrier-metrics table (ASR/NER/ACD by destination IP),
     /// opened with `m` (PAR4).
     #[test]
-    fn carrier_metrics_view() {
+    fn carrier_metrics_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('m')); // open carrier metrics
         assert_eq!(app.current_view(), &sipnab::tui::View::CarrierMetrics);
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the two-call comparison, opened with `c` after checking two
@@ -1217,10 +1250,10 @@ mod tui_snapshots {
     /// differ on state, final status and message count, so those rows are
     /// flagged `(differs)` and the differences line names them (PAR4).
     #[test]
-    fn compare_view() {
+    fn compare_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char(' ')); // check the first call
         app.handle_key(crossterm::event::KeyCode::Down);
         app.handle_key(crossterm::event::KeyCode::Char(' ')); // check the second call
@@ -1231,10 +1264,11 @@ mod tui_snapshots {
             app.current_view()
         );
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the per-endpoint rollup, opened with `e` on the selected call.
@@ -1243,10 +1277,10 @@ mod tui_snapshots {
     /// cache is empty in a unit test (no event loop ran `sync_caches`), so the
     /// render's direct-scan fallback supplies the real report.
     #[test]
-    fn endpoint_view() {
+    fn endpoint_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('e')); // open endpoint rollup
         assert!(
             matches!(app.current_view(), sipnab::tui::View::EndpointRollup { .. }),
@@ -1254,26 +1288,28 @@ mod tui_snapshots {
             app.current_view()
         );
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the call-volume histogram, opened with `b`. The fixture's three
     /// dialogs fall in one 60s bucket, so it draws a single full-width bar (PAR4).
     #[test]
-    fn call_volume_view() {
+    fn call_volume_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('b')); // open call volume
         assert_eq!(app.current_view(), &sipnab::tui::View::CallVolume);
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the SDP offer/answer timeline, opened with `o` on the selected
@@ -1281,10 +1317,10 @@ mod tui_snapshots {
     /// line — proving the view opens and renders; the rich rendering is covered
     /// by the `sdp_timeline_text` unit test (PAR4).
     #[test]
-    fn sdp_timeline_view() {
+    fn sdp_timeline_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('o')); // open SDP timeline
         assert!(
             matches!(app.current_view(), sipnab::tui::View::SdpTimeline { .. }),
@@ -1292,19 +1328,20 @@ mod tui_snapshots {
             app.current_view()
         );
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the RFC-conformance findings, opened with `f` on the selected
     /// call, linting the fixture dialog through the shared catalog (PAR4).
     #[test]
-    fn conformance_view() {
+    fn conformance_view() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::Char('f')); // open RFC conformance
         assert!(
             matches!(app.current_view(), sipnab::tui::View::Conformance { .. }),
@@ -1312,40 +1349,43 @@ mod tui_snapshots {
             app.current_view()
         );
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
-    fn filter_dialog_popup() {
+    fn filter_dialog_popup() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(crossterm::event::KeyCode::F(7)); // open filter popup
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the F2 save popup, with the path overridden for determinism.
     #[test]
-    fn save_dialog_popup() {
+    fn save_dialog_popup() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(crossterm::event::KeyCode::F(2)); // open save popup
         // Override the timestamp-based path for deterministic snapshots
         app.set_save_path("/tmp/sipnab_20240615_120000.pcap");
 
-        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal.draw(|frame| app.render(frame))?;
 
-        let output = buffer_to_string(&terminal);
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// At 80x24 the save dialog is taller than the screen. The path, the
@@ -1354,18 +1394,18 @@ mod tui_snapshots {
     /// a whole, so the count and the keys fell off the bottom and selecting a
     /// late format (WAV) pushed the path off the top.
     #[test]
-    fn save_dialog_keeps_path_count_and_keys_visible_at_80x24() {
+    fn save_dialog_keeps_path_count_and_keys_visible_at_80x24() -> Result<(), TestError> {
         for tabs in [0usize, 8, 11] {
             let backend = TestBackend::new(80, 24);
-            let mut terminal = Terminal::new(backend).unwrap();
-            let mut app = test_app_with_dialogs();
+            let mut terminal = Terminal::new(backend)?;
+            let mut app = test_app_with_dialogs()?;
             app.handle_key(crossterm::event::KeyCode::F(2));
             app.set_save_path("/tmp/sipnab_20240615_120000.pcap");
             for _ in 0..tabs {
                 app.handle_key(crossterm::event::KeyCode::Tab);
             }
-            terminal.draw(|frame| app.render(frame)).unwrap();
-            let out = buffer_to_string(&terminal);
+            terminal.draw(|frame| app.render(frame))?;
+            let out = buffer_to_string(&terminal)?;
             for needle in ["Save to:", "all are saved", "[Enter] Save", "\u{25B8} "] {
                 assert!(
                     out.contains(needle),
@@ -1373,6 +1413,7 @@ mod tui_snapshots {
                 );
             }
         }
+        Ok(())
     }
 
     // ── Helper: SDP-containing message constructors ───────────────────
@@ -1380,9 +1421,14 @@ mod tui_snapshots {
     /// Build an INVITE with SDP body.
     ///
     /// # Returns
-    /// The parsed INVITE offering PCMU/PCMA audio on port 20000; panics on
-    /// parse failure.
-    fn make_invite_with_sdp(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+    /// The parsed INVITE offering PCMU/PCMA audio on port 20000, or an error
+    /// on parse failure.
+    fn make_invite_with_sdp(
+        call_id: &str,
+        from: &str,
+        to: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let sdp = "v=0\r\n\
                    o=- 123456 654321 IN IP4 10.0.0.1\r\n\
                    s=-\r\n\
@@ -1411,7 +1457,7 @@ mod tui_snapshots {
             sdp
         );
         let raw = headers.into_bytes();
-        sipnab::sip::parser::parse_sip(
+        Ok(sipnab::sip::parser::parse_sip(
             &raw,
             ts,
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -1419,112 +1465,116 @@ mod tui_snapshots {
             5060,
             5060,
             sipnab::capture::parse::TransportProto::Udp,
-        )
-        .unwrap()
+        )?)
     }
 
     /// Create an app with SDP-containing dialogs.
     ///
     /// # Returns
     /// An `App` with one dialog: an SDP-bearing INVITE plus its 200 OK.
-    fn test_app_with_sdp_dialogs() -> App {
-        let t0 = base_ts_or_panic();
+    fn test_app_with_sdp_dialogs() -> Result<App, TestError> {
+        let t0 = base_ts()?;
         let messages = vec![
-            make_invite_with_sdp("sdp-call@test", "2001", "2002", t0),
-            make_response_or_panic(
+            make_invite_with_sdp("sdp-call@test", "2001", "2002", t0)?,
+            make_response(
                 "sdp-call@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(2),
-            ),
+            )?,
         ];
-        App::with_processed_messages(messages)
+        Ok(App::with_processed_messages(messages))
     }
 
     // ── Call List Rendering ───────────────────────────────────────────
 
     /// Snapshot: call list after hiding the first (#) column via the column selector.
     #[test]
-    fn call_list_column_hidden() {
+    fn call_list_column_hidden() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         // Hide the first column (#) via column selector
         app.handle_key(KeyCode::F(10)); // open column selector
         app.handle_key(KeyCode::Char(' ')); // toggle column 0 (Index)
         app.handle_key(KeyCode::Enter); // close selector
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call list after one `t` press. Delta-prev is the default,
     /// so one press lands on Delta-first — the test and its snapshot are
     /// named for what they actually render.
     #[test]
-    fn call_list_timestamp_delta_first() {
+    fn call_list_timestamp_delta_first() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('t')); // DeltaPrev (default) -> DeltaFirst
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call list after two `t` presses. Delta-prev is the default,
     /// so two presses land on Scaled — the test and its snapshot are named
     /// for what they actually render.
     #[test]
-    fn call_list_timestamp_scaled() {
+    fn call_list_timestamp_scaled() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('t')); // DeltaPrev (default) -> DeltaFirst
         app.handle_key(KeyCode::Char('t')); // DeltaFirst -> Scaled
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call list sorted by the Method column via `>`.
     #[test]
-    fn call_list_sort_by_method() {
+    fn call_list_sort_by_method() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('>')); // sort by next column (Method)
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: two rows check-selected with Space.
     #[test]
-    fn call_list_multi_selected() {
+    fn call_list_multi_selected() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char(' ')); // select row 0
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Char(' ')); // select row 1
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // Every call-list row shows a [ ]/[*] selection checkbox
     // so users can see and pick which dialogs to act on (e.g. save).
     /// Every row renders a selection checkbox: the checked row shows [*], others [ ] .
     #[test]
-    fn call_list_selection_checkbox_visible() {
+    fn call_list_selection_checkbox_visible() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char(' ')); // check row 0
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         // The checked row shows [*]; unchecked rows show [ ].
         assert!(
             output.contains("[*]"),
@@ -1534,69 +1584,75 @@ mod tui_snapshots {
             output.contains("[ ]"),
             "expected unchecked [ ] rows:\n{output}"
         );
+        Ok(())
     }
 
     /// Snapshot: call list with autoscroll toggled off via `A`.
     #[test]
-    fn call_list_autoscroll_off() {
+    fn call_list_autoscroll_off() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('A')); // toggle autoscroll off
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call list while capture is paused via `p`.
     #[test]
-    fn call_list_paused() {
+    fn call_list_paused() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('p')); // pause
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the status line reports the new timestamp mode after `t`.
     #[test]
-    fn call_list_status_error() {
+    fn call_list_status_error() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('t')); // cycle timestamp → status message
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: search prompt active with "test" typed.
     #[test]
-    fn call_list_search_active() {
+    fn call_list_search_active() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Char('/')); // activate search
         for c in "test".chars() {
             app.handle_key(KeyCode::Char(c));
         }
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the F10 column selector popup.
     #[test]
-    fn call_list_column_selector_popup() {
+    fn call_list_column_selector_popup() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(10)); // open column selector
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Call Flow Rendering ───────────────────────────────────────────
@@ -1605,170 +1661,182 @@ mod tui_snapshots {
     /// so one press lands on Delta-first — the test and its snapshot are
     /// named for what they actually render.
     #[test]
-    fn call_flow_timestamp_delta_first() {
+    fn call_flow_timestamp_delta_first() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Char('t')); // DeltaPrev (default) -> DeltaFirst timestamps
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call flow in CallId color mode via `c`.
     #[test]
-    fn call_flow_color_callid() {
+    fn call_flow_color_callid() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::Char('c')); // CallId color mode
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call flow with the raw-preview split toggled off via `R`.
     #[test]
-    fn call_flow_raw_preview_off() {
+    fn call_flow_raw_preview_off() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::Char('R')); // toggle raw preview off
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call flow in extended mode via `x`.
     #[test]
-    fn call_flow_extended_flow() {
+    fn call_flow_extended_flow() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::Char('x')); // extended flow toggle
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: SDP-bearing call flow in SDP Summary mode (`d`).
     #[test]
-    fn call_flow_sdp_summary() {
+    fn call_flow_sdp_summary() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_sdp_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_sdp_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Char('d')); // SDP Summary mode
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: SDP-bearing call flow in SDP Full mode (`d` twice).
     #[test]
-    fn call_flow_sdp_full() {
+    fn call_flow_sdp_full() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_sdp_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_sdp_dialogs()?;
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::Char('d')); // Summary
         app.handle_key(KeyCode::Char('d')); // Full
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Other Views ───────────────────────────────────────────────────
 
     /// Snapshot: statistics view with no dialogs.
     #[test]
-    fn statistics_view_empty() {
+    fn statistics_view_empty() -> Result<(), TestError> {
         let backend = TestBackend::new(60, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: diff of messages 0 and 1 of the first dialog.
     #[test]
-    fn message_diff_view() {
+    fn message_diff_view() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Char(' ')); // select msg 0
         app.handle_key(KeyCode::Down); // move to msg 1
         app.handle_key(KeyCode::Char(' ')); // open diff
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: call list at 60x15, exercising the narrow layout.
     #[test]
-    fn narrow_terminal_layout() {
+    fn narrow_terminal_layout() -> Result<(), TestError> {
         let backend = TestBackend::new(60, 15);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: save popup after cycling to the PCAP-NG format.
     #[test]
-    fn save_dialog_pcapng_format() {
+    fn save_dialog_pcapng_format() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/sipnab_20240615_120000.pcap");
         app.handle_key(KeyCode::Tab); // cycle to PcapNg
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: save popup after cycling to the TXT format.
     #[test]
-    fn save_dialog_txt_format() {
+    fn save_dialog_txt_format() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/sipnab_20240615_120000.pcap");
         app.handle_key(KeyCode::Tab); // PcapNg
         app.handle_key(KeyCode::Tab); // Txt
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: the F8 settings popup at 120x40.
     #[test]
-    fn settings_popup() {
+    fn settings_popup() -> Result<(), TestError> {
         let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(8));
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: file-open dialog in manual-path mode with a typed path (browser mode would list the cwd).
     #[test]
-    fn file_open_popup() {
+    fn file_open_popup() -> Result<(), TestError> {
         let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         // Open the file dialog, switch to manual-path mode for deterministic
         // rendering (the browser mode lists the current working directory),
         // then type a sample path.
@@ -1778,125 +1846,133 @@ mod tui_snapshots {
         for c in "/tmp/test.pcap".chars() {
             app.handle_key(KeyCode::Char(c));
         }
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Save dialog new format snapshots ─────────────────────────────
 
     /// Snapshot: save popup on the JSON format.
     #[test]
-    fn save_dialog_json_format() {
+    fn save_dialog_json_format() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/sipnab_20240615_120000.json");
         // Cycle to Json: Pcap -> PcapNg -> Txt -> Json = 3 tabs
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::Tab);
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: save popup on the CSV format.
     #[test]
-    fn save_dialog_csv_format() {
+    fn save_dialog_csv_format() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/sipnab_20240615_120000.csv");
         // Cycle to Csv: 5 tabs
         for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
         }
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: save popup on the HTML format.
     #[test]
-    fn save_dialog_html_format() {
+    fn save_dialog_html_format() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/sipnab_20240615_120000.html");
         // Cycle to Html: 6 tabs
         for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
         }
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     /// Snapshot: save popup on the SIPp XML format.
     #[test]
-    fn save_dialog_sipp_xml_format() {
+    fn save_dialog_sipp_xml_format() -> Result<(), TestError> {
         let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/sipnab_20240615_120000.xml");
         // Cycle to SippXml: 9 tabs
         for _ in 0..9 {
             app.handle_key(KeyCode::Tab);
         }
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Call flow timestamp Scaled mode snapshot ─────────────────────
 
     /// Snapshot: call flow in Scaled timestamp mode (two `t` presses from the Delta-prev default).
     #[test]
-    fn call_flow_timestamp_scaled() {
+    fn call_flow_timestamp_scaled() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Char('t')); // DeltaFirst
         app.handle_key(KeyCode::Char('t')); // Scaled
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Call flow with mark set ──────────────────────────────────────
 
     /// Snapshot: call flow with a mark set at message 0 and the selection moved to message 1.
     #[test]
-    fn call_flow_with_mark() {
+    fn call_flow_with_mark() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Char('m')); // set mark at msg 0
         app.handle_key(KeyCode::Down); // move to msg 1
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 
     // ── Call flow with fold expanded ─────────────────────────────────
 
     /// Snapshot: call flow with the fold at index 0 expanded via `e`.
     #[test]
-    fn call_flow_fold_expanded() {
+    fn call_flow_fold_expanded() -> Result<(), TestError> {
         let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = test_app_with_dialogs();
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow
         app.handle_key(KeyCode::Char('e')); // expand fold at index 0
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let output = buffer_to_string(&terminal);
+        terminal.draw(|frame| app.render(frame))?;
+        let output = buffer_to_string(&terminal)?;
         insta::assert_snapshot!(output);
+        Ok(())
     }
 }

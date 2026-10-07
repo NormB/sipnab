@@ -43,6 +43,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/markdown.rs"]
 mod markdown;
 
@@ -53,9 +55,9 @@ fn repo() -> &'static Path {
 
 /// Read a repo-relative file to a `String`, panicking with the full path
 /// on failure.
-fn read(rel: impl AsRef<Path>) -> String {
+fn read(rel: impl AsRef<Path>) -> Result<String, TestError> {
     let p = repo().join(rel.as_ref());
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 // ---------------------------------------------------------------------------
@@ -72,8 +74,8 @@ fn read(rel: impl AsRef<Path>) -> String {
 /// entire remainder of the file was blanked. Both link tests then examined zero
 /// links while still counting the file as scanned — a whole page of links going
 /// dark with the suite greener than before.
-fn prose(rel: impl AsRef<Path>) -> String {
-    markdown::prose(&read(rel))
+fn prose(rel: impl AsRef<Path>) -> Result<String, TestError> {
+    Ok(markdown::prose(&read(rel)?))
 }
 
 // ---------------------------------------------------------------------------
@@ -100,9 +102,7 @@ fn slug_spec(heading: &str) -> String {
 /// Zola slug: trailing `{...}` heading-attribute block stripped, then every
 /// non-alphanumeric run collapses to a single `-`, trimmed.
 fn slug_zola(heading: &str) -> String {
-    static ATTR_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let attr_re = ATTR_RE.get_or_init(|| regex::Regex::new(r"\s*\{[^{}]*\}\s*$").unwrap());
-    let text = attr_re.replace(heading, "");
+    let text = strip_attribute_block(heading);
     let mut out = String::new();
     let mut pending_dash = false;
     for c in text.to_lowercase().chars() {
@@ -119,19 +119,33 @@ fn slug_zola(heading: &str) -> String {
     out
 }
 
+/// `heading` without a trailing `{...}` attribute block (no braces inside it)
+/// and the whitespace around that block: what the regex
+/// `\s*\{[^{}]*\}\s*$` removes, written without a regex so that it cannot fail.
+fn strip_attribute_block(heading: &str) -> &str {
+    if let Some(body) = heading.trim_end().strip_suffix('}')
+        && let Some(open) = body.rfind('{')
+        && !body[open + 1..].contains('}')
+    {
+        return heading[..open].trim_end();
+    }
+    heading
+}
+
 /// ATX heading texts of a markdown file, in order (fences/frontmatter
 /// excluded, closing `#`s trimmed).
-fn headings(rel: impl AsRef<Path>) -> Vec<String> {
-    let re = regex::Regex::new(r"(?m)^#{1,6}[ \t]+(.+?)[ \t#]*$").unwrap();
-    re.captures_iter(&prose(rel))
+fn headings(rel: impl AsRef<Path>) -> Result<Vec<String>, TestError> {
+    let re = regex::Regex::new(r"(?m)^#{1,6}[ \t]+(.+?)[ \t#]*$")?;
+    Ok(re
+        .captures_iter(&prose(rel)?)
         .map(|c| c[1].to_string())
-        .collect()
+        .collect())
 }
 
 /// All anchors any of our renderers would emit for a file, including the
 /// `-N` suffixes both GitHub and Zola append to duplicate slugs.
-fn anchor_candidates(rel: impl AsRef<Path>) -> BTreeSet<String> {
-    let hs = headings(rel);
+fn anchor_candidates(rel: impl AsRef<Path>) -> Result<BTreeSet<String>, TestError> {
+    let hs = headings(rel)?;
     let mut out = BTreeSet::new();
     for slugger in [slug_github, slug_spec, slug_zola] {
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
@@ -146,7 +160,7 @@ fn anchor_candidates(rel: impl AsRef<Path>) -> BTreeSet<String> {
             *n += 1;
         }
     }
-    out
+    Ok(out)
 }
 
 /// No page may contain two headings that slugify to the same anchor.
@@ -166,15 +180,15 @@ fn anchor_candidates(rel: impl AsRef<Path>) -> BTreeSet<String> {
 /// Checked under every slug rule this file models, because a collision under
 /// ANY renderer is a broken bookmark for the readers using it.
 #[test]
-fn no_page_mints_a_positional_anchor() {
+fn no_page_mints_a_positional_anchor() -> Result<(), TestError> {
     let mut clashes = Vec::new();
     let mut pages = 0usize;
 
-    for rel in md_files_recursive("docs")
+    for rel in md_files_recursive("docs")?
         .into_iter()
-        .chain(md_files_recursive("website/content/docs"))
+        .chain(md_files_recursive("website/content/docs")?)
     {
-        let hs = headings(&rel);
+        let hs = headings(&rel)?;
         if hs.is_empty() {
             continue;
         }
@@ -220,6 +234,7 @@ fn no_page_mints_a_positional_anchor() {
          every renderer.",
         clashes.join("\n  ")
     );
+    Ok(())
 }
 
 /// Record a problem if `anchor` matches no anchor any renderer would emit
@@ -236,13 +251,14 @@ fn check_anchor(
     from: &str,
     raw: &str,
     problems: &mut Vec<String>,
-) {
-    if !anchor_candidates(target_rel).contains(anchor) {
+) -> Result<(), TestError> {
+    if !anchor_candidates(target_rel)?.contains(anchor) {
         problems.push(format!(
             "{from}: link `{raw}` -> DANGLING ANCHOR `#{anchor}` (no heading in {} slugifies to it)",
             target_rel.display()
         ));
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -250,23 +266,23 @@ fn check_anchor(
 // ---------------------------------------------------------------------------
 
 /// All `.md` files under `rel`, recursively, as repo-relative paths.
-fn md_files_recursive(rel: &str) -> Vec<PathBuf> {
+fn md_files_recursive(rel: &str) -> Result<Vec<PathBuf>, TestError> {
     let mut out = Vec::new();
     let mut stack = vec![repo().join(rel)];
     while let Some(dir) = stack.pop() {
         for entry in
-            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            std::fs::read_dir(&dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?
         {
-            let p = entry.expect("dir entry").path();
+            let p = entry?.path();
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                out.push(p.strip_prefix(repo()).unwrap().to_path_buf());
+                out.push(p.strip_prefix(repo())?.to_path_buf());
             }
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The wiki-source pages whose links a reader actually walks: the top-level
@@ -298,7 +314,7 @@ fn is_counted_wiki_link(raw: &str) -> bool {
 /// filter that quietly widened or narrowed what is counted fails here instead
 /// of turning up as an unexplained jump in the expected total.
 #[test]
-fn the_wiki_link_extractor_counts_only_markdown_journeys() {
+fn the_wiki_link_extractor_counts_only_markdown_journeys() -> Result<(), TestError> {
     for counted in [
         "mcp-tools.md",
         "./design/backlog.md",
@@ -324,6 +340,7 @@ fn the_wiki_link_extractor_counts_only_markdown_journeys() {
             "{skipped:?} is not a Markdown journey and must not be counted"
         );
     }
+    Ok(())
 }
 
 /// **Second of two.** The walk the ratchet counts over found a real tree.
@@ -334,8 +351,8 @@ fn the_wiki_link_extractor_counts_only_markdown_journeys() {
 /// of zero over zero files is not a passing gate, it is a gate that has
 /// stopped running.
 #[test]
-fn the_wiki_link_scan_reads_a_plausible_tree() {
-    let files = wiki_source_files();
+fn the_wiki_link_scan_reads_a_plausible_tree() -> Result<(), TestError> {
+    let files = wiki_source_files()?;
     assert!(
         files.len() >= 30,
         "the wiki source walk found only {} page(s); this tree has far more,          so the walk is broken and every count taken over it is meaningless",
@@ -349,27 +366,29 @@ fn the_wiki_link_scan_reads_a_plausible_tree() {
             "the walk did not reach {expected}, which is one of the pages the              ratchet's own attribution names"
         );
     }
+    Ok(())
 }
 
-fn wiki_source_files() -> Vec<PathBuf> {
-    md_files_recursive("docs")
-        .into_iter()
-        .filter(|p| {
-            let mut comps = p.components();
-            comps.next(); // "docs"
-            let next = comps
-                .next()
-                .unwrap()
-                .as_os_str()
-                .to_string_lossy()
-                .into_owned();
-            next.ends_with(".md") || next == "internals"
-        })
-        .collect()
+fn wiki_source_files() -> Result<Vec<PathBuf>, TestError> {
+    let mut out = Vec::new();
+    for p in md_files_recursive("docs")? {
+        let mut comps = p.components();
+        comps.next(); // "docs"
+        let next = comps
+            .next()
+            .ok_or_else(|| format!("{} has no component under docs/", p.display()))?
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
+        if next.ends_with(".md") || next == "internals" {
+            out.push(p);
+        }
+    }
+    Ok(out)
 }
 
 /// All markdown files under `website/content/docs`, recursively.
-fn website_docs_files() -> Vec<PathBuf> {
+fn website_docs_files() -> Result<Vec<PathBuf>, TestError> {
     md_files_recursive("website/content/docs")
 }
 
@@ -380,29 +399,28 @@ fn website_docs_files() -> Vec<PathBuf> {
 /// Every `@/docs` link, same-page anchor, and anchor suffix in the website
 /// docs resolves; plain relative `.md` links are flagged as dead-URL bugs.
 #[test]
-fn website_intra_docs_links_resolve() {
+fn website_intra_docs_links_resolve() -> Result<(), TestError> {
     // Matches the bare form, the [text](@/docs/x.md#a) form, and the
     // get_url(path='@/docs/x.md') form (the path capture is identical).
     // `/` is in the class so subsection links (`@/docs/internals/x.md`) are
     // resolved too; the pattern previously skipped them entirely.
-    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_./-]+?\.md)(#[A-Za-z0-9_.-]+)?").unwrap();
+    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_./-]+?\.md)(#[A-Za-z0-9_.-]+)?")?;
     // A plain relative .md link inside Zola content silently renders as a
     // dead URL — internal links must use @/docs/. Catch those too.
     // `/` and `.` belong in the class. Without them `[Threading](internals/threading.md)`
     // and `[Up](../install.md)` matched nothing at all — so a plain relative
     // link into a subdirectory, which Zola renders as a literal dead URL, was
     // invisible to the check whose docstring says it flags exactly those.
-    let rel_md =
-        regex::Regex::new(r"\]\((\./)?([A-Za-z0-9_./-]+\.md)(#[A-Za-z0-9_.-]+)?\)").unwrap();
+    let rel_md = regex::Regex::new(r"\]\((\./)?([A-Za-z0-9_./-]+\.md)(#[A-Za-z0-9_.-]+)?\)")?;
     // Same-page anchors: [text](#anchor)
-    let self_re = regex::Regex::new(r"\]\(#([A-Za-z0-9_.-]+)\)").unwrap();
+    let self_re = regex::Regex::new(r"\]\(#([A-Za-z0-9_.-]+)\)")?;
 
     let mut problems = Vec::new();
     let mut seen_docs = 0;
     let mut seen_anchors = 0;
-    for file in website_docs_files() {
+    for file in website_docs_files()? {
         let from = file.display().to_string();
-        let text = prose(&file);
+        let text = prose(&file)?;
         for cap in re.captures_iter(&text) {
             seen_docs += 1;
             let raw = cap[0].to_string();
@@ -422,7 +440,7 @@ fn website_intra_docs_links_resolve() {
                     &from,
                     &raw,
                     &mut problems,
-                );
+                )?;
             }
         }
         for cap in rel_md.captures_iter(&text) {
@@ -439,7 +457,7 @@ fn website_intra_docs_links_resolve() {
                 &from,
                 &format!("(#{})", &cap[1]),
                 &mut problems,
-            );
+            )?;
         }
     }
     // Two counters, because two independent extractors ran into one. The
@@ -462,6 +480,7 @@ fn website_intra_docs_links_resolve() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -470,14 +489,14 @@ fn website_intra_docs_links_resolve() {
 
 /// Every relative .md link and anchor across the wiki-source pages resolves to a real file and heading.
 #[test]
-fn wiki_intra_docs_links_resolve() {
-    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)").unwrap();
+fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
+    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)")?;
     let mut problems = Vec::new();
     let mut seen = 0;
-    for file in wiki_source_files() {
+    for file in wiki_source_files()? {
         let from = file.display().to_string();
-        let dir = file.parent().unwrap();
-        for cap in link_re.captures_iter(&prose(&file)) {
+        let dir = file.parent().ok_or("file has no parent")?;
+        for cap in link_re.captures_iter(&prose(&file)?) {
             let raw = cap[1].to_string();
             // One rule, stated once: `is_counted_wiki_link` decides what this
             // ratchet's number is a count OF, and is driven directly by
@@ -518,7 +537,7 @@ fn wiki_intra_docs_links_resolve() {
                 continue;
             }
             if let Some(a) = anchor {
-                check_anchor(&target_rel, &a, &from, &raw, &mut problems);
+                check_anchor(&target_rel, &a, &from, &raw, &mut problems)?;
             }
         }
     }
@@ -1209,6 +1228,7 @@ fn wiki_intra_docs_links_resolve() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The root community-health files cross-reference each other by relative
@@ -1220,7 +1240,7 @@ fn wiki_intra_docs_links_resolve() {
 /// which makes a dead link here more expensive than one buried in the
 /// reference, not less.
 #[test]
-fn root_community_file_links_resolve() {
+fn root_community_file_links_resolve() -> Result<(), TestError> {
     /// Root community links the extractor is expected to find.
     ///
     /// 46 across the root community files listed below. Raise it only after
@@ -1281,7 +1301,7 @@ fn root_community_file_links_resolve() {
         "CODE_OF_CONDUCT.md",
         "ROADMAP.md",
     ];
-    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)").unwrap();
+    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)")?;
     let mut problems = Vec::new();
     let mut seen = 0;
     for name in ROOT_FILES {
@@ -1290,7 +1310,7 @@ fn root_community_file_links_resolve() {
             "{name} is listed here but missing from the repo root — GitHub \
              renders these in the sidebar, so losing one is user-visible."
         );
-        for cap in link_re.captures_iter(&prose(name)) {
+        for cap in link_re.captures_iter(&prose(name)?) {
             let raw = cap[1].to_string();
             if raw.starts_with("http://")
                 || raw.starts_with("https://")
@@ -1319,7 +1339,7 @@ fn root_community_file_links_resolve() {
                 continue;
             }
             if let Some(a) = anchor {
-                check_anchor(&target, &a, name, &raw, &mut problems);
+                check_anchor(&target, &a, name, &raw, &mut problems)?;
             }
         }
     }
@@ -1338,6 +1358,7 @@ fn root_community_file_links_resolve() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The `_index.md` task cards' hrefs (`/docs/NAME/`, optionally with an
@@ -1356,25 +1377,25 @@ fn root_community_file_links_resolve() {
 /// same reason the pages do — `/docs/cookbook/` is generated from
 /// `docs/examples.md`, whose headings the docs pipeline is free to retitle.
 #[test]
-fn index_task_cards_point_at_existing_pages() {
-    let text = read("website/content/docs/_index.md");
+fn index_task_cards_point_at_existing_pages() -> Result<(), TestError> {
+    let text = read("website/content/docs/_index.md")?;
     // The frontmatter's `tasks = [...]` array: one inline table per line.
     let tasks = {
-        let start = text.find("tasks = [").expect(
+        let start = text.find("tasks = [").ok_or(
             "website/content/docs/_index.md has no `tasks = [` array — the task cards \
              moved or were renamed, and this gate is reading nothing",
-        );
+        )?;
         let rest = &text[start..];
         let end = rest
             .find("\n]")
-            .expect("unterminated `tasks = [` array in website/content/docs/_index.md");
+            .ok_or("unterminated `tasks = [` array in website/content/docs/_index.md")?;
         &rest[..end]
     };
     let cards = tasks
         .lines()
         .filter(|l| l.trim_start().starts_with('{'))
         .count();
-    let re = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#).unwrap();
+    let re = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#)?;
     let mut problems = Vec::new();
     let mut seen = 0;
     for cap in re.captures_iter(tasks) {
@@ -1394,7 +1415,7 @@ fn index_task_cards_point_at_existing_pages() {
                 "_index.md task card",
                 &cap[0],
                 &mut problems,
-            );
+            )?;
         }
     }
     assert!(
@@ -1416,6 +1437,7 @@ fn index_task_cards_point_at_existing_pages() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The `_index.md` audience paths resolve, and name the audiences the page
@@ -1442,16 +1464,16 @@ fn index_task_cards_point_at_existing_pages() {
 ///      and a route block addressing a reader the page no longer claims is
 ///      worse than no route block — it is confidently wrong.
 #[test]
-fn index_audience_paths_point_at_existing_pages() {
-    let text = read("website/content/docs/_index.md");
+fn index_audience_paths_point_at_existing_pages() -> Result<(), TestError> {
+    let text = read("website/content/docs/_index.md")?;
     let mut parts = text.split("+++");
     parts.next();
     let front = parts
         .next()
-        .expect("website/content/docs/_index.md has no `+++` frontmatter");
+        .ok_or("website/content/docs/_index.md has no `+++` frontmatter")?;
     let body = parts
         .next()
-        .expect("website/content/docs/_index.md has no body after the frontmatter");
+        .ok_or("website/content/docs/_index.md has no body after the frontmatter")?;
 
     // One chunk per `[[extra.audiences]]` array-of-tables entry.
     let chunks: Vec<&str> = front.split("[[extra.audiences]]").skip(1).collect();
@@ -1463,8 +1485,8 @@ fn index_audience_paths_point_at_existing_pages() {
          simply lose the block with no other complaint"
     );
 
-    let field = regex::Regex::new(r#"(?m)^(role|goal) = "([^"]+)""#).unwrap();
-    let href = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#).unwrap();
+    let field = regex::Regex::new(r#"(?m)^(role|goal) = "([^"]+)""#)?;
+    let href = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#)?;
 
     let mut problems = Vec::new();
     let mut roles: Vec<String> = Vec::new();
@@ -1480,8 +1502,7 @@ fn index_audience_paths_point_at_existing_pages() {
                 _ => goal = Some(cap[2].to_string()),
             }
         }
-        let role = role
-            .unwrap_or_else(|| panic!("an `[[extra.audiences]]` entry has no `role = \"…\"` line"));
+        let role = role.ok_or("an `[[extra.audiences]]` entry has no `role = \"…\"` line")?;
         assert!(
             goal.is_some_and(|g| !g.trim().is_empty()),
             "audience `{role}` has no `goal` — the role alone does not tell a \
@@ -1490,11 +1511,11 @@ fn index_audience_paths_point_at_existing_pages() {
 
         let start = chunk
             .find("steps = [")
-            .unwrap_or_else(|| panic!("audience `{role}` has no `steps = [` array"));
+            .ok_or_else(|| format!("audience `{role}` has no `steps = [` array"))?;
         let rest = &chunk[start..];
         let end = rest
             .find("\n]")
-            .unwrap_or_else(|| panic!("audience `{role}` has an unterminated `steps = [` array"));
+            .ok_or_else(|| format!("audience `{role}` has an unterminated `steps = [` array"))?;
         let steps = &rest[..end];
 
         let here = steps
@@ -1526,7 +1547,7 @@ fn index_audience_paths_point_at_existing_pages() {
                     &format!("_index.md audience `{role}`"),
                     &cap[0],
                     &mut problems,
-                );
+                )?;
             }
         }
         roles.push(role);
@@ -1545,11 +1566,11 @@ fn index_audience_paths_point_at_existing_pages() {
     let section = body
         .split("## Who it is for")
         .nth(1)
-        .expect("website/content/docs/_index.md has no `## Who it is for` section")
+        .ok_or("website/content/docs/_index.md has no `## Who it is for` section")?
         .split("\n## ")
         .next()
-        .expect("the `Who it is for` section terminates");
-    let bold = regex::Regex::new(r"(?m)^- \*\*([^*]+)\*\*").unwrap();
+        .ok_or("the `Who it is for` section terminates")?;
+    let bold = regex::Regex::new(r"(?m)^- \*\*([^*]+)\*\*")?;
     let prose: BTreeSet<String> = bold
         .captures_iter(section)
         .map(|c| c[1].trim().to_string())
@@ -1573,6 +1594,7 @@ fn index_audience_paths_point_at_existing_pages() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,9 +1732,9 @@ struct DocSection {
 ///
 /// # Returns
 /// The text before the first heading, and every section in document order.
-fn page_lead_and_sections(rel: &Path) -> (String, Vec<DocSection>) {
-    let raw = read(rel);
-    let comment = regex::Regex::new(r"(?s)<!--.*?-->").unwrap();
+fn page_lead_and_sections(rel: &Path) -> Result<(String, Vec<DocSection>), TestError> {
+    let raw = read(rel)?;
+    let comment = regex::Regex::new(r"(?s)<!--.*?-->")?;
     let stripped = comment.replace_all(&raw, "").into_owned();
     let body = stripped
         .splitn(3, "+++")
@@ -1720,7 +1742,7 @@ fn page_lead_and_sections(rel: &Path) -> (String, Vec<DocSection>) {
         .unwrap_or(&stripped)
         .to_string();
 
-    let head_re = regex::Regex::new(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$").unwrap();
+    let head_re = regex::Regex::new(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$")?;
     let lines: Vec<&str> = body.lines().collect();
     let mut fenced = false;
     let mut heads: Vec<(usize, usize, String)> = Vec::new();
@@ -1755,17 +1777,16 @@ fn page_lead_and_sections(rel: &Path) -> (String, Vec<DocSection>) {
             }
         })
         .collect();
-    (lead, sections)
+    Ok((lead, sections))
 }
 
 /// A `key = "value"` line from a page's TOML front matter, or an empty string.
-fn front_matter_field(rel: &Path, key: &str) -> String {
-    let text = read(rel);
+fn front_matter_field(rel: &Path, key: &str) -> Result<String, TestError> {
+    let text = read(rel)?;
     let front = text.split("+++").nth(1).unwrap_or_default().to_string();
-    regex::Regex::new(&format!(r#"(?m)^{key} = "(.*)""#))
-        .unwrap()
+    Ok(regex::Regex::new(&format!(r#"(?m)^{key} = "(.*)""#))?
         .captures(&front)
-        .map_or_else(String::new, |c| c[1].to_string())
+        .map_or_else(String::new, |c| c[1].to_string()))
 }
 
 /// One `{ title = …, href = "/docs/NAME/" }` entry of the docs index.
@@ -1794,50 +1815,49 @@ fn array_body<'a>(haystack: &'a str, opener: &str) -> Option<&'a str> {
 /// yield both a title and an href. An entry this gate cannot read panics here
 /// rather than silently dropping out of the count, which is how the task-card
 /// gate above once shipped a card pointing at a page that did not exist.
-fn index_links() -> Vec<IndexLink> {
-    let text = read("website/content/docs/_index.md");
+fn index_links() -> Result<Vec<IndexLink>, TestError> {
+    let text = read("website/content/docs/_index.md")?;
     let front = text
         .split("+++")
         .nth(1)
-        .expect("website/content/docs/_index.md has no `+++` front matter")
+        .ok_or("website/content/docs/_index.md has no `+++` front matter")?
         .to_string();
 
     let mut blocks: Vec<(String, String)> = vec![(
         "task card".to_string(),
         array_body(&front, "tasks = [")
-            .expect(
+            .ok_or(
                 "website/content/docs/_index.md has no `tasks = [` array — the task cards \
                  moved or were renamed, and this gate is reading nothing",
-            )
+            )?
             .to_string(),
     )];
-    let role_re = regex::Regex::new(r#"(?m)^role = "([^"]+)""#).unwrap();
+    let role_re = regex::Regex::new(r#"(?m)^role = "([^"]+)""#)?;
     for chunk in front.split("[[extra.audiences]]").skip(1) {
         let role = role_re
             .captures(chunk)
             .map_or_else(|| "unnamed".to_string(), |c| c[1].to_string());
         let steps = array_body(chunk, "steps = [")
-            .unwrap_or_else(|| panic!("audience `{role}` has no `steps = [` array"));
+            .ok_or_else(|| format!("audience `{role}` has no `steps = [` array"))?;
         blocks.push((format!("audience `{role}` step"), steps.to_string()));
     }
 
-    let title_re = regex::Regex::new(r#"title = "([^"]+)""#).unwrap();
-    let href_re =
-        regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#).unwrap();
+    let title_re = regex::Regex::new(r#"title = "([^"]+)""#)?;
+    let href_re = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#)?;
     let mut out = Vec::new();
     for (origin, array) in &blocks {
         for line in array.lines().filter(|l| l.trim_start().starts_with('{')) {
             let title = title_re
                 .captures(line)
-                .unwrap_or_else(|| panic!("{origin} has no `title = \"…\"`: {line}"))[1]
+                .ok_or_else(|| format!("{origin} has no `title = \"…\"`: {line}"))?[1]
                 .to_string();
-            let href = href_re.captures(line).unwrap_or_else(|| {
-                panic!(
+            let href = href_re.captures(line).ok_or_else(|| {
+                format!(
                     "{origin} `{title}` has no href in the `/docs/NAME/` or \
                      `/docs/NAME/#anchor` form this gate reads, so it would ship \
                      unchecked. Fix the href, or widen the regex here: {line}"
                 )
-            });
+            })?;
             out.push(IndexLink {
                 origin: origin.clone(),
                 title,
@@ -1846,7 +1866,7 @@ fn index_links() -> Vec<IndexLink> {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every index link has to land where the task it names is answered.
@@ -1896,8 +1916,8 @@ fn index_links() -> Vec<IndexLink> {
 /// vocabulary while still promising the wrong thing passes. Rule 1 keeps the
 /// cheapest version of that dodge (dropping the verb) out.
 #[test]
-fn index_links_land_where_the_task_they_promise_is_answered() {
-    let links = index_links();
+fn index_links_land_where_the_task_they_promise_is_answered() -> Result<(), TestError> {
+    let links = index_links()?;
     assert!(
         links.len() >= 10,
         "only {} index link(s) parsed out of website/content/docs/_index.md — the card \
@@ -1932,9 +1952,9 @@ fn index_links_land_where_the_task_they_promise_is_answered() {
         }
         let listed = terms.join(", ");
 
-        let (lead, sections) = page_lead_and_sections(&rel);
-        let page_title = front_matter_field(&rel, "title");
-        let page_desc = front_matter_field(&rel, "description");
+        let (lead, sections) = page_lead_and_sections(&rel)?;
+        let page_title = front_matter_field(&rel, "title")?;
+        let page_desc = front_matter_field(&rel, "description")?;
 
         let Some(anchor) = link.anchor.as_deref() else {
             let first_h2 = sections.iter().find(|s| s.level == 2);
@@ -2059,6 +2079,7 @@ fn index_links_land_where_the_task_they_promise_is_answered() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// The subject extractor and the word matcher behave as the gate above assumes.
@@ -2071,7 +2092,7 @@ fn index_links_land_where_the_task_they_promise_is_answered() {
 /// three-letter term must match a word rather than a substring, and a longer
 /// one must survive an English suffix on either side.
 #[test]
-fn link_subject_and_word_matching_behave() {
+fn link_subject_and_word_matching_behave() -> Result<(), TestError> {
     assert_eq!(subject_terms("Run it headless"), ["headless"]);
     assert_eq!(
         subject_terms("Set up a HEP capture server"),
@@ -2100,6 +2121,7 @@ fn link_subject_and_word_matching_behave() {
         "headless"
     ));
     assert!(!text_covers("Output Formats", "tooling"));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2108,7 +2130,7 @@ fn link_subject_and_word_matching_behave() {
 
 /// Every get_url `@/docs` link in every template resolves, including `}}#anchor` suffixes.
 #[test]
-fn template_docs_links_and_anchors_resolve() {
+fn template_docs_links_and_anchors_resolve() -> Result<(), TestError> {
     // site_journey_test covers bare existence in base/index; this covers ALL
     // templates and validates anchors appended after the get_url call
     // (`{{ get_url(path='@/docs/x.md') }}#anchor`).
@@ -2118,20 +2140,19 @@ fn template_docs_links_and_anchors_resolve() {
     // get_url to a nonexistent page there would have shipped a broken nav link.
     let re = regex::Regex::new(
         r"get_url\(path='@/docs/([A-Za-z0-9_./-]+?\.md)'\)\s*\}\}(#[A-Za-z0-9_.-]+)?",
-    )
-    .unwrap();
+    )?;
     let mut problems = Vec::new();
     let mut seen = 0;
-    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
-        let p = entry.expect("entry").path();
+    for entry in std::fs::read_dir(repo().join("website/templates"))? {
+        let p = entry?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("html") {
             continue;
         }
         let from = format!(
             "website/templates/{}",
-            p.file_name().unwrap().to_string_lossy()
+            p.file_name().ok_or("p has no file name")?.to_string_lossy()
         );
-        let text = std::fs::read_to_string(&p).expect("read template");
+        let text = std::fs::read_to_string(&p)?;
         for cap in re.captures_iter(&text) {
             seen += 1;
             let raw = cap[0].to_string();
@@ -2156,7 +2177,7 @@ fn template_docs_links_and_anchors_resolve() {
                 let zola_ok = {
                     let mut seen_slugs: BTreeMap<String, usize> = BTreeMap::new();
                     let mut ok = false;
-                    for h in headings(&target_rel) {
+                    for h in headings(&target_rel)? {
                         let slug = slug_zola(&h);
                         let n = seen_slugs.entry(slug.clone()).or_insert(0);
                         let candidate = if *n == 0 {
@@ -2186,7 +2207,7 @@ fn template_docs_links_and_anchors_resolve() {
                     &from,
                     &raw,
                     &mut problems,
-                );
+                )?;
             }
         }
     }
@@ -2202,6 +2223,7 @@ fn template_docs_links_and_anchors_resolve() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2232,7 +2254,7 @@ fn template_docs_links_and_anchors_resolve() {
 /// `mcp-overview.md` and `mcp-setup.md` stay listed: nothing brought them
 /// back, and a stale link to either is still a 404.
 #[test]
-fn no_references_to_merged_away_mcp_pages() {
+fn no_references_to_merged_away_mcp_pages() -> Result<(), TestError> {
     const GONE: &[&str] = &["mcp-overview.md", "mcp-setup.md"];
     let mut offenders = Vec::new();
     // The published surface, not every markdown file on disk. Two changes
@@ -2242,8 +2264,8 @@ fn no_references_to_merged_away_mcp_pages() {
     //   - drops docs/design/: planning material that
     //     is never published, and that must be free to name a merged-away
     //     page while describing the merge.
-    let mut files = wiki_source_files();
-    files.extend(md_files_recursive("website/content/docs"));
+    let mut files = wiki_source_files()?;
+    files.extend(md_files_recursive("website/content/docs")?);
     for name in [
         "README.md",
         "CONTRIBUTING.md",
@@ -2253,7 +2275,7 @@ fn no_references_to_merged_away_mcp_pages() {
         files.push(PathBuf::from(name));
     }
     for file in files {
-        let text = read(&file);
+        let text = read(&file)?;
         for (i, line) in text.lines().enumerate() {
             for gone in GONE {
                 if line.contains(gone) {
@@ -2267,6 +2289,7 @@ fn no_references_to_merged_away_mcp_pages() {
         "references to pages merged into mcp.md:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2276,7 +2299,7 @@ fn no_references_to_merged_away_mcp_pages() {
 
 /// The three slug styles reproduce anchors verified against real GitHub/Zola output.
 #[test]
-fn slugify_matches_known_rendered_anchors() {
+fn slugify_matches_known_rendered_anchors() -> Result<(), TestError> {
     // Backticked code heading -> backticks stripped, underscore kept.
     assert_eq!(slug_github("`find_problems`"), "find_problems");
     assert_eq!(slug_spec("`find_problems`"), "findproblems");
@@ -2303,7 +2326,7 @@ fn slugify_matches_known_rendered_anchors() {
     // repo-wide by no_page_mints_a_positional_anchor; this pins the three
     // endpoints an operator is most likely to bookmark, and the absence of
     // the specific suffix that used to appear.
-    let anchors = anchor_candidates(Path::new("website/content/docs/api.md"));
+    let anchors = anchor_candidates(Path::new("website/content/docs/api.md"))?;
     for expected in [
         "get-v1-dialogs",
         "get-v1-dialogs-call-id",
@@ -2318,6 +2341,7 @@ fn slugify_matches_known_rendered_anchors() {
         !anchors.contains("get-v1-dialogs-1"),
         "api.md is minting a positional dedup anchor again: {anchors:?}"
     );
+    Ok(())
 }
 
 /// Every operator doc must be reachable from the docs index.
@@ -2332,7 +2356,7 @@ fn slugify_matches_known_rendered_anchors() {
 /// "reachable from somewhere in the repo" is not the bar; reachable from here
 /// is.
 #[test]
-fn every_docs_page_is_linked_from_the_index() {
+fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     /// Pages the docs walk is expected to reach.
     // Raised 47 -> 49 by the vCon pair, the same shape as the rtpengine pair
     // above: `vcon.md` for the operator and `internals/vcon.md` for the
@@ -2370,8 +2394,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from
     // nowhere on GitHub or the wiki, and this test said it was linked.
-    let index = markdown::linkable_prose(&read("docs/README.md"));
-    let link_re = regex::Regex::new(r"\]\(\s*\.?/?([^)#\s]+\.md)").expect("link regex");
+    let index = markdown::linkable_prose(&read("docs/README.md")?);
+    let link_re = regex::Regex::new(r"\]\(\s*\.?/?([^)#\s]+\.md)")?;
     let linked: BTreeSet<String> = link_re
         .captures_iter(&index)
         .map(|c| c[1].trim_start_matches("./").to_string())
@@ -2389,7 +2413,7 @@ fn every_docs_page_is_linked_from_the_index() {
     let mut checked = 0usize;
     let mut stack = vec![PathBuf::from("docs")];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("docs/").flatten() {
+        for entry in std::fs::read_dir(&dir)?.flatten() {
             let p = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if p.is_dir() {
@@ -2404,11 +2428,7 @@ fn every_docs_page_is_linked_from_the_index() {
                 continue;
             }
             checked += 1;
-            let rel = p
-                .strip_prefix("docs")
-                .expect("under docs/")
-                .to_string_lossy()
-                .into_owned();
+            let rel = p.strip_prefix("docs")?.to_string_lossy().into_owned();
             // A page is reachable if the index links it directly, or if it
             // sits under a subdirectory whose own index the index links —
             // docs/internals/ is reached through docs/internals/README.md.
@@ -2456,6 +2476,7 @@ fn every_docs_page_is_linked_from_the_index() {
         "these docs/ pages are not linked from docs/README.md, so a reader \
          starting at the index cannot reach them: {unlinked:?}"
     );
+    Ok(())
 }
 
 /// Anchors on the generated site pages must resolve under **Zola's** slug
@@ -2477,16 +2498,16 @@ fn every_docs_page_is_linked_from_the_index() {
 /// `scripts/build-site-pages.py` now translates anchors on the way out; this
 /// asserts the translation actually happened.
 #[test]
-fn generated_site_anchors_resolve_under_zola() {
-    let re = regex::Regex::new(r"\]\(\s*(?:@/docs/([^)#\s]+\.md))?(#[^)\s]+)\s*\)").unwrap();
+fn generated_site_anchors_resolve_under_zola() -> Result<(), TestError> {
+    let re = regex::Regex::new(r"\]\(\s*(?:@/docs/([^)#\s]+\.md))?(#[^)\s]+)\s*\)")?;
     let dir = repo().join("website/content/docs");
 
     /// Every anchor Zola emits for a file, including the `-N` it appends to a
     /// duplicate slug.
-    fn zola_anchors(rel: &Path) -> BTreeSet<String> {
+    fn zola_anchors(rel: &Path) -> Result<BTreeSet<String>, TestError> {
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         let mut out = BTreeSet::new();
-        for h in headings(rel) {
+        for h in headings(rel)? {
             let slug = slug_zola(&h);
             let n = seen.entry(slug.clone()).or_insert(0);
             out.insert(if *n == 0 {
@@ -2496,13 +2517,13 @@ fn generated_site_anchors_resolve_under_zola() {
             });
             *n += 1;
         }
-        out
+        Ok(out)
     }
 
     let mut problems = Vec::new();
     let mut seen = 0;
     let mut files = Vec::new();
-    for entry in walk_md(&dir) {
+    for entry in walk_md(&dir)? {
         files.push(entry);
     }
     assert!(
@@ -2511,8 +2532,8 @@ fn generated_site_anchors_resolve_under_zola() {
     );
 
     for path in &files {
-        let rel = path.strip_prefix(repo()).expect("under repo").to_path_buf();
-        let text = read(&rel);
+        let rel = path.strip_prefix(repo())?.to_path_buf();
+        let text = read(&rel)?;
         for cap in re.captures_iter(&text) {
             let anchor = cap[2].trim_start_matches('#');
             // Zola resolves a bare `#a` against the page it appears on.
@@ -2528,7 +2549,7 @@ fn generated_site_anchors_resolve_under_zola() {
                 continue; // page existence is covered by its own gate
             }
             seen += 1;
-            if !zola_anchors(&target_rel).contains(anchor) {
+            if !zola_anchors(&target_rel)?.contains(anchor) {
                 problems.push(format!(
                     "{}: #{anchor} does not exist in {} under Zola's slug rule \
                      (it may be the GitHub spelling — regenerate with \
@@ -2552,14 +2573,15 @@ fn generated_site_anchors_resolve_under_zola() {
         problems.len(),
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every `.md` under `dir`, recursively.
-fn walk_md(dir: &Path) -> Vec<std::path::PathBuf> {
+fn walk_md(dir: &Path) -> Result<Vec<std::path::PathBuf>, TestError> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        for entry in std::fs::read_dir(&d).expect("read dir").flatten() {
+        for entry in std::fs::read_dir(&d)?.flatten() {
             let p = entry.path();
             if p.is_dir() {
                 stack.push(p);
@@ -2568,5 +2590,5 @@ fn walk_md(dir: &Path) -> Vec<std::path::PathBuf> {
             }
         }
     }
-    out
+    Ok(out)
 }

@@ -30,18 +30,20 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// Every `[[bin]]` name in `fuzz/Cargo.toml`, which is what `cargo fuzz list`
 /// reads.
-fn fuzz_targets() -> BTreeSet<String> {
-    let manifest = read("fuzz/Cargo.toml");
+fn fuzz_targets() -> Result<BTreeSet<String>, TestError> {
+    let manifest = read("fuzz/Cargo.toml")?;
     let mut out = BTreeSet::new();
     let mut in_bin = false;
     for line in manifest.lines() {
@@ -62,7 +64,7 @@ fn fuzz_targets() -> BTreeSet<String> {
         "parsed no [[bin]] names out of fuzz/Cargo.toml; every test here would \
          then pass by checking nothing"
     );
-    out
+    Ok(out)
 }
 
 /// The shell lines of a script, with comments dropped.
@@ -84,21 +86,22 @@ fn code_lines(body: &str) -> String {
 /// target that compiles, passes CI and is never fuzzed. `cargo fuzz list`
 /// reads the manifest, so the two cannot disagree.
 #[test]
-fn the_fuzz_build_derives_its_target_list() {
-    let build = read(".clusterfuzzlite/build.sh");
+fn the_fuzz_build_derives_its_target_list() -> Result<(), TestError> {
+    let build = read(".clusterfuzzlite/build.sh")?;
     assert!(
         build.contains("cargo fuzz list"),
         ".clusterfuzzlite/build.sh must enumerate targets with `cargo fuzz \
          list`; a restated list silently drops the next target added"
     );
     let code = code_lines(&build);
-    for target in fuzz_targets() {
+    for target in fuzz_targets()? {
         assert!(
             !code.contains(&target),
             ".clusterfuzzlite/build.sh names the target {target} in code. It \
              derives the list already; a second copy is what drifts."
         );
     }
+    Ok(())
 }
 
 /// Every seed corpus belongs to a target that still exists.
@@ -108,14 +111,18 @@ fn the_fuzz_build_derives_its_target_list() {
 /// under the old name, where they are copied into no archive and fuzz nothing
 /// — an absence with no symptom.
 #[test]
-fn every_seed_corpus_belongs_to_a_live_target() {
-    let targets = fuzz_targets();
+fn every_seed_corpus_belongs_to_a_live_target() -> Result<(), TestError> {
+    let targets = fuzz_targets()?;
     let dir: PathBuf = repo().join("fuzz/corpus");
     let mut orphans = Vec::new();
     let mut seen = 0usize;
-    for entry in std::fs::read_dir(&dir).expect("read fuzz/corpus") {
-        let entry = entry.expect("dir entry");
-        if !entry.file_type().expect("file type").is_dir() {
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read fuzz/corpus: {e}"))? {
+        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
+        if !entry
+            .file_type()
+            .map_err(|e| format!("file type: {e}"))?
+            .is_dir()
+        {
             continue;
         }
         seen += 1;
@@ -139,6 +146,7 @@ fn every_seed_corpus_belongs_to_a_live_target() {
         "found no corpus directories at all; the walk stopped matching and \
          this gate is checking nothing"
     );
+    Ok(())
 }
 
 /// One build script, not one per consumer.
@@ -147,8 +155,8 @@ fn every_seed_corpus_belongs_to_a_live_target() {
 /// on the day they are written and drift the first time a target is added,
 /// silently, because nothing compares them.
 #[test]
-fn there_is_exactly_one_fuzz_build_script() {
-    let shim = read("ops/oss-fuzz/build.sh.shim");
+fn there_is_exactly_one_fuzz_build_script() -> Result<(), TestError> {
+    let shim = read("ops/oss-fuzz/build.sh.shim")?;
     assert!(
         shim.contains(".clusterfuzzlite/build.sh"),
         "the shim submitted to google/oss-fuzz must exec the ClusterFuzzLite \
@@ -170,9 +178,10 @@ fn there_is_exactly_one_fuzz_build_script() {
         assert!(repo().join(f).is_file(), "{f} is missing");
     }
     assert!(
-        read(".clusterfuzzlite/project.yaml").contains("language: rust"),
+        read(".clusterfuzzlite/project.yaml")?.contains("language: rust"),
         "project.yaml must declare the language the builder image is chosen by"
     );
+    Ok(())
 }
 
 /// The ClusterFuzzLite image fuzzes the tree under test, not whatever is on
@@ -188,8 +197,8 @@ fn there_is_exactly_one_fuzz_build_script() {
 /// had not been pushed yet. A clone that succeeds is worse, because it fuzzes
 /// code the run never saw and reports on it as though it had.
 #[test]
-fn the_clusterfuzzlite_image_copies_the_tree_under_test() {
-    let dockerfile = read(".clusterfuzzlite/Dockerfile");
+fn the_clusterfuzzlite_image_copies_the_tree_under_test() -> Result<(), TestError> {
+    let dockerfile = read(".clusterfuzzlite/Dockerfile")?;
     let code = code_lines(&dockerfile);
     assert!(
         code.contains("COPY . $SRC/sipnab"),
@@ -205,6 +214,7 @@ fn the_clusterfuzzlite_image_copies_the_tree_under_test() {
         code.contains(".clusterfuzzlite/build.sh $SRC/build.sh"),
         "the runner executes $SRC/build.sh; the Dockerfile must put it there"
     );
+    Ok(())
 }
 
 /// The image carries what the fuzz targets link against.
@@ -214,42 +224,44 @@ fn the_clusterfuzzlite_image_copies_the_tree_under_test() {
 /// capture path, and without the headers `cargo fuzz build` fails at link time
 /// inside a container nobody is watching.
 #[test]
-fn the_clusterfuzzlite_image_installs_what_the_fuzz_targets_link() {
-    let manifest = read("fuzz/Cargo.toml");
+fn the_clusterfuzzlite_image_installs_what_the_fuzz_targets_link() -> Result<(), TestError> {
+    let manifest = read("fuzz/Cargo.toml")?;
     let sipnab_dep = manifest
         .lines()
         .find(|l| l.trim_start().starts_with("sipnab = "))
-        .expect("fuzz/Cargo.toml must depend on sipnab");
+        .ok_or("fuzz/Cargo.toml must depend on sipnab")?;
     if !sipnab_dep.contains("\"native\"") {
-        return;
+        return Ok(());
     }
-    let dockerfile = read(".clusterfuzzlite/Dockerfile");
+    let dockerfile = read(".clusterfuzzlite/Dockerfile")?;
     assert!(
         dockerfile.contains("libpcap-dev"),
         "the fuzz targets pull in sipnab's `native` feature, which links \
          libpcap, but .clusterfuzzlite/Dockerfile installs no headers for it:\n\
          {sipnab_dep}"
     );
+    Ok(())
 }
 
-fn workflow(name: &str) -> String {
+fn workflow(name: &str) -> Result<String, TestError> {
     read(&format!(".github/workflows/{name}"))
 }
 
-fn workflow_names() -> Vec<String> {
+fn workflow_names() -> Result<Vec<String>, TestError> {
     let dir = repo().join(".github/workflows");
-    let mut out: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read .github/workflows")
-        .map(|e| {
-            e.expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|n| n.ends_with(".yml") || n.ends_with(".yaml"))
-        .collect();
+    let mut out: Vec<String> = Vec::new();
+    for e in std::fs::read_dir(&dir).map_err(|e| format!("read .github/workflows: {e}"))? {
+        let n = e
+            .map_err(|e| format!("dir entry: {e}"))?
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if n.ends_with(".yml") || n.ends_with(".yaml") {
+            out.push(n);
+        }
+    }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The weekly matrix fuzzes every target, and only targets that exist.
@@ -260,15 +272,15 @@ fn workflow_names() -> Vec<String> {
 /// missing from the matrix is never fuzzed, and a target that is only in the
 /// matrix fails the job every week for a reason that reads like a build break.
 #[test]
-fn the_weekly_matrix_fuzzes_every_target() {
-    let body = workflow("fuzz.yml");
+fn the_weekly_matrix_fuzzes_every_target() -> Result<(), TestError> {
+    let body = workflow("fuzz.yml")?;
     let listed: BTreeSet<String> = body
         .lines()
         .map(str::trim)
         .filter_map(|l| l.strip_prefix("- fuzz_"))
         .map(|rest| format!("fuzz_{rest}"))
         .collect();
-    let targets = fuzz_targets();
+    let targets = fuzz_targets()?;
     let missing: Vec<&String> = targets.difference(&listed).collect();
     let extra: Vec<&String> = listed.difference(&targets).collect();
     assert!(
@@ -282,6 +294,7 @@ fn the_weekly_matrix_fuzzes_every_target() {
          {extra:?}. Those jobs fail weekly with a message about a missing \
          binary, which reads like a broken build rather than a stale list."
     );
+    Ok(())
 }
 
 /// Batch fuzzing without pruning grows a corpus nobody minimizes.
@@ -291,11 +304,11 @@ fn the_weekly_matrix_fuzzes_every_target() {
 /// replaying inputs that cover nothing new. The workflow that adds the first
 /// half must not be able to land without the second.
 #[test]
-fn batch_fuzzing_is_paired_with_corpus_pruning() {
+fn batch_fuzzing_is_paired_with_corpus_pruning() -> Result<(), TestError> {
     let mut batch = Vec::new();
     let mut prune = Vec::new();
-    for name in workflow_names() {
-        let body = workflow(&name);
+    for name in workflow_names()? {
+        let body = workflow(&name)?;
         if body.contains("mode: 'batch'") {
             batch.push(name.clone());
         }
@@ -304,13 +317,14 @@ fn batch_fuzzing_is_paired_with_corpus_pruning() {
         }
     }
     if batch.is_empty() {
-        return;
+        return Ok(());
     }
     assert!(
         !prune.is_empty(),
         "{batch:?} runs ClusterFuzzLite batch fuzzing, but no workflow prunes \
          the corpus it accumulates"
     );
+    Ok(())
 }
 
 /// Every ClusterFuzzLite step declares the language the builder image is
@@ -320,10 +334,10 @@ fn batch_fuzzing_is_paired_with_corpus_pruning() {
 /// with the C++ base image, where `cargo` does not exist — a failure whose
 /// message is about a missing binary rather than a missing input.
 #[test]
-fn every_clusterfuzzlite_build_step_declares_rust() {
+fn every_clusterfuzzlite_build_step_declares_rust() -> Result<(), TestError> {
     let mut checked = 0usize;
-    for name in workflow_names() {
-        let body = workflow(&name);
+    for name in workflow_names()? {
+        let body = workflow(&name)?;
         for chunk in body.split("- name:") {
             if !chunk.contains("clusterfuzzlite/actions/build_fuzzers") {
                 continue;
@@ -342,6 +356,7 @@ fn every_clusterfuzzlite_build_step_declares_rust() {
         "found no build_fuzzers steps; ClusterFuzzLite is configured in \
          .clusterfuzzlite/ but nothing runs it"
     );
+    Ok(())
 }
 
 /// One workflow, three schedules, and each job guarded by the cron that is
@@ -358,8 +373,8 @@ fn every_clusterfuzzlite_build_step_declares_rust() {
 /// check, just fuzzing that quietly stopped. Nothing else would notice, which
 /// is why this compares the two lists rather than trusting them to match.
 #[test]
-fn every_clusterfuzzlite_schedule_starts_exactly_one_job() {
-    let body = workflow("clusterfuzzlite.yml");
+fn every_clusterfuzzlite_schedule_starts_exactly_one_job() -> Result<(), TestError> {
+    let body = workflow("clusterfuzzlite.yml")?;
     let mut crons: Vec<String> = body
         .lines()
         .map(str::trim)
@@ -393,7 +408,7 @@ fn every_clusterfuzzlite_schedule_starts_exactly_one_job() {
         .find_map(|l| l.trim().strip_prefix("options: ["))
         .and_then(|v| v.split_once(']'))
         .map(|(v, _)| v.to_string())
-        .expect("clusterfuzzlite.yml must offer a `mode` choice on workflow_dispatch");
+        .ok_or("clusterfuzzlite.yml must offer a `mode` choice on workflow_dispatch")?;
     let offered: Vec<&str> = options.split(',').map(str::trim).collect();
     let mut dispatched = 0usize;
     for line in body.lines() {
@@ -417,6 +432,7 @@ fn every_clusterfuzzlite_schedule_starts_exactly_one_job() {
          {} are",
         crons.len()
     );
+    Ok(())
 }
 
 /// The seed corpora reach the image the fuzzers are built in.
@@ -429,8 +445,8 @@ fn every_clusterfuzzlite_schedule_starts_exactly_one_job() {
 /// success. Every target would then start from an empty corpus on every run,
 /// which is exactly what the tracked seeds exist to prevent.
 #[test]
-fn the_seed_corpora_are_not_excluded_from_the_build_context() {
-    let ignore = read(".dockerignore");
+fn the_seed_corpora_are_not_excluded_from_the_build_context() -> Result<(), TestError> {
+    let ignore = read(".dockerignore")?;
     let negations: Vec<&str> = ignore
         .lines()
         .map(str::trim)
@@ -450,11 +466,11 @@ fn the_seed_corpora_are_not_excluded_from_the_build_context() {
     let last_exclusion = lines
         .iter()
         .rposition(|l| !l.starts_with('!') && !l.starts_with('#') && !l.is_empty())
-        .expect("`.dockerignore` has no exclusion patterns at all");
+        .ok_or("`.dockerignore` has no exclusion patterns at all")?;
     let first_negation = lines
         .iter()
         .position(|l| l.starts_with('!'))
-        .expect("checked above");
+        .ok_or("checked above")?;
     assert!(
         first_negation > last_exclusion,
         ".dockerignore re-includes the fuzz seeds at line {} but goes on \
@@ -463,6 +479,7 @@ fn the_seed_corpora_are_not_excluded_from_the_build_context() {
         first_negation + 1,
         last_exclusion + 1
     );
+    Ok(())
 }
 
 // ── Owed: five failures the containerized build found, two tests each ────────
@@ -484,8 +501,8 @@ fn the_seed_corpora_are_not_excluded_from_the_build_context() {
 /// exports `RUSTUP_TOOLCHAIN` and an environment override beats the default.
 /// rustup said so in its own output and the build still came back with 1.91.
 #[test]
-fn the_fuzzing_image_selects_its_toolchain_by_environment() {
-    let dockerfile = read(".clusterfuzzlite/Dockerfile");
+fn the_fuzzing_image_selects_its_toolchain_by_environment() -> Result<(), TestError> {
+    let dockerfile = read(".clusterfuzzlite/Dockerfile")?;
     let code = code_lines(&dockerfile);
     assert!(
         code.contains("rustup toolchain install"),
@@ -499,6 +516,7 @@ fn the_fuzzing_image_selects_its_toolchain_by_environment() {
          exports RUSTUP_TOOLCHAIN, which overrides the default, so the install \
          succeeds and the old compiler still runs. Set ENV RUSTUP_TOOLCHAIN."
     );
+    Ok(())
 }
 
 /// The toolchain the image installs and the one it selects are one value.
@@ -507,12 +525,12 @@ fn the_fuzzing_image_selects_its_toolchain_by_environment() {
 /// and diverge the first time one is bumped — installing a toolchain and then
 /// running a different one, which fails with a message about neither.
 #[test]
-fn the_installed_toolchain_and_the_selected_one_are_the_same_value() {
-    let dockerfile = read(".clusterfuzzlite/Dockerfile");
+fn the_installed_toolchain_and_the_selected_one_are_the_same_value() -> Result<(), TestError> {
+    let dockerfile = read(".clusterfuzzlite/Dockerfile")?;
     let arg = dockerfile
         .lines()
         .find_map(|l| l.trim().strip_prefix("ARG RUST_NIGHTLY="))
-        .expect("the Dockerfile must name the toolchain in one ARG")
+        .ok_or("the Dockerfile must name the toolchain in one ARG")?
         .trim()
         .trim_matches('"')
         .to_string();
@@ -530,7 +548,7 @@ fn the_installed_toolchain_and_the_selected_one_are_the_same_value() {
         let line = dockerfile
             .lines()
             .find(|l| l.contains(directive))
-            .unwrap_or_else(|| panic!("no {directive} line"));
+            .ok_or_else(|| format!("no {directive} line"))?;
         assert!(
             line.contains("$RUST_NIGHTLY"),
             "{directive} does not read $RUST_NIGHTLY: {line:?}. Two literals \
@@ -538,6 +556,7 @@ fn the_installed_toolchain_and_the_selected_one_are_the_same_value() {
              runs another."
         );
     }
+    Ok(())
 }
 
 /// The toolchain must carry the standard library source.
@@ -549,17 +568,18 @@ fn the_installed_toolchain_and_the_selected_one_are_the_same_value() {
 /// built, after every flag is right, and with a message that names a path
 /// nothing in this repository mentions.
 #[test]
-fn the_fuzzing_image_installs_the_standard_library_source() {
-    let dockerfile = read(".clusterfuzzlite/Dockerfile");
+fn the_fuzzing_image_installs_the_standard_library_source() -> Result<(), TestError> {
+    let dockerfile = read(".clusterfuzzlite/Dockerfile")?;
     let install = dockerfile
         .lines()
         .find(|l| l.contains("rustup toolchain install"))
-        .expect("the Dockerfile must install a toolchain");
+        .ok_or("the Dockerfile must install a toolchain")?;
     assert!(
         install.contains("--component rust-src"),
         "the toolchain is installed without rust-src: {install:?}. OSS-Fuzz \
          copies the std source out of it during compile."
     );
+    Ok(())
 }
 
 /// A missing seed corpus fails the build instead of passing quietly.
@@ -570,8 +590,8 @@ fn the_fuzzing_image_installs_the_standard_library_source() {
 /// has found nothing, and the tracked seeds exist precisely so no run starts
 /// from zero.
 #[test]
-fn the_fuzz_build_refuses_when_no_seed_corpus_was_packed() {
-    let build = read(".clusterfuzzlite/build.sh");
+fn the_fuzz_build_refuses_when_no_seed_corpus_was_packed() -> Result<(), TestError> {
+    let build = read(".clusterfuzzlite/build.sh")?;
     let code = code_lines(&build);
     assert!(
         code.contains("seeded=0") && code.contains("seeded + 1"),
@@ -584,6 +604,7 @@ fn the_fuzz_build_refuses_when_no_seed_corpus_was_packed() {
          when the count is zero. This repository tracks seed corpora; zero \
          means they never reached the image."
     );
+    Ok(())
 }
 
 /// The build ships the shared libraries its targets need.
@@ -597,8 +618,8 @@ fn the_fuzz_build_refuses_when_no_seed_corpus_was_packed() {
 /// elsewhere before running anything, specifically to catch a build that
 /// hardcoded its own directory.
 #[test]
-fn the_fuzz_build_ships_the_libraries_its_targets_link() {
-    let build = read(".clusterfuzzlite/build.sh");
+fn the_fuzz_build_ships_the_libraries_its_targets_link() -> Result<(), TestError> {
+    let build = read(".clusterfuzzlite/build.sh")?;
     let code = code_lines(&build);
     assert!(
         code.contains("ldd "),
@@ -623,6 +644,7 @@ fn the_fuzz_build_ships_the_libraries_its_targets_link() {
          changes nothing: the loader still looks only where the builder had \
          them. An absolute rpath fails too — the checker relocates $OUT."
     );
+    Ok(())
 }
 
 /// What ships is derived from the binary, and the skip list is the C runtime.
@@ -634,8 +656,8 @@ fn the_fuzz_build_ships_the_libraries_its_targets_link() {
 /// which is a property of the base images, not of sipnab. A project library
 /// appearing in that list would be silently dropped from every run.
 #[test]
-fn the_shipped_libraries_are_derived_and_only_the_c_runtime_is_skipped() {
-    let build = read(".clusterfuzzlite/build.sh");
+fn the_shipped_libraries_are_derived_and_only_the_c_runtime_is_skipped() -> Result<(), TestError> {
+    let build = read(".clusterfuzzlite/build.sh")?;
     let code = code_lines(&build);
 
     // Derived: no library named in code. `libpcap` in a comment explaining the
@@ -651,7 +673,7 @@ fn the_shipped_libraries_are_derived_and_only_the_c_runtime_is_skipped() {
         .split_once("runtime_provided()")
         .and_then(|(_, rest)| rest.split_once("esac"))
         .map(|(body, _)| body.to_string())
-        .expect("build.sh must classify which libraries the runner provides");
+        .ok_or("build.sh must classify which libraries the runner provides")?;
     const C_RUNTIME: [&str; 9] = [
         "libc.so.",
         "libm.so.",
@@ -683,6 +705,7 @@ fn the_shipped_libraries_are_derived_and_only_the_c_runtime_is_skipped() {
          the C runtime: {unexpected:?}. Anything else in that list is a \
          library sipnab needs and will not ship."
     );
+    Ok(())
 }
 
 /// Both fuzzing images install the same system packages.
@@ -693,7 +716,7 @@ fn the_shipped_libraries_are_derived_and_only_the_c_runtime_is_skipped() {
 /// and not the other leaves a submission that fails the day it is accepted,
 /// months after the change that broke it.
 #[test]
-fn both_fuzzing_images_install_the_same_system_packages() {
+fn both_fuzzing_images_install_the_same_system_packages() -> Result<(), TestError> {
     fn packages(dockerfile: &str) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
         for line in dockerfile.lines() {
@@ -712,8 +735,8 @@ fn both_fuzzing_images_install_the_same_system_packages() {
         }
         out
     }
-    let cfl = packages(&read(".clusterfuzzlite/Dockerfile"));
-    let oss = packages(&read("ops/oss-fuzz/Dockerfile"));
+    let cfl = packages(&read(".clusterfuzzlite/Dockerfile")?);
+    let oss = packages(&read("ops/oss-fuzz/Dockerfile")?);
     assert!(
         !cfl.is_empty(),
         "parsed no packages out of .clusterfuzzlite/Dockerfile; this gate \
@@ -725,6 +748,7 @@ fn both_fuzzing_images_install_the_same_system_packages() {
          the same targets from the same base image; a package one needs the \
          other needs."
     );
+    Ok(())
 }
 
 /// Both fuzzing images build on the same base image, pinned identically.
@@ -734,20 +758,21 @@ fn both_fuzzing_images_install_the_same_system_packages() {
 /// compiler nobody tested against, and the divergence is a single line that no
 /// review would look twice at.
 #[test]
-fn both_fuzzing_images_pin_the_same_base() {
-    fn from_line(dockerfile: &str) -> String {
-        dockerfile
+fn both_fuzzing_images_pin_the_same_base() -> Result<(), TestError> {
+    fn from_line(dockerfile: &str) -> Result<String, TestError> {
+        Ok(dockerfile
             .lines()
             .find(|l| l.starts_with("FROM "))
-            .expect("every Dockerfile has a FROM")
-            .to_string()
+            .ok_or("every Dockerfile has a FROM")?
+            .to_string())
     }
     assert_eq!(
-        from_line(&read(".clusterfuzzlite/Dockerfile")),
-        from_line(&read("ops/oss-fuzz/Dockerfile")),
+        from_line(&read(".clusterfuzzlite/Dockerfile")?)?,
+        from_line(&read("ops/oss-fuzz/Dockerfile")?)?,
         "the two fuzzing images are built from different bases; whichever is \
          behind is testing a toolchain the other one is not"
     );
+    Ok(())
 }
 
 /// Nothing turns off the check that caught the broken targets.
@@ -762,10 +787,10 @@ fn both_fuzzing_images_pin_the_same_base() {
 /// reports nothing found for the rest of the project's life. That outcome is
 /// indistinguishable from fuzzing that is working.
 #[test]
-fn no_workflow_disables_the_bad_build_check() {
+fn no_workflow_disables_the_bad_build_check() -> Result<(), TestError> {
     let mut disabled = Vec::new();
-    for name in workflow_names() {
-        let body = workflow(&name);
+    for name in workflow_names()? {
+        let body = workflow(&name)?;
         for chunk in body.split("- name:") {
             if !chunk.contains("clusterfuzzlite/actions/build_fuzzers") {
                 continue;
@@ -786,4 +811,5 @@ fn no_workflow_disables_the_bad_build_check() {
          targets that cannot start — which reads as fuzzing that has found \
          nothing."
     );
+    Ok(())
 }

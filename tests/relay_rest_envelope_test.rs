@@ -21,14 +21,18 @@ use sipnab::stats_vocab::{
     resolve_for_wire,
 };
 
-fn parse(s: &str) -> Value {
-    serde_json::from_str(s).unwrap_or_else(|e| panic!("REST body must parse: {e}\n{s}"))
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
+fn parse(s: &str) -> Result<Value, TestError> {
+    Ok(serde_json::from_str(s).map_err(|e| format!("REST body must parse: {e}\n{s}"))?)
 }
 
 /// A success payload gains `outcome: "ok"` and keeps every figure it had, so a
 /// client that sees `ok` reads the same numbers the CLI would show.
 #[test]
-fn a_clean_answer_is_ok_and_keeps_its_figures() {
+fn a_clean_answer_is_ok_and_keeps_its_figures() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[(
         "npkts_relayed".to_string(),
         "9000".to_string(),
@@ -39,27 +43,28 @@ fn a_clean_answer_is_ok_and_keeps_its_figures() {
         chrono::Utc::now(),
         FetchOrigin::Asked,
     );
-    let v = parse(&relay_rest_ok(&payload));
+    let v = parse(&relay_rest_ok(&payload))?;
     assert_eq!(v["outcome"], "ok");
     assert_eq!(v["relay"], "rtpengine at r");
     let stats = v["statistics"]
         .as_array()
-        .expect("statistics survive the wrap");
+        .ok_or("statistics survive the wrap")?;
     assert!(
         stats
             .iter()
             .any(|s| s["name"] == "npkts_relayed" && s["value"] == "9000")
     );
+    Ok(())
 }
 
 /// Each of the five classifications renders as 200-body content, with its own
 /// wire token and whose-problem-it-is -- none collapse into another.
 #[test]
-fn every_classification_has_a_distinct_token_and_owner() {
+fn every_classification_has_a_distinct_token_and_owner() -> Result<(), TestError> {
     let mut seen = std::collections::BTreeSet::new();
     for outcome in StatisticsOutcome::all() {
-        let v = parse(&relay_rest_outcome(outcome, "a detail sentence"));
-        let token = v["outcome"].as_str().expect("outcome token").to_string();
+        let v = parse(&relay_rest_outcome(outcome, "a detail sentence"))?;
+        let token = v["outcome"].as_str().ok_or("outcome token")?.to_string();
         assert!(
             seen.insert(token.clone()),
             "classification tokens must be distinct; {token} repeated"
@@ -75,21 +80,22 @@ fn every_classification_has_a_distinct_token_and_owner() {
         5,
         "all five ST-S4 classifications are representable"
     );
+    Ok(())
 }
 
 /// `not_permitted` is its own outcome and is never rendered as `unreachable` --
 /// the file-backed-run refusal and the down-relay case send an operator to
 /// different places (ST-S4).
 #[test]
-fn not_permitted_is_not_unreachable() {
+fn not_permitted_is_not_unreachable() -> Result<(), TestError> {
     let np = parse(&relay_rest_outcome(
         StatisticsOutcome::NotPermitted,
         "file run",
-    ));
+    ))?;
     let un = parse(&relay_rest_outcome(
         StatisticsOutcome::Unreachable,
         "no answer",
-    ));
+    ))?;
     assert_eq!(np["outcome"], "not_permitted");
     assert_eq!(un["outcome"], "unreachable");
     assert_ne!(np["outcome"], un["outcome"]);
@@ -97,22 +103,24 @@ fn not_permitted_is_not_unreachable() {
         np["responsibility"], un["responsibility"],
         "the invocation's fault and the network's fault are owned differently"
     );
+    Ok(())
 }
 
 /// A classification body is NOT a clean answer: it has no `statistics` array
 /// and its outcome is never `ok`, so a client cannot mistake a refusal for
 /// data.
 #[test]
-fn a_classification_is_not_mistaken_for_data() {
+fn a_classification_is_not_mistaken_for_data() -> Result<(), TestError> {
     let v = parse(&relay_rest_outcome(
         StatisticsOutcome::NotConfigured,
         "name a relay",
-    ));
+    ))?;
     assert_ne!(v["outcome"], "ok");
     assert!(
         v.get("statistics").is_none(),
         "a refusal carries no statistics array"
     );
+    Ok(())
 }
 
 /// One relay-reported statistic in each of the three wire states, for the two
@@ -153,17 +161,17 @@ fn three_states() -> Vec<TieredStatistic> {
 /// probed or per-name path relies on, driven directly because that wire is
 /// unreachable here.
 #[test]
-fn a_partial_answer_shows_present_and_refused_side_by_side() {
+fn a_partial_answer_shows_present_and_refused_side_by_side() -> Result<(), TestError> {
     let wire = resolve_for_wire(&three_states());
     let v = parse(&relay_rest_ok(&format_relay_statistics_json(
         &wire,
         "relay at 192.0.2.7",
         chrono::Utc::now(),
         FetchOrigin::Asked,
-    )));
+    )))?;
     assert_eq!(v["outcome"], "ok");
-    let stats = v["statistics"].as_array().expect("a statistics array");
-    let refusals = v["refusals"].as_array().expect("a refusals array");
+    let stats = v["statistics"].as_array().ok_or("a statistics array")?;
+    let refusals = v["refusals"].as_array().ok_or("a refusals array")?;
     assert!(
         stats.iter().any(|s| s["name"] == "npkts_relayed"),
         "the name that answered is present: {v}"
@@ -171,7 +179,7 @@ fn a_partial_answer_shows_present_and_refused_side_by_side() {
     let refused = refusals
         .iter()
         .find(|r| r["name"] == "rtpa_nlost")
-        .expect("the refused name is listed with its code");
+        .ok_or("the refused name is listed with its code")?;
     assert_eq!(
         refused["code"], "E68",
         "the refusal carries the relay's own code, not a collapsed 'unavailable': {v}"
@@ -180,6 +188,7 @@ fn a_partial_answer_shows_present_and_refused_side_by_side() {
         !stats.iter().any(|s| s["name"] == "rtpa_nlost"),
         "a refused name is never also rendered as a value: {v}"
     );
+    Ok(())
 }
 
 /// ST-S4 condition 9 at the REST envelope: zero, not-asked and refused stay
@@ -188,21 +197,21 @@ fn a_partial_answer_shows_present_and_refused_side_by_side() {
 /// name is in `refusals` with its code and never a value. Collapsing any pair
 /// is the exact failure ST-S1 forbids.
 #[test]
-fn zero_absent_and_refused_are_three_states_in_the_envelope() {
+fn zero_absent_and_refused_are_three_states_in_the_envelope() -> Result<(), TestError> {
     let wire = resolve_for_wire(&three_states());
     let v = parse(&relay_rest_ok(&format_relay_statistics_json(
         &wire,
         "relay at 192.0.2.7",
         chrono::Utc::now(),
         FetchOrigin::Asked,
-    )));
-    let stats = v["statistics"].as_array().expect("a statistics array");
-    let refusals = v["refusals"].as_array().expect("a refusals array");
+    )))?;
+    let stats = v["statistics"].as_array().ok_or("a statistics array")?;
+    let refusals = v["refusals"].as_array().ok_or("a refusals array")?;
 
     let zero = stats
         .iter()
         .find(|s| s["name"] == "counted_zero")
-        .expect("a counted zero occupies a key");
+        .ok_or("a counted zero occupies a key")?;
     assert_eq!(
         zero["value"], "0",
         "a counted zero is the digits 0, not omitted"
@@ -218,4 +227,5 @@ fn zero_absent_and_refused_are_three_states_in_the_envelope() {
         refusals.iter().any(|r| r["name"] == "rtpa_nlost"),
         "a refused name is in refusals, distinct from an absent one: {v}"
     );
+    Ok(())
 }

@@ -15,6 +15,10 @@ use std::time::{Duration, Instant};
 
 use sipnab::capture::archive::fuzz_one_archive;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// A password nobody wrote down.
 fn mint() -> Vec<u8> {
     format!("fz{:x}", std::process::id() as u64 * 2_654_435_761).into_bytes()
@@ -28,7 +32,7 @@ fn input(password: &[u8], archive: &[u8]) -> Vec<u8> {
     v
 }
 
-fn zip_of(password: Option<&[u8]>) -> Vec<u8> {
+fn zip_of(password: Option<&[u8]>) -> Result<Vec<u8>, TestError> {
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let base = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -36,26 +40,25 @@ fn zip_of(password: Option<&[u8]>) -> Vec<u8> {
         Some(pw) => base.with_aes_encryption_bytes(zip::AesMode::Aes256, pw),
         None => base,
     };
-    w.start_file("a.pcap", opts).expect("start");
+    w.start_file("a.pcap", opts)?;
     let mut pcap = vec![0xd4, 0xc3, 0xb2, 0xa1, 2, 0, 4, 0];
     pcap.extend_from_slice(&[0u8; 16]);
     pcap.extend_from_slice(&[1u8; 200]);
-    w.write_all(&pcap).expect("write");
-    w.finish().expect("finish").into_inner()
+    w.write_all(&pcap)?;
+    Ok(w.finish()?.into_inner())
 }
 
-fn sevenz_of(password: &str) -> Vec<u8> {
+fn sevenz_of(password: &str) -> Result<Vec<u8>, TestError> {
     use sevenz_rust2::encoder_options::AesEncoderOptions;
     use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, Password};
-    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new())).expect("writer");
+    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new()))?;
     w.set_content_methods(vec![
         AesEncoderOptions::new(Password::from(password)).into(),
         EncoderMethod::LZMA2.into(),
     ]);
     let data = [7u8; 300];
-    w.push_archive_entry(ArchiveEntry::new_file("a.pcap"), Some(&data[..]))
-        .expect("entry");
-    w.finish().expect("finish").into_inner()
+    w.push_archive_entry(ArchiveEntry::new_file("a.pcap"), Some(&data[..]))?;
+    Ok(w.finish()?.into_inner())
 }
 
 /// Run one input, and say whether it panicked or took too long.
@@ -79,12 +82,12 @@ fn survives(data: &[u8]) -> Result<(), String> {
 }
 
 #[test]
-fn hostile_archives_never_panic_or_hang() {
+fn hostile_archives_never_panic_or_hang() -> Result<(), TestError> {
     let pw = mint();
-    let pw_text = String::from_utf8(pw.clone()).expect("ascii");
-    let zip_aes = zip_of(Some(&pw));
-    let zip_plain = zip_of(None);
-    let sz = sevenz_of(&pw_text);
+    let pw_text = String::from_utf8(pw.clone())?;
+    let zip_aes = zip_of(Some(&pw))?;
+    let zip_plain = zip_of(None)?;
+    let sz = sevenz_of(&pw_text)?;
     let mut seeds: Vec<Vec<u8>> = vec![
         vec![],
         vec![0],
@@ -118,4 +121,5 @@ fn hostile_archives_never_panic_or_hang() {
     }
     let failures: Vec<String> = seeds.iter().filter_map(|s| survives(s).err()).collect();
     assert!(failures.is_empty(), "{failures:?}");
+    Ok(())
 }

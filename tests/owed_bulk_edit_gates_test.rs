@@ -28,6 +28,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -45,7 +47,7 @@ fn repo() -> &'static Path {
 /// feature, and they must keep running in every combination the matrix builds.
 #[cfg(feature = "mcp")]
 #[test]
-fn every_registered_tool_resolves_a_since_version() {
+fn every_registered_tool_resolves_a_since_version() -> Result<(), TestError> {
     let versions = sipnab::mcp::since::versions();
     assert!(
         versions.len() > 20,
@@ -63,6 +65,7 @@ fn every_registered_tool_resolves_a_since_version() {
             "{tool} resolved to {ver:?}, which is neither a version nor Unreleased"
         );
     }
+    Ok(())
 }
 
 /// The changelog must still contain function-call forms at all.
@@ -72,8 +75,9 @@ fn every_registered_tool_resolves_a_since_version() {
 /// the function" and "the release that added the tool" silently collapses, and
 /// `since_version` starts answering with releases that predate the tool.
 #[test]
-fn the_changelog_still_distinguishes_a_function_from_a_tool() {
-    let text = std::fs::read_to_string(repo().join("CHANGELOG.md")).expect("CHANGELOG.md");
+fn the_changelog_still_distinguishes_a_function_from_a_tool() -> Result<(), TestError> {
+    let text = std::fs::read_to_string(repo().join("CHANGELOG.md"))
+        .map_err(|e| format!("CHANGELOG.md: {e}"))?;
     let call_forms = text.matches("()`").count();
     assert!(
         call_forms > 50,
@@ -81,6 +85,7 @@ fn the_changelog_still_distinguishes_a_function_from_a_tool() {
          has stripped the parentheses that separate `name()` (the function) from \
          `name` (the tool), which is the pair mcp::since reads"
     );
+    Ok(())
 }
 
 // ── 2. Web assets a text pass has no business reformatting ──────────────────
@@ -106,11 +111,11 @@ fn site_js() -> Vec<PathBuf> {
 /// formatting does not see it, Vale does not read it, and the site build will
 /// happily copy a broken file to `public/`.
 #[test]
-fn the_sites_javascript_parses() {
+fn the_sites_javascript_parses() -> Result<(), TestError> {
     let files = site_js();
     if Command::new("node").arg("--version").output().is_err() {
         eprintln!("node not available — skipping the JavaScript parse check");
-        return;
+        return Ok(());
     }
     let mut broken = Vec::new();
     for f in &files {
@@ -118,7 +123,7 @@ fn the_sites_javascript_parses() {
             .arg("--check")
             .arg(f)
             .output()
-            .expect("node --check");
+            .map_err(|e| format!("node --check: {e}"))?;
         if !out.status.success() {
             broken.push(format!(
                 "{}: {}",
@@ -135,11 +140,12 @@ fn the_sites_javascript_parses() {
         "site JavaScript does not parse:\n  {}",
         broken.join("\n  ")
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL for the check above: it must be looking at real files.
 #[test]
-fn the_javascript_checker_has_files_to_check() {
+fn the_javascript_checker_has_files_to_check() -> Result<(), TestError> {
     let files = site_js();
     assert!(
         files.len() >= 3,
@@ -147,6 +153,7 @@ fn the_javascript_checker_has_files_to_check() {
          check above is passing over nothing",
         files.len()
     );
+    Ok(())
 }
 
 // ── 3. Reporting a subset as the whole ──────────────────────────────────────
@@ -161,7 +168,7 @@ fn the_javascript_checker_has_files_to_check() {
 /// A list that must be updated when a workflow is added is the cheapest
 /// possible reminder that the set is bigger than one.
 #[test]
-fn the_full_workflow_set_is_accounted_for() {
+fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
     // Read from the directory, not from memory. Guessing this list is how the
     // original mistake was made in the first place.
     const KNOWN: &[&str] = &[
@@ -184,7 +191,7 @@ fn the_full_workflow_set_is_accounted_for() {
     ];
     let dir = repo().join(".github/workflows");
     let mut found: Vec<String> = std::fs::read_dir(&dir)
-        .expect("workflows directory")
+        .map_err(|e| format!("workflows directory: {e}"))?
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.ends_with(".yml") || n.ends_with(".yaml"))
@@ -204,14 +211,15 @@ fn the_full_workflow_set_is_accounted_for() {
         "workflow(s) not in this list: {unknown:?}. Add them here, and remember \
          that checking one workflow's result is not checking the repository's"
     );
+    Ok(())
 }
 
 /// The count is the thing that gets forgotten, so it is asserted separately.
 #[test]
-fn more_than_one_workflow_gates_this_repository() {
+fn more_than_one_workflow_gates_this_repository() -> Result<(), TestError> {
     let dir = repo().join(".github/workflows");
     let n = std::fs::read_dir(&dir)
-        .expect("workflows directory")
+        .map_err(|e| format!("workflows directory: {e}"))?
         .flatten()
         .filter(|e| {
             let n = e.file_name().to_string_lossy().to_string();
@@ -223,4 +231,5 @@ fn more_than_one_workflow_gates_this_repository() {
         "expected several workflows; found {n}. If this ever becomes 1, the \
          habit of reading a single result stops being wrong -- until it is again"
     );
+    Ok(())
 }

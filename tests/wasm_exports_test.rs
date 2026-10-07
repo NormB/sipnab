@@ -6,12 +6,14 @@
 //! public API function name is present. Catches stale WASM builds where
 //! new Rust functions were added but wasm-pack wasn't re-run.
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The generated `website/static/wasm/sipnab.js` contains every required
 /// public API function name. A missing WASM build is a hard failure: the
 /// bundle ships with the site and must exist for this guard to mean anything,
 /// so its absence fails loudly instead of silently skipping.
 #[test]
-fn wasm_js_exports_all_required_functions() {
+fn wasm_js_exports_all_required_functions() -> Result<(), TestError> {
     let js_path = std::path::Path::new("website/static/wasm/sipnab.js");
     assert!(
         js_path.exists(),
@@ -37,8 +39,7 @@ fn wasm_js_exports_all_required_functions() {
     // file, so `filter` was satisfied by any JS `.filter(` call.
     let out = std::process::Command::new("python3")
         .arg("scripts/check-wasm-exports.py")
-        .output()
-        .expect("run scripts/check-wasm-exports.py");
+        .output()?;
     assert!(
         out.status.success(),
         "WASM glue does not export everything src/wasm.rs declares:\n{}{}\n\
@@ -54,6 +55,7 @@ fn wasm_js_exports_all_required_functions() {
         report.contains("OK ("),
         "check-wasm-exports.py did not report a derived export count: {report}"
     );
+    Ok(())
 }
 
 /// Every `getrandom` line in the lockfile that honors the `wasm_js` backend
@@ -72,14 +74,13 @@ fn wasm_js_exports_all_required_functions() {
 /// this test is the cheap static half, so a new major line entering the graph
 /// fails here in seconds rather than only in the cross-compile.
 #[test]
-fn every_getrandom_line_enables_the_wasm_js_feature() {
-    let lock = std::fs::read_to_string("Cargo.lock").expect("read Cargo.lock");
-    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+fn every_getrandom_line_enables_the_wasm_js_feature() -> Result<(), TestError> {
+    let lock = std::fs::read_to_string("Cargo.lock")?;
+    let manifest = std::fs::read_to_string("Cargo.toml")?;
 
     // Major lines present in the graph. 0.2 predates the backend cfg and
     // ignores it, so only 0.3+ has to opt in.
-    let ver_re = regex::Regex::new(r#"(?m)^name = "getrandom"\nversion = "(\d+)\.(\d+)\.\d+""#)
-        .expect("version regex");
+    let ver_re = regex::Regex::new(r#"(?m)^name = "getrandom"\nversion = "(\d+)\.(\d+)\.\d+""#)?;
     let mut needed: Vec<String> = ver_re
         .captures_iter(&lock)
         .map(|c| format!("{}.{}", &c[1], &c[2]))
@@ -114,4 +115,5 @@ fn every_getrandom_line_enables_the_wasm_js_feature() {
          wasm_js feature\". Add it under [target.'cfg(target_arch = \"wasm32\")'.dependencies], \
          aliasing with `package = \"getrandom\"` if another major line is already declared."
     );
+    Ok(())
 }

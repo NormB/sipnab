@@ -126,6 +126,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/markdown.rs"]
 mod markdown;
 
@@ -295,10 +297,10 @@ impl Page {
     /// Reads [`markdown::prose`], so fenced blocks are gone: `# not a heading`
     /// inside a shell example is a comment, and counting it would put a
     /// section boundary in the middle of a section.
-    fn parse(rel: &str, raw: &str) -> Self {
+    fn parse(rel: &str, raw: &str) -> Result<Self, TestError> {
         let front_title = frontmatter_field(raw, "title");
         let body = markdown::prose(raw);
-        let heading_re = heading_re();
+        let heading_re = heading_re()?;
 
         let mut title = front_title.unwrap_or_default();
         let mut sections: Vec<Section> = Vec::new();
@@ -339,12 +341,12 @@ impl Page {
         if title.is_empty() {
             title = rel.to_string();
         }
-        Page {
+        Ok(Page {
             rel: rel.to_string(),
             title,
             sections,
             headings,
-        }
+        })
     }
 
     /// GitHub- and Zola-style slugs for a heading.
@@ -369,9 +371,11 @@ fn frontmatter_field(raw: &str, key: &str) -> Option<String> {
     re.captures(&rest[..end]).map(|c| c[1].to_string())
 }
 
-fn heading_re() -> &'static regex::Regex {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$").unwrap())
+fn heading_re() -> Result<&'static regex::Regex, TestError> {
+    static RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$"))
+        .as_ref()
+        .map_err(|e| format!("heading regex: {e}").into())
 }
 
 /// GitHub's slug: lowercase, backticks dropped, keep `[a-z0-9-_]`, spaces to
@@ -417,9 +421,11 @@ struct Link {
     anchor: Option<String>,
 }
 
-fn link_re() -> &'static regex::Regex {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(([^)\s]+)\)").unwrap())
+fn link_re() -> Result<&'static regex::Regex, TestError> {
+    static RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(([^)\s]+)\)"))
+        .as_ref()
+        .map_err(|e| format!("link regex: {e}").into())
 }
 
 /// Resolve a link destination to a repo-relative page path, or `None` if it is
@@ -624,22 +630,25 @@ fn topic_localization(link: &Link, page: &Page) -> Option<Finding> {
 }
 
 /// The gate: judge one no-anchor link against its target.
-fn judge(link: &Link, page: &Page) -> Option<Finding> {
+fn judge(link: &Link, page: &Page) -> Result<Option<Finding>, TestError> {
     if link.anchor.is_some() {
-        return None;
+        return Ok(None);
     }
-    if is_filename(&link.text) {
+    if is_filename(&link.text)? {
         // `[install.md](install.md)` promises the page, not a place in it.
-        return None;
+        return Ok(None);
     }
-    heading_echo(link, page).or_else(|| topic_localization(link, page))
+    Ok(heading_echo(link, page).or_else(|| topic_localization(link, page)))
 }
 
 /// Is this link text just a path, spelled out?
-fn is_filename(text: &str) -> bool {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"^\s*`?\s*\.{0,2}/?[\w./-]+\.md\s*`?\s*$").unwrap())
-        .is_match(text)
+fn is_filename(text: &str) -> Result<bool, TestError> {
+    static RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+    let re = RE
+        .get_or_init(|| regex::Regex::new(r"^\s*`?\s*\.{0,2}/?[\w./-]+\.md\s*`?\s*$"))
+        .as_ref()
+        .map_err(|e| format!("filename regex: {e}"))?;
+    Ok(re.is_match(text))
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +665,7 @@ fn repo() -> &'static Path {
 /// `docs/design/` and `docs/research/` are excluded for the same reason
 /// `link_integrity_test` excludes them — planning material, not a reader's
 /// journey.
-fn doc_pages() -> BTreeMap<String, Page> {
+fn doc_pages() -> Result<BTreeMap<String, Page>, TestError> {
     let mut out = BTreeMap::new();
     for root in ["docs", "website/content/docs"] {
         let mut stack = vec![repo().join(root)];
@@ -684,11 +693,11 @@ fn doc_pages() -> BTreeMap<String, Page> {
                 let Ok(raw) = std::fs::read_to_string(&p) else {
                     continue;
                 };
-                out.insert(rel.clone(), Page::parse(&rel, &raw));
+                out.insert(rel.clone(), Page::parse(&rel, &raw)?);
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every cross-page link in those pages.
@@ -698,13 +707,13 @@ fn doc_pages() -> BTreeMap<String, Page> {
 /// precisely the shape this gate exists to judge. Blanking spans first — what
 /// `linkable_prose` does, correctly, for deciding whether a `](…)` is live —
 /// would erase the link text and hide the case.
-fn doc_links(pages: &BTreeMap<String, Page>) -> Vec<Link> {
+fn doc_links(pages: &BTreeMap<String, Page>) -> Result<Vec<Link>, TestError> {
     let mut out = Vec::new();
     for rel in pages.keys() {
         let Ok(raw) = std::fs::read_to_string(repo().join(rel)) else {
             continue;
         };
-        for caps in link_re().captures_iter(&markdown::prose(&raw)) {
+        for caps in link_re()?.captures_iter(&markdown::prose(&raw)) {
             let dest = &caps[2];
             let Some(target) = resolve(rel, dest, pages) else {
                 continue;
@@ -718,7 +727,7 @@ fn doc_links(pages: &BTreeMap<String, Page>) -> Vec<Link> {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -728,9 +737,9 @@ fn doc_links(pages: &BTreeMap<String, Page>) -> Vec<Link> {
 /// Every no-anchor cross-page link either lands on a page that is the answer,
 /// or is on the [`ACCEPTED`] list with a reason.
 #[test]
-fn link_text_promises_a_section_the_target_buries_it_in() {
-    let pages = doc_pages();
-    let links = doc_links(&pages);
+fn link_text_promises_a_section_the_target_buries_it_in() -> Result<(), TestError> {
+    let pages = doc_pages()?;
+    let links = doc_links(&pages)?;
 
     // A walk that finds nothing must refuse, not pass. Floors rather than
     // pinned equalities: every documentation edit moves these, and a gate that
@@ -750,12 +759,12 @@ fn link_text_promises_a_section_the_target_buries_it_in() {
         links.len()
     );
 
-    let judged = links
-        .iter()
-        .filter(|l| {
-            l.anchor.is_none() && !is_filename(&l.text) && content_words(&l.text).len() >= 2
-        })
-        .count();
+    let mut judged = 0usize;
+    for l in &links {
+        if l.anchor.is_none() && !is_filename(&l.text)? && content_words(&l.text).len() >= 2 {
+            judged += 1;
+        }
+    }
     assert!(
         judged >= MIN_JUDGED,
         "only {judged} no-anchor links survived the skip filters (filename-only text, \
@@ -768,7 +777,7 @@ fn link_text_promises_a_section_the_target_buries_it_in() {
         let Some(page) = pages.get(&link.target) else {
             continue;
         };
-        if let Some(f) = judge(link, page) {
+        if let Some(f) = judge(link, page)? {
             findings.push((link.clone(), f));
         }
     }
@@ -832,6 +841,7 @@ fn link_text_promises_a_section_the_target_buries_it_in() {
         links.len(),
         unaccepted.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -851,9 +861,9 @@ fn link_text_promises_a_section_the_target_buries_it_in() {
 /// text is "below", "2C" or "Step 0" carries no vocabulary to match on. What is
 /// asserted is that when the rule *does* speak, it says what the author said.
 #[test]
-fn the_rule_reproduces_the_anchors_authors_already_chose() {
-    let pages = doc_pages();
-    let links = doc_links(&pages);
+fn the_rule_reproduces_the_anchors_authors_already_chose() -> Result<(), TestError> {
+    let pages = doc_pages()?;
+    let links = doc_links(&pages)?;
     let anchored: Vec<&Link> = links.iter().filter(|l| l.anchor.is_some()).collect();
     assert!(
         anchored.len() >= MIN_ANCHORED,
@@ -877,7 +887,7 @@ fn the_rule_reproduces_the_anchors_authors_already_chose() {
             anchor: None,
             ..link.clone()
         };
-        let Some(f) = judge(&stripped, page) else {
+        let Some(f) = judge(&stripped, page)? else {
             continue;
         };
         demanded += 1;
@@ -908,6 +918,7 @@ fn the_rule_reproduces_the_anchors_authors_already_chose() {
         agreed * 100 / demanded.max(1),
         disagreements.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -915,7 +926,7 @@ fn the_rule_reproduces_the_anchors_authors_already_chose() {
 // ---------------------------------------------------------------------------
 
 /// Build a page from literal markdown, as if it were at `rel`.
-fn page_from(rel: &str, raw: &str) -> Page {
+fn page_from(rel: &str, raw: &str) -> Result<Page, TestError> {
     Page::parse(rel, raw)
 }
 
@@ -935,7 +946,7 @@ fn link(src: &str, text: &str, target: &str) -> Link {
 /// work: a gate whose known-bad case is a link in the tree stops testing
 /// anything the moment somebody fixes that link.
 #[test]
-fn the_rule_fires_on_the_known_bad_case_and_spares_the_known_good() {
+fn the_rule_fires_on_the_known_bad_case_and_spares_the_known_good() -> Result<(), TestError> {
     // Known bad: the shape of website/content/docs/integrations.md — title
     // "Integrations", a description that names every topic including this one,
     // and `## Fail2ban Integration` as the fourth of eight headings.
@@ -957,7 +968,7 @@ fn the_rule_fires_on_the_known_bad_case_and_spares_the_known_good() {
          ### Measure it against your own traffic first\n\nA busy trunk looks like a scan.\n\n\
          ### Filter and jail\n\nNever ban the boxes the phone system needs.\n\n\
          ## Syslog alerts\n\nEmit findings to syslog.\n",
-    );
+    )?;
     assert_eq!(integrations.headings.len(), 8, "fixture drifted");
     assert_eq!(integrations.sections.len(), 4, "fixture drifted");
     let bad = judge(
@@ -967,18 +978,18 @@ fn the_rule_fires_on_the_known_bad_case_and_spares_the_known_good() {
             "docs/integrations.md",
         ),
         &integrations,
-    )
-    .expect(
+    )?
+    .ok_or(
         "the known-bad case did not fire: [Ban a source with fail2ban] -> integrations.md \
          with no anchor is the defect this gate exists for",
-    );
+    )?;
     assert_eq!(bad.anchor, "fail2ban-integration", "{}", bad.detail);
 
     // Known good, from the real tree: the whole page is the answer.
-    let pages = doc_pages();
+    let pages = doc_pages()?;
     let install = pages
         .get("docs/install.md")
-        .expect("docs/install.md must exist for this test to mean anything");
+        .ok_or("docs/install.md must exist for this test to mean anything")?;
     assert!(
         install.headings.len() > 20,
         "docs/install.md has {} headings; the known-good case is only interesting \
@@ -996,18 +1007,20 @@ fn the_rule_fires_on_the_known_bad_case_and_spares_the_known_good() {
     ] {
         let page = pages
             .get(target)
-            .unwrap_or_else(|| panic!("{target} must exist"));
-        if let Some(f) = judge(&link("docs/README.md", text, target), page) {
-            panic!(
+            .ok_or_else(|| format!("{target} must exist"))?;
+        if let Some(f) = judge(&link("docs/README.md", text, target), page)? {
+            return Err(format!(
                 "false positive: [{text}] -> {target} was flagged and told to point at \
                  #{} ({}). The whole page is the answer here — {} headings do not make it \
                  otherwise.",
                 f.anchor,
                 f.detail,
                 page.headings.len()
-            );
+            )
+            .into());
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,11 +1033,11 @@ fn the_rule_fires_on_the_known_bad_case_and_spares_the_known_good() {
 /// code: an instrument that cannot be shown to fire is indistinguishable from
 /// one that passed.
 #[test]
-fn a_walk_that_finds_nothing_refuses_rather_than_passing() {
+fn a_walk_that_finds_nothing_refuses_rather_than_passing() -> Result<(), TestError> {
     // The floors in the gate above compare against a corpus. Prove the corpus
     // is what makes them pass, by evaluating the same conditions on nothing.
     let empty: BTreeMap<String, Page> = BTreeMap::new();
-    let no_links = doc_links(&empty);
+    let no_links = doc_links(&empty)?;
     assert!(
         no_links.is_empty(),
         "resolving links against an empty page set produced {} link(s) — the resolver is \
@@ -1042,9 +1055,10 @@ fn a_walk_that_finds_nothing_refuses_rather_than_passing() {
 
     // And the real walk clears them, so the floors are measuring the corpus and
     // not a constant.
-    let pages = doc_pages();
-    let links = doc_links(&pages);
+    let pages = doc_pages()?;
+    let links = doc_links(&pages)?;
     assert!(pages.len() >= MIN_PAGES && links.len() >= MIN_LINKS);
+    Ok(())
 }
 
 /// A stale ACCEPTED entry is rejected, and a live one is not.
@@ -1053,9 +1067,9 @@ fn a_walk_that_finds_nothing_refuses_rather_than_passing() {
 /// a link nobody wrote. Without this the rot check is a branch nobody has ever
 /// taken.
 #[test]
-fn an_accepted_entry_that_names_no_link_is_rejected() {
-    let pages = doc_pages();
-    let links = doc_links(&pages);
+fn an_accepted_entry_that_names_no_link_is_rejected() -> Result<(), TestError> {
+    let pages = doc_pages()?;
+    let links = doc_links(&pages)?;
     let names_a_link = |src: &str, text: &str, target: &str| {
         links
             .iter()
@@ -1088,4 +1102,5 @@ fn an_accepted_entry_that_names_no_link_is_rejected() {
             a.src
         );
     }
+    Ok(())
 }

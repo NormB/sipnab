@@ -15,7 +15,7 @@ use sipnab::stats_vocab::{StatisticTier, StatisticValue};
 /// The three tiers have the snake_case wire names the spec assigns, and they
 /// are distinct.
 #[test]
-fn the_three_tiers_carry_the_wire_names_the_spec_assigns() {
+fn the_three_tiers_carry_the_wire_names_the_spec_assigns() -> Result<(), TestError> {
     assert_eq!(StatisticTier::RelayReported.as_wire_str(), "relay_reported");
     assert_eq!(
         StatisticTier::SipnabMeasured.as_wire_str(),
@@ -34,6 +34,7 @@ fn the_three_tiers_carry_the_wire_names_the_spec_assigns() {
         3,
         "the three tiers must have three distinct names, got {names:?}"
     );
+    Ok(())
 }
 
 /// The names are snake_case, not hyphenated.
@@ -42,7 +43,7 @@ fn the_three_tiers_carry_the_wire_names_the_spec_assigns() {
 /// `endpoint_reported` and `xr_voip_metrics`, while `relay_vocab`'s shipped
 /// `media-relay` keeps its hyphen. A hyphen here would be a third convention.
 #[test]
-fn the_wire_names_are_snake_case_not_hyphenated() {
+fn the_wire_names_are_snake_case_not_hyphenated() -> Result<(), TestError> {
     for t in StatisticTier::all() {
         let name = t.as_wire_str();
         assert!(
@@ -54,12 +55,13 @@ fn the_wire_names_are_snake_case_not_hyphenated() {
             "{name:?} is not snake_case"
         );
     }
+    Ok(())
 }
 
 /// No aggregate spans two tiers. `blends_tiers` is true exactly when the tiers
 /// differ, across all nine ordered pairs.
 #[test]
-fn combining_two_different_tiers_is_always_a_blend() {
+fn combining_two_different_tiers_is_always_a_blend() -> Result<(), TestError> {
     for a in StatisticTier::all() {
         for b in StatisticTier::all() {
             let expected = a != b;
@@ -71,11 +73,12 @@ fn combining_two_different_tiers_is_always_a_blend() {
             );
         }
     }
+    Ok(())
 }
 
 /// A counted zero occupies a key; not-asked does not. They are different facts.
 #[test]
-fn a_counted_zero_is_present_and_not_asked_is_absent() {
+fn a_counted_zero_is_present_and_not_asked_is_absent() -> Result<(), TestError> {
     let zero = StatisticValue::Counted("0".to_owned());
     assert!(
         zero.is_present_on_the_wire(),
@@ -90,12 +93,13 @@ fn a_counted_zero_is_present_and_not_asked_is_absent() {
         StatisticValue::NotAsked,
         "counted-zero and not-asked are different states and must not be equal"
     );
+    Ok(())
 }
 
 /// A refusal is not an absence. It does not occupy a value key, and it carries
 /// the code the source gave so `E68` and `E50` stay distinguishable.
 #[test]
-fn a_refusal_is_neither_a_value_nor_a_plain_absence() {
+fn a_refusal_is_neither_a_value_nor_a_plain_absence() -> Result<(), TestError> {
     let refused = StatisticValue::Refused("E68".to_owned());
     assert!(
         !refused.is_present_on_the_wire(),
@@ -108,7 +112,7 @@ fn a_refusal_is_neither_a_value_nor_a_plain_absence() {
     );
     // The code is retained, not discarded.
     let StatisticValue::Refused(code) = &refused else {
-        panic!("expected a refusal");
+        return Err("expected a refusal".into());
     };
     assert_eq!(code, "E68", "the relay's own refusal code must travel");
     assert_ne!(
@@ -116,6 +120,7 @@ fn a_refusal_is_neither_a_value_nor_a_plain_absence() {
         StatisticValue::Refused("E50".to_owned()),
         "E68 (no such statistic) and E50 (no such session) must not be equal"
     );
+    Ok(())
 }
 
 /// The spec document names the same three wire strings this code produces.
@@ -124,12 +129,11 @@ fn a_refusal_is_neither_a_value_nor_a_plain_absence() {
 /// in the code and in the spec, and they must not drift. If the spec renames a
 /// tier, this fails until the code follows, and vice versa.
 #[test]
-fn the_code_and_the_spec_name_the_same_three_tiers() {
+fn the_code_and_the_spec_name_the_same_three_tiers() -> Result<(), TestError> {
     let spec = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/docs/design/relay-statistics-vocabulary.md"
-    ))
-    .expect("the ST-S1 spec is readable");
+    ))?;
     for t in StatisticTier::all() {
         let name = t.as_wire_str();
         assert!(
@@ -138,6 +142,7 @@ fn the_code_and_the_spec_name_the_same_three_tiers() {
              names -- one of the two drifted"
         );
     }
+    Ok(())
 }
 
 // ── ST-S4: the five failure classifications ──────────────────────────────
@@ -147,7 +152,7 @@ use sipnab::stats_vocab::{Responsibility, StatisticsOutcome};
 /// The five classifications carry the snake_case wire names ST-S4 assigns, all
 /// distinct.
 #[test]
-fn the_five_outcomes_carry_the_wire_names_the_catalog_assigns() {
+fn the_five_outcomes_carry_the_wire_names_the_catalog_assigns() -> Result<(), TestError> {
     use StatisticsOutcome::*;
     assert_eq!(NotConfigured.as_wire_str(), "not_configured");
     assert_eq!(NotPermitted.as_wire_str(), "not_permitted");
@@ -163,11 +168,12 @@ fn the_five_outcomes_carry_the_wire_names_the_catalog_assigns() {
         5,
         "five outcomes, five distinct names: {names:?}"
     );
+    Ok(())
 }
 
 /// The outcome wire names are snake_case, not hyphenated, like the tiers.
 #[test]
-fn the_outcome_wire_names_are_snake_case() {
+fn the_outcome_wire_names_are_snake_case() -> Result<(), TestError> {
     for o in StatisticsOutcome::all() {
         let name = o.as_wire_str();
         assert!(!name.contains('-'), "{name:?} is hyphenated");
@@ -176,11 +182,12 @@ fn the_outcome_wire_names_are_snake_case() {
             "{name:?} is not snake_case"
         );
     }
+    Ok(())
 }
 
 /// Each classification points at whose problem it is, per ST-S4's table.
 #[test]
-fn each_outcome_points_at_whose_problem_it_is() {
+fn each_outcome_points_at_whose_problem_it_is() -> Result<(), TestError> {
     use StatisticsOutcome::*;
     assert_eq!(NotConfigured.responsibility(), Responsibility::Invocation);
     assert_eq!(NotPermitted.responsibility(), Responsibility::Invocation);
@@ -198,16 +205,16 @@ fn each_outcome_points_at_whose_problem_it_is() {
         4,
         "the five outcomes span four responsibilities"
     );
+    Ok(())
 }
 
 /// The code and the ST-S4 spec name the same five classifications.
 #[test]
-fn the_code_and_the_catalog_name_the_same_five_outcomes() {
+fn the_code_and_the_catalog_name_the_same_five_outcomes() -> Result<(), TestError> {
     let spec = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/docs/design/relay-statistics-failures.md"
-    ))
-    .expect("the ST-S4 catalog is readable");
+    ))?;
     for o in StatisticsOutcome::all() {
         let name = o.as_wire_str();
         assert!(
@@ -216,6 +223,7 @@ fn the_code_and_the_catalog_name_the_same_five_outcomes() {
              never names as a classification -- one of the two drifted"
         );
     }
+    Ok(())
 }
 
 // ── ST-S1 wire resolution: the three-state rule, single-sourced ──────────
@@ -246,7 +254,7 @@ fn refused(name: &str, code: &str) -> TieredStatistic {
 
 /// A counted value occupies a key; a counted zero occupies a key too.
 #[test]
-fn a_counted_value_including_zero_is_present_on_the_wire() {
+fn a_counted_value_including_zero_is_present_on_the_wire() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[
         counted("npkts_relayed", "9000"),
         counted("npkts_discard", "0"),
@@ -261,17 +269,18 @@ fn a_counted_value_including_zero_is_present_on_the_wire() {
         .present
         .iter()
         .find(|v| v.name == "npkts_discard")
-        .expect("present");
+        .ok_or("present")?;
     assert_eq!(
         discard.value, "0",
         "a counted zero keeps its value, not omitted"
     );
     assert_eq!(discard.tier, StatisticTier::RelayReported);
+    Ok(())
 }
 
 /// A not-asked statistic is omitted from BOTH lists -- never a zero.
 #[test]
-fn a_not_asked_statistic_is_omitted_not_zeroed() {
+fn a_not_asked_statistic_is_omitted_not_zeroed() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[counted("a", "1"), not_asked("rtpa_nlost")]);
     assert!(
         wire.present.iter().all(|v| v.name != "rtpa_nlost"),
@@ -283,11 +292,12 @@ fn a_not_asked_statistic_is_omitted_not_zeroed() {
         "a not-asked statistic is not a refusal either"
     );
     assert_eq!(wire.present.len(), 1, "only the counted one occupies a key");
+    Ok(())
 }
 
 /// A refusal is listed with its code, never as a value.
 #[test]
-fn a_refusal_is_listed_with_its_code_not_as_a_value() {
+fn a_refusal_is_listed_with_its_code_not_as_a_value() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[counted("a", "1"), refused("rtpa_nlost", "E68")]);
     assert!(
         wire.present.iter().all(|v| v.name != "rtpa_nlost"),
@@ -299,12 +309,13 @@ fn a_refusal_is_listed_with_its_code_not_as_a_value() {
         wire.refusals[0].code, "E68",
         "the relay's own code must travel"
     );
+    Ok(())
 }
 
 /// The three states partition cleanly: present + refusals, not-asked in
 /// neither, and a refusal code is never confused with another.
 #[test]
-fn the_three_states_partition_without_collapsing() {
+fn the_three_states_partition_without_collapsing() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[
         counted("counted_zero", "0"),
         not_asked("absent"),
@@ -325,6 +336,7 @@ fn the_three_states_partition_without_collapsing() {
             && wire.refusals.iter().all(|r| r.name != "absent"),
         "the not-asked statistic must be omitted from the wire entirely"
     );
+    Ok(())
 }
 
 use sipnab::stats_vocab::{NameSource, relay_reply_refusal};
@@ -334,7 +346,7 @@ use sipnab::stats_vocab::{NameSource, relay_reply_refusal};
 /// paraphrase. This is the single rule REST and MCP both read; it lives here so
 /// the two surfaces cannot drift.
 #[test]
-fn a_relay_reply_with_result_error_is_a_refusal_carrying_its_reason() {
+fn a_relay_reply_with_result_error_is_a_refusal_carrying_its_reason() -> Result<(), TestError> {
     let refused = [
         ("result".to_string(), "error".to_string()),
         ("error-reason".to_string(), "Unknown call-id".to_string()),
@@ -344,12 +356,13 @@ fn a_relay_reply_with_result_error_is_a_refusal_carrying_its_reason() {
         Some("Unknown call-id"),
         "result:error must read as a refusal carrying the relay's own reason"
     );
+    Ok(())
 }
 
 /// A clean reply -- `result: ok`, or counters with no `result` key at all -- is
 /// not a refusal, so it is never rendered as one.
 #[test]
-fn a_clean_relay_reply_is_not_a_refusal() {
+fn a_clean_relay_reply_is_not_a_refusal() -> Result<(), TestError> {
     let clean = [
         ("result".to_string(), "ok".to_string()),
         ("totals.RTP.packets".to_string(), "42".to_string()),
@@ -363,6 +376,7 @@ fn a_clean_relay_reply_is_not_a_refusal() {
         relay_reply_refusal(&counters).is_none(),
         "a reply with no result key is not a refusal"
     );
+    Ok(())
 }
 
 /// `result: error` is matched without regard to case (a relay may answer
@@ -370,7 +384,7 @@ fn a_clean_relay_reply_is_not_a_refusal() {
 /// refusal, with a stand-in sentence rather than an empty string -- an empty
 /// reason would render as a silent no.
 #[test]
-fn a_refusal_is_case_insensitive_and_never_reasonless() {
+fn a_refusal_is_case_insensitive_and_never_reasonless() -> Result<(), TestError> {
     let mixed_case = [("result".to_string(), "Error".to_string())];
     let reason = relay_reply_refusal(&mixed_case);
     assert!(
@@ -381,13 +395,14 @@ fn a_refusal_is_case_insensitive_and_never_reasonless() {
         !reason.as_deref().unwrap_or("").is_empty(),
         "a reasonless refusal must carry a stand-in sentence, never an empty string"
     );
+    Ok(())
 }
 
 /// `NameSource` has a stable wire token, distinct per variant, so a surface can
 /// report `listed` vs `probed` from one spelling rather than copying the two-arm
 /// match. `probed` is the weaker claim, and the token says which was made.
 #[test]
-fn name_source_carries_a_distinct_wire_token() {
+fn name_source_carries_a_distinct_wire_token() -> Result<(), TestError> {
     assert_eq!(NameSource::Listed.as_wire_str(), "listed");
     assert_eq!(NameSource::Probed.as_wire_str(), "probed");
     assert_ne!(
@@ -395,6 +410,7 @@ fn name_source_carries_a_distinct_wire_token() {
         NameSource::Probed.as_wire_str(),
         "listed and probed must not collapse to one token"
     );
+    Ok(())
 }
 
 // ── ST9 condition 4: a per-call refusal is a refusal on every surface ────────
@@ -424,26 +440,32 @@ fn refusal_pairs(reason: &str) -> Vec<(String, String)> {
 /// relay's own reason -- never as statistics. This is the whole ST9 condition-4
 /// gap on the CLI: the per-call path used to tier these pairs into counter rows.
 #[test]
-fn a_per_call_result_error_classifies_as_refused_with_its_reason() {
+fn a_per_call_result_error_classifies_as_refused_with_its_reason() -> Result<(), TestError> {
     match classify_per_call_reply(&refusal_pairs("Unknown call-id")) {
         PerCallReply::Refused(reason) => assert_eq!(
             reason, "Unknown call-id",
             "the relay's own reason must travel verbatim"
         ),
         PerCallReply::Statistics(stats) => {
-            panic!("a result:error per-call reply must be a refusal, not statistics: {stats:?}")
+            return Err(format!(
+                "a result:error per-call reply must be a refusal, not statistics: {stats:?}"
+            )
+            .into());
         }
     }
+    Ok(())
 }
 
 /// The refusal never leaks onto the wire as counter values: `result` and
 /// `error-reason` must not appear as present statistics. This is the failure
 /// mode the classifier exists to stop -- the relay's "no" rendered as data.
 #[test]
-fn a_per_call_refusal_is_never_rendered_as_counter_rows() {
+fn a_per_call_refusal_is_never_rendered_as_counter_rows() -> Result<(), TestError> {
     let PerCallReply::Refused(_) = classify_per_call_reply(&refusal_pairs("No call-id in message"))
     else {
-        panic!("a result:error reply must classify as Refused, so nothing tiers it into values");
+        return Err(
+            "a result:error reply must classify as Refused, so nothing tiers it into values".into(),
+        );
     };
     // And to prove the hazard is real: tiering the same pairs directly (the old
     // path) WOULD have surfaced `result`/`error-reason` as counted values.
@@ -455,31 +477,33 @@ fn a_per_call_refusal_is_never_rendered_as_counter_rows() {
         "sanity: the un-classified path really does render the refusal as a value, \
          which is the bug classify_per_call_reply prevents"
     );
+    Ok(())
 }
 
 /// `E68` (no such statistic) and `E50` (no such session) analogues must not
 /// share a message: the reason is carried through unchanged so two different
 /// refusals stay two different answers.
 #[test]
-fn two_different_per_call_refusals_do_not_collapse() {
+fn two_different_per_call_refusals_do_not_collapse() -> Result<(), TestError> {
     let a = match classify_per_call_reply(&refusal_pairs("Unknown call-id")) {
         PerCallReply::Refused(r) => r,
-        other => panic!("expected refusal, got {other:?}"),
+        other => return Err(format!("expected refusal, got {other:?}").into()),
     };
     let b = match classify_per_call_reply(&refusal_pairs("No call-id in message")) {
         PerCallReply::Refused(r) => r,
-        other => panic!("expected refusal, got {other:?}"),
+        other => return Err(format!("expected refusal, got {other:?}").into()),
     };
     assert_ne!(
         a, b,
         "two distinct relay reasons must not be flattened into one message"
     );
+    Ok(())
 }
 
 /// A per-call reply with real statistics classifies as `Statistics`, tiered
 /// `relay_reported`, with every pair present and uncoerced.
 #[test]
-fn a_per_call_statistics_reply_classifies_as_statistics() {
+fn a_per_call_statistics_reply_classifies_as_statistics() -> Result<(), TestError> {
     let pairs = vec![
         ("result".to_string(), "ok".to_string()),
         ("totals.RTP.packets".to_string(), "9000".to_string()),
@@ -498,31 +522,38 @@ fn a_per_call_statistics_reply_classifies_as_statistics() {
             );
         }
         PerCallReply::Refused(reason) => {
-            panic!("a result:ok reply is not a refusal, got Refused({reason:?})")
+            return Err(
+                format!("a result:ok reply is not a refusal, got Refused({reason:?})").into(),
+            );
         }
     }
+    Ok(())
 }
 
 /// A `result: error` with no `error-reason` still refuses -- with a non-empty
 /// stand-in, never an empty string that would render as a silent no.
 #[test]
-fn a_reasonless_per_call_refusal_still_refuses_with_a_stand_in() {
+fn a_reasonless_per_call_refusal_still_refuses_with_a_stand_in() -> Result<(), TestError> {
     match classify_per_call_reply(&[("result".to_string(), "error".to_string())]) {
         PerCallReply::Refused(reason) => assert!(
             !reason.is_empty(),
             "a reasonless refusal must carry a stand-in sentence, never an empty string"
         ),
         PerCallReply::Statistics(stats) => {
-            panic!("a reasonless result:error is still a refusal, not statistics: {stats:?}")
+            return Err(format!(
+                "a reasonless result:error is still a refusal, not statistics: {stats:?}"
+            )
+            .into());
         }
     }
+    Ok(())
 }
 
 /// The classifier agrees with the single refusal rule it is built on: it
 /// refuses exactly when `relay_reply_refusal` sees a refusal, so the two cannot
 /// drift into disagreeing about what a per-call "no" is.
 #[test]
-fn classify_per_call_reply_agrees_with_relay_reply_refusal() {
+fn classify_per_call_reply_agrees_with_relay_reply_refusal() -> Result<(), TestError> {
     for pairs in [
         refusal_pairs("Unknown call-id"),
         vec![("result".to_string(), "ok".to_string())],
@@ -537,6 +568,7 @@ fn classify_per_call_reply_agrees_with_relay_reply_refusal() {
             "classify_per_call_reply and relay_reply_refusal must agree for {pairs:?}"
         );
     }
+    Ok(())
 }
 
 // ── ST9 condition 11: an oversized relay count is suspect, not absent ─────────
@@ -552,7 +584,7 @@ use sipnab::stats_vocab::{RelayCompareValue, relay_compare_value};
 
 /// A relay count that fits `u64` is `Counted`, ready to compare.
 #[test]
-fn a_relay_count_that_fits_is_counted() {
+fn a_relay_count_that_fits_is_counted() -> Result<(), TestError> {
     assert_eq!(
         relay_compare_value(
             &[counted("totals.RTP.packets", "9000")],
@@ -560,33 +592,36 @@ fn a_relay_count_that_fits_is_counted() {
         ),
         RelayCompareValue::Counted(9000),
     );
+    Ok(())
 }
 
 /// A counted ZERO is `Counted(0)`, never `Absent` -- ST9's zero-versus-absent
 /// distinction reaching the comparison: a relay that carried the call and
 /// counted no packets is not a relay that does not hold the call.
 #[test]
-fn a_counted_zero_is_counted_not_absent() {
+fn a_counted_zero_is_counted_not_absent() -> Result<(), TestError> {
     assert_eq!(
         relay_compare_value(&[counted("totals.RTP.packets", "0")], "totals.RTP.packets"),
         RelayCompareValue::Counted(0),
         "a measured zero must not read as an absent side"
     );
+    Ok(())
 }
 
 /// A key the relay never sent (not asked) is an absent side, not a zero.
 #[test]
-fn a_not_asked_relay_side_is_absent() {
+fn a_not_asked_relay_side_is_absent() -> Result<(), TestError> {
     assert_eq!(
         relay_compare_value(&[not_asked("totals.RTP.packets")], "totals.RTP.packets"),
         RelayCompareValue::Absent,
     );
+    Ok(())
 }
 
 /// A refused key is an absent side too -- the relay declined the figure, it did
 /// not report a zero.
 #[test]
-fn a_refused_relay_side_is_absent() {
+fn a_refused_relay_side_is_absent() -> Result<(), TestError> {
     assert_eq!(
         relay_compare_value(
             &[refused("totals.RTP.packets", "E50")],
@@ -594,6 +629,7 @@ fn a_refused_relay_side_is_absent() {
         ),
         RelayCompareValue::Absent,
     );
+    Ok(())
 }
 
 /// A value too large for `u64` is `Overflow`, carrying its digits -- NOT
@@ -606,20 +642,21 @@ fn a_refused_relay_side_is_absent() {
 /// behavior is driven from a recorded oversized value here, which is the value
 /// the catalog says to test against.
 #[test]
-fn an_oversized_relay_count_is_overflow_not_absent() {
+fn an_oversized_relay_count_is_overflow_not_absent() -> Result<(), TestError> {
     let huge = "99999999999999999999999"; // 23 digits, past u64::MAX (20 digits)
     match relay_compare_value(&[counted("totals.RTP.packets", huge)], "totals.RTP.packets") {
         RelayCompareValue::Overflow(digits) => assert_eq!(
             digits, huge,
             "the oversized value is carried as its digits, uncoerced and untruncated"
         ),
-        other => panic!("an oversized count must be Overflow, not {other:?}"),
+        other => return Err(format!("an oversized count must be Overflow, not {other:?}").into()),
     }
+    Ok(())
 }
 
 /// The boundary holds: `u64::MAX` itself still fits and compares.
 #[test]
-fn u64_max_still_fits() {
+fn u64_max_still_fits() -> Result<(), TestError> {
     assert_eq!(
         relay_compare_value(
             &[counted("totals.RTP.packets", "18446744073709551615")],
@@ -627,20 +664,26 @@ fn u64_max_still_fits() {
         ),
         RelayCompareValue::Counted(u64::MAX),
     );
+    Ok(())
 }
 
 /// A present-but-non-numeric value is also `Overflow` (present, uncomparable),
 /// not `Absent`: an answer that cannot be trusted is the answer's problem, not a
 /// missing call.
 #[test]
-fn a_present_non_numeric_value_is_overflow_not_absent() {
+fn a_present_non_numeric_value_is_overflow_not_absent() -> Result<(), TestError> {
     match relay_compare_value(
         &[counted("totals.RTP.packets", "not-a-number")],
         "totals.RTP.packets",
     ) {
         RelayCompareValue::Overflow(digits) => assert_eq!(digits, "not-a-number"),
-        other => panic!("a present, uncomparable value must be Overflow, not {other:?}"),
+        other => {
+            return Err(
+                format!("a present, uncomparable value must be Overflow, not {other:?}").into(),
+            );
+        }
     }
+    Ok(())
 }
 
 // ── ST9 condition 6: a polled counter that steps backwards is a restart ───────
@@ -653,6 +696,10 @@ fn a_present_non_numeric_value_is_overflow_not_absent() {
 
 use sipnab::stats_vocab::{BackwardsStep, counter_stepped_backwards};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()
@@ -662,26 +709,28 @@ fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 
 /// A counter that rose is not a step -- the ordinary case, every poll.
 #[test]
-fn a_rising_counter_is_not_a_backwards_step() {
+fn a_rising_counter_is_not_a_backwards_step() -> Result<(), TestError> {
     assert_eq!(
         counter_stepped_backwards(&kv(&[("npkts", "9000")]), &kv(&[("npkts", "9600")])),
         None,
     );
+    Ok(())
 }
 
 /// An unchanged counter is not a step: a quiet relay, not a restarted one.
 #[test]
-fn an_unchanged_counter_is_not_a_backwards_step() {
+fn an_unchanged_counter_is_not_a_backwards_step() -> Result<(), TestError> {
     assert_eq!(
         counter_stepped_backwards(&kv(&[("npkts", "9000")]), &kv(&[("npkts", "9000")])),
         None,
     );
+    Ok(())
 }
 
 /// A counter that decreased is a step, carrying its name and both values so a
 /// surface can say which counter and by how much.
 #[test]
-fn a_decreased_counter_is_a_backwards_step() {
+fn a_decreased_counter_is_a_backwards_step() -> Result<(), TestError> {
     assert_eq!(
         counter_stepped_backwards(&kv(&[("npkts", "9000")]), &kv(&[("npkts", "0")])),
         Some(BackwardsStep {
@@ -690,57 +739,63 @@ fn a_decreased_counter_is_a_backwards_step() {
             current: 0,
         }),
     );
+    Ok(())
 }
 
 /// rtpengine's own `uptime` dropping is the same signal, and the one rtpproxy
 /// cannot give.
 #[test]
-fn uptime_dropping_is_a_backwards_step() {
+fn uptime_dropping_is_a_backwards_step() -> Result<(), TestError> {
     let step = counter_stepped_backwards(&kv(&[("uptime", "134")]), &kv(&[("uptime", "2")]))
-        .expect("uptime fell, which means a restart");
+        .ok_or("uptime fell, which means a restart")?;
     assert_eq!(step.name, "uptime");
     assert_eq!((step.previous, step.current), (134, 2));
+    Ok(())
 }
 
 /// A counter present only in the current reading has nothing to compare against,
 /// so it is not a step -- a new key is not a decrease.
 #[test]
-fn a_newly_appeared_counter_is_not_a_step() {
+fn a_newly_appeared_counter_is_not_a_step() -> Result<(), TestError> {
     assert_eq!(
         counter_stepped_backwards(&kv(&[("a", "1")]), &kv(&[("a", "2"), ("b", "5")])),
         None,
     );
+    Ok(())
 }
 
 /// A counter that disappeared is not a step either: absence is not a decrease.
 #[test]
-fn a_disappeared_counter_is_not_a_step() {
+fn a_disappeared_counter_is_not_a_step() -> Result<(), TestError> {
     assert_eq!(
         counter_stepped_backwards(&kv(&[("a", "1"), ("b", "5")]), &kv(&[("a", "2")])),
         None,
     );
+    Ok(())
 }
 
 /// Non-numeric values are not counters and are never read as a step -- a string
 /// like rtpengine's `uptime: "134"` is handled by parsing, and a genuinely
 /// non-numeric field is skipped, not compared as text.
 #[test]
-fn non_numeric_values_are_not_a_step() {
+fn non_numeric_values_are_not_a_step() -> Result<(), TestError> {
     assert_eq!(
         counter_stepped_backwards(&kv(&[("version", "zed")]), &kv(&[("version", "aardvark")])),
         None,
     );
+    Ok(())
 }
 
 /// With more than one decrease, the first by sorted name is returned, so the
 /// result does not depend on the reply's order.
 #[test]
-fn the_first_decrease_by_sorted_name_is_deterministic() {
+fn the_first_decrease_by_sorted_name_is_deterministic() -> Result<(), TestError> {
     let prev = kv(&[("zeta", "9"), ("alpha", "9")]);
     let cur = kv(&[("zeta", "1"), ("alpha", "1")]);
-    let step = counter_stepped_backwards(&prev, &cur).expect("both fell");
+    let step = counter_stepped_backwards(&prev, &cur).ok_or("both fell")?;
     assert_eq!(
         step.name, "alpha",
         "the alphabetically-first decreased counter is reported, deterministically"
     );
+    Ok(())
 }

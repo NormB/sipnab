@@ -26,6 +26,8 @@ use std::process::Command;
 #[path = "support/corpus.rs"]
 mod corpus_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Test sources exempt from the "wires the shared corpus gate" rule below,
 /// each for a stated reason. An exemption is a decision someone has to read,
 /// which is the point of listing them here rather than loosening the scan.
@@ -50,25 +52,24 @@ const EXEMPT: &[(&str, &str)] = &[
 ];
 
 /// Read a file under `tests/`.
-fn read(name: &str) -> String {
+fn read(name: &str) -> Result<String, TestError> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join(name);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?)
 }
 
 /// Every `tests/*.rs` filename, sorted.
-fn test_sources() -> Vec<String> {
+fn test_sources() -> Result<Vec<String>, TestError> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let mut out: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read tests/")
+    let mut out: Vec<String> = std::fs::read_dir(&dir)?
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.ends_with(".rs"))
         .collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The probe the child-process tests run. Ignored, so it never fires in a
@@ -78,28 +79,28 @@ fn test_sources() -> Vec<String> {
 /// however many corpus tests a binary holds.
 #[test]
 #[ignore = "spawned as a child by the notice tests in this file"]
-fn corpus_skip_notice_probe() {
+fn corpus_skip_notice_probe() -> Result<(), TestError> {
     assert!(
         corpus_support::root().is_none(),
         "the probe must run with {} unset",
         corpus_support::ENV_VAR
     );
     assert!(corpus_support::root().is_none());
+    Ok(())
 }
 
 /// Run the probe in a child process with the corpus unset and no
 /// `--nocapture`, and return its `(stderr, exit code)`.
-fn run_probe() -> (String, Option<i32>) {
-    let exe = std::env::current_exe().expect("current_exe");
+fn run_probe() -> Result<(String, Option<i32>), TestError> {
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args(["corpus_skip_notice_probe", "--exact", "--ignored"])
         .env_remove(corpus_support::ENV_VAR)
-        .output()
-        .expect("spawn self");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// The notice survives libtest's output capture.
@@ -109,8 +110,8 @@ fn run_probe() -> (String, Option<i32>) {
 /// success, so an implementation that used it would leave this child's stderr
 /// empty even though the code "printed" a warning.
 #[test]
-fn the_skip_notice_survives_libtests_output_capture() {
-    let (stderr, code) = run_probe();
+fn the_skip_notice_survives_libtests_output_capture() -> Result<(), TestError> {
+    let (stderr, code) = run_probe()?;
     assert!(
         stderr.contains(corpus_support::NOTICE_MARKER),
         "a corpus skip left no trace on stderr under libtest capture — the notice is \
@@ -125,24 +126,26 @@ fn the_skip_notice_survives_libtests_output_capture() {
         Some(0),
         "a missing corpus must remain a skip, not a failure"
     );
+    Ok(())
 }
 
 /// One line per binary, not one per test — the probe gates twice.
 #[test]
-fn the_skip_notice_is_printed_once_per_binary() {
-    let (stderr, _) = run_probe();
+fn the_skip_notice_is_printed_once_per_binary() -> Result<(), TestError> {
+    let (stderr, _) = run_probe()?;
     assert_eq!(
         stderr.matches(corpus_support::NOTICE_MARKER).count(),
         1,
         "the notice must be emitted exactly once per test binary however many \
          corpus tests it holds; stderr was: {stderr:?}"
     );
+    Ok(())
 }
 
 /// The wording carries the three things a reader needs: which variable, which
 /// suite, and that green here does not mean validated.
 #[test]
-fn the_notice_names_the_binary_and_denies_full_validation() {
+fn the_notice_names_the_binary_and_denies_full_validation() -> Result<(), TestError> {
     let line = corpus_support::notice_line("example_corpus_test");
     assert_eq!(
         line.lines().count(),
@@ -157,6 +160,7 @@ fn the_notice_names_the_binary_and_denies_full_validation() {
     ] {
         assert!(line.contains(needle), "notice omits {needle:?}: {line}");
     }
+    Ok(())
 }
 
 /// No test source rolls its own corpus gate.
@@ -165,10 +169,10 @@ fn the_notice_names_the_binary_and_denies_full_validation() {
 /// silent again without touching anything this file watches, so the read is
 /// centralized and the bypass is a build-time-visible failure.
 #[test]
-fn no_test_source_reads_the_corpus_variable_directly() {
+fn no_test_source_reads_the_corpus_variable_directly() -> Result<(), TestError> {
     let mut offenders = Vec::new();
-    for name in test_sources() {
-        let src = read(&name);
+    for name in test_sources()? {
+        let src = read(&name)?;
         if src.contains(&format!("var(\"{}\")", corpus_support::ENV_VAR))
             || src.contains(&format!("var_os(\"{}\")", corpus_support::ENV_VAR))
         {
@@ -181,17 +185,18 @@ fn no_test_source_reads_the_corpus_variable_directly() {
          their skip is not announced: {offenders:?}",
         corpus_support::ENV_VAR
     );
+    Ok(())
 }
 
 /// The old silent form is gone and stays gone.
 #[test]
-fn no_test_source_prints_the_skip_through_libtests_capture() {
+fn no_test_source_prints_the_skip_through_libtests_capture() -> Result<(), TestError> {
     let mut offenders = Vec::new();
-    for name in test_sources() {
+    for name in test_sources()? {
         if name == "corpus_skip_notice_test.rs" {
             continue;
         }
-        let src = read(&name);
+        let src = read(&name)?;
         for line in src.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("eprintln!") && trimmed.contains(corpus_support::ENV_VAR) {
@@ -204,6 +209,7 @@ fn no_test_source_prints_the_skip_through_libtests_capture() {
         "eprintln! is captured per test and discarded when the test passes, which is \
          how the corpus skip stayed invisible: {offenders:?}"
     );
+    Ok(())
 }
 
 /// Every corpus-gated suite wires the shared gate.
@@ -212,17 +218,17 @@ fn no_test_source_prints_the_skip_through_libtests_capture() {
 /// corpus nowhere but is named for it is exactly the file most likely to have
 /// grown a private gate.
 #[test]
-fn every_corpus_suite_wires_the_shared_gate() {
+fn every_corpus_suite_wires_the_shared_gate() -> Result<(), TestError> {
     let mut missing = Vec::new();
     let mut wired = 0usize;
-    for name in test_sources() {
+    for name in test_sources()? {
         if !name.contains("corpus") {
             continue;
         }
         if EXEMPT.iter().any(|(f, _)| *f == name) {
             continue;
         }
-        if read(&name).contains("support/corpus.rs") {
+        if read(&name)?.contains("support/corpus.rs") {
             wired += 1;
         } else {
             missing.push(name);
@@ -239,4 +245,5 @@ fn every_corpus_suite_wires_the_shared_gate() {
         wired >= 9,
         "only {wired} corpus suites wire the shared gate; the wiring is being removed"
     );
+    Ok(())
 }

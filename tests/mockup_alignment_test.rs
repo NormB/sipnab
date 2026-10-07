@@ -19,6 +19,10 @@
 use std::fmt::Write as _;
 use unicode_width::UnicodeWidthChar;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Strip HTML tags and unescape the entities the mockups use, so column
 /// positions reflect what the browser renders.
 fn strip_html(line: &str) -> String {
@@ -73,14 +77,14 @@ fn strip_html(line: &str) -> String {
 
 /// Extract every `<pre class="terminal-body">...</pre>` block as
 /// (1-based start line, rendered lines).
-fn extract_terminal_blocks(text: &str) -> Vec<(usize, Vec<String>)> {
-    let re = regex::Regex::new(r#"(?s)<pre class="terminal-body">(.*?)</pre>"#).unwrap();
+fn extract_terminal_blocks(text: &str) -> Result<Vec<(usize, Vec<String>)>, TestError> {
+    let re = regex::Regex::new(r#"(?s)<pre class="terminal-body">(.*?)</pre>"#)?;
     re.captures_iter(text)
-        .map(|cap| {
-            let m = cap.get(0).unwrap();
+        .map(|cap| -> Result<(usize, Vec<String>), TestError> {
+            let m = cap.get(0).ok_or("a match always has group 0")?;
             let start_line = text[..m.start()].lines().count() + 1;
             let lines = cap[1].lines().map(strip_html).collect();
-            (start_line, lines)
+            Ok((start_line, lines))
         })
         .collect()
 }
@@ -230,7 +234,7 @@ fn render(block: &str) -> Vec<String> {
 
 /// `strip_html` drops tags, unescapes known entities, keeps unknown/unterminated ones verbatim, and handles empty input.
 #[test]
-fn strip_html_removes_tags_and_unescapes_entities() {
+fn strip_html_removes_tags_and_unescapes_entities() -> Result<(), TestError> {
     assert_eq!(
         strip_html(r#"<span class="t-good">|--- INVITE ---&gt;|</span>"#),
         "|--- INVITE --->|"
@@ -244,6 +248,7 @@ fn strip_html_removes_tags_and_unescapes_entities() {
     assert_eq!(strip_html(""), "");
     // Unknown-but-terminated entity survives verbatim.
     assert_eq!(strip_html("&nbsp;"), "&nbsp;");
+    Ok(())
 }
 
 // NOTE: fixtures are flush-left because Rust's `"\` continuation strips the
@@ -252,7 +257,7 @@ fn strip_html_removes_tags_and_unescapes_entities() {
 
 /// A correctly aligned Unicode box (with interior pipes and HTML tags) yields no violations.
 #[test]
-fn aligned_box_passes() {
+fn aligned_box_passes() -> Result<(), TestError> {
     let block = "\
 ┌───── Title ─────┐
 │  content        │
@@ -261,11 +266,12 @@ fn aligned_box_passes() {
 └─────────────────┘";
     let v = check_block(&render(block));
     assert!(v.is_empty(), "expected no violations, got: {v:?}");
+    Ok(())
 }
 
 /// A right border shifted by one column is reported as a violation.
 #[test]
-fn box_with_shifted_right_border_fails() {
+fn box_with_shifted_right_border_fails() -> Result<(), TestError> {
     let block = "\
 ┌───── Title ─────┐
 │  content         │
@@ -274,11 +280,12 @@ fn box_with_shifted_right_border_fails() {
         !check_block(&render(block)).is_empty(),
         "shifted right border must be reported"
     );
+    Ok(())
 }
 
 /// A bottom-left corner off the top corner's column is reported.
 #[test]
-fn box_with_mismatched_bottom_corner_fails() {
+fn box_with_mismatched_bottom_corner_fails() -> Result<(), TestError> {
     let block = "\
 ┌───── Title ─────┐
 │  content        │
@@ -287,11 +294,12 @@ fn box_with_mismatched_bottom_corner_fails() {
         !check_block(&render(block)).is_empty(),
         "shifted bottom-left corner must be reported"
     );
+    Ok(())
 }
 
 /// An interior line missing its box-border verticals is reported.
 #[test]
-fn box_interior_line_missing_border_fails() {
+fn box_interior_line_missing_border_fails() -> Result<(), TestError> {
     let block = "\
 ┌───── Title ─────┐
 │  content        │
@@ -301,11 +309,12 @@ fn box_interior_line_missing_border_fails() {
         !check_block(&render(block)).is_empty(),
         "interior line without borders must be reported"
     );
+    Ok(())
 }
 
 /// An HTML entity (`&gt;`) counts as one display column, so the box still aligns.
 #[test]
-fn entity_width_counts_one_column() {
+fn entity_width_counts_one_column() -> Result<(), TestError> {
     // `&gt;` renders as one column; treating it as 4 shifts the border.
     let block = "\
 ┌───────┐
@@ -313,11 +322,12 @@ fn entity_width_counts_one_column() {
 └───────┘";
     let v = check_block(&render(block));
     assert!(v.is_empty(), "entity must count 1 column, got: {v:?}");
+    Ok(())
 }
 
 /// An ASCII pipe ladder with all pipes on lifeline columns yields no violations.
 #[test]
-fn aligned_ladder_passes() {
+fn aligned_ladder_passes() -> Result<(), TestError> {
     let block = "\
 a               b               c
 |               |               |
@@ -326,11 +336,12 @@ a               b               c
 |               |               |";
     let v = check_block(&render(block));
     assert!(v.is_empty(), "expected no violations, got: {v:?}");
+    Ok(())
 }
 
 /// A pipe one column off the lifelines is reported.
 #[test]
-fn ladder_with_off_column_pipe_fails() {
+fn ladder_with_off_column_pipe_fails() -> Result<(), TestError> {
     let block = "\
 a               b               c
 |               |               |
@@ -340,11 +351,12 @@ a               b               c
         !check_block(&render(block)).is_empty(),
         "off-lifeline pipe must be reported"
     );
+    Ok(())
 }
 
 /// CJK glyphs count 2 display columns, so a line using them still lands the borders correctly.
 #[test]
-fn wide_glyphs_count_two_columns() {
+fn wide_glyphs_count_two_columns() -> Result<(), TestError> {
     // CJK '実' is width 2 — a line using it must still land borders on the
     // same display columns as an all-ASCII line.
     let block = "\
@@ -354,17 +366,19 @@ fn wide_glyphs_count_two_columns() {
 └──────┘";
     let v = check_block(&render(block));
     assert!(v.is_empty(), "wide glyphs must count 2 columns, got: {v:?}");
+    Ok(())
 }
 
 /// Blocks with no box art and fewer than 3 pipe lines (tables, raw SIP) pass unchecked.
 #[test]
-fn plain_text_block_has_no_violations() {
+fn plain_text_block_has_no_violations() -> Result<(), TestError> {
     // Blocks with no box chars and <3 pipe lines (tables, raw SIP) pass.
     let block = "\
 INVITE sip:bob@10.0.0.2:5060 SIP/2.0
 Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK
  #  SSRC        Codec   MOS";
     assert!(check_block(&render(block)).is_empty());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +387,7 @@ Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK
 
 /// Every terminal-body mockup shipped on the site passes `check_block`, and at least 8 blocks are found (extractor liveness check).
 #[test]
-fn website_terminal_mockups_are_aligned() {
+fn website_terminal_mockups_are_aligned() -> Result<(), TestError> {
     let sources: &[(&str, &str)] = &[
         (
             "website/content/docs/keybindings.md",
@@ -391,7 +405,7 @@ fn website_terminal_mockups_are_aligned() {
     let mut violations = Vec::new();
     let mut blocks_seen = 0;
     for (path, text) in sources {
-        for (start, lines) in extract_terminal_blocks(text) {
+        for (start, lines) in extract_terminal_blocks(text)? {
             blocks_seen += 1;
             for v in check_block(&lines) {
                 violations.push(format!("{path}:{start}: {v}"));
@@ -409,4 +423,5 @@ fn website_terminal_mockups_are_aligned() {
         "misaligned terminal mockups:\n{}",
         violations.join("\n")
     );
+    Ok(())
 }

@@ -32,9 +32,11 @@
 
 use std::path::PathBuf;
 
-fn read(rel: &str) -> String {
+type TestError = Box<dyn std::error::Error>;
+
+fn read(rel: &str) -> Result<String, TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Is this line a clippy the gate RUNS, rather than one it prints?
@@ -85,8 +87,8 @@ fn clippy_scopes(src: &str) -> Vec<String> {
 /// every `#[cfg(test)]` block behind an integration target goes unread, which
 /// is most of what this repository is.
 #[test]
-fn the_commit_gate_lints_test_targets() {
-    let hook = read(".githooks/pre-commit");
+fn the_commit_gate_lints_test_targets() -> Result<(), TestError> {
+    let hook = read(".githooks/pre-commit")?;
     let scopes = clippy_scopes(&hook);
     assert!(
         !scopes.is_empty(),
@@ -102,6 +104,7 @@ fn the_commit_gate_lints_test_targets() {
              written in the files this project spends most of its lines on."
         );
     }
+    Ok(())
 }
 
 /// The commit gate and CI run the SAME clippy scope.
@@ -110,10 +113,10 @@ fn the_commit_gate_lints_test_targets() {
 /// is a hook that disagrees with it eventually, and the disagreement always
 /// surfaces as a red CI on work that passed locally.
 #[test]
-fn the_commit_gate_and_ci_run_the_same_clippy_scope() {
-    let hook = clippy_scopes(&read(".githooks/pre-commit"));
-    let push = clippy_scopes(&read(".githooks/pre-push"));
-    let ci = clippy_scopes(&read(".github/workflows/ci.yml"));
+fn the_commit_gate_and_ci_run_the_same_clippy_scope() -> Result<(), TestError> {
+    let hook = clippy_scopes(&read(".githooks/pre-commit")?);
+    let push = clippy_scopes(&read(".githooks/pre-push")?);
+    let ci = clippy_scopes(&read(".github/workflows/ci.yml")?);
 
     assert!(
         !ci.is_empty(),
@@ -144,6 +147,7 @@ fn the_commit_gate_and_ci_run_the_same_clippy_scope() {
             );
         }
     }
+    Ok(())
 }
 
 /// Every clippy invocation denies warnings.
@@ -152,13 +156,13 @@ fn the_commit_gate_and_ci_run_the_same_clippy_scope() {
 /// prints its findings and exits 0, which is the failure mode that looks most
 /// like success.
 #[test]
-fn every_clippy_invocation_denies_warnings() {
+fn every_clippy_invocation_denies_warnings() -> Result<(), TestError> {
     for rel in [
         ".githooks/pre-commit",
         ".githooks/pre-push",
         ".github/workflows/ci.yml",
     ] {
-        let src = read(rel);
+        let src = read(rel)?;
         let mut checked = 0;
         for line in src.lines() {
             let l = line.trim();
@@ -174,6 +178,7 @@ fn every_clippy_invocation_denies_warnings() {
         }
         assert!(checked >= 1, "{rel} has no clippy invocation to check");
     }
+    Ok(())
 }
 
 /// The scan reads real files.
@@ -181,10 +186,10 @@ fn every_clippy_invocation_denies_warnings() {
 /// Anti-vacuity: every assertion above iterates a list that a broken parser
 /// would return empty, and an empty list passes a `for` loop in silence.
 #[test]
-fn the_clippy_scan_found_real_invocations() {
-    let hook = clippy_scopes(&read(".githooks/pre-commit"));
-    let push = clippy_scopes(&read(".githooks/pre-push"));
-    let ci = clippy_scopes(&read(".github/workflows/ci.yml"));
+fn the_clippy_scan_found_real_invocations() -> Result<(), TestError> {
+    let hook = clippy_scopes(&read(".githooks/pre-commit")?);
+    let push = clippy_scopes(&read(".githooks/pre-push")?);
+    let ci = clippy_scopes(&read(".github/workflows/ci.yml")?);
     for (name, found) in [("pre-commit", &hook), ("pre-push", &push), ("ci.yml", &ci)] {
         assert!(
             !found.is_empty(),
@@ -195,4 +200,5 @@ fn the_clippy_scan_found_real_invocations() {
             "{name} parsed a scope that is not a flag list: {found:?}"
         );
     }
+    Ok(())
 }

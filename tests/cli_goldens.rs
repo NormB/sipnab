@@ -24,13 +24,15 @@
 //! Regenerate expected output after an intentional change with:
 //!   `TRYCMD=overwrite cargo test --test cli_goldens`
 
+use support::TestError;
+
 #[path = "support/mod.rs"]
 mod support;
 
 /// Runs every `tests/cli/cmd/*.trycmd` and `tests/cli/out/*.trycmd` case,
 /// pinning each command's stdout/stderr and exit code under the determinism env.
 #[test]
-fn cli_goldens() {
+fn cli_goldens() -> Result<(), TestError> {
     // ---- Config discovery is part of the determinism contract --------------
     //
     // `tests/cli/cmd/dump-config.trycmd` runs `sipnab --dump-config` with no
@@ -71,7 +73,8 @@ fn cli_goldens() {
     // the symptom named `--bpf-file` rather than the harness.
     let home = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("cli-goldens-home-{}", std::process::id()));
-    std::fs::create_dir_all(&home).expect("create the pinned HOME for CLI goldens");
+    std::fs::create_dir_all(&home)
+        .map_err(|e| format!("create the pinned HOME for CLI goldens: {e}"))?;
     for stray in [".sipnabrc", ".config/sipnab/sipnab.toml"] {
         let _ = std::fs::remove_file(home.join(stray));
     }
@@ -85,9 +88,10 @@ fn cli_goldens() {
     // ordering is load-bearing: it changes the process working directory, and
     // a second `#[test]` in this binary would run on another thread against
     // relative globs that no longer resolve.
-    cookbook::run(&home);
+    cookbook::run(&home)?;
 
     let _ = std::fs::remove_dir_all(&home);
+    Ok(())
 }
 
 /// A `trycmd` run pinned to the determinism env every CLI golden shares.
@@ -152,34 +156,38 @@ mod cookbook {
         feature = "metrics",
         feature = "plugins",
     ))]
-    pub fn run(home: &std::path::Path) {
+    pub fn run(home: &std::path::Path) -> Result<(), super::TestError> {
         use std::path::{Path, PathBuf};
 
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
         let scratch = home.join("cookbook");
         let _ = std::fs::remove_dir_all(&scratch);
-        std::fs::create_dir_all(&scratch).expect("create the cookbook scratch dir");
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| format!("create the cookbook scratch dir: {e}"))?;
         std::os::unix::fs::symlink(repo.join("tests"), scratch.join("tests"))
-            .expect("link the scratch dir's tests/ to the repository's");
+            .map_err(|e| format!("link the scratch dir's tests/ to the repository's: {e}"))?;
 
         // Each case writes into the directory its file is named after -- the
         // key the checker's `golden_case` puts in every output path -- and
         // sipnab does not create a missing parent for `--run-provenance-file`
         // or `-O`, so the directory has to exist before the case runs.
         for entry in std::fs::read_dir(repo.join("tests/cli/cookbook"))
-            .expect("list tests/cli/cookbook")
+            .map_err(|e| format!("list tests/cli/cookbook: {e}"))?
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
             if path.extension().is_some_and(|x| x == "trycmd") {
-                let key = path.file_stem().expect("a case file has a stem");
-                std::fs::create_dir(scratch.join(key)).expect("create a case's output dir");
+                let key = path.file_stem().ok_or("a case file has a stem")?;
+                std::fs::create_dir(scratch.join(key))
+                    .map_err(|e| format!("create a case's output dir: {e}"))?;
             }
         }
 
         let cases: PathBuf = repo.join("tests/cli/cookbook/*.trycmd");
-        let before = std::env::current_dir().expect("read the working directory");
-        std::env::set_current_dir(&scratch).expect("enter the cookbook scratch dir");
+        let before =
+            std::env::current_dir().map_err(|e| format!("read the working directory: {e}"))?;
+        std::env::set_current_dir(&scratch)
+            .map_err(|e| format!("enter the cookbook scratch dir: {e}"))?;
         // Run inside a closure so the working directory is restored before
         // any assertion below can panic.
         let outcome = std::panic::catch_unwind(|| {
@@ -187,13 +195,14 @@ mod cookbook {
                 .case(cases.to_string_lossy().into_owned())
                 .run();
         });
-        std::env::set_current_dir(before).expect("restore the working directory");
+        std::env::set_current_dir(before)
+            .map_err(|e| format!("restore the working directory: {e}"))?;
 
         // Everything a case wrote must be inside its own directory. A write
         // anywhere else means a recipe gained an output flag the checker's
         // OUTPUT_FLAGS does not redirect, and two cases could then share it.
         let strays: Vec<String> = std::fs::read_dir(&scratch)
-            .expect("list the cookbook scratch dir")
+            .map_err(|e| format!("list the cookbook scratch dir: {e}"))?
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| {
@@ -210,6 +219,7 @@ mod cookbook {
             "a cookbook case wrote outside its own directory: {strays:?}. Add \
              the flag that names it to OUTPUT_FLAGS in scripts/check-cookbook.py"
         );
+        Ok(())
     }
 
     #[cfg(not(all(
@@ -222,5 +232,7 @@ mod cookbook {
         feature = "metrics",
         feature = "plugins",
     )))]
-    pub fn run(_home: &std::path::Path) {}
+    pub fn run(_home: &std::path::Path) -> Result<(), super::TestError> {
+        Ok(())
+    }
 }

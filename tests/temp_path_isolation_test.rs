@@ -21,6 +21,8 @@
 
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Sites that share a fixed path ON PURPOSE, each with the reason it is correct.
 /// Keyed by the literal itself rather than by file, so a new fixed path in an
 /// already-listed file is still caught.
@@ -63,14 +65,14 @@ fn rs_files() -> Vec<PathBuf> {
 }
 
 #[test]
-fn every_temp_path_is_unique_per_process() {
+fn every_temp_path_is_unique_per_process() -> Result<(), TestError> {
     let mut sites = 0usize;
     let mut per_process = 0usize;
     let mut allowed = 0usize;
     let mut offenders: Vec<String> = Vec::new();
 
     for path in rs_files() {
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = std::fs::read_to_string(&path)?;
         let rel = path
             .strip_prefix(repo())
             .unwrap_or(&path)
@@ -205,4 +207,5 @@ fn every_temp_path_is_unique_per_process() {
          literal to DELIBERATELY_SHARED with the reason.",
         offenders.join("\n  ")
     );
+    Ok(())
 }

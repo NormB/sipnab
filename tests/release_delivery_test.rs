@@ -36,15 +36,18 @@ use release_logic::{
     is_dependency_bump, parse_version, unreleased_accumulation,
 };
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Read a repository file, panicking with the path on failure.
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// The working backlog, which is local and gitignored (see
@@ -75,14 +78,14 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 /// The version in `Cargo.toml`.
-fn crate_version() -> (u32, u32, u32) {
-    let toml = read("Cargo.toml");
+fn crate_version() -> Result<(u32, u32, u32), TestError> {
+    let toml = read("Cargo.toml")?;
     let line = toml
         .lines()
         .find(|l| l.trim_start().starts_with("version"))
-        .expect("Cargo.toml has a version line");
-    let raw = line.split('"').nth(1).expect("quoted version");
-    parse_version(raw).unwrap_or_else(|| panic!("unparseable crate version {raw:?}"))
+        .ok_or("Cargo.toml has a version line")?;
+    let raw = line.split('"').nth(1).ok_or("quoted version")?;
+    Ok(parse_version(raw).ok_or_else(|| format!("unparseable crate version {raw:?}"))?)
 }
 
 /// Every `vX.Y.Z` tag in the repository, ascending.
@@ -132,16 +135,20 @@ fn strict_release_gates() -> bool {
 /// Report a gate that cannot establish its input, and panic under strict mode.
 ///
 /// Returns on the skip path so the caller can `return` immediately after.
-fn cannot_tell(what: &str) {
+fn cannot_tell(what: &str) -> Result<(), TestError> {
     match cannot_tell_verdict(strict_release_gates()) {
         CannotTell::Skip => eprintln!("SKIP: {what}"),
-        CannotTell::Fail => panic!(
-            "{what}. At push time git has everything it needs, so this is a \
+        CannotTell::Fail => {
+            return Err(format!(
+                "{what}. At push time git has everything it needs, so this is a \
              broken gate rather than a limited checkout — and a gate that \
              declines to look is indistinguishable from one that passed. \
              (Set by SIPNAB_RELEASE_GATES_STRICT=1 in .githooks/pre-push.)"
-        ),
+            )
+            .into());
+        }
     }
+    Ok(())
 }
 
 /// The newest release tag, or `None` in a checkout that has none.
@@ -187,10 +194,14 @@ fn has_unreleased_code() -> Option<bool> {
     )
 }
 
+/// The version headings in `CHANGELOG.md`, and whether an `[Unreleased]`
+/// heading is present.
+type ChangelogSections = (Vec<(u32, u32, u32)>, bool);
+
 /// Every version heading in `CHANGELOG.md`, plus whether an `[Unreleased]`
 /// heading is present.
-fn changelog_sections() -> (Vec<(u32, u32, u32)>, bool) {
-    let text = read("CHANGELOG.md");
+fn changelog_sections() -> Result<ChangelogSections, TestError> {
+    let text = read("CHANGELOG.md")?;
     let mut versions = Vec::new();
     let mut unreleased = false;
     for line in text.lines() {
@@ -209,36 +220,38 @@ fn changelog_sections() -> (Vec<(u32, u32, u32)>, bool) {
             versions.push(v);
         }
     }
-    (versions, unreleased)
+    Ok((versions, unreleased))
 }
 
 /// The body of the `[Unreleased]` section, if it has one.
-fn unreleased_body() -> Option<String> {
-    release_logic::unreleased_section(&read("CHANGELOG.md"))
+fn unreleased_body() -> Result<Option<String>, TestError> {
+    Ok(release_logic::unreleased_section(&read("CHANGELOG.md")?))
 }
 
 /// The version the website advertises.
-fn published_version() -> (u32, u32, u32) {
-    let cfg = read("website/config.toml");
+fn published_version() -> Result<(u32, u32, u32), TestError> {
+    let cfg = read("website/config.toml")?;
     let line = cfg
         .lines()
         .find(|l| l.trim_start().starts_with("published_version"))
-        .expect("website/config.toml sets published_version");
-    let raw = line.split('"').nth(1).expect("quoted published_version");
-    parse_version(raw).unwrap_or_else(|| panic!("unparseable published_version {raw:?}"))
+        .ok_or("website/config.toml sets published_version")?;
+    let raw = line.split('"').nth(1).ok_or("quoted published_version")?;
+    Ok(parse_version(raw).ok_or_else(|| format!("unparseable published_version {raw:?}"))?)
 }
 
 /// Whether every change since the newest tag is that tag's own advertisement.
 ///
 /// Returns `None` when git cannot answer, which callers must treat as "cannot
 /// tell" rather than as "yes".
-fn only_advertises_the_newest_tag() -> Option<bool> {
-    let changed = changed_since_newest_tag()?;
-    Some(is_advertisement(
-        &changed,
-        published_version(),
-        newest_tag()?,
-    ))
+fn only_advertises_the_newest_tag() -> Result<Option<bool>, TestError> {
+    let Some(changed) = changed_since_newest_tag() else {
+        return Ok(None);
+    };
+    let published = published_version()?;
+    let Some(tag) = newest_tag() else {
+        return Ok(None);
+    };
+    Ok(Some(is_advertisement(&changed, published, tag)))
 }
 
 /// Whether every commit past the newest tag is a dependency bump.
@@ -257,13 +270,17 @@ fn only_bumps_dependencies() -> Option<bool> {
 ///
 /// Returns `None` when git cannot answer, which callers must treat as "cannot
 /// tell" rather than as "yes".
-fn only_advertises_beside_dependency_bumps() -> Option<bool> {
-    let changed = changed_since_newest_tag()?;
-    Some(is_advertisement_beside_dependency_bumps(
-        &changed,
-        published_version(),
-        newest_tag()?,
-    ))
+fn only_advertises_beside_dependency_bumps() -> Result<Option<bool>, TestError> {
+    let Some(changed) = changed_since_newest_tag() else {
+        return Ok(None);
+    };
+    let published = published_version()?;
+    let Some(tag) = newest_tag() else {
+        return Ok(None);
+    };
+    Ok(Some(is_advertisement_beside_dependency_bumps(
+        &changed, published, tag,
+    )))
 }
 
 // ── A. Unreleased work must declare itself ──────────────────────────
@@ -275,22 +292,22 @@ fn only_advertises_beside_dependency_bumps() -> Option<bool> {
 /// have them. An `[Unreleased]` heading costs one line and turns invisible
 /// latency into a visible fact.
 #[test]
-fn code_changed_since_the_last_tag_is_declared_in_the_changelog() {
+fn code_changed_since_the_last_tag_is_declared_in_the_changelog() -> Result<(), TestError> {
     let Some(unreleased_code) = has_unreleased_code() else {
         // Cannot tell — say so rather than passing. A shallow clone is the
         // usual cause and is a legitimate reason not to judge.
-        cannot_tell("git could not report changes since the newest tag");
-        return;
+        cannot_tell("git could not report changes since the newest tag")?;
+        return Ok(());
     };
     if !unreleased_code {
-        return;
+        return Ok(());
     }
-    if only_advertises_the_newest_tag() == Some(true) {
-        return;
+    if only_advertises_the_newest_tag()? == Some(true) {
+        return Ok(());
     }
-    let (_, has_unreleased_heading) = changelog_sections();
+    let (_, has_unreleased_heading) = changelog_sections()?;
     let newest_changelog = {
-        let mut v = changelog_sections().0;
+        let mut v = changelog_sections()?.0;
         v.sort_unstable();
         v.last().copied()
     };
@@ -304,6 +321,7 @@ fn code_changed_since_the_last_tag_is_declared_in_the_changelog() {
          green suite says the code is right, not that anyone has it.",
         newest_tag()
     );
+    Ok(())
 }
 
 /// An `[Unreleased]` section must not be empty.
@@ -312,9 +330,9 @@ fn code_changed_since_the_last_tag_is_declared_in_the_changelog() {
 /// checked, there is nothing", which is the one conclusion an unreleased P0
 /// disproves.
 #[test]
-fn an_unreleased_section_is_never_an_empty_promise() {
-    let Some(body) = unreleased_body() else {
-        return;
+fn an_unreleased_section_is_never_an_empty_promise() -> Result<(), TestError> {
+    let Some(body) = unreleased_body()? else {
+        return Ok(());
     };
     let meaningful = body
         .lines()
@@ -329,17 +347,18 @@ fn an_unreleased_section_is_never_an_empty_promise() {
          Delete the heading or fill it in — an empty section claims the \
          question was asked and answered."
     );
+    Ok(())
 }
 
 /// An `[Unreleased]` section requires unreleased work to exist.
 #[test]
-fn an_unreleased_section_exists_only_when_something_is_unreleased() {
-    let (_, has_unreleased) = changelog_sections();
+fn an_unreleased_section_exists_only_when_something_is_unreleased() -> Result<(), TestError> {
+    let (_, has_unreleased) = changelog_sections()?;
     if !has_unreleased {
-        return;
+        return Ok(());
     }
     let Some(n) = commits_since_newest_tag() else {
-        return;
+        return Ok(());
     };
     // The commit being made counts too. The pre-commit hook runs this with
     // HEAD still AT the tag and the new work in the index, so the first
@@ -355,6 +374,7 @@ fn an_unreleased_section_exists_only_when_something_is_unreleased() {
          the last release or the tag was moved; both make the section describe \
          nothing."
     );
+    Ok(())
 }
 
 /// Unreleased commits are bounded, and the bound is the alarm.
@@ -365,13 +385,16 @@ fn an_unreleased_section_exists_only_when_something_is_unreleased() {
 /// green. The number is deliberately generous — this fires on a stall, not on
 /// ordinary batching.
 #[test]
-fn unreleased_commits_do_not_accumulate_without_a_release() {
+fn unreleased_commits_do_not_accumulate_without_a_release() -> Result<(), TestError> {
     let Some(n) = commits_since_newest_tag() else {
-        cannot_tell("git could not count commits since the newest tag");
-        return;
+        cannot_tell("git could not count commits since the newest tag")?;
+        return Ok(());
     };
-    let cutting = newest_tag().is_some_and(|t| crate_version() > t);
-    let held = unreleased_body().and_then(|body| {
+    let cutting = match newest_tag() {
+        Some(t) => crate_version()? > t,
+        None => false,
+    };
+    let held = unreleased_body()?.and_then(|body| {
         body.lines().find_map(|l| {
             l.trim()
                 .strip_prefix("**Held:**")
@@ -379,12 +402,14 @@ fn unreleased_commits_do_not_accumulate_without_a_release() {
         })
     });
     if let Err(why) = unreleased_accumulation(n, cutting, held.as_deref()) {
-        panic!(
+        return Err(format!(
             "{why} Newest tag {:?}. A backlog of unreleased commits is invisible to \
              every other gate here.",
             newest_tag()
-        );
+        )
+        .into());
     }
+    Ok(())
 }
 
 /// A security fix must never be quietly unreleased.
@@ -393,7 +418,7 @@ fn unreleased_commits_do_not_accumulate_without_a_release() {
 /// an unshipped feature is a delay, an unshipped security fix is an exposure
 /// with a known remedy sitting in a repository.
 #[test]
-fn a_security_relevant_change_since_the_tag_is_declared() {
+fn a_security_relevant_change_since_the_tag_is_declared() -> Result<(), TestError> {
     const SECURITY_PATHS: &[&str] = &[
         "src/capture/hep.rs",
         "src/privilege.rs",
@@ -404,21 +429,21 @@ fn a_security_relevant_change_since_the_tag_is_declared() {
         "SECURITY.md",
     ];
     let Some(changed) = changed_since_newest_tag() else {
-        return;
+        return Ok(());
     };
     let touched: Vec<&String> = changed
         .iter()
         .filter(|f| SECURITY_PATHS.iter().any(|p| f.starts_with(p)))
         .collect();
     if touched.is_empty() {
-        return;
+        return Ok(());
     }
-    if only_advertises_the_newest_tag() == Some(true) {
-        return;
+    if only_advertises_the_newest_tag()? == Some(true) {
+        return Ok(());
     }
-    let (_, has_unreleased) = changelog_sections();
+    let (_, has_unreleased) = changelog_sections()?;
     let newest_changelog = {
-        let mut v = changelog_sections().0;
+        let mut v = changelog_sections()?.0;
         v.sort_unstable();
         v.last().copied()
     };
@@ -431,32 +456,34 @@ fn a_security_relevant_change_since_the_tag_is_declared() {
          protects nobody.",
         newest_tag()
     );
+    Ok(())
 }
 
 /// The newest changelog entry is the crate version or newer.
 #[test]
-fn the_changelog_never_trails_the_crate_version() {
-    let (mut versions, _) = changelog_sections();
+fn the_changelog_never_trails_the_crate_version() -> Result<(), TestError> {
+    let (mut versions, _) = changelog_sections()?;
     // Sections are written newest-first, so `last()` is the OLDEST entry.
     // Sorting makes the intent explicit and survives a file that is out of
     // order — which `changelog_sections_are_ordered_newest_first` catches
     // separately rather than silently compensating for here.
     versions.sort_unstable();
     let Some(newest) = versions.last().copied() else {
-        panic!("CHANGELOG.md has no version sections at all");
+        return Err("CHANGELOG.md has no version sections at all".into());
     };
     assert!(
-        newest >= crate_version(),
+        newest >= crate_version()?,
         "the crate is {:?} and the newest changelog entry is {newest:?}. A \
          version with no entry ships undocumented.",
-        crate_version()
+        crate_version()?
     );
+    Ok(())
 }
 
 /// Changelog version sections descend, newest first.
 #[test]
-fn changelog_sections_are_ordered_newest_first() {
-    let (versions, _) = changelog_sections();
+fn changelog_sections_are_ordered_newest_first() -> Result<(), TestError> {
+    let (versions, _) = changelog_sections()?;
     let mut sorted = versions.clone();
     sorted.sort_unstable();
     sorted.reverse();
@@ -467,36 +494,39 @@ fn changelog_sections_are_ordered_newest_first() {
         "CHANGELOG.md sections are out of order; a reader takes the first \
          entry as the newest"
     );
+    Ok(())
 }
 
 // ── B. The site must not lag silently ───────────────────────────────
 
 /// The site never advertises a version the crate has not reached.
 #[test]
-fn the_site_never_advertises_a_version_ahead_of_the_crate() {
+fn the_site_never_advertises_a_version_ahead_of_the_crate() -> Result<(), TestError> {
     assert!(
-        published_version() <= crate_version(),
+        published_version()? <= crate_version()?,
         "the site advertises {:?} and the crate is {:?}; a visitor is offered \
          something that was never built here",
-        published_version(),
-        crate_version()
+        published_version()?,
+        crate_version()?
     );
+    Ok(())
 }
 
 /// The advertised version has a tag.
 #[test]
-fn the_advertised_version_has_a_tag_in_this_repository() {
+fn the_advertised_version_has_a_tag_in_this_repository() -> Result<(), TestError> {
     let t = tags();
     if t.is_empty() {
-        cannot_tell("no tags in this checkout");
-        return;
+        cannot_tell("no tags in this checkout")?;
+        return Ok(());
     }
     assert!(
-        t.contains(&published_version()),
+        t.contains(&published_version()?),
         "the site advertises {:?}, which has no tag. published_version must \
          move only to a release that exists.",
-        published_version()
+        published_version()?
     );
+    Ok(())
 }
 
 /// The site is at most one patch release behind the crate.
@@ -506,33 +536,35 @@ fn the_advertised_version_has_a_tag_in_this_repository() {
 /// release was cut and never advertised — the failure that shipped 0.5.128 to
 /// nobody.
 #[test]
-fn the_site_is_at_most_one_release_behind_the_crate() {
-    let (cm, cn, cp) = crate_version();
-    let (pm, pn, pp) = published_version();
+fn the_site_is_at_most_one_release_behind_the_crate() -> Result<(), TestError> {
+    let (cm, cn, cp) = crate_version()?;
+    let (pm, pn, pp) = published_version()?;
     if (cm, cn) != (pm, pn) {
         // A minor bump is a different conversation; the patch rule does not
         // apply across it and asserting it would misfire.
-        return;
+        return Ok(());
     }
     assert!(
         cp.saturating_sub(pp) <= 1,
         "the crate is {:?} and the site still advertises {:?}. More than one \
          release behind means a tagged release was never advertised, which is \
          indistinguishable to a visitor from it never existing.",
-        crate_version(),
-        published_version()
+        crate_version()?,
+        published_version()?
     );
+    Ok(())
 }
 
 /// The advertised version has a changelog entry.
 #[test]
-fn the_advertised_version_is_described_in_the_changelog() {
-    let (versions, _) = changelog_sections();
+fn the_advertised_version_is_described_in_the_changelog() -> Result<(), TestError> {
+    let (versions, _) = changelog_sections()?;
     assert!(
-        versions.contains(&published_version()),
+        versions.contains(&published_version()?),
         "the site advertises {:?} and CHANGELOG.md does not describe it",
-        published_version()
+        published_version()?
     );
+    Ok(())
 }
 
 /// Every tag has a changelog entry.
@@ -540,8 +572,8 @@ fn the_advertised_version_is_described_in_the_changelog() {
 /// The reverse direction, and the one that catches a release cut in a hurry:
 /// artifacts exist, the tag exists, and nothing says what changed.
 #[test]
-fn every_tag_is_described_in_the_changelog() {
-    let (versions, _) = changelog_sections();
+fn every_tag_is_described_in_the_changelog() -> Result<(), TestError> {
+    let (versions, _) = changelog_sections()?;
     let described: BTreeSet<_> = versions.into_iter().collect();
     let undescribed: Vec<_> = tags()
         .into_iter()
@@ -551,13 +583,14 @@ fn every_tag_is_described_in_the_changelog() {
         undescribed.is_empty(),
         "these tags have no changelog entry: {undescribed:?}"
     );
+    Ok(())
 }
 
 // ── C. The instruments must be able to fire ─────────────────────────
 
 /// The tag scan found real tags.
 #[test]
-fn the_tag_scan_reads_a_real_repository() {
+fn the_tag_scan_reads_a_real_repository() -> Result<(), TestError> {
     let t = tags();
     assert!(
         !t.is_empty(),
@@ -570,18 +603,20 @@ fn the_tag_scan_reads_a_real_repository() {
          stopped matching",
         t.len()
     );
+    Ok(())
 }
 
 /// The changelog parser found real sections.
 #[test]
-fn the_changelog_parser_reads_real_sections() {
-    let (versions, _) = changelog_sections();
+fn the_changelog_parser_reads_real_sections() -> Result<(), TestError> {
+    let (versions, _) = changelog_sections()?;
     assert!(
         versions.len() >= 5,
         "the changelog parser found {} version section(s); it has stopped \
          matching and every comparison against it is vacuous",
         versions.len()
     );
+    Ok(())
 }
 
 /// `git` answering and `git` reporting nothing are different outcomes.
@@ -590,7 +625,7 @@ fn the_changelog_parser_reads_real_sections() {
 /// folded a git failure into `0`, every latency gate here would report a
 /// perfectly shipped repository from a checkout where git does not work.
 #[test]
-fn a_git_failure_is_not_reported_as_zero_commits() {
+fn a_git_failure_is_not_reported_as_zero_commits() -> Result<(), TestError> {
     assert!(
         git(&["rev-parse", "--git-dir"]).is_some(),
         "git cannot answer here; the gates in this file must SKIP rather than \
@@ -601,11 +636,12 @@ fn a_git_failure_is_not_reported_as_zero_commits() {
         "a failing git command returned Some(...); the helper cannot \
          distinguish 'nothing to report' from 'could not look'"
     );
+    Ok(())
 }
 
 /// The version parser accepts the forms this repository uses and rejects junk.
 #[test]
-fn the_version_parser_accepts_real_forms_and_rejects_junk() {
+fn the_version_parser_accepts_real_forms_and_rejects_junk() -> Result<(), TestError> {
     assert_eq!(parse_version("0.5.130"), Some((0, 5, 130)));
     assert_eq!(parse_version("v0.5.130"), Some((0, 5, 130)));
     assert_eq!(parse_version(" v0.5.130 "), Some((0, 5, 130)));
@@ -621,23 +657,25 @@ fn the_version_parser_accepts_real_forms_and_rejects_junk() {
     );
     assert_eq!(parse_version("v0.5.x"), None);
     assert_eq!(parse_version(""), None);
+    Ok(())
 }
 
 /// The unreleased-section reader distinguishes absent, empty and filled.
 #[test]
-fn the_unreleased_reader_tells_absent_from_empty() {
+fn the_unreleased_reader_tells_absent_from_empty() -> Result<(), TestError> {
     // Against the real file, whatever state it is in, the reader must return
     // a value consistent with the heading's presence.
-    let text = read("CHANGELOG.md");
+    let text = read("CHANGELOG.md")?;
     let heading_present = text
         .lines()
         .any(|l| l.starts_with("## ") && l.to_ascii_lowercase().contains("[unreleased]"));
     assert_eq!(
-        unreleased_body().is_some(),
+        unreleased_body()?.is_some(),
         heading_present,
         "the reader disagrees with the file about whether an [Unreleased] \
          heading exists"
     );
+    Ok(())
 }
 
 /// The shippable-path list actually matches this tree's layout.
@@ -645,7 +683,7 @@ fn the_unreleased_reader_tells_absent_from_empty() {
 /// A path list that matches nothing turns `has_unreleased_code` into a
 /// permanent `false`, and the loudest gate in this file would go quiet.
 #[test]
-fn the_shippable_path_list_matches_this_repository() {
+fn the_shippable_path_list_matches_this_repository() -> Result<(), TestError> {
     for p in SHIPPABLE {
         let target = repo().join(p.trim_end_matches('/'));
         assert!(
@@ -654,6 +692,7 @@ fn the_shippable_path_list_matches_this_repository() {
              check would never fire"
         );
     }
+    Ok(())
 }
 
 // ── D. The two-phase release contract, stated as states ─────────────
@@ -669,9 +708,9 @@ fn the_shippable_path_list_matches_this_repository() {
 /// This asserts a named gate exists for each transition, so deleting one is a
 /// visible act rather than a silent narrowing.
 #[test]
-fn every_transition_from_committed_to_deployed_has_a_gate() {
-    let this_file = read("tests/release_delivery_test.rs");
-    let completeness = read("tests/release_completeness_test.rs");
+fn every_transition_from_committed_to_deployed_has_a_gate() -> Result<(), TestError> {
+    let this_file = read("tests/release_delivery_test.rs")?;
+    let completeness = read("tests/release_completeness_test.rs")?;
     let both = format!("{this_file}\n{completeness}");
 
     let transitions: &[(&str, &str)] = &[
@@ -711,39 +750,42 @@ fn every_transition_from_committed_to_deployed_has_a_gate() {
          {missing:?}. Each uncovered state is one a green tree can sit in \
          indefinitely without anyone noticing."
     );
+    Ok(())
 }
 
 /// The crate version and the newest tag are in one of two legal states.
 #[test]
-fn the_crate_version_and_newest_tag_are_in_a_legal_pair() {
+fn the_crate_version_and_newest_tag_are_in_a_legal_pair() -> Result<(), TestError> {
     let Some(t) = newest_tag() else {
-        return;
+        return Ok(());
     };
-    let c = crate_version();
+    let c = crate_version()?;
     assert!(
         c >= t,
         "the crate is {c:?} and a tag {t:?} exists ahead of it; a tag must \
          never name a version the tree has not reached"
     );
+    Ok(())
 }
 
 /// A version bump obliges a changelog entry in the same tree.
 #[test]
-fn a_version_bump_carries_its_changelog_entry() {
+fn a_version_bump_carries_its_changelog_entry() -> Result<(), TestError> {
     let Some(t) = newest_tag() else {
-        return;
+        return Ok(());
     };
-    let c = crate_version();
+    let c = crate_version()?;
     if c == t {
-        return;
+        return Ok(());
     }
-    let (versions, _) = changelog_sections();
+    let (versions, _) = changelog_sections()?;
     assert!(
         versions.contains(&c),
         "the crate was bumped to {c:?} past the newest tag {t:?} and \
          CHANGELOG.md has no entry for it. The bump and its description belong \
          in the same commit; separated, the entry is written from memory."
     );
+    Ok(())
 }
 
 /// Closed P0 backlog items must be released or declared unreleased.
@@ -751,13 +793,13 @@ fn a_version_bump_carries_its_changelog_entry() {
 /// Ties the backlog to delivery. An item marked done is a promise that the
 /// problem is gone; while it sits untagged it is gone only here.
 #[test]
-fn a_p0_marked_done_is_released_or_declared() {
+fn a_p0_marked_done_is_released_or_declared() -> Result<(), TestError> {
     let Some(backlog) = local_backlog() else {
-        return;
+        return Ok(());
     };
     let p0_start = backlog
         .find("## P0 — panics & security")
-        .expect("backlog has a P0 section");
+        .ok_or("backlog has a P0 section")?;
     let p0_end = backlog[p0_start..]
         .find("\n## P1")
         .map(|i| p0_start + i)
@@ -772,17 +814,17 @@ fn a_p0_marked_done_is_released_or_declared() {
     let open = p0.lines().filter(|line| line.starts_with("- [ ] ")).count();
     if open > 0 {
         // Open P0s are a different problem and are not this gate's business.
-        return;
+        return Ok(());
     }
     let Some(n) = commits_since_newest_tag() else {
-        return;
+        return Ok(());
     };
     if n == 0 {
-        return;
+        return Ok(());
     }
-    if only_advertises_the_newest_tag() == Some(true) {
+    if only_advertises_the_newest_tag()? == Some(true) {
         // Phase two of this very release. Nothing is waiting to ship.
-        return;
+        return Ok(());
     }
     if only_bumps_dependencies() == Some(true) {
         // A dependency bump ships nothing a reader needs told about, and the
@@ -790,17 +832,17 @@ fn a_p0_marked_done_is_released_or_declared() {
         // the gate reported every Dependabot pull request as an undeclared
         // release and made all six unmergeable against a branch protection
         // requiring `CI success`.
-        return;
+        return Ok(());
     }
-    if only_advertises_beside_dependency_bumps() == Some(true) {
+    if only_advertises_beside_dependency_bumps()? == Some(true) {
         // Phase two landing after Dependabot merges: both arms above ask
         // whether every path is of their kind, so the mixture passes neither,
         // though each of its paths would.
-        return;
+        return Ok(());
     }
-    let (_, has_unreleased) = changelog_sections();
+    let (_, has_unreleased) = changelog_sections()?;
     let newest_changelog = {
-        let mut v = changelog_sections().0;
+        let mut v = changelog_sections()?.0;
         v.sort_unstable();
         v.last().copied()
     };
@@ -813,23 +855,25 @@ fn a_p0_marked_done_is_released_or_declared() {
          install from is half the job.",
         newest_tag()
     );
+    Ok(())
 }
 
 /// `published_version` never names a version with no changelog date.
 #[test]
-fn the_advertised_version_carries_a_date() {
-    let text = read("CHANGELOG.md");
-    let (pm, pn, pp) = published_version();
+fn the_advertised_version_carries_a_date() -> Result<(), TestError> {
+    let text = read("CHANGELOG.md")?;
+    let (pm, pn, pp) = published_version()?;
     let heading = format!("## [{pm}.{pn}.{pp}]");
     let line = text
         .lines()
         .find(|l| l.starts_with(&heading))
-        .unwrap_or_else(|| panic!("no changelog heading for the advertised {pm}.{pn}.{pp}"));
+        .ok_or_else(|| format!("no changelog heading for the advertised {pm}.{pn}.{pp}"))?;
     assert!(
         line.contains(" - 2"),
         "the advertised version's changelog heading carries no date: {line:?}. \
          An undated entry cannot be checked against the release."
     );
+    Ok(())
 }
 
 /// The advertisement exemption must not swallow ordinary work.
@@ -840,7 +884,7 @@ fn the_advertised_version_carries_a_date() {
 /// silence the gates this file is entirely about, and it would do so
 /// invisibly, because the tree would simply go quiet.
 #[test]
-fn the_advertisement_exemption_stays_narrow() {
+fn the_advertisement_exemption_stays_narrow() -> Result<(), TestError> {
     // Nothing under src/ or tests/ may be reachable through it.
     for forbidden in [
         "src/main.rs",
@@ -870,6 +914,7 @@ fn the_advertisement_exemption_stays_narrow() {
          incremental",
         ADVERTISEMENT_PATHS.len()
     );
+    Ok(())
 }
 
 /// The exemption applies only when the site actually names the newest tag.
@@ -879,10 +924,10 @@ fn the_advertisement_exemption_stays_narrow() {
 /// tag is ordinary work wearing the release flow's clothes, and must still be
 /// declared.
 #[test]
-fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() {
+fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() -> Result<(), TestError> {
     let Some(tag) = newest_tag() else {
-        cannot_tell("no tags in this checkout");
-        return;
+        cannot_tell("no tags in this checkout")?;
+        return Ok(());
     };
     let ads: Vec<String> = vec!["website/config.toml".into(), "docs/install.md".into()];
 
@@ -911,6 +956,7 @@ fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() {
         "an empty changeset advertises nothing; returning true here would \
          exempt the case where git reported nothing at all"
     );
+    Ok(())
 }
 
 /// A limited checkout may decline to judge.
@@ -918,8 +964,9 @@ fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() {
 /// A shallow clone and a tagless checkout are legitimate: the gate has no
 /// input, and inventing one would be worse than saying so.
 #[test]
-fn a_gate_that_cannot_tell_skips_when_git_may_be_limited() {
+fn a_gate_that_cannot_tell_skips_when_git_may_be_limited() -> Result<(), TestError> {
     assert_eq!(cannot_tell_verdict(false), CannotTell::Skip);
+    Ok(())
 }
 
 /// The push-time run may not.
@@ -929,6 +976,7 @@ fn a_gate_that_cannot_tell_skips_when_git_may_be_limited() {
 /// else; a gate that skips there passes for the same reason it would have
 /// passed at pre-commit, and nothing downstream can tell the two apart.
 #[test]
-fn a_gate_that_cannot_tell_fails_at_push_time() {
+fn a_gate_that_cannot_tell_fails_at_push_time() -> Result<(), TestError> {
     assert_eq!(cannot_tell_verdict(true), CannotTell::Fail);
+    Ok(())
 }

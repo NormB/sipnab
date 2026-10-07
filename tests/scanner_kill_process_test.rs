@@ -36,16 +36,22 @@ use sipnab::process_isolation::{
 };
 use sipnab::security::transmit_guard::TransmitPermit;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
 /// A permit for a live source: the worker exists only for one, and these
 /// tests declare it exactly as a real run does.
-fn live_permit() -> TransmitPermit {
-    TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
-        device: "lo".to_string(),
-    })
-    .expect("a live source grants a transmit permit")
+fn live_permit() -> Result<TransmitPermit, TestError> {
+    Ok(
+        TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
+            device: "lo".to_string(),
+        })
+        .ok_or("a live source grants a transmit permit")?,
+    )
 }
 
 /// How the tests start the worker: the `sipnab` binary cargo built for this
@@ -60,20 +66,21 @@ fn spawn_config(rate_limit: u32) -> KillWorkerSpawn {
 }
 
 /// Start a worker with the ephemeral sockets only (no raw socket).
-fn spawn_worker(rate_limit: u32) -> ScannerKillHandle {
-    spawn_scanner_kill_worker(&spawn_config(rate_limit), None, live_permit())
-        .expect("the worker process starts")
+fn spawn_worker(rate_limit: u32) -> Result<ScannerKillHandle, TestError> {
+    Ok(spawn_scanner_kill_worker(
+        &spawn_config(rate_limit),
+        None,
+        live_permit()?,
+    )?)
 }
 
 /// A UDP listener on 127.0.0.1 standing in for the scanner — the only thing
 /// any test here sends to.
-fn scanner() -> (UdpSocket, u16) {
-    let listener = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind the scanner");
-    listener
-        .set_read_timeout(Some(test_timeout(10)))
-        .expect("read timeout");
-    let port = listener.local_addr().expect("local addr").port();
-    (listener, port)
+fn scanner() -> Result<(UdpSocket, u16), TestError> {
+    let listener = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_read_timeout(Some(test_timeout(10)))?;
+    let port = listener.local_addr()?.port();
+    Ok((listener, port))
 }
 
 /// A kill response aimed at the scanner on 127.0.0.1:`port`.
@@ -102,12 +109,13 @@ fn within<T>(deadline: Duration, mut f: impl FnMut() -> Option<T>) -> Option<T> 
 }
 
 /// Send `signal` to `pid`.
-fn signal(pid: u32, signal: libc::c_int) {
-    let pid = libc::pid_t::try_from(pid).expect("a pid fits pid_t");
+fn signal(pid: u32, signal: libc::c_int) -> Result<(), TestError> {
+    let pid = libc::pid_t::try_from(pid)?;
     // SAFETY: kill(2) on a worker the handle under test spawned and has not
     // reaped (the handle holds the Child); touches no memory.
     let rc = unsafe { libc::kill(pid, signal) };
     assert_eq!(rc, 0, "kill({pid}, {signal}) failed");
+    Ok(())
 }
 
 /// The one-letter scheduler state of `pid`, from `/proc/<pid>/stat`.
@@ -120,20 +128,19 @@ fn proc_state(pid: u32) -> Option<char> {
 
 /// Stop the worker and wait until the kernel reports it stopped, so nothing
 /// sent afterwards can be answered.
-fn stop_worker(handle: &ScannerKillHandle) -> u32 {
-    let pid = handle.worker_pid().expect("a running worker has a pid");
-    signal(pid, libc::SIGSTOP);
+fn stop_worker(handle: &ScannerKillHandle) -> Result<u32, TestError> {
+    let pid = handle.worker_pid().ok_or("a running worker has a pid")?;
+    signal(pid, libc::SIGSTOP)?;
     within(test_timeout(10), || {
         (proc_state(pid) == Some('T')).then_some(())
     })
-    .expect("the worker must reach the stopped state");
-    pid
+    .ok_or("the worker must reach the stopped state")?;
+    Ok(pid)
 }
 
 /// Every `socket:[inode]` this process holds a descriptor for.
-fn own_socket_inodes() -> Vec<u64> {
-    std::fs::read_dir("/proc/self/fd")
-        .expect("/proc/self/fd is readable")
+fn own_socket_inodes() -> Result<Vec<u64>, TestError> {
+    Ok(std::fs::read_dir("/proc/self/fd")?
         .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
         .filter_map(|target| {
             target
@@ -143,27 +150,23 @@ fn own_socket_inodes() -> Vec<u64> {
                 .parse()
                 .ok()
         })
-        .collect()
+        .collect())
 }
 
 /// A request goes in, a datagram reaches the scanner through the socket the
 /// worker inherited, and the parent books it — class, ledger and the per-path
 /// counter the metrics exporter reads.
 #[test]
-fn the_worker_sends_through_an_inherited_socket_and_the_parent_books_it() {
-    let (listener, port) = scanner();
+fn the_worker_sends_through_an_inherited_socket_and_the_parent_books_it() -> Result<(), TestError> {
+    let (listener, port) = scanner()?;
     let body = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
-    let mut handle = spawn_worker(10);
+    let mut handle = spawn_worker(10)?;
     let (_, ephemeral_before) = kill_responses_sent();
 
-    handle
-        .send_kill(kill_to(port, body))
-        .expect("a fresh worker accepts a request");
+    handle.send_kill(kill_to(port, body))?;
 
     let mut buf = [0u8; 2048];
-    let (n, from) = listener
-        .recv_from(&mut buf)
-        .expect("the kill response must reach the scanner");
+    let (n, from) = listener.recv_from(&mut buf)?;
     assert_eq!(&buf[..n], body, "delivered verbatim");
     assert_ne!(
         from.port(),
@@ -172,7 +175,7 @@ fn the_worker_sends_through_an_inherited_socket_and_the_parent_books_it() {
     );
 
     let outcome = within(test_timeout(10), || handle.try_recv_response())
-        .expect("the outcome must come back from the worker");
+        .ok_or("the outcome must come back from the worker")?;
     assert_eq!(
         outcome,
         KillResponse::Sent {
@@ -189,6 +192,7 @@ fn the_worker_sends_through_an_inherited_socket_and_the_parent_books_it() {
     );
     handle.shutdown();
     assert!(!handle.is_alive());
+    Ok(())
 }
 
 /// THE property: after the spawn, this process holds none of the send
@@ -199,15 +203,15 @@ fn the_worker_sends_through_an_inherited_socket_and_the_parent_books_it() {
 /// the original. And checked while the worker demonstrably still has them:
 /// a datagram goes out through the same sockets afterwards.
 #[test]
-fn the_parent_holds_no_send_descriptor_after_the_spawn() {
-    let mut handle = spawn_worker(10);
+fn the_parent_holds_no_send_descriptor_after_the_spawn() -> Result<(), TestError> {
+    let mut handle = spawn_worker(10)?;
     let handed = handle.handed_over().to_vec();
     assert!(
         handed.iter().any(|h| h.kind == "udp4"),
         "an unprivileged spawn hands over at least the IPv4 UDP socket: {handed:?}"
     );
 
-    let held = own_socket_inodes();
+    let held = own_socket_inodes()?;
     for h in &handed {
         assert!(
             !held.contains(&h.inode),
@@ -220,28 +224,24 @@ fn the_parent_holds_no_send_descriptor_after_the_spawn() {
     }
 
     // And the worker is the one holding it: the same socket still sends.
-    let (listener, port) = scanner();
-    handle
-        .send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))
-        .expect("accepted");
+    let (listener, port) = scanner()?;
+    handle.send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))?;
     let mut buf = [0u8; 256];
-    listener
-        .recv_from(&mut buf)
-        .expect("the worker still sends through what it inherited");
+    listener.recv_from(&mut buf)?;
     handle.shutdown();
+    Ok(())
 }
 
 /// Run the worker entry point directly, with the arguments given.
-fn run_worker_directly(args: &[&str]) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_sipnab"))
+fn run_worker_directly(args: &[&str]) -> Result<Child, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .arg(KILL_WORKER_ARG)
         .args(args)
         .env("SIPNAB_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("run the worker entry point")
+        .spawn()?)
 }
 
 /// Reaps a directly started worker however the test ends.
@@ -257,8 +257,8 @@ impl Drop for Reaped {
 /// permit" and "no descriptor" are one refusal, and it creates no socket of
 /// its own to send through instead.
 #[test]
-fn a_worker_started_with_no_descriptor_refuses_every_request() {
-    let (listener, port) = scanner();
+fn a_worker_started_with_no_descriptor_refuses_every_request() -> Result<(), TestError> {
+    let (listener, port) = scanner()?;
     let mut worker = Reaped(run_worker_directly(&[
         "--rate-limit",
         "10",
@@ -268,28 +268,29 @@ fn a_worker_started_with_no_descriptor_refuses_every_request() {
         "nobody",
         "--log-level",
         "error",
-    ]));
-    let mut to_worker = worker.0.stdin.take().expect("stdin");
-    let mut from_worker = worker.0.stdout.take().expect("stdout");
+    ])?);
+    let mut to_worker = worker.0.stdin.take().ok_or("stdin")?;
+    let mut from_worker = worker.0.stdout.take().ok_or("stdout")?;
 
     for _ in 0..2 {
-        wire::write_frame(&mut to_worker, &kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))
-            .expect("write a request");
-        let reply: KillResponse = wire::read_frame(&mut from_worker)
-            .expect("read a reply")
-            .expect("the worker answers rather than closing");
+        wire::write_frame(&mut to_worker, &kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))?;
+        let reply: KillResponse =
+            wire::read_frame(&mut from_worker)?.ok_or("the worker answers rather than closing")?;
         match reply {
             KillResponse::Rejected { reason } => assert!(
                 reason.contains("no send descriptor"),
                 "the refusal must say why: {reason}"
             ),
-            other => panic!("a worker with nothing to send through must refuse, got {other:?}"),
+            other => {
+                return Err(format!(
+                    "a worker with nothing to send through must refuse, got {other:?}"
+                )
+                .into());
+            }
         }
     }
 
-    listener
-        .set_read_timeout(Some(Duration::from_millis(300)))
-        .expect("short timeout");
+    listener.set_read_timeout(Some(Duration::from_millis(300)))?;
     let mut buf = [0u8; 64];
     assert!(
         listener.recv_from(&mut buf).is_err(),
@@ -298,14 +299,15 @@ fn a_worker_started_with_no_descriptor_refuses_every_request() {
 
     drop(to_worker);
     let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
-        .expect("end of stream is the worker's shutdown");
+        .ok_or("end of stream is the worker's shutdown")?;
     assert!(status.success(), "an orderly end exits 0: {status:?}");
+    Ok(())
 }
 
 /// A descriptor the plan promises but the slot does not hold stops the
 /// worker at startup, rather than being wrapped as a socket.
 #[test]
-fn a_promised_descriptor_that_is_not_there_stops_the_worker() {
+fn a_promised_descriptor_that_is_not_there_stops_the_worker() -> Result<(), TestError> {
     // Nothing places a socket at the udp4 slot: every descriptor this test
     // process holds is close-on-exec, so the worker starts with only stdio.
     let mut worker = Reaped(run_worker_directly(&[
@@ -317,23 +319,24 @@ fn a_promised_descriptor_that_is_not_there_stops_the_worker() {
         "nobody",
         "--log-level",
         "error",
-    ]));
+    ])?);
     let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
-        .expect("the worker must refuse to start, not wait for requests");
+        .ok_or("the worker must refuse to start, not wait for requests")?;
     assert!(
         !status.success(),
         "adopting a descriptor that is not there must fail: {status:?}"
     );
+    Ok(())
 }
 
 /// A descriptor of the wrong kind at a promised slot stops the worker at
 /// startup: wrapping a stream socket as the UDP one would write kill
 /// responses into whatever connection it belongs to.
 #[test]
-fn a_promised_descriptor_of_the_wrong_kind_stops_the_worker() {
+fn a_promised_descriptor_of_the_wrong_kind_stops_the_worker() -> Result<(), TestError> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
-    let stream = std::net::TcpListener::bind("127.0.0.1:0").expect("a stream socket");
+    let stream = std::net::TcpListener::bind("127.0.0.1:0")?;
     let source = stream.as_raw_fd();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     command
@@ -364,14 +367,15 @@ fn a_promised_descriptor_of_the_wrong_kind_stops_the_worker() {
             Ok(())
         });
     }
-    let mut worker = Reaped(command.spawn().expect("run the worker entry point"));
+    let mut worker = Reaped(command.spawn()?);
     drop(stream);
     let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
-        .expect("the worker must refuse to start, not wait for requests");
+        .ok_or("the worker must refuse to start, not wait for requests")?;
     assert!(
         !status.success(),
         "a stream socket in the udp4 slot must be refused: {status:?}"
     );
+    Ok(())
 }
 
 /// The worker gives up everything it does not need: it sets
@@ -388,9 +392,9 @@ fn a_promised_descriptor_of_the_wrong_kind_stops_the_worker() {
 /// report of the running worker. The parsing of that report is pinned by
 /// `capabilities_are_clear_only_when_every_set_reads_zero`.
 #[test]
-fn the_worker_blocks_escalation_holds_no_capability_and_is_not_dumpable() {
-    let mut handle = spawn_worker(10);
-    let pid = handle.worker_pid().expect("running");
+fn the_worker_blocks_escalation_holds_no_capability_and_is_not_dumpable() -> Result<(), TestError> {
+    let mut handle = spawn_worker(10)?;
+    let pid = handle.worker_pid().ok_or("running")?;
     // The worker hardens itself after it starts; wait for the flag rather
     // than racing it.
     let status = within(test_timeout(10), || {
@@ -399,12 +403,12 @@ fn the_worker_blocks_escalation_holds_no_capability_and_is_not_dumpable() {
             .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["NoNewPrivs:", "1"])
             .then_some(s)
     })
-    .expect("the worker must set PR_SET_NO_NEW_PRIVS");
+    .ok_or("the worker must set PR_SET_NO_NEW_PRIVS")?;
     for set in ["CapPrm:", "CapEff:", "CapInh:"] {
         let line = status
             .lines()
             .find(|l| l.starts_with(set))
-            .unwrap_or_else(|| panic!("{set} is reported"));
+            .ok_or_else(|| format!("{set} is reported"))?;
         assert!(
             line.ends_with("0000000000000000"),
             "the worker must hold no capability: {line}"
@@ -426,44 +430,44 @@ fn the_worker_blocks_escalation_holds_no_capability_and_is_not_dumpable() {
         );
     }
     handle.shutdown();
+    Ok(())
 }
 
 /// The rate limit the parent chose crosses the exec: the worker enforces the
 /// number on its command line, not a default of its own.
 #[test]
-fn the_rate_limit_crosses_the_exec() {
+fn the_rate_limit_crosses_the_exec() -> Result<(), TestError> {
     /// Send three responses to one scanner through a worker started with
     /// `rate`, and return what it did.
-    fn sent_under(rate: u32) -> (u64, u64) {
-        let (listener, port) = scanner();
-        let mut handle = spawn_worker(rate);
+    fn sent_under(rate: u32) -> Result<(u64, u64), TestError> {
+        let (listener, port) = scanner()?;
+        let mut handle = spawn_worker(rate)?;
         for _ in 0..3 {
-            handle
-                .send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))
-                .expect("accepted");
+            handle.send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))?;
         }
         let counts = within(test_timeout(10), || {
             let c = handle.counts();
             (c.outcomes() == 3).then_some(c)
         })
-        .expect("all three are answered");
+        .ok_or("all three are answered")?;
         let mut buf = [0u8; 256];
         for _ in 0..counts.sent {
-            listener.recv_from(&mut buf).expect("each send arrives");
+            listener.recv_from(&mut buf)?;
         }
         handle.shutdown();
-        (counts.sent, counts.rate_limited)
+        Ok((counts.sent, counts.rate_limited))
     }
     assert_eq!(
-        sent_under(1),
+        sent_under(1)?,
         (1, 2),
         "a worker started with --rate-limit 1 sends one response in the first second"
     );
     assert_eq!(
-        sent_under(100),
+        sent_under(100)?,
         (3, 0),
         "and one started with 100 is bounded only by the per-destination cap of 3"
     );
+    Ok(())
 }
 
 /// A worker that is stopped cannot make `send_kill` wait: the queue fills,
@@ -474,10 +478,10 @@ fn the_rate_limit_crosses_the_exec() {
 /// those stores. The flood runs on its own thread behind a deadline, so a
 /// regression fails instead of hanging the suite.
 #[test]
-fn send_kill_never_blocks_while_the_worker_is_stopped() {
-    let (_listener, port) = scanner();
-    let handle = std::sync::Arc::new(spawn_worker(u32::MAX));
-    let pid = stop_worker(&handle);
+fn send_kill_never_blocks_while_the_worker_is_stopped() -> Result<(), TestError> {
+    let (_listener, port) = scanner()?;
+    let handle = std::sync::Arc::new(spawn_worker(u32::MAX)?);
+    let pid = stop_worker(&handle)?;
 
     let flood = 10_000usize;
     let producer = std::sync::Arc::clone(&handle);
@@ -493,13 +497,13 @@ fn send_kill_never_blocks_while_the_worker_is_stopped() {
         }
         let _ = done_tx.send((accepted, refused));
     });
-    let (accepted, refused) = done_rx.recv_timeout(test_timeout(20)).unwrap_or_else(|_| {
-        panic!(
+    let (accepted, refused) = done_rx.recv_timeout(test_timeout(20)).map_err(|_| {
+        format!(
             "send_kill blocked behind a stopped worker: {flood} offers did not \
              return. In production the caller is the capture thread, holding the \
              dialog and stream write locks."
         )
-    });
+    })?;
     assert!(refused > 0, "a stopped worker must fill the queue");
     let counts = handle.counts();
     assert_eq!(counts.dropped_requests, refused as u64, "{counts:?}");
@@ -510,20 +514,19 @@ fn send_kill_never_blocks_while_the_worker_is_stopped() {
     );
     assert!(handle.is_alive(), "stopped is not dead");
 
-    signal(pid, libc::SIGCONT);
+    signal(pid, libc::SIGCONT)?;
+    Ok(())
 }
 
 /// Shutdown is bounded even when the worker will not exit: it is killed after
 /// the grace period, reaped, and everything it never answered is counted.
 #[test]
-fn shutdown_ends_a_worker_that_will_not_exit_and_counts_what_it_held() {
-    let (_listener, port) = scanner();
-    let mut handle = spawn_worker(10);
-    stop_worker(&handle);
+fn shutdown_ends_a_worker_that_will_not_exit_and_counts_what_it_held() -> Result<(), TestError> {
+    let (_listener, port) = scanner()?;
+    let mut handle = spawn_worker(10)?;
+    stop_worker(&handle)?;
     for _ in 0..5 {
-        handle
-            .send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))
-            .expect("accepted");
+        handle.send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))?;
     }
 
     let started = Instant::now();
@@ -543,26 +546,25 @@ fn shutdown_ends_a_worker_that_will_not_exit_and_counts_what_it_held() {
         "every accepted request is accounted for: {counts:?}"
     );
     assert!(counts.lost_to_worker_exit > 0, "{counts:?}");
+    Ok(())
 }
 
 /// A worker killed mid-run disables the defense on its own, counts what it
 /// held, refuses further requests without blocking, and nothing restarts it.
 #[test]
-fn a_killed_worker_disables_the_defense_and_counts_what_was_in_flight() {
-    let (_listener, port) = scanner();
-    let mut handle = spawn_worker(10);
-    let pid = stop_worker(&handle);
+fn a_killed_worker_disables_the_defense_and_counts_what_was_in_flight() -> Result<(), TestError> {
+    let (_listener, port) = scanner()?;
+    let mut handle = spawn_worker(10)?;
+    let pid = stop_worker(&handle)?;
     for _ in 0..4 {
-        handle
-            .send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))
-            .expect("accepted");
+        handle.send_kill(kill_to(port, b"SIP/2.0 200 OK\r\n\r\n"))?;
     }
-    signal(pid, libc::SIGKILL);
+    signal(pid, libc::SIGKILL)?;
 
     let counts = within(test_timeout(10), || {
         handle.defense_disabled().then(|| handle.counts())
     })
-    .expect("the worker's death must disable the defense without a send failing first");
+    .ok_or("the worker's death must disable the defense without a send failing first")?;
     assert_eq!(counts.accepted, 4, "{counts:?}");
     assert_eq!(
         counts.lost_to_worker_exit, 4,
@@ -582,6 +584,7 @@ fn a_killed_worker_disables_the_defense_and_counts_what_was_in_flight() {
         4,
         "the refused request was never accepted"
     );
+    Ok(())
 }
 
 /// The worker starts before every step of `bootstrap::launch` that could stop
@@ -595,12 +598,12 @@ fn a_killed_worker_disables_the_defense_and_counts_what_was_in_flight() {
 /// list is per host. Placed after any of them, the spawn fails on exactly the
 /// hardened deployments, and the defense is off where it matters most.
 #[test]
-fn the_worker_starts_before_anything_that_could_stop_an_exec() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/bootstrap.rs"))
-        .expect("read bootstrap.rs");
-    let start = src.find("pub fn launch(").expect("launch is defined");
+fn the_worker_starts_before_anything_that_could_stop_an_exec() -> Result<(), TestError> {
+    let src =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/bootstrap.rs"))?;
+    let start = src.find("pub fn launch(").ok_or("launch is defined")?;
     let body = &src[start..];
-    let body = &body[..body.find("\n}\n").expect("launch ends")];
+    let body = &body[..body.find("\n}\n").ok_or("launch ends")?];
     // Code only: a comment naming a step is not a call to it.
     let code: String = body
         .lines()
@@ -609,21 +612,22 @@ fn the_worker_starts_before_anything_that_could_stop_an_exec() {
         .join("\n");
     let at = |call: &str| {
         code.find(call)
-            .unwrap_or_else(|| panic!("launch no longer calls {call}; repoint this test"))
+            .ok_or_else(|| format!("launch no longer calls {call}; repoint this test"))
     };
-    let spawn = at("spawn_kill_worker(");
+    let spawn = at("spawn_kill_worker(")?;
     for step in [
         "privilege::do_chroot(",
         "install_path_sandbox(",
         "install_syscall_logging(",
     ] {
         assert!(
-            spawn < at(step),
+            spawn < at(step)?,
             "the kill worker must be started before {step}: after it, the exec \
              the worker needs can be refused, and the defense is off on exactly \
              the hardened runs"
         );
     }
+    Ok(())
 }
 
 /// The address a HEP listener's startup line names, if `line` is that line.
@@ -643,16 +647,16 @@ fn hep_listener_addr(line: &str) -> Option<std::net::SocketAddr> {
 /// The listener's own log line is read for its address, and nothing else is.
 #[cfg(feature = "hep")]
 #[test]
-fn the_hep_listener_address_is_read_from_its_startup_line() {
+fn the_hep_listener_address_is_read_from_its_startup_line() -> Result<(), TestError> {
     assert_eq!(
         hep_listener_addr(
             "2026-10-01T09:03:51.760321Z  INFO sipnab::capture::hep: HEP listener started on 127.0.0.1:49372"
         ),
-        Some("127.0.0.1:49372".parse().expect("literal"))
+        Some("127.0.0.1:49372".parse()?)
     );
     assert_eq!(
         hep_listener_addr("INFO HEP listener started on 127.0.0.1:5061 (tcp)"),
-        Some("127.0.0.1:5061".parse().expect("literal"))
+        Some("127.0.0.1:5061".parse()?)
     );
     assert_eq!(
         hep_listener_addr("INFO HEP allowlist active: 1 CIDR range(s)"),
@@ -662,6 +666,7 @@ fn the_hep_listener_address_is_read_from_its_startup_line() {
         hep_listener_addr("HEP listener started on 127.0.0.1:0x"),
         None
     );
+    Ok(())
 }
 
 /// Reads whatever `child` writes on stderr into a channel, line by line.
@@ -669,8 +674,8 @@ fn the_hep_listener_address_is_read_from_its_startup_line() {
 /// Gated with its only caller: without `hep` it is dead code, and the feature
 /// matrix builds every test with `-D warnings`.
 #[cfg(feature = "hep")]
-fn stderr_lines(child: &mut Child) -> crossbeam_channel::Receiver<String> {
-    let stderr = child.stderr.take().expect("stderr piped");
+fn stderr_lines(child: &mut Child) -> Result<crossbeam_channel::Receiver<String>, TestError> {
+    let stderr = child.stderr.take().ok_or("stderr piped")?;
     let (tx, rx) = crossbeam_channel::unbounded();
     std::thread::spawn(move || {
         use std::io::BufRead;
@@ -681,7 +686,7 @@ fn stderr_lines(child: &mut Child) -> crossbeam_channel::Receiver<String> {
             }
         }
     });
-    rx
+    Ok(rx)
 }
 
 /// End to end, through the real run: `bootstrap::launch` starts the worker,
@@ -695,17 +700,17 @@ fn stderr_lines(child: &mut Child) -> crossbeam_channel::Receiver<String> {
 /// listener's port.
 #[cfg(feature = "hep")]
 #[test]
-fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
+fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), TestError> {
     use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
 
-    let (listener, scanner_port) = scanner();
-    let home = tempfile::tempdir().expect("tempdir");
+    let (listener, scanner_port) = scanner()?;
+    let home = tempfile::tempdir()?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     // Start the run holding two stray descriptors WITHOUT close-on-exec, the
     // way a C library's descriptor would sit in it: 3 is a slot the plan
     // leaves empty under --kill-spoof ephemeral, 9 is above the slots. The
     // worker must inherit neither.
-    let null = std::fs::File::open("/dev/null").expect("open /dev/null");
+    let null = std::fs::File::open("/dev/null")?;
     {
         use std::os::fd::AsRawFd;
         use std::os::unix::process::CommandExt;
@@ -751,37 +756,40 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .spawn()
-            .expect("start sipnab"),
+            .spawn()?,
     );
     drop(null);
     let parent = run.0.id();
-    let lines = stderr_lines(&mut run.0);
+    let lines = stderr_lines(&mut run.0)?;
     let mut seen: Vec<String> = Vec::new();
-    let mut wait_for = |what: &str, pred: &dyn Fn(&str) -> bool| -> String {
+    let mut wait_for = |what: &str, pred: &dyn Fn(&str) -> bool| -> Result<String, TestError> {
         let until = Instant::now() + test_timeout(30);
         loop {
             if let Some(line) = seen.iter().find(|l| pred(l)) {
-                return line.clone();
+                return Ok(line.clone());
             }
             let left = until.saturating_duration_since(Instant::now());
             match lines.recv_timeout(left) {
                 Ok(line) => seen.push(line),
-                Err(_) => panic!("never saw {what}; stderr so far:\n{}", seen.join("\n")),
+                Err(_) => {
+                    return Err(
+                        format!("never saw {what}; stderr so far:\n{}", seen.join("\n")).into(),
+                    );
+                }
             }
         }
     };
 
     let ready = wait_for("the worker's ready line", &|l| {
         l.contains("scanner-kill worker process") && l.contains("ready")
-    });
+    })?;
     let worker: u32 = ready
         .split("scanner-kill worker process ")
         .nth(1)
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|pid| pid.parse().ok())
-        .unwrap_or_else(|| panic!("no pid in {ready}"));
-    let status = std::fs::read_to_string(format!("/proc/{worker}/status")).expect("worker status");
+        .ok_or_else(|| format!("no pid in {ready}"))?;
+    let status = std::fs::read_to_string(format!("/proc/{worker}/status"))?;
     assert!(
         status.contains(&format!("PPid:\t{parent}")),
         "the worker must be the run's own child process"
@@ -808,7 +816,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
                 .filter_map(|fd| fd.trim().parse().ok())
                 .collect()
         })
-        .unwrap_or_else(|| panic!("no descriptor inventory in {ready}"));
+        .ok_or_else(|| format!("no descriptor inventory in {ready}"))?;
     let mut expected: Vec<u32> = vec![0, 1, 2];
     expected.extend(
         ready
@@ -827,7 +835,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         .split("environment [")
         .nth(1)
         .and_then(|rest| rest.split(']').next())
-        .unwrap_or_else(|| panic!("no environment inventory in {ready}"));
+        .ok_or_else(|| format!("no environment inventory in {ready}"))?;
     assert!(
         !environment.contains("SIPNAB_PI2_CANARY"),
         "the worker inherited the run's environment: {environment}"
@@ -846,7 +854,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         l.contains(&format!(
             "closed its copies of the send descriptors handed to worker process {worker}"
         ))
-    });
+    })?;
     let mut closed_inodes: Vec<u64> = closed
         .split("socket:[")
         .skip(1)
@@ -859,8 +867,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         closed_inodes, held_inodes,
         "the run must have closed exactly the sockets the worker holds: {closed}"
     );
-    let parent_fds: Vec<String> = std::fs::read_dir(format!("/proc/{parent}/fd"))
-        .expect("the run's descriptors are readable to its own user")
+    let parent_fds: Vec<String> = std::fs::read_dir(format!("/proc/{parent}/fd"))?
         .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
         .map(|t| t.display().to_string())
         .collect();
@@ -875,9 +882,9 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
     // from the -K target there.
     let started = wait_for("the HEP listener's bound address", &|l| {
         hep_listener_addr(l).is_some()
-    });
-    let bind = hep_listener_addr(&started).expect("the line just matched");
-    let send_options = |n: u32| {
+    })?;
+    let bind = hep_listener_addr(&started).ok_or("the line just matched")?;
+    let send_options = |n: u32| -> Result<(), TestError> {
         let sip = format!(
             "OPTIONS sip:probe@127.0.0.1 SIP/2.0\r\n\
              Via: SIP/2.0/UDP 127.0.0.1:{scanner_port};branch=z9hG4bKpi2{n}\r\n\
@@ -903,16 +910,12 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
             None,
             sip.as_bytes(),
         );
-        UdpSocket::bind("127.0.0.1:0")
-            .expect("sender")
-            .send_to(&hep, bind)
-            .expect("send HEP");
+        UdpSocket::bind("127.0.0.1:0")?.send_to(&hep, bind)?;
+        Ok(())
     };
-    send_options(1);
+    send_options(1)?;
     let mut buf = [0u8; 2048];
-    let (n, _) = listener
-        .recv_from(&mut buf)
-        .expect("the run must answer the -K target through its worker");
+    let (n, _) = listener.recv_from(&mut buf)?;
     let answer = String::from_utf8_lossy(&buf[..n]);
     assert!(answer.starts_with("SIP/2.0 "), "a SIP response: {answer}");
     assert!(
@@ -921,24 +924,22 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
     );
 
     // Kill the worker. The run says the defense is off, and keeps capturing.
-    signal(worker, libc::SIGKILL);
+    signal(worker, libc::SIGKILL)?;
     wait_for("the defense being reported disabled", &|l| {
         l.contains("DISABLED") && l.contains("scanner-kill worker process is gone")
-    });
-    send_options(2);
-    listener
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .expect("short timeout");
+    })?;
+    send_options(2)?;
+    listener.set_read_timeout(Some(Duration::from_millis(500)))?;
     assert!(
         listener.recv_from(&mut buf).is_err(),
         "nothing restarts the worker, so nothing answers any more"
     );
     assert!(
-        run.0.try_wait().expect("try_wait").is_none(),
+        run.0.try_wait()?.is_none(),
         "the capture must survive losing its worker"
     );
 
-    let status = terminate(&mut run.0).expect("stop the run");
+    let status = terminate(&mut run.0)?;
     assert!(
         status.success(),
         "a run that lost its worker still exits cleanly: {status:?}"
@@ -951,20 +952,20 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
     // and neither may be missing.
     let totals = wait_for("the shutdown totals", &|l| {
         l.contains("Scanner-kill totals:")
-    });
-    let count_before = |label: &str| -> u64 {
+    })?;
+    let count_before = |label: &str| -> Result<u64, TestError> {
         let at = totals
             .find(label)
-            .unwrap_or_else(|| panic!("no {label:?} in {totals}"));
-        totals[..at]
+            .ok_or_else(|| format!("no {label:?} in {totals}"))?;
+        Ok(totals[..at]
             .split_whitespace()
             .last()
             .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no count before {label:?} in {totals}"))
+            .ok_or_else(|| format!("no count before {label:?} in {totals}"))?)
     };
-    let sent = count_before(" sent");
+    let sent = count_before(" sent")?;
     let lost = if totals.contains(" lost with the worker process") {
-        count_before(" lost with the worker process")
+        count_before(" lost with the worker process")?
     } else {
         0
     };
@@ -973,4 +974,5 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         1,
         "the request the worker took must be booked once, as sent or lost: {totals}"
     );
+    Ok(())
 }

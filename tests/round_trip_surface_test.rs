@@ -38,9 +38,11 @@
 use sipnab::output::model::StreamSummary;
 use sipnab::rtp::rtcp::RttSource;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Build a summary with no round trip, the way every consumer sees a stream
 /// that nobody reported on.
-fn unmeasured() -> serde_json::Value {
+fn unmeasured() -> Result<serde_json::Value, TestError> {
     let s = StreamSummary {
         ssrc: "0xDEADBEEF".into(),
         codec: Some("PCMU".into()),
@@ -78,7 +80,7 @@ fn unmeasured() -> serde_json::Value {
         mos_wideband_context: None,
         mos_wideband_unavailable: None,
     };
-    serde_json::to_value(s).expect("serialize")
+    Ok(serde_json::to_value(s)?)
 }
 
 /// An unmeasured round trip is an ABSENT key, never zero.
@@ -87,8 +89,8 @@ fn unmeasured() -> serde_json::Value {
 /// serialized form is what a client parses and `skip_serializing_if` is the
 /// only thing standing between `None` and a `0` that would read as perfect.
 #[test]
-fn an_unmeasured_round_trip_is_absent_and_not_zero() {
-    let v = unmeasured();
+fn an_unmeasured_round_trip_is_absent_and_not_zero() -> Result<(), TestError> {
+    let v = unmeasured()?;
 
     assert!(
         v.get("round_trip_ms").is_none(),
@@ -103,6 +105,7 @@ fn an_unmeasured_round_trip_is_absent_and_not_zero() {
     // Anti-vacuity: the fields this is compared against ARE present, so the
     // absence above is about the round trip and not about a broken serialiser.
     assert!(v.get("jitter_ms").is_some() && v.get("loss_pct").is_some());
+    Ok(())
 }
 
 /// A measured round trip reaches the wire with its provenance attached.
@@ -114,7 +117,7 @@ fn an_unmeasured_round_trip_is_absent_and_not_zero() {
 /// only when the tap sits with the sender of the SR. An operator escalating on
 /// 200 ms needs to know which they have.
 #[test]
-fn a_measured_round_trip_carries_its_provenance() {
+fn a_measured_round_trip_carries_its_provenance() -> Result<(), TestError> {
     let base = StreamSummary {
         ssrc: "0xDEADBEEF".into(),
         codec: Some("PCMU".into()),
@@ -156,20 +159,19 @@ fn a_measured_round_trip_carries_its_provenance() {
     let xr = serde_json::to_value(
         base.clone()
             .with_round_trip(Some((90.0, RttSource::XrVoipMetrics))),
-    )
-    .expect("serialize");
+    )?;
     assert_eq!(xr["round_trip_ms"], 90.0);
     assert_eq!(xr["round_trip_source"], "xr_voip_metrics");
 
     let echo =
-        serde_json::to_value(base.with_round_trip(Some((210.0, RttSource::SenderReportEcho))))
-            .expect("serialize");
+        serde_json::to_value(base.with_round_trip(Some((210.0, RttSource::SenderReportEcho))))?;
     assert_eq!(echo["round_trip_ms"], 210.0);
     assert_eq!(
         echo["round_trip_source"], "sender_report_echo",
         "the weaker derivation must not be reported under the name of the \
          endpoint's own measurement"
     );
+    Ok(())
 }
 
 /// A measured ZERO is reported as zero, not swallowed as "unknown".
@@ -179,7 +181,7 @@ fn a_measured_round_trip_carries_its_provenance() {
 /// even plausible — and dropping it would put the key back in the state this
 /// whole change exists to fix, only in the other direction.
 #[test]
-fn a_measured_zero_is_reported_rather_than_hidden() {
+fn a_measured_zero_is_reported_rather_than_hidden() -> Result<(), TestError> {
     let s = StreamSummary {
         ssrc: "0x1".into(),
         codec: None,
@@ -217,10 +219,11 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
     }
     .with_round_trip(Some((0.0, RttSource::XrVoipMetrics)));
 
-    let v = serde_json::to_value(s).expect("serialize");
+    let v = serde_json::to_value(s)?;
     assert_eq!(
         v["round_trip_ms"], 0.0,
         "a reported 0 ms is a measurement and must survive: {v}"
     );
     assert!(v.get("round_trip_source").is_some());
+    Ok(())
 }

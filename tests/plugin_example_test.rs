@@ -30,9 +30,12 @@ use std::process::Command;
 
 use sipnab::plugin::{ABI_VERSION, Plugin};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Build the example plugin the way the spec's "Writing a plugin" section says
 /// to, and return the artifact path.
-fn build_example() -> PathBuf {
+fn build_example() -> Result<PathBuf, TestError> {
     // Build exactly once per test binary.
     //
     // Every test here needs the artifact, and libtest runs them in parallel —
@@ -42,12 +45,18 @@ fn build_example() -> PathBuf {
     // build is still putting it there, which fails as "build reported success
     // but produced no artifact". It passed on Linux and failed on macOS, which
     // is what a race looks like when you only run it twice.
-    static ARTIFACT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    ARTIFACT.get_or_init(build_example_once).clone()
+    // The cached value is the build's `Result`, so a failed build fails every
+    // test that needs it, with the same message. The error is kept as a
+    // `String` because a `static` must be `Sync`.
+    static ARTIFACT: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    ARTIFACT
+        .get_or_init(|| build_example_once().map_err(|e| e.to_string()))
+        .clone()
+        .map_err(Into::into)
 }
 
 /// The actual build. Called once, behind [`build_example`]'s `OnceLock`.
-fn build_example_once() -> PathBuf {
+fn build_example_once() -> Result<PathBuf, TestError> {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut cmd = Command::new(env!("CARGO"));
     cmd.current_dir(manifest);
@@ -79,8 +88,7 @@ fn build_example_once() -> PathBuf {
             "-p",
             "sipnab-plugin-example",
         ])
-        .output()
-        .expect("spawn cargo");
+        .output()?;
 
     assert!(
         out.status.success(),
@@ -111,7 +119,7 @@ fn build_example_once() -> PathBuf {
         path.display(),
         std::env::var_os("CARGO_TARGET_DIR")
     );
-    path
+    Ok(path)
 }
 
 /// One dialog in the shape `plugin_input_json` produces: answered, then a BYE
@@ -142,26 +150,26 @@ fn short_call_input() -> String {
 /// silently did nothing and "normal call" was byte-identical to "short call".
 /// The test still passed the case it was checking and proved nothing about the
 /// case it was named for.
-fn normal_call_input() -> String {
-    let mut v: serde_json::Value =
-        serde_json::from_str(&short_call_input()).expect("fixture is valid JSON");
+fn normal_call_input() -> Result<String, TestError> {
+    let mut v: serde_json::Value = serde_json::from_str(&short_call_input())?;
     v["messages"][2]["offset_ms"] = serde_json::json!(61_000);
-    v.to_string()
+    Ok(v.to_string())
 }
 
 #[test]
-fn wasm_plugin_documented_build_produces_a_plugin_this_host_accepts() {
-    let path = build_example();
-    let plugin = Plugin::load(&path).unwrap_or_else(|e| {
-        panic!("the example plugin must load in a stock host (ABI v{ABI_VERSION}): {e}")
-    });
+fn wasm_plugin_documented_build_produces_a_plugin_this_host_accepts() -> Result<(), TestError> {
+    let path = build_example()?;
+    let plugin = Plugin::load(&path).map_err(|e| {
+        format!("the example plugin must load in a stock host (ABI v{ABI_VERSION}): {e}")
+    })?;
     assert_eq!(plugin.name(), "sipnab_plugin_example");
+    Ok(())
 }
 
 #[test]
-fn wasm_plugin_detects_a_short_answered_call_and_cites_its_evidence() {
-    let plugin = Plugin::load(build_example()).expect("loads");
-    let findings = plugin.analyze(&short_call_input()).expect("analyzes");
+fn wasm_plugin_detects_a_short_answered_call_and_cites_its_evidence() -> Result<(), TestError> {
+    let plugin = Plugin::load(build_example()?)?;
+    let findings = plugin.analyze(&short_call_input())?;
 
     assert_eq!(findings.len(), 1, "expected one finding, got {findings:?}");
     let f = &findings[0];
@@ -175,26 +183,26 @@ fn wasm_plugin_detects_a_short_answered_call_and_cites_its_evidence() {
     );
     // Attribution is the host's, from the file stem — never the plugin's own.
     assert_eq!(f.plugin, "sipnab_plugin_example");
+    Ok(())
 }
 
 #[test]
-fn wasm_plugin_stays_quiet_on_a_normal_length_call() {
-    let plugin = Plugin::load(build_example()).expect("loads");
-    let findings = plugin
-        .analyze(&normal_call_input())
-        .expect("analyzes a normal call");
+fn wasm_plugin_stays_quiet_on_a_normal_length_call() -> Result<(), TestError> {
+    let plugin = Plugin::load(build_example()?)?;
+    let findings = plugin.analyze(&normal_call_input()?)?;
     assert!(
         findings.is_empty(),
         "a 60s call is not a short call; a detection that fires on healthy \
          traffic teaches the reader to ignore it: {findings:?}"
     );
+    Ok(())
 }
 
 /// The example must survive input it did not expect, because a plugin that
 /// traps on an odd dialog takes its findings out for every dialog like it.
 #[test]
-fn wasm_plugin_survives_unexpected_input() {
-    let plugin = Plugin::load(build_example()).expect("loads");
+fn wasm_plugin_survives_unexpected_input() -> Result<(), TestError> {
+    let plugin = Plugin::load(build_example()?)?;
     for weird in [
         "{}",
         r#"{"messages":[]}"#,
@@ -208,6 +216,7 @@ fn wasm_plugin_survives_unexpected_input() {
              it did not anticipate"
         );
     }
+    Ok(())
 }
 
 /// The `--plugin` flag itself, end to end through the binary.
@@ -219,9 +228,9 @@ fn wasm_plugin_survives_unexpected_input() {
 /// `sip-over-tcp.pcap` holds a call answered and torn down in 2.2s, which is
 /// what the example detects.
 #[test]
-fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() {
+fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() -> Result<(), TestError> {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let wasm = build_example();
+    let wasm = build_example()?;
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(manifest)
@@ -235,8 +244,7 @@ fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() {
             "--plugin",
         ])
         .arg(&wasm)
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "sipnab --plugin exited {:?}: {}",
@@ -244,10 +252,10 @@ fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let stdout = String::from_utf8(out.stdout)?;
     let mut seen = 0;
     for line in stdout.lines().filter(|l| l.trim_start().starts_with('{')) {
-        let v: serde_json::Value = serde_json::from_str(line).expect("dialog line parses");
+        let v: serde_json::Value = serde_json::from_str(line)?;
         if let Some(findings) = v.get("plugin_findings").and_then(|f| f.as_array()) {
             for f in findings {
                 assert_eq!(f["id"], "short-answered-call");
@@ -264,4 +272,5 @@ fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() {
         seen, 1,
         "expected exactly one short-call finding from this capture; got {seen}.\n{stdout}"
     );
+    Ok(())
 }

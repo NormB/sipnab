@@ -30,35 +30,37 @@ use std::path::PathBuf;
 
 use sipnab::security::tfps::{DROPPED_HINT, Reply, TfpsLocator};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Names the `tfps_ctl` to test against.
 const ENV_VAR: &str = "SIPNAB_TFPS_CTL";
 
 /// The named binary, or `None` after saying how to name one.
-fn real_ctl(test: &str) -> Option<PathBuf> {
+fn real_ctl(test: &str) -> Result<Option<PathBuf>, TestError> {
     match std::env::var_os(ENV_VAR).map(PathBuf::from) {
-        Some(p) if p.is_file() => Some(p),
-        Some(p) => panic!("{ENV_VAR}={} is not a file", p.display()),
+        Some(p) if p.is_file() => Ok(Some(p)),
+        Some(p) => Err(format!("{ENV_VAR}={} is not a file", p.display()).into()),
         None => {
             eprintln!(
                 "{test}: skipped; set {ENV_VAR}=/path/to/tfps_ctl to run it against a real TFPS"
             );
-            None
+            Ok(None)
         }
     }
 }
 
 #[test]
-fn a_real_peer_answers_status_in_the_shape_sipnab_reads() {
-    let Some(ctl) = real_ctl("a_real_peer_answers_status_in_the_shape_sipnab_reads") else {
-        return;
+fn a_real_peer_answers_status_in_the_shape_sipnab_reads() -> Result<(), TestError> {
+    let Some(ctl) = real_ctl("a_real_peer_answers_status_in_the_shape_sipnab_reads")? else {
+        return Ok(());
     };
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let db = dir.path().join("no-such.db");
     let reply = TfpsLocator::new(Some(ctl.clone()), Some(db.clone()))
         .status()
-        .unwrap_or_else(|e| panic!("{} status --json: {e}", ctl.display()));
+        .map_err(|e| format!("{} status --json: {e}", ctl.display()))?;
     let Reply::Answered { value, .. } = reply else {
-        panic!("an explicitly named tfps_ctl was reported as not installed");
+        return Err("an explicitly named tfps_ctl was reported as not installed".into());
     };
     assert_eq!(
         value.db,
@@ -69,20 +71,23 @@ fn a_real_peer_answers_status_in_the_shape_sipnab_reads() {
         !value.version.is_empty(),
         "status must carry the peer's version"
     );
+    Ok(())
 }
 
 #[test]
-fn a_real_peer_asked_for_drops_says_no_tfps_has_them() {
-    let Some(ctl) = real_ctl("a_real_peer_asked_for_drops_says_no_tfps_has_them") else {
-        return;
+fn a_real_peer_asked_for_drops_says_no_tfps_has_them() -> Result<(), TestError> {
+    let Some(ctl) = real_ctl("a_real_peer_asked_for_drops_says_no_tfps_has_them")? else {
+        return Ok(());
     };
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let err = TfpsLocator::new(Some(ctl), Some(dir.path().join("no-such.db")))
         .dropped()
-        .expect_err("no TFPS build has a dropped subcommand");
+        .err()
+        .ok_or("no TFPS build has a dropped subcommand")?;
     let msg = err.to_string();
     assert!(
         msg.contains(DROPPED_HINT),
         "the real peer's refusal must reach the operator with the hint: {msg}"
     );
+    Ok(())
 }

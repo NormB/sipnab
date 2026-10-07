@@ -67,6 +67,8 @@ use std::path::PathBuf;
 use regex::Regex;
 use serde_json::Value;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// SIP method names a golden question might ask about.
 ///
 /// A closed list on purpose: matching any bare upper-case word would read "How
@@ -111,21 +113,21 @@ fn repo() -> PathBuf {
 }
 
 /// The golden-answer corpus, parsed.
-fn corpus() -> Value {
+fn corpus() -> Result<Value, TestError> {
     let path = repo().join("tests/golden-answers/mcp-eval.json");
     let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("tests/golden-answers/mcp-eval.json must be readable: {e}"));
+        .map_err(|e| format!("tests/golden-answers/mcp-eval.json must be readable: {e}"))?;
     serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("tests/golden-answers/mcp-eval.json must be valid JSON: {e}"))
+        .map_err(|e| format!("tests/golden-answers/mcp-eval.json must be valid JSON: {e}").into())
 }
 
 /// Every entry under `cases`.
-fn cases(root: &Value) -> Vec<&Value> {
-    root["cases"]
+fn cases(root: &Value) -> Result<Vec<&Value>, TestError> {
+    Ok(root["cases"]
         .as_array()
-        .expect("the corpus must carry a `cases` array")
+        .ok_or("the corpus must carry a `cases` array")?
         .iter()
-        .collect()
+        .collect())
 }
 
 /// A case's `id`, for failure messages that name the entry.
@@ -134,23 +136,23 @@ fn id_of(case: &Value) -> String {
 }
 
 /// `src/mcp/server.rs`, read whole.
-fn server_source() -> String {
+fn server_source() -> Result<String, TestError> {
     let path = repo().join("src/mcp/server.rs");
     std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("src/mcp/server.rs must be readable: {e}"))
+        .map_err(|e| format!("src/mcp/server.rs must be readable: {e}").into())
 }
 
 /// The `description = "..."` string attached to a `#[tool(name = "<tool>")]`
 /// registration, with Rust line continuations folded back into one line.
-fn tool_description(src: &str, tool: &str) -> String {
+fn tool_description(src: &str, tool: &str) -> Result<String, TestError> {
     let anchor = format!("name = \"{tool}\"");
     let at = src
         .find(&anchor)
-        .unwrap_or_else(|| panic!("src/mcp/server.rs must register a tool named {tool}"));
+        .ok_or_else(|| format!("src/mcp/server.rs must register a tool named {tool}"))?;
     let rest = &src[at..];
     let open = rest
         .find("description = \"")
-        .unwrap_or_else(|| panic!("the {tool} registration must carry a description"))
+        .ok_or_else(|| format!("the {tool} registration must carry a description"))?
         + "description = \"".len();
     let body = &rest[open..];
     let mut end = None;
@@ -169,8 +171,8 @@ fn tool_description(src: &str, tool: &str) -> String {
             _ => {}
         }
     }
-    let end = end.unwrap_or_else(|| panic!("the {tool} description string is never closed"));
-    fold_continuations(&body[..end])
+    let end = end.ok_or_else(|| format!("the {tool} description string is never closed"))?;
+    Ok(fold_continuations(&body[..end]))
 }
 
 /// Fold a Rust string literal's escapes: a backslash-newline continuation and
@@ -210,16 +212,16 @@ fn fold_continuations(raw: &str) -> String {
 }
 
 /// The paging fixture: its doc block, its attributes and its whole body.
-fn paging_fixture_source(src: &str) -> String {
+fn paging_fixture_source(src: &str) -> Result<String, TestError> {
     let lines: Vec<&str> = src.lines().collect();
     let decl = lines
         .iter()
         .position(|l| l.contains("fn search_messages_pages_every_hit_exactly_once"))
-        .expect(
+        .ok_or(
             "src/mcp/server.rs must still define \
              search_messages_pages_every_hit_exactly_once; if it was renamed, \
              this rule is pointing at nothing",
-        );
+        )?;
     let mut start = decl;
     while start > 0 {
         let t = lines[start - 1].trim();
@@ -238,7 +240,7 @@ fn paging_fixture_source(src: &str) -> String {
         "the paging fixture's closing brace was never found; the extraction \
          would hand every rule below the rest of the file"
     );
-    lines[start..=end].join("\n")
+    Ok(lines[start..=end].join("\n"))
 }
 
 /// Lines claiming a response carries no method token, EXCLUDING those the
@@ -247,12 +249,12 @@ fn paging_fixture_source(src: &str) -> String {
 /// The retraction test is the discriminator this file turns on, so it is
 /// driven from both sides in
 /// `the_paging_fixture_does_not_claim_a_response_lacks_the_method`.
-fn unretracted_method_absence_claims(text: &str) -> Vec<String> {
+fn unretracted_method_absence_claims(text: &str) -> Result<Vec<String>, TestError> {
     let methods = SIP_METHODS.join("|");
     let claim = Regex::new(&format!(
         r"(?i)\b(?:carries|carry|contains|contain|holds|hold|has|have)\s+no\s+(?:{methods})\b|\bno\s+(?:{methods})\s+token\b"
     ))
-    .expect("the claim pattern must compile");
+    .map_err(|e| format!("the claim pattern must compile: {e}"))?;
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -267,7 +269,7 @@ fn unretracted_method_absence_claims(text: &str) -> Vec<String> {
         }
         out.push((*line).trim().to_string());
     }
-    out
+    Ok(out)
 }
 
 // ── the golden corpus's dependents ──────────────────────────────────
@@ -288,15 +290,15 @@ fn unretracted_method_absence_claims(text: &str) -> Vec<String> {
 /// value has to be doubled to keep the suite green -- pinning a wrong answer
 /// as the right one.
 #[test]
-fn a_golden_search_query_asks_the_question_the_entry_poses() {
+fn a_golden_search_query_asks_the_question_the_entry_poses() -> Result<(), TestError> {
     let methods = SIP_METHODS.join("|");
-    let asks_about_requests =
-        Regex::new(&format!(r"(?i)\b({methods})\b[^.?]*\brequests?\b")).expect("pattern compiles");
+    let asks_about_requests = Regex::new(&format!(r"(?i)\b({methods})\b[^.?]*\brequests?\b"))
+        .map_err(|e| format!("pattern compiles: {e}"))?;
 
-    let root = corpus();
+    let root = corpus()?;
     let mut checked = 0usize;
     let mut wrong = Vec::new();
-    for case in cases(&root) {
+    for case in cases(&root)? {
         if case["tool"].as_str() != Some("search_messages") {
             continue;
         }
@@ -337,6 +339,7 @@ fn a_golden_search_query_asks_the_question_the_entry_poses() {
          `CSeq: N <METHOD>` in every response too. Query the request line.",
         wrong.join("\n")
     );
+    Ok(())
 }
 
 /// A `byte_literal` oracle and the query on the same entry cannot drift apart.
@@ -352,11 +355,11 @@ fn a_golden_search_query_asks_the_question_the_entry_poses() {
 /// The consequence if this regresses: the eval can fail with the oracle and
 /// the tool both correct and no way to see which half is lying.
 #[test]
-fn a_byte_literal_oracle_and_its_query_cannot_drift_apart() {
-    let root = corpus();
+fn a_byte_literal_oracle_and_its_query_cannot_drift_apart() -> Result<(), TestError> {
+    let root = corpus()?;
     let mut checked = 0usize;
     let mut drifted = Vec::new();
-    for case in cases(&root) {
+    for case in cases(&root)? {
         let tool = case["tool"].as_str().unwrap_or_default();
         if !TEXT_SEARCH_TOOLS.contains(&tool) {
             continue;
@@ -396,6 +399,7 @@ fn a_byte_literal_oracle_and_its_query_cannot_drift_apart() {
          question from the one the expected value answers.",
         drifted.join("\n")
     );
+    Ok(())
 }
 
 // ── the surface's own dependents ────────────────────────────────────
@@ -413,9 +417,9 @@ fn a_byte_literal_oracle_and_its_query_cannot_drift_apart() {
 /// description says it reads six fields, and the agent that believes the
 /// description never asks about the header it needed.
 #[test]
-fn the_search_messages_description_matches_what_it_searches() {
-    let src = server_source();
-    let desc = tool_description(&src, "search_messages");
+fn the_search_messages_description_matches_what_it_searches() -> Result<(), TestError> {
+    let src = server_source()?;
+    let desc = tool_description(&src, "search_messages")?;
     assert!(
         desc.len() > 80,
         "the extracted search_messages description is {} byte(s) long, which \
@@ -443,6 +447,7 @@ fn the_search_messages_description_matches_what_it_searches() {
          header fields re-creates the narrow scope in the documentation after \
          it was removed from the code. Description was: {desc:?}"
     );
+    Ok(())
 }
 
 /// The paging fixture does not claim a response lacks the method it answers.
@@ -463,11 +468,11 @@ fn the_search_messages_description_matches_what_it_searches() {
 /// numbers contradicts the code, and the next person to touch it "fixes" the
 /// assertion to match the comment.
 #[test]
-fn the_paging_fixture_does_not_claim_a_response_lacks_the_method() {
+fn the_paging_fixture_does_not_claim_a_response_lacks_the_method() -> Result<(), TestError> {
     let bare_claim = "        // The 200 OK carries no INVITE token, so each dialog\n\
                       // contributes exactly one hit.\n";
     assert_eq!(
-        unretracted_method_absence_claims(bare_claim).len(),
+        unretracted_method_absence_claims(bare_claim)?.len(),
         1,
         "the scan does not catch the sentence this rule exists for; every \
          assertion below it would pass by seeing nothing"
@@ -476,19 +481,19 @@ fn the_paging_fixture_does_not_claim_a_response_lacks_the_method() {
                      // carries no INVITE token, which was true only while the\n\
                      // search read a chosen list of fields.\n";
     assert!(
-        unretracted_method_absence_claims(retracted).is_empty(),
+        unretracted_method_absence_claims(retracted)?.is_empty(),
         "the scan reads a retraction as a claim, so the corrected fixture can \
          never satisfy this rule and the rule is unfixable by design"
     );
 
-    let src = server_source();
-    let fixture = paging_fixture_source(&src);
+    let src = server_source()?;
+    let fixture = paging_fixture_source(&src)?;
     assert!(
         fixture.contains("ok200(") && fixture.contains("invite("),
         "the extracted fixture does not build INVITE plus 200 OK dialogs, so \
          it is not the fixture this rule is about: {fixture}"
     );
-    let claims = unretracted_method_absence_claims(&fixture);
+    let claims = unretracted_method_absence_claims(&fixture)?;
     assert!(
         claims.is_empty(),
         "the paging fixture asserts a response carries no method token:\n  {}\n\n\
@@ -498,10 +503,11 @@ fn the_paging_fixture_does_not_claim_a_response_lacks_the_method() {
         claims.join("\n  ")
     );
 
-    let total = Regex::new(r#"total_matched"\]\s*,\s*(\d+)"#).expect("pattern compiles");
+    let total = Regex::new(r#"total_matched"\]\s*,\s*(\d+)"#)
+        .map_err(|e| format!("pattern compiles: {e}"))?;
     let found = total
         .captures(&fixture)
-        .expect("the paging fixture must assert a total_matched value");
+        .ok_or("the paging fixture must assert a total_matched value")?;
     assert_eq!(
         &found[1], "10",
         "the paging fixture expects total_matched {} over five dialogs of \
@@ -510,6 +516,7 @@ fn the_paging_fixture_does_not_claim_a_response_lacks_the_method() {
          to move together.",
         &found[1]
     );
+    Ok(())
 }
 
 // ── non-vacuity ─────────────────────────────────────────────────────
@@ -522,9 +529,9 @@ fn the_paging_fixture_does_not_claim_a_response_lacks_the_method() {
 /// same failure mode as the incident itself, an answer that looks confident
 /// and is about nothing.
 #[test]
-fn the_inputs_these_rules_read_are_not_empty() {
-    let root = corpus();
-    let all = cases(&root);
+fn the_inputs_these_rules_read_are_not_empty() -> Result<(), TestError> {
+    let root = corpus()?;
+    let all = cases(&root)?;
     assert!(
         all.len() >= 8,
         "the golden corpus holds {} case(s); it held 22 when this file was \
@@ -548,7 +555,7 @@ fn the_inputs_these_rules_read_are_not_empty() {
         );
     }
 
-    let src = server_source();
+    let src = server_source()?;
     assert!(
         src.len() > 100_000,
         "src/mcp/server.rs read as {} byte(s); the real file is over half a \
@@ -563,4 +570,5 @@ fn the_inputs_these_rules_read_are_not_empty() {
         src.contains("fn search_messages_pages_every_hit_exactly_once"),
         "src/mcp/server.rs no longer defines the paging fixture this file gates"
     );
+    Ok(())
 }

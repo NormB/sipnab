@@ -9,6 +9,10 @@
 
 use sipnab::capture::packet::{FrameCounter, FrameOrigin, Packet, frame_digest};
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn file_packet(bytes: Vec<u8>, ordinal: u64) -> Packet {
     let n = bytes.len();
     let mut p = Packet::new(
@@ -35,7 +39,7 @@ fn file_packet(bytes: Vec<u8>, ordinal: u64) -> Packet {
 /// hash to retention lost that distinction and started rendering
 /// `eth9#0@<hash>` -- a pointer that looks checkable and is not.
 #[test]
-fn a_live_captured_frame_never_acquires_a_digest() {
+fn a_live_captured_frame_never_acquires_a_digest() -> Result<(), TestError> {
     let mut counter = FrameCounter::new();
     let mut p = Packet::new(
         chrono::Utc::now(),
@@ -47,11 +51,11 @@ fn a_live_captured_frame_never_acquires_a_digest() {
     );
     p.origin = Some(counter.next_origin());
     assert!(
-        !p.origin.expect("origin").verifiable,
+        !p.origin.ok_or("origin")?.verifiable,
         "the live counter must not claim a re-readable source; if it does, \
          every live pointer starts claiming verifiability it cannot deliver"
     );
-    let r = p.frame_ref().expect("source and ordinal are both present");
+    let r = p.frame_ref().ok_or("source and ordinal are both present")?;
     assert_eq!(
         r.origin.digest, None,
         "a live-captured frame acquired a digest. Nothing can re-read a device, \
@@ -64,6 +68,7 @@ fn a_live_captured_frame_never_acquires_a_digest() {
         "the RENDERED pointer is the thing a reader sees, and it must carry no \
          @digest suffix for a source that cannot be re-read"
     );
+    Ok(())
 }
 
 /// DEFECT 1, the other half: a file-sourced frame MUST still get one.
@@ -72,10 +77,10 @@ fn a_live_captured_frame_never_acquires_a_digest() {
 /// anything, which would silently turn every stored pointer UNVERIFIED while
 /// this file went green.
 #[test]
-fn a_file_sourced_frame_still_gets_a_digest_over_its_own_bytes() {
+fn a_file_sourced_frame_still_gets_a_digest_over_its_own_bytes() -> Result<(), TestError> {
     let bytes = vec![0x11, 0x22, 0x33, 0x44];
     let p = file_packet(bytes.clone(), 7);
-    let r = p.frame_ref().expect("pointer");
+    let r = p.frame_ref().ok_or("pointer")?;
     assert_eq!(
         r.origin.digest,
         Some(frame_digest(&bytes)),
@@ -83,6 +88,7 @@ fn a_file_sourced_frame_still_gets_a_digest_over_its_own_bytes() {
          the frame's OWN bytes -- and it must be the same FNV-1a value the \
          resolver will recompute, or every stored pointer refuses to resolve"
     );
+    Ok(())
 }
 
 /// DEFECT 2. `verifiable` became part of a pointer's IDENTITY.
@@ -93,7 +99,7 @@ fn a_file_sourced_frame_still_gets_a_digest_over_its_own_bytes() {
 /// `capture.pcap#4@beef` -- has an ordinal and an optional digest and nowhere
 /// to record re-readability, so a round-trip could never equal itself.
 #[test]
-fn verifiability_is_not_part_of_a_pointers_identity() {
+fn verifiability_is_not_part_of_a_pointers_identity() -> Result<(), TestError> {
     let minted = FrameOrigin {
         ordinal: 41,
         digest: Some(0xDEAD_BEEF),
@@ -116,6 +122,7 @@ fn verifiability_is_not_part_of_a_pointers_identity() {
         "ordering must ignore it too, or a sorted set of pointers gets a second \
          entry for a frame it already holds"
     );
+    Ok(())
 }
 
 /// DEFECT 2, the discriminating half: equality must still SEE the real fields.
@@ -124,7 +131,7 @@ fn verifiability_is_not_part_of_a_pointers_identity() {
 /// declaring every origin equal, which would make a pointer to frame 4
 /// indistinguishable from one to frame 900.
 #[test]
-fn pointer_identity_still_separates_ordinal_and_digest() {
+fn pointer_identity_still_separates_ordinal_and_digest() -> Result<(), TestError> {
     let base = FrameOrigin {
         ordinal: 41,
         digest: Some(0xDEAD_BEEF),
@@ -149,6 +156,7 @@ fn pointer_identity_still_separates_ordinal_and_digest() {
         "a digest mismatch means the capture changed under the pointer; if that \
          compares equal, the resolver stops being able to refuse"
     );
+    Ok(())
 }
 
 /// DEFECT 3. Test fixtures were given `verifiable: false` wholesale.
@@ -158,12 +166,12 @@ fn pointer_identity_still_separates_ordinal_and_digest() {
 /// real capture yields a verified pointer failed. The rule is not "tests get
 /// false" -- it is that the value describes the SOURCE.
 #[test]
-fn the_flag_follows_the_source_not_whether_it_is_a_test() {
+fn the_flag_follows_the_source_not_whether_it_is_a_test() -> Result<(), TestError> {
     let from_file = file_packet(vec![0x01, 0x02], 0);
     assert!(
         from_file
             .frame_ref()
-            .expect("pointer")
+            .ok_or("pointer")?
             .origin
             .digest
             .is_some(),
@@ -186,12 +194,13 @@ fn the_flag_follows_the_source_not_whether_it_is_a_test() {
         verifiable: false,
     });
     assert_eq!(
-        synthetic.frame_ref().expect("pointer").origin.digest,
+        synthetic.frame_ref().ok_or("pointer")?.origin.digest,
         None,
         "a packet built by hand names no re-readable source, so it must get no \
          digest -- otherwise the flag means nothing and every fixture claims \
          verifiability"
     );
+    Ok(())
 }
 
 /// The hot path must not hash. This is the whole point of the change.
@@ -201,9 +210,9 @@ fn the_flag_follows_the_source_not_whether_it_is_a_test() {
 /// materializing a digest, the +29% goes away silently and only a benchmark
 /// would notice.
 #[test]
-fn the_per_packet_locator_hashes_nothing() {
+fn the_per_packet_locator_hashes_nothing() -> Result<(), TestError> {
     let p = file_packet(vec![0x11; 512], 3);
-    let loc = p.frame_locator().expect("locator");
+    let loc = p.frame_locator().ok_or("locator")?;
     assert_eq!(
         loc.origin.digest, None,
         "the Copy locator carried for EVERY packet must not compute a digest. \
@@ -216,4 +225,5 @@ fn the_per_packet_locator_hashes_nothing() {
         "it must still carry the source's re-readability, or the retention site \
          has nothing to decide with and stops hashing anything at all"
     );
+    Ok(())
 }

@@ -34,25 +34,25 @@ mod server;
 #[path = "support/mcp.rs"]
 mod mcp;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Spawn `sh -c script` and return once it prints `ready`.
 ///
 /// Each script prints `ready` after installing its trap, so a test that
 /// signals the child cannot race the shell's startup and hit the default
 /// disposition instead of the one under test.
-fn shell_ready(script: &str) -> Child {
+fn shell_ready(script: &str) -> Result<Child, TestError> {
     let mut child = Command::new("sh")
         .args(["-c", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sh");
+        .spawn()?;
     let mut line = String::new();
-    BufReader::new(child.stdout.as_mut().expect("piped stdout"))
-        .read_line(&mut line)
-        .expect("read the ready line");
+    BufReader::new(child.stdout.as_mut().ok_or("piped stdout")?).read_line(&mut line)?;
     assert_eq!(line.trim(), "ready", "the helper script did not start");
-    child
+    Ok(child)
 }
 
 /// A child that handles SIGTERM is given the chance to: teardown signals it,
@@ -61,17 +61,18 @@ fn shell_ready(script: &str) -> Child {
 /// The loop sleeps in short steps with its output discarded, so the shell runs
 /// its trap promptly and leaves no process holding the pipe behind it.
 #[test]
-fn a_child_that_handles_sigterm_exits_with_the_status_it_chose() {
+fn a_child_that_handles_sigterm_exits_with_the_status_it_chose() -> Result<(), TestError> {
     let mut child =
-        shell_ready("trap 'exit 7' TERM; echo ready; while :; do sleep 0.05 >/dev/null; done");
+        shell_ready("trap 'exit 7' TERM; echo ready; while :; do sleep 0.05 >/dev/null; done")?;
 
-    let status = terminate_within(&mut child, test_timeout(10)).expect("reap the child");
+    let status = terminate_within(&mut child, test_timeout(10))?;
 
     assert_eq!(
         status.code(),
         Some(7),
         "teardown must send SIGTERM and wait for the child's own exit, got {status}"
     );
+    Ok(())
 }
 
 /// A child that ignores SIGTERM is still stopped: once the grace period has
@@ -81,12 +82,12 @@ fn a_child_that_handles_sigterm_exits_with_the_status_it_chose() {
 /// `exec` hands the ignored disposition to `sleep` itself, so the SIGKILL lands
 /// on the process that ignores SIGTERM and nothing is orphaned.
 #[test]
-fn a_child_that_ignores_sigterm_is_killed_once_the_grace_period_ends() {
+fn a_child_that_ignores_sigterm_is_killed_once_the_grace_period_ends() -> Result<(), TestError> {
     let grace = Duration::from_millis(500);
-    let mut child = shell_ready("trap '' TERM; echo ready; exec sleep 60");
+    let mut child = shell_ready("trap '' TERM; echo ready; exec sleep 60")?;
 
     let started = Instant::now();
-    let status = terminate_within(&mut child, grace).expect("reap the child");
+    let status = terminate_within(&mut child, grace)?;
     let took = started.elapsed();
 
     assert_eq!(
@@ -102,59 +103,64 @@ fn a_child_that_ignores_sigterm_is_killed_once_the_grace_period_ends() {
         took < grace + test_timeout(10),
         "teardown took {took:?}; the {grace:?} bound did not hold"
     );
+    Ok(())
 }
 
 /// Teardown reaps what it stops: once it returns, the pid is gone rather than
 /// left as a zombie.
 #[test]
-fn teardown_reaps_the_child_it_stops() {
+fn teardown_reaps_the_child_it_stops() -> Result<(), TestError> {
     let mut child =
-        shell_ready("trap 'exit 0' TERM; echo ready; while :; do sleep 0.05 >/dev/null; done");
-    let pid = libc::pid_t::try_from(child.id()).expect("pid fits pid_t");
+        shell_ready("trap 'exit 0' TERM; echo ready; while :; do sleep 0.05 >/dev/null; done")?;
+    let pid = libc::pid_t::try_from(child.id())?;
 
-    terminate_within(&mut child, test_timeout(10)).expect("reap the child");
+    terminate_within(&mut child, test_timeout(10))?;
 
     // SAFETY: signal 0 only asks whether the pid exists; nothing is delivered.
     let exists = unsafe { libc::kill(pid, 0) } == 0;
     assert!(!exists, "pid {pid} still exists after teardown returned");
+    Ok(())
 }
 
 /// The REST harness stops `sipnab --api` with SIGTERM, and it exits 0.
 #[cfg(feature = "api")]
 #[test]
-fn the_api_harness_stops_sipnab_with_a_clean_exit() {
-    let srv = server::ApiServer::spawn_or_panic(&[]);
+fn the_api_harness_stops_sipnab_with_a_clean_exit() -> Result<(), TestError> {
+    let srv = server::ApiServer::spawn(&[])?;
     assert_eq!(
-        srv.get_or_panic("/health").status,
+        srv.get("/health")?.status,
         200,
         "control: the server must be answering before it is stopped"
     );
 
-    let status = srv.stop_or_panic();
+    let status = srv.stop()?;
 
     assert_eq!(
         status.code(),
         Some(0),
         "sipnab --api must exit on SIGTERM, not be killed: {status}"
     );
+    Ok(())
 }
 
 /// A test that panics still reaps its server: `Drop` runs the same teardown.
 #[cfg(feature = "api")]
 #[test]
-fn a_panicking_test_still_reaps_its_api_server() {
+fn a_panicking_test_still_reaps_its_api_server() -> Result<(), TestError> {
     let pid = std::sync::Mutex::new(None);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let srv = server::ApiServer::spawn_or_panic(&[]);
-        *pid.lock().expect("pid lock") = Some(srv.pid());
-        panic!("a failing assertion while the server is up");
-    }));
+    // The panic below is the behavior under test (unwinding must run the
+    // server's `Drop`), so it stays a panic rather than an `Err`.
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), TestError> {
+            let srv = server::ApiServer::spawn(&[])?;
+            *pid.lock().map_err(|e| e.to_string())? = Some(srv.pid());
+            panic!("a failing assertion while the server is up");
+        }));
     assert!(outcome.is_err(), "the closure must have panicked");
     let pid = pid
-        .into_inner()
-        .expect("pid lock")
-        .expect("the server was spawned before the panic");
-    let pid = libc::pid_t::try_from(pid).expect("pid fits pid_t");
+        .into_inner()?
+        .ok_or("the server was spawned before the panic")?;
+    let pid = libc::pid_t::try_from(pid)?;
 
     // SAFETY: signal 0 only asks whether the pid exists; nothing is delivered.
     let exists = unsafe { libc::kill(pid, 0) } == 0;
@@ -162,6 +168,7 @@ fn a_panicking_test_still_reaps_its_api_server() {
         !exists,
         "sipnab --api (pid {pid}) outlived the panicking test that owned it"
     );
+    Ok(())
 }
 
 /// The stdio MCP harness stops `sipnab --mcp` with SIGTERM, and it exits 0.
@@ -170,15 +177,16 @@ fn a_panicking_test_still_reaps_its_api_server() {
 /// its serving loop when it is stopped.
 #[cfg(feature = "mcp")]
 #[test]
-fn the_mcp_session_harness_stops_sipnab_with_a_clean_exit() {
+fn the_mcp_session_harness_stops_sipnab_with_a_clean_exit() -> Result<(), TestError> {
     let pcap = mcp::fixture("sip_call.pcap");
-    let session = mcp::McpSession::start_or_panic(pcap.to_str().expect("utf-8 path"), &[]);
+    let session = mcp::McpSession::start(pcap.to_str().ok_or("utf-8 path")?, &[])?;
 
-    let status = session.stop_or_panic();
+    let status = session.stop()?;
 
     assert_eq!(
         status.code(),
         Some(0),
         "sipnab --mcp must exit on SIGTERM, not be killed: {status}"
     );
+    Ok(())
 }

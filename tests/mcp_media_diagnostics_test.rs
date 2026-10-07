@@ -35,7 +35,7 @@
 
 #[path = "support/mcp.rs"]
 mod support;
-use support::{call_tool_with_args_or_panic, ok_payload_or_panic};
+use support::{TestError, call_tool_with_args, ok_payload};
 
 /// A G.711 call: two streams, PCMU both ways, every frame unmarked.
 const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
@@ -44,14 +44,14 @@ const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 const G711_CALL: &str = "1-1966@10.0.2.20";
 
 /// Call `media_diagnostics` and return its payload.
-fn diagnostics(pcap: &str, call_id: &str) -> serde_json::Value {
-    let msg = call_tool_with_args_or_panic(
+fn diagnostics(pcap: &str, call_id: &str) -> Result<serde_json::Value, TestError> {
+    let msg = call_tool_with_args(
         pcap,
         &[],
         "media_diagnostics",
         serde_json::json!({ "call_id": call_id }),
-    );
-    ok_payload_or_panic(&msg)
+    )?;
+    ok_payload(&msg)
 }
 
 /// The QoS marking of a real capture reaches the agent, named.
@@ -61,9 +61,9 @@ fn diagnostics(pcap: &str, call_id: &str) -> serde_json::Value {
 /// the most common cause of jitter that adding bandwidth does not fix. A tool
 /// that omitted the key here would report the fault as "unknown".
 #[test]
-fn qos_marking_is_reported_and_named_for_a_real_capture() {
-    let v = diagnostics(G711, G711_CALL);
-    let streams = v["streams"].as_array().expect("streams array");
+fn qos_marking_is_reported_and_named_for_a_real_capture() -> Result<(), TestError> {
+    let v = diagnostics(G711, G711_CALL)?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
     assert!(
         !streams.is_empty(),
         "sip-rtp-g711.pcap carries RTP for this dialog; an empty list is the \
@@ -96,6 +96,7 @@ fn qos_marking_is_reported_and_named_for_a_real_capture() {
              than repeating the same number: {qos}"
         );
     }
+    Ok(())
 }
 
 /// Jitter carries its grounding, the way MOS carries `mos_grounded`.
@@ -105,9 +106,9 @@ fn qos_marking_is_reported_and_named_for_a_real_capture() {
 /// other branch: a stream whose clock rate was assumed must report no measured
 /// jitter at all rather than a number scaled by a divisor nobody stated.
 #[test]
-fn jitter_declares_whether_its_clock_rate_was_grounded() {
-    let v = diagnostics(G711, G711_CALL);
-    let streams = v["streams"].as_array().expect("streams array");
+fn jitter_declares_whether_its_clock_rate_was_grounded() -> Result<(), TestError> {
+    let v = diagnostics(G711, G711_CALL)?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
     assert!(!streams.is_empty(), "no streams: {v}");
 
     for s in streams {
@@ -130,6 +131,7 @@ fn jitter_declares_whether_its_clock_rate_was_grounded() {
             "a grounded figure needs no caveat: {jitter}"
         );
     }
+    Ok(())
 }
 
 /// The delay term behind the published MOS says where it came from.
@@ -139,9 +141,9 @@ fn jitter_declares_whether_its_clock_rate_was_grounded() {
 /// on it needs to know that before it reasons about the score. This is the
 /// fact that reached the TUI and stopped there.
 #[test]
-fn the_delay_behind_the_mos_declares_that_it_was_assumed() {
-    let v = diagnostics(G711, G711_CALL);
-    let streams = v["streams"].as_array().expect("streams array");
+fn the_delay_behind_the_mos_declares_that_it_was_assumed() -> Result<(), TestError> {
+    let v = diagnostics(G711, G711_CALL)?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
     assert!(!streams.is_empty(), "no streams: {v}");
 
     for s in streams {
@@ -161,6 +163,7 @@ fn the_delay_behind_the_mos_declares_that_it_was_assumed() {
             "the provenance is named: {delay}"
         );
     }
+    Ok(())
 }
 
 /// A capture with no RTCP says the endpoint reported nothing.
@@ -169,9 +172,9 @@ fn the_delay_behind_the_mos_declares_that_it_was_assumed() {
 /// reported perfect quality must not look the same. `endpoint_reported` is
 /// omitted entirely when nothing arrived.
 #[test]
-fn absent_rtcp_is_reported_as_absent_rather_than_as_a_clean_report() {
-    let v = diagnostics(G711, G711_CALL);
-    let streams = v["streams"].as_array().expect("streams array");
+fn absent_rtcp_is_reported_as_absent_rather_than_as_a_clean_report() -> Result<(), TestError> {
+    let v = diagnostics(G711, G711_CALL)?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
     assert!(!streams.is_empty(), "no streams: {v}");
 
     for s in streams {
@@ -182,6 +185,7 @@ fn absent_rtcp_is_reported_as_absent_rather_than_as_a_clean_report() {
              everything was fine': {s}"
         );
     }
+    Ok(())
 }
 
 /// A dialog with no media says the question does not apply.
@@ -191,15 +195,15 @@ fn absent_rtcp_is_reported_as_absent_rather_than_as_a_clean_report() {
 /// was checked and was fine", which is a confident wrong answer about a call
 /// whose media was never seen.
 #[test]
-fn a_dialog_with_no_media_says_so_rather_than_returning_an_empty_list() {
+fn a_dialog_with_no_media_says_so_rather_than_returning_an_empty_list() -> Result<(), TestError> {
     const NO_MEDIA: &str = "tests/pcap-samples/sip-register.pcap";
-    let msg = call_tool_with_args_or_panic(
+    let msg = call_tool_with_args(
         NO_MEDIA,
         &[],
         "media_diagnostics",
-        serde_json::json!({ "call_id": first_call_id(NO_MEDIA) }),
-    );
-    let v = ok_payload_or_panic(&msg);
+        serde_json::json!({ "call_id": first_call_id(NO_MEDIA)? }),
+    )?;
+    let v = ok_payload(&msg)?;
     assert_eq!(
         v["applicable"], false,
         "a REGISTER dialog carries no media; the answer is that the question \
@@ -209,21 +213,23 @@ fn a_dialog_with_no_media_says_so_rather_than_returning_an_empty_list() {
         v["reason"].as_str().is_some_and(|r| !r.is_empty()),
         "an inapplicable answer states why: {v}"
     );
+    Ok(())
 }
 
 /// First Call-ID in a capture, so no test hardcodes one that may change.
-fn first_call_id(pcap: &str) -> String {
+fn first_call_id(pcap: &str) -> Result<String, TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(["-N", "-I", pcap, "--json-dialogs", "--quiet"])
         .output()
-        .expect("spawn sipnab");
+        .map_err(|e| format!("spawn sipnab: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     for line in stdout.lines().filter(|l| l.trim_start().starts_with('{')) {
-        let v: serde_json::Value = serde_json::from_str(line).expect("dialog line");
+        let v: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| format!("dialog line: {e}"))?;
         if let Some(id) = v["call_id"].as_str() {
-            return id.to_string();
+            return Ok(id.to_string());
         }
     }
-    panic!("no dialogs in {pcap}");
+    Err(format!("no dialogs in {pcap}").into())
 }

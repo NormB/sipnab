@@ -30,6 +30,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// One `unsafe` census over `src/`.
 ///
 /// Returns `(raw_total, non_test_total, per_file_non_test)`.
@@ -39,14 +41,14 @@ use std::path::{Path, PathBuf};
 /// mis-handle a `{` inside a string literal in the skipped region — no such
 /// case exists in this tree, and a parser dependency to count braces is a
 /// worse trade than this comment.
-fn census(root: &Path) -> (usize, usize, BTreeMap<String, usize>) {
+fn census(root: &Path) -> Result<(usize, usize, BTreeMap<String, usize>), TestError> {
     let mut raw = 0;
     let mut non_test = 0;
     let mut per_file: BTreeMap<String, usize> = BTreeMap::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src/ is readable") {
-            let path = entry.expect("a readable entry").path();
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("src/ is readable: {e}"))? {
+            let path = entry.map_err(|e| format!("a readable entry: {e}"))?.path();
             if path.is_dir() {
                 stack.push(path);
                 continue;
@@ -54,7 +56,8 @@ fn census(root: &Path) -> (usize, usize, BTreeMap<String, usize>) {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).expect("a readable .rs file");
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| format!("a readable .rs file: {e}"))?;
             let mut in_test = false;
             let mut depth: i64 = 0;
             let mut opened = false;
@@ -83,8 +86,8 @@ fn census(root: &Path) -> (usize, usize, BTreeMap<String, usize>) {
             if here > 0 {
                 non_test += here;
                 per_file.insert(
-                    path.strip_prefix(root.parent().expect("src has a parent"))
-                        .expect("under the repo root")
+                    path.strip_prefix(root.parent().ok_or("src has a parent")?)
+                        .map_err(|e| format!("under the repo root: {e}"))?
                         .display()
                         .to_string(),
                     here,
@@ -92,7 +95,7 @@ fn census(root: &Path) -> (usize, usize, BTreeMap<String, usize>) {
             }
         }
     }
-    (raw, non_test, per_file)
+    Ok((raw, non_test, per_file))
 }
 
 fn repo() -> PathBuf {
@@ -105,19 +108,20 @@ fn repo() -> PathBuf {
 /// zero, both pages would need to say zero, and the gate would pass while
 /// describing a tree with no `unsafe` in it at all.
 #[test]
-fn the_census_counts_a_block_outside_a_test_module() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_counts_a_block_outside_a_test_module() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
     std::fs::write(
         src.join("a.rs"),
         "fn f() {\n    // SAFETY: fixture.\n    let _ = unsafe { 1 };\n}\n",
     )
-    .expect("write");
+    .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, per_file) = census(&src);
+    let (raw, non_test, per_file) = census(&src)?;
     assert_eq!((raw, non_test), (1, 1));
     assert_eq!(per_file.len(), 1, "one file holds it: {per_file:?}");
+    Ok(())
 }
 
 /// A block inside a `#[cfg(test)]` module counts toward the raw total and NOT
@@ -130,19 +134,19 @@ fn the_census_counts_a_block_outside_a_test_module() {
 /// the published claim about this crate's attack surface would quietly become
 /// wrong — which is exactly the drift this file exists to stop.
 #[test]
-fn the_census_excludes_a_block_inside_a_cfg_test_module() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_excludes_a_block_inside_a_cfg_test_module() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
     std::fs::write(
         src.join("b.rs"),
         "fn f() {\n    // SAFETY: fixture.\n    let _ = unsafe { 1 };\n}\n\
          \n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        \
          // SAFETY: fixture.\n        let _ = unsafe { 2 };\n    }\n}\n",
     )
-    .expect("write");
+    .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, per_file) = census(&src);
+    let (raw, non_test, per_file) = census(&src)?;
     assert_eq!(raw, 2, "the raw total counts both");
     assert_eq!(
         non_test, 1,
@@ -153,6 +157,7 @@ fn the_census_excludes_a_block_inside_a_cfg_test_module() {
         vec![1],
         "and the per-file breakdown agrees: {per_file:?}"
     );
+    Ok(())
 }
 
 /// The walk descends into subdirectories.
@@ -160,18 +165,19 @@ fn the_census_excludes_a_block_inside_a_cfg_test_module() {
 /// `src/` is nested four deep in places, and a walk that read only the top
 /// level would report a small number that looks like a real measurement.
 #[test]
-fn the_census_descends_into_subdirectories() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_descends_into_subdirectories() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let deep = dir.path().join("src/capture/uprobe");
-    std::fs::create_dir_all(&deep).expect("nested dirs");
+    std::fs::create_dir_all(&deep).map_err(|e| format!("nested dirs: {e}"))?;
     std::fs::write(
         deep.join("c.rs"),
         "fn f() {\n    // SAFETY: fixture.\n    let _ = unsafe { 3 };\n}\n",
     )
-    .expect("write");
+    .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, _) = census(&dir.path().join("src"));
+    let (raw, non_test, _) = census(&dir.path().join("src"))?;
     assert_eq!((raw, non_test), (1, 1), "a nested file must be reached");
+    Ok(())
 }
 
 /// A tree with no `unsafe` at all censuses to zero, and the gate refuses it.
@@ -181,15 +187,17 @@ fn the_census_descends_into_subdirectories() {
 /// honestly, and `the_documented_unsafe_counts_match_the_tree` proves the gate
 /// treats that zero as a failure rather than a pass.
 #[test]
-fn a_tree_with_no_unsafe_censuses_to_zero() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn a_tree_with_no_unsafe_censuses_to_zero() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
-    std::fs::write(src.join("d.rs"), "fn f() -> u8 {\n    1\n}\n").expect("write");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
+    std::fs::write(src.join("d.rs"), "fn f() -> u8 {\n    1\n}\n")
+        .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, per_file) = census(&src);
+    let (raw, non_test, per_file) = census(&src)?;
     assert_eq!((raw, non_test), (0, 0));
     assert!(per_file.is_empty(), "no file is listed: {per_file:?}");
+    Ok(())
 }
 
 /// Only `.rs` files are read.
@@ -198,20 +206,23 @@ fn a_tree_with_no_unsafe_censuses_to_zero() {
 /// that read everything would count the word in a comment or a doc example and
 /// report a number no source file backs.
 #[test]
-fn the_census_reads_only_rust_files() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_reads_only_rust_files() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
-    std::fs::write(src.join("notes.md"), "here is `unsafe {` in prose\n").expect("write");
-    std::fs::write(src.join("data.toml"), "text = \"unsafe {\"\n").expect("write");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
+    std::fs::write(src.join("notes.md"), "here is `unsafe {` in prose\n")
+        .map_err(|e| format!("write: {e}"))?;
+    std::fs::write(src.join("data.toml"), "text = \"unsafe {\"\n")
+        .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, per_file) = census(&src);
+    let (raw, non_test, per_file) = census(&src)?;
     assert_eq!(
         (raw, non_test),
         (0, 0),
         "a non-Rust file contributes nothing"
     );
     assert!(per_file.is_empty(), "{per_file:?}");
+    Ok(())
 }
 
 /// `unsafe fn` is not an `unsafe` block.
@@ -222,18 +233,19 @@ fn the_census_reads_only_rust_files() {
 /// is the kind of error that inflates a published attack-surface figure while
 /// looking like diligence.
 #[test]
-fn the_census_does_not_count_an_unsafe_fn_declaration() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_does_not_count_an_unsafe_fn_declaration() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
     std::fs::write(
         src.join("e.rs"),
         "/// # Safety\n/// Fixture.\npub unsafe fn f() -> u8 {\n    1\n}\n",
     )
-    .expect("write");
+    .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, _) = census(&src);
+    let (raw, non_test, _) = census(&src)?;
     assert_eq!((raw, non_test), (0, 0), "a declaration is not a block");
+    Ok(())
 }
 
 /// A `#[cfg(test)]` module nested inside another module is still skipped.
@@ -244,24 +256,25 @@ fn the_census_does_not_count_an_unsafe_fn_declaration() {
 /// silently drops every later block — which reads as a smaller attack surface,
 /// the direction nobody questions.
 #[test]
-fn the_census_skips_a_nested_test_module_and_resumes_after_it() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_skips_a_nested_test_module_and_resumes_after_it() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
     std::fs::write(
         src.join("f.rs"),
         "pub mod inner {\n    #[cfg(test)]\n    mod tests {\n        #[test]\n        \
          fn t() {\n            // SAFETY: fixture.\n            let _ = unsafe { 1 };\n        \
          }\n    }\n}\n\nfn after() {\n    // SAFETY: fixture.\n    let _ = unsafe { 2 };\n}\n",
     )
-    .expect("write");
+    .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, _) = census(&src);
+    let (raw, non_test, _) = census(&src)?;
     assert_eq!(raw, 2, "both blocks are in the file");
     assert_eq!(
         non_test, 1,
         "the nested test module is skipped and the walk resumes after it"
     );
+    Ok(())
 }
 
 /// The documented limitation, pinned rather than assumed away.
@@ -273,18 +286,18 @@ fn the_census_skips_a_nested_test_module_and_resumes_after_it() {
 /// this ever starts failing, the walk needs a real parser rather than a wider
 /// regex.
 #[test]
-fn the_census_brace_walk_is_lexical_and_this_is_its_boundary() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn the_census_brace_walk_is_lexical_and_this_is_its_boundary() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let src = dir.path().join("src");
-    std::fs::create_dir(&src).expect("src/");
+    std::fs::create_dir(&src).map_err(|e| format!("src/: {e}"))?;
     std::fs::write(
         src.join("g.rs"),
         "#[cfg(test)]\nmod tests {\n    const S: &str = \"{\";\n}\n\nfn after() {\n    \
          // SAFETY: fixture.\n    let _ = unsafe { 1 };\n}\n",
     )
-    .expect("write");
+    .map_err(|e| format!("write: {e}"))?;
 
-    let (raw, non_test, _) = census(&src);
+    let (raw, non_test, _) = census(&src)?;
     assert_eq!(raw, 1, "the file holds one block");
     assert_eq!(
         non_test, 0,
@@ -293,19 +306,20 @@ fn the_census_brace_walk_is_lexical_and_this_is_its_boundary() {
          makes the walk sound there; if this assertion flips to 1 the walk was \
          made smarter and this test should be updated to say so"
     );
+    Ok(())
 }
 
 /// Both pages quote the census, and the census is what the tree holds.
 #[test]
-fn the_documented_unsafe_counts_match_the_tree() {
-    let (raw, non_test, per_file) = census(&repo().join("src"));
+fn the_documented_unsafe_counts_match_the_tree() -> Result<(), TestError> {
+    let (raw, non_test, per_file) = census(&repo().join("src"))?;
     assert!(
         raw > 0 && non_test > 0,
         "the census found nothing, so this test is validating nothing"
     );
 
     let fault = std::fs::read_to_string(repo().join("docs/fault-model.md"))
-        .expect("docs/fault-model.md is readable");
+        .map_err(|e| format!("docs/fault-model.md is readable: {e}"))?;
     let expected = format!(
         "{non_test} blocks outside `#[cfg(test)]`, across {} files",
         per_file.len()
@@ -318,7 +332,7 @@ fn the_documented_unsafe_counts_match_the_tree() {
     );
 
     let ci = std::fs::read_to_string(repo().join("docs/internals/build-ci-release.md"))
-        .expect("docs/internals/build-ci-release.md is readable");
+        .map_err(|e| format!("docs/internals/build-ci-release.md is readable: {e}"))?;
     let raw_claim = format!("{raw} `unsafe` blocks");
     assert!(
         ci.contains(&raw_claim),
@@ -339,4 +353,5 @@ fn the_documented_unsafe_counts_match_the_tree() {
              {path} holds {count} and the page does not say so"
         );
     }
+    Ok(())
 }

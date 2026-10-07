@@ -23,6 +23,7 @@
 #![cfg(feature = "mcp")]
 
 use std::process::Command;
+use support::TestError;
 
 /// Call one MCP tool over stdio against a capture, returning its JSON result.
 ///
@@ -30,12 +31,16 @@ use std::process::Command;
 /// wait-for-capture logic. They were separate implementations and only one had
 /// the fix, which is how the same race would have come back through the other
 /// door.
-fn call_tool(pcap: &str, tool: &str, args: serde_json::Value) -> serde_json::Value {
-    let msg = call_tool_with_args_or_panic(pcap, &[], tool, args);
+fn call_tool(
+    pcap: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, TestError> {
+    let msg = call_tool_with_args(pcap, &[], tool, args)?;
     let text = msg["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("tool {tool} returned no text: {msg}"));
-    serde_json::from_str(text).expect("tool result is JSON")
+        .ok_or_else(|| format!("tool {tool} returned no text: {msg}"))?;
+    Ok(serde_json::from_str(text)?)
 }
 
 /// The largest fixture in the tree: 1334 dialogs, 127 of them failed.
@@ -56,7 +61,7 @@ const BRANCH: &str = "tests/pcap-samples/sipp-branch-scenario.pcapng";
 const CODECS: &str = "tests/pcap-samples/codec-negotiation.pcap";
 
 /// First Call-ID in a capture, so tests do not hardcode one that may change.
-fn first_call_id(pcap: &str) -> String {
+fn first_call_id(pcap: &str) -> Result<String, TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
@@ -67,16 +72,15 @@ fn first_call_id(pcap: &str) -> String {
             "--no-cli-print",
             "--quiet",
         ])
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     for line in stdout.lines().filter(|l| l.trim_start().starts_with('{')) {
-        let v: serde_json::Value = serde_json::from_str(line).expect("dialog line");
+        let v: serde_json::Value = serde_json::from_str(line)?;
         if let Some(id) = v["call_id"].as_str() {
-            return id.to_string();
+            return Ok(id.to_string());
         }
     }
-    panic!("no dialogs in {pcap}");
+    Err(format!("no dialogs in {pcap}").into())
 }
 
 const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
@@ -87,31 +91,35 @@ const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 /// the answer carries PCMU plus telephone-event. An empty result here — the
 /// shape that nearly shipped unnoticed — now fails.
 #[test]
-fn codec_negotiation_reports_the_real_codecs() {
-    let call_id = first_call_id(G711);
+fn codec_negotiation_reports_the_real_codecs() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
     let v = call_tool(
         G711,
         "check_codec_negotiation",
         serde_json::json!({"call_id": call_id}),
-    );
+    )?;
 
-    let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
-    let answered: Vec<String> = serde_json::from_value(v["answered"].clone()).expect("answered");
-    let common: Vec<String> = serde_json::from_value(v["common"].clone()).expect("common");
+    let offered: Vec<String> = serde_json::from_value(v["offered"].clone())?;
+    let answered: Vec<String> = serde_json::from_value(v["answered"].clone())?;
+    let common: Vec<String> = serde_json::from_value(v["common"].clone())?;
 
     assert!(
-        offered.iter().any(|c| unfenced(c) == "PCMU"),
+        any_unfenced(offered.iter().map(String::as_str), "PCMU")?,
         "the offer carries PCMU; got {offered:?}. An empty list here is the \
          exact shape a broken extractor produces"
     );
     assert!(
-        answered.iter().any(|c| unfenced(c) == "PCMU"),
+        any_unfenced(answered.iter().map(String::as_str), "PCMU")?,
         "the answer carries PCMU; got {answered:?}"
     );
-    let common_spellings: Vec<&str> = common.iter().map(|c| unfenced(c)).collect();
+    let common_spellings: Vec<&str> = common
+        .iter()
+        .map(|c| unfenced(c))
+        .collect::<Result<_, _>>()?;
     assert_eq!(common_spellings, vec!["PCMU"], "PCMU is the agreed codec");
     assert_eq!(v["result"], "ok");
     assert!(v["sdp_exchange_count"].as_u64().unwrap_or(0) >= 2);
+    Ok(())
 }
 
 /// The payload of a fenced run, failing loudly when the markers are absent.
@@ -128,12 +136,27 @@ fn codec_negotiation_reports_the_real_codecs() {
 /// it marks the run, it does not rewrite the token — so they strip the markers
 /// and compare what is inside. Failing when a marker is missing is what keeps
 /// this from quietly becoming an unfenced comparison again.
-fn unfenced(s: &str) -> &str {
+fn unfenced(s: &str) -> Result<&str, TestError> {
     const OPEN: &str = "\u{27E6}untrusted-capture-data\u{27E7}";
     const CLOSE: &str = "\u{27E6}/untrusted-capture-data\u{27E7}";
-    s.strip_prefix(OPEN)
+    Ok(s.strip_prefix(OPEN)
         .and_then(|r| r.strip_suffix(CLOSE))
-        .unwrap_or_else(|| panic!("capture-derived text reached the agent unfenced: {s:?}"))
+        .ok_or_else(|| format!("capture-derived text reached the agent unfenced: {s:?}"))?)
+}
+
+/// Whether any of `items`, once [`unfenced`], equals `want`. Stops at the
+/// first match, as `Iterator::any` does, and fails on an unfenced item it
+/// reaches before one.
+fn any_unfenced<'a>(
+    items: impl IntoIterator<Item = &'a str>,
+    want: &str,
+) -> Result<bool, TestError> {
+    for item in items {
+        if unfenced(item)? == want {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A dialog with no SDP must say so, not claim the far end failed to answer.
@@ -150,19 +173,20 @@ fn unfenced(s: &str) -> &str {
 /// for a reason unrelated to what it claimed to check, so an extractor change
 /// would not have been caught here.
 #[test]
-fn codec_negotiation_distinguishes_absent_sdp_from_an_unanswered_offer() {
+fn codec_negotiation_distinguishes_absent_sdp_from_an_unanswered_offer() -> Result<(), TestError> {
     const CAPTURE: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
     let v = call_tool(
         CAPTURE,
         "check_codec_negotiation",
         serde_json::json!({"call_id": "options-ping-a-synth@192.168.10.13"}),
-    );
+    )?;
     assert_eq!(
         v["result"], "no_sdp_in_capture",
         "an OPTIONS exchange with no body must report absent SDP, not a \
          missing answer; got {}",
         v["result"]
     );
+    Ok(())
 }
 
 /// The 488 INVITE in the same capture offers a codec, and it must be named.
@@ -173,15 +197,18 @@ fn codec_negotiation_distinguishes_absent_sdp_from_an_unanswered_offer() {
 /// operator as "the caller offered nothing" — a different and wrong diagnosis
 /// for a call rejected with 488.
 #[test]
-fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() {
+fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() -> Result<(), TestError> {
     const CAPTURE: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
     let v = call_tool(
         CAPTURE,
         "check_codec_negotiation",
         serde_json::json!({"call_id": "codec-reject-synth"}),
-    );
-    let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
-    let spellings: Vec<&str> = offered.iter().map(|c| unfenced(c)).collect();
+    )?;
+    let offered: Vec<String> = serde_json::from_value(v["offered"].clone())?;
+    let spellings: Vec<&str> = offered
+        .iter()
+        .map(|c| unfenced(c))
+        .collect::<Result<_, _>>()?;
     assert_eq!(
         spellings,
         vec!["PCMU"],
@@ -189,6 +216,7 @@ fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() {
          got {offered:?}"
     );
     assert_eq!(v["final_status_code"], 488);
+    Ok(())
 }
 
 /// Codec names differing only in case are the SAME codec.
@@ -203,29 +231,32 @@ fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() {
 /// wrong answer pointing at a codec mismatch that does not exist. An operator
 /// mid-outage would go reconfigure a working codec list.
 #[test]
-fn codec_comparison_ignores_case_because_rfc_4855_does() {
+fn codec_comparison_ignores_case_because_rfc_4855_does() -> Result<(), TestError> {
     const MIXED_CASE: &str = "tests/pcap-samples/SIP_CALL_RTP_G711";
     let v = call_tool(
         MIXED_CASE,
         "check_codec_negotiation",
         serde_json::json!({"call_id": "12013223@200.57.7.195"}),
-    );
+    )?;
 
-    let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
-    let answered: Vec<String> = serde_json::from_value(v["answered"].clone()).expect("answered");
-    let common: Vec<String> = serde_json::from_value(v["common"].clone()).expect("common");
+    let offered: Vec<String> = serde_json::from_value(v["offered"].clone())?;
+    let answered: Vec<String> = serde_json::from_value(v["answered"].clone())?;
+    let common: Vec<String> = serde_json::from_value(v["common"].clone())?;
 
     // The wire spelling is evidence and must survive into the report.
     assert!(
-        offered.iter().any(|c| unfenced(c) == "PCMA"),
+        any_unfenced(offered.iter().map(String::as_str), "PCMA")?,
         "the offer's own spelling must be preserved; got {offered:?}"
     );
     assert!(
-        answered.iter().any(|c| unfenced(c) == "pcma"),
+        any_unfenced(answered.iter().map(String::as_str), "pcma")?,
         "the answer's own spelling must be preserved; got {answered:?}"
     );
 
-    let lower: Vec<String> = common.iter().map(|c| unfenced(c).to_lowercase()).collect();
+    let lower: Vec<String> = common
+        .iter()
+        .map(|c| unfenced(c).map(str::to_lowercase))
+        .collect::<Result<_, _>>()?;
     assert!(
         lower.iter().any(|c| c == "pcma") && lower.iter().any(|c| c == "pcmu"),
         "PCMA and PCMU appear on both sides and must be common; got {common:?}"
@@ -235,6 +266,7 @@ fn codec_comparison_ignores_case_because_rfc_4855_does() {
         "this call answered 200 OK and carried G.711; reporting \
          no_common_codec sends an operator after a mismatch that is not there"
     );
+    Ok(())
 }
 
 /// The signaling/media split is the first triage decision, so it must be right.
@@ -243,9 +275,9 @@ fn codec_comparison_ignores_case_because_rfc_4855_does() {
 /// must be "media". Calling it "signaling" would send an operator to the SIP
 /// side of a problem that is entirely in RTP.
 #[test]
-fn triage_calls_one_way_audio_a_media_problem() {
-    let call_id = first_call_id(G711);
-    let v = call_tool(G711, "triage_call", serde_json::json!({"call_id": call_id}));
+fn triage_calls_one_way_audio_a_media_problem() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
+    let v = call_tool(G711, "triage_call", serde_json::json!({"call_id": call_id}))?;
 
     assert_eq!(
         v["verdict"], "media",
@@ -254,29 +286,31 @@ fn triage_calls_one_way_audio_a_media_problem() {
     assert_eq!(v["signaling"]["problem"], false);
     assert_eq!(v["media"]["problem"], true);
     assert_eq!(v["media"]["one_way_audio"], true);
+    Ok(())
 }
 
 /// A failed call with no media must land on the signaling side.
 #[test]
-fn triage_calls_a_failed_call_a_signaling_problem() {
+fn triage_calls_a_failed_call_a_signaling_problem() -> Result<(), TestError> {
     const FAIL: &str = "tests/pcap-samples/sip-auth-failure.pcapng";
-    let call_id = first_call_id(FAIL);
-    let v = call_tool(FAIL, "triage_call", serde_json::json!({"call_id": call_id}));
+    let call_id = first_call_id(FAIL)?;
+    let v = call_tool(FAIL, "triage_call", serde_json::json!({"call_id": call_id}))?;
     assert_eq!(
         v["verdict"], "signaling",
         "a 403 with no streams is a signaling problem: {v}"
     );
     assert_eq!(v["signaling"]["problem"], true);
+    Ok(())
 }
 
 /// The registry lookup must return the real meaning, not a plausible sentence.
 #[test]
-fn explain_response_code_returns_registry_text() {
+fn explain_response_code_returns_registry_text() -> Result<(), TestError> {
     let v = call_tool(
         G711,
         "explain_response_code",
         serde_json::json!({"code": 488}),
-    );
+    )?;
     assert_eq!(v["class"], "failure");
     assert_eq!(v["registered"], true);
     let text = v["explanation"].as_str().unwrap_or_default();
@@ -284,28 +318,34 @@ fn explain_response_code_returns_registry_text() {
         text.contains("Codec"),
         "488's explanation must name codec negotiation; got {text:?}"
     );
+    Ok(())
 }
 
 /// The SDP timeline must carry the codecs, not an empty shell.
 #[test]
-fn sdp_timeline_carries_codecs() {
-    let call_id = first_call_id(G711);
+fn sdp_timeline_carries_codecs() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
     let v = call_tool(
         G711,
         "get_sdp_timeline",
         serde_json::json!({"call_id": call_id}),
-    );
-    let exchanges = v["exchanges"].as_array().expect("exchanges array");
+    )?;
+    let exchanges = v["exchanges"].as_array().ok_or("exchanges array")?;
     assert!(!exchanges.is_empty(), "G.711 call must have SDP exchanges");
+    let mut lists_pcmu = false;
+    for e in exchanges {
+        if let Some(c) = e["codecs"].as_array()
+            && any_unfenced(c.iter().filter_map(|x| x.as_str()), "PCMU")?
+        {
+            lists_pcmu = true;
+            break;
+        }
+    }
     assert!(
-        exchanges.iter().any(|e| {
-            e["codecs"].as_array().is_some_and(|c| {
-                c.iter()
-                    .any(|x| x.as_str().is_some_and(|x| unfenced(x) == "PCMU"))
-            })
-        }),
+        lists_pcmu,
         "at least one exchange must list PCMU; got {exchanges:?}"
     );
+    Ok(())
 }
 
 /// A window covering the capture returns dialogs; one before it returns none.
@@ -313,12 +353,12 @@ fn sdp_timeline_carries_codecs() {
 /// Both directions, because a filter that returns everything regardless is
 /// indistinguishable from a working one if you only test the positive case.
 #[test]
-fn search_by_time_actually_filters() {
+fn search_by_time_actually_filters() -> Result<(), TestError> {
     let wide = call_tool(
         G711,
         "search_by_time",
         serde_json::json!({"start": "2000-01-01T00:00:00Z"}),
-    );
+    )?;
     let n_wide = wide["dialogs"].as_array().map(Vec::len).unwrap_or(0);
     assert!(
         n_wide > 0,
@@ -329,12 +369,13 @@ fn search_by_time_actually_filters() {
         G711,
         "search_by_time",
         serde_json::json!({"start": "1990-01-01T00:00:00Z", "end": "1990-01-02T00:00:00Z"}),
-    );
+    )?;
     let n_narrow = narrow["dialogs"].as_array().map(Vec::len).unwrap_or(0);
     assert_eq!(
         n_narrow, 0,
         "a window before the capture must match nothing: {narrow}"
     );
+    Ok(())
 }
 
 /// Comparing a dialog with itself must report no differences.
@@ -342,24 +383,25 @@ fn search_by_time_actually_filters() {
 /// The cheapest possible check that the differ actually compares rather than
 /// always returning a fixed list.
 #[test]
-fn compare_dialogs_finds_no_difference_between_a_call_and_itself() {
-    let call_id = first_call_id(G711);
+fn compare_dialogs_finds_no_difference_between_a_call_and_itself() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
     let v = call_tool(
         G711,
         "compare_dialogs",
         serde_json::json!({"call_id_a": call_id, "call_id_b": call_id}),
-    );
-    let diffs = v["differences"].as_array().expect("differences array");
+    )?;
+    let diffs = v["differences"].as_array().ok_or("differences array")?;
     assert!(
         diffs.is_empty(),
         "a call compared with itself differs in nothing; got {diffs:?}"
     );
+    Ok(())
 }
 
 /// `capture_status` must report the file it was actually given.
 #[test]
-fn capture_status_names_the_real_source() {
-    let v = call_tool(G711, "capture_status", serde_json::json!({}));
+fn capture_status_names_the_real_source() -> Result<(), TestError> {
+    let v = call_tool(G711, "capture_status", serde_json::json!({}))?;
     assert_eq!(v["source"], "file");
     assert!(
         v["name"].as_str().unwrap_or_default().contains("g711"),
@@ -367,6 +409,7 @@ fn capture_status_names_the_real_source() {
         v["name"]
     );
     assert_eq!(v["unsaved"], false, "a file replay is already on disk");
+    Ok(())
 }
 
 // ── file tools and shutdown ──────────────────────────────────────────
@@ -382,26 +425,26 @@ fn capture_status_names_the_real_source() {
 // fixed in one of two helpers once already.
 #[path = "support/mcp.rs"]
 mod support;
-use support::{McpSession, call_tool_with_args_or_panic, ok_payload_or_panic};
+use support::{McpSession, call_tool_with_args, ok_payload};
 
-fn tmp_root(name: &str) -> std::path::PathBuf {
+fn tmp_root(name: &str) -> Result<std::path::PathBuf, TestError> {
     let d = std::env::temp_dir().join(format!("sipnab-mcp-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("create temp root");
-    d
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
 }
 
 /// `export_capture` must produce a real, non-empty pcap.
 #[test]
-fn export_capture_writes_a_real_pcap() {
-    let root = tmp_root("export");
-    let msg = call_tool_with_args_or_panic(
+fn export_capture_writes_a_real_pcap() -> Result<(), TestError> {
+    let root = tmp_root("export")?;
+    let msg = call_tool_with_args(
         G711,
-        &["--mcp-file-root", root.to_str().unwrap()],
+        &["--mcp-file-root", root.to_str().ok_or("root is not UTF-8")?],
         "export_capture",
         serde_json::json!({"filename": "out.pcap"}),
-    );
-    let v = ok_payload_or_panic(&msg);
+    )?;
+    let v = ok_payload(&msg)?;
     assert!(
         v["messages"].as_u64().unwrap_or(0) > 0,
         "exported nothing: {v}"
@@ -409,7 +452,7 @@ fn export_capture_writes_a_real_pcap() {
 
     let written = root.join("out.pcap");
     assert!(written.is_file(), "no file at {}", written.display());
-    let bytes = std::fs::metadata(&written).expect("stat").len();
+    let bytes = std::fs::metadata(&written)?.len();
     assert!(
         bytes > 24,
         "pcap is only {bytes} bytes — header but no packets"
@@ -423,25 +466,25 @@ fn export_capture_writes_a_real_pcap() {
         .args([
             "-N",
             "-I",
-            written.to_str().unwrap(),
+            written.to_str().ok_or("written is not UTF-8")?,
             "--json-dialogs",
             "--no-cli-print",
             "--quiet",
         ])
-        .output()
-        .expect("re-read the export");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let dialogs = stdout
         .lines()
         .filter(|l| l.trim_start().starts_with('{'))
         .count();
     assert!(dialogs > 0, "the exported pcap parsed back to zero dialogs");
+    Ok(())
 }
 
 /// The file tools must refuse a path, not just a `..` sequence.
 #[test]
-fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
-    let root = tmp_root("traversal");
+fn file_tools_refuse_anything_that_is_not_a_bare_filename() -> Result<(), TestError> {
+    let root = tmp_root("traversal")?;
     for bad in [
         "../escape.pcap",
         "/etc/passwd",
@@ -449,12 +492,12 @@ fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
         "..",
         "a/../../b.pcap",
     ] {
-        let msg = call_tool_with_args_or_panic(
+        let msg = call_tool_with_args(
             G711,
-            &["--mcp-file-root", root.to_str().unwrap()],
+            &["--mcp-file-root", root.to_str().ok_or("root is not UTF-8")?],
             "export_capture",
             serde_json::json!({"filename": bad}),
-        );
+        )?;
         let err = msg["error"]["message"].as_str().unwrap_or_default();
         // Assert WHY it was refused, not merely that it was.
         //
@@ -474,6 +517,7 @@ fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
     }
     // And nothing escaped onto disk.
     assert!(!std::path::Path::new("/tmp/escape.pcap").exists());
+    Ok(())
 }
 
 /// A file tool must not write over the capture the server is reading.
@@ -484,96 +528,99 @@ fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
 /// way to know which files are inputs. The export truncated the capture it was
 /// reading, and the capture is frequently the only copy.
 #[test]
-fn export_capture_refuses_to_overwrite_the_capture_being_read() {
-    let root = tmp_root("export-over-input");
+fn export_capture_refuses_to_overwrite_the_capture_being_read() -> Result<(), TestError> {
+    let root = tmp_root("export-over-input")?;
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(G711);
     let input = root.join("incident.pcap");
-    std::fs::copy(&src, &input).expect("stage the input inside the file root");
-    let before = std::fs::read(&input).expect("read input");
+    std::fs::copy(&src, &input)?;
+    let before = std::fs::read(&input)?;
 
-    let msg = call_tool_with_args_or_panic(
-        input.to_str().expect("utf8 path"),
-        &["--mcp-file-root", root.to_str().unwrap()],
+    let msg = call_tool_with_args(
+        input.to_str().ok_or("utf8 path")?,
+        &["--mcp-file-root", root.to_str().ok_or("root is not UTF-8")?],
         "export_capture",
         serde_json::json!({"filename": "incident.pcap"}),
-    );
+    )?;
 
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("would overwrite"),
         "export_capture must refuse to write over its own input; got {msg}"
     );
-    let after = std::fs::read(&input).expect("the input capture must still exist");
+    let after = std::fs::read(&input)?;
     assert!(
         after == before,
         "the capture being read was modified by export_capture"
     );
+    Ok(())
 }
 
 /// Without `--mcp-file-root` the file tools refuse rather than guessing a path.
 #[test]
-fn file_tools_are_disabled_without_a_configured_root() {
-    let msg = call_tool_with_args_or_panic(
+fn file_tools_are_disabled_without_a_configured_root() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         G711,
         &[],
         "export_capture",
         serde_json::json!({"filename": "x.pcap"}),
-    );
+    )?;
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("--mcp-file-root"),
         "the refusal must name the flag that enables it; got {err:?}"
     );
+    Ok(())
 }
 
 /// `shutdown_server` is refused unless the operator opted in.
 #[test]
-fn shutdown_is_refused_without_the_opt_in_flag() {
-    let msg = call_tool_with_args_or_panic(G711, &[], "shutdown_server", serde_json::json!({}));
+fn shutdown_is_refused_without_the_opt_in_flag() -> Result<(), TestError> {
+    let msg = call_tool_with_args(G711, &[], "shutdown_server", serde_json::json!({}))?;
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("--mcp-allow-shutdown"),
         "refusal must name the flag; got {err:?}"
     );
+    Ok(())
 }
 
 /// Even when permitted, the default call is a dry run that stops nothing.
 #[test]
-fn shutdown_defaults_to_a_dry_run() {
-    let msg = call_tool_with_args_or_panic(
+fn shutdown_defaults_to_a_dry_run() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         G711,
         &["--mcp-allow-shutdown"],
         "shutdown_server",
         serde_json::json!({}),
-    );
-    let v = ok_payload_or_panic(&msg);
+    )?;
+    let v = ok_payload(&msg)?;
     assert_eq!(
         v["dry_run"], true,
         "omitting dry_run must NOT stop the server"
     );
     assert_eq!(v["would_stop"], false);
+    Ok(())
 }
 
 /// `list_captures` finds a capture in the root and ignores other files.
 #[test]
-fn list_captures_lists_only_captures() {
-    let root = tmp_root("list");
+fn list_captures_lists_only_captures() -> Result<(), TestError> {
+    let root = tmp_root("list")?;
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(G711),
         root.join("sample.pcap"),
-    )
-    .expect("copy fixture");
-    std::fs::write(root.join("notes.txt"), b"not a capture").expect("write decoy");
+    )?;
+    std::fs::write(root.join("notes.txt"), b"not a capture")?;
 
-    let v = ok_payload_or_panic(&call_tool_with_args_or_panic(
+    let v = ok_payload(&call_tool_with_args(
         G711,
-        &["--mcp-file-root", root.to_str().unwrap()],
+        &["--mcp-file-root", root.to_str().ok_or("root is not UTF-8")?],
         "list_captures",
         serde_json::json!({}),
-    ));
+    )?)?;
     let names: Vec<String> = v["captures"]
         .as_array()
-        .expect("captures array")
+        .ok_or("captures array")?
         .iter()
         .map(|c| c["filename"].as_str().unwrap_or_default().to_string())
         .collect();
@@ -582,6 +629,7 @@ fn list_captures_lists_only_captures() {
         !names.contains(&"notes.txt".to_string()),
         "listed a non-capture"
     );
+    Ok(())
 }
 
 /// `rtp_stats` must say whether its MOS is grounded.
@@ -594,10 +642,10 @@ fn list_captures_lists_only_captures() {
 /// The G.711 fixture must therefore report grounded, and the field must be
 /// present at all — its absence is what let the guess pass as a measurement.
 #[test]
-fn rtp_stats_declares_whether_the_mos_is_grounded() {
-    let call_id = first_call_id(G711);
-    let v = call_tool(G711, "rtp_stats", serde_json::json!({"call_id": call_id}));
-    let streams = v["streams"].as_array().expect("streams array");
+fn rtp_stats_declares_whether_the_mos_is_grounded() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
+    let v = call_tool(G711, "rtp_stats", serde_json::json!({"call_id": call_id}))?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
     assert!(!streams.is_empty(), "the G.711 fixture has RTP: {v}");
 
     for s in streams {
@@ -612,7 +660,7 @@ fn rtp_stats_declares_whether_the_mos_is_grounded() {
         // which is worse than silence: it implies a MOS is present.
         let mos = s["mos"]
             .as_f64()
-            .unwrap_or_else(|| panic!("every stream must carry the mos itself: {s}"));
+            .ok_or_else(|| format!("every stream must carry the mos itself: {s}"))?;
         assert!(
             (1.0..=4.5).contains(&mos),
             "a MOS outside 1.0..=4.5 is not on the G.107 scale: {mos}"
@@ -623,6 +671,7 @@ fn rtp_stats_declares_whether_the_mos_is_grounded() {
         streams.iter().any(|s| s["mos_grounded"] == true),
         "the PCMU stream must report a GROUNDED mos: {streams:?}"
     );
+    Ok(())
 }
 
 // ── bounded answers: the count, the flag, and the way to the rest ────
@@ -636,12 +685,12 @@ fn rtp_stats_declares_whether_the_mos_is_grounded() {
 
 /// `list_dialogs` must report the size of the answer it did not send.
 #[test]
-fn list_dialogs_reports_the_total_behind_a_truncated_page() {
-    let v = call_tool(BRANCH, "list_dialogs", serde_json::json!({"limit": 5}));
+fn list_dialogs_reports_the_total_behind_a_truncated_page() -> Result<(), TestError> {
+    let v = call_tool(BRANCH, "list_dialogs", serde_json::json!({"limit": 5}))?;
 
     let dialogs = v["dialogs"]
         .as_array()
-        .unwrap_or_else(|| panic!("list_dialogs must return an object with `dialogs`: {v}"));
+        .ok_or_else(|| format!("list_dialogs must return an object with `dialogs`: {v}"))?;
     assert_eq!(dialogs.len(), 5, "limit 5 must return 5 rows: {v}");
     assert_eq!(
         v["returned"], 5,
@@ -657,6 +706,7 @@ fn list_dialogs_reports_the_total_behind_a_truncated_page() {
         v["next_cursor"].is_string(),
         "a truncated page must carry the cursor that reaches the rest: {v}"
     );
+    Ok(())
 }
 
 /// An unbounded-enough page reports `truncated: false` and no cursor.
@@ -664,12 +714,12 @@ fn list_dialogs_reports_the_total_behind_a_truncated_page() {
 /// The negative half. A tool hard-coding `truncated: true` would pass the test
 /// above and be just as useless.
 #[test]
-fn list_dialogs_says_so_when_the_page_is_the_whole_answer() {
+fn list_dialogs_says_so_when_the_page_is_the_whole_answer() -> Result<(), TestError> {
     let v = call_tool(
         BRANCH,
         "list_dialogs",
         serde_json::json!({"filter": "state == 'Failed' AND msg_count > 5", "limit": 1000}),
-    );
+    )?;
     let n = v["dialogs"].as_array().map(Vec::len).unwrap_or(0);
     assert_eq!(n, 6, "6 dialogs in this fixture match: {v}");
     assert_eq!(v["total_matched"], n, "every match fitted in the page: {v}");
@@ -679,6 +729,7 @@ fn list_dialogs_says_so_when_the_page_is_the_whole_answer() {
         serde_json::Value::Null,
         "a complete answer has nothing to continue from: {v}"
     );
+    Ok(())
 }
 
 /// Paging with the cursor must reach every dialog exactly once.
@@ -687,8 +738,8 @@ fn list_dialogs_says_so_when_the_page_is_the_whole_answer() {
 /// `limit` that merely shows more: the union of the pages is the store, with no
 /// dialog dropped at a page boundary and none returned twice.
 #[test]
-fn list_dialogs_cursor_reaches_every_dialog_exactly_once() {
-    let mut session = McpSession::start_or_panic(BRANCH, &[]);
+fn list_dialogs_cursor_reaches_every_dialog_exactly_once() -> Result<(), TestError> {
+    let mut session = McpSession::start(BRANCH, &[])?;
     let mut seen: Vec<String> = Vec::new();
     let mut cursor = serde_json::Value::Null;
     let mut pages = 0;
@@ -698,9 +749,9 @@ fn list_dialogs_cursor_reaches_every_dialog_exactly_once() {
         if let Some(c) = cursor.as_str() {
             args["cursor"] = serde_json::json!(c);
         }
-        let v = session.ok_or_panic("list_dialogs", args);
-        for d in v["dialogs"].as_array().expect("dialogs array") {
-            seen.push(d["call_id"].as_str().expect("call_id").to_string());
+        let v = session.ok("list_dialogs", args)?;
+        for d in v["dialogs"].as_array().ok_or("dialogs array")? {
+            seen.push(d["call_id"].as_str().ok_or("call_id")?.to_string());
         }
         pages += 1;
         assert!(pages < 20, "paging did not terminate after {pages} pages");
@@ -730,16 +781,17 @@ fn list_dialogs_cursor_reaches_every_dialog_exactly_once() {
          boundary is exactly what a bare-timestamp cursor does to a tie group",
         seen.len()
     );
+    Ok(())
 }
 
 /// A cursor past the end returns an empty final page, not an error.
 #[test]
-fn list_dialogs_cursor_past_the_end_returns_an_empty_page() {
+fn list_dialogs_cursor_past_the_end_returns_an_empty_page() -> Result<(), TestError> {
     let v = call_tool(
         BRANCH,
         "list_dialogs",
         serde_json::json!({"cursor": "2099-01-01T00:00:00Z|zzzz"}),
-    );
+    )?;
     assert_eq!(v["dialogs"].as_array().map(Vec::len), Some(0));
     assert_eq!(v["truncated"], false);
     assert_eq!(v["next_cursor"], serde_json::Value::Null);
@@ -748,29 +800,31 @@ fn list_dialogs_cursor_past_the_end_returns_an_empty_page() {
         "the total describes the store, not the page — it must not go to zero \
          because the caller paged past the end: {v}"
     );
+    Ok(())
 }
 
 /// A malformed cursor is refused by name rather than treated as absent.
 #[test]
-fn list_dialogs_refuses_a_cursor_that_is_not_a_timestamp() {
-    let msg = call_tool_with_args_or_panic(
+fn list_dialogs_refuses_a_cursor_that_is_not_a_timestamp() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         BRANCH,
         &[],
         "list_dialogs",
         serde_json::json!({"cursor": "yesterday|abc"}),
-    );
+    )?;
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("RFC 3339"),
         "the refusal must name the format it wanted; got {err:?}. Silently \
          restarting from the beginning would loop an agent forever"
     );
+    Ok(())
 }
 
 /// `find_problems` carries the same total, flag and cursor as `list_dialogs`.
 #[test]
-fn find_problems_reports_the_total_behind_a_truncated_page() {
-    let v = call_tool(BRANCH, "find_problems", serde_json::json!({"limit": 4}));
+fn find_problems_reports_the_total_behind_a_truncated_page() -> Result<(), TestError> {
+    let v = call_tool(BRANCH, "find_problems", serde_json::json!({"limit": 4}))?;
     assert_eq!(v["dialogs"].as_array().map(Vec::len), Some(4), "{v}");
     assert_eq!(
         v["total_matched"], 127,
@@ -779,6 +833,7 @@ fn find_problems_reports_the_total_behind_a_truncated_page() {
     );
     assert_eq!(v["truncated"], true, "{v}");
     assert!(v["next_cursor"].is_string(), "{v}");
+    Ok(())
 }
 
 /// The first page says what the whole result set is made of.
@@ -794,9 +849,9 @@ fn find_problems_reports_the_total_behind_a_truncated_page() {
 /// reason `total_matched` is. A breakdown of four returned rows would describe
 /// the page rather than the answer.
 #[test]
-fn find_problems_says_what_its_matches_are_made_of() {
-    let v = call_tool(BRANCH, "find_problems", serde_json::json!({"limit": 4}));
-    let rows = v["by_method"].as_array().expect("by_method is present");
+fn find_problems_says_what_its_matches_are_made_of() -> Result<(), TestError> {
+    let v = call_tool(BRANCH, "find_problems", serde_json::json!({"limit": 4}))?;
+    let rows = v["by_method"].as_array().ok_or("by_method is present")?;
     assert!(!rows.is_empty(), "127 matches are made of something: {v}");
 
     let total: u64 = rows.iter().map(|r| r["count"].as_u64().unwrap_or(0)).sum();
@@ -826,6 +881,7 @@ fn find_problems_says_what_its_matches_are_made_of() {
             "every row names a method: {r}"
         );
     }
+    Ok(())
 }
 
 /// The breakdown describes the FILTERED population, not the store.
@@ -839,28 +895,28 @@ fn find_problems_says_what_its_matches_are_made_of() {
 /// nothing in the answer said so. An agent reading "127 problems" would
 /// reasonably have thought some of them were calls.
 #[test]
-fn the_method_breakdown_follows_the_filter() {
-    let mut session = McpSession::start_or_panic(BRANCH, &[]);
+fn the_method_breakdown_follows_the_filter() -> Result<(), TestError> {
+    let mut session = McpSession::start(BRANCH, &[])?;
 
-    let all = session.ok_or_panic("find_problems", serde_json::json!({"limit": 1}));
-    let rows = all["by_method"].as_array().expect("by_method present");
+    let all = session.ok("find_problems", serde_json::json!({"limit": 1}))?;
+    let rows = all["by_method"].as_array().ok_or("by_method present")?;
     assert_eq!(
         rows.len(),
         1,
         "every problem row in this fixture is one method; if that changes, \
          this test should assert the narrowing directly: {rows:?}"
     );
-    let present = rows[0]["method"].as_str().expect("a method").to_string();
+    let present = rows[0]["method"].as_str().ok_or("a method")?.to_string();
 
     // Filtering TO the method that is there leaves the population intact and
     // the breakdown naming it.
-    let kept = session.ok_or_panic(
+    let kept = session.ok(
         "find_problems",
         serde_json::json!({"filter": format!("method == \"{present}\""), "limit": 1}),
-    );
+    )?;
     let kept_methods: Vec<&str> = kept["by_method"]
         .as_array()
-        .expect("by_method present")
+        .ok_or("by_method present")?
         .iter()
         .filter_map(|r| r["method"].as_str())
         .collect();
@@ -872,10 +928,10 @@ fn the_method_breakdown_follows_the_filter() {
 
     // Filtering AWAY from it empties both the population and the breakdown.
     // A breakdown that survived its own filter would be describing the store.
-    let gone = session.ok_or_panic(
+    let gone = session.ok(
         "find_problems",
         serde_json::json!({"filter": format!("method != \"{present}\""), "limit": 1}),
-    );
+    )?;
     assert_eq!(gone["total_matched"], 0, "{gone}");
     assert_eq!(
         gone["by_method"].as_array().map(Vec::len),
@@ -883,6 +939,7 @@ fn the_method_breakdown_follows_the_filter() {
         "an empty population is made of nothing, and must not still report \
          {present}: {gone}"
     );
+    Ok(())
 }
 
 /// The dominant method comes first, and ties break by name.
@@ -898,10 +955,10 @@ fn the_method_breakdown_follows_the_filter() {
 /// without a name tie-break the two 2s could swap between runs over one
 /// capture, and a field an agent diffs across runs must not do that.
 #[test]
-fn the_method_breakdown_puts_the_dominant_method_first() {
+fn the_method_breakdown_puts_the_dominant_method_first() -> Result<(), TestError> {
     const MIXED: &str = "tests/pcap-samples/b2bua-asterisk.pcapng";
-    let v = call_tool(MIXED, "list_dialogs", serde_json::json!({"limit": 1}));
-    let rows = v["by_method"].as_array().expect("by_method present");
+    let v = call_tool(MIXED, "list_dialogs", serde_json::json!({"limit": 1}))?;
+    let rows = v["by_method"].as_array().ok_or("by_method present")?;
     assert!(
         rows.len() > 2,
         "this fixture must hold several methods, or the test proves nothing \
@@ -938,6 +995,7 @@ fn the_method_breakdown_puts_the_dominant_method_first() {
         v["total_matched"].as_u64().unwrap_or(0),
         "and every dialog is accounted for exactly once: {pairs:?}"
     );
+    Ok(())
 }
 
 // ── filters where the triage actually starts ─────────────────────────
@@ -947,16 +1005,16 @@ fn the_method_breakdown_puts_the_dominant_method_first() {
 /// Both counts are asserted. A `filter` parameter that parses and is then
 /// ignored returns the unfiltered 127 and looks like it worked.
 #[test]
-fn find_problems_filter_narrows_the_matching_kinds() {
-    let mut session = McpSession::start_or_panic(BRANCH, &[]);
+fn find_problems_filter_narrows_the_matching_kinds() -> Result<(), TestError> {
+    let mut session = McpSession::start(BRANCH, &[])?;
 
-    let all = session.ok_or_panic("find_problems", serde_json::json!({"limit": 1000}));
+    let all = session.ok("find_problems", serde_json::json!({"limit": 1000}))?;
     assert_eq!(all["total_matched"], 127, "unfiltered baseline: {all}");
 
-    let narrowed = session.ok_or_panic(
+    let narrowed = session.ok(
         "find_problems",
         serde_json::json!({"filter": "msg_count > 5", "limit": 1000}),
-    );
+    )?;
     assert_eq!(
         narrowed["total_matched"], 6,
         "6 of the 127 problem dialogs carry more than 5 messages; a `filter` \
@@ -964,58 +1022,61 @@ fn find_problems_filter_narrows_the_matching_kinds() {
     );
 
     // And the rows really satisfy both halves, not just the alias.
-    for d in narrowed["dialogs"].as_array().expect("dialogs") {
+    for d in narrowed["dialogs"].as_array().ok_or("dialogs")? {
         assert_eq!(d["state"], "Failed", "the alias still applies: {d}");
         assert!(
             d["msg_count"].as_u64().unwrap_or(0) > 5,
             "the filter still applies: {d}"
         );
     }
+    Ok(())
 }
 
 /// An unparseable filter on `find_problems` is refused, not ignored.
 #[test]
-fn find_problems_refuses_an_unparseable_filter() {
-    let msg = call_tool_with_args_or_panic(
+fn find_problems_refuses_an_unparseable_filter() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         BRANCH,
         &[],
         "find_problems",
         serde_json::json!({"filter": "msg_count >>>> "}),
-    );
+    )?;
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("filter"),
         "the refusal must name the filter; got {err:?}"
     );
+    Ok(())
 }
 
 /// `search_by_time` must accept a filter so a window and a symptom are one call.
 #[test]
-fn search_by_time_filter_narrows_the_window() {
-    let mut session = McpSession::start_or_panic(BRANCH, &[]);
+fn search_by_time_filter_narrows_the_window() -> Result<(), TestError> {
+    let mut session = McpSession::start(BRANCH, &[])?;
     let window = serde_json::json!({
         "start": "2016-11-17T21:52:35Z", "end": "2016-11-17T21:53:00Z", "limit": 1000
     });
 
-    let all = session.ok_or_panic("search_by_time", window.clone());
+    let all = session.ok("search_by_time", window.clone())?;
     assert_eq!(all["total_matched"], 247, "unfiltered window: {all}");
 
     let mut filtered = window.clone();
     filtered["filter"] = serde_json::json!("state == 'Failed'");
-    let v = session.ok_or_panic("search_by_time", filtered);
+    let v = session.ok("search_by_time", filtered)?;
     assert_eq!(
         v["total_matched"], 16,
         "16 of the 247 dialogs in this window failed; 247 here means the \
          filter was accepted and discarded: {v}"
     );
-    for d in v["dialogs"].as_array().expect("dialogs") {
+    for d in v["dialogs"].as_array().ok_or("dialogs")? {
         assert_eq!(d["state"], "Failed", "{d}");
     }
+    Ok(())
 }
 
 /// `search_by_time` also accepts the alias vocabulary, not only raw DSL.
 #[test]
-fn search_by_time_filter_accepts_a_diagnostic_alias() {
+fn search_by_time_filter_accepts_a_diagnostic_alias() -> Result<(), TestError> {
     let v = call_tool(
         BRANCH,
         "search_by_time",
@@ -1023,12 +1084,13 @@ fn search_by_time_filter_accepts_a_diagnostic_alias() {
             "start": "2016-11-17T21:52:35Z", "end": "2016-11-17T21:53:00Z",
             "filter": "problems", "limit": 1000
         }),
-    );
+    )?;
     assert_eq!(
         v["total_matched"], 16,
         "the 'problems' alias must expand here exactly as it does for \
          list_dialogs: {v}"
     );
+    Ok(())
 }
 
 // ── capture-wide RTP, and the MOS it refuses to guess with ───────────
@@ -1040,9 +1102,9 @@ fn search_by_time_filter_accepts_a_diagnostic_alias() {
 /// is not an edge case either; it is what a one-way-audio or NAT problem looks
 /// like from the media side.
 #[test]
-fn rtp_stats_capture_wide_reaches_streams_with_no_dialog() {
-    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({}));
-    let streams = v["streams"].as_array().expect("streams array");
+fn rtp_stats_capture_wide_reaches_streams_with_no_dialog() -> Result<(), TestError> {
+    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({}))?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
     assert_eq!(
         streams.len(),
         4,
@@ -1058,6 +1120,7 @@ fn rtp_stats_capture_wide_reaches_streams_with_no_dialog() {
         );
         assert!(s["ssrc"].is_string(), "{s}");
     }
+    Ok(())
 }
 
 /// A MOS threshold must not select on a placeholder.
@@ -1069,9 +1132,10 @@ fn rtp_stats_capture_wide_reaches_streams_with_no_dialog() {
 /// "2 bad streams" and "2 bad streams plus 2 I cannot score" are different
 /// answers, and only one of them is honest.
 #[test]
-fn rtp_stats_capture_wide_excludes_ungrounded_streams_from_a_mos_threshold() {
-    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({"max_mos": 4.5}));
-    let streams = v["streams"].as_array().expect("streams array");
+fn rtp_stats_capture_wide_excludes_ungrounded_streams_from_a_mos_threshold() -> Result<(), TestError>
+{
+    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({"max_mos": 4.5}))?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
 
     assert_eq!(
         streams.len(),
@@ -1101,6 +1165,7 @@ fn rtp_stats_capture_wide_excludes_ungrounded_streams_from_a_mos_threshold() {
         v["total_matched"], 2,
         "the total counts what the bound could judge: {v}"
     );
+    Ok(())
 }
 
 /// Without a MOS bound nothing is excluded and the count says zero.
@@ -1108,15 +1173,15 @@ fn rtp_stats_capture_wide_excludes_ungrounded_streams_from_a_mos_threshold() {
 /// The other half of the pair. A tool hard-coding `ungrounded_excluded` would
 /// pass the test above.
 #[test]
-fn rtp_stats_capture_wide_excludes_nothing_without_a_mos_bound() {
-    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({}));
+fn rtp_stats_capture_wide_excludes_nothing_without_a_mos_bound() -> Result<(), TestError> {
+    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({}))?;
     assert_eq!(
         v["ungrounded_excluded"], 0,
         "an unbounded query judges no MOS, so it withholds nothing: {v}"
     );
     let codecs: Vec<&str> = v["streams"]
         .as_array()
-        .expect("streams")
+        .ok_or("streams")?
         .iter()
         .filter_map(|s| s["codec"].as_str())
         .collect();
@@ -1125,29 +1190,31 @@ fn rtp_stats_capture_wide_excludes_nothing_without_a_mos_bound() {
         "the ungrounded streams are still listed when nothing thresholds \
          them; got {codecs:?}"
     );
+    Ok(())
 }
 
 /// A MOS bound alongside a Call-ID is refused rather than quietly dropped.
 #[test]
-fn rtp_stats_refuses_a_mos_bound_on_a_single_call() {
-    let call_id = first_call_id(G711);
-    let msg = call_tool_with_args_or_panic(
+fn rtp_stats_refuses_a_mos_bound_on_a_single_call() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
+    let msg = call_tool_with_args(
         G711,
         &[],
         "rtp_stats",
         serde_json::json!({"call_id": call_id, "max_mos": 4.0}),
-    );
+    )?;
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("call_id"),
         "the refusal must name the conflicting argument; got {err:?}"
     );
+    Ok(())
 }
 
 /// Capture-wide `rtp_stats` pages, and the pages cover every stream once.
 #[test]
-fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() {
-    let mut session = McpSession::start_or_panic(CODECS, &[]);
+fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() -> Result<(), TestError> {
+    let mut session = McpSession::start(CODECS, &[])?;
     let mut seen: Vec<String> = Vec::new();
     let mut cursor = serde_json::Value::Null;
 
@@ -1156,9 +1223,9 @@ fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() {
         if let Some(c) = cursor.as_str() {
             args["cursor"] = serde_json::json!(c);
         }
-        let v = session.ok_or_panic("rtp_stats", args);
+        let v = session.ok("rtp_stats", args)?;
         assert_eq!(v["total_matched"], 4, "page {page}: {v}");
-        for s in v["streams"].as_array().expect("streams") {
+        for s in v["streams"].as_array().ok_or("streams")? {
             seen.push(format!(
                 "{}|{}|{}",
                 s["ssrc"].as_str().unwrap_or_default(),
@@ -1179,6 +1246,7 @@ fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() {
         "paging must reach all 4 streams; got {seen:?}"
     );
     assert_eq!(seen.len(), 4, "a stream came back twice: {seen:?}");
+    Ok(())
 }
 
 /// The single-call shape is unchanged: `{ call_id, streams, diagnosis }`.
@@ -1186,9 +1254,9 @@ fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() {
 /// Adding a capture-wide mode must not move the per-call answer, which the
 /// documented examples and every existing client read.
 #[test]
-fn rtp_stats_single_call_shape_is_untouched() {
-    let call_id = first_call_id(G711);
-    let v = call_tool(G711, "rtp_stats", serde_json::json!({"call_id": call_id}));
+fn rtp_stats_single_call_shape_is_untouched() -> Result<(), TestError> {
+    let call_id = first_call_id(G711)?;
+    let v = call_tool(G711, "rtp_stats", serde_json::json!({"call_id": call_id}))?;
     assert_eq!(v["call_id"], call_id, "{v}");
     assert!(v["streams"].is_array(), "{v}");
     assert!(
@@ -1200,6 +1268,7 @@ fn rtp_stats_single_call_shape_is_untouched() {
         "the single-call response is not a page and must not grow page \
          fields: {v}"
     );
+    Ok(())
 }
 
 /// The placeholder note must read as a sentence, not a column of spaces.
@@ -1208,19 +1277,20 @@ fn rtp_stats_single_call_shape_is_untouched() {
 /// with a 38-space run in the middle from a wrapped string literal, which is
 /// the kind of thing a model quotes back to an operator.
 #[test]
-fn the_ungrounded_mos_note_has_no_stray_whitespace() {
-    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({}));
+fn the_ungrounded_mos_note_has_no_stray_whitespace() -> Result<(), TestError> {
+    let v = call_tool(CODECS, "rtp_stats", serde_json::json!({}))?;
     let note = v["streams"]
         .as_array()
-        .expect("streams")
+        .ok_or("streams")?
         .iter()
         .find_map(|s| s["mos_note"].as_str())
-        .expect("a G722 stream must carry the placeholder note");
+        .ok_or("a G722 stream must carry the placeholder note")?;
     assert!(
         !note.contains("  "),
         "the note contains a run of spaces and reaches an operator that way: \
          {note:?}"
     );
+    Ok(())
 }
 
 /// `by_method` accounts for every dialog `total_matched` counts.
@@ -1229,20 +1299,21 @@ fn the_ungrounded_mos_note_has_no_stray_whitespace() {
 /// proves the field moves with a filter; this proves it adds up, which is the
 /// property a caller doing its own percentages depends on.
 #[test]
-fn the_method_breakdown_sums_to_total_matched() {
-    let page = call_tool(BRANCH, "list_dialogs", serde_json::json!({ "limit": 5 }));
+fn the_method_breakdown_sums_to_total_matched() -> Result<(), TestError> {
+    let page = call_tool(BRANCH, "list_dialogs", serde_json::json!({ "limit": 5 }))?;
     let summed: u64 = page["by_method"]
         .as_array()
-        .expect("by_method is an array")
+        .ok_or("by_method is an array")?
         .iter()
-        .map(|r| r["count"].as_u64().expect("count is a number"))
-        .sum();
+        .map(|r| r["count"].as_u64().ok_or("count is a number"))
+        .sum::<Result<u64, _>>()?;
     assert_eq!(
         summed,
-        page["total_matched"].as_u64().expect("total_matched"),
+        page["total_matched"].as_u64().ok_or("total_matched")?,
         "got {}",
         page["by_method"]
     );
+    Ok(())
 }
 
 /// The breakdown is identical on page two.
@@ -1253,25 +1324,24 @@ fn the_method_breakdown_sums_to_total_matched() {
 /// apparent composition drift page by page — while every individual response
 /// looked internally consistent.
 #[test]
-fn the_method_breakdown_does_not_move_between_pages() {
-    let mut session = McpSession::start_or_panic(BRANCH, &[]);
-    let first = ok_payload_or_panic(
-        &session.call_or_panic("list_dialogs", serde_json::json!({ "limit": 2 })),
-    );
+fn the_method_breakdown_does_not_move_between_pages() -> Result<(), TestError> {
+    let mut session = McpSession::start(BRANCH, &[])?;
+    let first = ok_payload(&session.call("list_dialogs", serde_json::json!({ "limit": 2 }))?)?;
     let cursor = first["next_cursor"]
         .as_str()
-        .expect("1334 dialogs do not fit in one page of 2")
+        .ok_or("1334 dialogs do not fit in one page of 2")?
         .to_string();
-    let second = ok_payload_or_panic(&session.call_or_panic(
+    let second = ok_payload(&session.call(
         "list_dialogs",
         serde_json::json!({ "limit": 2, "cursor": cursor }),
-    ));
+    )?)?;
 
     assert_eq!(
         first["by_method"], second["by_method"],
         "the breakdown describes the match set, not the page"
     );
     assert_eq!(first["total_matched"], second["total_matched"]);
+    Ok(())
 }
 
 /// A filter matching nothing returns an empty breakdown.
@@ -1280,12 +1350,12 @@ fn the_method_breakdown_does_not_move_between_pages() {
 /// `by_method` would be one response contradicting itself, and it is what a
 /// tally computed before the filter would produce.
 #[test]
-fn the_method_breakdown_is_empty_when_the_filter_matches_nothing() {
+fn the_method_breakdown_is_empty_when_the_filter_matches_nothing() -> Result<(), TestError> {
     let page = call_tool(
         BRANCH,
         "list_dialogs",
         serde_json::json!({ "filter": "from.user == 'no-such-user-anywhere'" }),
-    );
+    )?;
     assert_eq!(page["total_matched"].as_u64(), Some(0), "{page}");
     assert_eq!(
         page["by_method"].as_array().map(Vec::len),
@@ -1293,4 +1363,5 @@ fn the_method_breakdown_is_empty_when_the_filter_matches_nothing() {
         "got {}",
         page["by_method"]
     );
+    Ok(())
 }

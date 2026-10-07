@@ -23,8 +23,13 @@ use sipnab::stats_vocab::{
     NameSource, StatisticTier, StatisticValue, TieredStatistic, known_names, relay_reported,
 };
 
-fn at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 13, 4, 5, 6).unwrap()
+type TestError = Box<dyn std::error::Error>;
+
+fn at() -> Result<DateTime<Utc>, TestError> {
+    Ok(Utc
+        .with_ymd_and_hms(2026, 9, 13, 4, 5, 6)
+        .single()
+        .ok_or("a valid, unambiguous fixture time")?)
 }
 
 fn counted(name: &str, v: &str) -> TieredStatistic {
@@ -40,7 +45,7 @@ fn counted(name: &str, v: &str) -> TieredStatistic {
 /// The names come back sorted and deduplicated, so two relays' lists compare
 /// and a caller reads a stable order regardless of reply order.
 #[test]
-fn known_names_are_sorted_and_deduplicated() {
+fn known_names_are_sorted_and_deduplicated() -> Result<(), TestError> {
     let stats = [
         counted("uptime", "134"),
         counted("npkts_relayed", "9000"),
@@ -56,12 +61,13 @@ fn known_names_are_sorted_and_deduplicated() {
         ],
         "sorted and with the duplicate uptime collapsed"
     );
+    Ok(())
 }
 
 /// A name sipnab never asked for is not evidence about what the relay knows,
 /// so NotAsked is excluded from the list.
 #[test]
-fn a_not_asked_name_is_not_a_known_name() {
+fn a_not_asked_name_is_not_a_known_name() -> Result<(), TestError> {
     let stats = [
         counted("present", "1"),
         TieredStatistic {
@@ -76,12 +82,13 @@ fn a_not_asked_name_is_not_a_known_name() {
         !names.contains(&"never_asked".to_string()),
         "a name sipnab never asked about says nothing about the relay's key set"
     );
+    Ok(())
 }
 
 /// rtpproxy's `E68` means the relay does NOT have that name, so a refused name
 /// is NOT a known name -- this is the whole point of the probe.
 #[test]
-fn a_refused_name_is_not_a_known_name() {
+fn a_refused_name_is_not_a_known_name() -> Result<(), TestError> {
     let stats = [
         counted("npkts_ina", "9000"),
         TieredStatistic {
@@ -96,12 +103,13 @@ fn a_refused_name_is_not_a_known_name() {
         !names.contains(&"rtpa_nlost".to_string()),
         "a name the relay refused (E68) is not one it knows"
     );
+    Ok(())
 }
 
 /// The set is drawn from what the relay actually reported: feeding the flat
 /// pairs of a real reply through `relay_reported` yields exactly its keys.
 #[test]
-fn known_names_are_the_keys_of_a_real_reply() {
+fn known_names_are_the_keys_of_a_real_reply() -> Result<(), TestError> {
     let tiered = relay_reported(&[
         ("totals.RTP.packets".to_string(), "9000".to_string()),
         ("totals.RTCP.packets".to_string(), "30".to_string()),
@@ -115,12 +123,14 @@ fn known_names_are_the_keys_of_a_real_reply() {
             "uptime".to_string(),
         ]
     );
+    Ok(())
 }
 
 /// No known names is a real answer -- the relay named nothing -- not a crash.
 #[test]
-fn no_known_names_is_an_empty_list_not_a_panic() {
+fn no_known_names_is_an_empty_list_not_a_panic() -> Result<(), TestError> {
     assert!(known_names(&[]).is_empty());
+    Ok(())
 }
 
 // ── NameSource: the determination is a first-class claim ────────────────────
@@ -128,7 +138,7 @@ fn no_known_names_is_an_empty_list_not_a_panic() {
 /// The two determinations say different things, and each names its mechanism:
 /// rtpengine LISTED them, rtpproxy's set was PROBED (did-not-refuse).
 #[test]
-fn the_two_name_sources_describe_different_mechanisms() {
+fn the_two_name_sources_describe_different_mechanisms() -> Result<(), TestError> {
     let listed = NameSource::Listed.how_determined();
     let probed = NameSource::Probed.how_determined();
     assert_ne!(
@@ -143,13 +153,14 @@ fn the_two_name_sources_describe_different_mechanisms() {
         probed.to_lowercase().contains("refuse"),
         "the probed determination says these are the names that did not refuse: {probed}"
     );
+    Ok(())
 }
 
 // ── format_relay_stat_names: the CLI rendering ──────────────────────────────
 
 /// Every known name is listed, one per line, and the relay is named.
 #[test]
-fn every_known_name_is_listed() {
+fn every_known_name_is_listed() -> Result<(), TestError> {
     let names = vec![
         "npkts_relayed".to_string(),
         "totals.RTP.packets".to_string(),
@@ -159,7 +170,7 @@ fn every_known_name_is_listed() {
         &names,
         NameSource::Listed,
         "rtpengine at 10.0.0.1:22222",
-        at(),
+        at()?,
     );
     for n in &names {
         assert!(text.contains(n.as_str()), "name {n} is listed:\n{text}");
@@ -168,13 +179,14 @@ fn every_known_name_is_listed() {
         text.contains("rtpengine at 10.0.0.1:22222"),
         "the relay is named:\n{text}"
     );
+    Ok(())
 }
 
 /// The header states how the list was determined and when it was asked.
 #[test]
-fn the_header_states_the_determination_and_the_moment() {
+fn the_header_states_the_determination_and_the_moment() -> Result<(), TestError> {
     let names = vec!["uptime".to_string()];
-    let text = format_relay_stat_names(&names, NameSource::Listed, "rtpengine at r:1", at());
+    let text = format_relay_stat_names(&names, NameSource::Listed, "rtpengine at r:1", at()?);
     assert!(
         text.contains("2026-09-13T04:05:06Z"),
         "when it was asked is shown:\n{text}"
@@ -183,52 +195,57 @@ fn the_header_states_the_determination_and_the_moment() {
         text.to_lowercase().contains("listed") || text.to_lowercase().contains("reported"),
         "the header states the relay listed them:\n{text}"
     );
+    Ok(())
 }
 
 /// A probed list carries the probe caveat, so it is not mistaken for a
 /// definitive enumeration.
 #[test]
-fn a_probed_list_carries_the_probe_caveat() {
+fn a_probed_list_carries_the_probe_caveat() -> Result<(), TestError> {
     let names = vec!["npkts_ina".to_string(), "nrelayed".to_string()];
-    let text = format_relay_stat_names(&names, NameSource::Probed, "rtpproxy at r:2", at());
+    let text = format_relay_stat_names(&names, NameSource::Probed, "rtpproxy at r:2", at()?);
     assert!(
         text.to_lowercase().contains("refuse"),
         "a probed list says these are the names that did not refuse:\n{text}"
     );
+    Ok(())
 }
 
 /// The count in the header matches the number of names rendered.
 #[test]
-fn the_header_count_matches_the_names_shown() {
+fn the_header_count_matches_the_names_shown() -> Result<(), TestError> {
     let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-    let text = format_relay_stat_names(&names, NameSource::Listed, "relay", at());
+    let text = format_relay_stat_names(&names, NameSource::Listed, "relay", at()?);
     assert!(
         text.contains('3'),
         "the count of names is stated in the header:\n{text}"
     );
+    Ok(())
 }
 
 /// A names-only listing carries NO values -- it answers "what can I ask for",
 /// not "what are they now". A value leaking in would make it a different
 /// capability wearing C3's flag.
 #[test]
-fn a_names_listing_carries_no_values() {
+fn a_names_listing_carries_no_values() -> Result<(), TestError> {
     // These names would have had values in a C1 table; here only the names show.
     let names = vec!["npkts_relayed".to_string(), "uptime".to_string()];
-    let text = format_relay_stat_names(&names, NameSource::Listed, "relay", at());
+    let text = format_relay_stat_names(&names, NameSource::Listed, "relay", at()?);
     assert!(
         !text.contains("9000"),
         "a value must not leak into a names-only listing:\n{text}"
     );
+    Ok(())
 }
 
 /// An empty known-name set says the relay named nothing, rather than printing a
 /// bare header with no body.
 #[test]
-fn an_empty_name_set_says_the_relay_named_nothing() {
-    let text = format_relay_stat_names(&[], NameSource::Listed, "relay", at());
+fn an_empty_name_set_says_the_relay_named_nothing() -> Result<(), TestError> {
+    let text = format_relay_stat_names(&[], NameSource::Listed, "relay", at()?);
     assert!(
         text.to_lowercase().contains("nothing"),
         "an empty list must say the relay named nothing it knows:\n{text}"
     );
+    Ok(())
 }

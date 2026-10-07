@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The instruction an attacker writes into a header sipnab will report.
 ///
 /// # Why it is one line, and what that says about the threat
@@ -98,7 +100,7 @@ fn udp_frame(src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8])
 }
 
 /// Write a classic little-endian pcap holding `frames`.
-fn write_pcap(path: &std::path::Path, frames: &[Vec<u8>]) {
+fn write_pcap(path: &std::path::Path, frames: &[Vec<u8>]) -> Result<(), TestError> {
     let mut out = Vec::new();
     out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes()); // magic
     out.extend_from_slice(&2u16.to_le_bytes()); // version major
@@ -114,7 +116,8 @@ fn write_pcap(path: &std::path::Path, frames: &[Vec<u8>]) {
         out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         out.extend_from_slice(frame);
     }
-    std::fs::write(path, out).expect("write pcap");
+    std::fs::write(path, out)?;
+    Ok(())
 }
 
 /// The Call-ID of the dialog the built capture carries.
@@ -122,7 +125,7 @@ const CALL_ID: &str = "injection-probe-1@example.com";
 
 /// Build a two-message dialog whose `User-Agent`, `From` display name and SDP
 /// session name each carry the attack, and return its path.
-fn hostile_capture(dir: &std::path::Path) -> std::path::PathBuf {
+fn hostile_capture(dir: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
     let sdp = format!(
         "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns={ATTACK}\r\nc=IN IP4 192.0.2.1\r\n\
          t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
@@ -163,17 +166,18 @@ fn hostile_capture(dir: &std::path::Path) -> std::path::PathBuf {
         udp_frame([192, 0, 2, 2], [192, 0, 2, 1], 5060, 5060, ok.as_bytes()),
     ];
     let path = dir.join("injection.pcap");
-    write_pcap(&path, &frames);
-    path
+    write_pcap(&path, &frames)?;
+    Ok(path)
 }
 
 // ── driving the real server ──────────────────────────────────────────
 
 /// One JSON-RPC line to the child.
-fn send(child: &mut std::process::Child, msg: &serde_json::Value) {
-    let stdin = child.stdin.as_mut().expect("stdin");
-    writeln!(stdin, "{}", serde_json::to_string(msg).expect("serialize")).expect("write");
-    stdin.flush().expect("flush");
+fn send(child: &mut std::process::Child, msg: &serde_json::Value) -> Result<(), TestError> {
+    let stdin = child.stdin.as_mut().ok_or("stdin")?;
+    writeln!(stdin, "{}", serde_json::to_string(msg)?)?;
+    stdin.flush()?;
+    Ok(())
 }
 
 /// Read until the response with `id` arrives, failing if stdout carries
@@ -182,28 +186,28 @@ fn read_response(
     reader: &mut BufReader<&mut std::process::ChildStdout>,
     id: i64,
     timeout: Duration,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, TestError> {
     let deadline = Instant::now() + timeout;
     let mut line = String::new();
     while Instant::now() < deadline {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return None,
+            Ok(0) => return Ok(None),
             Ok(_) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
                 let v: serde_json::Value = serde_json::from_str(trimmed)
-                    .unwrap_or_else(|e| panic!("stdout is the JSON-RPC wire: {e}\n{trimmed}"));
+                    .map_err(|e| format!("stdout is the JSON-RPC wire: {e}\n{trimmed}"))?;
                 if v.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
-                    return Some(v);
+                    return Ok(Some(v));
                 }
             }
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         }
     }
-    None
+    Ok(None)
 }
 
 /// A live server over the hostile capture, plus a closure that calls one tool.
@@ -216,7 +220,7 @@ struct Server {
 impl Server {
     /// Spawn sipnab over `pcap` with the stdio transport and complete the
     /// MCP handshake.
-    fn start(pcap: &std::path::Path) -> Self {
+    fn start(pcap: &std::path::Path) -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args([
                 "-N",
@@ -230,9 +234,8 @@ impl Server {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sipnab --mcp");
-        let stdout = child.stdout.take().expect("stdout");
+            .spawn()?;
+        let stdout = child.stdout.take().ok_or("stdout")?;
         let mut s = Self {
             child,
             stdout,
@@ -245,26 +248,30 @@ impl Server {
                 "capabilities": {},
                 "clientInfo": {"name": "pb8-test", "version": "0"}
             }),
-        );
+        )?;
         assert!(init["result"].is_object(), "initialize failed: {init}");
         send(
             &mut s.child,
             &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        );
-        s
+        )?;
+        Ok(s)
     }
 
     /// Send one request and read its response.
-    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+    fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         send(
             &mut self.child,
             &serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
-        );
+        )?;
         let mut reader = BufReader::new(&mut self.stdout);
-        read_response(&mut reader, id, test_timeout(10))
-            .unwrap_or_else(|| panic!("no response to {method}"))
+        Ok(read_response(&mut reader, id, test_timeout(10))?
+            .ok_or_else(|| format!("no response to {method}"))?)
     }
 
     /// Call one tool, retrying while the capture is still being ingested.
@@ -286,15 +293,19 @@ impl Server {
     /// race that Linux won and the macOS runner lost, reporting `call_id ...
     /// not found` for a dialog that was merely still being ingested. Removing
     /// it is what stops the fourth.
-    fn call_until_found(&mut self, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
+    fn call_until_found(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, TestError> {
         let deadline = std::time::Instant::now() + test_timeout(20);
         loop {
             let resp = self.request(
                 "tools/call",
                 serde_json::json!({"name": tool, "arguments": arguments}),
-            );
+            )?;
             if resp["result"].is_object() {
-                return resp["result"].clone();
+                return Ok(resp["result"].clone());
             }
             let msg = resp["error"]["message"].as_str().unwrap_or_default();
             assert!(
@@ -332,8 +343,8 @@ fn all_strings(v: &serde_json::Value, out: &mut Vec<String>) {
 }
 
 /// The whole result as one string, for substring sweeps.
-fn flat(v: &serde_json::Value) -> String {
-    serde_json::to_string(v).expect("serialize result")
+fn flat(v: &serde_json::Value) -> Result<String, TestError> {
+    Ok(serde_json::to_string(v)?)
 }
 
 /// The distinctive half of the attack: if this appears OUTSIDE a fenced run,
@@ -373,13 +384,13 @@ fn payload_is_always_fenced(text: &str) -> bool {
 /// It is also the largest run of sender-written text the surface returns, so
 /// it is the most valuable thing to fence and was the last thing fenced.
 #[test]
-fn get_dialog_fences_the_messages_it_returns() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = hostile_capture(dir.path());
-    let mut server = Server::start(&pcap);
+fn get_dialog_fences_the_messages_it_returns() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = hostile_capture(dir.path())?;
+    let mut server = Server::start(&pcap)?;
 
-    let result = server.call_until_found("get_dialog", serde_json::json!({"call_id": CALL_ID}));
-    let text = flat(&result);
+    let result = server.call_until_found("get_dialog", serde_json::json!({"call_id": CALL_ID}))?;
+    let text = flat(&result)?;
 
     assert!(
         text.contains(PAYLOAD),
@@ -394,24 +405,25 @@ fn get_dialog_fences_the_messages_it_returns() {
         text.contains(OPEN),
         "get_dialog returned no fenced run at all: {text}"
     );
+    Ok(())
 }
 
 /// The same response also carries the note that says what the markers mean.
 ///
 /// Fencing without the note is markers an agent has never been told to read.
 #[test]
-fn get_dialog_explains_the_markers_it_uses() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = hostile_capture(dir.path());
-    let mut server = Server::start(&pcap);
-    let result = server.call_until_found("get_dialog", serde_json::json!({"call_id": CALL_ID}));
+fn get_dialog_explains_the_markers_it_uses() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = hostile_capture(dir.path())?;
+    let mut server = Server::start(&pcap)?;
+    let result = server.call_until_found("get_dialog", serde_json::json!({"call_id": CALL_ID}))?;
 
-    let content = result["content"].as_array().expect("content array");
+    let content = result["content"].as_array().ok_or("content array")?;
     let note = content
         .iter()
         .filter_map(|b| b.get("text").and_then(serde_json::Value::as_str))
         .find(|t| t.contains("Provenance"));
-    let note = note.unwrap_or_else(|| panic!("no provenance note on get_dialog: {result}"));
+    let note = note.ok_or_else(|| format!("no provenance note on get_dialog: {result}"))?;
     assert!(note.contains(OPEN) && note.contains(CLOSE));
 
     assert!(
@@ -419,6 +431,7 @@ fn get_dialog_explains_the_markers_it_uses() {
         "the note must be APPENDED — a client indexing content[0] for the \
          payload has to keep working: {result}"
     );
+    Ok(())
 }
 
 /// No control character from a header survives into any tool result.
@@ -427,10 +440,10 @@ fn get_dialog_explains_the_markers_it_uses() {
 /// is dangerous does not depend on which field carried it, and a per-field
 /// list goes stale the next time a field is added.
 #[test]
-fn no_tool_result_carries_a_control_character_out_of_a_header() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = hostile_capture(dir.path());
-    let mut server = Server::start(&pcap);
+fn no_tool_result_carries_a_control_character_out_of_a_header() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = hostile_capture(dir.path())?;
+    let mut server = Server::start(&pcap)?;
 
     for (tool, args) in [
         ("get_dialog", serde_json::json!({"call_id": CALL_ID})),
@@ -445,7 +458,7 @@ fn no_tool_result_carries_a_control_character_out_of_a_header() {
             serde_json::json!({"call_id": CALL_ID}),
         ),
     ] {
-        let result = server.call_until_found(tool, args);
+        let result = server.call_until_found(tool, args)?;
         let mut strings = Vec::new();
         all_strings(&result, &mut strings);
         for s in &strings {
@@ -462,6 +475,7 @@ fn no_tool_result_carries_a_control_character_out_of_a_header() {
             );
         }
     }
+    Ok(())
 }
 
 /// An `a=rtpmap` encoding name carrying a SENTENCE is fenced.
@@ -479,8 +493,8 @@ fn no_tool_result_carries_a_control_character_out_of_a_header() {
 /// codec. A bucket label an agent reads as a category sipnab computed is a
 /// better disguise for injected text than a header value is.
 #[test]
-fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let sdp = format!(
         "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\nt=0 0\r\n\
          m=audio 40000 RTP/AVP 96\r\na=rtpmap:96 {ATTACK}/8000\r\n"
@@ -507,15 +521,15 @@ fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() {
             5060,
             invite.as_bytes(),
         )],
-    );
+    )?;
 
-    let mut server = Server::start(&path);
+    let mut server = Server::start(&path)?;
     for tool in ["get_sdp_timeline", "check_codec_negotiation"] {
         let result = server.call_until_found(
             tool,
             serde_json::json!({"call_id": "codec-inject@example.com"}),
-        );
-        let text = flat(&result);
+        )?;
+        let text = flat(&result)?;
         assert!(
             text.contains(PAYLOAD),
             "{tool} did not report the codec at all, so this proves nothing \
@@ -527,6 +541,7 @@ fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() {
              OUTSIDE the fence: {text}"
         );
     }
+    Ok(())
 }
 
 /// Build a capture holding one INVITE with an oversized `User-Agent`, ask
@@ -535,7 +550,7 @@ fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() {
 /// Shared so every assertion below measures the SAME response rather than each
 /// building its own fixture and quietly diverging. The `TempDir` comes back
 /// with it because dropping it removes the capture the server is reading.
-fn oversized_header_response() -> (serde_json::Value, tempfile::TempDir) {
+fn oversized_header_response() -> Result<(serde_json::Value, tempfile::TempDir), TestError> {
     oversized_header_response_in("big")
 }
 
@@ -545,8 +560,10 @@ fn oversized_header_response() -> (serde_json::Value, tempfile::TempDir) {
 /// enclosing path: a longer temp path on macOS inflated the container the old
 /// assertion measured. A test that can vary it can prove the field does not
 /// move with it.
-fn oversized_header_response_in(stem: &str) -> (serde_json::Value, tempfile::TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn oversized_header_response_in(
+    stem: &str,
+) -> Result<(serde_json::Value, tempfile::TempDir), TestError> {
+    let dir = tempfile::tempdir()?;
     // 4 KiB of legal `User-Agent`, deliberately under the parser's 8 KiB header
     // line limit: past that the message is REJECTED, and a rejected message
     // would report the cap working while it was never reached.
@@ -576,20 +593,20 @@ fn oversized_header_response_in(stem: &str) -> (serde_json::Value, tempfile::Tem
             5060,
             invite.as_bytes(),
         )],
-    );
-    let mut server = Server::start(&path);
+    )?;
+    let mut server = Server::start(&path)?;
     let result = server.call_until_found(
         "get_message",
         serde_json::json!({"call_id": "big-header@example.com", "index": 0}),
-    );
-    (result, dir)
+    )?;
+    Ok((result, dir))
 }
 
 /// A `User-Agent` cannot spend an agent's context: the field cap fires and the
 /// result says it fired.
 #[test]
-fn an_oversized_header_is_bounded_in_the_response() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_oversized_header_is_bounded_in_the_response() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     // 4 KiB of legal `User-Agent`. Deliberately under
     // `parser::DEFAULT_MAX_HEADER_LINE_LEN` (8 KiB): past that the parser
     // rejects the whole message, and a test that measured a REJECTED message
@@ -622,13 +639,13 @@ fn an_oversized_header_is_bounded_in_the_response() {
             5060,
             invite.as_bytes(),
         )],
-    );
+    )?;
 
-    let mut server = Server::start(&path);
+    let mut server = Server::start(&path)?;
     let result = server.call_until_found(
         "get_message",
         serde_json::json!({"call_id": "big-header@example.com", "index": 0}),
-    );
+    )?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     // Take the FIELD, not any string that happens to contain the payload.
@@ -646,12 +663,12 @@ fn an_oversized_header_is_bounded_in_the_response() {
         .iter()
         .filter(|s| s.contains("UUUU"))
         .find(|s| s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "no FENCED string carries the long User-Agent. Either the field \
                  is unfenced, or it never reached the response: {result}"
             )
-        });
+        })?;
     // The cap, plus the fence markers and the truncation marker the value
     // carries when it fires. Pinned against the constant rather than a round
     // number, so raising the cap does not silently widen what this accepts.
@@ -668,6 +685,7 @@ fn an_oversized_header_is_bounded_in_the_response() {
         ua.contains("truncated"),
         "a shortened value that does not say so reads as a whole one: {ua}"
     );
+    Ok(())
 }
 
 // ── Debt: an assertion that measured a container, not a value ──────────
@@ -689,8 +707,8 @@ fn an_oversized_header_is_bounded_in_the_response() {
 /// response ever carries the value in exactly one place, the ambiguity is gone
 /// and this test should be revisited rather than silently kept passing.
 #[test]
-fn the_response_carries_an_oversized_field_in_more_than_one_string() {
-    let (result, _dir) = oversized_header_response();
+fn the_response_carries_an_oversized_field_in_more_than_one_string() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     let carrying: Vec<&String> = strings.iter().filter(|s| s.contains("UUUU")).collect();
@@ -712,22 +730,23 @@ fn the_response_carries_an_oversized_field_in_more_than_one_string() {
          than one and `find` is ambiguous again",
         fenced.len()
     );
+    Ok(())
 }
 
 /// The container is bigger than the field, which is why measuring it was wrong.
 #[test]
-fn the_container_is_larger_than_the_field_it_encloses() {
-    let (result, _dir) = oversized_header_response();
+fn the_container_is_larger_than_the_field_it_encloses() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     let field = strings
         .iter()
         .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
-        .expect("a fenced field");
+        .ok_or("a fenced field")?;
     let container = strings
         .iter()
         .find(|s| s.contains("UUUU") && !s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
-        .expect("an enclosing container");
+        .ok_or("an enclosing container")?;
     assert!(
         container.len() > field.len(),
         "the container ({} bytes) is not larger than the field ({} bytes), so \
@@ -736,6 +755,7 @@ fn the_container_is_larger_than_the_field_it_encloses() {
         container.len(),
         field.len()
     );
+    Ok(())
 }
 
 /// The field cap holds regardless of how long the surrounding capture path is.
@@ -744,52 +764,55 @@ fn the_container_is_larger_than_the_field_it_encloses() {
 /// CONTAINER. Nothing about a capture's filesystem path should be able to move
 /// a field's size, and this states that directly.
 #[test]
-fn the_field_cap_is_independent_of_the_capture_path_length() {
-    let (short, _d1) = oversized_header_response();
-    let (long, _d2) = oversized_header_response_in(&"p".repeat(60));
-    let field_of = |v: &serde_json::Value| -> usize {
+fn the_field_cap_is_independent_of_the_capture_path_length() -> Result<(), TestError> {
+    let (short, _d1) = oversized_header_response()?;
+    let (long, _d2) = oversized_header_response_in(&"p".repeat(60))?;
+    let field_of = |v: &serde_json::Value| -> Result<usize, TestError> {
         let mut out = Vec::new();
         all_strings(v, &mut out);
-        out.iter()
+        Ok(out
+            .iter()
             .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
             .map(String::len)
-            .expect("a fenced field")
+            .ok_or("a fenced field")?)
     };
     // Non-vacuity probe: the CONTAINER must differ between the two, or the
     // fixture is not varying anything and the equality below is trivially true.
-    let container_of = |v: &serde_json::Value| -> usize {
+    let container_of = |v: &serde_json::Value| -> Result<usize, TestError> {
         let mut out = Vec::new();
         all_strings(v, &mut out);
-        out.iter()
+        Ok(out
+            .iter()
             .find(|s| s.contains("UUUU") && !s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
             .map(String::len)
-            .expect("a container")
+            .ok_or("a container")?)
     };
     assert_ne!(
-        container_of(&short),
-        container_of(&long),
+        container_of(&short)?,
+        container_of(&long)?,
         "the enclosing container did not change size when the capture path grew, \
          so this test is not exercising the condition that split Linux from \
          macOS and its equality assertion proves nothing"
     );
     assert_eq!(
-        field_of(&short),
-        field_of(&long),
+        field_of(&short)?,
+        field_of(&long)?,
         "the fenced field changed size when only the capture PATH got longer. A \
          cap that moves with an unrelated string is not a cap"
     );
+    Ok(())
 }
 
 /// The cap actually fires: the field is far smaller than the input.
 #[test]
-fn the_capped_field_is_a_fraction_of_the_header_that_produced_it() {
-    let (result, _dir) = oversized_header_response();
+fn the_capped_field_is_a_fraction_of_the_header_that_produced_it() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     let field = strings
         .iter()
         .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
-        .expect("a fenced field");
+        .ok_or("a fenced field")?;
     assert!(
         field.len() < 4096 / 4,
         "the field is {} bytes against a 4096-byte input; the cap either did \
@@ -804,6 +827,7 @@ fn the_capped_field_is_a_fraction_of_the_header_that_produced_it() {
         field.len(),
         sipnab::mcp::shape::MAX_FIELD_BYTES
     );
+    Ok(())
 }
 
 /// A truncated value SAYS it was truncated.
@@ -812,19 +836,20 @@ fn the_capped_field_is_a_fraction_of_the_header_that_produced_it() {
 /// agent reasoning about a `User-Agent` cannot tell "this is the value" from
 /// "this is the first 256 bytes of the value".
 #[test]
-fn a_capped_field_declares_that_it_was_cut() {
-    let (result, _dir) = oversized_header_response();
+fn a_capped_field_declares_that_it_was_cut() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     let field = strings
         .iter()
         .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
-        .expect("a fenced field");
+        .ok_or("a fenced field")?;
     assert!(
         field.contains("truncated") || field.contains('…'),
         "the field was cut without saying so: {field:?}. An agent cannot tell a \
          bounded value from a complete one"
     );
+    Ok(())
 }
 
 /// The fence survives the cap.
@@ -832,19 +857,20 @@ fn a_capped_field_declares_that_it_was_cut() {
 /// Truncating a fenced value could cut the closing marker off, which would
 /// leave attacker text outside the fence -- the failure the fence exists for.
 #[test]
-fn capping_a_field_does_not_strip_its_closing_fence() {
-    let (result, _dir) = oversized_header_response();
+fn capping_a_field_does_not_strip_its_closing_fence() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     let field = strings
         .iter()
         .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
-        .expect("a fenced field");
+        .ok_or("a fenced field")?;
     assert!(
         field.ends_with(sipnab::mcp::shape::UNTRUSTED_CLOSE),
         "a capped field lost its closing fence, so the text after it reads as \
          sipnab's own words: {field:?}"
     );
+    Ok(())
 }
 
 /// No string in the response carries the payload unbounded.
@@ -853,8 +879,8 @@ fn capping_a_field_does_not_strip_its_closing_fence() {
 /// question that matters: is there ANY path by which the whole 4 KiB header
 /// reaches an agent?
 #[test]
-fn no_string_in_the_response_carries_the_header_whole() {
-    let (result, _dir) = oversized_header_response();
+fn no_string_in_the_response_carries_the_header_whole() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     for s in strings.iter().filter(|s| s.contains("UUUU")) {
@@ -876,12 +902,13 @@ fn no_string_in_the_response_carries_the_header_whole() {
             sipnab::mcp::shape::MAX_FIELD_BYTES
         );
     }
+    Ok(())
 }
 
 /// The probe finds something, so the assertions above are not vacuous.
 #[test]
-fn the_oversized_header_fixture_actually_reaches_the_response() {
-    let (result, _dir) = oversized_header_response();
+fn the_oversized_header_fixture_actually_reaches_the_response() -> Result<(), TestError> {
+    let (result, _dir) = oversized_header_response()?;
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
     let n = strings.iter().filter(|s| s.contains("UUUU")).count();
@@ -890,4 +917,5 @@ fn the_oversized_header_fixture_actually_reaches_the_response() {
         "the payload does not appear in the response at all. Every length \
          assertion in this suite would then be checking nothing: {result}"
     );
+    Ok(())
 }

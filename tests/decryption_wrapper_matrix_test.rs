@@ -30,7 +30,7 @@ mod pcap_build;
 #[path = "support/tar_build.rs"]
 mod tar_build;
 
-use tar_build::{Entry, gzip_or_panic, tar};
+use tar_build::{Entry, gzip, tar};
 #[path = "support/encrypted_captures.rs"]
 mod encrypted_captures;
 use encrypted_captures::*;
@@ -57,45 +57,49 @@ const WRAPPERS: [Wrapper; 5] = [
 
 /// Write `capture` (a file named `name`) under `dir` presented as `how`, and
 /// return the path to hand `-I`.
-fn present(dir: &Path, name: &str, capture: &[u8], how: Wrapper) -> PathBuf {
+fn present(dir: &Path, name: &str, capture: &[u8], how: Wrapper) -> Result<PathBuf, TestError> {
     let member = format!("caps/{name}");
     let (file, bytes) = match how {
         Wrapper::Plain => (name.to_string(), capture.to_vec()),
-        Wrapper::Gzip => (format!("{name}.gz"), gzip_or_panic(capture)),
+        Wrapper::Gzip => (format!("{name}.gz"), gzip(capture)?),
         Wrapper::TarMember => ("set.tar".to_string(), tar(&[Entry::file(&member, capture)])),
         Wrapper::TgzMember => (
             "set.tgz".to_string(),
-            gzip_or_panic(&tar(&[Entry::file(&member, capture)])),
+            gzip(&tar(&[Entry::file(&member, capture)]))?,
         ),
         Wrapper::GzipInTgz => {
-            let inner = gzip_or_panic(capture);
+            let inner = gzip(capture)?;
             let member_gz = format!("{member}.gz");
             (
                 "set.tgz".to_string(),
-                gzip_or_panic(&tar(&[Entry::file(&member_gz, &inner)])),
+                gzip(&tar(&[Entry::file(&member_gz, &inner)]))?,
             )
         }
     };
     let path = dir.join(file);
-    std::fs::write(&path, bytes).expect("write presented capture");
-    path
+    std::fs::write(&path, bytes).map_err(|e| format!("write presented capture: {e}"))?;
+    Ok(path)
 }
 
 /// Run the binary with `TMPDIR` pointed at a private directory, so nothing it
 /// unpacks lands anywhere shared.
-fn sipnab(args: &[&str], log: &str, tmpdir: &Path) -> (String, String, Option<i32>) {
+fn sipnab(
+    args: &[&str],
+    log: &str,
+    tmpdir: &Path,
+) -> Result<(String, String, Option<i32>), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("TMPDIR", tmpdir)
         .env("SIPNAB_LOG", log)
         .env("NO_COLOR", "1")
         .output()
-        .expect("spawn sipnab");
-    (
+        .map_err(|e| format!("spawn sipnab: {e}"))?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// Run one row across every wrapper and require one answer.
@@ -110,16 +114,16 @@ fn matrix(
     log: &str,
     observe: &dyn Fn(&str, &str) -> String,
     proof: &str,
-) {
+) -> Result<(), TestError> {
     let mut answers = Vec::new();
     for how in WRAPPERS {
-        let dir = tempfile::tempdir().expect("dir");
-        let tmp = tempfile::tempdir().expect("tmp");
-        let input = present(dir.path(), name, capture, how);
+        let dir = tempfile::tempdir().map_err(|e| format!("dir: {e}"))?;
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e}"))?;
+        let input = present(dir.path(), name, capture, how)?;
         let spec = input.display().to_string();
         let mut args = vec!["-N", "-I", spec.as_str()];
         args.extend_from_slice(extra);
-        let (stdout, stderr, code) = sipnab(&args, log, tmp.path());
+        let (stdout, stderr, code) = sipnab(&args, log, tmp.path())?;
         assert_eq!(code, Some(0), "{row} / {how:?}: exit status\n{stderr}");
         answers.push((how, observe(&stdout, &stderr)));
     }
@@ -135,6 +139,7 @@ fn matrix(
             "{row}: {how:?} decrypts differently from plain"
         );
     }
+    Ok(())
 }
 
 // ── TLS 1.3 ────────────────────────────────────────────────────────────
@@ -159,32 +164,29 @@ fn sip_messages(stdout: &str, _stderr: &str) -> String {
 }
 
 #[test]
-fn tls_with_a_keylog_decrypts_the_same_in_every_wrapper() {
-    let keydir = tempfile::tempdir().expect("keys");
+fn tls_with_a_keylog_decrypts_the_same_in_every_wrapper() -> Result<(), TestError> {
+    let keydir = tempfile::tempdir().map_err(|e| format!("keys: {e}"))?;
     let keylog = keydir.path().join("session.keylog");
-    std::fs::write(&keylog, tls_keylog()).expect("keylog");
+    std::fs::write(&keylog, tls_keylog()).map_err(|e| format!("keylog: {e}"))?;
     let keylog = keylog.display().to_string();
     matrix(
         "TLS --keylog",
         "tls.pcap",
-        &classic_pcap_or_panic(&tls_session_frames_or_panic()),
+        &classic_pcap(&tls_session_frames()?)?,
         &["--keylog", &keylog, "--json", "--portrange", "1-65535"],
         "warn",
         &sip_messages,
         TLS_CALL_ID,
-    );
+    )?;
+    Ok(())
 }
 
 #[test]
-fn tls_with_embedded_secrets_decrypts_the_same_in_every_wrapper() {
-    let dir = tempfile::tempdir().expect("dir");
+fn tls_with_embedded_secrets_decrypts_the_same_in_every_wrapper() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("dir: {e}"))?;
     let p = dir.path().join("dsb.pcapng");
-    pcap_build::write_pcapng_with_dsb_frames_or_panic(
-        &p,
-        &tls_keylog(),
-        &tls_session_frames_or_panic(),
-    );
-    let capture = std::fs::read(&p).expect("read");
+    pcap_build::write_pcapng_with_dsb_frames(&p, &tls_keylog(), &tls_session_frames()?)?;
+    let capture = std::fs::read(&p).map_err(|e| format!("read: {e}"))?;
     matrix(
         "TLS embedded DSB",
         "dsb.pcapng",
@@ -193,7 +195,8 @@ fn tls_with_embedded_secrets_decrypts_the_same_in_every_wrapper() {
         "warn",
         &sip_messages,
         TLS_CALL_ID,
-    );
+    )?;
+    Ok(())
 }
 
 // ── SRTP ───────────────────────────────────────────────────────────────
@@ -208,16 +211,17 @@ fn dtmf_digits(_stdout: &str, stderr: &str) -> String {
 }
 
 #[test]
-fn srtp_keyed_by_sdes_decrypts_the_same_in_every_wrapper() {
+fn srtp_keyed_by_sdes_decrypts_the_same_in_every_wrapper() -> Result<(), TestError> {
     matrix(
         "SRTP SDES",
         "sdes.pcap",
-        &classic_pcap_or_panic(&sdes_call_frames_or_panic()),
+        &classic_pcap(&sdes_call_frames()?)?,
         &["-t", "--dtmf-cleartext", "--no-cli-print"],
         "sipnab=debug",
         &dtmf_digits,
         "42",
-    );
+    )?;
+    Ok(())
 }
 
 // ── DTLS-SRTP ──────────────────────────────────────────────────────────
@@ -260,7 +264,7 @@ fn dtls_handshake(msg_type: u8, body: &[u8]) -> Vec<u8> {
 
 /// DTLS hellos that negotiate SRTP_AES128_CM_HMAC_SHA1_80, then DTMF "42" as
 /// SRTP keyed by the DTLS-SRTP exporter.
-fn dtls_srtp_frames() -> Vec<Vec<u8>> {
+fn dtls_srtp_frames() -> Result<Vec<Vec<u8>>, TestError> {
     let a = [10, 7, 0, 1];
     let b = [10, 7, 0, 2];
     let (pa, pb) = (41_000u16, 51_000u16);
@@ -286,15 +290,15 @@ fn dtls_srtp_frames() -> Vec<Vec<u8>> {
         pcap_build::udp_frame(a, b, pa, pb, &dtls_handshake(1, &ch)),
         pcap_build::udp_frame(b, a, pb, pa, &dtls_handshake(2, &sh)),
     ];
-    for p in dtmf_srtp_or_panic(client_key, client_salt, 0x0bad_cafe, &[4, 2]) {
+    for p in dtmf_srtp(client_key, client_salt, 0x0bad_cafe, &[4, 2])? {
         frames.push(pcap_build::udp_frame(a, b, pa, pb, &p));
     }
-    frames
+    Ok(frames)
 }
 
 #[test]
-fn dtls_srtp_decrypts_the_same_in_every_wrapper() {
-    let keydir = tempfile::tempdir().expect("keys");
+fn dtls_srtp_decrypts_the_same_in_every_wrapper() -> Result<(), TestError> {
+    let keydir = tempfile::tempdir().map_err(|e| format!("keys: {e}"))?;
     let keylog = keydir.path().join("dtls.keylog");
     std::fs::write(
         &keylog,
@@ -304,12 +308,12 @@ fn dtls_srtp_decrypts_the_same_in_every_wrapper() {
             hex(&DTLS_MASTER)
         ),
     )
-    .expect("keylog");
+    .map_err(|e| format!("keylog: {e}"))?;
     let keylog = keylog.display().to_string();
     matrix(
         "DTLS-SRTP",
         "dtls.pcap",
-        &classic_pcap_or_panic(&dtls_srtp_frames()),
+        &classic_pcap(&dtls_srtp_frames()?)?,
         &[
             "--dtls-keylog",
             &keylog,
@@ -320,7 +324,8 @@ fn dtls_srtp_decrypts_the_same_in_every_wrapper() {
         "sipnab=debug",
         &dtmf_digits,
         "42",
-    );
+    )?;
+    Ok(())
 }
 
 // ── ESP with NULL encryption ───────────────────────────────────────────
@@ -402,43 +407,44 @@ fn esp_null_call_frames() -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn esp_with_null_encryption_decodes_the_same_in_every_wrapper() {
+fn esp_with_null_encryption_decodes_the_same_in_every_wrapper() -> Result<(), TestError> {
     matrix(
         "ESP NULL",
         "esp.pcap",
-        &classic_pcap_or_panic(&esp_null_call_frames()),
+        &classic_pcap(&esp_null_call_frames())?,
         &["--json"],
         "warn",
         &sip_messages,
         ESP_CALL_ID,
-    );
+    )?;
+    Ok(())
 }
 
 // ── SIP over secure WebSocket ─────────────────────────────────────────
 
 /// Run sipnab over `frames` with the session's keylog, returning the
 /// `(what, transport)` of each message of the test call, and stderr.
-fn decrypt_wss(frames: &[Vec<u8>]) -> (Vec<(String, String)>, String) {
-    let dir = tempfile::tempdir().expect("dir");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn decrypt_wss(frames: &[Vec<u8>]) -> Result<(Vec<(String, String)>, String), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("dir: {e}"))?;
+    let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e}"))?;
     let keylog = dir.path().join("session.keylog");
-    std::fs::write(&keylog, tls_keylog()).expect("keylog");
+    std::fs::write(&keylog, tls_keylog()).map_err(|e| format!("keylog: {e}"))?;
     let capture = dir.path().join("wss.pcap");
-    std::fs::write(&capture, classic_pcap_or_panic(frames)).expect("capture");
+    std::fs::write(&capture, classic_pcap(frames)?).map_err(|e| format!("capture: {e}"))?;
     let (stdout, stderr, code) = sipnab(
         &[
             "-N",
             "-I",
-            capture.to_str().unwrap(),
+            capture.to_str().ok_or("capture path is not UTF-8")?,
             "--keylog",
-            keylog.to_str().unwrap(),
+            keylog.to_str().ok_or("keylog path is not UTF-8")?,
             "--json",
             "--portrange",
             "1-65535",
         ],
         "warn",
         tmp.path(),
-    );
+    )?;
     assert_eq!(code, Some(0), "{stderr}");
     let messages = stdout
         .lines()
@@ -455,7 +461,7 @@ fn decrypt_wss(frames: &[Vec<u8>]) -> (Vec<(String, String)>, String) {
             )
         })
         .collect();
-    (messages, stderr)
+    Ok((messages, stderr))
 }
 
 /// The expected pair: the INVITE and its 180, both over WSS.
@@ -475,14 +481,15 @@ fn invite_and_ringing_over_wss() -> Vec<(String, String)> {
 /// recognized by their shape and their SIP content, not by port: TLS already
 /// said what this is, and 7443 is outside the default WebSocket port set.
 #[test]
-fn a_decrypted_wss_session_is_sip_over_wss() {
+fn a_decrypted_wss_session_is_sip_over_wss() -> Result<(), TestError> {
     let (invite, ringing) = wss_messages();
-    let frames = wss_session_or_panic(
+    let frames = wss_session(
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[ws_text_frame(ringing.as_bytes(), None)],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+    Ok(())
 }
 
 /// **OpenSIPS's shape: one frame, two TLS records.** OpenSIPS writes the
@@ -492,7 +499,7 @@ fn a_decrypted_wss_session_is_sip_over_wss() {
 /// the lab saw the client's INVITE, ACK and BYE and none of the proxy's 100,
 /// 180, 200 and 200.
 #[test]
-fn a_websocket_frame_split_across_two_tls_records_is_one_message() {
+fn a_websocket_frame_split_across_two_tls_records_is_one_message() -> Result<(), TestError> {
     let (invite, ringing) = wss_messages();
     let frame = ws_text_frame(ringing.as_bytes(), None);
     assert_eq!(
@@ -501,39 +508,41 @@ fn a_websocket_frame_split_across_two_tls_records_is_one_message() {
         "a 16-bit length makes the header 4 bytes"
     );
     let (header, payload) = frame.split_at(4);
-    let frames = wss_session_or_panic(
+    let frames = wss_session(
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[header.to_vec(), payload.to_vec()],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
     assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+    Ok(())
 }
 
 /// The masked client direction splits the same way, the mask key included.
 #[test]
-fn a_masked_frame_split_inside_its_header_is_one_message() {
+fn a_masked_frame_split_inside_its_header_is_one_message() -> Result<(), TestError> {
     let (invite, ringing) = wss_messages();
     let frame = ws_text_frame(invite.as_bytes(), Some(WS_MASK));
     // Header is 2 + 2 + 4 bytes; cut inside the mask key.
     let (head, rest) = frame.split_at(6);
-    let frames = wss_session_or_panic(
+    let frames = wss_session(
         &[head.to_vec(), rest.to_vec()],
         &[ws_text_frame(ringing.as_bytes(), None)],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+    Ok(())
 }
 
 /// Two frames in one TLS record are two messages.
 #[test]
-fn two_websocket_frames_in_one_tls_record_are_two_messages() {
+fn two_websocket_frames_in_one_tls_record_are_two_messages() -> Result<(), TestError> {
     let (invite, ringing) = wss_messages();
     let trying = ringing.replace("180 Ringing", "100 Trying");
     let mut both = ws_text_frame(trying.as_bytes(), None);
     both.extend_from_slice(&ws_text_frame(ringing.as_bytes(), None));
-    let frames = wss_session_or_panic(&[ws_text_frame(invite.as_bytes(), Some(WS_MASK))], &[both]);
-    let (messages, stderr) = decrypt_wss(&frames);
+    let frames = wss_session(&[ws_text_frame(invite.as_bytes(), Some(WS_MASK))], &[both])?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(
         messages,
         vec![
@@ -543,36 +552,38 @@ fn two_websocket_frames_in_one_tls_record_are_two_messages() {
         ],
         "{stderr}"
     );
+    Ok(())
 }
 
 /// A message fragmented across two frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)):
 /// a text frame with FIN clear, then a continuation frame with FIN set.
 #[test]
-fn a_message_fragmented_across_two_websocket_frames_is_one_message() {
+fn a_message_fragmented_across_two_websocket_frames_is_one_message() -> Result<(), TestError> {
     let (invite, ringing) = wss_messages();
     let (first, second) = ringing.as_bytes().split_at(30);
-    let frames = wss_session_or_panic(
+    let frames = wss_session(
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[
             ws_frame_raw(false, 1, first, None),
             ws_frame_raw(true, 0, second, None),
         ],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(messages, invite_and_ringing_over_wss(), "{stderr}");
+    Ok(())
 }
 
 /// A frame whose rest never arrives is counted as NOT DECODED, never lost in
 /// silence: here the capture ends after the 4-byte header record.
 #[test]
-fn an_abandoned_partial_websocket_frame_is_counted() {
+fn an_abandoned_partial_websocket_frame_is_counted() -> Result<(), TestError> {
     let (invite, ringing) = wss_messages();
     let frame = ws_text_frame(ringing.as_bytes(), None);
-    let frames = wss_session_or_panic(
+    let frames = wss_session(
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[frame[..4].to_vec()],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(
         messages,
         vec![("INVITE".to_string(), "WSS".to_string())],
@@ -581,8 +592,9 @@ fn an_abandoned_partial_websocket_frame_is_counted() {
     let not_decoded = stderr
         .lines()
         .find(|l| l.starts_with("NOT DECODED:"))
-        .unwrap_or_else(|| panic!("the abandoned frame must be counted: {stderr}"));
+        .ok_or_else(|| format!("the abandoned frame must be counted: {stderr}"))?;
     assert!(not_decoded.contains("truncated frame (1)"), "{not_decoded}");
+    Ok(())
 }
 
 // ── The HTTP upgrade, however it is split ──────────────────────────────
@@ -605,12 +617,15 @@ fn invite_trying_ringing() -> (String, String, String, Vec<(String, String)>) {
 /// frame bytes, and the proxy's first reply after the upgrade was lost into a
 /// refused frame.
 #[test]
-fn a_101_split_across_three_records_is_followed_by_every_frame() {
+fn a_101_split_across_three_records_is_followed_by_every_frame() -> Result<(), TestError> {
     let (invite, trying, ringing, want) = invite_trying_ringing();
-    let key_at = SWITCHING.find("Sec-WebSocket-Accept: ").unwrap() + "Sec-WebSocket-Accept: ".len();
+    let key_at = SWITCHING
+        .find("Sec-WebSocket-Accept: ")
+        .ok_or("the 101 names Sec-WebSocket-Accept")?
+        + "Sec-WebSocket-Accept: ".len();
     let blank_at = SWITCHING.len() - 4;
     let head = SWITCHING.as_bytes();
-    let frames = wss_session_with_or_panic(
+    let frames = wss_session_with(
         &[UPGRADE.as_bytes().to_vec()],
         &[
             head[..key_at].to_vec(),
@@ -622,23 +637,26 @@ fn a_101_split_across_three_records_is_followed_by_every_frame() {
             ws_text_frame(trying.as_bytes(), None),
             ws_text_frame(ringing.as_bytes(), None),
         ],
-    );
+    )?;
     assert_eq!(&head[blank_at..], b"\r\n\r\n");
-    let (messages, stderr) = decrypt_wss(&frames);
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(messages, want, "{stderr}");
     assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+    Ok(())
 }
 
 /// The client's upgrade request split across records, after the line that
 /// names the upgrade, so the first record already says this is WebSocket and
 /// the second is the rest of the HTTP head, not frames.
 #[test]
-fn an_upgrade_request_split_across_records_is_followed_by_every_frame() {
+fn an_upgrade_request_split_across_records_is_followed_by_every_frame() -> Result<(), TestError> {
     let (invite, trying, ringing, want) = invite_trying_ringing();
     let head = UPGRADE.as_bytes();
-    let cut = UPGRADE.find("Connection: ").unwrap();
+    let cut = UPGRADE
+        .find("Connection: ")
+        .ok_or("the upgrade names Connection")?;
     assert!(UPGRADE[..cut].contains("websocket"));
-    let frames = wss_session_with_or_panic(
+    let frames = wss_session_with(
         &[head[..cut].to_vec(), head[cut..].to_vec()],
         &[SWITCHING.as_bytes().to_vec()],
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
@@ -646,26 +664,27 @@ fn an_upgrade_request_split_across_records_is_followed_by_every_frame() {
             ws_text_frame(trying.as_bytes(), None),
             ws_text_frame(ringing.as_bytes(), None),
         ],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(messages, want, "{stderr}");
     assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+    Ok(())
 }
 
 /// The 101 and the first frame in one record: frames start at the first byte
 /// after the blank line that ends the HTTP head.
 #[test]
-fn a_101_and_the_first_frame_in_one_record_both_count() {
+fn a_101_and_the_first_frame_in_one_record_both_count() -> Result<(), TestError> {
     let (invite, trying, ringing, want) = invite_trying_ringing();
     let mut first = SWITCHING.as_bytes().to_vec();
     first.extend_from_slice(&ws_text_frame(trying.as_bytes(), None));
-    let frames = wss_session_with_or_panic(
+    let frames = wss_session_with(
         &[UPGRADE.as_bytes().to_vec()],
         &[first],
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[ws_text_frame(ringing.as_bytes(), None)],
-    );
-    let (mut messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (mut messages, stderr) = decrypt_wss(&frames)?;
     // Compared as a set: this fixture writes every handshake record before
     // the client's INVITE, so the 100 riding in the 101's record is captured
     // first. The point is that it counts at all.
@@ -674,20 +693,23 @@ fn a_101_and_the_first_frame_in_one_record_both_count() {
     want.sort();
     assert_eq!(messages, want, "{stderr}");
     assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+    Ok(())
 }
 
 /// An upgrade whose HTTP head never ends is counted, not lost in silence.
 #[test]
-fn an_upgrade_that_never_finishes_is_counted() {
+fn an_upgrade_that_never_finishes_is_counted() -> Result<(), TestError> {
     let (invite, _, _, _) = invite_trying_ringing();
-    let key_at = SWITCHING.find("Sec-WebSocket-Accept: ").unwrap();
-    let frames = wss_session_with_or_panic(
+    let key_at = SWITCHING
+        .find("Sec-WebSocket-Accept: ")
+        .ok_or("the 101 names Sec-WebSocket-Accept")?;
+    let frames = wss_session_with(
         &[UPGRADE.as_bytes().to_vec()],
         &[SWITCHING.as_bytes()[..key_at].to_vec()],
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[],
-    );
-    let (messages, stderr) = decrypt_wss(&frames);
+    )?;
+    let (messages, stderr) = decrypt_wss(&frames)?;
     assert_eq!(
         messages,
         vec![("INVITE".to_string(), "WSS".to_string())],
@@ -696,6 +718,7 @@ fn an_upgrade_that_never_finishes_is_counted() {
     let not_decoded = stderr
         .lines()
         .find(|l| l.starts_with("NOT DECODED:"))
-        .unwrap_or_else(|| panic!("the unfinished upgrade must be counted: {stderr}"));
+        .ok_or_else(|| format!("the unfinished upgrade must be counted: {stderr}"))?;
     assert!(not_decoded.contains("truncated frame (1)"), "{not_decoded}");
+    Ok(())
 }

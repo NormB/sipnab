@@ -32,6 +32,8 @@ mod pcap_build;
 
 use encrypted_captures::*;
 
+use encrypted_captures::TestError;
+
 /// Frames read back from an export, each with its PCAP-NG comments.
 type Frames = Vec<(Vec<u8>, Vec<String>)>;
 
@@ -69,14 +71,14 @@ struct Run {
     _dir: tempfile::TempDir,
 }
 
-fn tui_run(frames: &[Vec<u8>], mode: &str, paused: bool, stopped: bool) -> Run {
-    let dir = tempfile::tempdir().expect("dir");
+fn tui_run(frames: &[Vec<u8>], mode: &str, paused: bool, stopped: bool) -> Result<Run, TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("tui.pcapng");
     let cli = Cli::parse_from([
         "sipnab",
         "--pcapng",
         "-O",
-        out.to_str().expect("utf-8"),
+        out.to_str().ok_or("utf-8")?,
         "--pcap-export-mode",
         mode,
     ]);
@@ -90,7 +92,7 @@ fn run_with(
     paused: bool,
     stopped: bool,
     dir: tempfile::TempDir,
-) -> Run {
+) -> Result<Run, TestError> {
     run_spaced(cli, out, frames, 1, paused, stopped, dir)
 }
 
@@ -102,7 +104,7 @@ fn run_spaced(
     paused: bool,
     stopped: bool,
     dir: tempfile::TempDir,
-) -> Run {
+) -> Result<Run, TestError> {
     let mut thread = TuiPacketThread {
         output: TuiOutput::new(cli, (None, None, None)),
         processor: PacketProcessor::new(),
@@ -122,24 +124,24 @@ fn run_spaced(
         }
     }
     let summary = thread.output.close(stopped);
-    let (frames, section) = read_pcapng(out);
-    Run {
+    let (frames, section) = read_pcapng(out)?;
+    Ok(Run {
         frames,
         section,
         summary,
         observed,
         error,
         _dir: dir,
-    }
+    })
 }
 
-fn read_pcapng(path: &std::path::Path) -> (Frames, Vec<String>) {
+fn read_pcapng(path: &std::path::Path) -> Result<(Frames, Vec<String>), TestError> {
     use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
     use pcap_file::pcapng::blocks::section_header::SectionHeaderOption;
     let Ok(raw) = std::fs::read(path) else {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
-    let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..]).expect("pcapng");
+    let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
     let section = reader
         .section()
         .options
@@ -151,7 +153,7 @@ fn read_pcapng(path: &std::path::Path) -> (Frames, Vec<String>) {
         .collect();
     let mut frames = Vec::new();
     while let Some(block) = reader.next_block() {
-        if let pcap_file::pcapng::Block::EnhancedPacket(epb) = block.expect("block") {
+        if let pcap_file::pcapng::Block::EnhancedPacket(epb) = block? {
             let comments = epb
                 .options
                 .iter()
@@ -163,7 +165,7 @@ fn read_pcapng(path: &std::path::Path) -> (Frames, Vec<String>) {
             frames.push((epb.data.to_vec(), comments));
         }
     }
-    (frames, section)
+    Ok((frames, section))
 }
 
 /// UDP payloads from `sport` to `dport` in Ethernet/IPv4 frames.
@@ -180,8 +182,8 @@ fn udp_payloads(frames: &Frames, sport: u16, dport: u16) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn in_decrypted_mode_the_tuis_srtp_comes_out_as_rtp() {
-    let r = tui_run(&sdes_call_frames_or_panic(), "decrypted", false, false);
+fn in_decrypted_mode_the_tuis_srtp_comes_out_as_rtp() -> Result<(), TestError> {
+    let r = tui_run(&sdes_call_frames()?, "decrypted", false, false)?;
     assert!(r.error.is_none(), "{:?}", r.error);
     let rtp = udp_payloads(&r.frames, 40_000, 50_000);
     assert_eq!(rtp.len(), 6, "every DTMF packet");
@@ -189,11 +191,12 @@ fn in_decrypted_mode_the_tuis_srtp_comes_out_as_rtp() {
         assert_eq!(p.len(), 16, "RTP header and 4-byte event, no auth tag");
         assert_eq!(p[12], if i < 3 { 4 } else { 2 }, "the decrypted digit");
     }
+    Ok(())
 }
 
 #[test]
-fn the_tuis_rebuilt_frames_say_what_they_were_decrypted_from() {
-    let r = tui_run(&sdes_call_frames_or_panic(), "decrypted", false, false);
+fn the_tuis_rebuilt_frames_say_what_they_were_decrypted_from() -> Result<(), TestError> {
+    let r = tui_run(&sdes_call_frames()?, "decrypted", false, false)?;
     let labeled: Vec<&Vec<String>> = r
         .frames
         .iter()
@@ -211,73 +214,79 @@ fn the_tuis_rebuilt_frames_say_what_they_were_decrypted_from() {
         "{:?}",
         r.section
     );
+    Ok(())
 }
 
 #[test]
-fn the_tui_copies_tls_as_captured_and_counts_it() {
-    let input = tls_session_frames_or_panic();
-    let r = tui_run(&input, "decrypted", false, false);
+fn the_tui_copies_tls_as_captured_and_counts_it() -> Result<(), TestError> {
+    let input = tls_session_frames()?;
+    let r = tui_run(&input, "decrypted", false, false)?;
     let written: Vec<Vec<u8>> = r.frames.iter().map(|(f, _)| f.clone()).collect();
     assert_eq!(
         written, input,
         "the TUI does not decrypt TLS: every frame as captured"
     );
-    let summary = r.summary.expect("a counts line in decrypted mode");
+    let summary = r.summary.ok_or("a counts line in decrypted mode")?;
     assert!(
         summary.contains("4 TLS segments copied as captured"),
         "{summary}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_stopped_tui_writes_nothing_it_held_and_says_so() {
-    let r = tui_run(&sdes_call_frames_or_panic(), "decrypted", false, true);
+fn a_stopped_tui_writes_nothing_it_held_and_says_so() -> Result<(), TestError> {
+    let r = tui_run(&sdes_call_frames()?, "decrypted", false, true)?;
     assert!(
         r.frames.is_empty(),
         "stop means stop: {} frames written",
         r.frames.len()
     );
-    let summary = r.summary.expect("a counts line");
+    let summary = r.summary.ok_or("a counts line")?;
     assert!(summary.contains("8 discarded at stop"), "{summary}");
+    Ok(())
 }
 
 #[test]
-fn in_raw_mode_every_packet_is_written_as_captured() {
-    let input = sdes_call_frames_or_panic();
-    let r = tui_run(&input, "raw", false, false);
+fn in_raw_mode_every_packet_is_written_as_captured() -> Result<(), TestError> {
+    let input = sdes_call_frames()?;
+    let r = tui_run(&input, "raw", false, false)?;
     let written: Vec<Vec<u8>> = r.frames.iter().map(|(f, _)| f.clone()).collect();
     assert_eq!(written, input);
     assert!(r.summary.is_none(), "no decrypted export, no counts line");
+    Ok(())
 }
 
 #[test]
-fn a_paused_tui_still_writes_but_does_not_analyze() {
-    let input = sdes_call_frames_or_panic();
-    let r = tui_run(&input, "raw", true, false);
+fn a_paused_tui_still_writes_but_does_not_analyze() -> Result<(), TestError> {
+    let input = sdes_call_frames()?;
+    let r = tui_run(&input, "raw", true, false)?;
     assert_eq!(
         r.frames.len(),
         input.len(),
         "a paused capture keeps writing"
     );
     assert_eq!(r.observed, 0, "and analyzes nothing");
-    let running = tui_run(&input, "raw", false, false);
+    let running = tui_run(&input, "raw", false, false)?;
     assert!(
         running.observed > 0,
         "positive control: an unpaused run observes"
     );
+    Ok(())
 }
 
 #[test]
-fn an_output_that_cannot_be_opened_stops_the_thread_with_an_error() {
-    let dir = tempfile::tempdir().expect("dir");
+fn an_output_that_cannot_be_opened_stops_the_thread_with_an_error() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("no-such-dir").join("tui.pcapng");
-    let cli = Cli::parse_from(["sipnab", "--pcapng", "-O", out.to_str().expect("utf-8")]);
-    let r = run_with(&cli, &out, &sdes_call_frames_or_panic(), false, false, dir);
-    let e = r.error.expect("an error");
+    let cli = Cli::parse_from(["sipnab", "--pcapng", "-O", out.to_str().ok_or("utf-8")?]);
+    let r = run_with(&cli, &out, &sdes_call_frames()?, false, false, dir)?;
+    let e = r.error.ok_or("an error")?;
     assert!(e.contains("Failed to create output file"), "{e}");
     // The cause, not only the context: `{e}` on an anyhow error printed the
     // outermost layer alone and dropped the OS error an operator acts on.
     assert!(e.contains("No such file or directory"), "{e}");
+    Ok(())
 }
 
 /// The thread writes what has waited long enough after every packet, not
@@ -285,34 +294,27 @@ fn an_output_that_cannot_be_opened_stops_the_thread_with_an_error() {
 /// waited it out are in the file even when the run is then stopped, and only
 /// the ones still waiting are discarded.
 #[test]
-fn frames_that_waited_long_enough_are_written_before_a_stop() {
-    let dir = tempfile::tempdir().expect("dir");
+fn frames_that_waited_long_enough_are_written_before_a_stop() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let out = dir.path().join("tui.pcapng");
     let cli = Cli::parse_from([
         "sipnab",
         "--pcapng",
         "-O",
-        out.to_str().expect("utf-8"),
+        out.to_str().ok_or("utf-8")?,
         "--pcap-export-mode",
         "decrypted",
     ]);
     // Eight packets one second apart, at 0..7 s. When the last arrives the
     // window's edge is at 2 s, and a frame AT the edge has waited the whole
     // window: the ones at 0, 1 and 2 s leave, the other five are still held.
-    let r = run_spaced(
-        &cli,
-        &out,
-        &sdes_call_frames_or_panic(),
-        1_000,
-        false,
-        true,
-        dir,
-    );
+    let r = run_spaced(&cli, &out, &sdes_call_frames()?, 1_000, false, true, dir)?;
     assert_eq!(
         r.frames.len(),
         3,
         "the frames the window had passed were written"
     );
-    let summary = r.summary.expect("a counts line");
+    let summary = r.summary.ok_or("a counts line")?;
     assert!(summary.contains("5 discarded at stop"), "{summary}");
+    Ok(())
 }

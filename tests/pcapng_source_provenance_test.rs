@@ -23,12 +23,15 @@
 
 use std::path::{Path, PathBuf};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// A fresh temp directory for one test.
-fn tmp_dir(name: &str) -> PathBuf {
+fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
     let d = std::env::temp_dir().join(format!("sipnab-provenance-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("create temp dir");
-    d
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
 }
 
 /// Path to a checked-in sample capture.
@@ -39,8 +42,8 @@ fn sample(name: &str) -> PathBuf {
 }
 
 /// A checked-in sample path as the `-I` argument string.
-fn sample_arg(name: &str) -> String {
-    sample(name).to_str().expect("utf-8 path").to_string()
+fn sample_arg(name: &str) -> Result<String, TestError> {
+    Ok(sample(name).to_str().ok_or("utf-8 path")?.to_string())
 }
 
 /// `sip-rtp-g711.pcap`: Ethernet, first packet 2016-11-26, so the input-set
@@ -57,18 +60,17 @@ const REGISTER_FILE: &str = "register-invite-reinvite-bye.pcap";
 const REGISTER_PACKETS: usize = 229;
 
 /// Run sipnab with the given args, returning `(stderr, exit_code)`.
-fn run(args: &[&str]) -> (String, Option<i32>) {
+fn run(args: &[&str]) -> Result<(String, Option<i32>), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .env("SIPNAB_LOG", "info")
         .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// Every pcapng block in `path` as `(block_type, body)`, in file order.
@@ -76,13 +78,13 @@ fn run(args: &[&str]) -> (String, Option<i32>) {
 /// A pcapng block is `type:u32, total_len:u32, body, total_len:u32`. Only
 /// little-endian sections are handled, which is what sipnab writes on every
 /// platform it supports.
-fn pcapng_blocks(path: &Path) -> Vec<(u32, Vec<u8>)> {
-    let bytes = std::fs::read(path).expect("read pcapng");
+fn pcapng_blocks(path: &Path) -> Result<Vec<(u32, Vec<u8>)>, TestError> {
+    let bytes = std::fs::read(path)?;
     let mut out = Vec::new();
     let mut off = 0usize;
     while off + 12 <= bytes.len() {
-        let btype = u32::from_le_bytes(bytes[off..off + 4].try_into().expect("4 bytes"));
-        let len = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().expect("4 bytes")) as usize;
+        let btype = u32::from_le_bytes(bytes[off..off + 4].try_into()?);
+        let len = u32::from_le_bytes(bytes[off + 4..off + 8].try_into()?) as usize;
         assert!(
             len >= 12 && off + len <= bytes.len(),
             "malformed pcapng block at offset {off}: len={len}"
@@ -90,7 +92,7 @@ fn pcapng_blocks(path: &Path) -> Vec<(u32, Vec<u8>)> {
         out.push((btype, bytes[off + 8..off + len - 4].to_vec()));
         off += len;
     }
-    out
+    Ok(out)
 }
 
 /// The `if_name` option (code 2) of an Interface Description Block body, or
@@ -98,7 +100,7 @@ fn pcapng_blocks(path: &Path) -> Vec<(u32, Vec<u8>)> {
 ///
 /// IDB body: `linktype:u16, reserved:u16, snaplen:u32, options…`, and an
 /// option is `code:u16, len:u16, value, padding to a 4-byte boundary`.
-fn idb_if_name(body: &[u8]) -> Option<String> {
+fn idb_if_name(body: &[u8]) -> Result<Option<String>, TestError> {
     /// `opt_endofopt`.
     const OPT_END: u16 = 0;
     /// `if_name`.
@@ -106,8 +108,8 @@ fn idb_if_name(body: &[u8]) -> Option<String> {
 
     let mut off = 8usize;
     while off + 4 <= body.len() {
-        let code = u16::from_le_bytes(body[off..off + 2].try_into().expect("2 bytes"));
-        let len = u16::from_le_bytes(body[off + 2..off + 4].try_into().expect("2 bytes")) as usize;
+        let code = u16::from_le_bytes(body[off..off + 2].try_into()?);
+        let len = u16::from_le_bytes(body[off + 2..off + 4].try_into()?) as usize;
         if code == OPT_END {
             break;
         }
@@ -117,38 +119,40 @@ fn idb_if_name(body: &[u8]) -> Option<String> {
             break;
         }
         if code == OPT_IF_NAME {
-            return Some(String::from_utf8_lossy(&body[start..end]).into_owned());
+            return Ok(Some(
+                String::from_utf8_lossy(&body[start..end]).into_owned(),
+            ));
         }
         off = end + (4 - end % 4) % 4;
     }
-    None
+    Ok(None)
 }
 
 /// The `if_name` each Interface Description Block declares, in file order —
 /// index into this list IS the `interface_id` an EPB references.
-fn pcapng_interface_names(path: &Path) -> Vec<Option<String>> {
-    pcapng_blocks(path)
+fn pcapng_interface_names(path: &Path) -> Result<Vec<Option<String>>, TestError> {
+    pcapng_blocks(path)?
         .into_iter()
         .filter(|(t, _)| *t == 0x0000_0001)
         .map(|(_, body)| idb_if_name(&body))
-        .collect()
+        .collect::<Result<_, TestError>>()
 }
 
 /// The interface id each Enhanced Packet Block names, in file order.
 ///
 /// EPB body: `interface_id:u32, ts_high:u32, ts_low:u32, caplen:u32, …`.
-fn pcapng_epb_interface_ids(path: &Path) -> Vec<u32> {
-    pcapng_blocks(path)
+fn pcapng_epb_interface_ids(path: &Path) -> Result<Vec<u32>, TestError> {
+    pcapng_blocks(path)?
         .into_iter()
         .filter(|(t, _)| *t == 0x0000_0006)
-        .map(|(_, body)| u32::from_le_bytes(body[0..4].try_into().expect("4 bytes")))
-        .collect()
+        .map(|(_, body)| -> Result<_, TestError> { Ok(u32::from_le_bytes(body[0..4].try_into()?)) })
+        .collect::<Result<_, TestError>>()
 }
 
 /// How many frames reference each interface id, as a vector indexed by id.
-fn frames_per_interface(path: &Path, interfaces: usize) -> Vec<usize> {
+fn frames_per_interface(path: &Path, interfaces: usize) -> Result<Vec<usize>, TestError> {
     let mut counts = vec![0usize; interfaces];
-    for id in pcapng_epb_interface_ids(path) {
+    for id in pcapng_epb_interface_ids(path)? {
         let id = id as usize;
         assert!(
             id < interfaces,
@@ -156,7 +160,7 @@ fn frames_per_interface(path: &Path, interfaces: usize) -> Vec<usize> {
         );
         counts[id] += 1;
     }
-    counts
+    Ok(counts)
 }
 
 /// Two input files at the SAME link type must each get their own interface,
@@ -173,8 +177,8 @@ fn frames_per_interface(path: &Path, interfaces: usize) -> Vec<usize> {
 /// any other way fails the counts, which are each source file's own
 /// `capinfos -c` total.
 #[test]
-fn pcapng_two_same_link_type_inputs_get_one_interface_each() {
-    let dir = tmp_dir("two-files");
+fn pcapng_two_same_link_type_inputs_get_one_interface_each() -> Result<(), TestError> {
+    let dir = tmp_dir("two-files")?;
     let out = dir.join("out.pcapng");
     // REGISTER_FILE is given FIRST on the command line but read SECOND (the
     // set resolves chronologically), which is exactly the shape that made the
@@ -187,37 +191,41 @@ fn pcapng_two_same_link_type_inputs_get_one_interface_each() {
         "--portrange",
         "1-65535",
         "-I",
-        &sample_arg(REGISTER_FILE),
+        &sample_arg(REGISTER_FILE)?,
         "-I",
-        &sample_arg(G711_FILE),
+        &sample_arg(G711_FILE)?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_eq!(code, Some(0), "export must succeed\nstderr:\n{stderr}");
 
-    let names = pcapng_interface_names(&out);
+    let names = pcapng_interface_names(&out)?;
     assert_eq!(
         names,
-        vec![Some(sample_arg(G711_FILE)), Some(sample_arg(REGISTER_FILE))],
+        vec![
+            Some(sample_arg(G711_FILE)?),
+            Some(sample_arg(REGISTER_FILE)?)
+        ],
         "one IDB per source file, each naming that file, in read order \
          (G711 sorts first: its packets are from 2016)"
     );
 
     assert_eq!(
-        frames_per_interface(&out, names.len()),
+        frames_per_interface(&out, names.len())?,
         vec![G711_PACKETS, REGISTER_PACKETS],
         "every frame references the interface of the file it was read from — \
          the counts are each source file's own packet total"
     );
+    Ok(())
 }
 
 /// One input file must still produce exactly one interface, named after it,
 /// with every frame on it. Per-source provenance must not fragment ordinary
 /// single-capture exports.
 #[test]
-fn pcapng_single_input_still_writes_exactly_one_interface() {
-    let dir = tmp_dir("one-file");
+fn pcapng_single_input_still_writes_exactly_one_interface() -> Result<(), TestError> {
+    let dir = tmp_dir("one-file")?;
     let out = dir.join("out.pcapng");
     let (stderr, code) = run(&[
         "-N",
@@ -226,22 +234,23 @@ fn pcapng_single_input_still_writes_exactly_one_interface() {
         "--portrange",
         "1-65535",
         "-I",
-        &sample_arg(REGISTER_FILE),
+        &sample_arg(REGISTER_FILE)?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_eq!(code, Some(0), "export must succeed\nstderr:\n{stderr}");
     assert_eq!(
-        pcapng_interface_names(&out),
-        vec![Some(sample_arg(REGISTER_FILE))],
+        pcapng_interface_names(&out)?,
+        vec![Some(sample_arg(REGISTER_FILE)?)],
         "a single input keeps exactly one interface, named after it"
     );
     assert_eq!(
-        frames_per_interface(&out, 1),
+        frames_per_interface(&out, 1)?,
         vec![REGISTER_PACKETS],
         "every frame of the single input stays on interface 0"
     );
+    Ok(())
 }
 
 /// A directory input names the FILES it expanded to, not the directory.
@@ -251,12 +260,12 @@ fn pcapng_single_input_still_writes_exactly_one_interface() {
 /// directory — a thing no frame was ever captured from. It must not appear as
 /// an interface, and each expanded file must appear as its own.
 #[test]
-fn pcapng_directory_input_names_the_files_not_the_directory() {
-    let dir = tmp_dir("dir-input");
+fn pcapng_directory_input_names_the_files_not_the_directory() -> Result<(), TestError> {
+    let dir = tmp_dir("dir-input")?;
     let inputs = dir.join("captures");
-    std::fs::create_dir_all(&inputs).expect("create input dir");
+    std::fs::create_dir_all(&inputs)?;
     for name in [G711_FILE, REGISTER_FILE] {
-        std::fs::copy(sample(name), inputs.join(name)).expect("stage input");
+        std::fs::copy(sample(name), inputs.join(name))?;
     }
     let out = dir.join("out.pcapng");
     let (stderr, code) = run(&[
@@ -266,15 +275,15 @@ fn pcapng_directory_input_names_the_files_not_the_directory() {
         "--portrange",
         "1-65535",
         "-I",
-        inputs.to_str().expect("utf-8 path"),
+        inputs.to_str().ok_or("utf-8 path")?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_eq!(code, Some(0), "export must succeed\nstderr:\n{stderr}");
 
-    let names = pcapng_interface_names(&out);
-    let dir_arg = inputs.to_str().expect("utf-8 path").to_string();
+    let names = pcapng_interface_names(&out)?;
+    let dir_arg = inputs.to_str().ok_or("utf-8 path")?.to_string();
     assert!(
         !names.contains(&Some(dir_arg.clone())),
         "the directory itself is not a capture source: {names:?}"
@@ -288,8 +297,9 @@ fn pcapng_directory_input_names_the_files_not_the_directory() {
         "one IDB per expanded file, each naming that file"
     );
     assert_eq!(
-        frames_per_interface(&out, names.len()),
+        frames_per_interface(&out, names.len())?,
         vec![G711_PACKETS, REGISTER_PACKETS],
         "each expanded file's frames reference its own interface"
     );
+    Ok(())
 }

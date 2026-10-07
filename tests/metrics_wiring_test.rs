@@ -13,6 +13,8 @@
 //! passed against the unwired code — the names were always there.
 #![cfg(feature = "api")]
 
+use server::TestError;
+
 #[path = "support/server.rs"]
 mod server;
 
@@ -45,16 +47,18 @@ fn sample(body: &str, key: &str) -> Option<f64> {
 ///
 /// # Returns
 /// The sample value.
-fn require(body: &str, key: &str) -> f64 {
+fn require(body: &str, key: &str) -> Result<f64, TestError> {
     match sample(body, key) {
-        Some(v) => v,
+        Some(v) => Ok(v),
+
         None => {
             let family = key.split('{').next().unwrap_or(key);
             let seen: Vec<&str> = body.lines().filter(|l| l.contains(family)).collect();
-            panic!(
+            Err(format!(
                 "series `{key}` is absent from the scrape — an alert rule over it \
                  goes no-data. Lines mentioning `{family}`: {seen:?}"
-            );
+            )
+            .into())
         }
     }
 }
@@ -62,27 +66,28 @@ fn require(body: &str, key: &str) -> f64 {
 /// `sipnab_capture_packets_total` counts the packets the capture actually
 /// processed. A hard `0` here reads to an operator as "capture is dead".
 #[test]
-fn capture_packets_total_moves_with_the_capture() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn capture_packets_total_moves_with_the_capture() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[])?;
+    let body = srv.get("/metrics")?.body;
 
-    let packets = require(&body, "sipnab_capture_packets_total");
+    let packets = require(&body, "sipnab_capture_packets_total")?;
     assert!(
         packets > 0.0,
         "sipnab_capture_packets_total is {packets} after replaying {RTP_PCAP}: \
          the counter is not wired to the capture path, and an operator cannot \
          tell that from a capture that has genuinely stopped"
     );
+    Ok(())
 }
 
 /// `sipnab_responses_total{code}` counts SIP responses by class, and every
 /// class is present even at zero so a rule over an unseen class has data.
 #[test]
-fn responses_total_counts_responses_by_class() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn responses_total_counts_responses_by_class() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[])?;
+    let body = srv.get("/metrics")?.body;
 
-    let ok = require(&body, r#"sipnab_responses_total{code="2xx"}"#);
+    let ok = require(&body, r#"sipnab_responses_total{code="2xx"}"#)?;
     assert!(
         ok > 0.0,
         "the fixture call completes, so the 2xx class must have counted \
@@ -93,29 +98,31 @@ fn responses_total_counts_responses_by_class() {
     // is 0 rather than no-data on a capture that saw no server errors.
     for class in ["1xx", "2xx", "3xx", "4xx", "5xx", "6xx"] {
         let key = format!(r#"sipnab_responses_total{{code="{class}"}}"#);
-        require(&body, &key);
+        require(&body, &key)?;
     }
+    Ok(())
 }
 
 /// `sipnab_diagnosis_total{type}` reports the media findings over the tracked
 /// dialogs, with the full type set present so a panel is never blank.
 #[test]
-fn diagnosis_total_reports_media_findings() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn diagnosis_total_reports_media_findings() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[])?;
+    let body = srv.get("/metrics")?.body;
 
     for kind in ["one_way_audio", "nat_mismatch", "no_media"] {
         let key = format!(r#"sipnab_diagnosis_total{{type="{kind}"}}"#);
-        require(&body, &key);
+        require(&body, &key)?;
     }
 
-    let one_way = require(&body, r#"sipnab_diagnosis_total{type="one_way_audio"}"#);
+    let one_way = require(&body, r#"sipnab_diagnosis_total{type="one_way_audio"}"#)?;
     assert!(
         one_way > 0.0,
         "the fixture's dialog has media in one direction only (its other \
          stream is orphaned), so the one_way_audio finding must be counted; \
          got {one_way}"
     );
+    Ok(())
 }
 
 /// `sipnab_reassembly_timeouts_total` is exposed as a real counter reading
@@ -125,16 +132,17 @@ fn diagnosis_total_reports_media_findings() {
 /// test, so the value is legitimately `0` here; that the counter MOVES is
 /// pinned in `metrics_counters_test.rs` against the sweep itself.
 #[test]
-fn reassembly_timeouts_total_is_exposed() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn reassembly_timeouts_total_is_exposed() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[])?;
+    let body = srv.get("/metrics")?.body;
 
     assert!(
         body.contains("# TYPE sipnab_reassembly_timeouts_total counter"),
         "reassembly timeouts must stay declared as a counter"
     );
-    let v = require(&body, "sipnab_reassembly_timeouts_total");
+    let v = require(&body, "sipnab_reassembly_timeouts_total")?;
     assert_eq!(v, 0.0, "the fixture times out no reassembly");
+    Ok(())
 }
 
 /// The capture-quality block reaches the scrape as four separate series.
@@ -148,9 +156,9 @@ fn reassembly_timeouts_total_is_exposed() {
 /// Zero is the point: an absent series makes an alert rule no-data forever,
 /// which reads the same as "fine" on a dashboard and is not.
 #[test]
-fn capture_quality_reaches_the_scrape_as_separate_series() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn capture_quality_reaches_the_scrape_as_separate_series() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[])?;
+    let body = srv.get("/metrics")?.body;
 
     for family in [
         "sipnab_capture_kernel_dropped_packets_total",
@@ -162,7 +170,7 @@ fn capture_quality_reaches_the_scrape_as_separate_series() {
             "{family} must be declared as a counter"
         );
         assert_eq!(
-            require(&body, family),
+            require(&body, family)?,
             0.0,
             "{family} must read 0 for a file replay, which has no capture ring"
         );
@@ -173,11 +181,12 @@ fn capture_quality_reaches_the_scrape_as_separate_series() {
         "the roll-up must be a gauge — it is a state, not a running total"
     );
     assert_eq!(
-        require(&body, "sipnab_capture_quality_degraded"),
+        require(&body, "sipnab_capture_quality_degraded")?,
         0.0,
         "nothing was observed wrong replaying {RTP_PCAP}, so the roll-up must \
          be 0"
     );
+    Ok(())
 }
 
 /// The two drop counters are never collapsed into one series.
@@ -188,9 +197,9 @@ fn capture_quality_reaches_the_scrape_as_separate_series() {
 /// This is a naming contract, asserted on the wire where an alert rule reads
 /// it rather than in the struct.
 #[test]
-fn kernel_and_interface_drops_are_never_one_series() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn kernel_and_interface_drops_are_never_one_series() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[])?;
+    let body = srv.get("/metrics")?.body;
 
     assert!(
         sample(&body, "sipnab_capture_kernel_dropped_packets_total").is_some()
@@ -207,4 +216,5 @@ fn kernel_and_interface_drops_are_never_one_series() {
             "`{collapsed}` sums losses with different remedies into one series"
         );
     }
+    Ok(())
 }

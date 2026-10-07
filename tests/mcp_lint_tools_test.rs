@@ -24,7 +24,9 @@
 
 #[path = "support/mcp.rs"]
 mod support;
-use support::{McpSession, call_tool_with_args_or_panic, ok_payload_or_panic};
+use support::{McpSession, call_tool_with_args, ok_payload};
+
+use support::TestError;
 
 /// A B2BUA capture whose SDP negotiates `sendrecv` in both directions while the
 /// media only ever flows one way.
@@ -53,24 +55,40 @@ const OPTIONS_PING: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
 const OPTIONS_CALL: &str = "options-ping-c-synth@198.51.100.206";
 
 /// Findings for one call, as `(rule_id, severity)` pairs.
-fn rule_ids(payload: &serde_json::Value) -> Vec<String> {
-    payload["findings"]
+fn rule_ids(payload: &serde_json::Value) -> Result<Vec<String>, TestError> {
+    Ok(payload["findings"]
         .as_array()
-        .unwrap_or_else(|| panic!("findings must be an array: {payload}"))
+        .ok_or_else(|| format!("findings must be an array: {payload}"))?
         .iter()
-        .map(|f| f["rule_id"].as_str().expect("rule_id").to_string())
-        .collect()
+        .map(|f| {
+            f["rule_id"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("a finding's rule_id must be a string: {f}"))
+        })
+        .collect::<Result<_, _>>()?)
 }
 
 /// Every rule identifier named in `rules_not_evaluated`, across all groups.
-fn skipped_ids(payload: &serde_json::Value) -> Vec<String> {
-    payload["rules_not_evaluated"]
+fn skipped_ids(payload: &serde_json::Value) -> Result<Vec<String>, TestError> {
+    Ok(payload["rules_not_evaluated"]
         .as_array()
-        .unwrap_or_else(|| panic!("rules_not_evaluated must be an array: {payload}"))
+        .ok_or_else(|| format!("rules_not_evaluated must be an array: {payload}"))?
         .iter()
-        .flat_map(|g| g["rule_ids"].as_array().expect("rule_ids").iter())
-        .map(|v| v.as_str().expect("rule id").to_string())
-        .collect()
+        .map(|g| {
+            g["rule_ids"]
+                .as_array()
+                .ok_or_else(|| format!("a group's rule_ids must be an array: {g}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("a rule id must be a string: {v}"))
+        })
+        .collect::<Result<_, _>>()?)
 }
 
 /// The rule class that justifies putting a linter behind this tool at all must
@@ -81,15 +99,15 @@ fn skipped_ids(payload: &serde_json::Value) -> Vec<String> {
 /// signaling and the RTP together can report it, and until this test existed
 /// nothing proved the MCP surface reached that rule.
 #[test]
-fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
-    let payload = ok_payload_or_panic(&call_tool_with_args_or_panic(
+fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() -> Result<(), TestError> {
+    let payload = ok_payload(&call_tool_with_args(
         B2BUA,
         &[],
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL}),
-    ));
+    )?)?;
 
-    let ids = rule_ids(&payload);
+    let ids = rule_ids(&payload)?;
     assert!(
         ids.iter().any(|id| id == "OBS-3264-6.1-DIRECTION-UNMET"),
         "sendrecv was negotiated in both directions and 355 RTP packets went \
@@ -103,10 +121,10 @@ fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
 
     let finding = payload["findings"]
         .as_array()
-        .expect("findings")
+        .ok_or("findings")?
         .iter()
         .find(|f| f["rule_id"] == "OBS-3264-6.1-DIRECTION-UNMET")
-        .expect("the direction finding");
+        .ok_or("the direction finding")?;
     assert_eq!(finding["basis"], "observation");
     assert_eq!(finding["severity"], "warning");
     assert!(
@@ -115,6 +133,7 @@ fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
             .is_some_and(|o| o.contains("355")),
         "the finding must carry the packet count it was drawn from: {finding}"
     );
+    Ok(())
 }
 
 /// The citation stays two typed fields, and the numbers are the RFC's.
@@ -126,23 +145,23 @@ fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
 /// sources came to place the angle-bracket rule in RFC 3261 §20.10, where it
 /// is not.
 #[test]
-fn a_finding_carries_the_citation_as_data_not_prose() {
-    let payload = ok_payload_or_panic(&call_tool_with_args_or_panic(
+fn a_finding_carries_the_citation_as_data_not_prose() -> Result<(), TestError> {
+    let payload = ok_payload(&call_tool_with_args(
         B2BUA,
         &[],
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL}),
-    ));
+    )?)?;
 
-    for finding in payload["findings"].as_array().expect("findings") {
-        let id = finding["rule_id"].as_str().expect("rule_id");
+    for finding in payload["findings"].as_array().ok_or("findings")? {
+        let id = finding["rule_id"].as_str().ok_or("rule_id")?;
         assert!(
             finding["rfc"].is_u64(),
             "{id}: rfc must stay a number, not prose: {finding}"
         );
         let section = finding["section"]
             .as_str()
-            .unwrap_or_else(|| panic!("{id}: section must stay a string: {finding}"));
+            .ok_or_else(|| format!("{id}: section must stay a string: {finding}"))?;
         assert!(
             !section.is_empty() && section.chars().all(|c| c.is_ascii_digit() || c == '.'),
             "{id}: section must be a section number, got {section:?}"
@@ -150,7 +169,7 @@ fn a_finding_carries_the_citation_as_data_not_prose() {
         // The identifier splices the same two values, so a citation that
         // disagrees with its own identifier is caught here as well as in the
         // library's own gate.
-        let rfc = finding["rfc"].as_u64().expect("rfc");
+        let rfc = finding["rfc"].as_u64().ok_or("rfc")?;
         assert!(
             id.contains(&format!("-{rfc}-{section}-")),
             "{id} names a different citation from the one it carries \
@@ -163,6 +182,7 @@ fn a_finding_carries_the_citation_as_data_not_prose() {
             );
         }
     }
+    Ok(())
 }
 
 /// A ruleset selector narrows the run, and one that matches nothing says so.
@@ -170,33 +190,32 @@ fn a_finding_carries_the_citation_as_data_not_prose() {
 /// The dangerous alternative is a selector that quietly does nothing: the
 /// caller then reads the whole catalog believing it read a subset.
 #[test]
-fn rulesets_and_severity_narrow_the_run() {
-    let mut session = McpSession::start_or_panic(B2BUA, &[]);
+fn rulesets_and_severity_narrow_the_run() -> Result<(), TestError> {
+    let mut session = McpSession::start(B2BUA, &[])?;
 
-    let all = ok_payload_or_panic(
-        &session.call_or_panic("lint_dialog", serde_json::json!({"call_id": B2BUA_CALL})),
-    );
-    let observed = ok_payload_or_panic(&session.call_or_panic(
+    let all =
+        ok_payload(&session.call("lint_dialog", serde_json::json!({"call_id": B2BUA_CALL}))?)?;
+    let observed = ok_payload(&session.call(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["observed"]}),
-    ));
-    let interop = ok_payload_or_panic(&session.call_or_panic(
+    )?)?;
+    let interop = ok_payload(&session.call(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["interop"]}),
-    ));
-    let rfc3261 = ok_payload_or_panic(&session.call_or_panic(
+    )?)?;
+    let rfc3261 = ok_payload(&session.call(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["rfc3261"]}),
-    ));
+    )?)?;
 
     // This call trips one observation rule and three interop ones, all of them
     // citing RFC 3264. Verified against the unfiltered run below.
     assert!(
-        rule_ids(&observed).iter().all(|id| id.starts_with("OBS-")),
+        rule_ids(&observed)?.iter().all(|id| id.starts_with("OBS-")),
         "the observed selector must return only observation rules: {observed}"
     );
     assert!(
-        !rule_ids(&observed).is_empty() && !rule_ids(&interop).is_empty(),
+        !rule_ids(&observed)?.is_empty() && !rule_ids(&interop)?.is_empty(),
         "both halves have findings on this call, so an empty one is a filter \
          bug rather than a clean capture"
     );
@@ -214,21 +233,22 @@ fn rulesets_and_severity_narrow_the_run() {
 
     // `severity_min` is the engine's own filter, so a threshold above every
     // finding present empties the list rather than reordering it.
-    let loud = ok_payload_or_panic(&session.call_or_panic(
+    let loud = ok_payload(&session.call(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "severity_min": "error"}),
-    ));
+    )?)?;
     assert_eq!(loud["finding_count"], 0, "nothing here is an error: {loud}");
     assert_eq!(loud["severity_min"], "error");
 
-    let warned = ok_payload_or_panic(&session.call_or_panic(
+    let warned = ok_payload(&session.call(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "severity_min": "warning"}),
-    ));
+    )?)?;
     assert_eq!(
         warned["finding_count"], observed["finding_count"],
         "the one warning on this call is the direction finding: {warned}"
     );
+    Ok(())
 }
 
 /// A typo'd selector is refused by name rather than widening the run.
@@ -237,22 +257,23 @@ fn rulesets_and_severity_narrow_the_run() {
 /// rule and return an empty finding list, which reads as a conformant call —
 /// the worst outcome available, because it is a confident wrong answer.
 #[test]
-fn an_unknown_selector_is_refused_rather_than_silently_ignored() {
-    let msg = call_tool_with_args_or_panic(
+fn an_unknown_selector_is_refused_rather_than_silently_ignored() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         B2BUA,
         &[],
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["rfc3621"]}),
-    );
+    )?;
     let error = msg
         .get("error")
-        .unwrap_or_else(|| panic!("a typo'd selector must not succeed: {msg}"));
+        .ok_or_else(|| format!("a typo'd selector must not succeed: {msg}"))?;
     assert_eq!(error["code"], -32602);
-    let text = error["message"].as_str().expect("message");
+    let text = error["message"].as_str().ok_or("message")?;
     assert!(
         text.contains("rfc3621") && text.contains("rfc3261") && text.contains("observation"),
         "the refusal must name the bad selector and the vocabulary: {text}"
     );
+    Ok(())
 }
 
 /// A run that could not reach a rule says which rule and why.
@@ -261,17 +282,17 @@ fn an_unknown_selector_is_refused_rather_than_silently_ignored() {
 /// lists, so an agent counting findings answers "conformant" for both. This
 /// field is the only thing separating them.
 #[test]
-fn a_run_names_the_rules_it_could_not_evaluate() {
+fn a_run_names_the_rules_it_could_not_evaluate() -> Result<(), TestError> {
     // A call with media: only the RTCP rule stays out of reach, because the
     // stream store keeps no record of the endpoint pairs RTCP landed on.
-    let with_media = ok_payload_or_panic(&call_tool_with_args_or_panic(
+    let with_media = ok_payload(&call_tool_with_args(
         B2BUA,
         &[],
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL}),
-    ));
+    )?)?;
     assert_eq!(
-        skipped_ids(&with_media),
+        skipped_ids(&with_media)?,
         ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"],
         "with one RTP stream attributed, every other observation rule ran: \
          {with_media}"
@@ -279,14 +300,14 @@ fn a_run_names_the_rules_it_could_not_evaluate() {
 
     // A call with no media at all: every observation rule is unreachable, and
     // saying nothing would present that as a clean media path.
-    let no_media = ok_payload_or_panic(&call_tool_with_args_or_panic(
+    let no_media = ok_payload(&call_tool_with_args(
         OPTIONS_PING,
         &[],
         "lint_dialog",
         serde_json::json!({"call_id": OPTIONS_CALL}),
-    ));
+    )?)?;
     assert_eq!(no_media["rtp_streams_observed"], 0);
-    let skipped = skipped_ids(&no_media);
+    let skipped = skipped_ids(&no_media)?;
     for id in [
         "OBS-3264-6.1-PT-UNDECLARED",
         "OBS-4566-5.14-MEDIA-PORT-MISMATCH",
@@ -300,6 +321,7 @@ fn a_run_names_the_rules_it_could_not_evaluate() {
             "{id} had no media to read and the response must say so: {skipped:?}"
         );
     }
+    Ok(())
 }
 
 /// `validate_message` reads the message the index names, and reports what it
@@ -309,14 +331,14 @@ fn a_run_names_the_rules_it_could_not_evaluate() {
 /// dialog is an `OPTIONS` request carrying neither `Max-Forwards` nor a branch
 /// beginning `z9hG4bK`.
 #[test]
-fn validate_message_checks_the_message_the_index_names() {
-    let mut session = McpSession::start_or_panic(OPTIONS_PING, &[]);
+fn validate_message_checks_the_message_the_index_names() -> Result<(), TestError> {
+    let mut session = McpSession::start(OPTIONS_PING, &[])?;
 
-    let payload = ok_payload_or_panic(&session.call_or_panic(
+    let payload = ok_payload(&session.call(
         "validate_message",
         serde_json::json!({"call_id": OPTIONS_CALL, "index": 0}),
-    ));
-    let ids = rule_ids(&payload);
+    )?)?;
+    let ids = rule_ids(&payload)?;
     assert!(
         ids.contains(&"SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING".to_string())
             && ids.contains(&"SIP-3261-8.1.1.7-BRANCH-COOKIE".to_string()),
@@ -324,7 +346,7 @@ fn validate_message_checks_the_message_the_index_names() {
     );
     assert_eq!(payload["message_index"], 0);
     assert_eq!(payload["message_count"], 2);
-    for finding in payload["findings"].as_array().expect("findings") {
+    for finding in payload["findings"].as_array().ok_or("findings")? {
         assert_eq!(
             finding["message_index"], 0,
             "a finding must name the message it came from: {finding}"
@@ -332,7 +354,7 @@ fn validate_message_checks_the_message_the_index_names() {
     }
 
     // Reading one message reaches neither the dialog rules nor the media ones.
-    let skipped = skipped_ids(&payload);
+    let skipped = skipped_ids(&payload)?;
     for id in [
         "SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH",
         "SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT",
@@ -347,13 +369,13 @@ fn validate_message_checks_the_message_the_index_names() {
 
     // Out of range refuses and names the count, rather than returning the last
     // message or an empty finding list.
-    let msg = session.call_or_panic(
+    let msg = session.call(
         "validate_message",
         serde_json::json!({"call_id": OPTIONS_CALL, "index": 99}),
-    );
+    )?;
     let error = msg
         .get("error")
-        .unwrap_or_else(|| panic!("index 99 of a 2-message dialog must refuse: {msg}"));
+        .ok_or_else(|| format!("index 99 of a 2-message dialog must refuse: {msg}"))?;
     assert_eq!(error["code"], -32602);
     assert!(
         error["message"]
@@ -361,6 +383,7 @@ fn validate_message_checks_the_message_the_index_names() {
             .is_some_and(|m| m.contains("out of range") && m.contains('2')),
         "the refusal must name the message count: {error}"
     );
+    Ok(())
 }
 
 /// `explain_rule` resolves an identifier to the citation the rule really cites.
@@ -370,13 +393,13 @@ fn validate_message_checks_the_message_the_index_names() {
 /// Section 20, above §20.1. An agent that reads the section number out of this
 /// tool cites the right paragraph. One that recalls it does not.
 #[test]
-fn explain_rule_resolves_an_identifier_to_its_real_citation() {
-    let mut session = McpSession::start_or_panic(OPTIONS_PING, &[]);
+fn explain_rule_resolves_an_identifier_to_its_real_citation() -> Result<(), TestError> {
+    let mut session = McpSession::start(OPTIONS_PING, &[])?;
 
-    let bracket = ok_payload_or_panic(&session.call_or_panic(
+    let bracket = ok_payload(&session.call(
         "explain_rule",
         serde_json::json!({"rule_id": "SIP-3261-20-URI-BRACKETS"}),
-    ));
+    )?)?;
     assert_eq!(bracket["rfc"], 3261);
     assert_eq!(
         bracket["section"], "20",
@@ -390,14 +413,13 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 
     // The selectors reported have to work as `lint_dialog` arguments, which is
     // the only reason to report them at all.
-    let observation = ok_payload_or_panic(&session.call_or_panic(
+    let observation = ok_payload(&session.call(
         "explain_rule",
         serde_json::json!({"rule_id": "OBS-3264-6.1-DIRECTION-UNMET"}),
-    ));
+    )?)?;
     assert_eq!(observation["scope"], "media");
     assert_eq!(observation["basis"], "observation");
-    let selectors: Vec<String> =
-        serde_json::from_value(observation["rulesets"].clone()).expect("rulesets");
+    let selectors: Vec<String> = serde_json::from_value(observation["rulesets"].clone())?;
     assert!(
         selectors.contains(&"observed".to_string())
             && selectors.contains(&"rfc3264".to_string())
@@ -408,13 +430,13 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 
     // An unknown identifier refuses and lists the catalog, because an empty
     // answer reads as "that rule found nothing".
-    let msg = session.call_or_panic(
+    let msg = session.call(
         "explain_rule",
         serde_json::json!({"rule_id": "SIP-3261-20.10-URI-BRACKETS"}),
-    );
+    )?;
     let error = msg
         .get("error")
-        .unwrap_or_else(|| panic!("an invented identifier must refuse: {msg}"));
+        .ok_or_else(|| format!("an invented identifier must refuse: {msg}"))?;
     assert_eq!(error["code"], -32602);
     assert!(
         error["message"]
@@ -422,6 +444,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
             .is_some_and(|m| m.contains("SIP-3261-20-URI-BRACKETS")),
         "the refusal must list the real identifiers: {error}"
     );
+    Ok(())
 }
 
 /// Every rule the catalog holds is explainable through the tool.
@@ -430,8 +453,8 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 /// holding an identifier it cannot resolve, which is where a hallucinated
 /// citation comes from.
 #[test]
-fn every_cataloged_rule_is_explainable() {
-    let mut session = McpSession::start_or_panic(OPTIONS_PING, &[]);
+fn every_cataloged_rule_is_explainable() -> Result<(), TestError> {
+    let mut session = McpSession::start(OPTIONS_PING, &[])?;
     // Read out of the library so a rule added later has to appear here too.
     let ids: Vec<&'static str> = sipnab::sip::lint::RULES.iter().map(|r| r.id).collect();
     // 32 -> 41: PA4 added nine rules — three message-scoped
@@ -443,9 +466,8 @@ fn every_cataloged_rule_is_explainable() {
     assert_eq!(ids.len(), 41, "the catalog size moved: {}", ids.len());
 
     for id in ids {
-        let payload = ok_payload_or_panic(
-            &session.call_or_panic("explain_rule", serde_json::json!({"rule_id": id})),
-        );
+        let payload =
+            ok_payload(&session.call("explain_rule", serde_json::json!({"rule_id": id}))?)?;
         assert_eq!(payload["rule_id"], id);
         assert!(
             payload["title"].as_str().is_some_and(|t| !t.is_empty()),
@@ -457,11 +479,11 @@ fn every_cataloged_rule_is_explainable() {
                 .is_some_and(|u| u.starts_with("https://www.rfc-editor.org/rfc/rfc")),
             "{id} has no link to its section: {payload}"
         );
-        let selectors: Vec<String> =
-            serde_json::from_value(payload["rulesets"].clone()).expect("rulesets");
+        let selectors: Vec<String> = serde_json::from_value(payload["rulesets"].clone())?;
         assert!(
             selectors.contains(&"all".to_string()),
             "{id} must at least be reachable by `all`: {selectors:?}"
         );
     }
+    Ok(())
 }

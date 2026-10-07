@@ -84,6 +84,8 @@ use sipnab::sip::dialog::DialogState;
 use sipnab::sip::message::SipMessage;
 use sipnab::sip::parser::parse_sip_bytes;
 
+type TestError = Box<dyn std::error::Error>;
+
 const CALLER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
 const CALLEE: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
 
@@ -243,12 +245,12 @@ fn call_messages(shape: Shape) -> Vec<(i64, bool, String)> {
 }
 
 /// Parse a shape into `SipMessage`s carrying real, distinct timestamps.
-fn parsed_call(shape: Shape) -> Vec<SipMessage> {
+fn parsed_call(shape: Shape) -> Result<Vec<SipMessage>, TestError> {
     let base: DateTime<Utc> = Utc
         .with_ymd_and_hms(2026, 1, 1, 12, 0, 0)
         .single()
-        .expect("valid base timestamp");
-    call_messages(shape)
+        .ok_or("valid base timestamp")?;
+    let msgs = call_messages(shape)
         .into_iter()
         .map(|(offset_ms, from_caller, raw)| {
             let ts = base + chrono::Duration::milliseconds(offset_ms);
@@ -266,9 +268,10 @@ fn parsed_call(shape: Shape) -> Vec<SipMessage> {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("hand-written fixture must parse")
+            .map_err(|e| format!("hand-written fixture must parse: {e:?}"))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(msgs)
 }
 
 /// What a user is shown, and what downstream surfaces key on. Deliberately not
@@ -283,26 +286,26 @@ struct Observable {
 
 /// Feed `order` (indices into the shape's messages) into a fresh store and
 /// report what the store then says about the call.
-fn observe(shape: Shape, order: &[usize]) -> Observable {
-    let msgs = parsed_call(shape);
+fn observe(shape: Shape, order: &[usize]) -> Result<Observable, TestError> {
+    let msgs = parsed_call(shape)?;
     let mut store = DialogStore::new(64, false);
     for &i in order {
         store.process_message(msgs[i].clone());
     }
     let dialog = store
         .get(shape.call_id())
-        .expect("the call must be in the store under its Call-ID");
+        .ok_or("the call must be in the store under its Call-ID")?;
     let mut status_codes: Vec<u16> = dialog
         .messages
         .iter()
         .filter_map(|m| m.status_code)
         .collect();
     status_codes.sort_unstable();
-    Observable {
+    Ok(Observable {
         state: dialog.state().clone(),
         msg_count: dialog.messages.len(),
         status_codes,
-    }
+    })
 }
 
 /// Fixed permutations, each a shape N parallel readers would really produce.
@@ -328,10 +331,10 @@ fn permutations(n: usize) -> Vec<(&'static str, Vec<usize>)> {
 /// The control: timestamp order — what one serial reader produces today — must
 /// reach the outcome the call actually had.
 #[test]
-fn timestamp_order_reaches_the_real_outcome() {
+fn timestamp_order_reaches_the_real_outcome() -> Result<(), TestError> {
     for shape in [Shape::Answered, Shape::Canceled, Shape::Failed] {
         let n = call_messages(shape).len();
-        let got = observe(shape, &(0..n).collect::<Vec<_>>());
+        let got = observe(shape, &(0..n).collect::<Vec<_>>())?;
         assert_eq!(
             got.state,
             shape.expected_state(),
@@ -343,6 +346,7 @@ fn timestamp_order_reaches_the_real_outcome() {
             "{shape:?}: every message is stored; got {got:?}"
         );
     }
+    Ok(())
 }
 
 /// The property PR1 is blocked on, over every permutation without exception.
@@ -358,13 +362,13 @@ fn timestamp_order_reaches_the_real_outcome() {
 /// current state, so nothing a later arrival carries can pull a decided call
 /// backwards.
 #[test]
-fn arrival_order_converges_for_every_permutation() {
+fn arrival_order_converges_for_every_permutation() -> Result<(), TestError> {
     for shape in [Shape::Answered, Shape::Canceled, Shape::Failed] {
         let n = call_messages(shape).len();
-        let baseline = observe(shape, &(0..n).collect::<Vec<_>>());
+        let baseline = observe(shape, &(0..n).collect::<Vec<_>>())?;
 
         for (name, order) in permutations(n) {
-            let got = observe(shape, &order);
+            let got = observe(shape, &order)?;
             assert_eq!(
                 got, baseline,
                 "{shape:?}: arrival order `{name}` ({order:?}) produced a \
@@ -375,6 +379,7 @@ fn arrival_order_converges_for_every_permutation() {
             );
         }
     }
+    Ok(())
 }
 
 /// A capture that BEGINS MID-DIALOG reports the outcome it saw.
@@ -394,16 +399,16 @@ fn arrival_order_converges_for_every_permutation() {
 /// third message below is that `200`, and it is why this asserts `Canceled`
 /// rather than merely "not `Trying`".
 #[test]
-fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() {
+fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() -> Result<(), TestError> {
     // Only the ending: CANCEL, then its 487. The INVITE was before the capture.
-    let msgs = parsed_call(Shape::Canceled);
+    let msgs = parsed_call(Shape::Canceled)?;
     let mut store = DialogStore::new(64, false);
     for i in [3usize, 4] {
         store.process_message(msgs[i].clone());
     }
     let dialog = store
         .get(Shape::Canceled.call_id())
-        .expect("a mid-dialog capture still yields a dialog");
+        .ok_or("a mid-dialog capture still yields a dialog")?;
     assert_eq!(
         *dialog.state(),
         DialogState::Canceled,
@@ -416,6 +421,7 @@ fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() {
         Shape::Canceled.expected_state(),
         "and it must reach the same outcome a capture of the whole call does"
     );
+    Ok(())
 }
 
 /// The offline merge path is the escape hatch PR1 could lean on, so its
@@ -424,11 +430,11 @@ fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() {
 /// Two stores, each fed a different half backwards, then merged — the shape of
 /// two readers finishing and their results being combined.
 #[test]
-fn merge_recovers_timestamp_order_from_permuted_stores() {
+fn merge_recovers_timestamp_order_from_permuted_stores() -> Result<(), TestError> {
     for shape in [Shape::Answered, Shape::Canceled, Shape::Failed] {
-        let msgs = parsed_call(shape);
+        let msgs = parsed_call(shape)?;
         let n = msgs.len();
-        let baseline = observe(shape, &(0..n).collect::<Vec<_>>());
+        let baseline = observe(shape, &(0..n).collect::<Vec<_>>())?;
 
         let mid = n / 2;
         let mut a = DialogStore::new(64, false);
@@ -443,7 +449,7 @@ fn merge_recovers_timestamp_order_from_permuted_stores() {
 
         let dialog = a
             .get(shape.call_id())
-            .expect("the merged store must still hold the call");
+            .ok_or("the merged store must still hold the call")?;
         assert_eq!(
             dialog.messages.len(),
             baseline.msg_count,
@@ -456,4 +462,5 @@ fn merge_recovers_timestamp_order_from_permuted_stores() {
              the same state as a serial reader"
         );
     }
+    Ok(())
 }

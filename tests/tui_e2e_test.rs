@@ -21,6 +21,10 @@
 
 #[cfg(all(feature = "tui", unix))]
 mod tui_e2e {
+    /// The error a test returns: any error, boxed, so `?` works on I/O,
+    /// parse and JSON errors alike.
+    type TestError = Box<dyn std::error::Error>;
+
     use std::process::Command;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
@@ -48,7 +52,7 @@ mod tui_e2e {
         /// # Side effects
         /// Spawns a detached tmux session running the real sipnab binary; the
         /// session is killed when the returned `TuiSession` is dropped.
-        fn launch(cols: u16, rows: u16, cwd: &str, args: &[&str]) -> Self {
+        fn launch(cols: u16, rows: u16, cwd: &str, args: &[&str]) -> Result<Self, TestError> {
             let bin = env!("CARGO_BIN_EXE_sipnab");
             let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
             let name = format!("sipnab_e2e_{}_{}", std::process::id(), seq);
@@ -74,7 +78,7 @@ mod tui_e2e {
             // enforce. Being unique is not the same as being checkably unique.
             let cfg_home =
                 std::env::temp_dir().join(format!("sipnab-e2e-cfg-{}-{seq}", std::process::id()));
-            std::fs::create_dir_all(&cfg_home).expect("create isolated config dir");
+            std::fs::create_dir_all(&cfg_home)?;
 
             // tmux runs the command via the shell; cd first so the file browser
             // and any relative paths resolve under the fixture directory.
@@ -101,18 +105,17 @@ mod tui_e2e {
                     &rows.to_string(),
                     &cmd,
                 ])
-                .status()
-                .expect("failed to run tmux (is it installed?)");
+                .status()?;
             assert!(status.success(), "tmux new-session failed");
 
-            TuiSession { name }
+            Ok(TuiSession { name })
         }
 
         /// Default-size launch loading the bundled SIP call fixture.
         ///
         /// # Returns
         /// A 150x40 session started in `tests/fixtures` with `-I sip_call.pcap`.
-        fn launch_sip_call() -> Self {
+        fn launch_sip_call() -> Result<Self, TestError> {
             Self::launch(150, 40, fixtures_dir(), &["-I", "sip_call.pcap"])
         }
 
@@ -120,56 +123,57 @@ mod tui_e2e {
         ///
         /// # Returns
         /// The pane text from `tmux capture-pane -p` (lossy UTF-8).
-        fn screen(&self) -> String {
+        fn screen(&self) -> Result<String, TestError> {
             let out = Command::new("tmux")
                 .args(["capture-pane", "-t", &self.name, "-p"])
-                .output()
-                .expect("tmux capture-pane failed");
-            String::from_utf8_lossy(&out.stdout).into_owned()
+                .output()?;
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         }
 
-        /// Poll the screen until `needle` appears, returning the screen. Panics
-        /// with the last captured screen on timeout.
+        /// Poll the screen until `needle` appears, returning the screen. An
+        /// error carrying the last captured screen on timeout.
         ///
         /// # Arguments
         /// * `needle` - Substring polled for (50 ms interval, 5 s deadline).
-        fn wait_for(&self, needle: &str) -> String {
+        fn wait_for(&self, needle: &str) -> Result<String, TestError> {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let last = self.screen();
+                let last = self.screen()?;
                 if last.contains(needle) {
-                    return last;
+                    return Ok(last);
                 }
                 if Instant::now() >= deadline {
-                    panic!(
+                    return Err(format!(
                         "timed out waiting for {needle:?} in session {}.\nlast screen:\n{last}",
                         self.name
-                    );
+                    )
+                    .into());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
 
         /// Poll the screen until `pred` holds, returning the matching screen.
-        /// Panics with `desc` and the last captured screen on timeout. Used
+        /// An error naming `desc` and the last captured screen on timeout. Used
         /// for conditions a plain substring search can't express (e.g. an
         /// element must *disappear*, or a count must reach a value).
         ///
         /// # Arguments
-        /// * `desc` - Human description of the awaited condition (for panics).
+        /// * `desc` - Human description of the awaited condition (for the timeout error).
         /// * `pred` - Predicate over the captured screen (50 ms interval, 5 s deadline).
-        fn wait_until(&self, desc: &str, pred: impl Fn(&str) -> bool) -> String {
+        fn wait_until(&self, desc: &str, pred: impl Fn(&str) -> bool) -> Result<String, TestError> {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let last = self.screen();
+                let last = self.screen()?;
                 if pred(&last) {
-                    return last;
+                    return Ok(last);
                 }
                 if Instant::now() >= deadline {
-                    panic!(
+                    return Err(format!(
                         "timed out waiting for {desc} in session {}.\nlast screen:\n{last}",
                         self.name
-                    );
+                    )
+                    .into());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -181,27 +185,29 @@ mod tui_e2e {
         /// the awaited content can't be named in advance (the assertion that
         /// follows is the real check). Falls back to the latest capture at the
         /// 5 s deadline.
-        fn stable_screen(&self) -> String {
+        fn stable_screen(&self) -> Result<String, TestError> {
             let deadline = Instant::now() + Duration::from_secs(5);
-            let mut prev = self.screen();
+            let mut prev = self.screen()?;
             loop {
                 std::thread::sleep(Duration::from_millis(50));
-                let cur = self.screen();
+                let cur = self.screen()?;
                 if cur == prev || Instant::now() >= deadline {
-                    return cur;
+                    return Ok(cur);
                 }
                 prev = cur;
             }
         }
 
         /// Send a named key (e.g. "Enter", "Tab", "Escape", "F1").
-        fn key(&self, name: &str) {
-            self.send(&[name]);
+        fn key(&self, name: &str) -> Result<(), TestError> {
+            self.send(&[name])?;
+            Ok(())
         }
 
         /// Send literal characters (case-preserving), e.g. "v" or "O".
-        fn literal(&self, chars: &str) {
-            self.send(&["-l", chars]);
+        fn literal(&self, chars: &str) -> Result<(), TestError> {
+            self.send(&["-l", chars])?;
+            Ok(())
         }
 
         /// Run `tmux send-keys` for this session with the given trailing args.
@@ -213,14 +219,12 @@ mod tui_e2e {
         ///
         /// # Side effects
         /// Spawns tmux to deliver the key(s) to the pane.
-        fn send(&self, tail: &[&str]) {
+        fn send(&self, tail: &[&str]) -> Result<(), TestError> {
             let mut args = vec!["send-keys", "-t", &self.name];
             args.extend_from_slice(tail);
-            let status = Command::new("tmux")
-                .args(&args)
-                .status()
-                .expect("tmux send-keys failed");
+            let status = Command::new("tmux").args(&args).status()?;
             assert!(status.success(), "tmux send-keys failed");
+            Ok(())
         }
 
         /// True once the session has ended (the process exited).
@@ -232,16 +236,16 @@ mod tui_e2e {
                 .unwrap_or(false)
         }
 
-        /// Poll until the session process has exited; panics if it is still alive after 5 s.
-        fn wait_until_ended(&self) {
+        /// Poll until the session process has exited; an error if it is still alive after 5 s.
+        fn wait_until_ended(&self) -> Result<(), TestError> {
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
                 if self.ended() {
-                    return;
+                    return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            panic!("session {} did not exit", self.name);
+            Err(format!("session {} did not exit", self.name).into())
         }
     }
 
@@ -271,40 +275,44 @@ mod tui_e2e {
     /// The real binary starts under tmux, loads the pcap, and shows INVITE in the call list.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_launches_with_pcap_and_shows_call_list() {
-        let s = TuiSession::launch_sip_call();
+    fn tui_launches_with_pcap_and_shows_call_list() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
         // INVITE in the call-list body proves the TUI launched and loaded the pcap.
-        s.wait_for("INVITE");
+        s.wait_for("INVITE")?;
+        Ok(())
     }
 
     /// Tab in the real TUI switches to the stream list (the SSRC column header appears).
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_tab_switches_to_stream_list() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.key("Tab");
-        s.wait_for("SSRC"); // stream-list column header
+    fn tui_tab_switches_to_stream_list() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.key("Tab")?;
+        s.wait_for("SSRC")?; // stream-list column header
+        Ok(())
     }
 
     /// F1 in the real TUI opens the Help screen.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_f1_shows_help() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.key("F1");
-        s.wait_for("Help");
+    fn tui_f1_shows_help() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.key("F1")?;
+        s.wait_for("Help")?;
+        Ok(())
     }
 
     /// Enter in the real TUI opens the call-flow ladder.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_enter_opens_call_flow() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.key("Enter");
-        s.wait_for("INVITE"); // ladder
+    fn tui_enter_opens_call_flow() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.key("Enter")?;
+        s.wait_for("INVITE")?; // ladder
+        Ok(())
     }
 
     /// `q` asks, and answering yes exits: the tmux session ends within the
@@ -315,17 +323,18 @@ mod tui_e2e {
     /// question appeared and fail here rather than pass for the wrong reason.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_quit_exits_cleanly() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.literal("q");
-        s.wait_for("Quit sipnab?");
+    fn tui_quit_exits_cleanly() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.literal("q")?;
+        s.wait_for("Quit sipnab?")?;
         assert!(
             !s.ended(),
             "the question must be on screen with the process still running"
         );
-        s.literal("y");
-        s.wait_until_ended();
+        s.literal("y")?;
+        s.wait_until_ended()?;
+        Ok(())
     }
 
     /// Answering no returns to the session, which keeps running.
@@ -334,28 +343,30 @@ mod tui_e2e {
     /// must be recoverable, and a capture that was running is still running.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_quit_confirmation_can_be_declined() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.literal("q");
-        s.wait_for("Quit sipnab?");
-        s.literal("n");
-        s.wait_for("Dialogs:");
+    fn tui_quit_confirmation_can_be_declined() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.literal("q")?;
+        s.wait_for("Quit sipnab?")?;
+        s.literal("n")?;
+        s.wait_for("Dialogs:")?;
         assert!(
             !s.ended(),
             "declining must leave the capture running, not end it"
         );
+        Ok(())
     }
 
     /// Esc opens the same question rather than ending the session.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_esc_asks_before_quitting() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.key("Escape");
-        s.wait_for("Quit sipnab?");
+    fn tui_esc_asks_before_quitting() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.key("Escape")?;
+        s.wait_for("Quit sipnab?")?;
         assert!(!s.ended(), "Esc must not end the session on its own");
+        Ok(())
     }
 
     // ── New-feature coverage ─────────────────────────────────────────────
@@ -363,87 +374,92 @@ mod tui_e2e {
     /// Tab in the call flow toggles the focus indicator Ladder, Detail, and back to Ladder.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_tab_switches_call_flow_pane_focus() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.key("Enter");
+    fn tui_tab_switches_call_flow_pane_focus() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.key("Enter")?;
         // Split view is on by default; ladder focused first.
-        s.wait_for("Focus: Ladder");
-        s.key("Tab");
-        s.wait_for("Focus: Detail");
-        s.key("Tab");
-        s.wait_for("Focus: Ladder");
+        s.wait_for("Focus: Ladder")?;
+        s.key("Tab")?;
+        s.wait_for("Focus: Detail")?;
+        s.key("Tab")?;
+        s.wait_for("Focus: Ladder")?;
+        Ok(())
     }
 
     /// `v` shows a version line that includes the git commit in parentheses.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_v_shows_version_with_commit() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.literal("v");
+    fn tui_v_shows_version_with_commit() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.literal("v")?;
         // Version line includes the crate version and the git commit in parens.
-        let screen = s.wait_for("sipnab 0.");
+        let screen = s.wait_for("sipnab 0.")?;
         assert!(
             screen.contains('(') && screen.contains(')'),
             "version should include git commit:\n{screen}"
         );
+        Ok(())
     }
 
     /// On a 14-row terminal the detail pane overflows, so the scrollbar thumb glyph must render.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_call_flow_detail_scrollbar_appears_when_overflowing() {
+    fn tui_call_flow_detail_scrollbar_appears_when_overflowing() -> Result<(), TestError> {
         // A short terminal forces the detail pane to overflow → scrollbar.
-        let s = TuiSession::launch(120, 14, fixtures_dir(), &["-I", "sip_call.pcap"]);
-        s.wait_for("Dialogs:");
-        s.key("Enter");
-        s.wait_for("Focus: Ladder");
+        let s = TuiSession::launch(120, 14, fixtures_dir(), &["-I", "sip_call.pcap"])?;
+        s.wait_for("Dialogs:")?;
+        s.key("Enter")?;
+        s.wait_for("Focus: Ladder")?;
         // The scrollbar thumb glyph is unique to the scrollbar widget.
-        let screen = s.wait_for("\u{2588}");
+        let screen = s.wait_for("\u{2588}")?;
         assert!(
             screen.contains('\u{2588}'),
             "scrollbar thumb missing:\n{screen}"
         );
+        Ok(())
     }
 
     /// `O` opens the file browser listing the pcaps in the working directory.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_file_open_lists_pcaps_in_cwd() {
+    fn tui_file_open_lists_pcaps_in_cwd() -> Result<(), TestError> {
         // cwd is the fixtures dir, which contains sip_call.pcap + udp_5060.pcap.
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
-        s.literal("O"); // open file browser
-        s.wait_for("sip_call.pcap");
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
+        s.literal("O")?; // open file browser
+        s.wait_for("sip_call.pcap")?;
+        Ok(())
     }
 
     /// `N` names an address: the name shows in the Source column until name mode is cycled back to Off.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn tui_name_address_resolves_in_columns() {
-        let s = TuiSession::launch_sip_call();
-        s.wait_for("Dialogs:");
+    fn tui_name_address_resolves_in_columns() -> Result<(), TestError> {
+        let s = TuiSession::launch_sip_call()?;
+        s.wait_for("Dialogs:")?;
         // N opens the Name Address popup for the selected dialog's source.
-        s.literal("N");
-        s.wait_for("Name Address");
-        s.literal("edge-proxy");
-        s.key("Enter");
+        s.literal("N")?;
+        s.wait_for("Name Address")?;
+        s.literal("edge-proxy")?;
+        s.key("Enter")?;
         // Resolution auto-enables; the name now shows in the Source column.
-        let named = s.wait_for("edge-proxy");
+        let named = s.wait_for("edge-proxy")?;
         assert!(named.contains("edge-proxy"), "name not shown:\n{named}");
         // Toggling name mode back to Off restores the raw IP (no name).
-        s.literal("n"); // Static -> DNS
-        s.literal("n"); // DNS -> Off
+        s.literal("n")?; // Static -> DNS
+        s.literal("n")?; // DNS -> Off
         // Wait for the name to actually disappear from the render rather than
         // sampling a single frame that may still show the pre-toggle screen.
         let off = s.wait_until("name hidden when mode is Off", |sc| {
             !sc.contains("edge-proxy")
-        });
+        })?;
         assert!(
             !off.contains("edge-proxy"),
             "name should be hidden when Off:\n{off}"
         );
+        Ok(())
     }
 
     /// Regression: three OPTIONS keepalives that reuse Call-ID + CSeq (but
@@ -453,23 +469,23 @@ mod tui_e2e {
     /// with the time-unit setting.
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]
-    fn keepalive_messages_visible_in_every_timestamp_mode() {
+    fn keepalive_messages_visible_in_every_timestamp_mode() -> Result<(), TestError> {
         let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
         let s = TuiSession::launch(
             170,
             40,
             samples,
             &["-I", "options-keepalive-reused-cseq.pcap"],
-        );
-        s.wait_for("Dialogs:");
-        s.key("Enter"); // open the call flow ladder
-        s.wait_for("OPTIONS");
+        )?;
+        s.wait_for("Dialogs:")?;
+        s.key("Enter")?; // open the call flow ladder
+        s.wait_for("OPTIONS")?;
         // Default mode + the three cycled modes: 4 presses of 't' walk the
         // full TimestampMode cycle back to the start.
         for step in 0..4 {
             // Wait for the render to settle after the previous `t` press
             // instead of sampling a possibly mid-render frame.
-            let screen = s.stable_screen();
+            let screen = s.stable_screen()?;
             let arrows = screen
                 .lines()
                 .filter(|l| l.contains("OPTIONS") && l.contains("\u{25b6}"))
@@ -478,7 +494,8 @@ mod tui_e2e {
                 arrows, 3,
                 "timestamp-mode step {step}: expected 3 OPTIONS arrows.\nScreen:\n{screen}"
             );
-            s.literal("t");
+            s.literal("t")?;
         }
+        Ok(())
     }
 }

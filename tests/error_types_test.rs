@@ -7,12 +7,16 @@
 
 use sipnab::Error;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Loading a nonexistent explicit config path yields `Error::ConfigNotFound`
 /// whose Display names the path.
 #[test]
-fn config_missing_file_is_matchable() {
+fn config_missing_file_is_matchable() -> Result<(), TestError> {
     let err = sipnab::config::Config::load(Some("/nonexistent/sipnab-test.toml"), false)
-        .expect_err("missing explicit config must error");
+        .err()
+        .ok_or("missing explicit config must error")?;
     assert!(
         matches!(err, Error::ConfigNotFound { .. }),
         "expected ConfigNotFound, got: {err:?}"
@@ -21,28 +25,32 @@ fn config_missing_file_is_matchable() {
         err.to_string().contains("/nonexistent/sipnab-test.toml"),
         "message must name the path, got: {err}"
     );
+    Ok(())
 }
 
 /// Invalid TOML in a config file yields the matchable `Error::ConfigParse`.
 #[test]
-fn config_parse_error_is_matchable_and_names_path() {
-    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
-    std::fs::write(tmp.path(), "this is [not valid toml").expect("write");
+fn config_parse_error_is_matchable_and_names_path() -> Result<(), TestError> {
+    let tmp = tempfile::NamedTempFile::new()?;
+    std::fs::write(tmp.path(), "this is [not valid toml")?;
     let err = sipnab::config::Config::load(tmp.path().to_str(), false)
-        .expect_err("invalid TOML must error");
+        .err()
+        .ok_or("invalid TOML must error")?;
     assert!(
         matches!(err, Error::ConfigParse { .. }),
         "expected ConfigParse, got: {err:?}"
     );
+    Ok(())
 }
 
 /// A garbage CIDR string yields `Error::InvalidCidr` whose message echoes
 /// the input.
 #[cfg(feature = "hep")]
 #[test]
-fn invalid_cidr_is_matchable() {
-    let err =
-        sipnab::capture::hep::CidrRange::parse("not-a-cidr").expect_err("garbage CIDR must error");
+fn invalid_cidr_is_matchable() -> Result<(), TestError> {
+    let err = sipnab::capture::hep::CidrRange::parse("not-a-cidr")
+        .err()
+        .ok_or("garbage CIDR must error")?;
     assert!(
         matches!(err, Error::InvalidCidr { .. }),
         "expected InvalidCidr, got: {err:?}"
@@ -51,29 +59,34 @@ fn invalid_cidr_is_matchable() {
         err.to_string().contains("not-a-cidr"),
         "message must echo the input, got: {err}"
     );
+    Ok(())
 }
 
 /// An unknown alert sink name yields `Error::InvalidAlertRule`.
 #[test]
-fn invalid_alert_rule_is_matchable() {
+fn invalid_alert_rule_is_matchable() -> Result<(), TestError> {
     let err = sipnab::security::alerting::AlertRule::parse("bogus-sink")
-        .expect_err("unknown alert sink must error");
+        .err()
+        .ok_or("unknown alert sink must error")?;
     assert!(
         matches!(err, Error::InvalidAlertRule { .. }),
         "expected InvalidAlertRule, got: {err:?}"
     );
+    Ok(())
 }
 
 /// A garbage bind address yields `Error::InvalidBindAddr` from `parse_bind_addr`.
 #[cfg(feature = "api")]
 #[test]
-fn invalid_bind_addr_is_matchable() {
+fn invalid_bind_addr_is_matchable() -> Result<(), TestError> {
     let err = sipnab::output::api::parse_bind_addr("not-an-addr")
-        .expect_err("garbage bind addr must error");
+        .err()
+        .ok_or("garbage bind addr must error")?;
     assert!(
         matches!(err, Error::InvalidBindAddr { .. }),
         "expected InvalidBindAddr, got: {err:?}"
     );
+    Ok(())
 }
 
 // ── WS6.1: typed errors for the crate-root parse/capture surface ────
@@ -90,9 +103,10 @@ fn test_addr() -> std::net::IpAddr {
 
 /// A 2-byte RTP buffer yields `ParseError::TooShort { need: 12, got: 2 }`.
 #[test]
-fn truncated_rtp_is_matchable() {
+fn truncated_rtp_is_matchable() -> Result<(), TestError> {
     let err = sipnab::rtp::parser::parse_rtp_header(&[0x80, 0x00])
-        .expect_err("2 bytes cannot be an RTP header");
+        .err()
+        .ok_or("2 bytes cannot be an RTP header")?;
     assert!(
         matches!(
             err,
@@ -104,24 +118,27 @@ fn truncated_rtp_is_matchable() {
         ),
         "expected TooShort {{ need: 12, got: 2 }}, got: {err:?}"
     );
+    Ok(())
 }
 
 /// An RTP header with version 1 yields `ParseError::BadRtpVersion { version: 1 }`.
 #[test]
-fn rtp_bad_version_is_matchable() {
+fn rtp_bad_version_is_matchable() -> Result<(), TestError> {
     let mut pkt = [0u8; 12];
     pkt[0] = 0x40; // version 1
-    let err =
-        sipnab::rtp::parser::parse_rtp_header(&pkt).expect_err("RTP version 1 must be rejected");
+    let err = sipnab::rtp::parser::parse_rtp_header(&pkt)
+        .err()
+        .ok_or("RTP version 1 must be rejected")?;
     assert!(
         matches!(err, ParseError::BadRtpVersion { version: 1 }),
         "expected BadRtpVersion {{ version: 1 }}, got: {err:?}"
     );
+    Ok(())
 }
 
 /// `parse_sip` on an empty buffer yields `ParseError::Empty`.
 #[test]
-fn empty_sip_data_is_matchable() {
+fn empty_sip_data_is_matchable() -> Result<(), TestError> {
     let err = sipnab::sip::parser::parse_sip(
         &[],
         chrono::Utc::now(),
@@ -131,17 +148,19 @@ fn empty_sip_data_is_matchable() {
         5060,
         sipnab::capture::parse::TransportProto::Udp,
     )
-    .expect_err("empty data must error");
+    .err()
+    .ok_or("empty data must error")?;
     assert!(
         matches!(err, ParseError::Empty { .. }),
         "expected Empty, got: {err:?}"
     );
+    Ok(())
 }
 
 /// An HTTP request line yields `ParseError::NotSip` and the Display still
 /// names the offending line.
 #[test]
-fn non_sip_first_line_is_matchable() {
+fn non_sip_first_line_is_matchable() -> Result<(), TestError> {
     let err = sipnab::sip::parser::parse_sip(
         b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
         chrono::Utc::now(),
@@ -151,18 +170,20 @@ fn non_sip_first_line_is_matchable() {
         5060,
         sipnab::capture::parse::TransportProto::Udp,
     )
-    .expect_err("HTTP must not parse as SIP");
+    .err()
+    .ok_or("HTTP must not parse as SIP")?;
     assert!(
         matches!(err, ParseError::NotSip { .. }),
         "expected NotSip, got: {err:?}"
     );
     // The message still names the offending line for humans.
     assert!(err.to_string().contains("GET / HTTP/1.1"), "got: {err}");
+    Ok(())
 }
 
 /// Data with no line ending yields `ParseError::MissingCrlf`.
 #[test]
-fn sip_without_crlf_is_matchable() {
+fn sip_without_crlf_is_matchable() -> Result<(), TestError> {
     let err = sipnab::sip::parser::parse_sip(
         b"binary-garbage-no-line-ending",
         chrono::Utc::now(),
@@ -172,38 +193,45 @@ fn sip_without_crlf_is_matchable() {
         5060,
         sipnab::capture::parse::TransportProto::Udp,
     )
-    .expect_err("no CRLF must error");
+    .err()
+    .ok_or("no CRLF must error")?;
     assert!(
         matches!(err, ParseError::MissingCrlf),
         "expected MissingCrlf, got: {err:?}"
     );
+    Ok(())
 }
 
 /// `parse_sdp` on an empty buffer yields `ParseError::Empty`.
 #[test]
-fn empty_sdp_is_matchable() {
-    let err = sipnab::sip::sdp::parse_sdp(b"").expect_err("empty SDP must error");
+fn empty_sdp_is_matchable() -> Result<(), TestError> {
+    let err = sipnab::sip::sdp::parse_sdp(b"")
+        .err()
+        .ok_or("empty SDP must error")?;
     assert!(
         matches!(err, ParseError::Empty { .. }),
         "expected Empty, got: {err:?}"
     );
+    Ok(())
 }
 
 /// An SDP body with `v=1` yields `ParseError::BadSdpVersion`.
 #[test]
-fn bad_sdp_version_is_matchable() {
+fn bad_sdp_version_is_matchable() -> Result<(), TestError> {
     let err = sipnab::sip::sdp::parse_sdp(b"v=1\r\no=- 1 1 IN IP4 10.0.0.1\r\n")
-        .expect_err("SDP version 1 must be rejected");
+        .err()
+        .ok_or("SDP version 1 must be rejected")?;
     assert!(
         matches!(err, ParseError::BadSdpVersion { .. }),
         "expected BadSdpVersion, got: {err:?}"
     );
+    Ok(())
 }
 
 /// A packet with link type 147 (DLT_USER0) yields
 /// `CaptureError::UnsupportedLinkType(147)`.
 #[test]
-fn unsupported_link_type_is_matchable() {
+fn unsupported_link_type_is_matchable() -> Result<(), TestError> {
     let pkt = sipnab::capture::packet::Packet {
         timestamp: chrono::Utc::now(),
         data: bytes::Bytes::from_static(&[0u8; 64]),
@@ -214,57 +242,68 @@ fn unsupported_link_type_is_matchable() {
         pre_parsed: None,
         origin: None,
     };
-    let err =
-        sipnab::capture::parse::parse_packet(&pkt).expect_err("unsupported link type must error");
+    let err = sipnab::capture::parse::parse_packet(&pkt)
+        .err()
+        .ok_or("unsupported link type must error")?;
     assert!(
         matches!(err, CaptureError::UnsupportedLinkType(147)),
         "expected UnsupportedLinkType(147), got: {err:?}"
     );
+    Ok(())
 }
 
 /// A 4-byte buffer yields `CaptureError::TooShort { got: 4 }` from `PcapReader::new`.
 #[test]
-fn pcap_file_too_short_is_matchable() {
-    let err = sipnab::PcapReader::new(&[0u8; 4]).expect_err("4 bytes is not a capture file");
+fn pcap_file_too_short_is_matchable() -> Result<(), TestError> {
+    let err = sipnab::PcapReader::new(&[0u8; 4])
+        .err()
+        .ok_or("4 bytes is not a capture file")?;
     assert!(
         matches!(err, CaptureError::TooShort { got: 4, .. }),
         "expected TooShort {{ got: 4 }}, got: {err:?}"
     );
+    Ok(())
 }
 
 /// A file starting with an unknown magic number yields `CaptureError::UnknownFormat`.
 #[test]
-fn unknown_capture_magic_is_matchable() {
+fn unknown_capture_magic_is_matchable() -> Result<(), TestError> {
     let mut data = [0u8; 32];
     data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-    let err = sipnab::PcapReader::new(&data).expect_err("unknown magic must error");
+    let err = sipnab::PcapReader::new(&data)
+        .err()
+        .ok_or("unknown magic must error")?;
     assert!(
         matches!(err, CaptureError::UnknownFormat { .. }),
         "expected UnknownFormat, got: {err:?}"
     );
+    Ok(())
 }
 
 /// `ConfigParse`/`ConfigRead` chain the underlying toml/io error via
 /// `source()` (API guideline C-GOOD-ERR) rather than flattening it to text.
 #[test]
-fn config_errors_chain_their_sources() {
+fn config_errors_chain_their_sources() -> Result<(), TestError> {
     // C-GOOD-ERR: ConfigRead/ConfigParse carry the underlying io/toml
     // error as a real #[source], not flattened text.
     use std::error::Error as _;
-    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
-    std::fs::write(tmp.path(), "this is [not valid toml").expect("write");
+    let tmp = tempfile::NamedTempFile::new()?;
+    std::fs::write(tmp.path(), "this is [not valid toml")?;
     let err = sipnab::config::Config::load(tmp.path().to_str(), false)
-        .expect_err("invalid TOML must error");
+        .err()
+        .ok_or("invalid TOML must error")?;
     assert!(
         err.source().is_some(),
         "ConfigParse must chain the toml error as source(), got: {err:?}"
     );
 
     let err = sipnab::config::Config::load(Some("/nonexistent-dir/x.toml"), false)
-        .expect_err("missing config must error");
+        .err()
+        .ok_or("missing config must error")?;
     // ConfigNotFound (no file) has no source; force a read error instead:
     // a directory path read fails with an io::Error.
     if let sipnab::Error::ConfigRead { .. } = err {
         assert!(err.source().is_some(), "ConfigRead must chain io::Error");
     }
+    Ok(())
 }

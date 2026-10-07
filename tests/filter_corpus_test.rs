@@ -32,6 +32,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/run.rs"]
 mod run_support;
 
@@ -91,15 +93,15 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 /// exits 2 with a parse error, and counting stdout lines without checking the
 /// code reads that dead process as "zero dialogs matched" — the measurement
 /// trap this whole file exists to avoid.
-fn dialogs(capture: &Path, args: &[&str]) -> Vec<serde_json::Value> {
-    let (out, stderr, code) = try_dialogs(capture, args);
+fn dialogs(capture: &Path, args: &[&str]) -> Result<Vec<serde_json::Value>, TestError> {
+    let (out, stderr, code) = try_dialogs(capture, args)?;
     assert_eq!(
         code,
         Some(0),
         "sipnab exited {code:?} for {args:?}; stderr tail: {}",
         stderr.lines().rev().take(3).collect::<Vec<_>>().join(" | ")
     );
-    out
+    Ok(out)
 }
 
 /// The same run without the exit-code assertion, for the discovery pass: a
@@ -108,7 +110,10 @@ fn dialogs(capture: &Path, args: &[&str]) -> Vec<serde_json::Value> {
 ///
 /// # Returns
 /// `(dialogs, stderr, exit_code)`.
-fn try_dialogs(capture: &Path, args: &[&str]) -> (Vec<serde_json::Value>, String, Option<i32>) {
+fn try_dialogs(
+    capture: &Path,
+    args: &[&str],
+) -> Result<(Vec<serde_json::Value>, String, Option<i32>), TestError> {
     let capture = capture.to_string_lossy().into_owned();
     let mut argv: Vec<&str> = vec![
         "-N",
@@ -120,13 +125,13 @@ fn try_dialogs(capture: &Path, args: &[&str]) -> (Vec<serde_json::Value>, String
         "1-65535",
     ];
     argv.extend_from_slice(args);
-    let (stdout, stderr, code) = run_support::run_or_panic(&argv, Some("error"));
+    let (stdout, stderr, code) = run_support::run(&argv, Some("error"))?;
     let dialogs = stdout
         .lines()
         .filter(|l| l.starts_with('{'))
-        .map(|l| serde_json::from_str(l).expect("dialog line must be JSON"))
-        .collect();
-    (dialogs, stderr, code)
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    Ok((dialogs, stderr, code))
 }
 
 /// The Call-IDs of a dialog list, as an opaque set. Never printed.
@@ -157,7 +162,9 @@ fn discriminates(all: &[serde_json::Value]) -> bool {
 
 /// Captures worth asserting on: readable, under the size cap, holding enough
 /// dialogs, and able to tell selection from pass-through ([`discriminates`]).
-fn corpus_captures(root: &Path) -> Vec<(String, PathBuf, Vec<serde_json::Value>)> {
+fn corpus_captures(
+    root: &Path,
+) -> Result<Vec<(String, PathBuf, Vec<serde_json::Value>)>, TestError> {
     let mut out = Vec::new();
     let (mut too_big, mut too_few, mut unreadable, mut uniform) = (0usize, 0usize, 0usize, 0usize);
     for path in walk(root) {
@@ -168,7 +175,7 @@ fn corpus_captures(root: &Path) -> Vec<(String, PathBuf, Vec<serde_json::Value>)
             too_big += 1;
             continue;
         }
-        let (all, _, code) = try_dialogs(&path, &[]);
+        let (all, _, code) = try_dialogs(&path, &[])?;
         if code != Some(0) {
             unreadable += 1;
             continue;
@@ -196,7 +203,7 @@ fn corpus_captures(root: &Path) -> Vec<(String, PathBuf, Vec<serde_json::Value>)
         out.len(),
         MAX_FILE_BYTES / (1024 * 1024),
     );
-    out
+    Ok(out)
 }
 
 /// One documented expression and the predicate that decides, from the
@@ -320,9 +327,11 @@ const CASES: &[Case] = &[
 /// Every documented field selects the dialogs the unfiltered JSON says it
 /// should — no more (the defect: all of them) and no fewer.
 #[test]
-fn documented_fields_select_the_right_rows_on_real_captures() {
-    let Some(root) = corpus_root() else { return };
-    let captures = corpus_captures(&root);
+fn documented_fields_select_the_right_rows_on_real_captures() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
+    let captures = corpus_captures(&root)?;
     assert!(
         !captures.is_empty(),
         "no capture under SIPNAB_CORPUS holds {MIN_DIALOGS}+ dialogs, so this test proves nothing"
@@ -337,7 +346,7 @@ fn documented_fields_select_the_right_rows_on_real_captures() {
                 .filter(|d| (case.want)(d))
                 .cloned()
                 .collect::<Vec<_>>());
-            let got = ids(&dialogs(path, &["--filter", case.expr]));
+            let got = ids(&dialogs(path, &["--filter", case.expr])?);
 
             // Counts only: a Call-ID from a real capture never reaches the log.
             let missing = expected.difference(&got).count();
@@ -367,14 +376,17 @@ fn documented_fields_select_the_right_rows_on_real_captures() {
         "only {discriminating} expressions selected a proper subset across the \
          corpus — this run cannot distinguish an applied filter from an ignored one"
     );
+    Ok(())
 }
 
 /// `E` and `NOT E` partition the capture. Needs no expected count, so it
 /// covers the fields the per-dialog JSON does not expose.
 #[test]
-fn every_expression_partitions_the_capture() {
-    let Some(root) = corpus_root() else { return };
-    let captures = corpus_captures(&root);
+fn every_expression_partitions_the_capture() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
+    let captures = corpus_captures(&root)?;
     assert!(
         !captures.is_empty(),
         "no usable capture under SIPNAB_CORPUS"
@@ -392,8 +404,8 @@ fn every_expression_partitions_the_capture() {
     for (name, path, all) in &captures {
         let total = ids(all);
         for expr in EXPRS {
-            let yes = ids(&dialogs(path, &["--filter", expr]));
-            let no = ids(&dialogs(path, &["--filter", &format!("NOT {expr}")]));
+            let yes = ids(&dialogs(path, &["--filter", expr])?);
+            let no = ids(&dialogs(path, &["--filter", &format!("NOT {expr}")])?);
 
             let overlap = yes.intersection(&no).count();
             let union = yes.union(&no).count();
@@ -414,14 +426,17 @@ fn every_expression_partitions_the_capture() {
             total.len()
         );
     }
+    Ok(())
 }
 
 /// Each alias flag and the `--filter <alias>` spelling select the same rows on
 /// real traffic — the flags used to carry their own hand-written expansions.
 #[test]
-fn alias_flags_agree_with_the_documented_aliases_on_real_captures() {
-    let Some(root) = corpus_root() else { return };
-    let captures = corpus_captures(&root);
+fn alias_flags_agree_with_the_documented_aliases_on_real_captures() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
+    let captures = corpus_captures(&root)?;
     assert!(
         !captures.is_empty(),
         "no usable capture under SIPNAB_CORPUS"
@@ -435,8 +450,8 @@ fn alias_flags_agree_with_the_documented_aliases_on_real_captures() {
             ("--nat-issues", "nat-issues"),
             ("--problems", "problems"),
         ] {
-            let by_flag = ids(&dialogs(path, &[flag]));
-            let by_alias = ids(&dialogs(path, &["--filter", alias]));
+            let by_flag = ids(&dialogs(path, &[flag])?);
+            let by_alias = ids(&dialogs(path, &["--filter", alias])?);
             assert_eq!(
                 by_flag.symmetric_difference(&by_alias).count(),
                 0,
@@ -449,4 +464,5 @@ fn alias_flags_agree_with_the_documented_aliases_on_real_captures() {
         }
         eprintln!("corpus: {name} — 5 alias flags agree with their aliases");
     }
+    Ok(())
 }

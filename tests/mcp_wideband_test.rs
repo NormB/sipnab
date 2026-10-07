@@ -20,7 +20,10 @@ mod mcp;
 mod pcap_build;
 
 use mcp::McpSession;
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
+
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
 
 const CALL_ID: &str = "amr-wb-call@10.0.0.1";
 const PT: u8 = 96;
@@ -52,7 +55,13 @@ fn rtp(seq: u16, ft: u8) -> Vec<u8> {
 /// An answered call and `packets` frames of mode `ft` from A to B, sequence
 /// numbers advancing by `step` (2 loses every other packet). `codec` is the
 /// rtpmap encoding name both sides offer.
-fn capture(dir: &std::path::Path, codec: &str, ft: u8, packets: u16, step: u16) -> String {
+fn capture(
+    dir: &std::path::Path,
+    codec: &str,
+    ft: u8,
+    packets: u16,
+    step: u16,
+) -> Result<String, TestError> {
     let offer = sdp("10.0.0.1", 20000, codec);
     let answer = sdp("10.0.0.2", 30000, codec);
     let invite = format!(
@@ -81,68 +90,70 @@ fn capture(dir: &std::path::Path, codec: &str, ft: u8, packets: u16, step: u16) 
         frames.push(udp_frame(A, B, 20000, 30000, &rtp(n * step, ft)));
     }
     let path = dir.join("amr-wb.pcap");
-    write_pcap_or_panic(&path, &frames);
-    path.to_str().expect("utf-8 path").to_string()
+    write_pcap(&path, &frames)?;
+    Ok(path.to_str().ok_or("utf-8 path")?.to_string())
 }
 
 /// The `rtp_stats` stream objects for `CALL_ID`.
-fn streams(session: &mut McpSession) -> Vec<serde_json::Value> {
-    let msg = session.call_or_panic("rtp_stats", serde_json::json!({ "call_id": CALL_ID }));
+fn streams(session: &mut McpSession) -> Result<Vec<serde_json::Value>, TestError> {
+    let msg = session.call("rtp_stats", serde_json::json!({ "call_id": CALL_ID }))?;
     assert!(msg.get("error").is_none(), "rtp_stats must answer: {msg}");
     let text = msg["result"]["content"][0]["text"]
         .as_str()
-        .expect("text payload")
+        .ok_or("text payload")?
         .to_string();
-    let value: serde_json::Value = serde_json::from_str(&text).expect("payload is JSON");
-    value["streams"].as_array().cloned().unwrap_or_default()
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(value["streams"].as_array().cloned().unwrap_or_default())
 }
 
 /// A published mode with no loss: the stream carries its wideband score and
 /// the listening context it was read in.
 #[test]
-fn rtp_stats_carries_the_wideband_score_of_an_amr_wb_stream() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = capture(dir.path(), "AMR-WB/16000/1", 2, 20, 1);
-    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
-    let found = streams(&mut session);
+fn rtp_stats_carries_the_wideband_score_of_an_amr_wb_stream() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = capture(dir.path(), "AMR-WB/16000/1", 2, 20, 1)?;
+    let mut session = McpSession::start(&pcap, &["--no-config"])?;
+    let found = streams(&mut session)?;
     let stream = found
         .iter()
         .find(|s| s["codec"].as_str() == Some("AMR-WB"))
-        .unwrap_or_else(|| panic!("no AMR-WB stream in {found:?}"));
+        .ok_or_else(|| format!("no AMR-WB stream in {found:?}"))?;
     let mos = stream["mos_wideband"]
         .as_f64()
-        .unwrap_or_else(|| panic!("no mos_wideband on {stream}"));
+        .ok_or_else(|| format!("no mos_wideband on {stream}"))?;
     assert!((1.0..=5.0).contains(&mos), "MOS_CQEW out of range: {mos}");
     assert_eq!(stream["mos_wideband_context"], "monotic", "{stream}");
     assert!(stream.get("mos_wideband_unavailable").is_none(), "{stream}");
+    Ok(())
 }
 
 /// A published mode that lost packets has no wideband score, and says so by
 /// name rather than leaving the field out as if nothing were attempted.
 #[test]
-fn rtp_stats_names_why_a_lossy_amr_wb_stream_has_no_wideband_score() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = capture(dir.path(), "AMR-WB/16000/1", 2, 20, 2);
-    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
-    let found = streams(&mut session);
+fn rtp_stats_names_why_a_lossy_amr_wb_stream_has_no_wideband_score() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = capture(dir.path(), "AMR-WB/16000/1", 2, 20, 2)?;
+    let mut session = McpSession::start(&pcap, &["--no-config"])?;
+    let found = streams(&mut session)?;
     let stream = found
         .iter()
         .find(|s| s["codec"].as_str() == Some("AMR-WB"))
-        .unwrap_or_else(|| panic!("no AMR-WB stream in {found:?}"));
+        .ok_or_else(|| format!("no AMR-WB stream in {found:?}"))?;
     assert!(stream.get("mos_wideband").is_none(), "{stream}");
     assert!(
         stream["mos_wideband_unavailable"].is_string(),
         "the refusal must carry its reason: {stream}"
     );
+    Ok(())
 }
 
 /// A narrowband stream carries no wideband field at all.
 #[test]
-fn rtp_stats_adds_no_wideband_fields_to_a_narrowband_stream() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = capture(dir.path(), "AMR/8000/1", 2, 20, 1);
-    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
-    let found = streams(&mut session);
+fn rtp_stats_adds_no_wideband_fields_to_a_narrowband_stream() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = capture(dir.path(), "AMR/8000/1", 2, 20, 1)?;
+    let mut session = McpSession::start(&pcap, &["--no-config"])?;
+    let found = streams(&mut session)?;
     assert!(!found.is_empty(), "no stream at all");
     for stream in &found {
         for key in [
@@ -156,4 +167,5 @@ fn rtp_stats_adds_no_wideband_fields_to_a_narrowband_stream() {
             );
         }
     }
+    Ok(())
 }

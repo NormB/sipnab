@@ -45,6 +45,8 @@ use sipnab::rtp::quality::MosDelay;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::{DialogStore, idle_compact_after, keep_messages_per_idle_dialog};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
 }
@@ -57,7 +59,7 @@ fn sample(name: &str) -> String {
 
 /// Read every packet through the real file reader, in order, so ordinals here
 /// are the ordinals production would assign.
-fn read_all(path: &str) -> Vec<Packet> {
+fn read_all(path: &str) -> Result<Vec<Packet>, TestError> {
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
     let owned = vec![std::path::PathBuf::from(path)];
     let reader = std::thread::spawn(move || {
@@ -68,8 +70,8 @@ fn read_all(path: &str) -> Vec<Packet> {
     while let Ok(p) = rx.recv_timeout(std::time::Duration::from_secs(60)) {
         out.push(p);
     }
-    reader.join().expect("file reader thread");
-    out
+    reader.join().map_err(|_| "file reader thread panicked")?;
+    Ok(out)
 }
 
 /// Feed a capture through the real classification path into a store, so the
@@ -79,7 +81,7 @@ fn read_all(path: &str) -> Vec<Packet> {
 /// the state live capture leaves packets in: bytes, no file position to point
 /// back to. It exercises the real no-provenance path rather than reaching in
 /// and blanking a field afterwards.
-fn store_with(path: &str, strip_origin: bool) -> DialogStore {
+fn store_with(path: &str, strip_origin: bool) -> Result<DialogStore, TestError> {
     use sipnab::capture::parse::parse_packet;
     use sipnab::pipeline::{self, PacketAction, PipelineOptions};
     use sipnab::rtp::heuristic::RtpHeuristic;
@@ -87,7 +89,7 @@ fn store_with(path: &str, strip_origin: bool) -> DialogStore {
     let mut store = DialogStore::new(100_000, false);
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
-    for mut pkt in read_all(path) {
+    for mut pkt in read_all(path)? {
         if strip_origin {
             pkt.origin = None;
         }
@@ -99,10 +101,10 @@ fn store_with(path: &str, strip_origin: bool) -> DialogStore {
             store.process_message(*msg);
         }
     }
-    store
+    Ok(store)
 }
 
-fn store_from(path: &str) -> DialogStore {
+fn store_from(path: &str) -> Result<DialogStore, TestError> {
     store_with(path, false)
 }
 
@@ -113,7 +115,7 @@ fn store_from(path: &str) -> DialogStore {
 /// `Arc<RwLock<_>>` stores and a dialog store this suite has no use for. The
 /// classification is the part under test — everything a stream knows about its
 /// provenance has to survive `classify_packet` and `process_rtp`.
-fn stream_store_with(path: &str, strip_origin: bool) -> StreamStore {
+fn stream_store_with(path: &str, strip_origin: bool) -> Result<StreamStore, TestError> {
     use sipnab::capture::parse::parse_packet;
     use sipnab::pipeline::{self, PacketAction, PipelineOptions};
     use sipnab::rtp::heuristic::RtpHeuristic;
@@ -121,7 +123,7 @@ fn stream_store_with(path: &str, strip_origin: bool) -> StreamStore {
     let mut store = StreamStore::new(100_000);
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
-    for mut pkt in read_all(path) {
+    for mut pkt in read_all(path)? {
         if strip_origin {
             pkt.origin = None;
         }
@@ -133,13 +135,13 @@ fn stream_store_with(path: &str, strip_origin: bool) -> StreamStore {
             store.process_rtp(&pp, &hdr, pp.timestamp);
         }
     }
-    store
+    Ok(store)
 }
 
 /// The dialog knows where it began.
 #[test]
-fn a_dialog_records_the_frame_it_opened_in() {
-    let store = store_from(&fixture("sip_call.pcap"));
+fn a_dialog_records_the_frame_it_opened_in() -> Result<(), TestError> {
+    let store = store_from(&fixture("sip_call.pcap"))?;
     let dialogs: Vec<_> = store.iter().collect();
     assert!(
         !dialogs.is_empty(),
@@ -153,6 +155,7 @@ fn a_dialog_records_the_frame_it_opened_in() {
             d.call_id
         );
     }
+    Ok(())
 }
 
 /// The whole point: the emitted pointer leads back to the right bytes.
@@ -161,10 +164,10 @@ fn a_dialog_records_the_frame_it_opened_in() {
 /// field pointing one frame off would satisfy `is_some()` and be exactly the
 /// failure this feature exists to prevent.
 #[test]
-fn the_summary_pointer_resolves_to_the_frame_the_dialog_opened_in() {
+fn the_summary_pointer_resolves_to_the_frame_the_dialog_opened_in() -> Result<(), TestError> {
     let path = fixture("sip_call.pcap");
-    let packets = read_all(&path);
-    let store = store_from(&path);
+    let packets = read_all(&path)?;
+    let store = store_from(&path)?;
 
     let mut checked = 0;
     for d in store.iter() {
@@ -172,10 +175,9 @@ fn the_summary_pointer_resolves_to_the_frame_the_dialog_opened_in() {
         let pointer = summary
             .frame
             .as_ref()
-            .unwrap_or_else(|| panic!("summary carried no frame for {}", d.call_id));
+            .ok_or_else(|| format!("summary carried no frame for {}", d.call_id))?;
 
-        let got = resolve(&parse_pointer(pointer).expect("the emitted pointer must parse"))
-            .expect("the emitted pointer must resolve");
+        let got = resolve(&parse_pointer(pointer)?)?;
         assert!(
             got.is_verified(),
             "the reader recorded a digest, so a followed pointer must verify"
@@ -187,7 +189,7 @@ fn the_summary_pointer_resolves_to_the_frame_the_dialog_opened_in() {
         let ordinal = d
             .first_frame
             .as_ref()
-            .expect("first_frame present")
+            .ok_or("first_frame present")?
             .origin
             .ordinal as usize;
         assert_eq!(
@@ -201,6 +203,7 @@ fn the_summary_pointer_resolves_to_the_frame_the_dialog_opened_in() {
         checked > 0,
         "no dialog was checked; the assertions are vacuous"
     );
+    Ok(())
 }
 
 /// The case that decides the design.
@@ -212,9 +215,9 @@ fn the_summary_pointer_resolves_to_the_frame_the_dialog_opened_in() {
 /// would in fact have been different, so the test still means something if
 /// somebody "simplifies" the field away later.
 #[test]
-fn the_opening_frame_survives_losing_the_opening_message() {
+fn the_opening_frame_survives_losing_the_opening_message() -> Result<(), TestError> {
     let path = fixture("sip_call.pcap");
-    let mut store = store_from(&path);
+    let mut store = store_from(&path)?;
 
     // Pick a dialog with at least two messages carrying *different* frames, so
     // dropping the first genuinely changes what a derived implementation would
@@ -230,11 +233,11 @@ fn the_opening_frame_survives_losing_the_opening_message() {
             }
         })
         .map(|d| d.call_id.clone())
-        .expect("fixture must contain a dialog with two distinctly-framed messages");
+        .ok_or("fixture must contain a dialog with two distinctly-framed messages")?;
 
     let opened_in = {
-        let d = store.get_mut(&target).expect("dialog");
-        let opened_in = d.first_frame.clone().expect("opening frame recorded");
+        let d = store.get_mut(&target).ok_or("dialog")?;
+        let opened_in = d.first_frame.clone().ok_or("opening frame recorded")?;
         assert_eq!(
             d.messages.first().and_then(|m| m.frame.clone()),
             Some(opened_in.clone()),
@@ -247,7 +250,7 @@ fn the_opening_frame_survives_losing_the_opening_message() {
         opened_in
     };
 
-    let d = store.iter().find(|d| d.call_id == target).expect("dialog");
+    let d = store.iter().find(|d| d.call_id == target).ok_or("dialog")?;
 
     // The derived implementation would now be wrong -- assert that explicitly,
     // so this test keeps its teeth if someone later "simplifies" the stored
@@ -271,6 +274,7 @@ fn the_opening_frame_survives_losing_the_opening_message() {
         "the summary followed the surviving message instead of the dialog's own \
          record, and now cites a frame the dialog did not open in"
     );
+    Ok(())
 }
 
 /// The real `compact_idle`, on a dialog long enough for it to bite.
@@ -289,14 +293,14 @@ fn the_opening_frame_survives_losing_the_opening_message() {
 /// with teeth on that question. This one guards a different property -- that
 /// compaction does not itself corrupt the recorded frame.
 #[test]
-fn the_real_compaction_path_leaves_the_opening_frame_alone() {
+fn the_real_compaction_path_leaves_the_opening_frame_alone() -> Result<(), TestError> {
     let path = fixture("sip_call.pcap");
-    let mut store = store_from(&path);
-    let call_id = store.iter().next().expect("a dialog").call_id.clone();
+    let mut store = store_from(&path)?;
+    let call_id = store.iter().next().ok_or("a dialog")?.call_id.clone();
 
     let (opened_in, grown_to) = {
-        let d = store.get_mut(&call_id).expect("dialog");
-        let opened_in = d.first_frame.clone().expect("opening frame");
+        let d = store.get_mut(&call_id).ok_or("dialog")?;
+        let opened_in = d.first_frame.clone().ok_or("opening frame")?;
         // Grow past the keep-limit by repeating messages the dialog already
         // has. Content does not matter here; length does, because that is what
         // makes `retained_indices` return Some and eviction actually run.
@@ -317,7 +321,10 @@ fn the_real_compaction_path_leaves_the_opening_frame_alone() {
         keep_messages_per_idle_dialog()
     );
 
-    let d = store.iter().find(|d| d.call_id == call_id).expect("dialog");
+    let d = store
+        .iter()
+        .find(|d| d.call_id == call_id)
+        .ok_or("dialog")?;
     assert_eq!(
         d.first_frame.as_ref(),
         Some(&opened_in),
@@ -328,6 +335,7 @@ fn the_real_compaction_path_leaves_the_opening_frame_alone() {
         Some(opened_in.to_string()),
         "after real compaction the summary no longer cites the opening frame"
     );
+    Ok(())
 }
 
 /// The digest has to survive being written down.
@@ -339,23 +347,24 @@ fn the_real_compaction_path_leaves_the_opening_frame_alone() {
 /// rotated returned bytes with no warning -- the exact confident wrong answer
 /// the design forbids, reintroduced at the serialization boundary.
 #[test]
-fn an_emitted_pointer_still_verifies_after_a_round_trip_through_text() {
+fn an_emitted_pointer_still_verifies_after_a_round_trip_through_text() -> Result<(), TestError> {
     let path = fixture("sip_call.pcap");
-    let store = store_from(&path);
-    let d = store.iter().next().expect("one dialog");
-    let emitted = DialogSummary::from(d).frame.expect("pointer emitted");
+    let store = store_from(&path)?;
+    let d = store.iter().next().ok_or("one dialog")?;
+    let emitted = DialogSummary::from(d).frame.ok_or("pointer emitted")?;
 
-    let reparsed = parse_pointer(&emitted).expect("the emitted form must parse");
+    let reparsed = parse_pointer(&emitted)?;
     assert_eq!(
         reparsed.origin.digest,
-        d.first_frame.as_ref().expect("first_frame").origin.digest,
+        d.first_frame.as_ref().ok_or("first_frame")?.origin.digest,
         "the digest did not survive the trip through text, so nothing that \
          reads this pointer can tell a changed capture from an intact one"
     );
     assert!(
-        resolve(&reparsed).expect("resolve").is_verified(),
+        resolve(&reparsed)?.is_verified(),
         "a pointer emitted by a surface must verify when followed"
     );
+    Ok(())
 }
 
 /// End to end: follow an emitted pointer at a capture that changed underneath.
@@ -364,25 +373,25 @@ fn an_emitted_pointer_still_verifies_after_a_round_trip_through_text() {
 /// digest is carried; following the pointer against different bytes has to
 /// refuse rather than hand back whatever now sits at that ordinal.
 #[test]
-fn following_an_emitted_pointer_at_a_changed_capture_is_refused() {
+fn following_an_emitted_pointer_at_a_changed_capture_is_refused() -> Result<(), TestError> {
     let src = fixture("sip_call.pcap");
-    let store = store_from(&src);
-    let d = store.iter().next().expect("one dialog");
-    let emitted = DialogSummary::from(d).frame.expect("pointer emitted");
+    let store = store_from(&src)?;
+    let d = store.iter().next().ok_or("one dialog")?;
+    let emitted = DialogSummary::from(d).frame.ok_or("pointer emitted")?;
 
     let tail = emitted
         .rsplit_once('#')
         .map(|(_, t)| t.to_string())
-        .expect("pointer has a tail");
+        .ok_or("pointer has a tail")?;
 
     // A byte-identical copy must still resolve: the refusal below has to come
     // from the contents differing, not merely from the path differing.
     let dir = std::env::temp_dir().join(format!("sipnab-prov-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("tmpdir");
+    std::fs::create_dir_all(&dir)?;
     let copy = dir.join("same.pcap");
-    std::fs::copy(&src, &copy).expect("copy");
+    std::fs::copy(&src, &copy)?;
     assert!(
-        resolve(&parse_pointer(&format!("{}#{tail}", copy.display())).expect("parse")).is_ok(),
+        resolve(&parse_pointer(&format!("{}#{tail}", copy.display()))?).is_ok(),
         "a byte-identical copy must still resolve"
     );
 
@@ -390,49 +399,54 @@ fn following_an_emitted_pointer_at_a_changed_capture_is_refused() {
     // -- the "someone rotated the file under you" case, without hand-computing
     // offsets into the pcap to corrupt exactly the right frame.
     let other = fixture("udp_5060.pcap");
-    match resolve(&parse_pointer(&format!("{other}#{tail}")).expect("parse")) {
+    match resolve(&parse_pointer(&format!("{other}#{tail}"))?) {
         Err(sipnab::capture::resolve::ResolveError::Changed { .. }) => {}
-        Ok(r) => panic!(
-            "a changed capture returned bytes ({} of them, verified={}) instead \
-             of refusing",
-            r.bytes().len(),
-            r.is_verified()
-        ),
-        Err(other) => panic!("expected Changed, got {other:?}"),
+        Ok(r) => {
+            return Err(format!(
+                "a changed capture returned bytes ({} of them, verified={}) instead \
+                 of refusing",
+                r.bytes().len(),
+                r.is_verified()
+            )
+            .into());
+        }
+        Err(other) => return Err(format!("expected Changed, got {other:?}").into()),
     }
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 /// Absent means unknown. It must not become a pointer to frame 0.
 #[test]
-fn a_dialog_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
+fn a_dialog_with_no_frame_omits_the_key_rather_than_emitting_a_default() -> Result<(), TestError> {
     let path = fixture("sip_call.pcap");
 
     // Same capture, read with the frame origin stripped -- what live capture
     // produces. The dialogs are otherwise identical, so the only difference in
     // the emitted JSON should be the pointer.
-    let live_like = store_with(&path, true);
-    let d = live_like.iter().next().expect("one dialog");
+    let live_like = store_with(&path, true)?;
+    let d = live_like.iter().next().ok_or("one dialog")?;
     assert!(
         d.first_frame.is_none(),
         "a packet with no origin must not yield a dialog that claims a frame"
     );
-    let json = serde_json::to_value(DialogSummary::from(d)).expect("serialize");
+    let json = serde_json::to_value(DialogSummary::from(d))?;
     assert!(
-        !json.as_object().expect("object").contains_key("frame"),
+        !json.as_object().ok_or("object")?.contains_key("frame"),
         "a dialog with no frame must omit the key entirely, not emit null or a \
          placeholder that reads as a pointer to frame 0; got {json}"
     );
 
     // And the populated case really does emit it, so the check above is not
     // passing because the field never serializes under any circumstances.
-    let from_file = store_from(&path);
-    let d = from_file.iter().next().expect("one dialog");
-    let with = serde_json::to_value(DialogSummary::from(d)).expect("serialize");
+    let from_file = store_from(&path)?;
+    let d = from_file.iter().next().ok_or("one dialog")?;
+    let with = serde_json::to_value(DialogSummary::from(d))?;
     assert!(
-        with.as_object().expect("object").contains_key("frame"),
+        with.as_object().ok_or("object")?.contains_key("frame"),
         "a dialog that knows its frame must emit the key; got {with}"
     );
+    Ok(())
 }
 
 // ── media streams ─────────────────────────────────────────────────────
@@ -447,8 +461,8 @@ fn a_dialog_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
 
 /// The stream knows which frame it began in.
 #[test]
-fn a_stream_records_the_frame_its_first_packet_arrived_in() {
-    let store = stream_store_with(&sample("sip-rtp-g711.pcap"), false);
+fn a_stream_records_the_frame_its_first_packet_arrived_in() -> Result<(), TestError> {
+    let store = stream_store_with(&sample("sip-rtp-g711.pcap"), false)?;
     let streams: Vec<_> = store.iter().collect();
     assert!(
         !streams.is_empty(),
@@ -464,6 +478,7 @@ fn a_stream_records_the_frame_its_first_packet_arrived_in() {
             s.key.dst
         );
     }
+    Ok(())
 }
 
 /// The whole point: the emitted pointer leads back to the right bytes.
@@ -474,25 +489,23 @@ fn a_stream_records_the_frame_its_first_packet_arrived_in() {
 /// and `resolve` checks the digest, so a neighboring frame is refused rather
 /// than quietly returned.
 #[test]
-fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {
+fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() -> Result<(), TestError> {
     let path = sample("sip-rtp-g711.pcap");
-    let packets = read_all(&path);
-    let store = stream_store_with(&path, false);
+    let packets = read_all(&path)?;
+    let store = stream_store_with(&path, false)?;
 
     let mut checked = 0;
     for s in store.iter() {
         let emitted: serde_json::Value = serde_json::from_str(&stream_to_json(
             s,
             sipnab::rtp::quality::MosDelay::unknown(),
-        ))
-        .expect("stream JSON parses");
+        ))?;
         let pointer = emitted["frame"]
             .as_str()
-            .unwrap_or_else(|| panic!("stream JSON carried no frame: {emitted}"))
+            .ok_or_else(|| format!("stream JSON carried no frame: {emitted}"))?
             .to_string();
 
-        let got = resolve(&parse_pointer(&pointer).expect("the emitted pointer must parse"))
-            .expect("the emitted pointer must resolve");
+        let got = resolve(&parse_pointer(&pointer)?)?;
         assert!(
             got.is_verified(),
             "the reader recorded a digest, so a followed pointer must verify \
@@ -504,7 +517,7 @@ fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {
         let ordinal = s
             .first_frame
             .as_ref()
-            .expect("first_frame present")
+            .ok_or("first_frame present")?
             .origin
             .ordinal as usize;
         assert_eq!(
@@ -519,6 +532,7 @@ fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {
         checked > 0,
         "no stream was checked; the assertions are vacuous"
     );
+    Ok(())
 }
 
 /// Absent means unknown. It must not become a pointer to frame 0.
@@ -529,14 +543,14 @@ fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {
 /// REST `/v1/streams` and the TUI's stream export. One of the two defaulting
 /// to `null` would put a placeholder on half the surfaces.
 #[test]
-fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
+fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() -> Result<(), TestError> {
     let path = sample("sip-rtp-g711.pcap");
 
     // Same capture, read with the frame origin stripped -- what live capture
     // produces. The streams are otherwise identical, so the only difference in
     // the emitted JSON should be the pointer.
-    let live_like = stream_store_with(&path, true);
-    let s = live_like.iter().next().expect("one stream");
+    let live_like = stream_store_with(&path, true)?;
+    let s = live_like.iter().next().ok_or("one stream")?;
     assert!(
         s.first_frame.is_none(),
         "a packet with no origin must not yield a stream that claims a frame"
@@ -544,41 +558,38 @@ fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
     let json: serde_json::Value = serde_json::from_str(&stream_to_json(
         s,
         sipnab::rtp::quality::MosDelay::unknown(),
-    ))
-    .expect("stream JSON parses");
+    ))?;
     assert!(
-        !json.as_object().expect("object").contains_key("frame"),
+        !json.as_object().ok_or("object")?.contains_key("frame"),
         "a stream with no frame must omit the key entirely, not emit null or a \
          placeholder that reads as a pointer to frame 0; got {json}"
     );
-    let summary = serde_json::to_value(StreamSummary::of(s, MosDelay::from_capture(&live_like)))
-        .expect("serialize");
+    let summary = serde_json::to_value(StreamSummary::of(s, MosDelay::from_capture(&live_like)))?;
     assert!(
-        !summary.as_object().expect("object").contains_key("frame"),
+        !summary.as_object().ok_or("object")?.contains_key("frame"),
         "the compact stream projection must omit the key too; got {summary}"
     );
 
     // And the populated case really does emit it, so the checks above are not
     // passing because the field never serializes under any circumstances.
-    let from_file = stream_store_with(&path, false);
-    let s = from_file.iter().next().expect("one stream");
+    let from_file = stream_store_with(&path, false)?;
+    let s = from_file.iter().next().ok_or("one stream")?;
     let with: serde_json::Value = serde_json::from_str(&stream_to_json(
         s,
         sipnab::rtp::quality::MosDelay::unknown(),
-    ))
-    .expect("stream JSON parses");
+    ))?;
     assert!(
-        with.as_object().expect("object").contains_key("frame"),
+        with.as_object().ok_or("object")?.contains_key("frame"),
         "a stream that knows its frame must emit the key; got {with}"
     );
     let with_summary =
-        serde_json::to_value(StreamSummary::of(s, MosDelay::from_capture(&from_file)))
-            .expect("serialize");
+        serde_json::to_value(StreamSummary::of(s, MosDelay::from_capture(&from_file)))?;
     assert!(
         with_summary
             .as_object()
-            .expect("object")
+            .ok_or("object")?
             .contains_key("frame"),
         "the compact stream projection must emit it too; got {with_summary}"
     );
+    Ok(())
 }

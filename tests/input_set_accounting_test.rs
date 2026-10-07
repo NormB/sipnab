@@ -25,18 +25,21 @@ mod corpus_support;
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn samples() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples")
 }
 
 /// Lay out `root/top.pcap` plus `n` subdirectories each holding one capture.
-fn tree_with_subdirs(root: &std::path::Path, n: usize) {
-    std::fs::copy(samples().join("sip-rtp-g711.pcap"), root.join("top.pcap")).expect("copy");
+fn tree_with_subdirs(root: &std::path::Path, n: usize) -> Result<(), TestError> {
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), root.join("top.pcap"))?;
     for i in 0..n {
         let sub = root.join(format!("host-{i}"));
-        std::fs::create_dir(&sub).expect("mkdir");
-        std::fs::copy(samples().join("sip-register.pcap"), sub.join("cap.pcap")).expect("copy");
+        std::fs::create_dir(&sub)?;
+        std::fs::copy(samples().join("sip-register.pcap"), sub.join("cap.pcap"))?;
     }
+    Ok(())
 }
 
 /// A directory run says how many subdirectories it did not enter.
@@ -44,14 +47,14 @@ fn tree_with_subdirs(root: &std::path::Path, n: usize) {
 /// Without this the run reports the files it read and nothing else, and the
 /// operator has no way to tell a complete answer from a partial one.
 #[test]
-fn a_directory_run_says_how_many_subdirectories_it_did_not_enter() {
-    let root = tempfile::tempdir().expect("tempdir");
-    tree_with_subdirs(root.path(), 2);
+fn a_directory_run_says_how_many_subdirectories_it_did_not_enter() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    tree_with_subdirs(root.path(), 2)?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "the run still succeeds:\n{err}");
     assert!(
         err.contains("2 subdirectory(ies) not descended"),
@@ -66,6 +69,7 @@ fn a_directory_run_says_how_many_subdirectories_it_did_not_enter() {
         "the two numbers have to appear together or they do not \
          reconcile:\n{err}"
     );
+    Ok(())
 }
 
 /// …and stops saying it once `--recursive` reads them.
@@ -73,11 +77,11 @@ fn a_directory_run_says_how_many_subdirectories_it_did_not_enter() {
 /// A line that appears on every run is a line nobody reads. This is the half
 /// that keeps the warning meaningful.
 #[test]
-fn the_shortfall_is_not_reported_when_recursive_read_them() {
-    let root = tempfile::tempdir().expect("tempdir");
-    tree_with_subdirs(root.path(), 2);
+fn the_shortfall_is_not_reported_when_recursive_read_them() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    tree_with_subdirs(root.path(), 2)?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &[
             "-N",
             "-I",
@@ -86,25 +90,27 @@ fn the_shortfall_is_not_reported_when_recursive_read_them() {
             "--quiet",
         ],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "{err}");
     assert!(
         !err.contains("not descended"),
         "every subdirectory was read; there is nothing to disclose:\n{err}"
     );
+    Ok(())
 }
 
 /// A run that dropped nothing says nothing about drops.
 #[test]
-fn a_single_named_file_reports_no_shortfall() {
+fn a_single_named_file_reports_no_shortfall() -> Result<(), TestError> {
     let f = samples().join("sip-rtp-g711.pcap");
     let (_out, err, code) =
-        run_support::run_or_panic(&["-N", "-I", &f.to_string_lossy(), "--quiet"], Some("info"));
+        run_support::run(&["-N", "-I", &f.to_string_lossy(), "--quiet"], Some("info"))?;
     assert_eq!(code, Some(0), "{err}");
     assert!(
         !err.contains("-I resolved to"),
         "one file named directly drops nothing:\n{err}"
     );
+    Ok(())
 }
 
 /// An entry that cannot hold a capture is named rather than dropped in silence.
@@ -114,24 +120,23 @@ fn a_single_named_file_reports_no_shortfall() {
 /// directory left the set with nothing said.
 #[cfg(unix)]
 #[test]
-fn a_fifo_in_a_capture_directory_is_named() {
-    let root = tempfile::tempdir().expect("tempdir");
+fn a_fifo_in_a_capture_directory_is_named() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
     std::fs::copy(
         samples().join("sip-rtp-g711.pcap"),
         root.path().join("real.pcap"),
-    )
-    .expect("copy");
+    )?;
     let fifo = root.path().join("live.pcap");
     let status = std::process::Command::new("mkfifo")
         .arg(&fifo)
         .status()
-        .expect("run mkfifo");
+        .map_err(|e| format!("run mkfifo: {e}"))?;
     assert!(status.success(), "mkfifo failed");
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("warn"),
-    );
+    )?;
     assert_eq!(code, Some(0), "the real capture still analyzes:\n{err}");
     assert!(
         err.contains("live.pcap") && err.contains("not a file"),
@@ -141,6 +146,7 @@ fn a_fifo_in_a_capture_directory_is_named() {
         err.contains("1 entry(ies) that are not files"),
         "and counted beside the total it reduced:\n{err}"
     );
+    Ok(())
 }
 
 /// A directory whose captures are one level down says where they are.
@@ -149,16 +155,16 @@ fn a_fifo_in_a_capture_directory_is_named() {
 /// per-day capture tree has exactly this shape, and the operator's next move
 /// is `--recursive`, not a hunt for the missing files.
 #[test]
-fn a_directory_whose_captures_are_deeper_says_so() {
-    let root = tempfile::tempdir().expect("tempdir");
+fn a_directory_whose_captures_are_deeper_says_so() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
     let sub = root.path().join("host-a");
-    std::fs::create_dir(&sub).expect("mkdir");
-    std::fs::copy(samples().join("sip-rtp-g711.pcap"), sub.join("cap.pcap")).expect("copy");
+    std::fs::create_dir(&sub)?;
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), sub.join("cap.pcap"))?;
 
-    let (_out, err, code) = run_support::run_or_panic(
+    let (_out, err, code) = run_support::run(
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("error"),
-    );
+    )?;
     assert_eq!(
         code,
         Some(1),
@@ -168,6 +174,7 @@ fn a_directory_whose_captures_are_deeper_says_so() {
         err.contains("not descended") && err.contains("--recursive"),
         "the error has to point one level down:\n{err}"
     );
+    Ok(())
 }
 
 /// The same accounting against a real capture directory named by
@@ -181,26 +188,26 @@ fn a_directory_whose_captures_are_deeper_says_so() {
 /// the change resolves to 15 files at its top level and holds 122 more in three
 /// subdirectories, and the run reported the 15 as though they were everything.
 #[test]
-fn corpus_directory_reports_what_it_did_not_enter() {
+fn corpus_directory_reports_what_it_did_not_enter() -> Result<(), TestError> {
     // The skip is announced on stderr by `corpus_support::root`, once per test
     // binary. It used to be an `eprintln!` that libtest captured and discarded
     // on success, so this gate reported `ok` while never running.
     let Some(root) = corpus_support::root() else {
-        return;
+        return Ok(());
     };
     let dir = root.to_string_lossy().into_owned();
     let subdirs = std::fs::read_dir(&dir)
-        .expect("read corpus dir")
+        .map_err(|e| format!("read corpus dir: {e}"))?
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .count();
     if subdirs == 0 {
         eprintln!("corpus has no subdirectories — nothing to disclose, skipping");
-        return;
+        return Ok(());
     }
 
     let (_out, err, code) =
-        run_support::run_or_panic(&["-N", "-I", &dir, "--count", "1", "--quiet"], Some("warn"));
+        run_support::run(&["-N", "-I", &dir, "--count", "1", "--quiet"], Some("warn"))?;
     assert_eq!(code, Some(0), "the run still succeeds");
     assert!(
         err.contains(&format!("{subdirs} subdirectory(ies) not descended")),
@@ -209,4 +216,5 @@ fn corpus_directory_reports_what_it_did_not_enter() {
         err.lines().count()
     );
     eprintln!("corpus: {subdirs} subdirectory(ies) reported as not descended");
+    Ok(())
 }

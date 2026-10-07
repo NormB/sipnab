@@ -23,6 +23,8 @@
 
 use std::sync::{Arc, Mutex};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Collects `tracing` events emitted on the current thread.
 #[derive(Clone, Default)]
 struct EventCapture {
@@ -62,7 +64,7 @@ impl tracing::Subscriber for EventCapture {
 /// Shutting the worker down logs what the defense did.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 #[test]
-fn shutdown_reports_what_the_kill_defense_did() {
+fn shutdown_reports_what_the_kill_defense_did() -> Result<(), TestError> {
     use sipnab::process_isolation::{KillRequest, KillWorkerSpawn, spawn_scanner_kill_worker};
     use sipnab::security::transmit_guard::TransmitPermit;
     use std::net::{IpAddr, Ipv4Addr};
@@ -74,7 +76,7 @@ fn shutdown_reports_what_the_kill_defense_did() {
     let permit = TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
         device: "lo".to_string(),
     })
-    .expect("a live source grants a transmit permit");
+    .ok_or("a live source grants a transmit permit")?;
     let spawn = KillWorkerSpawn {
         // This file's executable is a test harness; the worker is the binary.
         program: env!("CARGO_BIN_EXE_sipnab").into(),
@@ -82,20 +84,18 @@ fn shutdown_reports_what_the_kill_defense_did() {
         run_as: None,
         log_level: "warn".to_string(),
     };
-    let mut handle = spawn_scanner_kill_worker(&spawn, None, permit).expect("spawn worker");
+    let mut handle = spawn_scanner_kill_worker(&spawn, None, permit)?;
 
     // The response goes to a listener this test binds on loopback.
-    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind listener");
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    handle
-        .send_kill(KillRequest::SendResponse {
-            dst_addr: loopback,
-            dst_port: listener.local_addr().expect("listener address").port(),
-            src_addr: loopback,
-            src_port: 5060,
-            response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
-        })
-        .expect("a fresh worker must accept a request");
+    handle.send_kill(KillRequest::SendResponse {
+        dst_addr: loopback,
+        dst_port: listener.local_addr()?.port(),
+        src_addr: loopback,
+        src_port: 5060,
+        response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    })?;
 
     // Wait for the outcome to be booked so the totals are not a race with the
     // worker.
@@ -116,7 +116,7 @@ fn shutdown_reports_what_the_kill_defense_did() {
         handle.shutdown();
     });
 
-    let events = capture.events.lock().expect("capture mutex");
+    let events = capture.events.lock().map_err(|e| e.to_string())?;
     let reported = events
         .iter()
         .any(|(_, msg)| msg.contains("Scanner-kill totals") && msg.contains("1 sent"));
@@ -124,4 +124,5 @@ fn shutdown_reports_what_the_kill_defense_did() {
         reported,
         "shutdown must log the kill totals (counts were {counts:?}); captured: {events:?}"
     );
+    Ok(())
 }

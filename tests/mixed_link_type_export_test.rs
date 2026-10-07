@@ -23,12 +23,16 @@
 
 use std::path::{Path, PathBuf};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// A fresh temp directory for one test.
-fn tmp_dir(name: &str) -> PathBuf {
+fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
     let d = std::env::temp_dir().join(format!("sipnab-mixed-link-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("create temp dir");
-    d
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
 }
 
 /// Path to a checked-in sample capture.
@@ -49,18 +53,17 @@ const SLL_PACKETS: usize = 835;
 const ETHERNET_PACKETS: usize = 229;
 
 /// Run sipnab with the given args, returning `(stderr, exit_code)`.
-fn run(args: &[&str]) -> (String, Option<i32>) {
+fn run(args: &[&str]) -> Result<(String, Option<i32>), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .env("SIPNAB_LOG", "info")
         .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// The link type in a classic pcap file's 24-byte global header.
@@ -68,21 +71,21 @@ fn run(args: &[&str]) -> (String, Option<i32>) {
 /// Hand-read from the bytes (magic decides the endianness) so the assertion
 /// does not depend on any sipnab code — this is what libpcap, Wireshark and
 /// `capinfos` read, and it is the only link type a classic pcap can state.
-fn pcap_global_link_type(path: &Path) -> u32 {
-    let bytes = std::fs::read(path).expect("read pcap");
+fn pcap_global_link_type(path: &Path) -> Result<u32, TestError> {
+    let bytes = std::fs::read(path)?;
     assert!(
         bytes.len() >= 24,
         "{} is too short to hold a pcap header",
         path.display()
     );
-    let magic = u32::from_le_bytes(bytes[0..4].try_into().expect("4 bytes"));
+    let magic = u32::from_le_bytes(bytes[0..4].try_into()?);
     let le = matches!(magic, 0xA1B2_C3D4 | 0xA1B2_3C4D);
-    let raw: [u8; 4] = bytes[20..24].try_into().expect("4 bytes");
-    if le {
+    let raw: [u8; 4] = bytes[20..24].try_into()?;
+    Ok(if le {
         u32::from_le_bytes(raw)
     } else {
         u32::from_be_bytes(raw)
-    }
+    })
 }
 
 /// Every pcapng block in `path` as `(block_type, body)`, in file order.
@@ -90,13 +93,13 @@ fn pcap_global_link_type(path: &Path) -> u32 {
 /// A pcapng block is `type:u32, total_len:u32, body, total_len:u32`. Only
 /// little-endian sections are handled, which is what sipnab writes on every
 /// platform it supports.
-fn pcapng_blocks(path: &Path) -> Vec<(u32, Vec<u8>)> {
-    let bytes = std::fs::read(path).expect("read pcapng");
+fn pcapng_blocks(path: &Path) -> Result<Vec<(u32, Vec<u8>)>, TestError> {
+    let bytes = std::fs::read(path)?;
     let mut out = Vec::new();
     let mut off = 0usize;
     while off + 12 <= bytes.len() {
-        let btype = u32::from_le_bytes(bytes[off..off + 4].try_into().expect("4 bytes"));
-        let len = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().expect("4 bytes")) as usize;
+        let btype = u32::from_le_bytes(bytes[off..off + 4].try_into()?);
+        let len = u32::from_le_bytes(bytes[off + 4..off + 8].try_into()?) as usize;
         assert!(
             len >= 12 && off + len <= bytes.len(),
             "malformed pcapng block at offset {off}: len={len}"
@@ -104,28 +107,32 @@ fn pcapng_blocks(path: &Path) -> Vec<(u32, Vec<u8>)> {
         out.push((btype, bytes[off + 8..off + len - 4].to_vec()));
         off += len;
     }
-    out
+    Ok(out)
 }
 
 /// The link type each Interface Description Block declares, in file order.
 ///
 /// IDB body: `linktype:u16, reserved:u16, snaplen:u32, options…`.
-fn pcapng_interface_link_types(path: &Path) -> Vec<u32> {
-    pcapng_blocks(path)
+fn pcapng_interface_link_types(path: &Path) -> Result<Vec<u32>, TestError> {
+    pcapng_blocks(path)?
         .into_iter()
         .filter(|(t, _)| *t == 0x0000_0001)
-        .map(|(_, body)| u32::from(u16::from_le_bytes(body[0..2].try_into().expect("2 bytes"))))
+        .map(|(_, body)| -> Result<u32, TestError> {
+            Ok(u32::from(u16::from_le_bytes(body[0..2].try_into()?)))
+        })
         .collect()
 }
 
 /// The interface id each Enhanced Packet Block names, in file order.
 ///
 /// EPB body: `interface_id:u32, ts_high:u32, ts_low:u32, caplen:u32, …`.
-fn pcapng_epb_interface_ids(path: &Path) -> Vec<u32> {
-    pcapng_blocks(path)
+fn pcapng_epb_interface_ids(path: &Path) -> Result<Vec<u32>, TestError> {
+    pcapng_blocks(path)?
         .into_iter()
         .filter(|(t, _)| *t == 0x0000_0006)
-        .map(|(_, body)| u32::from_le_bytes(body[0..4].try_into().expect("4 bytes")))
+        .map(|(_, body)| -> Result<u32, TestError> {
+            Ok(u32::from_le_bytes(body[0..4].try_into()?))
+        })
         .collect()
 }
 
@@ -137,8 +144,8 @@ fn pcapng_epb_interface_ids(path: &Path) -> Vec<u32> {
 /// frames as opaque `data`, every SIP message inside them vanished from the
 /// dissection, and nothing in the file said so.
 #[test]
-fn plain_pcap_refuses_a_mixed_link_type_input_set() {
-    let dir = tmp_dir("plain");
+fn plain_pcap_refuses_a_mixed_link_type_input_set() -> Result<(), TestError> {
+    let dir = tmp_dir("plain")?;
     let out = dir.join("out.pcap");
     let (stderr, code) = run(&[
         "-N",
@@ -146,14 +153,14 @@ fn plain_pcap_refuses_a_mixed_link_type_input_set() {
         "--portrange",
         "1-65535",
         "-I",
-        sample("speech_8k_ulaw.pcap").to_str().expect("utf-8 path"),
+        sample("speech_8k_ulaw.pcap").to_str().ok_or("utf-8 path")?,
         "-I",
         sample("register-invite-reinvite-bye.pcap")
             .to_str()
-            .expect("utf-8 path"),
+            .ok_or("utf-8 path")?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_ne!(
         code,
@@ -178,19 +185,20 @@ fn plain_pcap_refuses_a_mixed_link_type_input_set() {
     // declares the link type of the frames it actually holds.
     if out.exists() {
         assert_eq!(
-            pcap_global_link_type(&out),
+            pcap_global_link_type(&out)?,
             LINKTYPE_LINUX_SLL,
             "the partial file must declare the link type of the frames in it"
         );
     }
+    Ok(())
 }
 
 /// The same input set written as pcapng is faithful: one interface per link
 /// type, each declaring its own, and every packet block naming the interface
 /// it came from. Nothing is dropped and nothing is mislabeled.
 #[test]
-fn pcapng_gives_each_link_type_its_own_interface() {
-    let dir = tmp_dir("pcapng");
+fn pcapng_gives_each_link_type_its_own_interface() -> Result<(), TestError> {
+    let dir = tmp_dir("pcapng")?;
     let out = dir.join("out.pcapng");
     let (stderr, code) = run(&[
         "-N",
@@ -199,14 +207,14 @@ fn pcapng_gives_each_link_type_its_own_interface() {
         "--portrange",
         "1-65535",
         "-I",
-        sample("speech_8k_ulaw.pcap").to_str().expect("utf-8 path"),
+        sample("speech_8k_ulaw.pcap").to_str().ok_or("utf-8 path")?,
         "-I",
         sample("register-invite-reinvite-bye.pcap")
             .to_str()
-            .expect("utf-8 path"),
+            .ok_or("utf-8 path")?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_eq!(
         code,
@@ -215,13 +223,13 @@ fn pcapng_gives_each_link_type_its_own_interface() {
     );
 
     assert_eq!(
-        pcapng_interface_link_types(&out),
+        pcapng_interface_link_types(&out)?,
         vec![LINKTYPE_LINUX_SLL, LINKTYPE_ETHERNET],
         "one IDB per link type, in first-appearance order (SLL sorts first: \
          its timestamps are epoch-0)"
     );
 
-    let ids = pcapng_epb_interface_ids(&out);
+    let ids = pcapng_epb_interface_ids(&out)?;
     assert_eq!(
         ids.len(),
         SLL_PACKETS + ETHERNET_PACKETS,
@@ -238,13 +246,14 @@ fn pcapng_gives_each_link_type_its_own_interface() {
         "every Ethernet frame names the Ethernet interface — not interface 0, \
          whose IDB declares SLL"
     );
+    Ok(())
 }
 
 /// A single-link-type set is untouched by the guard: one interface, one IDB,
 /// every packet on it. The fix must not fragment ordinary captures.
 #[test]
-fn uniform_link_type_still_writes_one_interface() {
-    let dir = tmp_dir("uniform");
+fn uniform_link_type_still_writes_one_interface() -> Result<(), TestError> {
+    let dir = tmp_dir("uniform")?;
     let out = dir.join("out.pcapng");
     let (stderr, code) = run(&[
         "-N",
@@ -255,10 +264,10 @@ fn uniform_link_type_still_writes_one_interface() {
         "-I",
         sample("register-invite-reinvite-bye.pcap")
             .to_str()
-            .expect("utf-8 path"),
+            .ok_or("utf-8 path")?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_eq!(
         code,
@@ -266,21 +275,22 @@ fn uniform_link_type_still_writes_one_interface() {
         "uniform export must succeed\nstderr:\n{stderr}"
     );
     assert_eq!(
-        pcapng_interface_link_types(&out),
+        pcapng_interface_link_types(&out)?,
         vec![LINKTYPE_ETHERNET],
         "a single-link-type capture keeps exactly one interface"
     );
     assert!(
-        pcapng_epb_interface_ids(&out).iter().all(|&id| id == 0),
+        pcapng_epb_interface_ids(&out)?.iter().all(|&id| id == 0),
         "every packet stays on interface 0"
     );
+    Ok(())
 }
 
 /// And plain pcap is untouched too: a uniform set still writes a classic
 /// pcap declaring that link type, exit 0.
 #[test]
-fn uniform_link_type_still_writes_plain_pcap() {
-    let dir = tmp_dir("uniform-plain");
+fn uniform_link_type_still_writes_plain_pcap() -> Result<(), TestError> {
+    let dir = tmp_dir("uniform-plain")?;
     let out = dir.join("out.pcap");
     let (stderr, code) = run(&[
         "-N",
@@ -288,10 +298,10 @@ fn uniform_link_type_still_writes_plain_pcap() {
         "--portrange",
         "1-65535",
         "-I",
-        sample("speech_8k_ulaw.pcap").to_str().expect("utf-8 path"),
+        sample("speech_8k_ulaw.pcap").to_str().ok_or("utf-8 path")?,
         "-O",
-        out.to_str().expect("utf-8 path"),
-    ]);
+        out.to_str().ok_or("utf-8 path")?,
+    ])?;
 
     assert_eq!(
         code,
@@ -299,8 +309,9 @@ fn uniform_link_type_still_writes_plain_pcap() {
         "uniform export must succeed\nstderr:\n{stderr}"
     );
     assert_eq!(
-        pcap_global_link_type(&out),
+        pcap_global_link_type(&out)?,
         LINKTYPE_LINUX_SLL,
         "a classic pcap of an SLL capture declares SLL"
     );
+    Ok(())
 }

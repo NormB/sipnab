@@ -30,18 +30,18 @@ use std::process::{Command, Output};
 #[path = "../build_script/bpf_flags.rs"]
 mod bpf_flags;
 
+type TestError = Box<dyn std::error::Error>;
+
 const SCRIPT: &str = "scripts/reproducible-build.sh";
 
-fn repo() -> PathBuf {
+fn repo() -> Result<PathBuf, TestError> {
     // Canonical: rustc sees the directory cargo was started in as the kernel
     // reports it, with symlinks resolved, so that is the prefix to remap.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .canonicalize()
-        .expect("canonicalize the checkout")
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize()?)
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo()?.join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 fn text(out: &Output) -> String {
@@ -54,14 +54,13 @@ fn text(out: &Output) -> String {
 }
 
 /// Run the script from the checkout with `CARGO_HOME` set to `cargo_home`.
-fn script(args: &[&str], cargo_home: &str) -> Output {
-    Command::new("bash")
-        .arg(repo().join(SCRIPT))
+fn script(args: &[&str], cargo_home: &str) -> Result<Output, TestError> {
+    Ok(Command::new("bash")
+        .arg(repo()?.join(SCRIPT))
         .args(args)
-        .current_dir(repo())
+        .current_dir(repo()?)
         .env("CARGO_HOME", cargo_home)
-        .output()
-        .expect("run reproducible-build.sh")
+        .output()?)
 }
 
 fn stdout(out: &Output) -> String {
@@ -73,9 +72,9 @@ fn stdout(out: &Output) -> String {
 /// checkout is, and where cargo keeps its registry sources. The checkout's
 /// prefix covers the eBPF crate and the build's own `target/`.
 #[test]
-fn the_rustflags_remap_the_checkout_and_the_cargo_home() {
-    let flags = stdout(&script(&["--rustflags"], "/opt/some-cargo-home"));
-    let root = repo().display().to_string();
+fn the_rustflags_remap_the_checkout_and_the_cargo_home() -> Result<(), TestError> {
+    let flags = stdout(&script(&["--rustflags"], "/opt/some-cargo-home")?);
+    let root = repo()?.display().to_string();
     for want in [
         format!("--remap-path-prefix={root}=/sipnab"),
         "--remap-path-prefix=/opt/some-cargo-home=/cargo".to_string(),
@@ -85,15 +84,16 @@ fn the_rustflags_remap_the_checkout_and_the_cargo_home() {
             "--rustflags lacks {want}:\n{flags}"
         );
     }
+    Ok(())
 }
 
 /// C objects carry the same paths in their DWARF, and rustc's remap does not
 /// reach the C compiler. The C flags must map the SAME prefixes to the SAME
 /// names: two lists would agree today and drift apart silently.
 #[test]
-fn the_cflags_map_the_same_prefixes_as_the_rustflags() {
-    let rust = stdout(&script(&["--rustflags"], "/opt/some-cargo-home"));
-    let c = stdout(&script(&["--cflags"], "/opt/some-cargo-home"));
+fn the_cflags_map_the_same_prefixes_as_the_rustflags() -> Result<(), TestError> {
+    let rust = stdout(&script(&["--rustflags"], "/opt/some-cargo-home")?);
+    let c = stdout(&script(&["--cflags"], "/opt/some-cargo-home")?);
     let pairs = |s: &str, prefix: &str| -> Vec<String> {
         s.split_whitespace()
             .filter_map(|f| f.strip_prefix(prefix).map(str::to_string))
@@ -103,13 +103,14 @@ fn the_cflags_map_the_same_prefixes_as_the_rustflags() {
     let m = pairs(&c, "-ffile-prefix-map=");
     assert!(!r.is_empty(), "no remaps at all:\n{rust}");
     assert_eq!(r, m, "the Rust remaps and the C prefix maps disagree");
+    Ok(())
 }
 
 /// A path with whitespace cannot travel in RUSTFLAGS, which cargo splits on
 /// whitespace. Refused by name rather than silently split into two flags.
 #[test]
-fn a_cargo_home_with_whitespace_is_refused() {
-    let out = script(&["--rustflags"], "/opt/cargo home");
+fn a_cargo_home_with_whitespace_is_refused() -> Result<(), TestError> {
+    let out = script(&["--rustflags"], "/opt/cargo home")?;
     assert!(
         !out.status.success(),
         "accepted a split path:\n{}",
@@ -120,6 +121,7 @@ fn a_cargo_home_with_whitespace_is_refused() {
         "the refusal does not say why:\n{}",
         text(&out)
     );
+    Ok(())
 }
 
 /// `build` runs the release's cargo command with the split flags AND the
@@ -127,8 +129,8 @@ fn a_cargo_home_with_whitespace_is_refused() {
 /// `--locked`, and the feature set it was given. A stub `cargo` on PATH
 /// records the invocation instead of compiling.
 #[test]
-fn build_runs_the_release_command_with_every_flag() {
-    let dir = tempfile::tempdir().expect("stub dir");
+fn build_runs_the_release_command_with_every_flag() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let log = dir.path().join("cargo.log");
     let stub = dir.path().join("cargo");
     std::fs::write(
@@ -138,11 +140,10 @@ fn build_runs_the_release_command_with_every_flag() {
              echo \"CFLAGS $CFLAGS\"; echo \"SDE $SOURCE_DATE_EPOCH\"; }} > '{}'\n",
             log.display()
         ),
-    )
-    .expect("write stub");
-    let mut perms = std::fs::metadata(&stub).expect("stat").permissions();
+    )?;
+    let mut perms = std::fs::metadata(&stub)?.permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&stub, perms).expect("chmod");
+    std::fs::set_permissions(&stub, perms)?;
 
     let path = format!(
         "{}:{}",
@@ -150,17 +151,16 @@ fn build_runs_the_release_command_with_every_flag() {
         std::env::var("PATH").unwrap_or_default()
     );
     let out = Command::new("bash")
-        .arg(repo().join(SCRIPT))
+        .arg(repo()?.join(SCRIPT))
         .args(["build", "x86_64-unknown-linux-gnu", "full,bpf"])
-        .current_dir(repo())
+        .current_dir(repo()?)
         .env("PATH", path)
         .env("CARGO_HOME", "/opt/some-cargo-home")
         .env("RUSTFLAGS", "-Dwarnings")
         .env_remove("SOURCE_DATE_EPOCH")
-        .output()
-        .expect("run build");
+        .output()?;
     assert!(out.status.success(), "{}", text(&out));
-    let rec = std::fs::read_to_string(&log).expect("the stub cargo was never run");
+    let rec = std::fs::read_to_string(&log)?;
 
     let args = rec
         .lines()
@@ -205,9 +205,8 @@ fn build_runs_the_release_command_with_every_flag() {
     // it is set, and the commit's own time is the one every rebuild agrees on.
     let commit_time = Command::new("git")
         .args(["log", "-1", "--format=%ct", "HEAD"])
-        .current_dir(repo())
-        .output()
-        .expect("git log");
+        .current_dir(repo()?)
+        .output()?;
     let want = String::from_utf8_lossy(&commit_time.stdout)
         .trim()
         .to_string();
@@ -220,31 +219,32 @@ fn build_runs_the_release_command_with_every_flag() {
         sde, want,
         "SOURCE_DATE_EPOCH must be the commit time of the checkout:\n{rec}"
     );
+    Ok(())
 }
 
 /// `compare` is the verdict of the check: identical files pass, and differing
 /// ones fail with evidence (where they first differ) rather than a bare no.
 #[test]
-fn compare_passes_identical_files_and_fails_differing_ones_with_evidence() {
-    let dir = tempfile::tempdir().expect("dir");
+fn compare_passes_identical_files_and_fails_differing_ones_with_evidence() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
     let a = dir.path().join("a");
     let b = dir.path().join("b");
     let c = dir.path().join("c");
-    std::fs::write(&a, b"same bytes /sipnab/src/main.rs").unwrap();
-    std::fs::write(&b, b"same bytes /sipnab/src/main.rs").unwrap();
-    std::fs::write(&c, b"same bytes /home/xx/src/main.rs").unwrap();
-    let run = |x: &Path, y: &Path| {
-        Command::new("bash")
-            .arg(repo().join(SCRIPT))
+    std::fs::write(&a, b"same bytes /sipnab/src/main.rs")?;
+    std::fs::write(&b, b"same bytes /sipnab/src/main.rs")?;
+    std::fs::write(&c, b"same bytes /home/xx/src/main.rs")?;
+    let run = |x: &Path, y: &Path| -> Result<std::process::Output, TestError> {
+        Ok(Command::new("bash")
+            .arg(repo()?.join(SCRIPT))
             .arg("compare")
             .arg(x)
             .arg(y)
-            .output()
-            .expect("run compare")
+            .output()?)
     };
-    let same = run(&a, &b);
+    let same = run(&a, &b)?;
     assert!(same.status.success(), "{}", text(&same));
-    let diff = run(&a, &c);
+    let diff = run(&a, &c)?;
     assert!(
         !diff.status.success(),
         "differing files passed:\n{}",
@@ -255,6 +255,7 @@ fn compare_passes_identical_files_and_fails_differing_ones_with_evidence() {
         all.contains("differ") && all.contains("/home/xx"),
         "the failure shows no evidence of what differs:\n{all}"
     );
+    Ok(())
 }
 
 /// The eBPF object is built by `build.rs` in a nested cargo that sets its own
@@ -263,7 +264,7 @@ fn compare_passes_identical_files_and_fails_differing_ones_with_evidence() {
 /// Everything else in the outer flags (`-Dwarnings`, `-C strip=none`) stays
 /// out, because it is not what the kernel crate is built with.
 #[test]
-fn the_bpf_build_takes_the_outer_remaps_and_nothing_else() {
+fn the_bpf_build_takes_the_outer_remaps_and_nothing_else() -> Result<(), TestError> {
     let outer = [
         "-Dwarnings",
         "-C",
@@ -298,19 +299,20 @@ fn the_bpf_build_takes_the_outer_remaps_and_nothing_else() {
         plain,
         "--cfg=bpf_target_arch=\"aarch64\"\x1f-Cdebuginfo=2\x1f-Clink-arg=--btf"
     );
+    Ok(())
 }
 
 /// The eBPF half is compiled by a nightly. `nightly` alone names a different
 /// compiler every day, so a release could not be rebuilt a week later: the
 /// channel is a dated nightly, and build.rs reads it from the toolchain file.
 #[test]
-fn the_bpf_nightly_is_pinned_to_a_date_and_read_from_one_file() {
-    let toml = read("bpf/rust-toolchain.toml");
+fn the_bpf_nightly_is_pinned_to_a_date_and_read_from_one_file() -> Result<(), TestError> {
+    let toml = read("bpf/rust-toolchain.toml")?;
     let channel = bpf_flags::toolchain_channel(&toml)
-        .unwrap_or_else(|| panic!("no channel in bpf/rust-toolchain.toml:\n{toml}"));
+        .ok_or_else(|| format!("no channel in bpf/rust-toolchain.toml:\n{toml}"))?;
     let date = channel
         .strip_prefix("nightly-")
-        .unwrap_or_else(|| panic!("channel {channel:?} is not a dated nightly"));
+        .ok_or_else(|| format!("channel {channel:?} is not a dated nightly"))?;
     assert!(
         date.len() == 10
             && date.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 {
@@ -320,23 +322,24 @@ fn the_bpf_nightly_is_pinned_to_a_date_and_read_from_one_file() {
             }),
         "channel {channel:?} is not nightly-YYYY-MM-DD"
     );
-    let build_rs = read("build.rs");
+    let build_rs = read("build.rs")?;
     assert!(
         build_rs.contains("toolchain_channel") && !build_rs.contains("\"nightly\","),
         "build.rs must run the channel bpf/rust-toolchain.toml names, not a \
          literal `nightly`"
     );
-    let release = read(".github/workflows/release.yml");
+    let release = read(".github/workflows/release.yml")?;
     assert!(
         !release.contains("rustup toolchain install nightly"),
         "release.yml installs a floating nightly instead of the pinned one"
     );
+    Ok(())
 }
 
 /// The shape of the channel parser: the `channel` key under `[toolchain]`,
 /// comments and other keys ignored.
 #[test]
-fn the_toolchain_channel_parser_reads_only_the_channel_key() {
+fn the_toolchain_channel_parser_reads_only_the_channel_key() -> Result<(), TestError> {
     let toml = "# nightly is mentioned here\n[toolchain]\ncomponents = [\"rust-src\"]\n\
                 channel = \"nightly-2026-08-09\"\n";
     assert_eq!(
@@ -344,17 +347,18 @@ fn the_toolchain_channel_parser_reads_only_the_channel_key() {
         Some("nightly-2026-08-09")
     );
     assert_eq!(bpf_flags::toolchain_channel("[toolchain]\n"), None);
+    Ok(())
 }
 
 /// Release and check build through the same script, so the check proves the
 /// build the release performs and not a neighbor of it.
 #[test]
-fn the_release_and_the_check_build_through_the_same_script() {
-    let release = read(".github/workflows/release.yml");
+fn the_release_and_the_check_build_through_the_same_script() -> Result<(), TestError> {
+    let release = read(".github/workflows/release.yml")?;
     for step in ["- name: Build (native)", "- name: Build (cross)"] {
         let at = release
             .find(step)
-            .unwrap_or_else(|| panic!("release.yml has no {step:?} step"));
+            .ok_or_else(|| format!("release.yml has no {step:?} step"))?;
         let rest = &release[at + step.len()..];
         let end = rest.find("\n      - ").unwrap_or(rest.len());
         let body = &rest[..end];
@@ -364,7 +368,7 @@ fn the_release_and_the_check_build_through_the_same_script() {
         );
     }
 
-    let check = read(".github/workflows/reproducible.yml");
+    let check = read(".github/workflows/reproducible.yml")?;
     assert!(
         check.contains("bash scripts/reproducible-build.sh check"),
         "reproducible.yml does not run the script's check"
@@ -372,23 +376,25 @@ fn the_release_and_the_check_build_through_the_same_script() {
     // The check builds with `build`, the same entry point release.yml uses:
     // the `build` of the clone's own copy of the script, so a check of an
     // older tag builds the way that tag's release did.
-    let script_text = read(SCRIPT);
+    let script_text = read(SCRIPT)?;
     let check_fn = script_text
         .find("cmd_check()")
         .map(|i| &script_text[i..])
-        .expect("the script has no cmd_check");
+        .ok_or("the script has no cmd_check")?;
     let check_fn = &check_fn[..check_fn.find("\n}\n").unwrap_or(check_fn.len())];
     assert!(
         check_fn.contains("/scripts/reproducible-build.sh\" build "),
         "cmd_check does not build through the script's `build`:\n{check_fn}"
     );
+    Ok(())
 }
 
 /// The check job follows the repository's rules for jobs: bounded, read-only,
 /// on a schedule, and on pull requests that touch what the build reads.
 #[test]
-fn the_check_workflow_is_bounded_read_only_and_triggered_by_build_inputs() {
-    let wf = read(".github/workflows/reproducible.yml");
+fn the_check_workflow_is_bounded_read_only_and_triggered_by_build_inputs() -> Result<(), TestError>
+{
+    let wf = read(".github/workflows/reproducible.yml")?;
     assert!(
         wf.contains("timeout-minutes:"),
         "the check job is unbounded"
@@ -413,6 +419,7 @@ fn the_check_workflow_is_bounded_read_only_and_triggered_by_build_inputs() {
             "a change to {path} does not run the check"
         );
     }
+    Ok(())
 }
 
 /// Inside a container job the checkout belongs to the runner's user, not the
@@ -423,15 +430,15 @@ fn the_check_workflow_is_bounded_read_only_and_triggered_by_build_inputs() {
 /// on the host, passed. The step must mark the workspace safe, in the build
 /// job, before either build step runs.
 #[test]
-fn container_builds_mark_the_checkout_safe_before_building() {
-    let wf = read(".github/workflows/release.yml");
-    let job = &wf[wf.find("\n  build:").expect("release.yml has a build job")..];
+fn container_builds_mark_the_checkout_safe_before_building() -> Result<(), TestError> {
+    let wf = read(".github/workflows/release.yml")?;
+    let job = &wf[wf.find("\n  build:").ok_or("release.yml has a build job")?..];
     let job = &job[..job.find("\n  release:").unwrap_or(job.len())];
     let safe = job
         .find("safe.directory")
-        .expect("the build job marks the checkout as a git safe.directory");
+        .ok_or("the build job marks the checkout as a git safe.directory")?;
     for step in ["- name: Build (cross)", "- name: Build (native)"] {
-        let at = job.find(step).unwrap_or_else(|| panic!("no `{step}` step"));
+        let at = job.find(step).ok_or_else(|| format!("no `{step}` step"))?;
         assert!(
             safe < at,
             "safe.directory must be set before `{step}`, or the container \
@@ -442,4 +449,5 @@ fn container_builds_mark_the_checkout_safe_before_building() {
         job.contains("\"$GITHUB_WORKSPACE\"") || job.contains("${{ github.workspace }}"),
         "mark the actual workspace safe, not `*`"
     );
+    Ok(())
 }

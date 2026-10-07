@@ -55,6 +55,8 @@ mod absence_scan;
 
 use absence_scan::{defines, ratchet_pins, split_raw_strings, test_fns};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -107,7 +109,7 @@ fn phantom_in_a_raw_string() -> String {
 /// comparison rather than a comment so the next person to reach for one of
 /// them can see which case it actually answers.
 #[test]
-fn the_equality_and_the_raw_string_rule_cover_different_holes() {
+fn the_equality_and_the_raw_string_rule_cover_different_holes() -> Result<(), TestError> {
     // Case 1: a phantom inside a raw string. It brings its own marker.
     let raw = phantom_in_a_raw_string();
     assert_eq!(
@@ -134,6 +136,7 @@ fn the_equality_and_the_raw_string_rule_cover_different_holes() {
         "the equality must catch a marker with no definition -- the case the \
          raw-string rule cannot see, since there is no string involved"
     );
+    Ok(())
 }
 
 /// Indentation does not separate a fixture from a declaration.
@@ -143,7 +146,7 @@ fn the_equality_and_the_raw_string_rule_cover_different_holes() {
 /// own test function is indented; so is a fixture pin inside a string. One bit
 /// that is set for both cases carries no information.
 #[test]
-fn indentation_does_not_separate_a_fixture_from_a_declaration() {
+fn indentation_does_not_separate_a_fixture_from_a_declaration() -> Result<(), TestError> {
     let genuine = "fn some_gate() {\n    const EXPECTED_TABLES: usize = 756;\n    assert_eq!(count(), EXPECTED_TABLES);\n}\n";
     let fixture =
         "fn helper() {\n    let f = r#\"\n    const EXPECTED_TABLES: usize = 756;\n\"#;\n}\n";
@@ -163,6 +166,7 @@ fn indentation_does_not_separate_a_fixture_from_a_declaration() {
          indentation reports the genuine one, which is what it did: eight \
          hits, eight of them real."
     );
+    Ok(())
 }
 
 /// Being inside a string does separate them.
@@ -171,7 +175,7 @@ fn indentation_does_not_separate_a_fixture_from_a_declaration() {
 /// two cases must land on opposite sides — that is the whole definition of the
 /// word.
 #[test]
-fn being_inside_a_string_does_separate_them() {
+fn being_inside_a_string_does_separate_them() -> Result<(), TestError> {
     let genuine = "fn some_gate() {\n    const EXPECTED_TABLES: usize = 756;\n}\n";
     let fixture =
         "fn helper() {\n    let f = r#\"\n    const EXPECTED_TABLES: usize = 756;\n\"#;\n}\n";
@@ -195,6 +199,7 @@ fn being_inside_a_string_does_separate_them() {
         "the fixture pin must be found INSIDE a string, which is what makes it \
          a fixture"
     );
+    Ok(())
 }
 
 /// A candidate discriminator is only one if the two cases land apart.
@@ -204,7 +209,7 @@ fn being_inside_a_string_does_separate_them() {
 /// that returns the same verdict for both cases has no discriminating power
 /// regardless of how well it describes the case that motivated it.
 #[test]
-fn a_candidate_discriminator_must_put_the_two_cases_apart() {
+fn a_candidate_discriminator_must_put_the_two_cases_apart() -> Result<(), TestError> {
     let genuine = "fn some_gate() {\n    const EXPECTED_TABLES: usize = 756;\n}\n";
     let fixture =
         "fn helper() {\n    let f = r#\"\n    const EXPECTED_TABLES: usize = 756;\n\"#;\n}\n";
@@ -230,6 +235,7 @@ fn a_candidate_discriminator_must_put_the_two_cases_apart() {
         "string membership no longer separates the two cases, so the rule that \
          replaced the indentation one is resting on the same nothing"
     );
+    Ok(())
 }
 
 // ── B. a rule must examine something ────────────────────────────────
@@ -240,7 +246,7 @@ fn a_candidate_discriminator_must_put_the_two_cases_apart() {
 /// perfect health when the walk breaks. That is the failure mode with no
 /// symptom: `assert!(bad.is_empty())` over zero files is true.
 #[test]
-fn every_tree_walking_rule_guards_against_an_empty_corpus() {
+fn every_tree_walking_rule_guards_against_an_empty_corpus() -> Result<(), TestError> {
     // Walked, not listed. A hardcoded roster covers the files that existed
     // when it was typed, and the next scanner added here inherits no guard and
     // no complaint. It also let THIS file satisfy the rule for the wrong
@@ -256,7 +262,11 @@ fn every_tree_walking_rule_guards_against_an_empty_corpus() {
 
     let mut unguarded = Vec::new();
     for path in &files {
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .ok_or_else(|| format!("{} has no file name", path.display()))?
+            .to_string_lossy()
+            .to_string();
         let src = read(path);
         // A CALL, not a mention: the definition line is not a call, and
         // neither is the name inside a string literal.
@@ -287,6 +297,7 @@ fn every_tree_walking_rule_guards_against_an_empty_corpus() {
         "these files walk the test tree with no assertion that the walk found \
          anything: {unguarded:?}. An empty corpus satisfies every rule in them."
     );
+    Ok(())
 }
 
 /// The predicates return nothing on empty input, rather than something.
@@ -295,13 +306,14 @@ fn every_tree_walking_rule_guards_against_an_empty_corpus() {
 /// really does produce an empty result rather than a default that looks like
 /// a finding, or like a pass.
 #[test]
-fn the_predicates_return_nothing_on_empty_input() {
+fn the_predicates_return_nothing_on_empty_input() -> Result<(), TestError> {
     assert!(test_fns("").is_empty(), "no definitions in nothing");
     assert!(ratchet_pins("").is_empty(), "no pins in nothing");
     assert_eq!(defines("", "anything"), 0);
     let (stripped, inner) = split_raw_strings("");
     assert!(stripped.is_empty() && inner.is_empty());
     assert_eq!(marker_lines(""), 0);
+    Ok(())
 }
 
 /// An empty corpus satisfies the marker equality, which is why it is guarded.
@@ -309,7 +321,7 @@ fn the_predicates_return_nothing_on_empty_input() {
 /// Stated as a demonstration rather than left implicit. `0 == 0` is the shape
 /// of every vacuous pass in this repository, and the rule reads as healthy.
 #[test]
-fn an_empty_corpus_satisfies_the_marker_equality() {
+fn an_empty_corpus_satisfies_the_marker_equality() -> Result<(), TestError> {
     assert_eq!(
         marker_lines(""),
         test_fns("").len(),
@@ -317,6 +329,7 @@ fn an_empty_corpus_satisfies_the_marker_equality() {
     );
     let real = format!("#{}\nfn real_one() {{}}\n", "[test]");
     assert_eq!(marker_lines(&real), 1, "a real file must not be empty-like");
+    Ok(())
 }
 
 /// A rule reading a missing file does not pass silently.
@@ -325,7 +338,7 @@ fn an_empty_corpus_satisfies_the_marker_equality() {
 /// convenient and dangerous: every `contains` check on it is false, so a rule
 /// about a file that moved reads as a rule about a file that is clean.
 #[test]
-fn a_rule_reading_a_missing_file_does_not_pass_silently() {
+fn a_rule_reading_a_missing_file_does_not_pass_silently() -> Result<(), TestError> {
     let missing = read(&repo().join("tests/this_file_does_not_exist.rs"));
     assert!(missing.is_empty(), "a missing file reads as empty");
     assert!(
@@ -345,6 +358,7 @@ fn a_rule_reading_a_missing_file_does_not_pass_silently() {
              examining nothing"
         );
     }
+    Ok(())
 }
 
 // ── C. the MCP tool counter, both directions ────────────────────────
@@ -354,21 +368,22 @@ fn a_rule_reading_a_missing_file_does_not_pass_silently() {
 /// Read rather than copied. A second spelling of this pattern would drift from
 /// the one that certifies the homepage number, and then this file would be
 /// testing something the gate does not do.
-fn registration_regex() -> regex::Regex {
+fn registration_regex() -> Result<regex::Regex, TestError> {
     let src = read(&repo().join("tests/site_journey_test.rs"));
     let anchor = src
         .find("fn registered_mcp_tool_count")
-        .expect("site_journey_test still defines the MCP tool counter");
+        .ok_or("site_journey_test still defines the MCP tool counter")?;
     let tail = &src[anchor..];
     let start = tail
         .find("Regex::new(r#\"")
-        .expect("the counter still builds its regex inline")
+        .ok_or("the counter still builds its regex inline")?
         + "Regex::new(r#\"".len();
     let end = tail[start..]
         .find("\"#)")
-        .expect("the regex literal is closed")
+        .ok_or("the regex literal is closed")?
         + start;
-    regex::Regex::new(&tail[start..end]).expect("the gate's own pattern compiles")
+    regex::Regex::new(&tail[start..end])
+        .map_err(|e| format!("the gate's own pattern compiles: {e}").into())
 }
 
 /// The counter agrees with the registrations actually in the tree.
@@ -377,8 +392,8 @@ fn registration_regex() -> regex::Regex {
 /// none of it means anything if the pattern has stopped matching the real
 /// thing.
 #[test]
-fn the_mcp_counter_matches_the_registrations_in_the_tree() {
-    let re = registration_regex();
+fn the_mcp_counter_matches_the_registrations_in_the_tree() -> Result<(), TestError> {
+    let re = registration_regex()?;
     let mut total = 0usize;
     let mut files = 0usize;
     let mut stack = vec![repo().join("src/mcp")];
@@ -400,6 +415,7 @@ fn the_mcp_counter_matches_the_registrations_in_the_tree() {
          matching how they are written and every rule below is scanning \
          nothing"
     );
+    Ok(())
 }
 
 /// A registration-shaped line inside a raw string is counted.
@@ -409,8 +425,8 @@ fn the_mcp_counter_matches_the_registrations_in_the_tree() {
 /// inflate the number this repository puts on its homepage — silently, because
 /// nothing else measures it.
 #[test]
-fn a_registration_shaped_line_inside_a_raw_string_is_counted() {
-    let re = registration_regex();
+fn a_registration_shaped_line_inside_a_raw_string_is_counted() -> Result<(), TestError> {
+    let re = registration_regex()?;
     let fixture = "const DOC: &str = r#\"\n    name = \"phantom_tool\",\n\"#;\n";
     assert_eq!(
         re.find_iter(fixture).count(),
@@ -419,6 +435,7 @@ fn a_registration_shaped_line_inside_a_raw_string_is_counted() {
          If the counter learned about quoting, the gate below is guarding a \
          hole that has closed -- check before removing it."
     );
+    Ok(())
 }
 
 /// No raw string under `src/mcp` contains a registration-shaped line.
@@ -427,8 +444,8 @@ fn a_registration_shaped_line_inside_a_raw_string_is_counted() {
 /// Rust: the counter is a regex on purpose, so the rule is that nothing in its
 /// corpus may look like a registration without being one.
 #[test]
-fn no_raw_string_under_src_mcp_contains_a_registration_shaped_line() {
-    let re = registration_regex();
+fn no_raw_string_under_src_mcp_contains_a_registration_shaped_line() -> Result<(), TestError> {
+    let re = registration_regex()?;
     let mut bad = Vec::new();
     let mut files = 0usize;
     let mut stack = vec![repo().join("src/mcp")];
@@ -459,6 +476,7 @@ fn no_raw_string_under_src_mcp_contains_a_registration_shaped_line() {
          inflating the number on the homepage.",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// The counter ignores a commented-out registration.
@@ -468,8 +486,8 @@ fn no_raw_string_under_src_mcp_contains_a_registration_shaped_line() {
 /// out of scope. That is worth an assertion because it is the difference
 /// between the two comment forms, and nothing else records it.
 #[test]
-fn the_mcp_counter_ignores_a_commented_registration() {
-    let re = registration_regex();
+fn the_mcp_counter_ignores_a_commented_registration() -> Result<(), TestError> {
+    let re = registration_regex()?;
     let commented = "    // name = \"phantom_tool\",\n    /// name = \"other_tool\",\n";
     assert_eq!(
         re.find_iter(commented).count(),
@@ -477,6 +495,7 @@ fn the_mcp_counter_ignores_a_commented_registration() {
         "a commented-out registration is being counted; the homepage number \
          would include tools that are not registered"
     );
+    Ok(())
 }
 
 // ── D. the unwrap ban, which gets both directions right ─────────────
@@ -486,17 +505,18 @@ fn the_mcp_counter_ignores_a_commented_registration() {
 /// The control for the three below: they claim things about how the scanner
 /// treats mentions, and none of that means anything if it is failing.
 #[test]
-fn the_unwrap_ban_passes_on_the_tree_as_it_stands() {
+fn the_unwrap_ban_passes_on_the_tree_as_it_stands() -> Result<(), TestError> {
     let out = Command::new("python3")
         .arg(repo().join("scripts/check-unwrap.py"))
         .current_dir(repo())
         .output()
-        .expect("python3 must be available to run the unwrap ban");
+        .map_err(|e| format!("python3 must be available to run the unwrap ban: {e}"))?;
     assert!(
         out.status.success(),
         "scripts/check-unwrap.py failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(())
 }
 
 /// Production code mentions `.unwrap()` in comments, and the ban allows it.
@@ -505,7 +525,11 @@ fn the_unwrap_ban_passes_on_the_tree_as_it_stands() {
 /// form: the exemption is exercised by the tree every time the gate runs, so
 /// it cannot rot into a branch nothing reaches.
 #[test]
-fn the_unwrap_ban_allows_a_mention_in_a_comment() {
+fn the_unwrap_ban_allows_a_mention_in_a_comment() -> Result<(), TestError> {
+    // Assembled so this file's own source holds no call-shaped text for the
+    // unwrap ratchet's line scan to count.
+    const UNWRAP_CALL: &str = concat!(".unw", "rap()");
+    const EXPECT_CALL: &str = concat!(".expe", "ct(");
     let mut mentions = 0usize;
     let mut stack = vec![repo().join("src")];
     while let Some(dir) = stack.pop() {
@@ -521,7 +545,7 @@ fn the_unwrap_ban_allows_a_mention_in_a_comment() {
             for line in read(&p).lines() {
                 let t = line.trim_start();
                 if (t.starts_with("//") || t.starts_with('*'))
-                    && (t.contains(".unwrap()") || t.contains(".expect("))
+                    && (t.contains(UNWRAP_CALL) || t.contains(EXPECT_CALL))
                 {
                     mentions += 1;
                 }
@@ -530,11 +554,12 @@ fn the_unwrap_ban_allows_a_mention_in_a_comment() {
     }
     assert!(
         mentions > 0,
-        "no comment under src/ mentions .unwrap() or .expect(), so the \
+        "no comment under src/ mentions {UNWRAP_CALL} or {EXPECT_CALL}, so the \
          scanner's comment exemption is not exercised by the tree and this \
          test proves nothing about it"
     );
     // And the gate passes anyway -- checked by the control above.
+    Ok(())
 }
 
 /// The unwrap ban strips before it searches.
@@ -545,7 +570,7 @@ fn the_unwrap_ban_allows_a_mention_in_a_comment() {
 /// recommending everywhere else -- so it should not be able to disappear
 /// quietly.
 #[test]
-fn the_unwrap_ban_strips_before_it_searches() {
+fn the_unwrap_ban_strips_before_it_searches() -> Result<(), TestError> {
     let src = read(&repo().join("scripts/check-unwrap.py"));
     assert!(!src.is_empty(), "scripts/check-unwrap.py must be readable");
     // Word-boundary, not substring: renaming the state to `_RAWX` leaves
@@ -567,6 +592,7 @@ fn the_unwrap_ban_strips_before_it_searches() {
              violation again"
         );
     }
+    Ok(())
 }
 
 /// The unwrap ban refuses to run against a corpus it cannot see.
@@ -577,7 +603,7 @@ fn the_unwrap_ban_strips_before_it_searches() {
 /// all. A gate that reports OK after scanning nothing is the failure this
 /// whole file is about.
 #[test]
-fn the_unwrap_ban_refuses_to_run_against_a_corpus_it_cannot_see() {
+fn the_unwrap_ban_refuses_to_run_against_a_corpus_it_cannot_see() -> Result<(), TestError> {
     let src = read(&repo().join("scripts/check-unwrap.py"));
     assert!(
         src.contains("derived only") && src.contains("scanned no files"),
@@ -591,6 +617,7 @@ fn the_unwrap_ban_refuses_to_run_against_a_corpus_it_cannot_see() {
          printing a warning and continuing, which is the same as not having \
          them"
     );
+    Ok(())
 }
 
 /// The unwrap ban also bans the macro spellings of "abort here".
@@ -600,13 +627,13 @@ fn the_unwrap_ban_refuses_to_run_against_a_corpus_it_cannot_see() {
 /// restriction-lint measurement found zero unwraps under `src/` beside nine
 /// such sites. Pinned by name so the widening cannot quietly narrow again.
 #[test]
-fn the_unwrap_ban_names_the_four_abort_macros_and_the_gate_marker() {
+fn the_unwrap_ban_names_the_four_abort_macros_and_the_gate_marker() -> Result<(), TestError> {
     let src = read(&repo().join("scripts/check-unwrap.py"));
     assert!(!src.is_empty(), "scripts/check-unwrap.py must be readable");
     let pattern = src
         .lines()
         .find(|l| l.starts_with("_ABORT = "))
-        .expect("check-unwrap.py no longer defines _ABORT, the abort-macro pattern");
+        .ok_or("check-unwrap.py no longer defines _ABORT, the abort-macro pattern")?;
     for macro_name in ["panic", "unreachable", "todo", "unimplemented"] {
         assert!(
             pattern.contains(macro_name),
@@ -619,6 +646,7 @@ fn the_unwrap_ban_names_the_four_abort_macros_and_the_gate_marker() {
          every documented exception in src/ is now a violation, or the whole \
          check is gone"
     );
+    Ok(())
 }
 
 /// The abort-macro marker does not exempt a site that gives no reason.
@@ -630,44 +658,45 @@ fn the_unwrap_ban_names_the_four_abort_macros_and_the_gate_marker() {
 /// The control runs first: with a reason, the same site is accepted, so a
 /// scanner that rejects everything cannot pass this.
 #[test]
-fn the_unwrap_ban_does_not_exempt_an_abort_site_with_no_reason() {
-    let dir = tempfile::tempdir().expect("a scratch workspace");
+fn the_unwrap_ban_does_not_exempt_an_abort_site_with_no_reason() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("a scratch workspace: {e}"))?;
     let root = dir.path();
-    std::fs::create_dir_all(root.join("src")).expect("src");
-    std::fs::create_dir_all(root.join("crates/sipnab-audio/src")).expect("member src");
+    std::fs::create_dir_all(root.join("src")).map_err(|e| format!("src: {e}"))?;
+    std::fs::create_dir_all(root.join("crates/sipnab-audio/src"))
+        .map_err(|e| format!("member src: {e}"))?;
     std::fs::write(
         root.join("Cargo.toml"),
         "[workspace]\nmembers = [\".\", \"crates/sipnab-audio\"]\n",
     )
-    .expect("manifest");
+    .map_err(|e| format!("manifest: {e}"))?;
     std::fs::write(
         root.join("crates/sipnab-audio/src/lib.rs"),
         "pub fn audio() -> u8 { 1 }\n",
     )
-    .expect("member lib.rs");
-    let scan = |marker: &str| {
+    .map_err(|e| format!("member lib.rs: {e}"))?;
+    let scan = |marker: &str| -> Result<(Option<i32>, String), TestError> {
         let body = format!(
             "pub fn prod(x: u8) -> u8 {{\n    match x {{\n        0 => 1,\n        \
              {marker}\n        _ => unreachable!(),\n    }}\n}}\n"
         );
-        std::fs::write(root.join("src/lib.rs"), body).expect("lib.rs");
+        std::fs::write(root.join("src/lib.rs"), body).map_err(|e| format!("lib.rs: {e}"))?;
         let out = Command::new("python3")
             .arg(repo().join("scripts/check-unwrap.py"))
             .current_dir(root)
             .output()
-            .expect("python3 must be available to run the unwrap ban");
-        (
+            .map_err(|e| format!("python3 must be available to run the unwrap ban: {e}"))?;
+        Ok((
             out.status.code(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        ))
     };
-    let (rc, err) = scan("// gate: unreachable because the caller masks every other value");
+    let (rc, err) = scan("// gate: unreachable because the caller masks every other value")?;
     assert_eq!(
         rc,
         Some(0),
         "a marker with a reason must exempt the site:\n{err}"
     );
-    let (rc, err) = scan("// gate: unreachable because");
+    let (rc, err) = scan("// gate: unreachable because")?;
     assert_eq!(
         rc,
         Some(1),
@@ -677,4 +706,5 @@ fn the_unwrap_ban_does_not_exempt_an_abort_site_with_no_reason() {
         err.contains("src/lib.rs:5:") && err.contains("no reason"),
         "the report must name the site and say the marker gave no reason:\n{err}"
     );
+    Ok(())
 }

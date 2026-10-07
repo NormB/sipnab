@@ -17,13 +17,15 @@
 
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()).into())
 }
 
 // ── The spelling gate still knows what it is looking for ─────────────────────
@@ -36,8 +38,8 @@ fn read(rel: &str) -> String {
 /// inverts the gate; emptying it switches the gate off while every run stays
 /// green.
 #[test]
-fn the_spelling_gate_still_lists_british_words() {
-    let src = read("tests/docs_drift_test.rs");
+fn the_spelling_gate_still_lists_british_words() -> Result<(), TestError> {
+    let src = read("tests/docs_drift_test.rs")?;
     // Built at runtime, never written literally. The spelling gate exempts its
     // OWN file because "a gate cannot be its own violation"; claiming a second
     // exemption for this one would widen that hole by a file every time
@@ -51,6 +53,7 @@ fn the_spelling_gate_still_lists_british_words() {
              own list would leave it searching for the spellings it permits"
         );
     }
+    Ok(())
 }
 
 /// GIVEN the same gate
@@ -60,10 +63,10 @@ fn the_spelling_gate_still_lists_british_words() {
 /// The inverted form, which is what my sed actually produced. A list of
 /// American words makes every correct file a violation.
 #[test]
-fn the_spelling_gate_does_not_search_for_american_words() {
-    let src = read("tests/docs_drift_test.rs");
+fn the_spelling_gate_does_not_search_for_american_words() -> Result<(), TestError> {
+    let src = read("tests/docs_drift_test.rs")?;
     let anchor = format!("\"{}{}\"", "behavi", "our");
-    let list_start = src.find(&anchor).expect("the word list is findable");
+    let list_start = src.find(&anchor).ok_or("the word list is findable")?;
     let window = &src[list_start..(list_start + 2000).min(src.len())];
     for (stem, tail) in [("behavi", "or"), ("recogni", "zed"), ("normali", "ze")] {
         let american = format!("\"{stem}{tail}\"");
@@ -73,6 +76,7 @@ fn the_spelling_gate_does_not_search_for_american_words() {
              correctly spelled file a violation"
         );
     }
+    Ok(())
 }
 
 /// GIVEN the gate's anti-vacuity check
@@ -82,8 +86,8 @@ fn the_spelling_gate_does_not_search_for_american_words() {
 /// This is the mechanism that made the damage visible instead of silent, and
 /// it must not be removed.
 #[test]
-fn the_spelling_gate_proves_itself_on_a_known_bad_word() {
-    let src = read("tests/docs_drift_test.rs");
+fn the_spelling_gate_proves_itself_on_a_known_bad_word() -> Result<(), TestError> {
+    let src = read("tests/docs_drift_test.rs")?;
     let must_line = format!(
         "for must in [\"{}{}\", \"{}{}\", \"{}{}\"]",
         "behavi", "our", "normali", "se", "recogni", "sed"
@@ -93,6 +97,7 @@ fn the_spelling_gate_proves_itself_on_a_known_bad_word() {
         "the anti-vacuity check is gone; without it an emptied word list reads \
          as a clean tree"
     );
+    Ok(())
 }
 
 // ── The seam gate still knows a vendor name ──────────────────────────────────
@@ -106,8 +111,8 @@ fn the_spelling_gate_proves_itself_on_a_known_bad_word() {
 /// vendor would have caught that and missed the same mistake made with the
 /// other.
 #[test]
-fn the_seam_gate_knows_both_relay_vendors() {
-    let src = read("tests/relay_seam_test.rs");
+fn the_seam_gate_knows_both_relay_vendors() -> Result<(), TestError> {
+    let src = read("tests/relay_seam_test.rs")?;
     for vendor in ["rtpengine", "rtpproxy"] {
         assert!(
             src.to_lowercase().contains(vendor),
@@ -115,6 +120,7 @@ fn the_seam_gate_knows_both_relay_vendors() {
              catch that name leaking into a consuming layer"
         );
     }
+    Ok(())
 }
 
 /// GIVEN the seam gate
@@ -125,8 +131,8 @@ fn the_seam_gate_knows_both_relay_vendors() {
 /// case-sensitive, and a Rust type is `RtpengineLeak` or `RTPENGINE_PORT`. The
 /// scan could not see any spelling code would actually use.
 #[test]
-fn the_seam_gate_matches_the_spellings_code_uses() {
-    let src = read("tests/relay_seam_test.rs");
+fn the_seam_gate_matches_the_spellings_code_uses() -> Result<(), TestError> {
+    let src = read("tests/relay_seam_test.rs")?;
     assert!(
         src.contains("to_lowercase")
             || src.contains("to_ascii_lowercase")
@@ -134,6 +140,7 @@ fn the_seam_gate_matches_the_spellings_code_uses() {
         "a case-sensitive vendor scan cannot see `RtpengineLeak`, which is the \
          spelling a leak actually takes"
     );
+    Ok(())
 }
 
 // ── The portable vocabulary stays portable ───────────────────────────────────
@@ -145,12 +152,12 @@ fn the_seam_gate_matches_the_spellings_code_uses() {
 /// Paying for the break where an assertion named a native-only module. The
 /// browser build compiles the store and has no control plane at all.
 #[test]
-fn the_relay_vocabulary_is_not_behind_the_native_gate() {
-    let lib = read("src/lib.rs");
+fn the_relay_vocabulary_is_not_behind_the_native_gate() -> Result<(), TestError> {
+    let lib = read("src/lib.rs")?;
     let vocab_line = lib
         .lines()
         .position(|l| l.trim() == "pub mod relay_vocab;")
-        .expect("the portable vocabulary module is declared");
+        .ok_or("the portable vocabulary module is declared")?;
     // The line IMMEDIATELY before, and only that one: a `cfg` attribute applies
     // to the item that follows it and to nothing else. Looking two lines back
     // finds the attribute belonging to the module above, which is how the first
@@ -167,14 +174,15 @@ fn the_relay_vocabulary_is_not_behind_the_native_gate() {
         "the portable vocabulary sits behind a target gate, so an assertion \
          naming it cannot compile for the browser"
     );
+    Ok(())
 }
 
 /// GIVEN the endpoint assertion
 /// WHEN its field types are read
 /// THEN they name the portable module and not the native one.
 #[test]
-fn an_assertion_names_only_the_portable_vocabulary() {
-    let store = read("src/rtp/stream_store.rs");
+fn an_assertion_names_only_the_portable_vocabulary() -> Result<(), TestError> {
+    let store = read("src/rtp/stream_store.rs")?;
     assert!(
         store.contains("crate::relay_vocab::RelayImplementation"),
         "the assertion should reach the vocabulary through the portable module"
@@ -183,6 +191,7 @@ fn an_assertion_names_only_the_portable_vocabulary() {
         !store.contains("crate::relay::RelayImplementation"),
         "naming the native module here breaks the wasm build, and it did"
     );
+    Ok(())
 }
 
 // ── Doc comments stay attached to what they document ─────────────────────────
@@ -195,13 +204,13 @@ fn an_assertion_names_only_the_portable_vocabulary() {
 /// silently re-documenting the wrong thing. `missing_docs` catches the field
 /// left bare; nothing catches the field now wearing somebody else's sentence.
 #[test]
-fn no_field_wears_its_neighbors_doc_comment() {
+fn no_field_wears_its_neighbors_doc_comment() -> Result<(), TestError> {
     for file in [
         "src/mcp/tools/relay.rs",
         "src/app/batch.rs",
         "src/rtp/stream_store.rs",
     ] {
-        let src = read(file);
+        let src = read(file)?;
         let lines: Vec<&str> = src.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let t = line.trim();
@@ -212,16 +221,18 @@ fn no_field_wears_its_neighbors_doc_comment() {
                 let next = lines[i + 1].trim();
                 let after = lines[i + 2].trim();
                 if next.starts_with("pub ") && after.starts_with("pub ") && after.ends_with(',') {
-                    panic!(
+                    return Err(format!(
                         "{file}:{}: a documented field is immediately followed by an \
                          undocumented one, which is what an insertion between a doc \
                          comment and its field produces",
                         i + 3
-                    );
+                    )
+                    .into());
                 }
             }
         }
     }
+    Ok(())
 }
 
 // ── A test may not depend on a file git does not track ───────────────────────
@@ -235,10 +246,13 @@ fn no_field_wears_its_neighbors_doc_comment() {
 /// and panicked on a runner that had never run the harness. A test reading an
 /// untracked file is a test about the developer's working directory.
 #[test]
-fn no_test_reads_a_file_git_does_not_track() {
+fn no_test_reads_a_file_git_does_not_track() -> Result<(), TestError> {
     let tests_dir = repo().join("tests");
     let mut offenders = Vec::new();
-    for entry in std::fs::read_dir(&tests_dir).expect("tests/").flatten() {
+    for entry in std::fs::read_dir(&tests_dir)
+        .map_err(|e| format!("tests/: {e}"))?
+        .flatten()
+    {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
@@ -275,6 +289,7 @@ fn no_test_reads_a_file_git_does_not_track() {
         "these tests read a generated, untracked file and will pass locally \
          while failing on a clean checkout: {offenders:?}"
     );
+    Ok(())
 }
 
 /// GIVEN the harness environment file
@@ -284,7 +299,7 @@ fn no_test_reads_a_file_git_does_not_track() {
 /// The anti-vacuity half: if `.env` were ever tracked, the test above would be
 /// guarding nothing and should be deleted rather than left to look useful.
 #[test]
-fn the_harness_env_file_really_is_untracked() {
+fn the_harness_env_file_really_is_untracked() -> Result<(), TestError> {
     let out = std::process::Command::new("git")
         .args(["check-ignore", "harness/.env"])
         .current_dir(repo())
@@ -297,6 +312,7 @@ fn the_harness_env_file_really_is_untracked() {
             "harness/.env is tracked now, so the rule above guards nothing"
         );
     }
+    Ok(())
 }
 
 /// GIVEN the port ranges the two anchors use
@@ -306,8 +322,8 @@ fn the_harness_env_file_really_is_untracked() {
 /// The fix for the same defect, pinned: the compose file is what ships, and a
 /// developer's `.env` override is not evidence about anybody else's run.
 #[test]
-fn the_anchor_ranges_are_read_from_what_ships() {
-    let compose = read("harness/docker-compose.yml");
+fn the_anchor_ranges_are_read_from_what_ships() -> Result<(), TestError> {
+    let compose = read("harness/docker-compose.yml")?;
     for key in ["RTP_MIN", "RTP_MAX", "RTPPROXY_RTP_MIN", "RTPPROXY_RTP_MAX"] {
         assert!(
             compose.contains(&format!("${{{key}:-")),
@@ -315,4 +331,5 @@ fn the_anchor_ranges_are_read_from_what_ships() {
              has nothing committed to read"
         );
     }
+    Ok(())
 }

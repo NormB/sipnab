@@ -18,6 +18,9 @@ use sipnab::rtp::heuristic::RtpHeuristic;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Builds a UDP `ParsedPacket` between 10.0.0.1 and 10.0.0.2 with the given
 /// payload and ports.
 ///
@@ -134,17 +137,18 @@ impl Harness {
 /// Processing an INVITE creates exactly one dialog (retrievable by Call-ID)
 /// and leaves the stream store empty.
 #[test]
-fn sip_invite_lands_in_dialog_store() {
+fn sip_invite_lands_in_dialog_store() -> Result<(), TestError> {
     let mut h = Harness::new();
     h.run(&parsed(invite(), 5060, 5060), &PipelineOptions::default());
     assert_eq!(h.ds.read().len(), 1, "INVITE must create a dialog");
     assert!(h.ds.read().get("pipeline-1@test").is_some());
     assert!(h.ss.read().is_empty(), "no RTP yet");
+    Ok(())
 }
 
 /// Processing an RTP packet creates exactly one stream and no dialogs.
 #[test]
-fn rtp_lands_in_stream_store() {
+fn rtp_lands_in_stream_store() -> Result<(), TestError> {
     let mut h = Harness::new();
     h.run(
         &parsed(rtp_packet(0xABCD, 1), 20000, 30000),
@@ -152,11 +156,12 @@ fn rtp_lands_in_stream_store() {
     );
     assert_eq!(h.ss.read().len(), 1, "RTP must create a stream");
     assert!(h.ds.read().is_empty());
+    Ok(())
 }
 
 /// With `no_rtp` set, an RTP packet leaves the stream store empty.
 #[test]
-fn no_rtp_option_skips_media() {
+fn no_rtp_option_skips_media() -> Result<(), TestError> {
     let mut h = Harness::new();
     let opts = PipelineOptions {
         no_rtp: true,
@@ -164,11 +169,12 @@ fn no_rtp_option_skips_media() {
     };
     h.run(&parsed(rtp_packet(0xABCD, 1), 20000, 30000), &opts);
     assert!(h.ss.read().is_empty(), "no_rtp must skip RTP tracking");
+    Ok(())
 }
 
 /// With `no_dialog` set, an INVITE leaves the dialog store empty.
 #[test]
-fn no_dialog_option_skips_sip_tracking() {
+fn no_dialog_option_skips_sip_tracking() -> Result<(), TestError> {
     let mut h = Harness::new();
     let opts = PipelineOptions {
         no_dialog: true,
@@ -179,23 +185,25 @@ fn no_dialog_option_skips_sip_tracking() {
         h.ds.read().is_empty(),
         "no_dialog must skip dialog tracking"
     );
+    Ok(())
 }
 
 /// `port_in_range` matches when either src or dst is inside the inclusive
 /// range, including the degenerate single-port case.
 #[test]
-fn port_in_range_is_inclusive_and_either_direction() {
+fn port_in_range_is_inclusive_and_either_direction() -> Result<(), TestError> {
     assert!(pipeline::port_in_range(5060, 9999, (5060, 5061)));
     assert!(pipeline::port_in_range(9999, 5061, (5060, 5061)));
     assert!(!pipeline::port_in_range(5059, 5062, (5060, 5061)));
     // Degenerate single-port range
     assert!(pipeline::port_in_range(5060, 1, (5060, 5060)));
+    Ok(())
 }
 
 /// `is_rtcp_packet` requires an odd destination port and a full valid RTCP
 /// header — even ports and truncated packets are rejected.
 #[test]
-fn rtcp_detection_requires_odd_port_and_valid_header() {
+fn rtcp_detection_requires_odd_port_and_valid_header() -> Result<(), TestError> {
     // Valid RTCP SR header (V=2, PT=200) on an odd port
     let rtcp = vec![0x80, 200, 0, 6, 0, 0, 0, 1];
     assert!(pipeline::is_rtcp_packet(&rtcp, 30001));
@@ -204,6 +212,7 @@ fn rtcp_detection_requires_odd_port_and_valid_header() {
         "even dst port is RTP, not RTCP"
     );
     assert!(!pipeline::is_rtcp_packet(&[0x80, 200], 30001), "too short");
+    Ok(())
 }
 
 /// Buffer-sharing contract: a SIP message parsed from a packet payload
@@ -211,7 +220,7 @@ fn rtcp_detection_requires_odd_port_and_valid_header() {
 /// a second copy — and storing it in the dialog store must not copy
 /// either.
 #[test]
-fn sip_message_raw_shares_payload_buffer() {
+fn sip_message_raw_shares_payload_buffer() -> Result<(), TestError> {
     let payload: bytes::Bytes = invite().into();
     let msg = sipnab::sip::parser::parse_sip_bytes(
         &payload,
@@ -221,8 +230,7 @@ fn sip_message_raw_shares_payload_buffer() {
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("INVITE parses");
+    )?;
     let range = payload.as_ptr_range();
     assert!(
         range.contains(&msg.raw.as_ptr()),
@@ -232,6 +240,7 @@ fn sip_message_raw_shares_payload_buffer() {
         msg.body.is_empty() || range.contains(&msg.body.as_ptr()),
         "SipMessage.body must view the payload buffer too"
     );
+    Ok(())
 }
 
 /// `extract_sdp_links` is the single source of truth for SDP→stream
@@ -239,7 +248,7 @@ fn sip_message_raw_shares_payload_buffer() {
 /// one link tuple per addressable `m=` line — so an audio+video offer
 /// yields both — using the session-level `c=` when a media has no own.
 #[test]
-fn extract_sdp_links_covers_all_media_streams() {
+fn extract_sdp_links_covers_all_media_streams() -> Result<(), TestError> {
     let sdp = sipnab::sip::sdp::parse_sdp(
         b"v=0\r\n\
 o=- 1 1 IN IP4 10.0.0.9\r\n\
@@ -250,8 +259,7 @@ m=audio 40000 RTP/AVP 0\r\n\
 a=rtpmap:0 PCMU/8000\r\n\
 m=video 40002 RTP/AVP 96\r\n\
 a=rtpmap:96 H264/90000\r\n",
-    )
-    .expect("SDP parses");
+    )?;
 
     let links = pipeline::extract_sdp_links(&sdp, "av@test");
     assert_eq!(links.len(), 2, "both audio and video must be linked");
@@ -259,11 +267,11 @@ a=rtpmap:96 H264/90000\r\n",
     let audio = links
         .iter()
         .find(|(_, p, _, _)| *p == 40000)
-        .expect("audio");
+        .ok_or("audio")?;
     let video = links
         .iter()
         .find(|(_, p, _, _)| *p == 40002)
-        .expect("video");
+        .ok_or("video")?;
     assert_eq!(audio.0, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)));
     assert_eq!(audio.2, "av@test");
     assert_eq!(video.3.media_type, "video");
@@ -271,12 +279,13 @@ a=rtpmap:96 H264/90000\r\n",
         video.3.rtpmap.iter().any(|r| r.encoding == "H264"),
         "cloned media must carry the video rtpmap"
     );
+    Ok(())
 }
 
 /// Media with no resolvable connection address (no media `c=`, no session
 /// `c=`) is skipped rather than linked to a bogus endpoint.
 #[test]
-fn extract_sdp_links_skips_media_without_address() {
+fn extract_sdp_links_skips_media_without_address() -> Result<(), TestError> {
     let sdp = sipnab::sip::sdp::parse_sdp(
         b"v=0\r\n\
 o=- 1 1 IN IP4 10.0.0.9\r\n\
@@ -284,17 +293,17 @@ s=call\r\n\
 t=0 0\r\n\
 m=audio 40000 RTP/AVP 0\r\n\
 a=rtpmap:0 PCMU/8000\r\n",
-    )
-    .expect("SDP parses");
+    )?;
     let links = pipeline::extract_sdp_links(&sdp, "noaddr@test");
     assert!(links.is_empty(), "no c= line ⇒ no links");
+    Ok(())
 }
 
 /// `classify_packet` is the lock-free core: it must classify a packet into the
 /// right `PacketAction` without touching any store. These pin the mapping the
 /// four routers all depend on (WS1).
 #[test]
-fn classify_maps_packets_to_actions() {
+fn classify_maps_packets_to_actions() -> Result<(), TestError> {
     use pipeline::{PacketAction, classify_packet};
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
@@ -306,7 +315,7 @@ fn classify_maps_packets_to_actions() {
         PacketAction::Sip { msg, .. } => {
             assert_eq!(msg.call_id(), Some("pipeline-1@test"));
         }
-        _ => panic!("SIP packet must classify as Sip"),
+        _ => return Err("SIP packet must classify as Sip".into()),
     }
 
     // RTP → Rtp action, no decrypted payload (unencrypted path never clones),
@@ -322,7 +331,7 @@ fn classify_maps_packets_to_actions() {
             assert!(decrypted_payload.is_none());
             assert!(!via_heuristic, "header-detected RTP is not heuristic");
         }
-        _ => panic!("RTP packet must classify as Rtp"),
+        _ => return Err("RTP packet must classify as Rtp".into()),
     }
 
     // Non-SIP, non-RTP payload → None.
@@ -331,12 +340,13 @@ fn classify_maps_packets_to_actions() {
         classify_packet(&junk, &mut heuristic, &opts, &mut decrypt),
         PacketAction::None
     ));
+    Ok(())
 }
 
 /// `no_dialog` still classifies SIP as `Sip` (batch needs the message) but
 /// with empty sdp_links; `no_rtp` classifies an RTP packet as `None`.
 #[test]
-fn classify_honors_opt_outs() {
+fn classify_honors_opt_outs() -> Result<(), TestError> {
     use pipeline::{PacketAction, classify_packet};
     let mut heuristic = RtpHeuristic::new();
     let mut decrypt = pipeline::MediaDecrypt::default();
@@ -358,7 +368,7 @@ fn classify_honors_opt_outs() {
                 "no_dialog must skip SDP link extraction"
             );
         }
-        _ => panic!("no_dialog SIP must still classify as Sip"),
+        _ => return Err("no_dialog SIP must still classify as Sip".into()),
     }
 
     // no_rtp: an RTP packet classifies as None.
@@ -371,13 +381,14 @@ fn classify_honors_opt_outs() {
         classify_packet(&rtp_pp, &mut heuristic, &no_rtp, &mut decrypt),
         PacketAction::None
     ));
+    Ok(())
 }
 
 /// SIP detection is gated by `sip_portrange` when set (the batch and `--jobs`
 /// contract: `--portrange` filters signaling only, never media), and ungated
 /// when `None` (the live-TUI contract, where BPF already filtered).
 #[test]
-fn classify_gates_sip_by_portrange() {
+fn classify_gates_sip_by_portrange() -> Result<(), TestError> {
     use pipeline::{PacketAction, classify_packet};
     let mut heuristic = RtpHeuristic::new();
     let mut decrypt = pipeline::MediaDecrypt::default();
@@ -408,6 +419,7 @@ fn classify_gates_sip_by_portrange() {
         classify_packet(&any_port, &mut heuristic, &ungated, &mut decrypt),
         PacketAction::Sip { .. }
     ));
+    Ok(())
 }
 
 /// Heuristically-discovered RTP (payload that fails the strict `is_rtp_packet`
@@ -415,7 +427,7 @@ fn classify_gates_sip_by_portrange() {
 /// flagged `via_heuristic`, so appliers can distinguish it (batch skips DTMF /
 /// quality events for heuristic streams).
 #[test]
-fn classify_flags_heuristic_rtp() {
+fn classify_flags_heuristic_rtp() -> Result<(), TestError> {
     use pipeline::{PacketAction, classify_packet};
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
@@ -441,20 +453,21 @@ fn classify_flags_heuristic_rtp() {
                 promoted += 1;
             }
             PacketAction::None => {}
-            _ => panic!("unexpected classification for heuristic RTP"),
+            _ => return Err("unexpected classification for heuristic RTP".into()),
         }
     }
     assert!(
         promoted > 0,
         "the consecutive-packet heuristic must promote this flow"
     );
+    Ok(())
 }
 
 /// A TLS-decrypted synthetic packet (transport stamped `Tls` by the batch
 /// decrypt glue) classifies as Sip carrying that transport — and never falls
 /// into the UDP-only media path.
 #[test]
-fn classify_carries_tls_transport() {
+fn classify_carries_tls_transport() -> Result<(), TestError> {
     use pipeline::{PacketAction, classify_packet};
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
@@ -466,6 +479,7 @@ fn classify_carries_tls_transport() {
         PacketAction::Sip { msg, .. } => {
             assert_eq!(msg.transport, TransportProto::Tls);
         }
-        _ => panic!("TLS-decrypted SIP must classify as Sip"),
+        _ => return Err("TLS-decrypted SIP must classify as Sip".into()),
     }
+    Ok(())
 }

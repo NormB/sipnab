@@ -32,6 +32,8 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// A pcap link type reserved for private use, so no future decoder claims it.
 const DLT_USER0: u32 = 147;
 
@@ -40,8 +42,8 @@ const DLT_USER0: u32 = 147;
 const UNDECODABLE_FRAMES: usize = 5;
 
 /// Run the binary under the shared test baseline with quiet logs.
-fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    run_support::run_or_panic(args, Some("error"))
+fn run(args: &[&str]) -> Result<(String, String, Option<i32>), TestError> {
+    Ok(run_support::run(args, Some("error"))?)
 }
 
 /// Write a capture whose link type sipnab has no decoder for, carrying bytes
@@ -49,7 +51,7 @@ fn run(args: &[&str]) -> (String, String, Option<i32>) {
 ///
 /// The payload matters: this is the "capture full of SIP that sipnab reports
 /// as empty" case, not a capture that is genuinely empty.
-fn write_undecodable(path: &Path) {
+fn write_undecodable(path: &Path) -> Result<(), TestError> {
     let sip = b"INVITE sip:auto@localhost SIP/2.0\r\nCall-ID: undecodable-1\r\n\r\n";
     let frames: Vec<Vec<u8>> = (0..UNDECODABLE_FRAMES)
         .map(|_| {
@@ -58,19 +60,20 @@ fn write_undecodable(path: &Path) {
             f
         })
         .collect();
-    pcap_build::write_pcap_with_linktype_or_panic(path, &frames, DLT_USER0);
+    pcap_build::write_pcap_with_linktype(path, &frames, DLT_USER0)?;
+    Ok(())
 }
 
 /// The summary must state, with numbers, that nothing was decoded — and must
 /// name the DLT, because "unsupported link type" without its number names no
 /// capture format an operator can convert.
 #[test]
-fn an_undecodable_capture_says_so_with_its_numbers() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_undecodable_capture_says_so_with_its_numbers() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("undecodable.pcap");
-    write_undecodable(&path);
+    write_undecodable(&path)?;
 
-    let (_, stderr, code) = run(&["-N", "-I", path.to_str().expect("utf-8 path")]);
+    let (_, stderr, code) = run(&["-N", "-I", path.to_str().ok_or("utf-8 path")?])?;
     assert_eq!(
         code,
         Some(0),
@@ -93,6 +96,7 @@ fn an_undecodable_capture_says_so_with_its_numbers() {
         stderr.contains("not evidence of absence"),
         "a wholly unread capture must refuse to let a zero read as a finding:\n{stderr}"
     );
+    Ok(())
 }
 
 /// The unqualified "No SIP traffic found." is a claim about the wire. A run
@@ -100,12 +104,12 @@ fn an_undecodable_capture_says_so_with_its_numbers() {
 /// defect — the point where an unread capture was finally reported to the
 /// operator as an empty one.
 #[test]
-fn no_sip_traffic_found_is_never_stated_after_a_failed_decode() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn no_sip_traffic_found_is_never_stated_after_a_failed_decode() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("undecodable.pcap");
-    write_undecodable(&path);
+    write_undecodable(&path)?;
 
-    let (_, stderr, _) = run(&["-N", "-I", path.to_str().expect("utf-8 path")]);
+    let (_, stderr, _) = run(&["-N", "-I", path.to_str().ok_or("utf-8 path")?])?;
 
     assert!(
         !stderr.contains("No SIP traffic found."),
@@ -115,43 +119,45 @@ fn no_sip_traffic_found_is_never_stated_after_a_failed_decode() {
         stderr.contains("not a finding that the capture contains no SIP"),
         "the run must disclaim its own zero:\n{stderr}"
     );
+    Ok(())
 }
 
 /// The other half of the contract, and the one that gives the first half its
 /// value: a capture sipnab reads perfectly must stay silent about decoding.
 /// A notice that fires on every run is one operators learn to skim past.
 #[test]
-fn a_capture_that_decodes_cleanly_prints_no_notice() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_capture_that_decodes_cleanly_prints_no_notice() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("clean.pcap");
     let frames: Vec<Vec<u8>> = pcap_build::sip_call("clean-1", "z9hG4bK-clean", "alice", "bob")
         .iter()
         .map(|msg| pcap_build::udp_frame([10, 1, 0, 1], [10, 1, 0, 2], 5060, 5060, msg.as_bytes()))
         .collect();
-    pcap_build::write_pcap_or_panic(&path, &frames);
+    pcap_build::write_pcap(&path, &frames)?;
 
-    let (_, stderr, code) = run(&["-N", "-I", path.to_str().expect("utf-8 path")]);
+    let (_, stderr, code) = run(&["-N", "-I", path.to_str().ok_or("utf-8 path")?])?;
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         !stderr.contains("NOT DECODED"),
         "a clean read must print no undecodable notice:\n{stderr}"
     );
+    Ok(())
 }
 
 /// A capture that decodes fine but holds no SIP keeps the plain finding —
 /// that IS the answer, and softening it everywhere would trade one useless
 /// message for another.
 #[test]
-fn a_clean_capture_with_no_sip_still_states_it_plainly() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_clean_capture_with_no_sip_still_states_it_plainly() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("no-sip.pcap");
     // Well-formed UDP on a port carrying nothing that parses as SIP.
     let frames: Vec<Vec<u8>> = (0..4)
         .map(|_| pcap_build::udp_frame([10, 1, 0, 1], [10, 1, 0, 2], 5060, 5060, b"not-sip-at-all"))
         .collect();
-    pcap_build::write_pcap_or_panic(&path, &frames);
+    pcap_build::write_pcap(&path, &frames)?;
 
-    let (_, stderr, code) = run(&["-N", "-I", path.to_str().expect("utf-8 path")]);
+    let (_, stderr, code) = run(&["-N", "-I", path.to_str().ok_or("utf-8 path")?])?;
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         !stderr.contains("NOT DECODED"),
@@ -161,6 +167,7 @@ fn a_clean_capture_with_no_sip_still_states_it_plainly() {
         stderr.contains("No SIP traffic found."),
         "a clean read with no SIP must say so plainly:\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--report` is the surface an operator reads to answer "what is in this
@@ -168,12 +175,12 @@ fn a_clean_capture_with_no_sip_still_states_it_plainly() {
 /// read; when it was not, the empty table is not an answer at all — and the
 /// two rendered as the same blank report.
 #[test]
-fn the_report_carries_a_not_decoded_section() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_report_carries_a_not_decoded_section() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("undecodable.pcap");
-    write_undecodable(&path);
+    write_undecodable(&path)?;
 
-    let (stdout, _, code) = run(&["-N", "-I", path.to_str().expect("utf-8 path"), "--report"]);
+    let (stdout, _, code) = run(&["-N", "-I", path.to_str().ok_or("utf-8 path")?, "--report"])?;
     assert_eq!(code, Some(0));
     assert!(
         stdout.contains("NOT DECODED (capture-wide):"),
@@ -196,12 +203,13 @@ fn the_report_carries_a_not_decoded_section() {
         .iter()
         .map(|msg| pcap_build::udp_frame([10, 1, 0, 1], [10, 1, 0, 2], 5060, 5060, msg.as_bytes()))
         .collect();
-    pcap_build::write_pcap_or_panic(&clean, &frames);
-    let (stdout, _, _) = run(&["-N", "-I", clean.to_str().expect("utf-8 path"), "--report"]);
+    pcap_build::write_pcap(&clean, &frames)?;
+    let (stdout, _, _) = run(&["-N", "-I", clean.to_str().ok_or("utf-8 path")?, "--report"])?;
     assert!(
         !stdout.contains("NOT DECODED"),
         "a clean report gains no section:\n{stdout}"
     );
+    Ok(())
 }
 
 /// `--cores N` must reach the same conclusion as `--cores 1` about the same
@@ -209,14 +217,14 @@ fn the_report_carries_a_not_decoded_section() {
 /// exactly this reason: a notice wired into one summary site and not the
 /// others makes the two paths disagree about the same bytes.
 #[test]
-fn the_parallel_path_reports_the_same_undecodable_frames() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_parallel_path_reports_the_same_undecodable_frames() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("undecodable.pcap");
-    write_undecodable(&path);
-    let file = path.to_str().expect("utf-8 path");
+    write_undecodable(&path)?;
+    let file = path.to_str().ok_or("utf-8 path")?;
 
-    let (_, single, _) = run(&["-N", "-I", file]);
-    let (_, parallel, _) = run(&["-N", "-I", file, "--cores", "2"]);
+    let (_, single, _) = run(&["-N", "-I", file])?;
+    let (_, parallel, _) = run(&["-N", "-I", file, "--cores", "2"])?;
 
     for stderr in [&single, &parallel] {
         assert!(
@@ -226,4 +234,5 @@ fn the_parallel_path_reports_the_same_undecodable_frames() {
             "both paths must name the DLT and its count:\n{stderr}"
         );
     }
+    Ok(())
 }

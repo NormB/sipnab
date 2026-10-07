@@ -26,32 +26,35 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 const FIXTURE: &str = "website/static/demos/sample-call.pcap";
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current exe");
+fn bin() -> Result<PathBuf, TestError> {
+    let mut p = std::env::current_exe()?;
     p.pop();
     if p.ends_with("deps") {
         p.pop();
     }
-    p.join("sipnab")
+    Ok(p.join("sipnab"))
 }
 
 /// Run sipnab and return (exit code, stderr).
-fn run(args: &[&str]) -> (i32, String) {
-    let out = Command::new(bin())
+fn run(args: &[&str]) -> Result<(i32, String), TestError> {
+    let out = Command::new(bin()?)
         .args(args)
         .current_dir(repo())
-        .output()
-        .expect("run sipnab");
-    (
+        .output()?;
+    Ok((
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 /// Every alias `--filter` accepts, `--export-vcon-when` accepts too.
@@ -59,16 +62,16 @@ fn run(args: &[&str]) -> (i32, String) {
 /// The operator-visible statement. An alias is part of the filter language, so
 /// a flag documented as taking that language takes all of it.
 #[test]
-fn every_alias_filter_accepts_export_vcon_when_accepts() {
+fn every_alias_filter_accepts_export_vcon_when_accepts() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
-    let fixture = fixture.to_str().expect("fixture path");
+    let fixture = fixture.to_str().ok_or("fixture path")?;
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_parity");
 
     let mut diverged = Vec::new();
     let mut checked = 0;
     for alias in sipnab::sip::dsl::DIAGNOSTIC_ALIASES {
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("out dir");
+        std::fs::create_dir_all(&dir)?;
 
         let (filter_code, _) = run(&[
             "-N",
@@ -78,7 +81,7 @@ fn every_alias_filter_accepts_export_vcon_when_accepts() {
             "--filter",
             alias,
             "--json-dialogs",
-        ]);
+        ])?;
         let (vcon_code, vcon_err) = run(&[
             "-N",
             "-I",
@@ -87,8 +90,8 @@ fn every_alias_filter_accepts_export_vcon_when_accepts() {
             "--export-vcon-when",
             alias,
             "--export-vcon-dir",
-            dir.to_str().expect("dir"),
-        ]);
+            dir.to_str().ok_or("dir")?,
+        ])?;
         checked += 1;
         if filter_code == 0 && vcon_code != 0 {
             diverged.push(format!(
@@ -111,6 +114,7 @@ fn every_alias_filter_accepts_export_vcon_when_accepts() {
          them, though cli-reference.md says it speaks that language:\n{}",
         diverged.join("\n")
     );
+    Ok(())
 }
 
 /// A raw DSL expression still works on both.
@@ -119,12 +123,12 @@ fn every_alias_filter_accepts_export_vcon_when_accepts() {
 /// expressions the flag already took, which is what a second parse path would
 /// risk.
 #[test]
-fn a_raw_expression_still_works_on_both_surfaces() {
+fn a_raw_expression_still_works_on_both_surfaces() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
-    let fixture = fixture.to_str().expect("fixture path");
+    let fixture = fixture.to_str().ok_or("fixture path")?;
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_raw");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("out dir");
+    std::fs::create_dir_all(&dir)?;
 
     let expr = "state == 'Completed'";
     let (filter_code, _) = run(&[
@@ -135,7 +139,7 @@ fn a_raw_expression_still_works_on_both_surfaces() {
         "--filter",
         expr,
         "--json-dialogs",
-    ]);
+    ])?;
     let (vcon_code, err) = run(&[
         "-N",
         "-I",
@@ -144,8 +148,8 @@ fn a_raw_expression_still_works_on_both_surfaces() {
         "--export-vcon-when",
         expr,
         "--export-vcon-dir",
-        dir.to_str().expect("dir"),
-    ]);
+        dir.to_str().ok_or("dir")?,
+    ])?;
     let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(filter_code, 0, "--filter refused a raw expression");
@@ -153,6 +157,7 @@ fn a_raw_expression_still_works_on_both_surfaces() {
         vcon_code, 0,
         "--export-vcon-when refused a raw expression: {err}"
     );
+    Ok(())
 }
 
 /// A genuinely malformed expression is still refused, on both.
@@ -161,12 +166,12 @@ fn a_raw_expression_still_works_on_both_surfaces() {
 /// above would pass for the wrong reason -- and an operator's typo would
 /// produce an empty directory they read as "nothing matched".
 #[test]
-fn a_malformed_expression_is_refused_by_both() {
+fn a_malformed_expression_is_refused_by_both() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
-    let fixture = fixture.to_str().expect("fixture path");
+    let fixture = fixture.to_str().ok_or("fixture path")?;
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_bad");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("out dir");
+    std::fs::create_dir_all(&dir)?;
 
     let bad = "state ==== nonsense((";
     let (filter_code, _) = run(&[
@@ -177,7 +182,7 @@ fn a_malformed_expression_is_refused_by_both() {
         "--filter",
         bad,
         "--json-dialogs",
-    ]);
+    ])?;
     let (vcon_code, _) = run(&[
         "-N",
         "-I",
@@ -186,8 +191,8 @@ fn a_malformed_expression_is_refused_by_both() {
         "--export-vcon-when",
         bad,
         "--export-vcon-dir",
-        dir.to_str().expect("dir"),
-    ]);
+        dir.to_str().ok_or("dir")?,
+    ])?;
     let _ = std::fs::remove_dir_all(&dir);
 
     assert_ne!(filter_code, 0, "--filter accepted a malformed expression");
@@ -196,6 +201,7 @@ fn a_malformed_expression_is_refused_by_both() {
         "--export-vcon-when accepted a malformed expression, so a typo now \
          yields an empty directory a reader takes for 'nothing matched'"
     );
+    Ok(())
 }
 
 // ── the four owed ───────────────────────────────────────────────────
@@ -219,10 +225,9 @@ fn a_malformed_expression_is_refused_by_both() {
 /// their own entry points. The rule is about flags, whose value the plan
 /// already sees.
 #[test]
-fn every_cli_filter_flag_is_resolved_in_the_plan() {
-    let cli = std::fs::read_to_string(repo().join("src/cli.rs")).expect("read cli.rs");
-    let plan =
-        std::fs::read_to_string(repo().join("src/app/bootstrap.rs")).expect("read bootstrap");
+fn every_cli_filter_flag_is_resolved_in_the_plan() -> Result<(), TestError> {
+    let cli = std::fs::read_to_string(repo().join("src/cli.rs"))?;
+    let plan = std::fs::read_to_string(repo().join("src/app/bootstrap.rs"))?;
 
     // Flags whose doc comment says they take the filter language.
     let lines: Vec<&str> = cli.lines().collect();
@@ -264,6 +269,7 @@ fn every_cli_filter_flag_is_resolved_in_the_plan() {
             f.replace('_', "-")
         );
     }
+    Ok(())
 }
 
 /// A malformed predicate fails the run before the capture opens.
@@ -271,22 +277,22 @@ fn every_cli_filter_flag_is_resolved_in_the_plan() {
 /// The flag's own doc promises this, and it is the difference between a typo
 /// and a silent empty directory the operator reads as "nothing matched".
 #[test]
-fn a_malformed_predicate_fails_before_writing_anything() {
+fn a_malformed_predicate_fails_before_writing_anything() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_earlyfail");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("out dir");
+    std::fs::create_dir_all(&dir)?;
 
     let (code, _) = run(&[
         "-N",
         "-I",
-        fixture.to_str().expect("fixture"),
+        fixture.to_str().ok_or("fixture")?,
         "--no-cli-print",
         "--export-vcon-when",
         "state ==== nonsense((",
         "--export-vcon-dir",
-        dir.to_str().expect("dir"),
-    ]);
+        dir.to_str().ok_or("dir")?,
+    ])?;
     let written = std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -296,6 +302,7 @@ fn a_malformed_predicate_fails_before_writing_anything() {
         "the run refused the predicate and still wrote {written} file(s); a \
          partially populated directory is worse than none"
     );
+    Ok(())
 }
 
 /// One alias selects the same dialogs through either flag.
@@ -304,16 +311,16 @@ fn a_malformed_predicate_fails_before_writing_anything() {
 /// it to different predicates, which is precisely what two expansion sites
 /// with two threshold sources would produce.
 #[test]
-fn both_surfaces_select_the_same_dialogs_for_one_alias() {
+fn both_surfaces_select_the_same_dialogs_for_one_alias() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
-    let fixture = fixture.to_str().expect("fixture");
+    let fixture = fixture.to_str().ok_or("fixture")?;
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_same_set");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("out dir");
+    std::fs::create_dir_all(&dir)?;
 
     // `--filter` reports rows; `--export-vcon-when` writes one container per
     // selected dialog. The COUNTS must agree.
-    let out = Command::new(bin())
+    let out = Command::new(bin()?)
         .args([
             "-N",
             "-I",
@@ -324,8 +331,7 @@ fn both_surfaces_select_the_same_dialogs_for_one_alias() {
             "--json-dialogs",
         ])
         .current_dir(repo())
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let rows = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| l.trim_start().starts_with('{'))
@@ -339,8 +345,8 @@ fn both_surfaces_select_the_same_dialogs_for_one_alias() {
         "--export-vcon-when",
         "problems",
         "--export-vcon-dir",
-        dir.to_str().expect("dir"),
-    ]);
+        dir.to_str().ok_or("dir")?,
+    ])?;
     let containers = std::fs::read_dir(&dir)
         .map(|d| {
             d.filter_map(Result::ok)
@@ -358,6 +364,7 @@ fn both_surfaces_select_the_same_dialogs_for_one_alias() {
          accept the alias and they do not agree on what it means, which is \
          two expansions rather than one."
     );
+    Ok(())
 }
 
 /// The resolver reads the operator's thresholds, not the built-ins.
@@ -368,12 +375,11 @@ fn both_surfaces_select_the_same_dialogs_for_one_alias() {
 /// a tuned deployment as an untuned one -- silently, and only for the people
 /// who bothered to configure it.
 #[test]
-fn the_resolver_reads_configured_thresholds() {
-    let plan =
-        std::fs::read_to_string(repo().join("src/app/bootstrap.rs")).expect("read bootstrap");
+fn the_resolver_reads_configured_thresholds() -> Result<(), TestError> {
+    let plan = std::fs::read_to_string(repo().join("src/app/bootstrap.rs"))?;
     let at = plan
         .find("fn build_vcon_filter_expr")
-        .expect("the vcon resolver is gone");
+        .ok_or("the vcon resolver is gone")?;
     let body = &plan[at..at + 900.min(plan.len() - at)];
 
     assert!(
@@ -386,6 +392,7 @@ fn the_resolver_reads_configured_thresholds() {
         body.contains("expand_alias"),
         "the vcon resolver does not expand aliases at all"
     );
+    Ok(())
 }
 
 // ── the two owed for the fuzz build ─────────────────────────────────
@@ -403,8 +410,8 @@ fn the_resolver_reads_configured_thresholds() {
 /// set is built first, which here was the fuzz targets at push time rather
 /// than anything a commit gate runs.
 #[test]
-fn both_arms_of_a_cfg_split_function_share_one_signature() {
-    let src = std::fs::read_to_string(repo().join("src/app/batch.rs")).expect("read batch.rs");
+fn both_arms_of_a_cfg_split_function_share_one_signature() -> Result<(), TestError> {
+    let src = std::fs::read_to_string(repo().join("src/app/batch.rs"))?;
     let lines: Vec<&str> = src.lines().collect();
 
     // Collect (name, params) for every `fn` directly under a `#[cfg(...feature...)]`.
@@ -460,6 +467,7 @@ fn both_arms_of_a_cfg_split_function_share_one_signature() {
             );
         }
     }
+    Ok(())
 }
 
 /// The scan actually found the pair this failure was about.
@@ -468,8 +476,8 @@ fn both_arms_of_a_cfg_split_function_share_one_signature() {
 /// the gate above still passes while checking one fewer thing, and the reason
 /// it exists is gone with no notice.
 #[test]
-fn the_cfg_split_scan_covers_the_pair_that_broke_the_build() {
-    let src = std::fs::read_to_string(repo().join("src/app/batch.rs")).expect("read batch.rs");
+fn the_cfg_split_scan_covers_the_pair_that_broke_the_build() -> Result<(), TestError> {
+    let src = std::fs::read_to_string(repo().join("src/app/batch.rs"))?;
     assert!(
         src.contains("#[cfg(feature = \"vcon\")]")
             && src.contains("#[cfg(not(feature = \"vcon\"))]"),
@@ -482,4 +490,5 @@ fn the_cfg_split_scan_covers_the_pair_that_broke_the_build() {
         "expected export_vcon to have both a real arm and a stub; found \
          {stubs}"
     );
+    Ok(())
 }

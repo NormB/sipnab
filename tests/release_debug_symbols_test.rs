@@ -23,7 +23,7 @@ use std::process::Command;
 #[path = "support/dbgsym.rs"]
 mod dbgsym;
 
-use dbgsym::{repo, text};
+use dbgsym::{TestError, repo, text};
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -34,24 +34,24 @@ const RELEASE: &str = ".github/workflows/release.yml";
 const SPLIT_STEP: &str = "Split the debug symbols from the shipped binary";
 
 /// Read a repo-relative file.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}").into())
 }
 
 /// Every `- name:` in the workflow, in file order.
-fn step_names() -> Vec<String> {
-    read(RELEASE)
+fn step_names() -> Result<Vec<String>, TestError> {
+    Ok(read(RELEASE)?
         .lines()
         .filter_map(|l| l.trim().strip_prefix("- name: "))
         .map(|s| s.trim().to_string())
-        .collect()
+        .collect())
 }
 
 /// Position of the one step called `name`. Panics when missing or duplicated:
 /// a scan that takes the first of two identically named steps can be pointed
 /// at a decoy.
-fn position(name: &str) -> usize {
-    let names = step_names();
+fn position(name: &str) -> Result<usize, TestError> {
+    let names = step_names()?;
     let hits: Vec<usize> = names
         .iter()
         .enumerate()
@@ -64,19 +64,19 @@ fn position(name: &str) -> usize {
         "{RELEASE} has {} steps named {name:?}; expected exactly one",
         hits.len()
     );
-    hits[0]
+    Ok(hits[0])
 }
 
 /// The full text of the step called `name`, from its `- name:` line to the
 /// next item at the same indentation.
-fn step_block(name: &str) -> Vec<String> {
+fn step_block(name: &str) -> Result<Vec<String>, TestError> {
     step_block_in(RELEASE, name)
 }
 
 /// [`step_block`] for any workflow file. Panics unless exactly one step has
 /// that name, so a decoy cannot shadow the real step.
-fn step_block_in(workflow: &str, name: &str) -> Vec<String> {
-    let text = read(workflow);
+fn step_block_in(workflow: &str, name: &str) -> Result<Vec<String>, TestError> {
+    let text = read(workflow)?;
     let lines: Vec<&str> = text.lines().collect();
     let needle = format!("- name: {name}");
     let hits: Vec<usize> = lines
@@ -106,27 +106,27 @@ fn step_block_in(workflow: &str, name: &str) -> Vec<String> {
         }
         body.push(l.to_string());
     }
-    body
+    Ok(body)
 }
 
 /// The dedented `run:` script of the step called `name`.
-fn step_script(name: &str) -> String {
+fn step_script(name: &str) -> Result<String, TestError> {
     step_script_in(RELEASE, name)
 }
 
 /// [`step_script`] for any workflow file.
-fn step_script_in(workflow: &str, name: &str) -> String {
-    let body = step_block_in(workflow, name);
+fn step_script_in(workflow: &str, name: &str) -> Result<String, TestError> {
+    let body = step_block_in(workflow, name)?;
     let run_at = body
         .iter()
         .position(|l| l.trim_start().starts_with("run:"))
-        .unwrap_or_else(|| panic!("step {name:?} has no `run:` block"));
+        .ok_or_else(|| format!("step {name:?} has no `run:` block"))?;
     let run_line = body[run_at].trim_start();
     if let Some(inline) = run_line.strip_prefix("run:")
         && !inline.trim().is_empty()
         && inline.trim() != "|"
     {
-        return inline.trim().to_string();
+        return Ok(inline.trim().to_string());
     }
     let run_indent = body[run_at].len() - body[run_at].trim_start().len();
     let block: Vec<&String> = body[run_at + 1..]
@@ -157,20 +157,20 @@ fn step_script_in(workflow: &str, name: &str) -> String {
         !script.trim().is_empty(),
         "step {name:?}: extracted an empty script"
     );
-    script
+    Ok(script)
 }
 
 /// The step's `if:` condition, if it has one.
-fn step_if(name: &str) -> Option<String> {
-    step_block(name)
+fn step_if(name: &str) -> Result<Option<String>, TestError> {
+    Ok(step_block(name)?
         .iter()
-        .find_map(|l| l.trim().strip_prefix("if: ").map(str::to_string))
+        .find_map(|l| l.trim().strip_prefix("if: ").map(str::to_string)))
 }
 
 /// Every `(target, variant)` the build matrix produces.
-fn matrix() -> Vec<(String, String)> {
+fn matrix() -> Result<Vec<(String, String)>, TestError> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for line in read(RELEASE).lines() {
+    for line in read(RELEASE)?.lines() {
         let t = line.trim();
         if let Some(target) = t.strip_prefix("- target: ") {
             out.push((target.trim().to_string(), String::new()));
@@ -185,16 +185,16 @@ fn matrix() -> Vec<(String, String)> {
         "matrix scan found only {} entries",
         out.len()
     );
-    out
+    Ok(out)
 }
 
 /// Run `split-debuginfo.sh --cargo-config <target>`.
-fn cargo_config(target: &str) -> std::process::Output {
+fn cargo_config(target: &str) -> Result<std::process::Output, TestError> {
     Command::new("bash")
         .arg(dbgsym::script())
         .args(["--cargo-config", target])
         .output()
-        .expect("run split-debuginfo.sh --cargo-config")
+        .map_err(|e| format!("run split-debuginfo.sh --cargo-config: {e}").into())
 }
 
 /// Both build steps keep the line tables, by asking the split script for the
@@ -207,11 +207,11 @@ fn cargo_config(target: &str) -> std::process::Output {
 /// `dsymutil` reads it. With `packed`, rustc deletes those objects after its
 /// own dsymutil run, and on the first CI run it produced no `.dSYM` at all.
 #[test]
-fn the_build_keeps_the_symbols_the_split_needs() {
+fn the_build_keeps_the_symbols_the_split_needs() -> Result<(), TestError> {
     // Both build steps build through scripts/reproducible-build.sh, the one
     // place the release build command lives, so the flags are asserted there.
     for step in ["Build (native)", "Build (cross)"] {
-        let script = step_script(step);
+        let script = step_script(step)?;
         assert!(
             script.contains("bash scripts/reproducible-build.sh build"),
             "{step} must build through scripts/reproducible-build.sh:\n{script}"
@@ -220,7 +220,7 @@ fn the_build_keeps_the_symbols_the_split_needs() {
     let build = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reproducible-build.sh"),
     )
-    .expect("read scripts/reproducible-build.sh");
+    .map_err(|e| format!("read scripts/reproducible-build.sh: {e}"))?;
     assert!(
         build.contains("split-debuginfo.sh\" --rustflags \"$target\")")
             && build.contains("export RUSTFLAGS=\"${RUSTFLAGS:+$RUSTFLAGS }$split"),
@@ -235,11 +235,11 @@ fn the_build_keeps_the_symbols_the_split_needs() {
         "the cross build must also pass --cargo-config"
     );
     let mut seen = BTreeSet::new();
-    for (target, _) in matrix() {
+    for (target, _) in matrix()? {
         if !seen.insert(target.clone()) {
             continue;
         }
-        let out = cargo_config(&target);
+        let out = cargo_config(&target)?;
         assert!(out.status.success(), "{target}:\n{}", text(&out));
         let cfg = String::from_utf8_lossy(&out.stdout).trim().to_string();
         // rustflags, NOT `profile.release.*`: cargo hashes the profile into
@@ -254,41 +254,43 @@ fn the_build_keeps_the_symbols_the_split_needs() {
         };
         assert_eq!(cfg, want, "--cargo-config for {target}");
     }
-    let bad = cargo_config("riscv64gc-unknown-none-elf");
+    let bad = cargo_config("riscv64gc-unknown-none-elf")?;
     assert!(
         !bad.status.success(),
         "an unknown target must be refused, not given a guess:\n{}",
         text(&bad)
     );
+    Ok(())
 }
 
 /// The toolchain carries `llvm-objcopy`, which the split needs for the
 /// binaries built for an architecture other than the runner's.
 #[test]
-fn the_toolchain_install_carries_llvm_tools() {
-    let block = step_block("Install Rust").join("\n");
+fn the_toolchain_install_carries_llvm_tools() -> Result<(), TestError> {
+    let block = step_block("Install Rust")?.join("\n");
     assert!(
         block.contains("components: llvm-tools"),
         "Install Rust must add llvm-tools; the host's GNU objcopy cannot read \
          a foreign-architecture binary:\n{block}"
     );
+    Ok(())
 }
 
 /// (d) The split runs for EVERY matrix entry, after the build and before
 /// anything reads, measures, runs or packages the binary. A gate placed
 /// before it would examine the unstripped build instead of the shipped file.
 #[test]
-fn the_split_runs_for_every_build_before_the_binary_is_examined() {
-    let split = position(SPLIT_STEP);
+fn the_split_runs_for_every_build_before_the_binary_is_examined() -> Result<(), TestError> {
+    let split = position(SPLIT_STEP)?;
     assert_eq!(
-        step_if(SPLIT_STEP),
+        step_if(SPLIT_STEP)?,
         None,
         "the split must run for every target and variant; the noaudio builds \
          ship in the .deb and .rpm and need their own symbol files"
     );
     for before in ["Build (native)", "Build (cross)"] {
         assert!(
-            position(before) < split,
+            position(before)? < split,
             "{before} must come before the split"
         );
     }
@@ -304,18 +306,19 @@ fn the_split_runs_for_every_build_before_the_binary_is_examined() {
         "Upload artifact",
     ] {
         assert!(
-            split < position(after),
+            split < position(after)?,
             "{after:?} must come after the split, or it sees the unstripped build"
         );
     }
+    Ok(())
 }
 
 /// Every matrix entry publishes a symbol file under a distinct name, and each
 /// name is the stem the tarball or package of that entry already uses plus
 /// `.debug` or `.dSYM.zip`.
 #[test]
-fn every_build_publishes_a_distinctly_named_symbol_file() {
-    let script = step_script(SPLIT_STEP);
+fn every_build_publishes_a_distinctly_named_symbol_file() -> Result<(), TestError> {
+    let script = step_script(SPLIT_STEP)?;
     assert!(
         script.contains("bash scripts/split-debuginfo.sh"),
         "{SPLIT_STEP} does not run the split script:\n{script}"
@@ -323,7 +326,7 @@ fn every_build_publishes_a_distinctly_named_symbol_file() {
     let mut names = BTreeSet::new();
     let mut linux = 0;
     let mut mac = 0;
-    for (target, variant) in matrix() {
+    for (target, variant) in matrix()? {
         let suffix = if variant.is_empty() {
             String::new()
         } else {
@@ -349,6 +352,7 @@ fn every_build_publishes_a_distinctly_named_symbol_file() {
         "the split must write dist/sipnab-<version>-<target><suffix>, the \
          same stem as the tarball, so the release job picks it up:\n{script}"
     );
+    Ok(())
 }
 
 /// (d) Executed: the split step's own shell, run on this host against a real
@@ -358,33 +362,32 @@ fn every_build_publishes_a_distinctly_named_symbol_file() {
 /// is still live and still reads the shipped file.
 #[test]
 #[cfg(target_os = "linux")]
-fn the_split_step_and_the_strip_check_run_on_a_real_binary() {
-    let host = dbgsym::host_triple_or_panic();
-    let dir = tempfile::tempdir().unwrap();
+fn the_split_step_and_the_strip_check_run_on_a_real_binary() -> Result<(), TestError> {
+    let host = dbgsym::host_triple()?;
+    let dir = tempfile::tempdir()?;
     let work = dir.path();
     let rel = work.join("target").join(&host).join("release");
-    std::fs::create_dir_all(&rel).unwrap();
-    let fixture = dbgsym::build_fixture_or_panic(work, None, true).expect("host fixture");
+    std::fs::create_dir_all(&rel)?;
+    let fixture = dbgsym::build_fixture(work, None, true)?.ok_or("host fixture")?;
     let bin = rel.join("sipnab");
-    std::fs::copy(&fixture, &bin).unwrap();
-    std::fs::create_dir_all(work.join("scripts")).unwrap();
-    std::fs::copy(dbgsym::script(), work.join("scripts/split-debuginfo.sh")).unwrap();
+    std::fs::copy(&fixture, &bin)?;
+    std::fs::create_dir_all(work.join("scripts"))?;
+    std::fs::copy(dbgsym::script(), work.join("scripts/split-debuginfo.sh"))?;
 
     let verify =
-        step_script("Verify the binary is stripped").replace("${{ matrix.target }}", &host);
+        step_script("Verify the binary is stripped")?.replace("${{ matrix.target }}", &host);
     let unstripped = Command::new("bash")
         .arg("-c")
         .arg(&verify)
         .current_dir(work)
-        .output()
-        .unwrap();
+        .output()?;
     assert!(
         !unstripped.status.success(),
         "the strip check passed an unstripped binary:\n{}",
         text(&unstripped)
     );
 
-    let split = step_script(SPLIT_STEP);
+    let split = step_script(SPLIT_STEP)?;
     let out = Command::new("bash")
         .arg("-c")
         .arg(&split)
@@ -392,8 +395,7 @@ fn the_split_step_and_the_strip_check_run_on_a_real_binary() {
         .env("TARGET", &host)
         .env("SUFFIX", "")
         .env("GITHUB_REF_NAME", "v1.2.3")
-        .output()
-        .unwrap();
+        .output()?;
     assert!(
         out.status.success(),
         "the split step failed:\n{}",
@@ -401,30 +403,27 @@ fn the_split_step_and_the_strip_check_run_on_a_real_binary() {
     );
     let debug = work.join(format!("dist/sipnab-1.2.3-{host}.debug"));
     assert!(debug.is_file(), "no {}:\n{}", debug.display(), text(&out));
-    assert_eq!(
-        dbgsym::build_id_or_panic(&bin),
-        dbgsym::build_id_or_panic(&debug)
-    );
+    assert_eq!(dbgsym::build_id(&bin)?, dbgsym::build_id(&debug)?);
 
     let stripped = Command::new("bash")
         .arg("-c")
         .arg(&verify)
         .current_dir(work)
-        .output()
-        .unwrap();
+        .output()?;
     assert!(
         stripped.status.success(),
         "the strip check refused the split binary:\n{}",
         text(&stripped)
     );
+    Ok(())
 }
 
 /// (d) The release job publishes, checksums and attests the symbol files.
 #[test]
-fn the_release_publishes_checksums_and_attests_the_symbol_files() {
-    let files = step_block("Create GitHub Release").join("\n");
-    let sums = step_script("Generate combined checksums");
-    let attest = step_block("Attest build provenance").join("\n");
+fn the_release_publishes_checksums_and_attests_the_symbol_files() -> Result<(), TestError> {
+    let files = step_block("Create GitHub Release")?.join("\n");
+    let sums = step_script("Generate combined checksums")?;
+    let attest = step_block("Attest build provenance")?.join("\n");
     for pattern in ["artifacts/*.debug", "artifacts/*.dSYM.zip"] {
         assert!(
             files.contains(pattern),
@@ -441,6 +440,7 @@ fn the_release_publishes_checksums_and_attests_the_symbol_files() {
             "SHA256SUMS.txt does not cover {glob}:\n{sums}"
         );
     }
+    Ok(())
 }
 
 /// (e) The size gate measures the shipped binary and nothing else: a symbol
@@ -448,71 +448,68 @@ fn the_release_publishes_checksums_and_attests_the_symbol_files() {
 /// fails a binary over the ceiling, so it is not passing by measuring nothing.
 #[test]
 #[cfg(target_os = "linux")]
-fn the_size_gate_measures_only_the_shipped_binary() {
+fn the_size_gate_measures_only_the_shipped_binary() -> Result<(), TestError> {
     let target = "x86_64-unknown-linux-musl";
-    let gate = step_script("Enforce published binary size (musl targets)")
+    let gate = step_script("Enforce published binary size (musl targets)")?
         .replace("${{ matrix.target }}", target);
     assert!(
         !gate.contains(".debug") && !gate.contains("dSYM"),
         "the size gate must not read a symbol file:\n{gate}"
     );
-    let ceiling_mb: u64 = read("website/config.toml")
+    let ceiling_mb: u64 = read("website/config.toml")?
         .lines()
         .find_map(|l| l.strip_prefix("binary_size_ceiling_mb = "))
-        .map(|v| v.trim().trim_matches('"').parse().unwrap())
-        .expect("binary_size_ceiling_mb");
+        .ok_or("binary_size_ceiling_mb")?
+        .trim()
+        .trim_matches('"')
+        .parse()?;
     let over = (ceiling_mb + 1) * 1024 * 1024;
 
-    let run = |bin_len: u64| {
-        let dir = tempfile::tempdir().unwrap();
+    let run = |bin_len: u64| -> Result<std::process::Output, TestError> {
+        let dir = tempfile::tempdir()?;
         let w = dir.path();
-        std::fs::create_dir_all(w.join("website")).unwrap();
+        std::fs::create_dir_all(w.join("website"))?;
         std::fs::copy(
             repo().join("website/config.toml"),
             w.join("website/config.toml"),
-        )
-        .unwrap();
+        )?;
         let rel = w.join("target").join(target).join("release");
-        std::fs::create_dir_all(&rel).unwrap();
-        std::fs::create_dir_all(w.join("dist")).unwrap();
+        std::fs::create_dir_all(&rel)?;
+        std::fs::create_dir_all(w.join("dist"))?;
         // Sparse: set_len allocates nothing, so "over the ceiling" costs no disk.
-        std::fs::File::create(rel.join("sipnab"))
-            .unwrap()
-            .set_len(bin_len)
-            .unwrap();
-        std::fs::File::create(w.join(format!("dist/sipnab-1.2.3-{target}.debug")))
-            .unwrap()
-            .set_len(over)
-            .unwrap();
-        Command::new("bash")
+        std::fs::File::create(rel.join("sipnab"))?.set_len(bin_len)?;
+        std::fs::File::create(w.join(format!("dist/sipnab-1.2.3-{target}.debug")))?
+            .set_len(over)?;
+        Ok(Command::new("bash")
             .arg("-c")
             .arg(&gate)
             .current_dir(w)
-            .output()
-            .unwrap()
+            .output()?)
     };
 
-    let small = run(1024);
+    let small = run(1024)?;
     assert!(
         small.status.success(),
         "a 1 KiB binary failed the size gate, so it measured something else:\n{}",
         text(&small)
     );
-    let big = run(over);
+    let big = run(over)?;
     assert!(
         !big.status.success(),
         "a binary over the ceiling passed, so the gate is not measuring it:\n{}",
         text(&big)
     );
+    Ok(())
 }
 
 /// The check is anchored to a real file: the matrix, the step list and the
 /// ceiling this file reads all exist in the tree.
 #[test]
-fn the_workflow_scan_reads_the_real_workflow() {
+fn the_workflow_scan_reads_the_real_workflow() -> Result<(), TestError> {
     assert!(Path::new(&repo().join(RELEASE)).is_file());
-    assert!(step_names().len() > 20, "step scan found too few steps");
-    assert!(matrix().iter().any(|(t, _)| t == "aarch64-apple-darwin"));
+    assert!(step_names()?.len() > 20, "step scan found too few steps");
+    assert!(matrix()?.iter().any(|(t, _)| t == "aarch64-apple-darwin"));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -525,12 +522,12 @@ const CI_PROVE_STEP: &str = "Prove the release symbol split";
 
 /// The ci.yml job that holds `step`: the text from the job's two-space key to
 /// the next one.
-fn ci_job_holding(step: &str) -> String {
-    let text = read(CI);
+fn ci_job_holding(step: &str) -> Result<String, TestError> {
+    let text = read(CI)?;
     let needle = format!("- name: {step}");
     let at = text
         .find(&needle)
-        .unwrap_or_else(|| panic!("{CI} has no step {step:?}"));
+        .ok_or_else(|| format!("{CI} has no step {step:?}"))?;
     let is_job_key = |l: &str| {
         l.len() > 2 && l.starts_with("  ") && !l.starts_with("   ") && l.trim_end().ends_with(':')
     };
@@ -555,7 +552,7 @@ fn ci_job_holding(step: &str) -> String {
         }
         off += line.len() + 1;
     }
-    rest[..end].to_string()
+    Ok(rest[..end].to_string())
 }
 
 /// The macOS half of the split exists only on the release's darwin runners,
@@ -565,11 +562,11 @@ fn ci_job_holding(step: &str) -> String {
 /// one Linux x86_64 and one macOS runner, runs the split, and checks what the
 /// release relies on.
 #[test]
-fn ci_proves_the_split_on_linux_and_macos_before_a_tag() {
-    let job = ci_job_holding(CI_PROVE_STEP);
+fn ci_proves_the_split_on_linux_and_macos_before_a_tag() -> Result<(), TestError> {
+    let job = ci_job_holding(CI_PROVE_STEP)?;
     assert_eq!(
         job,
-        ci_job_holding(CI_BUILD_STEP),
+        ci_job_holding(CI_BUILD_STEP)?,
         "the build and the proof must be one job, or the proof reads nothing"
     );
     assert!(
@@ -589,7 +586,7 @@ fn ci_proves_the_split_on_linux_and_macos_before_a_tag() {
         "an unbounded job holds its concurrency group:\n{job}"
     );
 
-    let build = step_script_in(CI, CI_BUILD_STEP);
+    let build = step_script_in(CI, CI_BUILD_STEP)?;
     assert!(
         build.contains("cargo build --release")
             && build.contains(
@@ -598,11 +595,11 @@ fn ci_proves_the_split_on_linux_and_macos_before_a_tag() {
         "CI must build the RELEASE profile with the flags release.yml takes \
          from the script, or it proves a different build:\n{build}"
     );
-    let build_pos = position_in(CI, CI_BUILD_STEP);
-    let prove_pos = position_in(CI, CI_PROVE_STEP);
+    let build_pos = position_in(CI, CI_BUILD_STEP)?;
+    let prove_pos = position_in(CI, CI_PROVE_STEP)?;
     assert!(build_pos < prove_pos, "the proof must run after the build");
 
-    let prove = step_script_in(CI, CI_PROVE_STEP);
+    let prove = step_script_in(CI, CI_PROVE_STEP)?;
     for needle in [
         "bash scripts/split-debuginfo.sh",
         "Build ID",
@@ -616,15 +613,16 @@ fn ci_proves_the_split_on_linux_and_macos_before_a_tag() {
             "{CI_PROVE_STEP} does not check {needle:?}:\n{prove}"
         );
     }
+    Ok(())
 }
 
 /// Position of the step called `name` among `workflow`'s steps.
-fn position_in(workflow: &str, name: &str) -> usize {
-    read(workflow)
+fn position_in(workflow: &str, name: &str) -> Result<usize, TestError> {
+    read(workflow)?
         .lines()
         .filter_map(|l| l.trim().strip_prefix("- name: "))
         .position(|n| n.trim() == name)
-        .unwrap_or_else(|| panic!("{workflow} has no step {name:?}"))
+        .ok_or_else(|| format!("{workflow} has no step {name:?}").into())
 }
 
 /// How [`the_ci_proof_step_catches_what_it_must`] prepares its tree.
@@ -655,18 +653,18 @@ enum ProofCase {
 /// could be deleted and this test would stay green.
 #[test]
 #[cfg(target_os = "linux")]
-fn the_ci_proof_step_catches_what_it_must() {
-    let host = dbgsym::host_triple_or_panic();
-    let prove = step_script_in(CI, CI_PROVE_STEP);
-    let run = |case: ProofCase| {
-        let dir = tempfile::tempdir().unwrap();
+fn the_ci_proof_step_catches_what_it_must() -> Result<(), TestError> {
+    let host = dbgsym::host_triple()?;
+    let prove = step_script_in(CI, CI_PROVE_STEP)?;
+    let run = |case: ProofCase| -> Result<(std::process::Output, tempfile::TempDir), TestError> {
+        let dir = tempfile::tempdir()?;
         let work = dir.path().to_path_buf();
         let rel = work.join("target").join(&host).join("release");
-        std::fs::create_dir_all(&rel).unwrap();
-        let fixture = dbgsym::build_fixture_or_panic(&work, None, true).expect("host fixture");
+        std::fs::create_dir_all(&rel)?;
+        let fixture = dbgsym::build_fixture(&work, None, true)?.ok_or("host fixture")?;
         let bin = rel.join("sipnab");
-        std::fs::copy(&fixture, &bin).unwrap();
-        std::fs::create_dir_all(work.join("scripts")).unwrap();
+        std::fs::copy(&fixture, &bin)?;
+        std::fs::create_dir_all(work.join("scripts"))?;
         let script = work.join("scripts/split-debuginfo.sh");
         let stub = match case {
             ProofCase::LyingScript => Some("cp \"$1\" \"$2.debug\""),
@@ -683,14 +681,16 @@ fn the_ci_proof_step_catches_what_it_must() {
             Some(body) => std::fs::write(
                 &script,
                 format!("set -e\nmkdir -p \"$(dirname \"$2\")\"\n{body}\n"),
-            )
-            .unwrap(),
+            )?,
             None => {
-                std::fs::copy(dbgsym::script(), &script).unwrap();
+                std::fs::copy(dbgsym::script(), &script)?;
             }
         }
         if case == ProofCase::StrippedFirst {
-            let s = Command::new("strip").arg(&bin).status().expect("strip");
+            let s = Command::new("strip")
+                .arg(&bin)
+                .status()
+                .map_err(|e| format!("strip: {e}"))?;
             assert!(s.success());
         }
         let out = Command::new("bash")
@@ -698,23 +698,22 @@ fn the_ci_proof_step_catches_what_it_must() {
             .arg(&prove)
             .current_dir(&work)
             .env("TARGET", &host)
-            .output()
-            .unwrap();
-        (out, dir)
+            .output()?;
+        Ok((out, dir))
     };
-    let (good, _d1) = run(ProofCase::Good);
+    let (good, _d1) = run(ProofCase::Good)?;
     assert!(
         good.status.success(),
         "the proof failed a good split:\n{}",
         text(&good)
     );
-    let (stripped, _d2) = run(ProofCase::StrippedFirst);
+    let (stripped, _d2) = run(ProofCase::StrippedFirst)?;
     assert!(
         !stripped.status.success(),
         "the proof passed a binary stripped before the split:\n{}",
         text(&stripped)
     );
-    let (lying, _d3) = run(ProofCase::LyingScript);
+    let (lying, _d3) = run(ProofCase::LyingScript)?;
     assert!(
         !lying.status.success(),
         "the proof passed a binary that still has its .symtab:\n{}",
@@ -725,20 +724,21 @@ fn the_ci_proof_step_catches_what_it_must() {
         "the refusal must come from the step's own .symtab check:\n{}",
         text(&lying)
     );
-    let (empty, _d4) = run(ProofCase::EmptyDebug);
+    let (empty, _d4) = run(ProofCase::EmptyDebug)?;
     assert!(
         !empty.status.success()
             && String::from_utf8_lossy(&empty.stdout).contains("build ID mismatch"),
         "the step's build-ID comparison did not catch an empty .debug:\n{}",
         text(&empty)
     );
-    let (nolink, _d5) = run(ProofCase::NoDebuglink);
+    let (nolink, _d5) = run(ProofCase::NoDebuglink)?;
     assert!(
         !nolink.status.success()
             && String::from_utf8_lossy(&nolink.stdout).contains(".gnu_debuglink"),
         "the step's .gnu_debuglink check did not catch a missing link:\n{}",
         text(&nolink)
     );
+    Ok(())
 }
 
 /// Executed: the CI proof step's macOS branch, run on this host with stub
@@ -748,36 +748,39 @@ fn the_ci_proof_step_catches_what_it_must() {
 /// the step's own logic can go red, which reading its text cannot.
 #[test]
 #[cfg(unix)]
-fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
-    let prove = step_script_in(CI, CI_PROVE_STEP);
+fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() -> Result<(), TestError> {
+    let prove = step_script_in(CI, CI_PROVE_STEP)?;
     let target = "aarch64-apple-darwin";
-    let run = |make_zip: bool, dsym_uuid: &str, runs: bool| {
-        let dir = tempfile::tempdir().unwrap();
+    let run = |make_zip: bool,
+               dsym_uuid: &str,
+               runs: bool|
+     -> Result<(std::process::Output, tempfile::TempDir), TestError> {
+        let dir = tempfile::tempdir()?;
         let w = dir.path().to_path_buf();
         let rel = w.join("target").join(target).join("release");
-        std::fs::create_dir_all(rel.join("sipnab.dSYM")).unwrap();
+        std::fs::create_dir_all(rel.join("sipnab.dSYM"))?;
         // An executable stand-in: the step runs the split binary once.
         let body = if runs {
             "#!/bin/sh\necho sipnab\n"
         } else {
             "#!/bin/sh\nexit 137\n"
         };
-        executable::write_executable(&rel.join("sipnab"), body).unwrap();
-        std::fs::create_dir_all(w.join("scripts")).unwrap();
+        executable::write_executable(&rel.join("sipnab"), body)?;
+        std::fs::create_dir_all(w.join("scripts"))?;
         let split = if make_zip {
             "mkdir -p \"$(dirname \"$2\")\"; echo zip > \"$2.dSYM.zip\"\n"
         } else {
             "exit 0\n"
         };
-        std::fs::write(w.join("scripts/split-debuginfo.sh"), split).unwrap();
+        std::fs::write(w.join("scripts/split-debuginfo.sh"), split)?;
         let bin = w.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&bin)?;
         let stub = format!(
             "#!/bin/sh\ncase \"$2\" in\n  *.dSYM) echo \"UUID: {dsym_uuid} (arm64) $2\" ;;\n  \
              *) echo \"UUID: AAAA-1111 (arm64) $2\" ;;\nesac\n"
         );
         let dd = bin.join("dwarfdump");
-        executable::write_executable(&dd, &stub).unwrap();
+        executable::write_executable(&dd, &stub)?;
         let path = format!(
             "{}:{}",
             bin.display(),
@@ -789,23 +792,22 @@ fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
             .current_dir(&w)
             .env("TARGET", target)
             .env("PATH", path)
-            .output()
-            .unwrap();
-        (out, dir)
+            .output()?;
+        Ok((out, dir))
     };
-    let (good, _a) = run(true, "AAAA-1111", true);
+    let (good, _a) = run(true, "AAAA-1111", true)?;
     assert!(
         good.status.success(),
         "the macOS proof failed a good split:\n{}",
         text(&good)
     );
-    let (nozip, _b) = run(false, "AAAA-1111", true);
+    let (nozip, _b) = run(false, "AAAA-1111", true)?;
     assert!(
         !nozip.status.success() && String::from_utf8_lossy(&nozip.stdout).contains(".dSYM.zip"),
         "the macOS proof passed with no .dSYM.zip:\n{}",
         text(&nozip)
     );
-    let (mismatch, _c) = run(true, "BBBB-2222", true);
+    let (mismatch, _c) = run(true, "BBBB-2222", true)?;
     assert!(
         !mismatch.status.success()
             && String::from_utf8_lossy(&mismatch.stdout).contains("UUID mismatch"),
@@ -813,12 +815,13 @@ fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
         text(&mismatch)
     );
     // A strip that broke the signature leaves a binary macOS kills on launch.
-    let (dead, _e) = run(true, "AAAA-1111", false);
+    let (dead, _e) = run(true, "AAAA-1111", false)?;
     assert!(
         !dead.status.success() && String::from_utf8_lossy(&dead.stdout).contains("does not run"),
         "the macOS proof passed a split binary that does not run:\n{}",
         text(&dead)
     );
+    Ok(())
 }
 
 /// Every build step whose binary the split reads: (workflow, step, tool the
@@ -839,20 +842,19 @@ fn build_step_rustflags(
     tool: &str,
     target: &str,
     ambient: &str,
-) -> String {
-    let dir = tempfile::tempdir().unwrap();
+) -> Result<String, TestError> {
+    let dir = tempfile::tempdir()?;
     let w = dir.path();
-    std::fs::create_dir_all(w.join("scripts")).unwrap();
-    std::fs::copy(dbgsym::script(), w.join("scripts/split-debuginfo.sh")).unwrap();
+    std::fs::create_dir_all(w.join("scripts"))?;
+    std::fs::copy(dbgsym::script(), w.join("scripts/split-debuginfo.sh"))?;
     // The release's build steps build through this script, which appends the
     // split's flags; see tests/reproducible_build_test.rs for the rest of it.
     std::fs::copy(
         repo().join("scripts/reproducible-build.sh"),
         w.join("scripts/reproducible-build.sh"),
-    )
-    .unwrap();
+    )?;
     let bin = w.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&bin)?;
     let rec = w.join("seen");
     let stub = bin.join(tool);
     executable::write_executable(
@@ -861,9 +863,8 @@ fn build_step_rustflags(
             "#!/bin/sh\nprintf 'RUSTFLAGS=%s\\n' \"${{RUSTFLAGS-<unset>}}\" > '{}'\n",
             rec.display()
         ),
-    )
-    .unwrap();
-    let script = step_script_in(workflow, step)
+    )?;
+    let script = step_script_in(workflow, step)?
         .replace("${{ matrix.target }}", target)
         .replace("${{ steps.features.outputs.features }}", "native");
     let path = format!(
@@ -882,15 +883,14 @@ fn build_step_rustflags(
         // script would read is given instead.
         .env("SOURCE_DATE_EPOCH", "1")
         .env("RUSTFLAGS", ambient)
-        .output()
-        .unwrap();
+        .output()?;
     assert!(
         out.status.success(),
         "{workflow} {step:?} failed:\n{}",
         text(&out)
     );
     std::fs::read_to_string(&rec)
-        .unwrap_or_else(|_| panic!("{workflow} {step:?} never ran {tool}:\n{}", text(&out)))
+        .map_err(|_| format!("{workflow} {step:?} never ran {tool}:\n{}", text(&out)).into())
 }
 
 /// A `RUSTFLAGS` set anywhere around a build REPLACES `build.rustflags` from
@@ -900,31 +900,32 @@ fn build_step_rustflags(
 /// appended to whatever was already there, for both OSes.
 #[test]
 #[cfg(unix)]
-fn every_split_build_passes_its_flags_through_rustflags() {
+fn every_split_build_passes_its_flags_through_rustflags() -> Result<(), TestError> {
     for (workflow, step, tool) in SPLIT_BUILDS {
         for target in ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"] {
-            let want = String::from_utf8(cargo_rustflags(target).stdout).unwrap();
+            let want = String::from_utf8(cargo_rustflags(target)?.stdout)?;
             let want = want.trim();
-            let seen = build_step_rustflags(workflow, step, tool, target, "-Dwarnings");
+            let seen = build_step_rustflags(workflow, step, tool, target, "-Dwarnings")?;
             assert!(
                 seen.contains("-Dwarnings") && seen.contains(want),
                 "{workflow} {step:?} for {target} handed {tool} {seen:?}; it must \
                  keep the ambient -Dwarnings AND carry {want:?}"
             );
-            let bare = build_step_rustflags(workflow, step, tool, target, "");
+            let bare = build_step_rustflags(workflow, step, tool, target, "")?;
             assert!(
                 bare.contains(want),
                 "{workflow} {step:?} with no ambient RUSTFLAGS: {bare:?}"
             );
         }
     }
+    Ok(())
 }
 
 /// Run `split-debuginfo.sh --rustflags <target>`.
-fn cargo_rustflags(target: &str) -> std::process::Output {
+fn cargo_rustflags(target: &str) -> Result<std::process::Output, TestError> {
     Command::new("bash")
         .arg(dbgsym::script())
         .args(["--rustflags", target])
         .output()
-        .expect("run split-debuginfo.sh --rustflags")
+        .map_err(|e| format!("run split-debuginfo.sh --rustflags: {e}").into())
 }

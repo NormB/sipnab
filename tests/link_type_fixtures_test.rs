@@ -29,6 +29,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The DLT_LOOP fixture: a loopback capture of one complete call.
 const LOOP_FIXTURE: &str = "tests/pcap-samples/loopback-dlt-loop.pcap";
 /// The DLT_LINUX_SLL fixture: PPPoE inside cooked capture v1.
@@ -76,17 +80,16 @@ fn repo_path(rel: &str) -> String {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run_sipnab(args: &[&str]) -> (String, String, i32) {
+fn run_sipnab(args: &[&str]) -> Result<(String, String, i32), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("failed to execute sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code().unwrap_or(-1),
-    )
+    ))
 }
 
 /// Every JSON object on stdout that carries `key`, in order.
@@ -105,8 +108,8 @@ fn json_objects(stdout: &str, key: &str) -> Vec<serde_json::Value> {
 }
 
 /// The seven messages a fixture carries, in the order it carries them.
-fn assert_messages(fixture: &str, call_id: &str) {
-    let (stdout, stderr, code) = run_sipnab(&["-N", "-I", &repo_path(fixture), "--json"]);
+fn assert_messages(fixture: &str, call_id: &str) -> Result<(), TestError> {
+    let (stdout, stderr, code) = run_sipnab(&["-N", "-I", &repo_path(fixture), "--json"])?;
     assert_eq!(
         code, 0,
         "sipnab exited {code} on {fixture}; stderr:\n{stderr}"
@@ -138,6 +141,7 @@ fn assert_messages(fixture: &str, call_id: &str) {
         assert_eq!(m["call_id"], serde_json::json!(call_id), "{fixture}");
         assert_eq!(m["transport"], serde_json::json!("UDP"), "{fixture}");
     }
+    Ok(())
 }
 
 /// The one dialog a fixture carries, its outcome, and both media streams.
@@ -145,14 +149,14 @@ fn assert_messages(fixture: &str, call_id: &str) {
 /// The streams are asserted because they are what rules out "the SIP was
 /// recovered and the other twenty frames were dropped": the link decoder runs
 /// on every frame, not only the ones that turn out to be SIP.
-fn assert_dialog(fixture: &str, call_id: &str) {
+fn assert_dialog(fixture: &str, call_id: &str) -> Result<(), TestError> {
     let (stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
         &repo_path(fixture),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
         code, 0,
         "sipnab exited {code} on {fixture}; stderr:\n{stderr}"
@@ -174,13 +178,14 @@ fn assert_dialog(fixture: &str, call_id: &str) {
     assert_eq!(d["final_status_reason"], serde_json::json!("OK"));
     assert_eq!(d["state"], serde_json::json!("Completed"));
 
-    let streams = d["streams"].as_array().expect("dialog carries streams");
+    let streams = d["streams"].as_array().ok_or("dialog carries streams")?;
     assert_eq!(streams.len(), EXPECTED_STREAM_COUNT, "{fixture} streams");
     for s in streams {
         assert_eq!(s["packets"], serde_json::json!(EXPECTED_RTP_PACKETS));
         assert_eq!(s["codec"], serde_json::json!("PCMU"));
         assert_eq!(s["loss_pct"], serde_json::json!(0.0));
     }
+    Ok(())
 }
 
 /// `--cores 2` finds the same dialog the single-threaded run finds.
@@ -190,9 +195,9 @@ fn assert_dialog(fixture: &str, call_id: &str) {
 /// not understand a link type the full parse understands is a split brain:
 /// the two dispatch sites disagree about the same frame, and the failure is
 /// quiet — everything lands on worker 0, or worse, a flow's packets scatter.
-fn assert_cores_parity(fixture: &str) {
+fn assert_cores_parity(fixture: &str) -> Result<(), TestError> {
     let path = repo_path(fixture);
-    let one = run_sipnab(&["-N", "-I", &path, "--json-dialogs", "--no-cli-print"]);
+    let one = run_sipnab(&["-N", "-I", &path, "--json-dialogs", "--no-cli-print"])?;
     let two = run_sipnab(&[
         "-N",
         "-I",
@@ -201,7 +206,7 @@ fn assert_cores_parity(fixture: &str) {
         "2",
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(one.2, 0, "single-core run failed on {fixture}:\n{}", one.1);
     assert_eq!(two.2, 0, "--cores 2 run failed on {fixture}:\n{}", two.1);
 
@@ -215,19 +220,22 @@ fn assert_cores_parity(fixture: &str) {
         serde_json::json!(EXPECTED_MSG_COUNT),
         "--cores 2 lost messages the single-core run found in {fixture}"
     );
-    let streams = b[0]["streams"].as_array().expect("streams under --cores 2");
+    let streams = b[0]["streams"]
+        .as_array()
+        .ok_or("streams under --cores 2")?;
     assert_eq!(streams.len(), EXPECTED_STREAM_COUNT, "{fixture} --cores 2");
+    Ok(())
 }
 
 /// The report renders the call rather than claiming the capture holds no SIP.
-fn assert_report_does_not_deny(fixture: &str, call_id: &str) {
+fn assert_report_does_not_deny(fixture: &str, call_id: &str) -> Result<(), TestError> {
     let (stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
         &repo_path(fixture),
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
         code, 0,
         "sipnab exited {code} on {fixture}; stderr:\n{stderr}"
@@ -247,7 +255,7 @@ fn assert_report_does_not_deny(fixture: &str, call_id: &str) {
     let row = stdout
         .lines()
         .find(|l| l.starts_with(shown))
-        .unwrap_or_else(|| panic!("report has no dialog row for {call_id}:\n{stdout}"));
+        .ok_or_else(|| format!("report has no dialog row for {call_id}:\n{stdout}"))?;
     assert!(
         row.split_whitespace().any(|f| f == "7"),
         "dialog row reports a message count other than {EXPECTED_MSG_COUNT}: {row}"
@@ -256,32 +264,37 @@ fn assert_report_does_not_deny(fixture: &str, call_id: &str) {
         row.contains("200"),
         "dialog row reports no final status code: {row}"
     );
+    Ok(())
 }
 
 // ── DLT_LOOP (108) ────────────────────────────────────────────────────
 
 /// A DLT_LOOP capture yields the exact call it contains.
 #[test]
-fn dlt_loop_capture_yields_the_exact_messages_it_contains() {
-    assert_messages(LOOP_FIXTURE, LOOP_CALL_ID);
+fn dlt_loop_capture_yields_the_exact_messages_it_contains() -> Result<(), TestError> {
+    assert_messages(LOOP_FIXTURE, LOOP_CALL_ID)?;
+    Ok(())
 }
 
 /// …one dialog, completed 200, with both media streams intact.
 #[test]
-fn dlt_loop_capture_yields_the_exact_dialog_it_contains() {
-    assert_dialog(LOOP_FIXTURE, LOOP_CALL_ID);
+fn dlt_loop_capture_yields_the_exact_dialog_it_contains() -> Result<(), TestError> {
+    assert_dialog(LOOP_FIXTURE, LOOP_CALL_ID)?;
+    Ok(())
 }
 
 /// …and the report says so.
 #[test]
-fn dlt_loop_capture_report_does_not_deny_the_sip() {
-    assert_report_does_not_deny(LOOP_FIXTURE, LOOP_CALL_ID);
+fn dlt_loop_capture_report_does_not_deny_the_sip() -> Result<(), TestError> {
+    assert_report_does_not_deny(LOOP_FIXTURE, LOOP_CALL_ID)?;
+    Ok(())
 }
 
 /// …and `--cores 2` agrees.
 #[test]
-fn dlt_loop_capture_shards_identically_across_cores() {
-    assert_cores_parity(LOOP_FIXTURE);
+fn dlt_loop_capture_shards_identically_across_cores() -> Result<(), TestError> {
+    assert_cores_parity(LOOP_FIXTURE)?;
+    Ok(())
 }
 
 /// DLT_LOOP's address family is big-endian, and this fixture proves it is
@@ -301,8 +314,8 @@ fn dlt_loop_capture_shards_identically_across_cores() {
 /// decoder that "helpfully" swapped it would erase the one distinction the
 /// link type exists to make.
 #[test]
-fn dlt_loop_rejects_the_host_order_address_family_the_link_type_forbids() {
-    let original = std::fs::read(repo_path(LOOP_FIXTURE)).expect("read the DLT_LOOP fixture");
+fn dlt_loop_rejects_the_host_order_address_family_the_link_type_forbids() -> Result<(), TestError> {
+    let original = std::fs::read(repo_path(LOOP_FIXTURE))?;
 
     // Classic little-endian pcap: a 24-byte file header, then per-packet
     // 16-byte records (ts_sec, ts_usec, caplen, origlen) each followed by
@@ -311,7 +324,7 @@ fn dlt_loop_rejects_the_host_order_address_family_the_link_type_forbids() {
     let mut off = 24;
     let mut frames = 0;
     while off + 16 <= swapped.len() {
-        let caplen = u32::from_le_bytes(swapped[off + 8..off + 12].try_into().unwrap()) as usize;
+        let caplen = u32::from_le_bytes(swapped[off + 8..off + 12].try_into()?) as usize;
         let body = off + 16;
         assert!(body + 4 <= swapped.len(), "truncated fixture record");
         swapped[body..body + 4].reverse();
@@ -323,17 +336,17 @@ fn dlt_loop_rejects_the_host_order_address_family_the_link_type_forbids() {
         "the DLT_LOOP fixture must hold 27 frames: 7 SIP + 20 RTP"
     );
 
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("host-order-family.pcap");
-    std::fs::write(&path, &swapped).expect("write the byte-swapped copy");
+    std::fs::write(&path, &swapped)?;
 
     let (stdout, _stderr, code) = run_sipnab(&[
         "-N",
         "-I",
-        path.to_str().unwrap(),
+        path.to_str().ok_or("path is not UTF-8")?,
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
         code, 0,
         "sipnab should exit 0 on a capture it cannot decode"
@@ -353,64 +366,73 @@ fn dlt_loop_rejects_the_host_order_address_family_the_link_type_forbids() {
         &repo_path(LOOP_FIXTURE),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(ok_code, 0);
     assert_eq!(
         json_objects(&ok_stdout, "msg_count").len(),
         EXPECTED_DIALOG_COUNT
     );
+    Ok(())
 }
 
 // ── PPPoE inside Linux cooked capture (SLL / SLL2) ────────────────────
 
 /// A `-i any` capture of a PPPoE access link yields the call it contains.
 #[test]
-fn linux_sll_pppoe_capture_yields_the_exact_messages_it_contains() {
-    assert_messages(SLL_FIXTURE, SLL_CALL_ID);
+fn linux_sll_pppoe_capture_yields_the_exact_messages_it_contains() -> Result<(), TestError> {
+    assert_messages(SLL_FIXTURE, SLL_CALL_ID)?;
+    Ok(())
 }
 
 /// …one dialog, completed 200, with both media streams intact.
 #[test]
-fn linux_sll_pppoe_capture_yields_the_exact_dialog_it_contains() {
-    assert_dialog(SLL_FIXTURE, SLL_CALL_ID);
+fn linux_sll_pppoe_capture_yields_the_exact_dialog_it_contains() -> Result<(), TestError> {
+    assert_dialog(SLL_FIXTURE, SLL_CALL_ID)?;
+    Ok(())
 }
 
 /// …and the report says so.
 #[test]
-fn linux_sll_pppoe_capture_report_does_not_deny_the_sip() {
-    assert_report_does_not_deny(SLL_FIXTURE, SLL_CALL_ID);
+fn linux_sll_pppoe_capture_report_does_not_deny_the_sip() -> Result<(), TestError> {
+    assert_report_does_not_deny(SLL_FIXTURE, SLL_CALL_ID)?;
+    Ok(())
 }
 
 /// …and `--cores 2` agrees, which is where a peek that skipped a flat 16
 /// bytes past the PPPoE header would show up.
 #[test]
-fn linux_sll_pppoe_capture_shards_identically_across_cores() {
-    assert_cores_parity(SLL_FIXTURE);
+fn linux_sll_pppoe_capture_shards_identically_across_cores() -> Result<(), TestError> {
+    assert_cores_parity(SLL_FIXTURE)?;
+    Ok(())
 }
 
 /// The same call, in the SLL2 header, whose protocol type sits at offset 0
 /// rather than 14.
 #[test]
-fn linux_sll2_pppoe_capture_yields_the_exact_messages_it_contains() {
-    assert_messages(SLL2_FIXTURE, SLL2_CALL_ID);
+fn linux_sll2_pppoe_capture_yields_the_exact_messages_it_contains() -> Result<(), TestError> {
+    assert_messages(SLL2_FIXTURE, SLL2_CALL_ID)?;
+    Ok(())
 }
 
 /// …one dialog, completed 200, with both media streams intact.
 #[test]
-fn linux_sll2_pppoe_capture_yields_the_exact_dialog_it_contains() {
-    assert_dialog(SLL2_FIXTURE, SLL2_CALL_ID);
+fn linux_sll2_pppoe_capture_yields_the_exact_dialog_it_contains() -> Result<(), TestError> {
+    assert_dialog(SLL2_FIXTURE, SLL2_CALL_ID)?;
+    Ok(())
 }
 
 /// …and the report says so.
 #[test]
-fn linux_sll2_pppoe_capture_report_does_not_deny_the_sip() {
-    assert_report_does_not_deny(SLL2_FIXTURE, SLL2_CALL_ID);
+fn linux_sll2_pppoe_capture_report_does_not_deny_the_sip() -> Result<(), TestError> {
+    assert_report_does_not_deny(SLL2_FIXTURE, SLL2_CALL_ID)?;
+    Ok(())
 }
 
 /// …and `--cores 2` agrees.
 #[test]
-fn linux_sll2_pppoe_capture_shards_identically_across_cores() {
-    assert_cores_parity(SLL2_FIXTURE);
+fn linux_sll2_pppoe_capture_shards_identically_across_cores() -> Result<(), TestError> {
+    assert_cores_parity(SLL2_FIXTURE)?;
+    Ok(())
 }
 
 /// The three fixtures are what the generator writes, byte for byte.
@@ -421,7 +443,7 @@ fn linux_sll2_pppoe_capture_shards_identically_across_cores() {
 /// true rather than being true on the day they were added. The same script in
 /// check mode is the proof.
 #[test]
-fn the_link_type_fixtures_match_their_generator() {
+fn the_link_type_fixtures_match_their_generator() -> Result<(), TestError> {
     let out = Command::new("python3")
         .arg("tests/gen-link-type-samples.py")
         .arg("--check")
@@ -432,7 +454,7 @@ fn the_link_type_fixtures_match_their_generator() {
         // every other test here reads them. Skipping is honest; failing would
         // report a toolchain gap as a capture defect.
         eprintln!("skipping: python3 is not available to check fixture drift");
-        return;
+        return Ok(());
     };
     assert!(
         out.status.success(),
@@ -441,4 +463,5 @@ fn the_link_type_fixtures_match_their_generator() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(())
 }

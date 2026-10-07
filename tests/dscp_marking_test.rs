@@ -29,6 +29,10 @@ use chrono::{TimeZone, Utc};
 use sipnab::capture::packet::Packet;
 use sipnab::capture::parse::parse_packet;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The one capture in the tree whose two dialog halves are marked differently.
 const SPOOF: &str = "tests/pcap-samples/metasploit-sip-invite-spoof.pcap";
 
@@ -40,7 +44,7 @@ const CS3: u64 = 24;
 /// The wide port range is required rather than cosmetic: [`SPOOF`]'s INVITE
 /// travels between two ephemeral ports, so the shipped 5060-5061 default sees
 /// only the response and the asymmetry this file exists to check disappears.
-fn messages(pcap: &str) -> Vec<serde_json::Value> {
+fn messages(pcap: &str) -> Result<Vec<serde_json::Value>, TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
@@ -53,23 +57,26 @@ fn messages(pcap: &str) -> Vec<serde_json::Value> {
             "--quiet",
         ])
         .output()
-        .expect("spawn sipnab");
+        .map_err(|e| format!("spawn sipnab: {e}"))?;
     assert!(
         out.status.success(),
         "sipnab failed on {pcap}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8_lossy(&out.stdout)
+    let mut msgs = Vec::new();
+    for l in String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| l.trim_start().starts_with('{'))
-        .map(|l| serde_json::from_str(l).expect("message line is JSON"))
-        .collect()
+    {
+        msgs.push(serde_json::from_str(l).map_err(|e| format!("message line is JSON: {e}"))?);
+    }
+    Ok(msgs)
 }
 
 /// The per-message JSON reports the DSCP the frame was marked with.
 #[test]
-fn message_json_reports_the_dscp_the_frame_carried() {
-    let msgs = messages(SPOOF);
+fn message_json_reports_the_dscp_the_frame_carried() -> Result<(), TestError> {
+    let msgs = messages(SPOOF)?;
 
     // A scan that found nothing would make every assertion below vacuous.
     assert_eq!(
@@ -82,11 +89,11 @@ fn message_json_reports_the_dscp_the_frame_carried() {
     let invite = msgs
         .iter()
         .find(|m| m["method"] == "INVITE" && m["is_request"] == true)
-        .unwrap_or_else(|| panic!("no INVITE in {SPOOF}: {msgs:?}"));
+        .ok_or_else(|| format!("no INVITE in {SPOOF}: {msgs:?}"))?;
     let ringing = msgs
         .iter()
         .find(|m| m["status_code"] == 180)
-        .unwrap_or_else(|| panic!("no 180 in {SPOOF}: {msgs:?}"));
+        .ok_or_else(|| format!("no 180 in {SPOOF}: {msgs:?}"))?;
 
     assert_eq!(
         invite["dscp"], 0,
@@ -98,6 +105,7 @@ fn message_json_reports_the_dscp_the_frame_carried() {
          Getting 0 here means the parser is reporting a default rather than \
          reading the header"
     );
+    Ok(())
 }
 
 /// A capture where nothing is marked reports 0, not absence.
@@ -108,8 +116,8 @@ fn message_json_reports_the_dscp_the_frame_carried() {
 /// omits the key when the marking is 0 tells an agent "unknown" for a call
 /// whose marking is known and is the fault.
 #[test]
-fn an_unmarked_capture_reports_zero_rather_than_omitting_the_field() {
-    let msgs = messages("tests/pcap-samples/sip-rtp-g711.pcap");
+fn an_unmarked_capture_reports_zero_rather_than_omitting_the_field() -> Result<(), TestError> {
+    let msgs = messages("tests/pcap-samples/sip-rtp-g711.pcap")?;
     assert!(
         !msgs.is_empty(),
         "no messages parsed — this test would assert nothing"
@@ -121,6 +129,7 @@ fn an_unmarked_capture_reports_zero_rather_than_omitting_the_field() {
              for that — not a missing key: {m}"
         );
     }
+    Ok(())
 }
 
 // ── Encapsulation: the inner marking is the operator's own ───────────
@@ -179,7 +188,7 @@ fn udp(sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
 /// slice, so a parser that gets this one right gets GRE, MPLS-in-IP, VXLAN,
 /// GTP-U and the rest right for the same reason.
 #[test]
-fn a_tunnelled_packet_reports_the_inner_marking_not_the_carriers() {
+fn a_tunnelled_packet_reports_the_inner_marking_not_the_carriers() -> Result<(), TestError> {
     const OUTER_EF: u8 = 46;
     const INNER_CS3: u8 = 24;
 
@@ -204,14 +213,14 @@ fn a_tunnelled_packet_reports_the_inner_marking_not_the_carriers() {
 
     let len = frame.len();
     let packet = Packet::new(
-        Utc.timestamp_opt(0, 0).single().expect("epoch"),
+        Utc.timestamp_opt(0, 0).single().ok_or("epoch")?,
         frame,
         len,
         len,
         None,
         EN10MB,
     );
-    let parsed = parse_packet(&packet).expect("IP-in-IP SIP parses");
+    let parsed = parse_packet(&packet).map_err(|e| format!("IP-in-IP SIP parses: {e}"))?;
 
     assert_eq!(
         parsed.dscp,
@@ -220,21 +229,26 @@ fn a_tunnelled_packet_reports_the_inner_marking_not_the_carriers() {
          the parse read the carrier's marking instead of the operator's",
         parsed.dscp
     );
+    Ok(())
 }
 
 // ── Media: a stream keeps its first marking and notices a re-marking ──
 
 /// Feed one RTP packet of a stream, marked `dscp`.
-fn push_rtp(store: &mut sipnab::rtp::stream_store::StreamStore, seq: u16, dscp: u8) {
+fn push_rtp(
+    store: &mut sipnab::rtp::stream_store::StreamStore,
+    seq: u16,
+    dscp: u8,
+) -> Result<(), TestError> {
     let parsed = sipnab::capture::ParsedPacket {
         frame_bytes: None,
         frame: None,
         timestamp: Utc
             .timestamp_opt(1_700_000_000 + i64::from(seq), 0)
             .single()
-            .expect("ts"),
-        src_addr: "10.0.0.1".parse().expect("addr"),
-        dst_addr: "10.0.0.2".parse().expect("addr"),
+            .ok_or("ts")?,
+        src_addr: "10.0.0.1".parse().map_err(|e| format!("addr: {e}"))?,
+        dst_addr: "10.0.0.2".parse().map_err(|e| format!("addr: {e}"))?,
         src_port: 20000,
         dst_port: 30000,
         transport: sipnab::net::TransportProto::Udp,
@@ -263,6 +277,7 @@ fn push_rtp(store: &mut sipnab::rtp::stream_store::StreamStore, seq: u16, dscp: 
     };
     let ts = parsed.timestamp;
     store.process_rtp(&parsed, &rtp, ts);
+    Ok(())
 }
 
 /// A stream re-marked in flight keeps its ORIGINAL marking and says it changed.
@@ -273,15 +288,16 @@ fn push_rtp(store: &mut sipnab::rtp::stream_store::StreamStore, seq: u16, dscp: 
 /// best effort two hops later reads as an unmarked stream — and the operator
 /// goes to configure the SBC that was already right.
 #[test]
-fn a_stream_remarked_in_flight_keeps_its_first_marking_and_reports_the_change() {
+fn a_stream_remarked_in_flight_keeps_its_first_marking_and_reports_the_change()
+-> Result<(), TestError> {
     const EF: u8 = 46;
     const BLEACHED: u8 = 0;
 
     let mut store = sipnab::rtp::stream_store::StreamStore::new(16);
-    push_rtp(&mut store, 1, EF);
-    push_rtp(&mut store, 2, BLEACHED);
+    push_rtp(&mut store, 1, EF)?;
+    push_rtp(&mut store, 2, BLEACHED)?;
 
-    let stream = store.iter().next().expect("one stream");
+    let stream = store.iter().next().ok_or("one stream")?;
     assert_eq!(
         stream.dscp_first,
         Some(EF),
@@ -293,6 +309,7 @@ fn a_stream_remarked_in_flight_keeps_its_first_marking_and_reports_the_change() 
         stream.dscp_remarked(),
         "EF then best-effort is a re-marking, and it is the whole finding"
     );
+    Ok(())
 }
 
 /// A steady stream reports one marking and does NOT claim a change.
@@ -300,14 +317,14 @@ fn a_stream_remarked_in_flight_keeps_its_first_marking_and_reports_the_change() 
 /// The mirror of the test above, and the reason it is not enough alone: an
 /// implementation that reported every stream as re-marked would pass that one.
 #[test]
-fn a_steady_stream_does_not_claim_it_was_remarked() {
+fn a_steady_stream_does_not_claim_it_was_remarked() -> Result<(), TestError> {
     const EF: u8 = 46;
 
     let mut store = sipnab::rtp::stream_store::StreamStore::new(16);
-    push_rtp(&mut store, 1, EF);
-    push_rtp(&mut store, 2, EF);
+    push_rtp(&mut store, 1, EF)?;
+    push_rtp(&mut store, 2, EF)?;
 
-    let stream = store.iter().next().expect("one stream");
+    let stream = store.iter().next().ok_or("one stream")?;
     assert_eq!(stream.dscp_first, Some(EF));
     assert!(
         !stream.dscp_remarked(),
@@ -319,6 +336,7 @@ fn a_steady_stream_does_not_claim_it_was_remarked() {
         "EF is the expedited-forwarding codepoint voice is conventionally \
          marked with"
     );
+    Ok(())
 }
 
 /// A stream whose marking was never observed says so rather than guessing.
@@ -327,14 +345,14 @@ fn a_steady_stream_does_not_claim_it_was_remarked() {
 /// read as "this bearer is marked wrongly" about a stream sipnab never saw an
 /// IP header for.
 #[test]
-fn an_unobserved_marking_is_not_reported_as_a_wrong_one() {
+fn an_unobserved_marking_is_not_reported_as_a_wrong_one() -> Result<(), TestError> {
     let mut store = sipnab::rtp::stream_store::StreamStore::new(16);
     let parsed = sipnab::capture::ParsedPacket {
         frame_bytes: None,
         frame: None,
-        timestamp: Utc.timestamp_opt(1_700_000_000, 0).single().expect("ts"),
-        src_addr: "10.0.0.1".parse().expect("addr"),
-        dst_addr: "10.0.0.2".parse().expect("addr"),
+        timestamp: Utc.timestamp_opt(1_700_000_000, 0).single().ok_or("ts")?,
+        src_addr: "10.0.0.1".parse().map_err(|e| format!("addr: {e}"))?,
+        dst_addr: "10.0.0.2".parse().map_err(|e| format!("addr: {e}"))?,
         src_port: 20000,
         dst_port: 30000,
         transport: sipnab::net::TransportProto::Udp,
@@ -364,7 +382,7 @@ fn an_unobserved_marking_is_not_reported_as_a_wrong_one() {
     let ts = parsed.timestamp;
     store.process_rtp(&parsed, &rtp, ts);
 
-    let stream = store.iter().next().expect("one stream");
+    let stream = store.iter().next().ok_or("one stream")?;
     assert_eq!(stream.dscp_first, None);
     assert_eq!(
         stream.dscp_is_expedited(),
@@ -376,4 +394,5 @@ fn an_unobserved_marking_is_not_reported_as_a_wrong_one() {
         !stream.dscp_remarked(),
         "one unobserved marking cannot differ from another"
     );
+    Ok(())
 }

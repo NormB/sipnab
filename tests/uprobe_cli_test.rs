@@ -14,20 +14,25 @@ use sipnab::capture::CaptureSource;
 use sipnab::capture::uprobe::discover::{Flavor, PlannedTarget, parse_flavor, plan_targets};
 use sipnab::cli::Cli;
 
+/// Any error, boxed, so `?` works on every error type alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// `--uprobe-list` is the flag an operator is told to run first, so it must
 /// parse on its own with no capture source named.
 #[test]
-fn uprobe_list_parses_alone() {
-    let cli = Cli::try_parse_from(["sipnab", "--uprobe-list"]).expect("parse");
+fn uprobe_list_parses_alone() -> Result<(), TestError> {
+    let cli =
+        Cli::try_parse_from(["sipnab", "--uprobe-list"]).map_err(|e| format!("parse: {e}"))?;
     assert!(cli.tls_args.uprobe_list);
     assert!(
         !cli.tls_args.uprobe_tls,
         "listing must not imply starting a capture"
     );
+    Ok(())
 }
 
 #[test]
-fn uprobe_tls_selects_the_uprobe_capture_source() {
+fn uprobe_tls_selects_the_uprobe_capture_source() -> Result<(), TestError> {
     let cli = Cli::try_parse_from([
         "sipnab",
         "-N",
@@ -35,9 +40,9 @@ fn uprobe_tls_selects_the_uprobe_capture_source() {
         "--uprobe-library",
         "/usr/lib/libssl.so.3",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     let config = sipnab::config::Config::default();
-    let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
+    let plan = sipnab::app::bootstrap::plan(&cli, &config).map_err(|e| format!("plan: {e:?}"))?;
 
     match plan.source {
         Some(CaptureSource::Uprobe { ref targets, .. }) => {
@@ -48,34 +53,36 @@ fn uprobe_tls_selects_the_uprobe_capture_source() {
                 "the symbol is inferred from the library's flavor"
             );
         }
-        other => panic!("expected an uprobe source, got {other:?}"),
+        other => return Err(format!("expected an uprobe source, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// Naming libraries is enough on its own: an operator who says which library
 /// to probe has already said they want a uprobe capture.
 #[test]
-fn naming_a_library_is_enough_to_select_the_source() {
+fn naming_a_library_is_enough_to_select_the_source() -> Result<(), TestError> {
     let cli = Cli::try_parse_from([
         "sipnab",
         "-N",
         "--uprobe-library",
         "/usr/lib/libwolfssl.so.42",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     let config = sipnab::config::Config::default();
-    let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
+    let plan = sipnab::app::bootstrap::plan(&cli, &config).map_err(|e| format!("plan: {e:?}"))?;
     match plan.source {
         Some(CaptureSource::Uprobe { ref targets, .. }) => {
             assert_eq!(targets[0].symbol, "wolfSSL_write");
         }
-        other => panic!("expected an uprobe source, got {other:?}"),
+        other => return Err(format!("expected an uprobe source, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// Repeatable, because a host running both flavors needs both probed.
 #[test]
-fn uprobe_library_is_repeatable_and_each_gets_its_own_symbol() {
+fn uprobe_library_is_repeatable_and_each_gets_its_own_symbol() -> Result<(), TestError> {
     let cli = Cli::try_parse_from([
         "sipnab",
         "-N",
@@ -84,11 +91,11 @@ fn uprobe_library_is_repeatable_and_each_gets_its_own_symbol() {
         "--uprobe-library",
         "/usr/lib/libwolfssl.so.42",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     assert_eq!(cli.tls_args.uprobe_library.len(), 2);
 
     let config = sipnab::config::Config::default();
-    let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
+    let plan = sipnab::app::bootstrap::plan(&cli, &config).map_err(|e| format!("plan: {e:?}"))?;
     match plan.source {
         Some(CaptureSource::Uprobe { ref targets, .. }) => {
             let symbols: Vec<&str> = targets.iter().map(|t| t.symbol.as_str()).collect();
@@ -98,12 +105,13 @@ fn uprobe_library_is_repeatable_and_each_gets_its_own_symbol() {
                 "OpenSSL and wolfSSL do not share a write symbol"
             );
         }
-        other => panic!("expected an uprobe source, got {other:?}"),
+        other => return Err(format!("expected an uprobe source, got {other:?}").into()),
     }
+    Ok(())
 }
 
 #[test]
-fn uprobe_symbol_overrides_the_inferred_one() {
+fn uprobe_symbol_overrides_the_inferred_one() -> Result<(), TestError> {
     let cli = Cli::try_parse_from([
         "sipnab",
         "-N",
@@ -112,37 +120,39 @@ fn uprobe_symbol_overrides_the_inferred_one() {
         "--uprobe-symbol",
         "SSL_write_ex",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     let config = sipnab::config::Config::default();
-    let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
+    let plan = sipnab::app::bootstrap::plan(&cli, &config).map_err(|e| format!("plan: {e:?}"))?;
     match plan.source {
         Some(CaptureSource::Uprobe { ref targets, .. }) => {
             assert_eq!(targets[0].symbol, "SSL_write_ex");
         }
-        other => panic!("expected an uprobe source, got {other:?}"),
+        other => return Err(format!("expected an uprobe source, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// A library sipnab cannot classify has no inferable symbol, and guessing one
 /// would install a probe that reads whatever the argument registers hold.
 #[test]
-fn an_unclassifiable_library_without_a_symbol_is_refused_with_the_fix() {
+fn an_unclassifiable_library_without_a_symbol_is_refused_with_the_fix() -> Result<(), TestError> {
     let cli = Cli::try_parse_from([
         "sipnab",
         "-N",
         "--uprobe-library",
         "/opt/vendor/libcrypto-x.so",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     let config = sipnab::config::Config::default();
     let err = sipnab::app::bootstrap::plan(&cli, &config)
         .err()
-        .expect("must refuse rather than guess a symbol");
+        .ok_or("must refuse rather than guess a symbol")?;
     let msg = format!("{err:?}");
     assert!(
         msg.contains("--uprobe-symbol"),
         "the refusal must name the fix: {msg}"
     );
+    Ok(())
 }
 
 /// The MCP params keep the spelling the flag lost, and that is deliberate.
@@ -154,10 +164,10 @@ fn an_unclassifiable_library_without_a_symbol_is_refused_with_the_fix() {
 /// asymmetry is a decision rather than something nobody got round to.
 #[cfg(feature = "mcp")]
 #[test]
-fn the_mcp_params_still_accept_the_old_spelling_because_serde_is_silent() {
+fn the_mcp_params_still_accept_the_old_spelling_because_serde_is_silent() -> Result<(), TestError> {
     let old: sipnab::mcp::server::StartTlsCaptureParams =
         serde_json::from_str(r#"{"flavours":["wolfssl"]}"#)
-            .expect("the wire alias is still accepted");
+            .map_err(|e| format!("the wire alias is still accepted: {e}"))?;
     assert_eq!(
         old.flavors,
         vec!["wolfssl"],
@@ -165,8 +175,10 @@ fn the_mcp_params_still_accept_the_old_spelling_because_serde_is_silent() {
     );
 
     let new: sipnab::mcp::server::StartTlsCaptureParams =
-        serde_json::from_str(r#"{"flavors":["wolfssl"]}"#).expect("and so is the new one");
+        serde_json::from_str(r#"{"flavors":["wolfssl"]}"#)
+            .map_err(|e| format!("and so is the new one: {e}"))?;
     assert_eq!(new.flavors, old.flavors, "both keys mean one thing");
+    Ok(())
 }
 
 /// The pre-0.5.105 spelling still parses, because a released flag is a
@@ -180,7 +192,7 @@ fn the_mcp_params_still_accept_the_old_spelling_because_serde_is_silent() {
 /// flag name still works. What was left was a contract break with nothing
 /// on the other side of it.
 #[test]
-fn the_old_uprobe_flavour_spelling_still_works() {
+fn the_old_uprobe_flavour_spelling_still_works() -> Result<(), TestError> {
     let cli = Cli::parse_from([
         "sipnab",
         "--uprobe-flavour",
@@ -200,10 +212,11 @@ fn the_old_uprobe_flavour_spelling_still_works() {
         vec!["openssl"],
         "and the US spelling is the one the help text names"
     );
+    Ok(())
 }
 
 #[test]
-fn uprobe_flavor_parses_both_and_is_repeatable() {
+fn uprobe_flavor_parses_both_and_is_repeatable() -> Result<(), TestError> {
     let cli = Cli::try_parse_from([
         "sipnab",
         "--uprobe-list",
@@ -212,30 +225,34 @@ fn uprobe_flavor_parses_both_and_is_repeatable() {
         "--uprobe-flavor",
         "wolfssl",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     assert_eq!(cli.tls_args.uprobe_flavor, vec!["openssl", "wolfssl"]);
     assert_eq!(parse_flavor("openssl"), Ok(Flavor::OpenSsl));
     assert_eq!(parse_flavor("wolfssl"), Ok(Flavor::WolfSsl));
+    Ok(())
 }
 
 /// GnuTLS is mapped on ordinary hosts and is deliberately not probed: its
 /// write function has a different signature, so a probe built for the OpenSSL
 /// shape would read the wrong register.
 #[test]
-fn a_flavor_sipnab_does_not_probe_is_rejected_at_parse_time() {
+fn a_flavor_sipnab_does_not_probe_is_rejected_at_parse_time() -> Result<(), TestError> {
     let err = Cli::try_parse_from(["sipnab", "--uprobe-list", "--uprobe-flavor", "gnutls"])
-        .expect_err("clap must reject an unsupported flavor");
+        .err()
+        .ok_or("expected an error: clap must reject an unsupported flavor")?;
     let msg = err.to_string();
     assert!(
         msg.contains("openssl") && msg.contains("wolfssl"),
         "the error must list what IS supported: {msg}"
     );
+    Ok(())
 }
 
 /// The backend selector, and the refusal that keeps it honest.
 #[test]
-fn the_backend_defaults_to_tracefs_and_bpf_can_be_asked_for_by_name() {
-    let cli = Cli::try_parse_from(["sipnab", "-N", "--uprobe-tls"]).expect("parse");
+fn the_backend_defaults_to_tracefs_and_bpf_can_be_asked_for_by_name() -> Result<(), TestError> {
+    let cli =
+        Cli::try_parse_from(["sipnab", "-N", "--uprobe-tls"]).map_err(|e| format!("parse: {e}"))?;
     assert_eq!(
         cli.tls_args.uprobe_backend, "tracefs",
         "the default must be the backend that works without BTF or nightly"
@@ -250,52 +267,58 @@ fn the_backend_defaults_to_tracefs_and_bpf_can_be_asked_for_by_name() {
         "--uprobe-library",
         "/usr/lib/libssl.so.3",
     ])
-    .expect("parse");
+    .map_err(|e| format!("parse: {e}"))?;
     assert_eq!(chosen.tls_args.uprobe_backend, "bpf");
 
     let config = sipnab::config::Config::default();
-    let plan = sipnab::app::bootstrap::plan(&chosen, &config).expect("plan");
+    let plan =
+        sipnab::app::bootstrap::plan(&chosen, &config).map_err(|e| format!("plan: {e:?}"))?;
     match plan.source {
         Some(CaptureSource::Uprobe { backend, .. }) => {
             assert_eq!(backend, sipnab::capture::UprobeBackend::Bpf);
         }
-        other => panic!("expected an uprobe source, got {other:?}"),
+        other => return Err(format!("expected an uprobe source, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// A backend that does not exist is refused at parse time, with the two that do.
 #[test]
-fn an_unknown_backend_is_rejected_and_names_the_real_ones() {
+fn an_unknown_backend_is_rejected_and_names_the_real_ones() -> Result<(), TestError> {
     let err = Cli::try_parse_from(["sipnab", "-N", "--uprobe-tls", "--uprobe-backend", "ebpf"])
-        .expect_err("only tracefs and bpf exist");
+        .err()
+        .ok_or("expected an error: only tracefs and bpf exist")?;
     let msg = err.to_string();
     assert!(
         msg.contains("tracefs") && msg.contains("bpf"),
         "the error must list what IS supported: {msg}"
     );
+    Ok(())
 }
 
 /// The property the whole surface exists to protect.
 #[test]
-fn a_capture_that_would_attach_to_nothing_is_refused() {
+fn a_capture_that_would_attach_to_nothing_is_refused() -> Result<(), TestError> {
     let err = plan_targets(&[], None, &[], Vec::new())
-        .expect_err("an empty probe list must never be returned as success");
+        .err()
+        .ok_or("expected an error: an empty probe list must never be returned as success")?;
     assert!(
         err.contains("--uprobe-library"),
         "the refusal must say how to proceed: {err}"
     );
+    Ok(())
 }
 
 /// Flavor narrowing applies to the plan, not just to the listing.
 #[test]
-fn narrowing_by_flavor_changes_what_would_be_probed() {
+fn narrowing_by_flavor_changes_what_would_be_probed() -> Result<(), TestError> {
     let planned = plan_targets(
         &["/usr/lib/libwolfssl.so.42".to_string()],
         None,
         &[Flavor::WolfSsl],
         Vec::new(),
     )
-    .expect("an explicit library needs no discovery");
+    .map_err(|e| format!("an explicit library needs no discovery: {e}"))?;
     assert_eq!(
         planned,
         vec![PlannedTarget {
@@ -303,4 +326,5 @@ fn narrowing_by_flavor_changes_what_would_be_probed() {
             symbol: "wolfSSL_write".to_string(),
         }]
     );
+    Ok(())
 }

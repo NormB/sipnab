@@ -17,6 +17,8 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// crates.io's default `max_upload_size` for a `.crate` file.
 const CRATES_IO_MAX_UPLOAD_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -25,16 +27,15 @@ fn repo() -> PathBuf {
 }
 
 /// `sipnab-bpf-types`' own version, read from its manifest.
-fn bpf_types_version() -> String {
-    let manifest = std::fs::read_to_string(repo().join("crates/sipnab-bpf-types/Cargo.toml"))
-        .expect("read crates/sipnab-bpf-types/Cargo.toml");
-    manifest
+fn bpf_types_version() -> Result<String, TestError> {
+    let manifest = std::fs::read_to_string(repo().join("crates/sipnab-bpf-types/Cargo.toml"))?;
+    Ok(manifest
         .lines()
         .find_map(|l| {
             let v = l.strip_prefix("version = \"")?;
             Some(v.trim_end_matches('"').to_string())
         })
-        .expect("sipnab-bpf-types declares a version")
+        .ok_or("sipnab-bpf-types declares a version")?)
 }
 
 /// Package both publishable crates, once per test run, into a directory of
@@ -44,12 +45,14 @@ fn bpf_types_version() -> String {
 /// normal one while this runs. The git hook's variables are removed so a run
 /// under `.githooks/pre-commit` packages this checkout, not the hook's idea
 /// of one.
-fn package() -> PathBuf {
-    static PACKAGED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    PACKAGED.get_or_init(package_now).clone()
+fn package() -> Result<PathBuf, TestError> {
+    static PACKAGED: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    Ok(PACKAGED
+        .get_or_init(|| package_now().map_err(|e| e.to_string()))
+        .clone()?)
 }
 
-fn package_now() -> PathBuf {
+fn package_now() -> Result<PathBuf, TestError> {
     let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("crate-package");
     let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([
@@ -67,15 +70,14 @@ fn package_now() -> PathBuf {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .current_dir(repo())
-        .output()
-        .expect("run cargo package");
+        .output()?;
     assert!(
         out.status.success(),
         "`cargo package -p sipnab-bpf-types -p sipnab` fails, so `cargo publish` \
          would too:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    target.join("package")
+    Ok(target.join("package"))
 }
 
 fn crate_file(dir: &Path, name: &str, version: &str) -> PathBuf {
@@ -85,30 +87,25 @@ fn crate_file(dir: &Path, name: &str, version: &str) -> PathBuf {
 }
 
 /// Paths inside the `.crate`, without the `name-version/` prefix.
-fn crate_entries(crate_path: &Path) -> BTreeSet<String> {
-    let out = Command::new("tar")
-        .arg("-tzf")
-        .arg(crate_path)
-        .output()
-        .expect("run tar -tzf");
+fn crate_entries(crate_path: &Path) -> Result<BTreeSet<String>, TestError> {
+    let out = Command::new("tar").arg("-tzf").arg(crate_path).output()?;
     assert!(out.status.success(), "tar -tzf {}", crate_path.display());
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| l.split_once('/').map(|(_, rest)| rest.to_string()))
         .filter(|l| !l.is_empty())
-        .collect()
+        .collect())
 }
 
 /// One file read out of the `.crate`.
-fn crate_member(crate_path: &Path, prefix: &str, member: &str) -> String {
+fn crate_member(crate_path: &Path, prefix: &str, member: &str) -> Result<String, TestError> {
     let out = Command::new("tar")
         .arg("-xzOf")
         .arg(crate_path)
         .arg(format!("{prefix}/{member}"))
-        .output()
-        .expect("run tar -xzOf");
+        .output()?;
     assert!(out.status.success(), "tar could not read {member}");
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Lexically resolve `rel` against the directory of `file`, both repo-relative.
@@ -133,12 +130,11 @@ fn resolve(file: &str, rel: &str) -> String {
 /// (`build.rs` shares `build_script/git_triggers.rs` with a test that way.)
 /// Only sources the crate ships are scanned: an excluded one, like
 /// `src/bin/gen_fixture.rs`, is never built from the crate.
-fn embedded_files_outside_src(shipped: &BTreeSet<String>) -> BTreeSet<String> {
+fn embedded_files_outside_src(shipped: &BTreeSet<String>) -> Result<BTreeSet<String>, TestError> {
     let listed = Command::new("git")
         .args(["ls-files", "-z", "--", ":(glob)src/**/*.rs", "build.rs"])
         .current_dir(repo())
-        .output()
-        .expect("git ls-files src/");
+        .output()?;
     assert!(listed.status.success(), "git ls-files failed");
     let mut found = BTreeSet::new();
     for file in String::from_utf8_lossy(&listed.stdout).split('\0') {
@@ -158,28 +154,29 @@ fn embedded_files_outside_src(shipped: &BTreeSet<String>) -> BTreeSet<String> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
 #[test]
-fn both_crates_package_and_the_main_one_fits_the_upload_limit() {
-    let dir = package();
-    crate_file(&dir, "sipnab-bpf-types", &bpf_types_version());
+fn both_crates_package_and_the_main_one_fits_the_upload_limit() -> Result<(), TestError> {
+    let dir = package()?;
+    crate_file(&dir, "sipnab-bpf-types", &bpf_types_version()?);
     let main = crate_file(&dir, "sipnab", env!("CARGO_PKG_VERSION"));
-    let size = std::fs::metadata(&main).expect("stat .crate").len();
+    let size = std::fs::metadata(&main)?.len();
     assert!(
         size <= CRATES_IO_MAX_UPLOAD_BYTES,
         "{} is {size} bytes; crates.io refuses anything over \
          {CRATES_IO_MAX_UPLOAD_BYTES}. Trim the `include` list in Cargo.toml.",
         main.display()
     );
+    Ok(())
 }
 
 #[test]
-fn every_file_the_code_embeds_is_in_the_crate() {
-    let main = crate_file(&package(), "sipnab", env!("CARGO_PKG_VERSION"));
-    let entries = crate_entries(&main);
-    let embedded = embedded_files_outside_src(&entries);
+fn every_file_the_code_embeds_is_in_the_crate() -> Result<(), TestError> {
+    let main = crate_file(&package()?, "sipnab", env!("CARGO_PKG_VERSION"));
+    let entries = crate_entries(&main)?;
+    let embedded = embedded_files_outside_src(&entries)?;
     assert!(
         embedded.len() >= 10,
         "found only {} embedded files outside src/; the scan has stopped \
@@ -193,18 +190,19 @@ fn every_file_the_code_embeds_is_in_the_crate() {
          them, so a build from crates.io fails: {missing:?}. Add them to \
          `include` in Cargo.toml."
     );
+    Ok(())
 }
 
 #[test]
-fn cargo_install_puts_only_sipnab_on_the_path() {
+fn cargo_install_puts_only_sipnab_on_the_path() -> Result<(), TestError> {
     let version = env!("CARGO_PKG_VERSION");
-    let main = crate_file(&package(), "sipnab", version);
+    let main = crate_file(&package()?, "sipnab", version);
     assert!(
-        !crate_entries(&main).contains("src/bin/gen_fixture.rs"),
+        !crate_entries(&main)?.contains("src/bin/gen_fixture.rs"),
         "the test-fixture generator is in the published crate, so \
          `cargo install sipnab` installs it beside sipnab"
     );
-    let manifest = crate_member(&main, &format!("sipnab-{version}"), "Cargo.toml");
+    let manifest = crate_member(&main, &format!("sipnab-{version}"), "Cargo.toml")?;
     let bins: Vec<&str> = manifest
         .split("[[bin]]")
         .skip(1)
@@ -221,6 +219,7 @@ fn cargo_install_puts_only_sipnab_on_the_path() {
         "the published manifest declares these binaries; `cargo install sipnab` \
          installs every one of them"
     );
+    Ok(())
 }
 
 /// crates.io shows a crate's README as its page, and a crate without one as
@@ -229,21 +228,21 @@ fn cargo_install_puts_only_sipnab_on_the_path() {
 /// carries both license texts: the manifest names "MIT OR Apache-2.0", and
 /// the MIT terms ask for the notice to travel with every copy.
 #[test]
-fn every_published_crate_ships_its_readme_and_both_licenses() {
-    let dir = package();
+fn every_published_crate_ships_its_readme_and_both_licenses() -> Result<(), TestError> {
+    let dir = package()?;
     for (name, version) in [
         ("sipnab", env!("CARGO_PKG_VERSION").to_string()),
-        ("sipnab-bpf-types", bpf_types_version()),
+        ("sipnab-bpf-types", bpf_types_version()?),
     ] {
         let path = crate_file(&dir, name, &version);
-        let entries = crate_entries(&path);
+        let entries = crate_entries(&path)?;
         for file in ["README.md", "LICENSE-MIT", "LICENSE-APACHE"] {
             assert!(
                 entries.contains(file),
                 "{name} {version} would be published without {file}"
             );
         }
-        let manifest = crate_member(&path, &format!("{name}-{version}"), "Cargo.toml");
+        let manifest = crate_member(&path, &format!("{name}-{version}"), "Cargo.toml")?;
         assert!(
             manifest.lines().any(|l| l == "readme = \"README.md\""),
             "{name}'s published manifest does not name its README, so crates.io \
@@ -252,7 +251,7 @@ fn every_published_crate_ships_its_readme_and_both_licenses() {
     }
     // One license text, not two that drift: the crate's copies are the root's.
     for file in ["LICENSE-MIT", "LICENSE-APACHE"] {
-        let root = std::fs::read(repo().join(file)).expect("root license");
+        let root = std::fs::read(repo().join(file))?;
         let copy =
             std::fs::read(repo().join("crates/sipnab-bpf-types").join(file)).unwrap_or_default();
         assert!(
@@ -260,4 +259,5 @@ fn every_published_crate_ships_its_readme_and_both_licenses() {
             "crates/sipnab-bpf-types/{file} differs from the root {file}"
         );
     }
+    Ok(())
 }

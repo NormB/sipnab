@@ -23,6 +23,10 @@
 
 use std::path::PathBuf;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
@@ -121,8 +125,8 @@ fn rtp_telephone_event() -> Vec<u8> {
 /// # Side effects
 /// Creates a directory under the system temp dir; the caller keeps the
 /// [`tempfile::TempDir`] alive for the run's duration.
-fn dtmf_capture() -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("create temp dir");
+fn dtmf_capture() -> Result<(tempfile::TempDir, PathBuf), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("telephone-event.pcap");
     let frames = vec![
         pcap_build::udp_frame(
@@ -134,8 +138,8 @@ fn dtmf_capture() -> (tempfile::TempDir, PathBuf) {
         ),
         pcap_build::udp_frame(CALLER, CALLEE, 40001, MEDIA_PORT, &rtp_telephone_event()),
     ];
-    pcap_build::write_pcap_or_panic(&path, &frames);
-    (dir, path)
+    pcap_build::write_pcap(&path, &frames)?;
+    Ok((dir, path))
 }
 
 /// Run sipnab over the synthetic capture and return `(stdout, stderr)`.
@@ -150,14 +154,14 @@ fn dtmf_capture() -> (tempfile::TempDir, PathBuf) {
 ///
 /// # Side effects
 /// Spawns the compiled binary once.
-fn dtmf_run(extra: &[&str], level: &str) -> (String, String) {
-    let (_dir, path) = dtmf_capture();
+fn dtmf_run(extra: &[&str], level: &str) -> Result<(String, String), TestError> {
+    let (_dir, path) = dtmf_capture()?;
     let capture = path.to_string_lossy().into_owned();
     let mut args = vec!["-N", "-I", capture.as_str(), "-t"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run_support::run_or_panic(&args, Some(level));
+    let (stdout, stderr, code) = run_support::run(&args, Some(level))?;
     assert_eq!(code, Some(0), "sipnab exited {code:?}\nstderr:\n{stderr}");
-    (stdout, stderr)
+    Ok((stdout, stderr))
 }
 
 /// Every log message from `DTMF` onward, one per line that carries one.
@@ -180,8 +184,8 @@ fn dtmf_messages(stderr: &str) -> Vec<&str> {
 /// emits at, so if the value is absent here it is absent everywhere. Asserting
 /// absence at a level that suppresses the line would prove nothing.
 #[test]
-fn the_decoded_digit_value_is_masked_out_of_the_log_by_default() {
-    let (stdout, stderr) = dtmf_run(&[], "debug");
+fn the_decoded_digit_value_is_masked_out_of_the_log_by_default() -> Result<(), TestError> {
+    let (stdout, stderr) = dtmf_run(&[], "debug")?;
     let messages = dtmf_messages(&stderr);
 
     // stdout too, in its one plausible spelling. The log is the surface this
@@ -215,6 +219,7 @@ fn the_decoded_digit_value_is_masked_out_of_the_log_by_default() {
         "the masked event line is missing — the diagnostic must survive \
          masking, not be dropped by it\nDTMF messages: {messages:?}"
     );
+    Ok(())
 }
 
 /// `--dtmf-cleartext` at `debug` does emit the value, so the opt-in is real.
@@ -222,8 +227,8 @@ fn the_decoded_digit_value_is_masked_out_of_the_log_by_default() {
 /// Paired with the default-masked test above, this is what proves masking is a
 /// policy and not simply a broken decoder.
 #[test]
-fn dtmf_cleartext_emits_the_digit_value_at_debug_level() {
-    let (_stdout, stderr) = dtmf_run(&["--dtmf-cleartext"], "debug");
+fn dtmf_cleartext_emits_the_digit_value_at_debug_level() -> Result<(), TestError> {
+    let (_stdout, stderr) = dtmf_run(&["--dtmf-cleartext"], "debug")?;
     let messages = dtmf_messages(&stderr);
     assert!(
         messages
@@ -232,6 +237,7 @@ fn dtmf_cleartext_emits_the_digit_value_at_debug_level() {
         "--dtmf-cleartext did not disclose the digit at debug level, so the \
          opt-in does nothing\nDTMF messages: {messages:?}"
     );
+    Ok(())
 }
 
 /// Even with `--dtmf-cleartext`, a default-level (`info`) log carries no value.
@@ -241,8 +247,8 @@ fn dtmf_cleartext_emits_the_digit_value_at_debug_level() {
 /// this test the choice of `debug` for the cleartext line is an unverified
 /// comment.
 #[test]
-fn dtmf_cleartext_stays_below_the_default_log_level() {
-    let (_stdout, stderr) = dtmf_run(&["--dtmf-cleartext"], "info");
+fn dtmf_cleartext_stays_below_the_default_log_level() -> Result<(), TestError> {
+    let (_stdout, stderr) = dtmf_run(&["--dtmf-cleartext"], "info")?;
     let messages = dtmf_messages(&stderr);
     assert!(
         !messages.is_empty(),
@@ -257,4 +263,5 @@ fn dtmf_cleartext_stays_below_the_default_log_level() {
              be: {msg:?}"
         );
     }
+    Ok(())
 }

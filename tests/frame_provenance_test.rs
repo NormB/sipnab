@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// already demonstrated one layer down: frames that named a file they never
 /// came from were worse than frames naming no file at all.
 #[test]
-fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
+fn a_frame_ref_needs_both_halves_or_it_is_not_offered() -> Result<(), TestError> {
     let base = Packet::new(
         chrono::Utc::now(),
         vec![0u8; 64],
@@ -46,7 +46,7 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
     });
     let r = both
         .frame_ref()
-        .expect("source and ordinal are both present");
+        .ok_or("source and ordinal are both present")?;
     assert_eq!(
         r,
         FrameRef {
@@ -83,12 +83,13 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
         "an ordinal with no source does not say which file it counts within, \
          so it resolves against nothing"
     );
+    Ok(())
 }
 
 /// The rendered form is `<source>#<ordinal>`, which is what output carries and
 /// what a resolver will accept.
 #[test]
-fn a_frame_ref_renders_as_source_hash_ordinal() {
+fn a_frame_ref_renders_as_source_hash_ordinal() -> Result<(), TestError> {
     let r = FrameRef {
         // Whole frame: these fixtures predate byte ranges and mean the
         // same thing they always did.
@@ -102,6 +103,7 @@ fn a_frame_ref_renders_as_source_hash_ordinal() {
         kind: sipnab::capture::packet::FrameSource::Wire,
     };
     assert_eq!(r.to_string(), "/captures/tg.pcap0#4211");
+    Ok(())
 }
 
 /// The digest is really computed over the frame, and really discriminates.
@@ -112,12 +114,12 @@ fn a_frame_ref_renders_as_source_hash_ordinal() {
 /// digest that was never computed shows up as `None`, and one computed over
 /// a constant shows up as every frame agreeing.
 #[test]
-fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
+fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() -> Result<(), TestError> {
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let packets = read_all(&pcap);
+    let packets = read_all(&pcap)?;
 
     // Read through the POINTER, not the raw origin. Since PERF1 the reader
     // records the ordinal and leaves the digest to be computed where a pointer
@@ -128,7 +130,7 @@ fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
     for (i, p) in packets.iter().enumerate() {
         assert!(
             p.origin
-                .expect("a frame read from a file has an origin")
+                .ok_or("a frame read from a file has an origin")?
                 .verifiable,
             "frame {i} came from a capture file, which can be reopened, so it \
              must be marked verifiable -- otherwise no pointer to it will ever \
@@ -140,9 +142,9 @@ fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
         .map(|p| {
             p.frame_ref()
                 .and_then(|r| r.origin.digest)
-                .expect("a pointer to a frame read from a file must carry a digest")
+                .ok_or("a pointer to a frame read from a file must carry a digest")
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Recomputing from the bytes must reproduce it exactly, or the stored
     // value describes something other than the frame.
@@ -164,6 +166,7 @@ fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
         digests.len(),
         digests.first()
     );
+    Ok(())
 }
 
 /// FNV-1a is pinned to its specification, not to whatever the toolchain does.
@@ -173,11 +176,12 @@ fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
 /// after a toolchain upgrade — silently, and in the direction that refuses
 /// valid frames. These are the published FNV-1a 64-bit vectors.
 #[test]
-fn the_digest_matches_the_published_fnv1a_vectors() {
+fn the_digest_matches_the_published_fnv1a_vectors() -> Result<(), TestError> {
     use sipnab::capture::packet::frame_digest;
     assert_eq!(frame_digest(b""), 0xcbf2_9ce4_8422_2325, "empty");
     assert_eq!(frame_digest(b"a"), 0xaf63_dc4c_8601_ec8c, "a");
     assert_eq!(frame_digest(b"foobar"), 0x85944171f73967e8, "foobar");
+    Ok(())
 }
 
 /// Ordinals are 0-based and dense: the *n*th packet of a file reports *n*.
@@ -186,12 +190,12 @@ fn the_digest_matches_the_published_fnv1a_vectors() {
 /// the assertion is about the reader's counting and a hand-built packet would
 /// only test the struct literal.
 #[test]
-fn the_nth_packet_of_a_file_reports_ordinal_n() {
+fn the_nth_packet_of_a_file_reports_ordinal_n() -> Result<(), TestError> {
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let packets = read_all(&pcap);
+    let packets = read_all(&pcap)?;
     assert!(
         packets.len() >= 2,
         "fixture must hold at least two packets for this to say anything; \
@@ -200,9 +204,9 @@ fn the_nth_packet_of_a_file_reports_ordinal_n() {
     );
 
     for (i, p) in packets.iter().enumerate() {
-        let r = p.frame_ref().unwrap_or_else(|| {
-            panic!("packet {i} came from a file and must carry a pointer to it")
-        });
+        let r = p
+            .frame_ref()
+            .ok_or_else(|| format!("packet {i} came from a file and must carry a pointer to it"))?;
         assert_eq!(
             r.origin.ordinal, i as u64,
             "packet {i} reported ordinal {}; ordinals must be 0-based and \
@@ -216,6 +220,7 @@ fn the_nth_packet_of_a_file_reports_ordinal_n() {
             r.source
         );
     }
+    Ok(())
 }
 
 /// Reading two files restarts the ordinal at zero for the second.
@@ -225,9 +230,9 @@ fn the_nth_packet_of_a_file_reports_ordinal_n() {
 /// is silently wrong — the numbers still look plausible, which is what makes
 /// it worth a test rather than a comment.
 #[test]
-fn each_file_of_a_set_numbers_its_own_frames_from_zero() {
+fn each_file_of_a_set_numbers_its_own_frames_from_zero() -> Result<(), TestError> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let packets = read_all_multi(&[dir.join("sip_call.pcap"), dir.join("udp_5060.pcap")]);
+    let packets = read_all_multi(&[dir.join("sip_call.pcap"), dir.join("udp_5060.pcap")])?;
     let per_source = group_by_source(&packets);
 
     assert_eq!(
@@ -253,6 +258,7 @@ fn each_file_of_a_set_numbers_its_own_frames_from_zero() {
     for ordinals in per_source.values() {
         assert!(!ordinals.is_empty(), "a source contributed no frames");
     }
+    Ok(())
 }
 
 /// The PARALLEL reader must give each file's frames that file's own source.
@@ -274,7 +280,7 @@ fn each_file_of_a_set_numbers_its_own_frames_from_zero() {
 /// that the dialogs between them name BOTH files. One source means the reader
 /// collapsed them.
 #[test]
-fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() {
+fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() -> Result<(), TestError> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
     let a = dir.join("invite-opus-bye.pcap");
     let b = dir.join("codec-negotiation.pcap");
@@ -301,8 +307,7 @@ fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() {
         retain_audio: false,
         max_audio_frames: 1500,
     };
-    let r = sipnab::parallel::run_offline_parallel_file(&[a.clone(), b.clone()], &cc, cfg)
-        .expect("the two-file set reconstructs");
+    let r = sipnab::parallel::run_offline_parallel_file(&[a.clone(), b.clone()], &cc, cfg)?;
 
     let mut sources: std::collections::BTreeSet<String> = Default::default();
     let mut dialogs = 0usize;
@@ -342,17 +347,18 @@ fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() {
             "no dialog names {want}; sources were {sources:?}"
         );
     }
+    Ok(())
 }
 
 // ── helpers ───────────────────────────────────────────────────────────
 
 /// Read every packet of one capture through the real file reader.
-fn read_all(path: &str) -> Vec<Packet> {
+fn read_all(path: &str) -> Result<Vec<Packet>, TestError> {
     read_all_multi(&[std::path::PathBuf::from(path)])
 }
 
 /// Read every packet of a set through the real file reader, in order.
-fn read_all_multi(paths: &[std::path::PathBuf]) -> Vec<Packet> {
+fn read_all_multi(paths: &[std::path::PathBuf]) -> Result<Vec<Packet>, TestError> {
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
     let owned = paths.to_vec();
     let reader = std::thread::spawn(move || {
@@ -363,8 +369,8 @@ fn read_all_multi(paths: &[std::path::PathBuf]) -> Vec<Packet> {
     while let Ok(p) = rx.recv_timeout(std::time::Duration::from_secs(60)) {
         out.push(p);
     }
-    reader.join().expect("file reader thread");
-    out
+    reader.join().map_err(|_| "file reader thread")?;
+    Ok(out)
 }
 
 /// Ordinals seen per source, in arrival order.
@@ -384,6 +390,10 @@ fn group_by_source(packets: &[Packet]) -> std::collections::BTreeMap<String, Vec
 
 use sipnab::capture::resolve::{Resolution, ResolveError, parse_pointer, resolve};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// `<source>#<ordinal>` round-trips, and nonsense is refused rather than
 /// guessed at.
 ///
@@ -391,8 +401,8 @@ use sipnab::capture::resolve::{Resolution, ResolveError, parse_pointer, resolve}
 /// ordinal never does, so `rsplit_once` is the only split that survives a
 /// path like `/captures/run#3/tg.pcap0`.
 #[test]
-fn a_pointer_parses_from_its_rendered_form() {
-    let r = parse_pointer("/captures/tg.pcap0#4211").expect("well formed");
+fn a_pointer_parses_from_its_rendered_form() -> Result<(), TestError> {
+    let r = parse_pointer("/captures/tg.pcap0#4211")?;
     assert_eq!(r.source.as_ref(), "/captures/tg.pcap0");
     assert_eq!(r.origin.ordinal, 4211);
     assert_eq!(
@@ -400,7 +410,7 @@ fn a_pointer_parses_from_its_rendered_form() {
         "text carries no digest, so a parsed pointer must not claim one"
     );
 
-    let odd = parse_pointer("/captures/run#3/tg.pcap0#7").expect("path containing a hash");
+    let odd = parse_pointer("/captures/run#3/tg.pcap0#7")?;
     assert_eq!(odd.source.as_ref(), "/captures/run#3/tg.pcap0");
     assert_eq!(odd.origin.ordinal, 7);
 
@@ -416,19 +426,20 @@ fn a_pointer_parses_from_its_rendered_form() {
             "{bad:?} is not a pointer and must be refused, not interpreted"
         );
     }
+    Ok(())
 }
 
 /// A pointer with no digest resolves, and says nothing was checked.
 #[test]
-fn a_pointer_without_a_digest_resolves_as_unverified() {
+fn a_pointer_without_a_digest_resolves_as_unverified() -> Result<(), TestError> {
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let packets = read_all(&pcap);
+    let packets = read_all(&pcap)?;
     let want = packets[2].data.to_vec();
 
-    let got = resolve(&parse_pointer(&format!("{pcap}#2")).expect("parse")).expect("resolve");
+    let got = resolve(&parse_pointer(&format!("{pcap}#2"))?)?;
     assert_eq!(got.bytes(), &want[..], "resolved the wrong frame");
     assert!(
         !got.is_verified(),
@@ -436,39 +447,42 @@ fn a_pointer_without_a_digest_resolves_as_unverified() {
          verified is how an unchecked byte string becomes evidence"
     );
     assert!(matches!(got, Resolution::Unverified(_)));
+    Ok(())
 }
 
 /// A pointer carrying the digest the run recorded resolves as verified.
 #[test]
-fn a_pointer_carrying_its_digest_resolves_as_verified() {
+fn a_pointer_carrying_its_digest_resolves_as_verified() -> Result<(), TestError> {
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let packets = read_all(&pcap);
-    let pointer = packets[3].frame_ref().expect("frame 3 has a pointer");
+    let packets = read_all(&pcap)?;
+    let pointer = packets[3].frame_ref().ok_or("frame 3 has a pointer")?;
     assert!(
         pointer.origin.digest.is_some(),
         "the reader must have recorded a digest, or this test proves nothing"
     );
 
-    let got = resolve(&pointer).expect("resolve");
+    let got = resolve(&pointer)?;
     assert!(got.is_verified(), "digest matched, so this is verified");
     assert_eq!(got.bytes(), &packets[3].data[..]);
+    Ok(())
 }
 
 /// An ordinal past the end of the capture is refused, and says how many
 /// frames are really there.
 #[test]
-fn an_ordinal_past_the_end_is_refused_with_the_real_count() {
+fn an_ordinal_past_the_end_is_refused_with_the_real_count() -> Result<(), TestError> {
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let present = read_all(&pcap).len() as u64;
+    let present = read_all(&pcap)?.len() as u64;
 
-    let err = resolve(&parse_pointer(&format!("{pcap}#100000")).expect("parse"))
-        .expect_err("there is no frame 100000");
+    let err = resolve(&parse_pointer(&format!("{pcap}#100000"))?)
+        .err()
+        .ok_or("there is no frame 100000")?;
     match err {
         ResolveError::NoSuchFrame {
             frames_present,
@@ -478,8 +492,9 @@ fn an_ordinal_past_the_end_is_refused_with_the_real_count() {
             assert_eq!(frames_present, present);
             assert_eq!(ordinal, 100_000);
         }
-        other => panic!("expected NoSuchFrame, got {other:?}"),
+        other => return Err(format!("expected NoSuchFrame, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// A capture that changed under the pointer is refused, not returned.
@@ -489,40 +504,46 @@ fn an_ordinal_past_the_end_is_refused_with_the_real_count() {
 /// hand back bytes that are not the ones the finding was about. Proven by
 /// pointing a real digest at a real capture whose frame differs.
 #[test]
-fn a_capture_that_changed_is_refused_rather_than_returned() {
+fn a_capture_that_changed_is_refused_rather_than_returned() -> Result<(), TestError> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let a = dir.join("sip_call.pcap");
     let b = dir.join("udp_5060.pcap");
 
     // A pointer made against one capture, aimed at another. Frame 0 exists in
     // both, so nothing about the read fails — only the digest disagrees.
-    let mut pointer = read_all(a.to_str().expect("utf-8"))[0]
+    let mut pointer = read_all(a.to_str().ok_or("utf-8")?)?[0]
         .frame_ref()
-        .expect("frame 0 has a pointer");
-    pointer.source = std::sync::Arc::from(b.to_str().expect("utf-8"));
+        .ok_or("frame 0 has a pointer")?;
+    pointer.source = std::sync::Arc::from(b.to_str().ok_or("utf-8")?);
 
     match resolve(&pointer) {
         Err(ResolveError::Changed { ordinal, .. }) => assert_eq!(ordinal, 0),
-        Ok(r) => panic!(
-            "returned {} bytes for a frame that is not the one the pointer was \
+        Ok(r) => {
+            return Err(format!(
+                "returned {} bytes for a frame that is not the one the pointer was \
              made against — this is the fabrication the digest exists to stop",
-            r.bytes().len()
-        ),
-        Err(other) => panic!("expected Changed, got {other}"),
+                r.bytes().len()
+            )
+            .into());
+        }
+        Err(other) => return Err(format!("expected Changed, got {other}").into()),
     }
+    Ok(())
 }
 
 /// A source that will not open is refused, naming the source.
 #[test]
-fn an_unreadable_source_is_refused_by_name() {
-    let err = resolve(&parse_pointer("/nonexistent/nowhere.pcap#0").expect("parse"))
-        .expect_err("that file does not exist");
+fn an_unreadable_source_is_refused_by_name() -> Result<(), TestError> {
+    let err = resolve(&parse_pointer("/nonexistent/nowhere.pcap#0")?)
+        .err()
+        .ok_or("that file does not exist")?;
     match err {
         ResolveError::Unreadable { source, .. } => {
             assert_eq!(source, "/nonexistent/nowhere.pcap");
         }
-        other => panic!("expected Unreadable, got {other:?}"),
+        other => return Err(format!("expected Unreadable, got {other:?}").into()),
     }
+    Ok(())
 }
 
 // ── the pointer survives the parse boundary ───────────────────────────
@@ -540,7 +561,7 @@ fn an_unreadable_source_is_refused_by_name() {
 /// is populated but points at the wrong frame would satisfy "is_some()" and be
 /// worse than none at all.
 #[test]
-fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
+fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() -> Result<(), TestError> {
     use sipnab::capture::parse::parse_packet;
     use sipnab::pipeline::{self, PacketAction, PipelineOptions};
     use sipnab::rtp::heuristic::RtpHeuristic;
@@ -549,7 +570,7 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let packets = read_all(&pcap);
+    let packets = read_all(&pcap)?;
 
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
@@ -578,14 +599,15 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
         if let PacketAction::Sip { msg, .. } =
             pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt)
         {
-            let r = msg.frame.clone().unwrap_or_else(|| {
-                panic!("a SIP message parsed from a capture must know its frame")
-            });
+            let r = msg
+                .frame
+                .clone()
+                .ok_or("a SIP message parsed from a capture must know its frame")?;
 
             // The pointer must lead back to the frame this message was in --
             // and `resolve` verifies the digest, so a pointer aimed one frame
             // off is refused rather than quietly returning a neighbor.
-            let got = resolve(&r).expect("the message's own frame must resolve");
+            let got = resolve(&r)?;
             assert!(
                 got.is_verified(),
                 "the reader recorded a digest, so following the pointer must \
@@ -606,6 +628,7 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
         "the fixture must yield at least two SIP messages for this to say \
          anything; it yielded {checked}"
     );
+    Ok(())
 }
 
 /// An exported pcapng says, in the file, that its frames were rebuilt (#106).
@@ -620,10 +643,10 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
 /// artifact. A note the code passes and the format drops would satisfy any
 /// test written against the call.
 #[test]
-fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
+fn an_exported_pcapng_carries_its_own_synthesis_caveat() -> Result<(), TestError> {
     use sipnab::capture::{PcapExportMode, PcapWriter, PcapWriterOptions};
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("evidence.pcapng");
     let note = "THE FRAMES IN THIS FILE WERE REBUILT, NOT COPIED. \
                 Produced by sipnab for test purposes.";
@@ -639,11 +662,10 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
             interface: None,
             provenance: Some(note.to_string()),
         },
-    )
-    .expect("writer");
-    w.finish().expect("finish");
+    )?;
+    w.finish()?;
 
-    let bytes = std::fs::read(&path).expect("read the export");
+    let bytes = std::fs::read(&path)?;
     let text = String::from_utf8_lossy(&bytes);
     assert!(
         text.contains("WERE REBUILT, NOT COPIED"),
@@ -666,15 +688,15 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
             interface: None,
             provenance: None,
         },
-    )
-    .expect("writer");
-    w2.finish().expect("finish");
-    let plain_bytes = std::fs::read(&plain).expect("read");
+    )?;
+    w2.finish()?;
+    let plain_bytes = std::fs::read(&plain)?;
     let plain_text = String::from_utf8_lossy(&plain_bytes);
     assert!(
         !plain_text.contains("REBUILT"),
         "a writer given no note must embed none"
     );
+    Ok(())
 }
 
 /// A truncated frame written to `-O` is reported, not silently shortened
@@ -689,14 +711,13 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
 /// reworded warning cannot quietly turn this green while the loss goes
 /// unreported.
 #[test]
-fn a_truncated_frame_written_to_output_is_counted() {
+fn a_truncated_frame_written_to_output_is_counted() -> Result<(), TestError> {
     use sipnab::capture::packet::Packet;
     use sipnab::capture::{PcapExportMode, PcapWriter};
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("short.pcap");
-    let mut w =
-        PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw).expect("writer");
+    let mut w = PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw)?;
 
     // caplen < origlen is the kernel saying "there was more".
     let whole = Packet::new(
@@ -715,9 +736,9 @@ fn a_truncated_frame_written_to_output_is_counted() {
         Some("t".to_string()),
         1,
     );
-    w.write(&whole).expect("write whole");
-    w.write(&cut).expect("write truncated");
-    w.finish().expect("finish");
+    w.write(&whole)?;
+    w.write(&cut)?;
+    w.finish()?;
 
     assert_eq!(
         w.truncated_frames_written(),
@@ -726,4 +747,5 @@ fn a_truncated_frame_written_to_output_is_counted() {
          whole frame must not, or the warning fires on every capture and means \
          nothing"
     );
+    Ok(())
 }

@@ -19,6 +19,10 @@ use sipnab::relay::rtpproxy::{
     Reply, RtpproxyControl, Stream, creates, decode_command, decode_reply,
 };
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The offer OpenSIPS sent, verbatim.
 const OFFER: &[u8] = b"29_6976_4 Uc8,101 1-32@172.28.0.21 172.28.0.21 6000 32SIPpTag091;1";
 /// The relay's answer to it, verbatim.
@@ -35,17 +39,18 @@ const LOOKUP_REPLY: &[u8] = b"29_6976_5 31000 172.28.0.12";
 /// WHEN it is decoded
 /// THEN it is an update carrying the call-id, and it creates ordinary media.
 #[test]
-fn the_real_offer_decodes_as_a_media_creating_update() {
+fn the_real_offer_decodes_as_a_media_creating_update() -> Result<(), TestError> {
     let RtpproxyControl::Command {
         cookie, verb, args, ..
-    } = decode_command(OFFER).expect("the offer decodes")
+    } = decode_command(OFFER).ok_or("the offer decodes")?
     else {
-        panic!("expected a command");
+        return Err("expected a command".into());
     };
     assert_eq!(cookie, "29_6976_4");
     assert_eq!(verb, 'U');
     assert_eq!(args.first().map(String::as_str), Some("1-32@172.28.0.21"));
     assert_eq!(creates(verb), Some(Stream::Ordinary));
+    Ok(())
 }
 
 /// GIVEN the same offer
@@ -58,31 +63,33 @@ fn the_real_offer_decodes_as_a_media_creating_update() {
 /// honest option: inventing a meaning for `c8,101` would be asserting a
 /// grammar nobody promised.
 #[test]
-fn real_modifiers_survive_verbatim_and_uninterpreted() {
-    let RtpproxyControl::Command { modifiers, .. } = decode_command(OFFER).expect("decodes") else {
-        panic!("expected a command");
+fn real_modifiers_survive_verbatim_and_uninterpreted() -> Result<(), TestError> {
+    let RtpproxyControl::Command { modifiers, .. } = decode_command(OFFER).ok_or("decodes")? else {
+        return Err("expected a command".into());
     };
     assert_eq!(modifiers, "c8,101");
+    Ok(())
 }
 
 /// GIVEN the lookup that completed the call
 /// WHEN it is decoded
 /// THEN it carries both tags and stays inside LOOKUP's bounds.
 #[test]
-fn the_real_lookup_decodes_with_both_tags() {
+fn the_real_lookup_decodes_with_both_tags() -> Result<(), TestError> {
     let RtpproxyControl::Command {
         verb,
         modifiers,
         args,
         ..
-    } = decode_command(LOOKUP).expect("the lookup decodes")
+    } = decode_command(LOOKUP).ok_or("the lookup decodes")?
     else {
-        panic!("expected a command");
+        return Err("expected a command".into());
     };
     assert_eq!(verb, 'L');
     assert_eq!(modifiers, "c8");
     assert_eq!(args.len(), 5, "call-id, address, port, from-tag, to-tag");
     assert_eq!(args[4], "1SIPpTag013;1", "the to-tag completes the dialog");
+    Ok(())
 }
 
 /// GIVEN both real commands
@@ -93,13 +100,14 @@ fn the_real_lookup_decodes_with_both_tags() {
 /// `LOOKUP` 5..6. The lookup sits exactly on its upper bound, which is the
 /// value most likely to be off by one in a table typed from memory.
 #[test]
-fn real_traffic_sits_inside_the_declared_argument_bounds() {
+fn real_traffic_sits_inside_the_declared_argument_bounds() -> Result<(), TestError> {
     for (bytes, want) in [(OFFER, 4usize), (LOOKUP, 5usize)] {
-        let RtpproxyControl::Command { args, .. } = decode_command(bytes).expect("decodes") else {
-            panic!("expected a command");
+        let RtpproxyControl::Command { args, .. } = decode_command(bytes).ok_or("decodes")? else {
+            return Err("expected a command".into());
         };
         assert_eq!(args.len(), want);
     }
+    Ok(())
 }
 
 // ── The replies ──────────────────────────────────────────────────────────────
@@ -108,10 +116,10 @@ fn real_traffic_sits_inside_the_declared_argument_bounds() {
 /// WHEN it is decoded
 /// THEN it is a media reply naming the port it allocated.
 #[test]
-fn the_real_offer_reply_names_the_allocated_port() {
-    let RtpproxyControl::Reply { cookie, reply } = decode_reply(OFFER_REPLY).expect("decodes")
+fn the_real_offer_reply_names_the_allocated_port() -> Result<(), TestError> {
+    let RtpproxyControl::Reply { cookie, reply } = decode_reply(OFFER_REPLY).ok_or("decodes")?
     else {
-        panic!("expected a reply");
+        return Err("expected a reply".into());
     };
     assert_eq!(cookie, "29_6976_4");
     assert_eq!(
@@ -121,19 +129,20 @@ fn the_real_offer_reply_names_the_allocated_port() {
             address: "172.28.0.12".to_string()
         }
     );
+    Ok(())
 }
 
 /// GIVEN both replies
 /// WHEN their ports are checked
 /// THEN both land in rtpproxy's configured range and outside rtpengine's.
 #[test]
-fn both_real_replies_allocated_inside_the_relays_own_range() {
+fn both_real_replies_allocated_inside_the_relays_own_range() -> Result<(), TestError> {
     for (bytes, want) in [(OFFER_REPLY, 31032u16), (LOOKUP_REPLY, 31000u16)] {
-        let RtpproxyControl::Reply { reply, .. } = decode_reply(bytes).expect("decodes") else {
-            panic!("expected a reply");
+        let RtpproxyControl::Reply { reply, .. } = decode_reply(bytes).ok_or("decodes")? else {
+            return Err("expected a reply".into());
         };
         let Reply::Media { port, .. } = reply else {
-            panic!("expected a media reply");
+            return Err("expected a media reply".into());
         };
         assert_eq!(port, want);
         assert!((31000..=31050).contains(&port), "{port} outside the range");
@@ -142,6 +151,7 @@ fn both_real_replies_allocated_inside_the_relays_own_range() {
             "{port} in the other anchor's range"
         );
     }
+    Ok(())
 }
 
 // ── Pairing, which is what a cookie is for ───────────────────────────────────
@@ -150,18 +160,19 @@ fn both_real_replies_allocated_inside_the_relays_own_range() {
 /// WHEN their cookies are compared
 /// THEN they match, which is how a passive observer pairs them.
 #[test]
-fn a_real_command_and_its_reply_share_a_cookie() {
+fn a_real_command_and_its_reply_share_a_cookie() -> Result<(), TestError> {
     let cookie = |c: RtpproxyControl| match c {
         RtpproxyControl::Command { cookie, .. } | RtpproxyControl::Reply { cookie, .. } => cookie,
     };
     assert_eq!(
-        cookie(decode_command(OFFER).expect("offer")),
-        cookie(decode_reply(OFFER_REPLY).expect("reply"))
+        cookie(decode_command(OFFER).ok_or("offer")?),
+        cookie(decode_reply(OFFER_REPLY).ok_or("reply")?)
     );
     assert_eq!(
-        cookie(decode_command(LOOKUP).expect("lookup")),
-        cookie(decode_reply(LOOKUP_REPLY).expect("reply"))
+        cookie(decode_command(LOOKUP).ok_or("lookup")?),
+        cookie(decode_reply(LOOKUP_REPLY).ok_or("reply")?)
     );
+    Ok(())
 }
 
 /// GIVEN the two exchanges of one call
@@ -172,17 +183,18 @@ fn a_real_command_and_its_reply_share_a_cookie() {
 /// rising suffix. A pairing rule that matched on the prefix would read every
 /// call as one retried command, which is exactly the finding RP4 is for.
 #[test]
-fn two_exchanges_in_one_call_carry_different_cookies() {
+fn two_exchanges_in_one_call_carry_different_cookies() -> Result<(), TestError> {
     let cookie = |c: RtpproxyControl| match c {
         RtpproxyControl::Command { cookie, .. } | RtpproxyControl::Reply { cookie, .. } => cookie,
     };
-    let first = cookie(decode_command(OFFER).expect("offer"));
-    let second = cookie(decode_command(LOOKUP).expect("lookup"));
+    let first = cookie(decode_command(OFFER).ok_or("offer")?);
+    let second = cookie(decode_command(LOOKUP).ok_or("lookup")?);
     assert_ne!(first, second);
     assert!(
         first.rsplit_once('_').map(|(p, _)| p) == second.rsplit_once('_').map(|(p, _)| p),
         "they really do share a prefix, so a prefix match would collapse them"
     );
+    Ok(())
 }
 
 // ── Direction, against real bytes ────────────────────────────────────────────
@@ -191,12 +203,13 @@ fn two_exchanges_in_one_call_carry_different_cookies() {
 /// WHEN the command parser is offered it
 /// THEN it refuses, because a reply is not a command.
 #[test]
-fn the_command_parser_refuses_a_real_reply() {
+fn the_command_parser_refuses_a_real_reply() -> Result<(), TestError> {
     assert!(
         decode_command(OFFER_REPLY).is_none(),
         "a media reply starts with digits after the cookie, which no command \
          letter can be"
     );
+    Ok(())
 }
 
 /// GIVEN a real command
@@ -207,13 +220,14 @@ fn the_command_parser_refuses_a_real_reply() {
 /// parser's job is to read whatever the relay sent, and only DIRECTION says
 /// this came from the wrong side. What it must never do is invent a port.
 #[test]
-fn the_reply_parser_never_invents_a_port_from_a_command() {
-    let decoded = decode_reply(OFFER).expect("it reads as text");
+fn the_reply_parser_never_invents_a_port_from_a_command() -> Result<(), TestError> {
+    let decoded = decode_reply(OFFER).ok_or("it reads as text")?;
     let RtpproxyControl::Reply { reply, .. } = decoded else {
-        panic!("expected a reply");
+        return Err("expected a reply".into());
     };
     assert!(
         !matches!(reply, Reply::Media { .. }),
         "a command read as a reply must not yield a media allocation: {reply:?}"
     );
+    Ok(())
 }

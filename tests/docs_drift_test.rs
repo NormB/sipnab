@@ -22,6 +22,9 @@ use std::collections::BTreeSet;
 #[path = "support/markdown.rs"]
 mod markdown;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Long flags mentioned in the docs that belong to OTHER tools (cargo, docker,
 /// apt, editcap, systemctl, voipmonitor, `claude mcp add`), not to sipnab —
 /// each scoped to the exact doc label(s) where it legitimately appears.
@@ -1590,17 +1593,21 @@ fn cli_long_flags() -> BTreeSet<String> {
 ///
 /// # Returns
 /// The distinct flag names found, without the leading dashes.
-fn extract_long_flags(text: &str) -> BTreeSet<String> {
+fn extract_long_flags(text: &str) -> Result<BTreeSet<String>, TestError> {
     // Strip markdown link targets first. GitHub-style heading anchors embed a
     // double hyphen wherever the heading had an em dash, so
     // `](#scenario-5--a-fleet-of-capture-hosts)` otherwise reads as a flag
     // named `--a-fleet-of-capture-hosts`. One page carries 19 of them.
-    static LINK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let link = LINK.get_or_init(|| regex::Regex::new(r"\]\([^)]*\)").unwrap());
+    static LINK: std::sync::OnceLock<Result<regex::Regex, regex::Error>> =
+        std::sync::OnceLock::new();
+    let link = LINK
+        .get_or_init(|| regex::Regex::new(r"\]\([^)]*\)"))
+        .as_ref()
+        .map_err(Clone::clone)?;
     let text = link.replace_all(text, "]");
 
-    let re = regex::Regex::new(r"--([A-Za-z][A-Za-z0-9-]*)").unwrap();
-    re.captures_iter(&text).map(|c| c[1].to_string()).collect()
+    let re = regex::Regex::new(r"--([A-Za-z][A-Za-z0-9-]*)")?;
+    Ok(re.captures_iter(&text).map(|c| c[1].to_string()).collect())
 }
 
 /// Every published markdown page, as `(repo-relative path, contents)`.
@@ -1619,7 +1626,7 @@ fn extract_long_flags(text: &str) -> BTreeSet<String> {
 /// true for links, symbols and mermaid, and false for flags, which that file
 /// never checks. A phantom flag added there passed 82 tests while live on two
 /// published pages.
-fn published_markdown() -> Vec<(String, String)> {
+fn published_markdown() -> Result<Vec<(String, String)>, TestError> {
     // Root pages a reader reaches. CONTRIBUTING.md is in: a phantom sipnab
     // flag there misleads a contributor, which is a real reader.
     //
@@ -1635,8 +1642,7 @@ fn published_markdown() -> Vec<(String, String)> {
     let out = std::process::Command::new("git")
         .args(["ls-files", "*.md"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(out.status.success(), "git ls-files failed");
     let mut pages: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -1660,13 +1666,13 @@ fn published_markdown() -> Vec<(String, String)> {
         pages.len()
     );
     pages.sort();
-    pages
+    Ok(pages)
 }
 
 /// Every `--flag` mentioned across the user-facing docs exists in the clap
 /// CLI (or is a whitelisted foreign-tool flag); extraction is self-checked.
 #[test]
-fn readme_long_flags_exist_in_cli() {
+fn readme_long_flags_exist_in_cli() -> Result<(), TestError> {
     // Derived from the tree, not hand-listed. The old list held 34
     // include_str! entries and missed three published pages:
     // docs/mcp-deploy.md carried 21 long-flag tokens and is rendered on
@@ -1678,7 +1684,7 @@ fn readme_long_flags_exist_in_cli() {
     // derived list is strictly better for that purpose: a renamed file is
     // still scanned under its new name, where before it silently left the
     // corpus.
-    let corpus = published_markdown();
+    let corpus = published_markdown()?;
     let docs: Vec<(&str, &str)> = corpus
         .iter()
         .map(|(label, text)| (label.as_str(), text.as_str()))
@@ -1689,7 +1695,7 @@ fn readme_long_flags_exist_in_cli() {
     let mut all_mentioned = BTreeSet::new();
     let mut failures = Vec::new();
     for (name, text) in docs {
-        let mentioned = extract_long_flags(text);
+        let mentioned = extract_long_flags(text)?;
         let phantom: Vec<&String> = mentioned
             .iter()
             .filter(|f| !known.contains(*f) && !is_foreign_flag(f, name))
@@ -1715,11 +1721,12 @@ fn readme_long_flags_exist_in_cli() {
          add it to FOREIGN_FLAGS in tests/docs_drift_test.rs, scoped to this doc's label.",
         failures.join("\n  ")
     );
+    Ok(())
 }
 
 /// README keeps the libasound runtime note and a --no-default-features headless recipe.
 #[test]
-fn readme_documents_audio_runtime_dependency_and_headless_recipe() {
+fn readme_documents_audio_runtime_dependency_and_headless_recipe() -> Result<(), TestError> {
     // The `audio` default feature needs libasound at runtime; README must
     // keep saying so AND keep showing a no-audio recipe for headless hosts
     // (same warning build.rs emits — keep the two in sync).
@@ -1732,13 +1739,14 @@ fn readme_documents_audio_runtime_dependency_and_headless_recipe() {
         readme.contains("--no-default-features"),
         "README must show a --no-default-features recipe to drop the audio feature"
     );
+    Ok(())
 }
 
 /// The flag extractor skips table rules and spaced dashes but still flags `---triple` typos.
 #[test]
-fn extraction_ignores_table_rules_and_em_dashes() {
+fn extraction_ignores_table_rules_and_em_dashes() -> Result<(), TestError> {
     let md = "| a |\n|----|\n**Bold** -- prose with -- dashes\n`--real-flag` and ---triple";
-    let got = extract_long_flags(md);
+    let got = extract_long_flags(md)?;
     assert_eq!(
         got,
         BTreeSet::from(["real-flag".to_string(), "triple".to_string()]),
@@ -1746,6 +1754,7 @@ fn extraction_ignores_table_rules_and_em_dashes() {
          intentionally matches: a doc typo like `---flag` should be flagged, \
          and `triple` won't be a known flag)"
     );
+    Ok(())
 }
 
 /// Split a markdown document into its fenced code blocks (``` ... ```).
@@ -1780,19 +1789,20 @@ fn fenced_blocks(md: &str) -> Vec<String> {
 /// (`website/content/docs/`) — the website's mcp.md carries its own copy of
 /// these examples, so a broken example there must fail this test too.
 #[test]
-fn mcp_examples_always_pass_no_tui() {
+fn mcp_examples_always_pass_no_tui() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let doc_dirs = ["docs", "website/content/docs"];
-    let entries = doc_dirs.iter().flat_map(|dir| {
-        std::fs::read_dir(dir)
-            .unwrap_or_else(|e| panic!("read doc dir {dir}: {e}"))
-            .map(|entry| entry.expect("dir entry").path())
-    });
+    let mut entries = Vec::new();
+    for dir in doc_dirs {
+        for entry in std::fs::read_dir(dir).map_err(|e| format!("read doc dir {dir}: {e}"))? {
+            entries.push(entry?.path());
+        }
+    }
     for path in entries {
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let md = std::fs::read_to_string(&path).expect("read doc");
+        let md = std::fs::read_to_string(&path)?;
         for block in fenced_blocks(&md) {
             // Join backslash continuations so a multi-line command is
             // checked as one logical invocation.
@@ -1826,6 +1836,7 @@ fn mcp_examples_always_pass_no_tui() {
         "--mcp examples missing -N/--no-tui (copy-paste would fail):\n{}",
         offenders.join("\n---\n")
     );
+    Ok(())
 }
 
 /// The security policy must keep a reachable disclosure address.
@@ -1837,10 +1848,10 @@ fn mcp_examples_always_pass_no_tui() {
 /// here. It also promises response times, which are worthless if the address
 /// they attach to has quietly vanished.
 #[test]
-fn security_policy_has_a_reporting_contact() {
-    let sec = std::fs::read_to_string("SECURITY.md").expect("SECURITY.md");
+fn security_policy_has_a_reporting_contact() -> Result<(), TestError> {
+    let sec = std::fs::read_to_string("SECURITY.md")?;
 
-    let email = regex::Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
+    let email = regex::Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")?;
     let found = email.find(&sec).map(|m| m.as_str().to_string());
     assert!(
         found.is_some(),
@@ -1863,20 +1874,21 @@ fn security_policy_has_a_reporting_contact() {
     );
 
     // And the project must actually point people at the policy.
-    let readme = std::fs::read_to_string("README.md").expect("README.md");
+    let readme = std::fs::read_to_string("README.md")?;
     assert!(
         readme.contains("SECURITY.md"),
         "README does not link SECURITY.md, so the policy is unreachable from \
          the front door"
     );
+    Ok(())
 }
 
 /// Regression guard: the Code of Conduct once shipped with the enforcement
 /// contact deleted (the INSERT-CONTACT-METHOD placeholder removed rather
 /// than filled), leaving no way to report an incident.
 #[test]
-fn code_of_conduct_has_enforcement_contact() {
-    let coc = std::fs::read_to_string("CODE_OF_CONDUCT.md").expect("CODE_OF_CONDUCT.md");
+fn code_of_conduct_has_enforcement_contact() -> Result<(), TestError> {
+    let coc = std::fs::read_to_string("CODE_OF_CONDUCT.md")?;
     assert!(
         !coc.to_ascii_uppercase().contains("[INSERT"),
         "unfilled Contributor Covenant placeholder"
@@ -1886,24 +1898,25 @@ fn code_of_conduct_has_enforcement_contact() {
     let enforcement = coc
         .split("## Enforcement\n")
         .nth(1)
-        .expect("Enforcement section present");
+        .ok_or("Enforcement section present")?;
     assert!(
         enforcement.contains('@') && enforcement.contains("mailto:"),
         "Enforcement section must name a working contact (mailto link)"
     );
     // And the repo actually points people at it.
-    let readme = std::fs::read_to_string("README.md").expect("README.md");
+    let readme = std::fs::read_to_string("README.md")?;
     assert!(
         readme.contains("CODE_OF_CONDUCT.md"),
         "README must link the Code of Conduct"
     );
+    Ok(())
 }
 
 /// The man page must track the crate: its .TH version and LICENSE section
 /// once rotted to "0.4.18" / "GPL-3.0-only" while Cargo.toml said 0.5.2 /
 /// "MIT OR Apache-2.0" — a licensing contradiction, not just staleness.
 #[test]
-fn man_page_version_and_license_match_cargo() {
+fn man_page_version_and_license_match_cargo() -> Result<(), TestError> {
     let man = include_str!("../man/sipnab.1");
     let version = env!("CARGO_PKG_VERSION");
     assert!(
@@ -1918,6 +1931,7 @@ fn man_page_version_and_license_match_cargo() {
         man.contains("MIT OR Apache-2.0"),
         "man/sipnab.1 must state the MIT OR Apache-2.0 license"
     );
+    Ok(())
 }
 
 /// Every file a version CUT has to touch, and the pattern that finds its
@@ -1954,8 +1968,12 @@ const CUT_MARKER_SITES: &[(&str, &str)] = &[
 ];
 
 /// Whether every cut marker in `text` is `want`, and how many were found.
-fn stale_cut_markers(text: &str, pattern: &str, want: &str) -> (Vec<String>, usize) {
-    let re = regex::Regex::new(pattern).expect("cut marker pattern");
+fn stale_cut_markers(
+    text: &str,
+    pattern: &str,
+    want: &str,
+) -> Result<(Vec<String>, usize), TestError> {
+    let re = regex::Regex::new(pattern)?;
     let mut stale = Vec::new();
     let mut found = 0usize;
     for c in re.captures_iter(text) {
@@ -1964,7 +1982,7 @@ fn stale_cut_markers(text: &str, pattern: &str, want: &str) -> (Vec<String>, usi
             stale.push(c[1].to_string());
         }
     }
-    (stale, found)
+    Ok((stale, found))
 }
 
 /// Every file a cut must touch carries the crate version.
@@ -1973,13 +1991,13 @@ fn stale_cut_markers(text: &str, pattern: &str, want: &str) -> (Vec<String>, usi
 /// "which files does a cut move?" from a grep into a list, and fails the day
 /// one of them is left behind.
 #[test]
-fn every_file_a_cut_must_touch_carries_the_crate_version() {
+fn every_file_a_cut_must_touch_carries_the_crate_version() -> Result<(), TestError> {
     let version = env!("CARGO_PKG_VERSION");
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for (file, pattern) in CUT_MARKER_SITES {
         let text = std::fs::read_to_string(repo.join(file))
-            .unwrap_or_else(|e| panic!("{file} is on the cut list and cannot be read: {e}"));
-        let (stale, found) = stale_cut_markers(&text, pattern, version);
+            .map_err(|e| format!("{file} is on the cut list and cannot be read: {e}"))?;
+        let (stale, found) = stale_cut_markers(&text, pattern, version)?;
         assert!(
             found > 0,
             "{file} is on the cut list and its marker pattern matched nothing. \
@@ -1993,6 +2011,7 @@ fn every_file_a_cut_must_touch_carries_the_crate_version() {
              moves every marker on this list together."
         );
     }
+    Ok(())
 }
 
 /// **Second of four.** The comparison can fail.
@@ -2001,12 +2020,12 @@ fn every_file_a_cut_must_touch_carries_the_crate_version() {
 /// matches — the failure mode `found > 0` above guards for the real tree, and
 /// this guards the predicate itself, in both directions.
 #[test]
-fn the_cut_marker_scan_fires_on_a_stale_file() {
+fn the_cut_marker_scan_fires_on_a_stale_file() -> Result<(), TestError> {
     let man = "\
 .TH SIPNAB 1 \"2026-09-08\" \"sipnab 0.5.158\" \"User Commands\"\n";
     let pattern = r#"\.TH SIPNAB 1 "[^"]*" "sipnab (\d+\.\d+\.\d+)""#;
 
-    let (stale, found) = stale_cut_markers(man, pattern, "0.5.159");
+    let (stale, found) = stale_cut_markers(man, pattern, "0.5.159")?;
     assert_eq!(found, 1, "the marker must be found before it can be judged");
     assert_eq!(
         stale,
@@ -2014,13 +2033,14 @@ fn the_cut_marker_scan_fires_on_a_stale_file() {
         "the miss must be reported"
     );
 
-    let (clean, found) = stale_cut_markers(man, pattern, "0.5.158");
+    let (clean, found) = stale_cut_markers(man, pattern, "0.5.158")?;
     assert_eq!(found, 1);
     assert!(clean.is_empty(), "a current marker must not be reported");
 
-    let (none, found) = stale_cut_markers("no marker here at all\n", pattern, "0.5.159");
+    let (none, found) = stale_cut_markers("no marker here at all\n", pattern, "0.5.159")?;
     assert_eq!(found, 0, "a file with no marker must report zero matches");
     assert!(none.is_empty());
+    Ok(())
 }
 
 /// **Third of four.** No line is claimed by both rules.
@@ -2031,14 +2051,14 @@ fn the_cut_marker_scan_fires_on_a_stale_file() {
 /// both — `website/config.toml` does — but no single PATTERN may match a line
 /// the other rule owns, or a cut and a publish would fight over it forever.
 #[test]
-fn no_cut_marker_pattern_also_matches_a_published_marker() {
+fn no_cut_marker_pattern_also_matches_a_published_marker() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let published = r#"published_version = "0.4.1""#;
     let release_date = r#"release_date = "2026-01-01""#;
     let download = "curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.4.1 sh";
     let rpm = "sudo rpm -i sipnab-0.4.1-1.x86_64.rpm";
     for (file, pattern) in CUT_MARKER_SITES {
-        let re = regex::Regex::new(pattern).expect("cut marker pattern");
+        let re = regex::Regex::new(pattern)?;
         for line in [published, release_date, download, rpm] {
             assert!(
                 !re.is_match(line),
@@ -2052,6 +2072,7 @@ fn no_cut_marker_pattern_also_matches_a_published_marker() {
             "{file} is on the cut list and is not in the tree"
         );
     }
+    Ok(())
 }
 
 /// **Fourth of four.** The list covers the sites that already had bespoke
@@ -2062,7 +2083,8 @@ fn no_cut_marker_pattern_also_matches_a_published_marker() {
 /// files here is what makes this a superset rather than a fourth opinion: if a
 /// bespoke gate is ever deleted, the file stays covered.
 #[test]
-fn the_cut_list_covers_every_file_a_bespoke_version_gate_already_polices() {
+fn the_cut_list_covers_every_file_a_bespoke_version_gate_already_polices() -> Result<(), TestError>
+{
     let listed: Vec<&str> = CUT_MARKER_SITES.iter().map(|(f, _)| *f).collect();
     for already_policed in ["man/sipnab.1", "website/config.toml", "Cargo.toml"] {
         assert!(
@@ -2077,6 +2099,7 @@ fn the_cut_list_covers_every_file_a_bespoke_version_gate_already_polices() {
          than that",
         listed.len()
     );
+    Ok(())
 }
 
 /// "Current version" strings sprinkled through the install/benchmark docs
@@ -2085,7 +2108,7 @@ fn the_cut_list_covers_every_file_a_bespoke_version_gate_already_polices() {
 /// this guard. Historical references (e.g. the benchmark provenance
 /// "0.4.16") are deliberately NOT matched.
 #[test]
-fn docs_current_version_markers_match_cargo() {
+fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
     let version = env!("CARGO_PKG_VERSION");
 
     // Markers that tell a reader WHICH VERSION TO DOWNLOAD track the last
@@ -2100,10 +2123,9 @@ fn docs_current_version_markers_match_cargo() {
     // `install.sh` itself is unaffected — with `SIPNAB_VERSION` unset it asks
     // the API for the latest release — so this only ever bit the person who
     // followed the documented pinned example.
-    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
-        .unwrap()
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)?
         .captures(include_str!("../website/config.toml"))
-        .expect("website/config.toml has no published_version")[1]
+        .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
     let download_markers: &[(&str, &str, &str)] = &[
         (
@@ -2185,7 +2207,7 @@ fn docs_current_version_markers_match_cargo() {
         ),
     ];
     for (path, text, pattern) in download_markers {
-        let re = regex::Regex::new(pattern).unwrap();
+        let re = regex::Regex::new(pattern)?;
         let mut matched = false;
         for cap in re.captures_iter(text) {
             matched = true;
@@ -2316,7 +2338,7 @@ fn docs_current_version_markers_match_cargo() {
         ),
     ];
     for (path, text, pattern) in sources {
-        let re = regex::Regex::new(pattern).unwrap();
+        let re = regex::Regex::new(pattern)?;
         let mut matched = false;
         for cap in re.captures_iter(text) {
             matched = true;
@@ -2333,6 +2355,7 @@ fn docs_current_version_markers_match_cargo() {
              update the marker list"
         );
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2346,7 +2369,7 @@ fn docs_current_version_markers_match_cargo() {
 
 /// The markdown table rows of docs/benchmarks.md and the website benchmarks page are identical.
 #[test]
-fn benchmark_tables_match_between_docs_and_website() {
+fn benchmark_tables_match_between_docs_and_website() -> Result<(), TestError> {
     /// The markdown table rows (lines starting with `|`) of a document,
     /// trailing whitespace trimmed.
     fn rows(text: &str) -> Vec<&str> {
@@ -2363,6 +2386,7 @@ fn benchmark_tables_match_between_docs_and_website() {
          website/content/docs/benchmarks.md — re-benchmarks must update BOTH \
          files in the same commit, or the wiki publishes stale numbers"
     );
+    Ok(())
 }
 
 /// `response_class()` agrees with the classification in the reference page.
@@ -2376,7 +2400,7 @@ fn benchmark_tables_match_between_docs_and_website() {
 /// Reads the page rather than a copy of it, so adding a code to the doc without
 /// teaching the classifier fails here.
 #[test]
-fn response_class_matches_the_documented_table() {
+fn response_class_matches_the_documented_table() -> Result<(), TestError> {
     use sipnab::sip::response_codes::{ResponseClass, response_class};
 
     let doc = include_str!("../docs/sip-response-codes.md");
@@ -2393,8 +2417,8 @@ fn response_class_matches_the_documented_table() {
             _ => None,
         }
     };
-    let row = regex::Regex::new(r"(?m)^\| `(\d{3})` \|").unwrap();
-    let head = regex::Regex::new(r"(?m)^## (.+)$").unwrap();
+    let row = regex::Regex::new(r"(?m)^\| `(\d{3})` \|")?;
+    let head = regex::Regex::new(r"(?m)^## (.+)$")?;
 
     let mut current: Option<ResponseClass> = None;
     let mut checked = 0usize;
@@ -2407,7 +2431,7 @@ fn response_class_matches_the_documented_table() {
             continue;
         };
         let Some(expected) = current else { continue };
-        let code: u16 = c[1].parse().expect("three digits");
+        let code: u16 = c[1].parse()?;
         assert_eq!(
             response_class(code),
             expected,
@@ -2422,6 +2446,7 @@ fn response_class_matches_the_documented_table() {
         "checked {checked} codes against the page, expected all 75 — the table \
          shape changed and this gate is reading less than it claims"
     );
+    Ok(())
 }
 
 /// Every `DialogState` value appears in the docs that enumerate them.
@@ -2436,7 +2461,7 @@ fn response_class_matches_the_documented_table() {
 /// five matches loudly and would have left four lists quietly wrong. A filter
 /// value nobody documents is a filter nobody uses.
 #[test]
-fn documented_dialog_states_cover_the_enum() {
+fn documented_dialog_states_cover_the_enum() -> Result<(), TestError> {
     // The enumeration, mirrored from `DialogState`. Adding a variant without
     // adding it here passes; adding it here without documenting it fails, which
     // is the direction that matters — the docs are what a reader has.
@@ -2468,6 +2493,7 @@ fn documented_dialog_states_cover_the_enum() {
             );
         }
     }
+    Ok(())
 }
 
 /// Docs that state the fuzz-target count as current must match the tree.
@@ -2477,11 +2503,10 @@ fn documented_dialog_states_cover_the_enum() {
 /// the real one — a security-facing page understating security coverage.
 /// Nothing checked either the number or the names.
 #[test]
-fn fuzz_target_count_and_names_match_the_tree() {
+fn fuzz_target_count_and_names_match_the_tree() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    let mut actual: Vec<String> = std::fs::read_dir(repo.join("fuzz/fuzz_targets"))
-        .expect("fuzz/fuzz_targets must exist")
+    let mut actual: Vec<String> = std::fs::read_dir(repo.join("fuzz/fuzz_targets"))?
         .filter_map(|e| {
             let p = e.ok()?.path();
             if p.extension()? != "rs" {
@@ -2521,13 +2546,14 @@ fn fuzz_target_count_and_names_match_the_tree() {
         .split_once("targets:")
         .and_then(|(_, rest)| rest.split_once('.'))
         .map(|(list, _)| list.split(',').filter(|s| !s.trim().is_empty()).count())
-        .expect("docs/fault-model.md no longer enumerates the fuzz targets after 'targets:'");
+        .ok_or("docs/fault-model.md no longer enumerates the fuzz targets after 'targets:'")?;
     assert_eq!(
         listed, n,
         "docs/fault-model.md names {listed} fuzz targets but {n} exist in \
          fuzz/fuzz_targets/ — the security-facing page is describing a smaller \
          fuzz surface than the tree actually has"
     );
+    Ok(())
 }
 
 /// The ROOT `Cargo.lock` pins sipnab's own version and must match the crate.
@@ -2550,13 +2576,13 @@ fn fuzz_target_count_and_names_match_the_tree() {
 /// the same: `cargo update -p sipnab` (or any cargo command) and commit the
 /// result with the bump.
 #[test]
-fn root_lockfile_pins_the_current_crate_version() {
-    let manifest = std::fs::read_to_string("Cargo.toml").expect("Cargo.toml");
+fn root_lockfile_pins_the_current_crate_version() -> Result<(), TestError> {
+    let manifest = std::fs::read_to_string("Cargo.toml")?;
     let crate_version = manifest
         .lines()
         .find_map(|l| l.strip_prefix("version = \""))
         .and_then(|v| v.split('"').next())
-        .expect("Cargo.toml carries a version");
+        .ok_or("Cargo.toml carries a version")?;
 
     // Read what GIT holds, never the working tree.
     //
@@ -2576,20 +2602,19 @@ fn root_lockfile_pins_the_current_crate_version() {
     // never touches `fuzz/Cargo.lock`, so nothing repairs it underfoot.
     let staged = std::process::Command::new("git")
         .args(["show", ":Cargo.lock"])
-        .output()
-        .expect("git show :Cargo.lock");
+        .output()?;
     assert!(
         staged.status.success(),
         "could not read Cargo.lock from the git index: {}",
         String::from_utf8_lossy(&staged.stderr)
     );
-    let lock = String::from_utf8(staged.stdout).expect("Cargo.lock is utf8");
+    let lock = String::from_utf8(staged.stdout)?;
     let locked = lock
         .split("\n[[package]]\n")
         .find(|block| block.starts_with("name = \"sipnab\"\n"))
         .and_then(|block| block.lines().find_map(|l| l.strip_prefix("version = \"")))
         .and_then(|v| v.split('"').next())
-        .expect("Cargo.lock carries a [[package]] entry for sipnab");
+        .ok_or("Cargo.lock carries a [[package]] entry for sipnab")?;
 
     assert_eq!(
         locked, crate_version,
@@ -2600,6 +2625,7 @@ fn root_lockfile_pins_the_current_crate_version() {
          the tag carries a tree whose manifest and lockfile disagree about \
          which release it is, which is what 0.5.120 and 0.5.121 both shipped."
     );
+    Ok(())
 }
 
 /// `fuzz/Cargo.lock` pins sipnab's own version and must match the crate.
@@ -2610,10 +2636,9 @@ fn root_lockfile_pins_the_current_crate_version() {
 /// shipped with the lockfile still naming 0.5.47, and nothing anywhere noticed:
 /// no hook, no workflow, no test looked at this file.
 #[test]
-fn fuzz_lockfile_pins_the_current_crate_version() {
+fn fuzz_lockfile_pins_the_current_crate_version() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let lock = std::fs::read_to_string(repo.join("fuzz/Cargo.lock"))
-        .expect("fuzz/Cargo.lock must exist — the fuzz workspace is committed");
+    let lock = std::fs::read_to_string(repo.join("fuzz/Cargo.lock"))?;
 
     // The [[package]] block whose name is sipnab; its `version` is the pin.
     let pinned = lock
@@ -2625,7 +2650,7 @@ fn fuzz_lockfile_pins_the_current_crate_version() {
                 .find_map(|l| l.trim().strip_prefix("version = "))
                 .map(|v| v.trim().trim_matches('"').to_string())
         })
-        .expect("no sipnab [[package]] entry in fuzz/Cargo.lock");
+        .ok_or("no sipnab [[package]] entry in fuzz/Cargo.lock")?;
 
     assert_eq!(
         pinned,
@@ -2635,6 +2660,7 @@ fn fuzz_lockfile_pins_the_current_crate_version() {
          command in fuzz/) and commit the result with the version bump",
         env!("CARGO_PKG_VERSION")
     );
+    Ok(())
 }
 
 /// Both benchmark pages must name the same measured build and date, that build
@@ -2658,21 +2684,19 @@ fn fuzz_lockfile_pins_the_current_crate_version() {
 /// 3.25M: both were honest, and they were measuring different programs. One
 /// binary now, named in one place.
 #[test]
-fn benchmark_pages_agree_on_what_was_measured() {
+fn benchmark_pages_agree_on_what_was_measured() -> Result<(), TestError> {
     let re = regex::Regex::new(
         r"local release build of (\d+\.\d+\.\d+) \(`([0-9a-f]+)`\), (\d{4}-\d{2}-\d{2})",
-    )
-    .unwrap();
+    )?;
 
-    let baseline: serde_json::Value = serde_json::from_str(include_str!("../bench/baseline.json"))
-        .expect("bench/baseline.json is not JSON");
-    let recorded = |k: &str| -> String {
-        baseline["measured"][k]
+    let baseline: serde_json::Value = serde_json::from_str(include_str!("../bench/baseline.json"))?;
+    let recorded = |k: &str| -> Result<String, TestError> {
+        Ok(baseline["measured"][k]
             .as_str()
-            .unwrap_or_else(|| panic!("bench/baseline.json has no measured.{k}"))
-            .to_string()
+            .ok_or_else(|| format!("bench/baseline.json has no measured.{k}"))?
+            .to_string())
     };
-    let want = (recorded("version"), recorded("commit"), recorded("date"));
+    let want = (recorded("version")?, recorded("commit")?, recorded("date")?);
 
     for (path, text) in [
         ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
@@ -2681,13 +2705,13 @@ fn benchmark_pages_agree_on_what_was_measured() {
             include_str!("../website/content/docs/benchmarks.md"),
         ),
     ] {
-        let cap = re.captures(text).unwrap_or_else(|| {
-            panic!(
+        let cap = re.captures(text).ok_or_else(|| {
+            format!(
                 "{path}: no 'local release build of X.Y.Z (`hash`), YYYY-MM-DD' \
                  statement. Every number on this page comes from one build on one \
                  day; if the page will not say which, the numbers are unattributable."
             )
-        });
+        })?;
         let found = (cap[1].to_string(), cap[2].to_string(), cap[3].to_string());
         assert_eq!(
             found, want,
@@ -2700,13 +2724,18 @@ fn benchmark_pages_agree_on_what_was_measured() {
 
     // You cannot have measured a version that does not exist yet.
     let crate_version = env!("CARGO_PKG_VERSION");
-    let parse = |v: &str| -> Vec<u32> { v.split('.').map(|p| p.parse().unwrap()).collect() };
+    let parse = |v: &str| -> Result<Vec<u32>, TestError> {
+        v.split('.')
+            .map(|p| -> Result<_, TestError> { Ok(p.parse()?) })
+            .collect::<Result<_, TestError>>()
+    };
     assert!(
-        parse(&want.0) <= parse(crate_version),
+        parse(&want.0)? <= parse(crate_version)?,
         "benchmarks claim to be measured on {}, which is newer than the \
          crate version {crate_version}",
         want.0
     );
+    Ok(())
 }
 
 /// The benchmark harness the benchmarks page cites must exist in the repo.
@@ -2717,7 +2746,7 @@ fn benchmark_pages_agree_on_what_was_measured() {
 /// including on the reference host the methodology names. Nothing detected it
 /// because nothing looked.
 #[test]
-fn benchmark_harness_is_published() {
+fn benchmark_harness_is_published() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for f in [
         "bench/carrier.py",
@@ -2736,16 +2765,14 @@ fn benchmark_harness_is_published() {
     {
         use std::os::unix::fs::PermissionsExt;
         for f in ["bench/scaling.sh", "bench/compare.sh"] {
-            let mode = std::fs::metadata(repo.join(f))
-                .expect("harness script metadata")
-                .permissions()
-                .mode();
+            let mode = std::fs::metadata(repo.join(f))?.permissions().mode();
             assert!(
                 mode & 0o111 != 0,
                 "{f} is not executable, so the documented `bench/…` invocation fails"
             );
         }
     }
+    Ok(())
 }
 
 /// The corpus figures quoted on the benchmarks page must be what the generator
@@ -2758,7 +2785,7 @@ fn benchmark_harness_is_published() {
 /// and this fails rather than letting the page describe a corpus that no longer
 /// exists.
 #[test]
-fn carrier_generator_produces_the_documented_corpus() {
+fn carrier_generator_produces_the_documented_corpus() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let tmp = std::env::temp_dir().join(format!("sipnab-carrier-{}.pcap", std::process::id()));
 
@@ -2767,8 +2794,7 @@ fn carrier_generator_produces_the_documented_corpus() {
         .args(["--calls", "50", "--quiet", "--out"])
         .arg(&tmp)
         .current_dir(repo)
-        .output()
-        .expect("run bench/carrier.py — python3 must be on PATH");
+        .output()?;
     let _ = std::fs::remove_file(&tmp);
     assert!(
         out.status.success(),
@@ -2800,6 +2826,7 @@ fn carrier_generator_produces_the_documented_corpus() {
             );
         }
     }
+    Ok(())
 }
 
 /// Every capability an operator can choose must be findable on the HOMEPAGE.
@@ -2817,7 +2844,7 @@ fn carrier_generator_produces_the_documented_corpus() {
 /// `bpf` -> "eBPF" is a judgement about vocabulary that no rule can infer --
 /// and adding a feature without deciding how a reader finds it fails here.
 #[test]
-fn the_homepage_names_every_capability_a_reader_would_search_for() {
+fn the_homepage_names_every_capability_a_reader_would_search_for() -> Result<(), TestError> {
     let home = include_str!("../website/templates/index.html");
     // (cargo feature, the phrase a reader searches for)
     let must_appear: &[(&str, &str)] = &[
@@ -2834,10 +2861,10 @@ fn the_homepage_names_every_capability_a_reader_would_search_for() {
     let features_block = manifest
         .split("[features]")
         .nth(1)
-        .expect("Cargo.toml has a [features] table")
+        .ok_or("Cargo.toml has a [features] table")?
         .split("\n[")
         .next()
-        .expect("features table terminates");
+        .ok_or("features table terminates")?;
 
     let mut missing = Vec::new();
     for (feature, phrase) in must_appear {
@@ -2855,6 +2882,7 @@ fn the_homepage_names_every_capability_a_reader_would_search_for() {
          written up elsewhere:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// Whether a markdown feature table has a ROW whose first cell is `name`.
@@ -2881,7 +2909,7 @@ fn has_feature_row(page: &str, name: &str) -> bool {
 /// place that denied the feature existed. A table a reader is routed to has to
 /// be under the same gate as the one they might stumble on.
 #[test]
-fn feature_tables_cover_every_cargo_feature() {
+fn feature_tables_cover_every_cargo_feature() -> Result<(), TestError> {
     let manifest = include_str!("../Cargo.toml");
     let readme = include_str!("../README.md");
     let install = include_str!("../docs/install.md");
@@ -2889,10 +2917,10 @@ fn feature_tables_cover_every_cargo_feature() {
     let features_block = manifest
         .split("[features]")
         .nth(1)
-        .expect("Cargo.toml has a [features] section")
+        .ok_or("Cargo.toml has a [features] section")?
         .split("\n[")
         .next()
-        .expect("features section terminates");
+        .ok_or("features section terminates")?;
 
     let mut missing = Vec::new();
     let mut seen = 0;
@@ -2933,6 +2961,7 @@ fn feature_tables_cover_every_cargo_feature() {
         "a feature table is missing an entry: {}",
         missing.join(", ")
     );
+    Ok(())
 }
 
 /// Every `[theme]` color slot must be documented in both theme guides, and the
@@ -2943,17 +2972,17 @@ fn feature_tables_cover_every_cargo_feature() {
 /// theme guides told readers it was "not configurable", and the two config
 /// references disagreed on the slot count (11 vs 10).
 #[test]
-fn theme_slots_are_documented_and_counted_correctly() {
+fn theme_slots_are_documented_and_counted_correctly() -> Result<(), TestError> {
     let config_rs = include_str!("../src/config.rs");
 
     // Fields of `pub struct ThemeConfig` — the authoritative slot list.
     let block = config_rs
         .split("pub struct ThemeConfig {")
         .nth(1)
-        .expect("ThemeConfig struct not found")
+        .ok_or("ThemeConfig struct not found")?
         .split("\n}")
         .next()
-        .expect("unterminated ThemeConfig struct");
+        .ok_or("unterminated ThemeConfig struct")?;
     let slots: Vec<&str> = block
         .lines()
         .filter_map(|l| l.trim().strip_prefix("pub "))
@@ -3020,6 +3049,7 @@ fn theme_slots_are_documented_and_counted_correctly() {
         slots.len(),
         wrong.join(", ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3036,7 +3066,7 @@ fn theme_slots_are_documented_and_counted_correctly() {
 /// `cargo update` with nothing to notice — the same shape as every other gap
 /// this suite exists for, except the consequence is legal rather than cosmetic.
 #[test]
-fn third_party_notices_are_current() {
+fn third_party_notices_are_current() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let tmp = std::env::temp_dir().join(format!("sipnab-notices-{}.md", std::process::id()));
 
@@ -3044,15 +3074,14 @@ fn third_party_notices_are_current() {
         .arg(repo.join("scripts/build-third-party-notices.py"))
         .arg(&tmp)
         .current_dir(repo)
-        .output()
-        .expect("run scripts/build-third-party-notices.py — python3 and cargo must be on PATH");
+        .output()?;
     assert!(
         out.status.success(),
         "build-third-party-notices.py failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let fresh = std::fs::read_to_string(&tmp).expect("generated notices");
+    let fresh = std::fs::read_to_string(&tmp)?;
     let committed =
         std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md")).unwrap_or_default();
     let _ = std::fs::remove_file(&tmp);
@@ -3063,6 +3092,7 @@ fn third_party_notices_are_current() {
         "THIRD-PARTY-NOTICES.md is stale — the dependency graph changed. \
          Regenerate with `python3 scripts/build-third-party-notices.py` and commit."
     );
+    Ok(())
 }
 
 /// The notices name every system library the released binaries link, with the
@@ -3073,10 +3103,9 @@ fn third_party_notices_are_current() {
 /// check above. libasound is the only copyleft component sipnab touches; if its
 /// entry ever disappears, the notice obligation is silently unmet.
 #[test]
-fn third_party_notices_cover_system_libraries() {
+fn third_party_notices_cover_system_libraries() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))
-        .expect("THIRD-PARTY-NOTICES.md must exist — it ships in every release artifact");
+    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))?;
 
     for (lib, license) in [
         ("libpcap", "BSD-3-Clause"),
@@ -3095,24 +3124,26 @@ fn third_party_notices_cover_system_libraries() {
 
     // The notices are worthless if they do not ship. Every release artifact
     // that carries LICENSE-MIT must carry these too.
-    let release = std::fs::read_to_string(repo.join(".github/workflows/release.yml"))
-        .expect("read release.yml");
+    let release = std::fs::read_to_string(repo.join(".github/workflows/release.yml"))?;
     assert!(
         release.contains("THIRD-PARTY-NOTICES.md"),
         "release.yml does not package THIRD-PARTY-NOTICES.md — the notices would \
          exist in the repository and reach nobody who downloads a binary"
     );
+    Ok(())
 }
 
 /// The rows of the notices' "Vendored files" table, keyed by repository path:
 /// `(version, sha256)`.
-fn vendored_notice_rows(notices: &str) -> std::collections::BTreeMap<String, (String, String)> {
+fn vendored_notice_rows(
+    notices: &str,
+) -> Result<std::collections::BTreeMap<String, (String, String)>, TestError> {
     let section = notices
         .split("\n## Vendored files")
         .nth(1)
-        .expect("THIRD-PARTY-NOTICES.md has no `## Vendored files` section");
+        .ok_or("THIRD-PARTY-NOTICES.md has no `## Vendored files` section")?;
     let section = section.split("\n## ").next().unwrap_or(section);
-    section
+    Ok(section
         .lines()
         .filter(|l| l.starts_with("| `"))
         .map(|l| {
@@ -3128,7 +3159,7 @@ fn vendored_notice_rows(notices: &str) -> std::collections::BTreeMap<String, (St
                 (cells[3].to_string(), cells[6].trim_matches('`').to_string()),
             )
         })
-        .collect()
+        .collect())
 }
 
 /// A file under `website/static/js/` is someone else's minified code when its
@@ -3161,18 +3192,21 @@ const EMBEDDED_VERSION: &[(&str, &str)] = &[
 /// file on disk, so replacing the file without updating its row fails here,
 /// and a script's recorded version is the one the bundle embeds.
 #[test]
-fn every_vendored_file_is_recorded_with_its_version() {
+fn every_vendored_file_is_recorded_with_its_version() -> Result<(), TestError> {
     use sha2::{Digest, Sha256};
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))
-        .expect("read THIRD-PARTY-NOTICES.md");
-    let rows = vendored_notice_rows(&notices);
+    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))?;
+    let rows = vendored_notice_rows(&notices)?;
 
     let mut vendored: Vec<String> = Vec::new();
-    for entry in std::fs::read_dir(repo.join("website/static/js")).expect("read js dir") {
-        let path = entry.expect("dir entry").path();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    for entry in std::fs::read_dir(repo.join("website/static/js"))? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .ok_or("path.file_name() is None")?
+            .to_string_lossy()
+            .into_owned();
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         if is_vendored_minified(&name, &text) {
             vendored.push(format!("website/static/js/{name}"));
@@ -3186,15 +3220,15 @@ fn every_vendored_file_is_recorded_with_its_version() {
     vendored.push("tests/schemas/publisher/vcon_json_schema.json".to_string());
 
     for rel in &vendored {
-        let (version, sha) = rows.get(rel).unwrap_or_else(|| {
-            panic!(
+        let (version, sha) = rows.get(rel).ok_or_else(|| {
+            format!(
                 "{rel} is vendored third-party code with no row in \
                  THIRD-PARTY-NOTICES.md's Vendored files table. Add it to \
                  VENDORED in scripts/build-third-party-notices.py and regenerate."
             )
-        });
+        })?;
         assert!(!version.is_empty(), "{rel}: the recorded version is empty");
-        let bytes = std::fs::read(repo.join(rel)).expect("read vendored file");
+        let bytes = std::fs::read(repo.join(rel))?;
         let digest: String = Sha256::digest(&bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -3206,21 +3240,23 @@ fn every_vendored_file_is_recorded_with_its_version() {
              scripts/build-third-party-notices.py."
         );
         if rel.ends_with(".js") {
-            let name = rel.rsplit('/').next().unwrap();
+            let name = rel
+                .rsplit('/')
+                .next()
+                .ok_or("rel.rsplit('/').next() is None")?;
             let pattern = EMBEDDED_VERSION
                 .iter()
                 .find(|(n, _)| *n == name)
-                .unwrap_or_else(|| {
-                    panic!(
+                .ok_or_else(|| {
+                    format!(
                         "{rel} has no entry in EMBEDDED_VERSION saying where it states its version"
                     )
-                })
+                })?
                 .1;
             let text = String::from_utf8_lossy(&bytes);
-            let embedded = regex::Regex::new(pattern)
-                .unwrap()
+            let embedded = regex::Regex::new(pattern)?
                 .captures(&text)
-                .unwrap_or_else(|| panic!("{rel}: no version marker matching {pattern}"))[1]
+                .ok_or_else(|| format!("{rel}: no version marker matching {pattern}"))?[1]
                 .to_string();
             assert_eq!(
                 &embedded, version,
@@ -3234,18 +3270,20 @@ fn every_vendored_file_is_recorded_with_its_version() {
             "THIRD-PARTY-NOTICES.md records vendored file {rel}, which does not exist"
         );
     }
+    Ok(())
 }
 
 /// The classifier above is what decides which scripts need a row, so it must
 /// tell sipnab's own readable scripts from a minified bundle.
 #[test]
-fn the_vendored_script_classifier_discriminates() {
+fn the_vendored_script_classifier_discriminates() -> Result<(), TestError> {
     assert!(is_vendored_minified("x.min.js", "short"));
     assert!(is_vendored_minified("bundle.js", &"a".repeat(1001)));
     assert!(!is_vendored_minified(
         "analyze.js",
         "// sipnab\nlet x = 1;\n"
     ));
+    Ok(())
 }
 
 /// `maintenance_or_update` (OpenSSF Silver): a user must be able to find how
@@ -3259,11 +3297,11 @@ fn the_vendored_script_classifier_discriminates() {
 /// running version, where breaking changes are marked, and which releases are
 /// supported.
 #[test]
-fn install_docs_say_how_to_upgrade_every_install_route() {
+fn install_docs_say_how_to_upgrade_every_install_route() -> Result<(), TestError> {
     let doc = include_str!("../docs/install.md");
     let start = doc
         .find("\n## Upgrade sipnab\n")
-        .expect("docs/install.md has no `## Upgrade sipnab` section");
+        .ok_or("docs/install.md has no `## Upgrade sipnab` section")?;
     let rest = &doc[start + 1..];
     let end = rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3);
     let section = &rest[..end];
@@ -3349,6 +3387,7 @@ fn install_docs_say_how_to_upgrade_every_install_route() {
         doc.contains("| Move to a newer release | [Upgrade sipnab](#upgrade-sipnab) |"),
         "the page's goal table does not point at the Upgrade section"
     );
+    Ok(())
 }
 
 /// The MCP tool table must list every tool the server registers.
@@ -3399,10 +3438,9 @@ fn registered_mcp_sources() -> String {
 
 /// Ground truth is the `#[tool(name = "…")]` attributes, not a second list.
 #[test]
-fn mcp_tool_table_lists_every_registered_tool() {
+fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     let server = registered_mcp_sources();
-    let registered: BTreeSet<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)
-        .expect("regex")
+    let registered: BTreeSet<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)?
         .captures_iter(&server)
         .map(|c| c[1].to_string())
         .collect();
@@ -3502,14 +3540,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
         registered.len()
     );
 
-    let doc = std::fs::read_to_string("docs/mcp-tools.md").expect("docs/mcp-tools.md");
+    let doc = std::fs::read_to_string("docs/mcp-tools.md")?;
     // The index is EIGHT tables now, one per group, so the old slice -- from
     // the first header to the first blank line -- read the first group and
     // reported the other 41 tools missing. The index runs from the first table
     // header to the first `## ` section heading; take all of it.
     let table_start = doc
         .find("| Tool | Parameters | Returns |")
-        .expect("docs/mcp-tools.md has no tool table");
+        .ok_or("docs/mcp-tools.md has no tool table")?;
     let table_end = doc[table_start..]
         .find("\n## ")
         .map_or(doc.len(), |i| table_start + i);
@@ -3523,8 +3561,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // the gate is checking.
     let documented: BTreeSet<String> = regex::RegexBuilder::new(r"^\| \[?`([a-z0-9_]+)`")
         .multi_line(true)
-        .build()
-        .expect("regex")
+        .build()?
         .captures_iter(table)
         .map(|c| c[1].to_string())
         .collect();
@@ -3552,6 +3589,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
         "docs/mcp-tools.md documents MCP tools the server does not register: \
          {phantom:?}"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3643,7 +3681,7 @@ fn fenced_with_info(text: &str) -> Vec<(usize, String, String)> {
 /// Heredocs are handled as prevention rather than a fix: the scanned corpus
 /// contains none today, and they are the one construct that would otherwise
 /// make this gate report a multi-line document body as many commands.
-fn command_units(body: &str) -> Vec<String> {
+fn command_units(body: &str) -> Result<Vec<String>, TestError> {
     let mut starts = Vec::new();
     let mut pending = false;
     let mut here: Option<String> = None;
@@ -3704,7 +3742,7 @@ fn command_units(body: &str) -> Vec<String> {
             // `<<<` is a herestring, not a heredoc: it takes no terminator, so
             // treating it as one would swallow the rest of the block.
             if !rt.contains("<<<")
-                && let Some(caps) = heredoc_re().captures(rt)
+                && let Some(caps) = heredoc_re()?.captures(rt)
             {
                 here = Some(caps[1].to_string());
             }
@@ -3717,12 +3755,15 @@ fn command_units(body: &str) -> Vec<String> {
             pending = false;
         }
     }
-    starts
+    Ok(starts)
 }
 
-fn heredoc_re() -> &'static regex::Regex {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r#"<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)"#).unwrap())
+fn heredoc_re() -> Result<&'static regex::Regex, TestError> {
+    static RE: std::sync::OnceLock<Result<regex::Regex, regex::Error>> = std::sync::OnceLock::new();
+    Ok(RE
+        .get_or_init(|| regex::Regex::new(r#"<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)"#))
+        .as_ref()
+        .map_err(Clone::clone)?)
 }
 
 /// Markdown the gate scans: every **tracked** `*.md`, minus planning trees
@@ -3743,7 +3784,7 @@ fn heredoc_re() -> &'static regex::Regex {
 /// regenerating is the only way the mirror can be green — coverage is
 /// transitive and stricter than scanning it directly. Reporting the mirror
 /// would point the author at a file whose own header says "do not edit".
-fn scanned_markdown() -> Vec<std::path::PathBuf> {
+fn scanned_markdown() -> Result<Vec<std::path::PathBuf>, TestError> {
     // Planning material, never published. Retro-editing a historical record to
     // satisfy a rendering gate would corrupt it. Same exclusion and reason as
     // link_integrity_test's docs-tree scan.
@@ -3752,18 +3793,17 @@ fn scanned_markdown() -> Vec<std::path::PathBuf> {
     let out = std::process::Command::new("git")
         .args(["ls-files", "*.md"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(
         out.status.success(),
         "git ls-files failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|rel| !SKIP_DIRS.iter().any(|d| rel.starts_with(d)))
         .map(|rel| root.join(rel))
-        .collect()
+        .collect())
 }
 
 /// Agent planning documents are never committed.
@@ -3775,14 +3815,13 @@ fn scanned_markdown() -> Vec<std::path::PathBuf> {
 /// directory, already gitignored; this keeps a forced `git add` from bringing
 /// either back.
 #[test]
-fn agent_planning_documents_are_never_committed() {
+fn agent_planning_documents_are_never_committed() -> Result<(), TestError> {
     const FORBIDDEN: &[&str] = &["docs/superpowers/", ".superpowers/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
         .args(["ls-files"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(out.status.success(), "git ls-files failed");
     let tracked: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -3793,6 +3832,7 @@ fn agent_planning_documents_are_never_committed() {
         tracked.is_empty(),
         "agent planning documents are tracked; remove them with `git rm`: {tracked:?}"
     );
+    Ok(())
 }
 
 /// Open work is tracked in ONE file, and no second tracker appears.
@@ -3817,7 +3857,7 @@ fn agent_planning_documents_are_never_committed() {
 /// That is the part that rots otherwise: a new plan document quietly becomes a
 /// second todo list, and "where is the backlog" stops having one answer.
 #[test]
-fn only_the_backlog_tracks_open_work() {
+fn only_the_backlog_tracks_open_work() -> Result<(), TestError> {
     // Historical planning records. The count is what each carried on
     // 2026-09-17; it may shrink as work is recorded elsewhere, and a file that
     // reaches zero should lose its entry rather than sit here at 0.
@@ -3835,8 +3875,7 @@ fn only_the_backlog_tracks_open_work() {
     let out = std::process::Command::new("git")
         .args(["ls-files", "*.md"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(out.status.success(), "git ls-files failed");
 
     let mut new_trackers: Vec<String> = Vec::new();
@@ -3886,17 +3925,18 @@ fn only_the_backlog_tracks_open_work() {
          New work goes in the local backlog.",
         grown.join("\n  ")
     );
+    Ok(())
 }
 
 /// A fenced shell block must hand the reader exactly one command, unless it
 /// declares itself an ordered procedure.
 #[test]
-fn shell_fence_is_one_clipboard_payload() {
+fn shell_fence_is_one_clipboard_payload() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
     let mut offenders = Vec::new();
     let mut scanned = 0;
 
-    for path in scanned_markdown() {
+    for path in scanned_markdown()? {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         if text.contains("Generated by scripts/build-site") {
             continue;
@@ -3915,7 +3955,7 @@ fn shell_fence_is_one_clipboard_payload() {
             if first.trim() == SEQUENCE_MARKER {
                 continue;
             }
-            let units = command_units(&body);
+            let units = command_units(&body)?;
             if units.len() > 1 {
                 offenders.push(format!(
                     "{rel}:{line}: one copy button hands the reader {} commands:\n      {}",
@@ -3951,6 +3991,7 @@ fn shell_fence_is_one_clipboard_payload() {
          NOT assert that command is correct or safe.",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// The corpus scan goes green the moment the docs are fixed, so these pin the
@@ -3958,7 +3999,7 @@ fn shell_fence_is_one_clipboard_payload() {
 /// `command_units` could be softened to always return one unit and every gate
 /// above would still pass.
 #[test]
-fn command_units_splits_the_shipped_two_command_block() {
+fn command_units_splits_the_shipped_two_command_block() -> Result<(), TestError> {
     // docs/troubleshooting.md:9 as published in v0.5.55 — the block whose
     // copy button handed the reader a --call-report that wrote report.md they
     // never asked for.
@@ -3970,54 +4011,56 @@ sipnab -N -I capture.pcap --filter \"state == 'Failed'\" --json \\
 # Detailed report for one call (Markdown, ready for a ticket)
 sipnab -I capture.pcap --call-report \"abc123@host\" --markdown > report.md
 ";
-    let units = command_units(body);
+    let units = command_units(body)?;
     assert_eq!(
         units.len(),
         2,
         "the shipped two-command block must read as 2 units, got {}: {units:#?}",
         units.len()
     );
+    Ok(())
 }
 
 #[test]
-fn command_units_joins_continuations_quotes_and_heredocs() {
+fn command_units_joins_continuations_quotes_and_heredocs() -> Result<(), TestError> {
     // Trailing backslash.
     assert_eq!(
-        command_units("sipnab -N \\\n  --json \\\n  -I x.pcap\n").len(),
+        command_units("sipnab -N \\\n  --json \\\n  -I x.pcap\n")?.len(),
         1
     );
     // Pipe into a continued expression.
     assert_eq!(
-        command_units("sipnab -N --json |\n  jq .call_id\n").len(),
+        command_units("sipnab -N --json |\n  jq .call_id\n")?.len(),
         1
     );
     // && chain.
-    assert_eq!(command_units("cd /tmp &&\n  ls\n").len(), 1);
+    assert_eq!(command_units("cd /tmp &&\n  ls\n")?.len(), 1);
     // A quote left open across lines: the prose inside is NOT a command. This
     // is the case a blank-line heuristic gets wrong.
     assert_eq!(
-        command_units("git commit -m \"line one\n\nline two\n\nline three\"\n").len(),
+        command_units("git commit -m \"line one\n\nline two\n\nline three\"\n")?.len(),
         1,
         "quote state must carry across newlines"
     );
     // Heredoc body is not a series of commands.
     assert_eq!(
-        command_units("cat <<'EOF' > /tmp/f\nalpha\nbeta\nEOF\n").len(),
+        command_units("cat <<'EOF' > /tmp/f\nalpha\nbeta\nEOF\n")?.len(),
         1
     );
     // A herestring is not a heredoc.
-    assert_eq!(command_units("jq . <<< \"$x\"\necho done\n").len(), 2);
+    assert_eq!(command_units("jq . <<< \"$x\"\necho done\n")?.len(), 2);
     // Comments and blanks are not units.
-    assert_eq!(command_units("# just a note\n\n# another\n").len(), 0);
+    assert_eq!(command_units("# just a note\n\n# another\n")?.len(), 0);
+    Ok(())
 }
 
 #[test]
-fn sequence_marker_admits_a_declared_procedure() {
+fn sequence_marker_admits_a_declared_procedure() -> Result<(), TestError> {
     let body = format!(
         "{SEQUENCE_MARKER}\nmkdir -p /etc/sipnab\nopenssl rand -hex 32 > /etc/sipnab/mcp-token\nchmod 0600 /etc/sipnab/mcp-token\n"
     );
     assert!(
-        command_units(&body).len() > 1,
+        command_units(&body)?.len() > 1,
         "the procedure genuinely holds several commands"
     );
     let first = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
@@ -4026,6 +4069,7 @@ fn sequence_marker_admits_a_declared_procedure() {
         SEQUENCE_MARKER,
         "and the gate admits it on the strength of the declaration alone"
     );
+    Ok(())
 }
 
 /// No documentation table repeats a row.
@@ -4045,7 +4089,7 @@ fn sequence_marker_admits_a_declared_procedure() {
 /// Rows inside code fences are excluded — a fenced example may legitimately
 /// show a repeated line.
 #[test]
-fn no_documentation_table_repeats_a_row() {
+fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     /// Tracked markdown files this walk expects to see.
     // 163 -> 164: `docs/design/testing-matrix.md`, the generated surface
     // coverage matrix. One file, and the only one this change adds --
@@ -4697,8 +4741,7 @@ fn no_documentation_table_repeats_a_row() {
     let out = std::process::Command::new("git")
         .args(["ls-files", "-z", "*.md"])
         .current_dir(repo)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|f| !f.is_empty())
@@ -5123,6 +5166,7 @@ fn no_documentation_table_repeats_a_row() {
          key that dropped the column telling the rows apart:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5148,7 +5192,7 @@ fn no_documentation_table_repeats_a_row() {
 /// Raising a floor after improving a page is the intended workflow. Lowering
 /// one is the thing to argue about in review.
 #[test]
-fn how_to_headings_stay_task_first() {
+fn how_to_headings_stay_task_first() -> Result<(), TestError> {
     /// Verbs a reader would use for their own goal. Extend freely — a missing
     /// verb only ever understates the score, which the ratchet tolerates.
     const GOAL_VERBS: &[&str] = &[
@@ -5217,14 +5261,13 @@ fn how_to_headings_stay_task_first() {
 
     let strip = regex::Regex::new(
         r"(?i)^(\d+[a-z]?\.\s*|Scenario\s+\d+[A-Z]?\s*[—-]\s*|Step\s+\d+\s*[—-]\s*)",
-    )
-    .unwrap();
-    let heading = regex::Regex::new(r"(?m)^#{2,3}[ \t]+(.+?)[ \t#]*$").unwrap();
+    )?;
+    let heading = regex::Regex::new(r"(?m)^#{2,3}[ \t]+(.+?)[ \t#]*$")?;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for (page, floor) in PAGES {
         let text =
-            std::fs::read_to_string(repo.join(page)).unwrap_or_else(|e| panic!("read {page}: {e}"));
+            std::fs::read_to_string(repo.join(page)).map_err(|e| format!("read {page}: {e}"))?;
         let heads: Vec<String> = heading
             .captures_iter(&markdown::prose(&text))
             .map(|c| c[1].to_string())
@@ -5261,6 +5304,7 @@ fn how_to_headings_stay_task_first() {
             heads.len()
         );
     }
+    Ok(())
 }
 
 /// Omitting `-d` must be documented as platform-dependent, not "auto-detect".
@@ -5274,11 +5318,11 @@ fn how_to_headings_stay_task_first() {
 ///
 /// Both trees, because a reader lands on either.
 #[test]
-fn device_default_is_documented_per_platform() {
+fn device_default_is_documented_per_platform() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for page in ["docs/cli-reference.md", "website/content/docs/cli.md"] {
         let text =
-            std::fs::read_to_string(repo.join(page)).unwrap_or_else(|e| panic!("read {page}: {e}"));
+            std::fs::read_to_string(repo.join(page)).map_err(|e| format!("read {page}: {e}"))?;
         assert!(
             text.contains("`any` pseudo-device"),
             "{page}: must name the Linux default as the `any` pseudo-device"
@@ -5300,11 +5344,12 @@ fn device_default_is_documented_per_platform() {
     }
 
     // The CLI help is where most people actually look.
-    let cli = std::fs::read_to_string(repo.join("src/cli.rs")).expect("read cli.rs");
+    let cli = std::fs::read_to_string(repo.join("src/cli.rs"))?;
     assert!(
         cli.contains("ALL interfaces at once"),
         "src/cli.rs: -d help must state the Linux default captures all interfaces"
     );
+    Ok(())
 }
 
 /// The SIP parameter tables must stay consistent with what sipnab claims.
@@ -5320,16 +5365,15 @@ fn device_default_is_documented_per_platform() {
 /// if `top_via_branch` or `from_tag` were removed, the claim becomes false and
 /// the build fails rather than the docs quietly overstating.
 #[test]
-fn sip_parameter_claims_match_the_parser() {
+fn sip_parameter_claims_match_the_parser() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let page = std::fs::read_to_string(repo.join("docs/sip-parameters.md"))
-        .expect("read docs/sip-parameters.md");
-    let msg = std::fs::read_to_string(repo.join("src/sip/message.rs")).expect("read message.rs");
+    let page = std::fs::read_to_string(repo.join("docs/sip-parameters.md"))?;
+    let msg = std::fs::read_to_string(repo.join("src/sip/message.rs"))?;
     // `registration_expiry` moved out of diagnosis.rs into the module root
     // when it gained a second reader: the dialog state machine needs it to
     // tell a registration from a de-registration, which is what made
     // `DialogState::Expired` reachable.
-    let sip_mod = std::fs::read_to_string(repo.join("src/sip/mod.rs")).expect("read sip/mod.rs");
+    let sip_mod = std::fs::read_to_string(repo.join("src/sip/mod.rs"))?;
 
     // (parameter, the accessor that justifies the claim, where it lives)
     for (param, accessor, source) in [
@@ -5363,7 +5407,7 @@ fn sip_parameter_claims_match_the_parser() {
     ] {
         let at = page
             .find(heading)
-            .unwrap_or_else(|| panic!("missing section: {heading}"));
+            .ok_or_else(|| format!("missing section: {heading}"))?;
         let rest = &page[at + heading.len()..];
         let n: usize = rest
             .chars()
@@ -5377,6 +5421,7 @@ fn sip_parameter_claims_match_the_parser() {
              and the table shipped short"
         );
     }
+    Ok(())
 }
 
 /// Every registered MCP tool needs its own documented section with an example.
@@ -5391,7 +5436,7 @@ fn sip_parameter_claims_match_the_parser() {
 /// So this gate asks for the two things a row cannot give: a heading naming the
 /// tool, and a concrete example under it.
 #[test]
-fn every_mcp_tool_has_a_documented_section_with_an_example() {
+fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // WALK src/mcp, never `server.rs` alone. Reading one file made the 13
     // tools under `src/mcp/tools/` invisible to this gate, which is how a
@@ -5416,10 +5461,9 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
         "the walk over src/mcp read nothing; this gate would then certify a \
          page against an empty tool set"
     );
-    let page =
-        std::fs::read_to_string(repo.join("docs/mcp-tools.md")).expect("read docs/mcp-tools.md");
+    let page = std::fs::read_to_string(repo.join("docs/mcp-tools.md"))?;
 
-    let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z0-9_]+)""#).unwrap();
+    let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z0-9_]+)""#)?;
     let tools: std::collections::BTreeSet<String> = name_re
         .captures_iter(&server)
         .map(|c| c[1].to_string())
@@ -5472,6 +5516,7 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
          Show real output — an operator reaching for a tool mid-incident needs to \
          recognize the answer, not infer its shape."
     );
+    Ok(())
 }
 
 /// Every AMR-WB number printed in `docs/mos-and-codecs.md` must match the model.
@@ -5484,7 +5529,7 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
 /// exists to warn against, so the page is now derived-checked rather than
 /// trusted.
 #[test]
-fn the_published_amr_wb_tables_match_the_model() {
+fn the_published_amr_wb_tables_match_the_model() -> Result<(), TestError> {
     /// AMR-WB rows the codec table is expected to carry.
     ///
     /// 15: the nine AMR-WB modes plus the six bandwidth-extension rows the
@@ -5495,17 +5540,16 @@ fn the_published_amr_wb_tables_match_the_model() {
     use sipnab::rtp::emodel_wb::{ListeningContext, amr_wb_ie, amr_wb_mos};
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let page = std::fs::read_to_string(repo.join("docs/mos-and-codecs.md"))
-        .expect("read docs/mos-and-codecs.md");
+    let page = std::fs::read_to_string(repo.join("docs/mos-and-codecs.md"))?;
 
     // Rows look like: | 12.65 | 13 | 4.34 |
-    let row = regex::Regex::new(r"(?m)^\| ([0-9.]+) \| ([0-9]+) \| ([0-9.]+) \|$").unwrap();
+    let row = regex::Regex::new(r"(?m)^\| ([0-9.]+) \| ([0-9]+) \| ([0-9.]+) \|$")?;
 
     // The monotic table is the first of the two; split on its heading so a row
     // is attributed to the right listening context.
     let split = page
         .find("### Diotic")
-        .expect("the diotic heading anchors the split");
+        .ok_or("the diotic heading anchors the split")?;
     let sections = [
         (&page[..split], ListeningContext::Monotic),
         (&page[split..], ListeningContext::Diotic),
@@ -5514,19 +5558,19 @@ fn the_published_amr_wb_tables_match_the_model() {
     let mut checked = 0;
     for (text, context) in sections {
         for c in row.captures_iter(text) {
-            let kbps: f64 = c[1].parse().expect("kbit/s");
-            let ie: f64 = c[2].parse().expect("Ie,WB");
-            let mos: f64 = c[3].parse().expect("MOS");
+            let kbps: f64 = c[1].parse()?;
+            let ie: f64 = c[2].parse()?;
+            let mos: f64 = c[3].parse()?;
 
-            let real_ie = amr_wb_ie(kbps, context).unwrap_or_else(|| {
-                panic!("docs list {kbps} kbit/s for {context:?}, the model has no such row")
-            });
+            let real_ie = amr_wb_ie(kbps, context).ok_or_else(|| {
+                format!("docs list {kbps} kbit/s for {context:?}, the model has no such row")
+            })?;
             assert!(
                 (real_ie - ie).abs() < f64::EPSILON,
                 "{kbps} kbit/s {context:?}: docs say Ie,WB={ie}, model says {real_ie}"
             );
 
-            let real_mos = amr_wb_mos(kbps, context, 0.0).expect("scorable at zero loss");
+            let real_mos = amr_wb_mos(kbps, context, 0.0).ok_or("scorable at zero loss")?;
             assert!(
                 (real_mos - mos).abs() < 5e-3,
                 "{kbps} kbit/s {context:?}: docs say MOS={mos}, model says \
@@ -5545,6 +5589,7 @@ fn the_published_amr_wb_tables_match_the_model() {
          More is fine — bump this. FEWER means the table shape changed and the \
          gate is no longer reading it."
     );
+    Ok(())
 }
 
 /// Every alias the documentation spells out in full must expand to exactly what
@@ -5561,35 +5606,35 @@ fn the_published_amr_wb_tables_match_the_model() {
 /// pins the refusal and `expand_alias`'s own test pins that the alias does not
 /// contain "orphaned", but neither reads the documentation. This does.
 #[test]
-fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
+fn a_documented_alias_expands_to_what_the_code_expands_it_to() -> Result<(), TestError> {
     let want =
         sipnab::sip::dsl::expand_alias("problems", &sipnab::sip::dsl::AliasThresholds::default())
-            .expect("the problems alias exists");
+            .ok_or("the problems alias exists")?;
     let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let want = normalize(&want);
 
     let mut checked = 0;
     for rel in ["docs/examples.md", "website/content/docs/cookbook.md"] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read {rel}: {e}"))?;
 
         // The expansion is quoted in backticks and is the only backticked span
         // in these files that opens with the alias's first predicate.
         let opener = want
             .split(" OR ")
             .next()
-            .expect("the expansion has at least one predicate");
+            .ok_or("the expansion has at least one predicate")?;
         let found = text
             .split('`')
             .find(|span| span.trim_start().starts_with(opener))
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                format!(
                     "{rel} no longer quotes the `problems` expansion (nothing \
                      backticked starts with {opener:?}). If the documentation \
                      stopped spelling the alias out, delete this gate rather \
                      than letting it pass by finding nothing."
                 )
-            });
+            })?;
 
         assert_eq!(
             normalize(found),
@@ -5602,6 +5647,7 @@ fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
     }
 
     assert_eq!(checked, 2, "both the doc and its site mirror must be read");
+    Ok(())
 }
 
 /// The benchmarks page names ONE measured release, and says so consistently.
@@ -5626,7 +5672,7 @@ fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
 /// gate stays right when the crate moves on and fails when a sweep drags this
 /// line along with it.
 #[test]
-fn the_benchmarks_page_names_one_measured_release_throughout() {
+fn the_benchmarks_page_names_one_measured_release_throughout() -> Result<(), TestError> {
     let pages = [
         ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
         (
@@ -5634,7 +5680,7 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
             include_str!("../website/content/docs/benchmarks.md"),
         ),
     ];
-    let ver = regex::Regex::new(r"(\d+\.\d+\.\d+)").unwrap();
+    let ver = regex::Regex::new(r"(\d+\.\d+\.\d+)")?;
     for (name, doc) in pages {
         // Every sentence that states what was measured, by the phrasing each
         // copy actually uses.
@@ -5672,6 +5718,7 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
              tables were measured against, which a later release does not change."
         );
     }
+    Ok(())
 }
 
 /// The MCP tool count in prose must match what the server registers.
@@ -5684,11 +5731,10 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
 /// one gate and hand-writing it in three files is the whole defect -- every
 /// place that states it is checked here against the registrations themselves.
 #[test]
-fn prose_mcp_tool_counts_match_the_server() {
+fn prose_mcp_tool_counts_match_the_server() -> Result<(), TestError> {
     let server = registered_mcp_sources();
     let server = server.as_str();
-    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)
-        .unwrap()
+    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)?
         .find_iter(server)
         .count();
     assert!(
@@ -5697,8 +5743,7 @@ fn prose_mcp_tool_counts_match_the_server() {
          matching, so this gate is comparing prose against nothing"
     );
 
-    let stale =
-        regex::Regex::new(r"(\d+) (?:Model Context Protocol tools|MCP tools|tools \()").unwrap();
+    let stale = regex::Regex::new(r"(\d+) (?:Model Context Protocol tools|MCP tools|tools \()")?;
     for (path, text) in [
         ("README.md", include_str!("../README.md")),
         (
@@ -5715,7 +5760,7 @@ fn prose_mcp_tool_counts_match_the_server() {
         ("docs/mcp.md", include_str!("../docs/mcp.md")),
     ] {
         for cap in stale.captures_iter(text) {
-            let claimed: usize = cap[1].parse().unwrap();
+            let claimed: usize = cap[1].parse()?;
             assert_eq!(
                 claimed, registered,
                 "{path} says {claimed} MCP tools; src/mcp/server.rs registers \
@@ -5740,14 +5785,13 @@ fn prose_mcp_tool_counts_match_the_server() {
     {
         let home = include_str!("../website/templates/index.html");
         let card =
-            regex::Regex::new(r#"data-count="(\d+)" data-suffix=" MCP tools">(\d+) MCP tools"#)
-                .expect("regex")
+            regex::Regex::new(r#"data-count="(\d+)" data-suffix=" MCP tools">(\d+) MCP tools"#)?
                 .captures(home)
-                .expect(
+                .ok_or(
                     "website/templates/index.html has no MCP tool stat card; if the \
                  card was renamed this gate stopped checking the number a \
                  visitor reads first",
-                );
+                )?;
         for half in [1usize, 2] {
             assert_eq!(
                 card[half].parse::<usize>().unwrap_or(0),
@@ -5761,8 +5805,7 @@ fn prose_mcp_tool_counts_match_the_server() {
     }
 
     let protocol = include_str!("../docs/mcp-protocol.md");
-    let writers = regex::Regex::new(r"read_only_hint = false")
-        .unwrap()
+    let writers = regex::Regex::new(r"read_only_hint = false")?
         .find_iter(server)
         .count();
     assert!(
@@ -5784,6 +5827,7 @@ fn prose_mcp_tool_counts_match_the_server() {
              table must list every one of them."
         );
     }
+    Ok(())
 }
 
 /// No parameter doc may state a row ceiling as a fixed number.
@@ -5798,7 +5842,7 @@ fn prose_mcp_tool_counts_match_the_server() {
 /// setting, so the gate is on the PHRASING rather than on the value: a doc may
 /// name 1000 as the DEFAULT, and may not present it as the limit.
 #[test]
-fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
+fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() -> Result<(), TestError> {
     let banned = [
         "1..=1000",
         "1 to 1000",
@@ -5843,6 +5887,7 @@ fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
         "docs/mcp-tools.md must name the knob somewhere, or this gate is \
          checking that a phrase is absent from a page it never read"
     );
+    Ok(())
 }
 
 /// The tree spells in US English, and nothing held it there.
@@ -5863,7 +5908,7 @@ fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
 /// THIRD-PARTY-NOTICES.md are other people's text, and website/static/llms*.txt
 /// is generated.
 #[test]
-fn the_tree_spells_in_us_english() {
+fn the_tree_spells_in_us_english() -> Result<(), TestError> {
     // WHOLE words, not stems. `aria-labeledby` is a standard HTML attribute
     // spelled that way by the spec and `analysis` is correct US English, so a
     // stem match flags both -- and a gate that cries wolf gets switched off.
@@ -6012,8 +6057,7 @@ fn the_tree_spells_in_us_english() {
     let out = std::process::Command::new("git")
         .args(["ls-files"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
     let listing = String::from_utf8_lossy(&out.stdout);
 
     // SPELL1. Word boundaries are not enough: `_` is a word character, so
@@ -6137,6 +6181,7 @@ fn the_tree_spells_in_us_english() {
         hits.len(),
         hits.join("\n  ")
     );
+    Ok(())
 }
 
 /// The British-spelling list is not empty.
@@ -6147,15 +6192,15 @@ fn the_tree_spells_in_us_english() {
 /// which is indistinguishable from a tree that is clean. The file count and
 /// the list are two different ways for the same gate to prove nothing.
 #[test]
-fn the_british_spelling_list_is_not_empty() {
+fn the_british_spelling_list_is_not_empty() -> Result<(), TestError> {
     let src = include_str!("docs_drift_test.rs");
     let list = src
         .split("const BRITISH: &[&str] = &[")
         .nth(1)
-        .expect("the spelling gate declares its list")
+        .ok_or("the spelling gate declares its list")?
         .split("];")
         .next()
-        .expect("the list is terminated");
+        .ok_or("the list is terminated")?;
     let words = list.matches('"').count() / 2;
     assert!(
         words > 20,
@@ -6170,6 +6215,7 @@ fn the_british_spelling_list_is_not_empty() {
              must stay in the list"
         );
     }
+    Ok(())
 }
 
 /// The contributing guide states the spelling rule.
@@ -6178,11 +6224,9 @@ fn the_british_spelling_list_is_not_empty() {
 /// day. Nothing had told the writer, so the rule was met for the first time as
 /// a rejected commit -- and the fix is a sentence, not a stricter gate.
 #[test]
-fn the_guide_states_the_us_english_rule() {
+fn the_guide_states_the_us_english_rule() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let guide = std::fs::read_to_string(repo.join("CONTRIBUTING.md"))
-        .expect("CONTRIBUTING.md")
-        .to_ascii_lowercase();
+    let guide = std::fs::read_to_string(repo.join("CONTRIBUTING.md"))?.to_ascii_lowercase();
     assert!(
         guide.contains("us english"),
         "CONTRIBUTING.md does not state that prose is US English, so a \
@@ -6192,6 +6236,7 @@ fn the_guide_states_the_us_english_rule() {
         guide.contains("the_tree_spells_in_us_english"),
         "and it must name the gate, so the reader can see what checks it"
     );
+    Ok(())
 }
 
 /// Every packet applier must carry SDP provenance, not just three of four.
@@ -6215,7 +6260,7 @@ fn the_guide_states_the_us_english_rule() {
 /// A source scan rather than a behavioural test on purpose: the failure is
 /// "one of four call sites differs", and that is a property of the source.
 #[test]
-fn every_packet_applier_carries_sdp_provenance() {
+fn every_packet_applier_carries_sdp_provenance() -> Result<(), TestError> {
     const APPLIERS: &[&str] = &[
         "src/pipeline.rs",
         "src/parallel.rs",
@@ -6227,8 +6272,7 @@ fn every_packet_applier_carries_sdp_provenance() {
     let mut carrying = 0usize;
     let mut bare: Vec<&str> = Vec::new();
     for f in APPLIERS {
-        let text =
-            std::fs::read_to_string(root.join(f)).unwrap_or_else(|e| panic!("read {f}: {e}"));
+        let text = std::fs::read_to_string(root.join(f)).map_err(|e| format!("read {f}: {e}"))?;
         // The provenance-carrying call is a strict superset of the bare one's
         // name, so count the bare form only where it is NOT the `_from` call.
         let with = text.matches("link_to_dialog_with_sdp_from(").count();
@@ -6260,6 +6304,7 @@ fn every_packet_applier_carries_sdp_provenance() {
          SdpProvenance::unknown() and silently disables F3 stale-offer aging \
          on that surface: {bare:?}"
     );
+    Ok(())
 }
 
 /// The documented pre-push gate count must match the hook.
@@ -6275,10 +6320,9 @@ fn every_packet_applier_carries_sdp_provenance() {
 /// which is the difference between a number that stays true and a number that
 /// was true once.
 #[test]
-fn documented_pre_push_gate_count_matches_the_hook() {
+fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let hook =
-        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let hook = std::fs::read_to_string(root.join(".githooks/pre-push"))?;
     let gates = hook.matches("\n# -- Hard gate").count();
 
     // A marker that stopped matching would report zero gates and agree with
@@ -6306,7 +6350,12 @@ fn documented_pre_push_gate_count_matches_the_hook() {
         12 => "twelve",
         13 => "thirteen",
         14 => "fourteen",
-        n => panic!("no spelling for {n} gates; add one rather than dropping the check"),
+        n => {
+            return Err(format!(
+                "no spelling for {n} gates; add one rather than dropping the check"
+            )
+            .into());
+        }
     };
 
     for (path, text) in [
@@ -6337,6 +6386,7 @@ fn documented_pre_push_gate_count_matches_the_hook() {
             );
         }
     }
+    Ok(())
 }
 
 /// The deleted WASM-bundle gate must not be documented as live.
@@ -6347,10 +6397,9 @@ fn documented_pre_push_gate_count_matches_the_hook() {
 /// removal — which is a documentation failure with a very long tail, because
 /// a contributor reads it as a rule they are breaking.
 #[test]
-fn the_removed_wasm_bundle_gate_is_not_documented_as_live() {
+fn the_removed_wasm_bundle_gate_is_not_documented_as_live() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let hook = std::fs::read_to_string(root.join(".githooks/pre-commit"))
-        .expect("read .githooks/pre-commit");
+    let hook = std::fs::read_to_string(root.join(".githooks/pre-commit"))?;
     // The hook keeps the reasoning as a comment; it must stay a comment.
     assert!(
         hook.contains("That gate is gone with the binary it guarded"),
@@ -6371,6 +6420,7 @@ fn the_removed_wasm_bundle_gate_is_not_documented_as_live() {
             "{path} describes the deleted WASM-bundle gate as live"
         );
     }
+    Ok(())
 }
 
 /// The pre-push wasm check and CI's must compile for the SAME target.
@@ -6388,7 +6438,7 @@ fn the_removed_wasm_bundle_gate_is_not_documented_as_live() {
 /// Pinned on the flag rather than on the whole command string, so reformatting
 /// either file does not fail this, but dropping the target does.
 #[test]
-fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() {
+fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() -> Result<(), TestError> {
     const TRIPLE: &str = "wasm32-unknown-unknown";
     let hook = include_str!("../.githooks/pre-push");
     let ci = include_str!("../.github/workflows/ci.yml");
@@ -6425,6 +6475,7 @@ fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() {
             "{label} passes a `--target` that is never resolved to {TRIPLE}"
         );
     }
+    Ok(())
 }
 
 /// Each prose gate's path list has ONE source, and all three runners read it.
@@ -6448,7 +6499,7 @@ fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() {
 /// them would either silence codespell on Rust prose or hand vale trees it
 /// cannot read.
 #[test]
-fn the_prose_gate_path_lists_have_one_source() {
+fn the_prose_gate_path_lists_have_one_source() -> Result<(), TestError> {
     /// The runners that must READ a list rather than restate it.
     ///
     /// `.githooks/pre-commit` joined them when the prose gates moved to where
@@ -6480,12 +6531,12 @@ fn the_prose_gate_path_lists_have_one_source() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     for (list_file, tool, floor) in LISTS {
-        let raw = std::fs::read_to_string(repo.join(list_file)).unwrap_or_else(|e| {
-            panic!(
+        let raw = std::fs::read_to_string(repo.join(list_file)).map_err(|e| {
+            format!(
                 "{list_file} is missing ({e}). It is the single source for the \
                  paths {tool} runs over; all three runners read it."
             )
-        });
+        })?;
         let paths: Vec<String> = raw
             .lines()
             .map(|l| l.split('#').next().unwrap_or("").trim())
@@ -6508,7 +6559,7 @@ fn the_prose_gate_path_lists_have_one_source() {
         // has to read the file rather than merely be sourced. Without this the
         // gate would pass on three hooks sourcing a script that reads nothing.
         let shared = std::fs::read_to_string(repo.join(SHARED_SCRIPT))
-            .unwrap_or_else(|e| panic!("cannot read {SHARED_SCRIPT}: {e}"));
+            .map_err(|e| format!("cannot read {SHARED_SCRIPT}: {e}"))?;
         assert!(
             shared
                 .lines()
@@ -6528,7 +6579,7 @@ fn the_prose_gate_path_lists_have_one_source() {
 
         for runner in RUNNERS {
             let text = std::fs::read_to_string(repo.join(runner))
-                .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
+                .map_err(|e| format!("cannot read {runner}: {e}"))?;
 
             // On a line that RUNS, not merely one that mentions it. A comment
             // naming the file satisfied this while the code beside it carried a
@@ -6609,6 +6660,7 @@ fn the_prose_gate_path_lists_have_one_source() {
             }
         }
     }
+    Ok(())
 }
 
 /// The vale version pin has ONE source, and the runners derive it.
@@ -6626,16 +6678,16 @@ fn the_prose_gate_path_lists_have_one_source() {
 /// and says so quietly, which is the shape the corpus and wasm gates were both
 /// found in this week.
 #[test]
-fn the_vale_version_pin_has_one_source() {
+fn the_vale_version_pin_has_one_source() -> Result<(), TestError> {
     const CI: &str = ".github/workflows/quality.yml";
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    let ci = std::fs::read_to_string(repo.join(CI)).expect("read quality.yml");
+    let ci = std::fs::read_to_string(repo.join(CI))?;
     let pin = ci
         .lines()
         .find_map(|l| l.trim().strip_prefix("VALE_VERSION:"))
         .map(|v| v.trim().trim_matches('\'').to_string())
-        .expect("quality.yml declares no VALE_VERSION — this gate now checks nothing");
+        .ok_or("quality.yml declares no VALE_VERSION — this gate now checks nothing")?;
     assert!(
         pin.split('.').all(|p| p.parse::<u32>().is_ok()),
         "{CI} VALE_VERSION is {pin:?}, which is not a version"
@@ -6645,7 +6697,7 @@ fn the_vale_version_pin_has_one_source() {
     // It must genuinely read the workflow, or nothing does.
     const SHARED_SCRIPT: &str = "scripts/prose-gates.sh";
     let shared = std::fs::read_to_string(repo.join(SHARED_SCRIPT))
-        .unwrap_or_else(|e| panic!("cannot read {SHARED_SCRIPT}: {e}"));
+        .map_err(|e| format!("cannot read {SHARED_SCRIPT}: {e}"))?;
     // On a line that reads it. Mutation broke the derivation and this still
     // passed, because the path also appears in the comment explaining it --
     // `contains` proves the string is present, never that it is used.
@@ -6664,7 +6716,7 @@ fn the_vale_version_pin_has_one_source() {
         "scripts/preflight.sh",
     ] {
         let text = std::fs::read_to_string(repo.join(runner))
-            .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
+            .map_err(|e| format!("cannot read {runner}: {e}"))?;
 
         // Derived here, or derived by the script this sources. Either way the
         // literal must not appear: that is what "one source" means.
@@ -6688,6 +6740,7 @@ fn the_vale_version_pin_has_one_source() {
             );
         }
     }
+    Ok(())
 }
 
 /// No ratchet writes its expected value twice.
@@ -6710,7 +6763,7 @@ fn the_vale_version_pin_has_one_source() {
 /// today and drifts tomorrow, which is the shape this whole area has spent the
 /// week removing.
 #[test]
-fn no_ratchet_repeats_its_own_expected_value() {
+fn no_ratchet_repeats_its_own_expected_value() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let script = repo.join("scripts/check-ratchet-messages.py");
     assert!(script.exists(), "missing {}", script.display());
@@ -6718,8 +6771,7 @@ fn no_ratchet_repeats_its_own_expected_value() {
     let out = std::process::Command::new("python3")
         .arg(&script)
         .current_dir(repo)
-        .output()
-        .expect("run scripts/check-ratchet-messages.py (python3 must be on PATH)");
+        .output()?;
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -6743,6 +6795,7 @@ fn no_ratchet_repeats_its_own_expected_value() {
         "the checker reported {scanned} assertions scanned, which is too few to \
          be the real tree -- it passed by reading almost nothing:\n{stdout}"
     );
+    Ok(())
 }
 
 /// The prose gates resolve their tools in ONE place, and all three hooks use it.
@@ -6762,7 +6815,7 @@ fn no_ratchet_repeats_its_own_expected_value() {
 /// price of the duplication above; `scripts/prose-gates.sh` is what makes the
 /// third caller free.
 #[test]
-fn the_prose_gate_logic_has_one_source() {
+fn the_prose_gate_logic_has_one_source() -> Result<(), TestError> {
     const SHARED: &str = "scripts/prose-gates.sh";
     /// Every runner that must SOURCE the shared script rather than reimplement it.
     const RUNNERS: [&str; 3] = [
@@ -6784,9 +6837,9 @@ fn the_prose_gate_logic_has_one_source() {
     ];
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let shared = std::fs::read_to_string(repo.join(SHARED)).unwrap_or_else(|e| {
-        panic!("{SHARED} is missing ({e}); it is where the prose gates resolve their tools")
-    });
+    let shared = std::fs::read_to_string(repo.join(SHARED)).map_err(|e| {
+        format!("{SHARED} is missing ({e}); it is where the prose gates resolve their tools")
+    })?;
 
     // Anti-vacuity: an empty stub would satisfy every assertion below.
     for needle in TOOL_RESOLUTION {
@@ -6799,7 +6852,7 @@ fn the_prose_gate_logic_has_one_source() {
 
     for runner in RUNNERS {
         let text = std::fs::read_to_string(repo.join(runner))
-            .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
+            .map_err(|e| format!("cannot read {runner}: {e}"))?;
 
         // SOURCED, not mentioned. Mutation replaced the `.` line with a
         // hardcoded list and this passed, because the comment above it still
@@ -6841,6 +6894,7 @@ fn the_prose_gate_logic_has_one_source() {
             }
         }
     }
+    Ok(())
 }
 
 /// `llms.txt` and `llms-full.txt` are current with the pages they aggregate.
@@ -6856,7 +6910,7 @@ fn the_prose_gate_logic_has_one_source() {
 /// and running only the internals generator refreshes the mirror a gate DOES
 /// check and leaves these two behind.
 #[test]
-fn llms_aggregates_are_current() {
+fn llms_aggregates_are_current() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // pid and line, never a fixed path: two tests sharing one would race, and a
     // leftover from a killed run would be read as this run's output.
@@ -6870,8 +6924,7 @@ fn llms_aggregates_are_current() {
         .arg(tmp.join("pages"))
         .arg(tmp.join("static"))
         .current_dir(repo)
-        .output()
-        .expect("run scripts/build-site-pages.py — python3 must be on PATH");
+        .output()?;
     assert!(
         out.status.success(),
         "build-site-pages.py failed:\n{}",
@@ -6881,7 +6934,7 @@ fn llms_aggregates_are_current() {
     let mut stale = Vec::new();
     for name in ["llms.txt", "llms-full.txt"] {
         let fresh = std::fs::read_to_string(tmp.join("static").join(name))
-            .unwrap_or_else(|e| panic!("the generator wrote no {name}: {e}"));
+            .map_err(|e| format!("the generator wrote no {name}: {e}"))?;
         let have =
             std::fs::read_to_string(repo.join("website/static").join(name)).unwrap_or_default();
         assert!(
@@ -6900,6 +6953,7 @@ fn llms_aggregates_are_current() {
         "website/static is stale — regenerate with \
          `python3 scripts/build-site-pages.py` and commit: {stale:?}"
     );
+    Ok(())
 }
 
 /// Every function in the vCon modules carries its OWN doc comment.
@@ -6920,7 +6974,7 @@ fn llms_aggregates_are_current() {
 /// above it, not whether the words are right. A shallow check that fires on
 /// the actual failure mode beats a clever one that cannot run.
 #[test]
-fn every_function_in_the_vcon_modules_has_its_own_doc_comment() {
+fn every_function_in_the_vcon_modules_has_its_own_doc_comment() -> Result<(), TestError> {
     // Modules where the vCon work concentrated, and where the splitting
     // actually happened. Not the whole tree: a gate that reports two hundred
     // pre-existing gaps is a gate somebody switches off.
@@ -6932,7 +6986,7 @@ fn every_function_in_the_vcon_modules_has_its_own_doc_comment() {
 
     for module in MODULES {
         let text = std::fs::read_to_string(root.join(module))
-            .unwrap_or_else(|e| panic!("read {module}: {e}"));
+            .map_err(|e| format!("read {module}: {e}"))?;
         let lines: Vec<&str> = text.lines().collect();
         let mut in_tests = false;
 
@@ -6988,6 +7042,7 @@ fn every_function_in_the_vcon_modules_has_its_own_doc_comment() {
          none:\n  {}",
         undocumented.join("\n  ")
     );
+    Ok(())
 }
 
 /// A doc comment block is never separated from its item by a blank line.
@@ -7001,7 +7056,7 @@ fn every_function_in_the_vcon_modules_has_its_own_doc_comment() {
 /// Clippy sees an orphaned block only as `empty_line_after_doc_comments`, and
 /// only sometimes. This is the shape stated directly.
 #[test]
-fn no_doc_comment_block_is_orphaned_from_its_item() {
+fn no_doc_comment_block_is_orphaned_from_its_item() -> Result<(), TestError> {
     const MODULES: &[&str] = &["src/output/vcon.rs", "src/app/batch.rs"];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -7010,7 +7065,7 @@ fn no_doc_comment_block_is_orphaned_from_its_item() {
 
     for module in MODULES {
         let text = std::fs::read_to_string(root.join(module))
-            .unwrap_or_else(|e| panic!("read {module}: {e}"));
+            .map_err(|e| format!("read {module}: {e}"))?;
         let lines: Vec<&str> = text.lines().collect();
 
         for (n, line) in lines.iter().enumerate() {
@@ -7042,6 +7097,7 @@ fn no_doc_comment_block_is_orphaned_from_its_item() {
          it:\n  {}",
         orphaned.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every ratchet constant records why it moved, naming the value it moved to.
@@ -7057,16 +7113,16 @@ fn no_doc_comment_block_is_orphaned_from_its_item() {
 /// The existing constants all carry that sentence. This makes it a rule rather
 /// than a habit.
 #[test]
-fn every_ratchet_constant_records_the_value_it_moved_to() {
+fn every_ratchet_constant_records_the_value_it_moved_to() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let re = regex::Regex::new(r"(?m)^\s*const (EXPECTED_[A-Z_]+): usize = (\d+);").unwrap();
+    let re = regex::Regex::new(r"(?m)^\s*const (EXPECTED_[A-Z_]+): usize = (\d+);")?;
 
     let mut checked = 0usize;
     let mut unattributed: Vec<String> = Vec::new();
 
     for file in ["tests/docs_drift_test.rs", "tests/link_integrity_test.rs"] {
         let text =
-            std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("read {file}: {e}"));
+            std::fs::read_to_string(root.join(file)).map_err(|e| format!("read {file}: {e}"))?;
         let lines: Vec<&str> = text.lines().collect();
 
         for (n, line) in lines.iter().enumerate() {
@@ -7111,6 +7167,7 @@ fn every_ratchet_constant_records_the_value_it_moved_to() {
          that hid a regression:\n  {}",
         unattributed.join("\n  ")
     );
+    Ok(())
 }
 
 /// No gate in this tree treats an empty scan as a pass.
@@ -7127,7 +7184,7 @@ fn every_ratchet_constant_records_the_value_it_moved_to() {
 /// looked at, and refuse to pass on zero. This asserts the convention holds, so
 /// the next scanning gate cannot quietly skip it.
 #[test]
-fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() {
+fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // Gates that walk a corpus: each must assert a floor on what it examined.
     const SCANNERS: &[(&str, &str)] = &[
@@ -7140,15 +7197,15 @@ fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() {
     let mut proven = 0usize;
     for (file, counter) in SCANNERS {
         let text =
-            std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("read {file}: {e}"));
+            std::fs::read_to_string(root.join(file)).map_err(|e| format!("read {file}: {e}"))?;
         // A counter is only meaningful if something bounds it below. Two
         // spellings qualify, and the second is the stronger one: an exact
         // `assert_eq!(counter, EXPECTED_N)` pins the corpus size rather than
         // merely refusing zero. The first draft of this gate recognized only
         // the floor form and reported a gate using the stricter one as
         // unguarded -- a check that is wrong about what counts as a check.
-        let floor = regex::Regex::new(&format!(r"assert!\(\s*{counter}\s*>=?\s*\d+")).unwrap();
-        let exact = regex::Regex::new(&format!(r"assert_eq!\(\s*\n?\s*{counter},")).unwrap();
+        let floor = regex::Regex::new(&format!(r"assert!\(\s*{counter}\s*>=?\s*\d+"))?;
+        let exact = regex::Regex::new(&format!(r"assert_eq!\(\s*\n?\s*{counter},"))?;
         if floor.is_match(&text) || exact.is_match(&text) {
             proven += 1;
         }
@@ -7161,6 +7218,7 @@ fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() {
          that count, so an empty corpus reads as a clean pass. Every entry in \
          SCANNERS must have an `assert!(<counter> > N, ...)` beside its loop."
     );
+    Ok(())
 }
 
 /// Every refusal in `pre-push` sits inside a marked gate.
@@ -7179,14 +7237,13 @@ fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() {
 /// was this test's first draft, and it reported the hook as broken when the
 /// hook was right.
 #[test]
-fn every_refusal_in_pre_push_sits_inside_a_marked_gate() {
+fn every_refusal_in_pre_push_sits_inside_a_marked_gate() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let hook =
-        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let hook = std::fs::read_to_string(root.join(".githooks/pre-push"))?;
 
     let first_marker = hook
         .find("\n# -- Hard gate")
-        .expect("pre-push has no `# -- Hard gate` markers at all");
+        .ok_or("pre-push has no `# -- Hard gate` markers at all")?;
 
     let markers = hook.matches("\n# -- Hard gate").count();
     let refusals = hook.matches("Push blocked").count();
@@ -7205,6 +7262,7 @@ fn every_refusal_in_pre_push_sits_inside_a_marked_gate() {
          `# -- Hard gate` marker, so those gates are invisible to the count \
          the documents are checked against"
     );
+    Ok(())
 }
 
 /// The spelling table covers every count the hook can currently reach.
@@ -7214,14 +7272,12 @@ fn every_refusal_in_pre_push_sits_inside_a_marked_gate() {
 /// adding an eleventh gate turns a documentation check into a panic about a
 /// missing match arm, several minutes into a CI run. Cheaper to say so here.
 #[test]
-fn the_gate_count_spelling_table_covers_one_more_than_today() {
+fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let hook =
-        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let hook = std::fs::read_to_string(root.join(".githooks/pre-push"))?;
     let gates = hook.matches("\n# -- Hard gate").count();
 
-    let test_src =
-        std::fs::read_to_string(root.join("tests/docs_drift_test.rs")).expect("read this file");
+    let test_src = std::fs::read_to_string(root.join("tests/docs_drift_test.rs"))?;
     // The arm for the NEXT gate must already exist, so adding one is a doc
     // edit rather than a panic.
     let next = gates + 1;
@@ -7242,7 +7298,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() {
         .iter()
         .find(|(n, _)| *n == next)
         .map(|(_, s)| *s)
-        .unwrap_or_else(|| panic!("extend this table past {next}"));
+        .ok_or_else(|| format!("extend this table past {next}"))?;
 
     assert!(
         test_src.contains(&format!("=> \"{want}\"")),
@@ -7252,6 +7308,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() {
          {next} (\"{want}\"). Adding a gate would panic there instead of \
          reporting a documentation mismatch."
     );
+    Ok(())
 }
 
 /// Every `FOREIGN_FLAGS` entry still describes a document that carries it.
@@ -7267,7 +7324,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() {
 /// never implemented, and pass. Entries are cheap to add under deadline; this
 /// is what makes them cost something to keep.
 #[test]
-fn no_foreign_flag_exemption_outlives_the_text_it_was_cut_for() {
+fn no_foreign_flag_exemption_outlives_the_text_it_was_cut_for() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut stale: Vec<String> = Vec::new();
     let mut checked = 0usize;
@@ -7297,6 +7354,7 @@ fn no_foreign_flag_exemption_outlives_the_text_it_was_cut_for() {
          holes in `readme_long_flags_exist_in_cli` protecting nothing:\n  {}",
         stale.join("\n  ")
     );
+    Ok(())
 }
 
 /// A foreign-flag exemption never names a flag sipnab actually has.
@@ -7306,9 +7364,9 @@ fn no_foreign_flag_exemption_outlives_the_text_it_was_cut_for() {
 /// `--interface` are all plausible -- then that page can document it wrongly
 /// and the gate stays silent, because the name is on the exemption list.
 #[test]
-fn no_foreign_flag_exemption_shadows_a_real_sipnab_flag() {
+fn no_foreign_flag_exemption_shadows_a_real_sipnab_flag() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cli = std::fs::read_to_string(root.join("src/cli.rs")).expect("read src/cli.rs");
+    let cli = std::fs::read_to_string(root.join("src/cli.rs"))?;
 
     let mut shadowed: Vec<&str> = Vec::new();
     for (flag, _) in FOREIGN_FLAGS {
@@ -7328,6 +7386,7 @@ fn no_foreign_flag_exemption_shadows_a_real_sipnab_flag() {
          a page can document sipnab's version of the flag incorrectly and \
          `readme_long_flags_exist_in_cli` will not notice."
     );
+    Ok(())
 }
 
 /// Every `NOT CHECKED` in `pre-push` tells the operator what to do about it.
@@ -7347,10 +7406,9 @@ fn no_foreign_flag_exemption_shadows_a_real_sipnab_flag() {
 /// varies: sometimes it is an install command, sometimes it is which CI job
 /// still covers you.
 #[test]
-fn every_not_checked_branch_in_pre_push_says_what_to_do() {
+fn every_not_checked_branch_in_pre_push_says_what_to_do() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let hook =
-        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let hook = std::fs::read_to_string(root.join(".githooks/pre-push"))?;
     let lines: Vec<&str> = hook.lines().collect();
 
     let mut silent: Vec<String> = Vec::new();
@@ -7393,6 +7451,7 @@ fn every_not_checked_branch_in_pre_push_says_what_to_do() {
          tool:\n  {}",
         silent.join("\n  ")
     );
+    Ok(())
 }
 
 /// The OpenSIPS and Kamailio guides tell a reader on a freshly booted machine
@@ -7407,10 +7466,10 @@ fn every_not_checked_branch_in_pre_push_says_what_to_do() {
 /// exited 100, and the same command run after the holder finished exited 0.
 /// The quoted text must stay apt's own words, so a reader can match it.
 #[test]
-fn guides_explain_the_dpkg_lock_error_in_apts_own_words() {
+fn guides_explain_the_dpkg_lock_error_in_apts_own_words() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for guide in ["docs/opensips.md", "docs/kamailio.md"] {
-        let text = std::fs::read_to_string(root.join(guide)).expect("read guide");
+        let text = std::fs::read_to_string(root.join(guide))?;
         let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
             flat.contains("Could not get lock /var/lib/dpkg/lock-frontend. It is held by process"),
@@ -7421,4 +7480,5 @@ fn guides_explain_the_dpkg_lock_error_in_apts_own_words() {
             "{guide} no longer says what to do about it"
         );
     }
+    Ok(())
 }

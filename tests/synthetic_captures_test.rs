@@ -33,14 +33,17 @@ mod synthetic_captures;
 
 use synthetic_captures::OWNED;
 
+/// Any error, boxed, so `?` works on every error type alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Absolute path of a repository-relative file.
 fn repo(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
 /// Read a committed file, naming it if it cannot be read.
-fn committed(rel: &str) -> Vec<u8> {
-    std::fs::read(repo(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn committed(rel: &str) -> Result<Vec<u8>, TestError> {
+    Ok(std::fs::read(repo(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The regeneration command, quoted by every failure that needs it.
@@ -103,11 +106,11 @@ fn udp_of(frame: &[u8]) -> Option<Udp<'_>> {
     }
     let ihl = usize::from(frame[14] & 0x0f) * 4;
     let l4 = 14 + ihl;
-    let mac = |at: usize| -> [u8; 6] { frame[at..at + 6].try_into().expect("six bytes") };
+    let mac = |at: usize| -> Option<[u8; 6]> { frame[at..at + 6].try_into().ok() };
     let quad = |at: usize| Ipv4Addr::new(frame[at], frame[at + 1], frame[at + 2], frame[at + 3]);
     Some(Udp {
-        dst_mac: mac(0),
-        src_mac: mac(6),
+        dst_mac: mac(0)?,
+        src_mac: mac(6)?,
         src: quad(26),
         dst: quad(30),
         flags: u16::from_be_bytes([frame[20], frame[21]]),
@@ -194,9 +197,9 @@ fn hep_chunks(payload: &[u8]) -> Vec<(u16, &[u8])> {
 
 /// Every owned capture is byte for byte what its builder produces.
 #[test]
-fn every_owned_capture_is_what_its_generator_builds() {
+fn every_owned_capture_is_what_its_generator_builds() -> Result<(), TestError> {
     for owned in OWNED {
-        let on_disk = committed(owned.path);
+        let on_disk = committed(owned.path)?;
         let built = (owned.build)();
         if on_disk != built {
             let first = on_disk
@@ -204,7 +207,7 @@ fn every_owned_capture_is_what_its_generator_builds() {
                 .zip(&built)
                 .position(|(a, b)| a != b)
                 .unwrap_or(on_disk.len().min(built.len()));
-            panic!(
+            return Err(format!(
                 "{} is not what tests/support/synthetic_captures.rs builds: \
                  {} bytes committed, {} built, first difference at byte {first}. \
                  A capture that differs from its generator has no provenance. \
@@ -213,14 +216,16 @@ fn every_owned_capture_is_what_its_generator_builds() {
                 owned.path,
                 on_disk.len(),
                 built.len(),
-            );
+            )
+            .into());
         }
     }
+    Ok(())
 }
 
 /// Building twice gives the same bytes: no clock, no randomness.
 #[test]
-fn the_generator_is_deterministic() {
+fn the_generator_is_deterministic() -> Result<(), TestError> {
     for owned in OWNED {
         assert!(
             (owned.build)() == (owned.build)(),
@@ -229,6 +234,7 @@ fn the_generator_is_deterministic() {
             owned.path
         );
     }
+    Ok(())
 }
 
 /// Nothing in an owned capture could have come from a real network.
@@ -238,10 +244,10 @@ fn the_generator_is_deterministic() {
 /// as text in a payload too, and the inner addresses of every HEP datagram on
 /// loopback, where rtpengine's own ng socket lives.
 #[test]
-fn owned_captures_carry_only_documentation_identifiers() {
+fn owned_captures_carry_only_documentation_identifiers() -> Result<(), TestError> {
     let mut offenders: Vec<String> = Vec::new();
     for owned in OWNED {
-        for (n, rec) in records(&committed(owned.path)).iter().enumerate() {
+        for (n, rec) in records(&committed(owned.path)?).iter().enumerate() {
             let Some(frame) = udp_of(&rec.data) else {
                 continue;
             };
@@ -276,20 +282,21 @@ fn owned_captures_carry_only_documentation_identifiers() {
         offenders.len(),
         offenders[..offenders.len().min(8)].join("\n  ")
     );
+    Ok(())
 }
 
 /// Every deliberate exception is used: its address is in its capture, both
 /// in an IP header and written in a payload, so the list cannot outlive the
 /// reason it was written for.
 #[test]
-fn every_deliberate_address_is_still_where_it_is_listed() {
+fn every_deliberate_address_is_still_where_it_is_listed() -> Result<(), TestError> {
     for (path, addr, why) in DELIBERATE {
         assert!(!why.is_empty(), "{path}: an exception with no reason");
         assert!(
             !deliberate("tests/fixtures/sip_call.pcap", *addr),
             "the exception for {addr} is {path}'s alone"
         );
-        let recs = records(&committed(path));
+        let recs = records(&committed(path)?);
         let frames: Vec<Udp<'_>> = recs.iter().filter_map(|r| udp_of(&r.data)).collect();
         assert!(
             frames.iter().any(|f| f.src == *addr || f.dst == *addr),
@@ -302,6 +309,7 @@ fn every_deliberate_address_is_still_where_it_is_listed() {
             "{path} no longer writes {addr} in a payload"
         );
     }
+    Ok(())
 }
 
 // ── the relay pair ──────────────────────────────────────────────────
@@ -317,9 +325,10 @@ const RELAY_MEDIA_ONLY: &str = "tests/fixtures/rtpengine-media-only.pcap";
 /// is the control plane, so the control plane is the only thing that can have
 /// named the call.
 #[test]
-fn the_media_only_capture_is_the_relay_capture_without_its_control_plane() {
-    let with = records(&committed(RELAY_NG));
-    let without = records(&committed(RELAY_MEDIA_ONLY));
+fn the_media_only_capture_is_the_relay_capture_without_its_control_plane() -> Result<(), TestError>
+{
+    let with = records(&committed(RELAY_NG)?);
+    let without = records(&committed(RELAY_MEDIA_ONLY)?);
     let (control, media): (Vec<&Rec>, Vec<&Rec>) = with
         .iter()
         .partition(|r| udp_of(&r.data).is_some_and(|u| u.dport == 9060));
@@ -341,6 +350,7 @@ fn the_media_only_capture_is_the_relay_capture_without_its_control_plane() {
              longer isolates the control plane"
         );
     }
+    Ok(())
 }
 
 /// The control plane keeps the shapes a live rtpengine 12.5.1 sent.
@@ -352,8 +362,8 @@ fn the_media_only_capture_is_the_relay_capture_without_its_control_plane() {
 /// own, the relay's allocated ports only in the replies, and a `delete` reply
 /// too large for one packet, of which the capture holds the first fragment.
 #[test]
-fn the_relay_control_plane_keeps_rtpengine_wire_shapes() {
-    let recs = records(&committed(RELAY_NG));
+fn the_relay_control_plane_keeps_rtpengine_wire_shapes() -> Result<(), TestError> {
+    let recs = records(&committed(RELAY_NG)?);
     let control: Vec<Udp<'_>> = recs
         .iter()
         .filter_map(|r| udp_of(&r.data))
@@ -375,11 +385,11 @@ fn the_relay_control_plane_keeps_rtpengine_wire_shapes() {
             Some(&b"km-670bd208@sipnab"[..]),
             "every datagram, reply or request, names the call in its correlation id"
         );
-        let payload = find(0x0f).expect("a payload chunk");
+        let payload = find(0x0f).ok_or("a payload chunk")?;
         let space = payload
             .iter()
             .position(|b| *b == b' ')
-            .expect("an ng message is a cookie, a space, and the body");
+            .ok_or("an ng message is a cookie, a space, and the body")?;
         bodies.push(String::from_utf8_lossy(&payload[space + 1..]).into_owned());
     }
 
@@ -392,7 +402,7 @@ fn the_relay_control_plane_keeps_rtpengine_wire_shapes() {
         delete_reply,
     ] = &bodies[..]
     else {
-        panic!("six bodies");
+        return Err("six bodies".into());
     };
     assert!(
         offer.starts_with("d7:command5:offer7:call-id18:km-670bd208@sipnab8:from-tag5:ftag13:sdp"),
@@ -427,6 +437,7 @@ fn the_relay_control_plane_keeps_rtpengine_wire_shapes() {
         last.payload.len() + 8
     );
     assert!(delete_reply.starts_with("d7:createdi"), "{delete_reply}");
+    Ok(())
 }
 
 // ── the fuzz seed ───────────────────────────────────────────────────
@@ -437,8 +448,8 @@ fn the_relay_control_plane_keeps_rtpengine_wire_shapes() {
 /// inside. The reader must yield the two it can and stop, which is the
 /// behavior the seed exists to start the fuzzer next to.
 #[test]
-fn the_truncated_seed_is_truncated_the_way_its_name_says() {
-    let bytes = committed("fuzz/corpus/pcap_reader/truncated-sip");
+fn the_truncated_seed_is_truncated_the_way_its_name_says() -> Result<(), TestError> {
+    let bytes = committed("fuzz/corpus/pcap_reader/truncated-sip")?;
     let whole = records(&bytes);
     assert_eq!(whole.len(), 2, "two records the file holds in full");
     assert_eq!(whole[0].caplen, whole[0].orig_len, "the first is whole");
@@ -456,21 +467,22 @@ fn the_truncated_seed_is_truncated_the_way_its_name_says() {
 
     // And sipnab's own reader agrees, stopping without reading past the end.
     let read: Vec<_> = sipnab::PcapReader::new(&bytes)
-        .expect("a valid header")
+        .map_err(|e| format!("a valid header: {e:?}"))?
         .collect();
     assert_eq!(read.len(), 2);
     assert!((read[1].data.len() as u32) < read[1].orig_len);
+    Ok(())
 }
 
 // ── the codecs ──────────────────────────────────────────────────────
 
 /// Decode a hex literal.
-fn hex(s: &str) -> Vec<u8> {
+fn hex(s: &str) -> Result<Vec<u8>, TestError> {
     let s: String = s.split_whitespace().collect();
-    (0..s.len())
+    Ok((0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
-        .collect()
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("hex: {e:?}")))
+        .collect::<Result<Vec<u8>, String>>()?)
 }
 
 /// Full-scale pseudo-random samples from the C library's classic LCG, so the
@@ -495,18 +507,19 @@ fn lcg_noise(count: usize) -> Vec<i16> {
 /// two frames of it; the second is full-scale noise, which drives both
 /// sub-bands' quantizers and scale factors to their limits.
 #[test]
-fn the_g722_encoder_matches_two_independent_implementations() {
+fn the_g722_encoder_matches_two_independent_implementations() -> Result<(), TestError> {
     let wideband: Vec<i16> = (0..640).map(codecs::wideband_sample).collect();
     assert_eq!(
         codecs::g722_encode(&wideband),
-        hex(G722_WIDEBAND_VECTOR),
+        hex(G722_WIDEBAND_VECTOR)?,
         "the fixtures' signal"
     );
     assert_eq!(
         codecs::g722_encode(&lcg_noise(480)),
-        hex(G722_NOISE_VECTOR),
+        hex(G722_NOISE_VECTOR)?,
         "full-scale noise"
     );
+    Ok(())
 }
 
 /// SHA-256 of `bytes`, in lowercase hex.
@@ -525,7 +538,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// it to the same 24,000 bytes, and this encoder must too; the vector is
 /// compared by hash to keep 24 KB of hex out of the file.
 #[test]
-fn the_g722_encoder_matches_them_across_three_levels_of_noise() {
+fn the_g722_encoder_matches_them_across_three_levels_of_noise() -> Result<(), TestError> {
     let signal: Vec<i16> = lcg_noise(48_000)
         .iter()
         .enumerate()
@@ -537,6 +550,7 @@ fn the_g722_encoder_matches_them_across_three_levels_of_noise() {
         sha256_hex(&encoded),
         "baab5d97989d0b60a628c023a9a0a32646faff41c7929ee364cd3edfe94529e8"
     );
+    Ok(())
 }
 
 /// Both G.711 encoders agree with CPython's `audioop` (`lin2alaw` and
@@ -545,7 +559,7 @@ fn the_g722_encoder_matches_them_across_three_levels_of_noise() {
 /// compared by hash; each was computed from `audioop` over the inputs in
 /// ascending order, from -32768 to 32767.
 #[test]
-fn the_g711_encoders_match_cpython_on_every_input() {
+fn the_g711_encoders_match_cpython_on_every_input() -> Result<(), TestError> {
     let alaw: Vec<u8> = (i16::MIN..=i16::MAX).map(codecs::alaw).collect();
     let ulaw: Vec<u8> = (i16::MIN..=i16::MAX).map(codecs::ulaw).collect();
     assert_eq!(
@@ -558,12 +572,13 @@ fn the_g711_encoders_match_cpython_on_every_input() {
         "81d633c9e6972a18c74a58720b96cb8ca0bdd096d4060b646dd708c3b846019a",
         "mu-law"
     );
+    Ok(())
 }
 
 /// Encoding frame by frame on one encoder is the same as encoding the whole
 /// signal at once: the state carries across calls, as a sender's does.
 #[test]
-fn the_g722_encoder_carries_its_state_across_frames() {
+fn the_g722_encoder_carries_its_state_across_frames() -> Result<(), TestError> {
     let signal: Vec<i16> = (0..3200).map(codecs::wideband_sample).collect();
     let mut encoder = codecs::G722Encoder::new();
     let framed: Vec<u8> = signal
@@ -571,6 +586,7 @@ fn the_g722_encoder_carries_its_state_across_frames() {
         .flat_map(|frame| encoder.encode(frame))
         .collect();
     assert_eq!(framed, codecs::g722_encode(&signal));
+    Ok(())
 }
 
 /// spandsp 0.0.6 and FFmpeg on the first 640 samples of `wideband_sample`.
@@ -607,7 +623,7 @@ fn alaw_expand(code: u8) -> i16 {
 /// [`alaw_expand`], whose magnitudes are pinned to sipnab's decoder and whose
 /// sign is pinned to sox and FFmpeg.
 #[test]
-fn the_g711_encoders_invert_a_g711_decoder() {
+fn the_g711_encoders_invert_a_g711_decoder() -> Result<(), TestError> {
     use sipnab::rtp::g711::{alaw_to_pcm, ulaw_to_pcm};
     assert_eq!((alaw_expand(0xd5), alaw_expand(0x55)), (8, -8));
     assert_eq!((alaw_expand(0x80), alaw_expand(0x00)), (5504, -5504));
@@ -644,13 +660,14 @@ fn the_g711_encoders_invert_a_g711_decoder() {
             previous = y;
         }
     }
+    Ok(())
 }
 
 /// The sine table is the sine it says it is, to within rounding. Checked
 /// with floating point here, where a last-bit difference between platforms
 /// cannot matter, so the generator itself never has to use it.
 #[test]
-fn the_sine_table_is_a_sine() {
+fn the_sine_table_is_a_sine() -> Result<(), TestError> {
     for (k, v) in codecs::SINE16.iter().enumerate() {
         let exact = 32767.0 * (2.0 * std::f64::consts::PI * k as f64 / 16.0).sin();
         assert!(
@@ -658,6 +675,7 @@ fn the_sine_table_is_a_sine() {
             "entry {k}: {v} vs {exact}"
         );
     }
+    Ok(())
 }
 
 // ── the SIPp media files ────────────────────────────────────────────
@@ -707,12 +725,12 @@ fn times_us(bytes: &[u8]) -> Vec<u64> {
 /// sequence numbers and timestamps that advance by one frame each, and the
 /// packet count that keeps the scenarios' timing.
 #[test]
-fn the_sipp_media_files_are_one_steady_stream_each() {
+fn the_sipp_media_files_are_one_steady_stream_each() -> Result<(), TestError> {
     for (path, pt, packets) in [
         ("harness/sipp/scenarios/g711a.pcap", 8u8, 5535usize),
         ("harness/sipp/scenarios/g722.pcap", 9, 5413),
     ] {
-        let bytes = committed(path);
+        let bytes = committed(path)?;
         let recs = records(&bytes);
         assert_eq!(recs.len(), packets, "{path}: packet count");
         let rtp: Vec<RtpFields> = recs
@@ -720,9 +738,9 @@ fn the_sipp_media_files_are_one_steady_stream_each() {
             .map(|r| {
                 udp_of(&r.data)
                     .and_then(|u| rtp_of(u.payload))
-                    .unwrap_or_else(|| panic!("{path}: a record that is not RTP"))
+                    .ok_or_else(|| format!("{path}: a record that is not RTP"))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         for (i, p) in rtp.iter().enumerate() {
             assert_eq!(p.pt, pt, "{path} packet {i}: payload type");
             assert_eq!(p.payload_len, 160, "{path} packet {i}: 20 ms payload");
@@ -739,6 +757,7 @@ fn the_sipp_media_files_are_one_steady_stream_each() {
             "{path}: packets are 20 ms apart"
         );
     }
+    Ok(())
 }
 
 // ── the OpenSIPS relay pair ─────────────────────────────────────────
@@ -749,9 +768,10 @@ const OS_MEDIA_ONLY: &str = "tests/fixtures/rtpengine-opensips-media-only.pcap";
 /// The media-only twin is the relay capture minus its four HEP datagrams,
 /// every other record identical, so the pair isolates the control plane.
 #[test]
-fn the_opensips_media_only_capture_is_the_relay_capture_without_its_control_plane() {
-    let with = records(&committed(OS_NG));
-    let without = records(&committed(OS_MEDIA_ONLY));
+fn the_opensips_media_only_capture_is_the_relay_capture_without_its_control_plane()
+-> Result<(), TestError> {
+    let with = records(&committed(OS_NG)?);
+    let without = records(&committed(OS_MEDIA_ONLY)?);
     let (control, media): (Vec<&Rec>, Vec<&Rec>) = with
         .iter()
         .partition(|r| udp_of(&r.data).is_some_and(|u| u.dport == 9060));
@@ -761,19 +781,20 @@ fn the_opensips_media_only_capture_is_the_relay_capture_without_its_control_plan
     for (n, (a, b)) in media.iter().zip(&without).enumerate() {
         assert!(a.data == b.data, "media record {n} differs between the two");
     }
+    Ok(())
 }
 
 /// The caller's packets are what SIPp replays from g722.pcap, header and
 /// payload, and the relay forwards each as PCMU under the same sequence
 /// number, timestamp and SSRC: a transcode, not a new stream.
 #[test]
-fn the_opensips_relay_transcodes_the_start_of_g722_pcap() {
-    let media: Vec<Vec<u8>> = records(&committed("harness/sipp/scenarios/g722.pcap"))
+fn the_opensips_relay_transcodes_the_start_of_g722_pcap() -> Result<(), TestError> {
+    let media: Vec<Vec<u8>> = records(&committed("harness/sipp/scenarios/g722.pcap")?)
         .iter()
         .take(21)
-        .map(|r| udp_of(&r.data).expect("udp").payload.to_vec())
-        .collect();
-    let recs = records(&committed(OS_NG));
+        .map(|r| udp_of(&r.data).map(|u| u.payload.to_vec()).ok_or("udp"))
+        .collect::<Result<_, _>>()?;
+    let recs = records(&committed(OS_NG)?);
     let frames: Vec<Udp<'_>> = recs.iter().filter_map(|r| udp_of(&r.data)).collect();
     let caller: Vec<&[u8]> = frames
         .iter()
@@ -783,8 +804,8 @@ fn the_opensips_relay_transcodes_the_start_of_g722_pcap() {
     let relayed: Vec<RtpFields> = frames
         .iter()
         .filter(|u| u.dport == 6000)
-        .map(|u| rtp_of(u.payload).expect("rtp"))
-        .collect();
+        .map(|u| rtp_of(u.payload).ok_or("rtp"))
+        .collect::<Result<_, _>>()?;
     assert_eq!(caller.len(), 21);
     for (n, (sent, played)) in caller.iter().zip(&media).enumerate() {
         assert!(
@@ -794,10 +815,11 @@ fn the_opensips_relay_transcodes_the_start_of_g722_pcap() {
     }
     assert_eq!(relayed.len(), 19);
     for (n, out) in relayed.iter().enumerate() {
-        let inp = rtp_of(caller[n]).expect("rtp");
+        let inp = rtp_of(caller[n]).ok_or("rtp")?;
         assert_eq!((inp.pt, out.pt), (9, 0), "G.722 in, PCMU out");
         assert_eq!((out.seq, out.ts, out.ssrc), (inp.seq, inp.ts, inp.ssrc));
     }
+    Ok(())
 }
 
 /// The control plane keeps OpenSIPS's shapes: the Call-ID on every datagram's
@@ -805,8 +827,8 @@ fn the_opensips_relay_transcodes_the_start_of_g722_pcap() {
 /// `command` last, replies with no `call-id`, and the relay's ports only in
 /// the replies.
 #[test]
-fn the_opensips_control_plane_keeps_its_wire_shapes() {
-    let recs = records(&committed(OS_NG));
+fn the_opensips_control_plane_keeps_its_wire_shapes() -> Result<(), TestError> {
+    let recs = records(&committed(OS_NG)?);
     let bodies: Vec<String> = recs
         .iter()
         .filter_map(|r| udp_of(&r.data))
@@ -816,13 +838,13 @@ fn the_opensips_control_plane_keeps_its_wire_shapes() {
             let find = |k: u16| chunks.iter().find(|(t, _)| *t == k).map(|(_, v)| *v);
             assert_eq!(find(0x0b), Some(&[0x3d][..]), "capture protocol ng");
             assert_eq!(find(0x11), Some(&b"1-4062@198.51.100.21"[..]));
-            let payload = find(0x0f).expect("payload chunk");
-            let space = payload.iter().position(|b| *b == b' ').expect("cookie");
-            String::from_utf8_lossy(&payload[space + 1..]).into_owned()
+            let payload = find(0x0f).ok_or("payload chunk")?;
+            let space = payload.iter().position(|b| *b == b' ').ok_or("cookie")?;
+            Ok::<String, TestError>(String::from_utf8_lossy(&payload[space + 1..]).into_owned())
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let [offer, offer_reply, answer, answer_reply] = &bodies[..] else {
-        panic!("four bodies, not {}", bodies.len());
+        return Err(format!("four bodies, not {}", bodies.len()).into());
     };
     for (request, command) in [(offer, "5:offer"), (answer, "6:answer")] {
         assert!(request.starts_with("d3:sdp"), "{request}");
@@ -841,6 +863,7 @@ fn the_opensips_control_plane_keeps_its_wire_shapes() {
         assert!(reply.contains(&format!("m=audio {port} ")), "{reply}");
         assert!(reply.ends_with("6:result2:oke"), "{reply}");
     }
+    Ok(())
 }
 
 // ── the OpenSIPS proxy's view of the same call ──────────────────────
@@ -861,16 +884,18 @@ fn sip_body(message: &str) -> &str {
 /// rewrite of that is what the proxy relays to the caller. The proxy sees no
 /// media, and the relay sees no SIP.
 #[test]
-fn the_proxy_capture_is_the_signaling_half_of_the_relay_capture() {
-    let proxy = records(&committed(OS_PROXY));
+fn the_proxy_capture_is_the_signaling_half_of_the_relay_capture() -> Result<(), TestError> {
+    let proxy = records(&committed(OS_PROXY)?);
     let messages: Vec<String> = proxy
         .iter()
         .map(|r| {
-            let u = udp_of(&r.data).expect("every proxy frame is UDP");
+            let u = udp_of(&r.data).ok_or("every proxy frame is UDP")?;
             assert_eq!(u.dport, 5060, "SIP only, no media");
-            String::from_utf8(u.payload.to_vec()).expect("SIP is text")
+            Ok::<String, TestError>(
+                String::from_utf8(u.payload.to_vec()).map_err(|e| format!("SIP is text: {e:?}"))?,
+            )
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     assert!(!messages.is_empty());
     for m in &messages {
         assert!(
@@ -886,22 +911,28 @@ fn the_proxy_capture_is_the_signaling_half_of_the_relay_capture() {
 
     // The `sdp` value of each `ng` message, in capture order: bencode writes
     // it as `3:sdp<length>:<bytes>`.
-    let relay_sdps: Vec<String> = records(&committed(OS_NG))
+    let relay_sdps: Vec<String> = records(&committed(OS_NG)?)
         .iter()
         .filter_map(|r| udp_of(&r.data))
         .filter(|u| u.dport == 9060)
         .map(|u| {
             let text = String::from_utf8_lossy(u.payload).into_owned();
-            let at = text.find("3:sdp").expect("every ng message carries an sdp") + 5;
-            let colon = at + text[at..].find(':').expect("a bencode length");
-            let len: usize = text[at..colon].parse().expect("a decimal length");
-            text[colon + 1..colon + 1 + len].to_string()
+            let at = text
+                .find("3:sdp")
+                .ok_or("every ng message carries an sdp")?
+                + 5;
+            let colon = at + text[at..].find(':').ok_or("a bencode length")?;
+            let len: usize = text[at..colon]
+                .parse()
+                .map_err(|e| format!("a decimal length: {e:?}"))?;
+            Ok::<String, TestError>(text[colon + 1..colon + 1 + len].to_string())
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     assert_eq!(relay_sdps.len(), 4, "offer, reply, answer, reply");
     assert_eq!(
         bodies, relay_sdps,
         "the proxy's SDP, in order, must be the relay control plane's: offer in, \
          the relay's rewrite out, answer in, the relay's rewrite out"
     );
+    Ok(())
 }

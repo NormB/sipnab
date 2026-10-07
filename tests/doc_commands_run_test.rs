@@ -41,6 +41,8 @@ use std::process::Command;
 
 use clap::CommandFactory;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Repository root.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -119,13 +121,11 @@ struct Invocation {
 ///
 /// Backslash continuations are joined first, so a command split over five lines
 /// is one invocation rather than five fragments that parse as nothing.
-fn documented_invocations() -> Vec<Invocation> {
-    let fence = regex::Regex::new(r"^```(bash|sh|shell|console)\s*$").expect("regex");
-    let starts = regex::Regex::new(r"^(sudo\s+)?([A-Z_][A-Z0-9_]*=\S+\s+)*(\./)?sipnab(\s|$)")
-        .expect("regex");
+fn documented_invocations() -> Result<Vec<Invocation>, TestError> {
+    let fence = regex::Regex::new(r"^```(bash|sh|shell|console)\s*$")?;
+    let starts = regex::Regex::new(r"^(sudo\s+)?([A-Z_][A-Z0-9_]*=\S+\s+)*(\./)?sipnab(\s|$)")?;
     let mut out = Vec::new();
-    let mut pages: Vec<PathBuf> = std::fs::read_dir(repo().join("docs"))
-        .expect("docs/ is readable")
+    let mut pages: Vec<PathBuf> = std::fs::read_dir(repo().join("docs"))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
@@ -144,7 +144,7 @@ fn documented_invocations() -> Vec<Invocation> {
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_owned();
-        let text = std::fs::read_to_string(&page).expect("a readable page");
+        let text = std::fs::read_to_string(&page)?;
         let lines: Vec<&str> = text.lines().collect();
         let mut inside = false;
         let mut i = 0;
@@ -176,37 +176,35 @@ fn documented_invocations() -> Vec<Invocation> {
             i += 1;
         }
     }
-    out
+    Ok(out)
 }
 
 /// What to do with one documented invocation.
 ///
 /// Ordered by what MUST win. A command that both names a device and installs an
 /// exec hook is not run, because the hook is the dangerous half.
-fn classify(cmd: &str) -> Plan {
+fn classify(cmd: &str) -> Result<Plan, TestError> {
     // Never run, whatever else it says.
     let side_effects = regex::Regex::new(
         r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend|--setup-caps)(\s|=|$)",
-    )
-    .expect("regex");
+    )?;
     if side_effects.is_match(cmd) {
-        return Plan::SideEffects;
+        return Ok(Plan::SideEffects);
     }
     // `$(…)`, `$VAR`, or a line that opens a loop: the shell is doing the work.
-    let shell_var = regex::Regex::new(r"\$[A-Za-z_(]").expect("regex");
+    let shell_var = regex::Regex::new(r"\$[A-Za-z_(]")?;
     if shell_var.is_match(cmd) || cmd.contains("; do") || cmd.contains("; then") {
-        return Plan::ShellProgram;
+        return Ok(Plan::ShellProgram);
     }
-    let serves =
-        regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics|-L|--hep-listen)(\s|=|$)").expect("regex");
+    let serves = regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics|-L|--hep-listen)(\s|=|$)")?;
     if serves.is_match(cmd) {
-        return Plan::Bounded;
+        return Ok(Plan::Bounded);
     }
-    let device = regex::Regex::new(r"(^|\s)(-d|--device)(\s|=)").expect("regex");
+    let device = regex::Regex::new(r"(^|\s)(-d|--device)(\s|=)")?;
     if device.is_match(cmd) || cmd.starts_with("sudo ") {
-        return Plan::ReadsFakeDevice;
+        return Ok(Plan::ReadsFakeDevice);
     }
-    Plan::Reads
+    Ok(Plan::Reads)
 }
 
 /// A device name no host has. Long and self-describing so that if it ever DOES
@@ -335,26 +333,26 @@ fn command(p: &Prepared) -> Command {
 
 /// Run every command to completion on a few threads, and return each one's
 /// usage error (or `None`) in the order given.
-fn run_side_by_side(commands: &[(Invocation, Prepared)]) -> Vec<Option<String>> {
+fn run_side_by_side(commands: &[(Invocation, Prepared)]) -> Result<Vec<Option<String>>, TestError> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     let next = AtomicUsize::new(0);
     let mut verdicts = vec![None; commands.len()];
-    std::thread::scope(|scope| {
+    std::thread::scope(|scope| -> Result<(), TestError> {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
-                scope.spawn(|| {
+                scope.spawn(|| -> Result<Vec<_>, String> {
                     let mut mine = Vec::new();
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some((_, p)) = commands.get(i) else {
-                            break mine;
+                            break Ok(mine);
                         };
-                        let out = command(p)
-                            .output()
-                            .expect("the binary under test is runnable");
-                        mine.push((i, usage_error(&String::from_utf8_lossy(&out.stderr))));
+                        let out = command(p).output().map_err(|e| e.to_string())?;
+                        let verdict = usage_error(&String::from_utf8_lossy(&out.stderr))
+                            .map_err(|e| e.to_string())?;
+                        mine.push((i, verdict));
                     }
                 })
             })
@@ -362,17 +360,18 @@ fn run_side_by_side(commands: &[(Invocation, Prepared)]) -> Vec<Option<String>> 
         for handle in handles {
             let done = handle
                 .join()
-                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload))?;
             for (i, verdict) in done {
                 verdicts[i] = verdict;
             }
         }
-    });
-    verdicts
+        Ok(())
+    })?;
+    Ok(verdicts)
 }
 
 /// Build the argv actually run, with every substitution this test declares.
-fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
+fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, TestError> {
     // `sudo` is the shell's word, not sipnab's argument, and this suite must
     // never escalate. Dropping it leaves the flags, which are what is under
     // test.
@@ -385,19 +384,21 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
     let mut env = Vec::new();
     let mut rest = head;
     // Leading VAR=value assignments belong to the environment, not to argv.
-    let assign = regex::Regex::new(r"^([A-Z_][A-Z0-9_]*)=(\S+)\s+").expect("regex");
+    let assign = regex::Regex::new(r"^([A-Z_][A-Z0-9_]*)=(\S+)\s+")?;
     while let Some(c) = assign.captures(rest) {
         env.push((c[1].to_owned(), c[2].to_owned()));
         rest = &rest[c[0].len()..];
     }
-    let mut argv: Vec<String> = shell_words(rest)?;
+    let Some(mut argv): Option<Vec<String>> = shell_words(rest) else {
+        return Ok(None);
+    };
     if argv.is_empty() {
-        return None;
+        return Ok(None);
     }
     argv[0] = env!("CARGO_BIN_EXE_sipnab").to_owned();
 
     let cwd = sandbox.join(format!("cmd-{n}"));
-    std::fs::create_dir_all(&cwd).expect("a per-command directory in the sandbox");
+    std::fs::create_dir_all(&cwd)?;
     // A home of its own, FIRST, so a variable the example sets still wins.
     // Inherited, the real one let a local config change what this gate saw,
     // and gave commands running side by side a shared file to race on.
@@ -425,7 +426,7 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
             }
         } else if INPUT_FILE_FLAGS.contains(&prev.as_str()) {
             let p = cwd.join("input");
-            std::fs::write(&p, "").expect("the sandbox is writable");
+            std::fs::write(&p, "")?;
             argv[i] = p.display().to_string();
         } else if let Some(&is_dir) = paths.get(prev.as_str()) {
             let in_repo = repo().join(&argv[i]);
@@ -442,7 +443,7 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
                     .map_or_else(|| "path".to_owned(), |f| f.to_string_lossy().into_owned());
                 let target = cwd.join(name);
                 if is_dir {
-                    std::fs::create_dir_all(&target).expect("a directory in the sandbox");
+                    std::fs::create_dir_all(&target)?;
                 }
                 argv[i] = target.display().to_string();
             }
@@ -468,7 +469,7 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
     if !argv.iter().any(|a| a == "-N" || a == "--no-tui") {
         argv.push("-N".to_owned());
     }
-    Some(Prepared { argv, env, cwd })
+    Ok(Some(Prepared { argv, env, cwd }))
 }
 
 /// A small POSIX-ish word split: quotes respected, no expansion.
@@ -512,27 +513,23 @@ fn shell_words(s: &str) -> Option<Vec<String>> {
 ///
 /// clap writes a bare `error: …` to stderr. sipnab's errors go through tracing
 /// and carry a timestamp, so the two are distinguishable without parsing either.
-fn usage_error(stderr: &str) -> Option<String> {
-    stderr
+fn usage_error(stderr: &str) -> Result<Option<String>, TestError> {
+    // Strip ANSI so a colored line is still recognizable.
+    let ansi = regex::Regex::new(r"\x1b\[[0-9;]*m")?;
+    Ok(stderr
         .lines()
-        .map(|l| {
-            // Strip ANSI so a colored line is still recognizable.
-            regex::Regex::new(r"\x1b\[[0-9;]*m")
-                .expect("regex")
-                .replace_all(l, "")
-                .into_owned()
-        })
+        .map(|l| ansi.replace_all(l, "").into_owned())
         .find(|l| {
             let t = l.trim_start();
             t.starts_with("error: ") || t.starts_with("error:")
         })
-        .map(|l| l.trim().to_owned())
+        .map(|l| l.trim().to_owned()))
 }
 
 /// Every documented command runs, or is one of two named exceptions.
 #[test]
-fn every_documented_command_runs_or_says_why_not() {
-    let all = documented_invocations();
+fn every_documented_command_runs_or_says_why_not() -> Result<(), TestError> {
+    let all = documented_invocations()?;
     assert!(
         all.len() >= 200,
         "only {} documented sipnab invocation(s) found — the extractor stopped \
@@ -545,7 +542,7 @@ fn every_documented_command_runs_or_says_why_not() {
         std::process::id(),
         all.len()
     ));
-    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    std::fs::create_dir_all(&sandbox)?;
 
     let mut tally: BTreeMap<Plan, usize> = BTreeMap::new();
     let mut unsplittable = Vec::new();
@@ -557,12 +554,12 @@ fn every_documented_command_runs_or_says_why_not() {
     let mut ran = 0_usize;
 
     for (n, inv) in all.iter().enumerate() {
-        let plan = classify(&inv.text);
+        let plan = classify(&inv.text)?;
         *tally.entry(plan).or_default() += 1;
         if !plan.is_run() {
             continue;
         }
-        let Some(prepared) = prepare(&inv.text, &sandbox, n) else {
+        let Some(prepared) = prepare(&inv.text, &sandbox, n)? else {
             unsplittable.push(inv.clone());
             continue;
         };
@@ -585,7 +582,7 @@ fn every_documented_command_runs_or_says_why_not() {
     // (see `prepare`), so nothing they write is shared. One at a time, 313 of
     // them cost ~19 s, nearly all of it starting the unoptimized binary
     // (measured 2026-09-29); the verdicts are kept in documentation order.
-    let verdicts = run_side_by_side(&to_run);
+    let verdicts = run_side_by_side(&to_run)?;
     for ((inv, _), err) in to_run.iter().zip(verdicts) {
         if let Some(err) = err {
             failures.push(format!(
@@ -605,13 +602,11 @@ fn every_documented_command_runs_or_says_why_not() {
         if still_running {
             let _ = child.kill();
         }
-        let out = child
-            .wait_with_output()
-            .expect("a spawned child is waitable");
+        let out = child.wait_with_output()?;
         if still_running {
             continue; // Got past parsing, which is all this can prove.
         }
-        if let Some(err) = usage_error(&String::from_utf8_lossy(&out.stderr)) {
+        if let Some(err) = usage_error(&String::from_utf8_lossy(&out.stderr))? {
             failures.push(format!(
                 "{}:{}\n    {}\n    -> {}",
                 inv.page, inv.line, inv.text, err
@@ -658,6 +653,7 @@ fn every_documented_command_runs_or_says_why_not() {
          nothing. Tally: {tally:?}",
         all.len()
     );
+    Ok(())
 }
 
 /// Nothing is left un-run without a stated reason.
@@ -665,11 +661,11 @@ fn every_documented_command_runs_or_says_why_not() {
 /// The bucket names are the whole point: "skipped" without a reason is where a
 /// gate goes to stop working.
 #[test]
-fn nothing_is_left_unrun_without_a_reason() {
-    let all = documented_invocations();
+fn nothing_is_left_unrun_without_a_reason() -> Result<(), TestError> {
+    let all = documented_invocations()?;
     let mut unrun = 0;
     for inv in &all {
-        let plan = classify(&inv.text);
+        let plan = classify(&inv.text)?;
         assert!(
             !plan.why().is_empty(),
             "{}:{} has no stated plan",
@@ -692,6 +688,7 @@ fn nothing_is_left_unrun_without_a_reason() {
          ten. The classifier has widened.",
         all.len()
     );
+    Ok(())
 }
 
 /// The README's commands are in the walk, and every one of them is run.
@@ -709,8 +706,8 @@ fn nothing_is_left_unrun_without_a_reason() {
 /// the run ones is `SideEffects`, for `sudo sipnab --setup-caps`, which the
 /// first-run section has to show and this suite must never execute.
 #[test]
-fn the_readme_commands_are_walked_and_all_run() {
-    let readme: Vec<Invocation> = documented_invocations()
+fn the_readme_commands_are_walked_and_all_run() -> Result<(), TestError> {
+    let readme: Vec<Invocation> = documented_invocations()?
         .into_iter()
         .filter(|i| i.page == "README.md")
         .collect();
@@ -722,7 +719,7 @@ fn the_readme_commands_are_walked_and_all_run() {
     );
     let mut ran = 0_usize;
     for inv in &readme {
-        let plan = classify(&inv.text);
+        let plan = classify(&inv.text)?;
         assert!(
             plan.is_run() || plan == Plan::SideEffects,
             "README.md:{} is not run by this gate ({}): {}",
@@ -739,6 +736,7 @@ fn the_readme_commands_are_walked_and_all_run() {
         readme.len() - ran,
         readme.len()
     );
+    Ok(())
 }
 
 /// The two never-run buckets are the two that would do something to the host.
@@ -748,7 +746,7 @@ fn the_readme_commands_are_walked_and_all_run() {
 /// and one that ran `--uprobe-tls` would load probes into whatever machine is
 /// building sipnab.
 #[test]
-fn the_never_run_buckets_are_the_dangerous_ones() {
+fn the_never_run_buckets_are_the_dangerous_ones() -> Result<(), TestError> {
     for cmd in [
         "sipnab -N -d eth0 --on-dialog-exec '/usr/local/bin/call-logger'",
         "sipnab -N -I trunk.pcap --on-quality-exec 'curl -m 30 -X POST http://hook/quality'",
@@ -756,33 +754,33 @@ fn the_never_run_buckets_are_the_dangerous_ones() {
         "sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535",
     ] {
         assert_eq!(
-            classify(cmd),
+            classify(cmd)?,
             Plan::SideEffects,
             "{cmd:?} would be RUN by this gate"
         );
     }
     // And the ordinary ones are not swept up with them.
-    assert_eq!(classify("sipnab -N -I capture.pcap --json"), Plan::Reads);
+    assert_eq!(classify("sipnab -N -I capture.pcap --json")?, Plan::Reads);
     assert_eq!(
-        classify("sudo sipnab -d eth0 --portrange 5060-5061"),
+        classify("sudo sipnab -d eth0 --portrange 5060-5061")?,
         Plan::ReadsFakeDevice
     );
-    assert_eq!(classify("sipnab --api 127.0.0.1:8080"), Plan::Bounded);
+    assert_eq!(classify("sipnab --api 127.0.0.1:8080")?, Plan::Bounded);
+    Ok(())
 }
 
 /// The usage-error detector fires on a real refusal and not on ordinary output.
 ///
 /// Without this, a detector that matched nothing would certify every command.
 #[test]
-fn the_usage_error_detector_discriminates() {
+fn the_usage_error_detector_discriminates() -> Result<(), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([DELIBERATE_NON_FLAG])
         .current_dir(repo())
-        .output()
-        .expect("runnable");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        usage_error(&stderr).is_some(),
+        usage_error(&stderr)?.is_some(),
         "sipnab refused an unknown flag and the detector did not see it. \
          stderr was:\n{stderr}"
     );
@@ -790,14 +788,14 @@ fn the_usage_error_detector_discriminates() {
     let ok = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", FIXTURE])
         .current_dir(repo())
-        .output()
-        .expect("runnable");
+        .output()?;
     let ok_err = String::from_utf8_lossy(&ok.stderr);
     assert!(
-        usage_error(&ok_err).is_none(),
+        usage_error(&ok_err)?.is_none(),
         "a perfectly good command was read as a usage error, so this gate would \
          fail on working documentation. stderr was:\n{ok_err}"
     );
+    Ok(())
 }
 
 // ── The documentation runs somewhere it cannot touch the repository ────
@@ -864,17 +862,17 @@ fn derive_path_flags() -> BTreeMap<String, bool> {
 /// misses surfaces here by name instead of as a file somebody finds later in
 /// `/var/log` or the repository root.
 #[test]
-fn no_argument_names_a_path_outside_the_sandbox_or_the_repository() {
+fn no_argument_names_a_path_outside_the_sandbox_or_the_repository() -> Result<(), TestError> {
     let sandbox = std::env::temp_dir().join(format!("sipnab-doc-paths-{}", std::process::id()));
-    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    std::fs::create_dir_all(&sandbox)?;
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let mut escapes = Vec::new();
     let mut checked = 0_usize;
-    for (n, inv) in documented_invocations().iter().enumerate() {
-        if !classify(&inv.text).is_run() {
+    for (n, inv) in documented_invocations()?.iter().enumerate() {
+        if !classify(&inv.text)?.is_run() {
             continue;
         }
-        let Some(p) = prepare(&inv.text, &sandbox, n) else {
+        let Some(p) = prepare(&inv.text, &sandbox, n)? else {
             continue;
         };
         checked += 1;
@@ -908,11 +906,12 @@ fn no_argument_names_a_path_outside_the_sandbox_or_the_repository() {
         escapes.len(),
         escapes.join("\n")
     );
+    Ok(())
 }
 
 /// The path flags come from the CLI, and they include the ones that leaked.
 #[test]
-fn the_path_flags_are_read_from_the_cli_not_listed_by_hand() {
+fn the_path_flags_are_read_from_the_cli_not_listed_by_hand() -> Result<(), TestError> {
     let flags = path_flags();
     assert!(
         flags.len() >= 25,
@@ -944,6 +943,7 @@ fn the_path_flags_are_read_from_the_cli_not_listed_by_hand() {
         !flags.contains_key("--input") && !flags.contains_key("-I"),
         "the input flag is resolved against the repository, never sandboxed"
     );
+    Ok(())
 }
 
 /// A documented example that writes a relative file writes it in the sandbox.
@@ -951,25 +951,24 @@ fn the_path_flags_are_read_from_the_cli_not_listed_by_hand() {
 /// The effect, not the argv: the very line that left `runs.jsonl` in the
 /// repository root, run through the same preparation the gate uses.
 #[test]
-fn a_documented_relative_output_lands_in_the_sandbox_not_the_repository() {
-    let doc = std::fs::read_to_string(repo().join("docs/examples.md")).expect("examples.md");
+fn a_documented_relative_output_lands_in_the_sandbox_not_the_repository() -> Result<(), TestError> {
+    let doc = std::fs::read_to_string(repo().join("docs/examples.md"))?;
     let line = doc
         .lines()
         .map(str::trim)
         .find(|l| l.starts_with("sipnab ") && l.contains("--run-provenance-file runs.jsonl"))
-        .expect("docs/examples.md no longer carries the runs.jsonl example this pins");
+        .ok_or("docs/examples.md no longer carries the runs.jsonl example this pins")?;
 
     let before = std::fs::metadata(repo().join("runs.jsonl"))
         .ok()
         .and_then(|m| m.modified().ok());
     let sandbox = std::env::temp_dir().join(format!("sipnab-doc-relative-{}", std::process::id()));
-    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
-    let p = prepare(line, &sandbox, 0).expect("the example splits into words");
+    std::fs::create_dir_all(&sandbox)?;
+    let p = prepare(line, &sandbox, 0)?.ok_or("the example splits into words")?;
     let out = Command::new(&p.argv[0])
         .args(&p.argv[1..])
         .current_dir(&p.cwd)
-        .output()
-        .expect("runnable");
+        .output()?;
     let written_in_sandbox = std::fs::read_dir(&p.cwd)
         .map(|d| {
             d.flatten()
@@ -991,6 +990,7 @@ fn a_documented_relative_output_lands_in_the_sandbox_not_the_repository() {
         "running the documented example touched runs.jsonl in the repository \
          root, which is the defect this exists to prevent"
     );
+    Ok(())
 }
 
 // ── Every flag this gate names by hand is one sipnab has ───────────────
@@ -1017,18 +1017,16 @@ fn cli_flag_names() -> BTreeSet<String> {
 /// Comments are skipped: prose may discuss a flag that no longer exists. What
 /// the gate actually MATCHES and SUBSTITUTES on is in its literals and regexes,
 /// and that is where five invented names sat.
-fn flag_names_this_file_uses() -> BTreeSet<String> {
-    let src = std::fs::read_to_string(repo().join("tests/doc_commands_run_test.rs"))
-        .expect("this test's own source");
+fn flag_names_this_file_uses() -> Result<BTreeSet<String>, TestError> {
+    let src = std::fs::read_to_string(repo().join("tests/doc_commands_run_test.rs"))?;
     let code: String = src
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    let literal = regex::Regex::new(r#"r?"((?:[^"\\]|\\.)*)""#).expect("regex");
-    let long = regex::Regex::new(r"(?:^|[\s|(=\[`])(--[a-z][a-z0-9-]*[a-z0-9])(?:[\s|)=\]`]|$)")
-        .expect("regex");
-    let short = regex::Regex::new(r"(?:^|[\s|(\[`])(-[A-Za-z])(?:[\s|)=\]`]|$)").expect("regex");
+    let literal = regex::Regex::new(r#"r?"((?:[^"\\]|\\.)*)""#)?;
+    let long = regex::Regex::new(r"(?:^|[\s|(=\[`])(--[a-z][a-z0-9-]*[a-z0-9])(?:[\s|)=\]`]|$)")?;
+    let short = regex::Regex::new(r"(?:^|[\s|(\[`])(-[A-Za-z])(?:[\s|)=\]`]|$)")?;
     let mut out = BTreeSet::new();
     for lit in literal.captures_iter(&code) {
         let body = lit.get(1).map_or("", |m| m.as_str());
@@ -1038,7 +1036,7 @@ fn flag_names_this_file_uses() -> BTreeSet<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every flag name this gate matches or substitutes on is one the CLI defines.
@@ -1049,14 +1047,14 @@ fn flag_names_this_file_uses() -> BTreeSet<String> {
 /// nothing, so it failed silently -- and `--metrics`, which does start a
 /// listener, was missing from the server pattern the whole time.
 #[test]
-fn every_flag_this_gate_names_is_one_the_cli_defines() {
+fn every_flag_this_gate_names_is_one_the_cli_defines() -> Result<(), TestError> {
     let real = cli_flag_names();
     assert!(
         real.len() >= 150 && real.contains("--input"),
         "only {} CLI flag name(s) read from clap: the walk is broken",
         real.len()
     );
-    let used = flag_names_this_file_uses();
+    let used = flag_names_this_file_uses()?;
     assert!(
         used.contains("--call-report") && used.contains("-O"),
         "the literal scan found {used:?}, which misses flags this file plainly \
@@ -1071,6 +1069,7 @@ fn every_flag_this_gate_names_is_one_the_cli_defines() {
         "this gate names flag(s) sipnab does not have: {invented:?}. A pattern \
          on a flag nothing accepts matches nothing and says so to nobody."
     );
+    Ok(())
 }
 
 /// Every input-file flag takes a path, per the CLI.
@@ -1079,7 +1078,7 @@ fn every_flag_this_gate_names_is_one_the_cli_defines() {
 /// value is a mode or a number would hand sipnab a path where it expects
 /// something else, and the refusal would read as a documentation error.
 #[test]
-fn every_input_file_flag_takes_a_path() {
+fn every_input_file_flag_takes_a_path() -> Result<(), TestError> {
     let paths = path_flags();
     for f in INPUT_FILE_FLAGS {
         assert!(
@@ -1088,6 +1087,7 @@ fn every_input_file_flag_takes_a_path() {
              taking a file or directory"
         );
     }
+    Ok(())
 }
 
 /// The only non-flag in this file is the detector's probe, held in one place.
@@ -1095,9 +1095,8 @@ fn every_input_file_flag_takes_a_path() {
 /// The check above exempts exactly that name. If the exemption could be used
 /// twice, a real typo spelled like a probe would pass it.
 #[test]
-fn the_only_non_flag_in_this_file_is_the_detectors_probe() {
-    let src = std::fs::read_to_string(repo().join("tests/doc_commands_run_test.rs"))
-        .expect("this test's own source");
+fn the_only_non_flag_in_this_file_is_the_detectors_probe() -> Result<(), TestError> {
+    let src = std::fs::read_to_string(repo().join("tests/doc_commands_run_test.rs"))?;
     let code: String = src
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -1110,7 +1109,7 @@ fn the_only_non_flag_in_this_file_is_the_detectors_probe() {
          its constant -- so the exemption covers one probe and no typo"
     );
     let real = cli_flag_names();
-    let non_flags: Vec<String> = flag_names_this_file_uses()
+    let non_flags: Vec<String> = flag_names_this_file_uses()?
         .into_iter()
         .filter(|f| !real.contains(f))
         .collect();
@@ -1124,6 +1123,7 @@ fn the_only_non_flag_in_this_file_is_the_detectors_probe() {
         "{DELIBERATE_NON_FLAG} became a real flag, so the detector test would \
          watch clap ACCEPT it"
     );
+    Ok(())
 }
 
 // ── ...and cannot reach the network either ──────────────────────────────
@@ -1162,7 +1162,7 @@ fn address_flags() -> BTreeSet<String> {
 /// fails here until someone decides what it does, and a table entry that is
 /// not an address flag fails too.
 #[test]
-fn every_address_flag_is_classified_as_a_bind_a_send_or_a_filter() {
+fn every_address_flag_is_classified_as_a_bind_a_send_or_a_filter() -> Result<(), TestError> {
     let derived = address_flags();
     assert!(
         derived.contains("--api") && derived.contains("--hep-send") && derived.len() >= 8,
@@ -1181,7 +1181,7 @@ fn every_address_flag_is_classified_as_a_bind_a_send_or_a_filter() {
                 "{table} names {f}, which the CLI does not declare as taking an address"
             );
             if let Some(other) = seen.insert(*f, table) {
-                panic!("{f} is in both {other} and {table}");
+                return Err(format!("{f} is in both {other} and {table}").into());
             }
         }
     }
@@ -1194,21 +1194,22 @@ fn every_address_flag_is_classified_as_a_bind_a_send_or_a_filter() {
         "these address flags are in no table, so a documented command using one \
          would run with the page's own address: {unclassified:?}"
     );
+    Ok(())
 }
 
 /// No documented command, as run, binds anything but loopback or transmits
 /// anywhere but the discard port.
 #[test]
-fn no_documented_command_binds_publicly_or_transmits_off_the_host() {
+fn no_documented_command_binds_publicly_or_transmits_off_the_host() -> Result<(), TestError> {
     let sandbox = std::env::temp_dir().join(format!("sipnab-doc-addrs-{}", std::process::id()));
-    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    std::fs::create_dir_all(&sandbox)?;
     let mut offenses = Vec::new();
     let mut addressed = 0_usize;
-    for (n, inv) in documented_invocations().iter().enumerate() {
-        if !classify(&inv.text).is_run() {
+    for (n, inv) in documented_invocations()?.iter().enumerate() {
+        if !classify(&inv.text)?.is_run() {
             continue;
         }
-        let Some(p) = prepare(&inv.text, &sandbox, n) else {
+        let Some(p) = prepare(&inv.text, &sandbox, n)? else {
             continue;
         };
         for pair in p.argv.windows(2) {
@@ -1238,6 +1239,7 @@ fn no_documented_command_binds_publicly_or_transmits_off_the_host() {
          host when run:\n{}",
         offenses.join("\n")
     );
+    Ok(())
 }
 
 // ── Three defects this gate shipped, each with a test that would have caught it ──
@@ -1249,7 +1251,7 @@ fn no_documented_command_binds_publicly_or_transmits_off_the_host() {
 /// `/` read as a path escaping the sandbox. `strip_redirection` drops a `#`
 /// that begins a word, the way the shell does.
 #[test]
-fn a_trailing_shell_comment_is_not_passed_as_arguments() {
+fn a_trailing_shell_comment_is_not_passed_as_arguments() -> Result<(), TestError> {
     let stripped =
         strip_redirection("sipnab -N -I capture.pcap --report  # RFC 2833 / telephone-event");
     assert_eq!(
@@ -1268,6 +1270,7 @@ fn a_trailing_shell_comment_is_not_passed_as_arguments() {
         r#"sipnab --filter "a # b""#,
         "a quoted # is not a comment"
     );
+    Ok(())
 }
 
 /// A value-name containing FILE as a substring is not a path flag.
@@ -1277,7 +1280,7 @@ fn a_trailing_shell_comment_is_not_passed_as_arguments() {
 /// version of `path_flags` replaced their values with sandbox paths and sipnab
 /// refused `/tmp/.../signaling` and `/tmp/.../core` as invalid profiles.
 #[test]
-fn a_profile_flag_is_not_mistaken_for_a_path() {
+fn a_profile_flag_is_not_mistaken_for_a_path() -> Result<(), TestError> {
     let paths = path_flags();
     for not_a_path in ["--capture-profile", "--mcp-tools"] {
         assert!(
@@ -1293,6 +1296,7 @@ fn a_profile_flag_is_not_mistaken_for_a_path() {
             "{is_a_path} is a path flag and went missing"
         );
     }
+    Ok(())
 }
 
 /// A command that escalates privilege is never run.
@@ -1303,21 +1307,22 @@ fn a_profile_flag_is_not_mistaken_for_a_path() {
 /// the gate ran `sudo setcap` four times -- granting the debug binary the very
 /// capability whose absence the capture-probe tests then measured.
 #[test]
-fn privilege_escalation_is_never_run_but_printing_a_filter_is() {
+fn privilege_escalation_is_never_run_but_printing_a_filter_is() -> Result<(), TestError> {
     for cmd in ["sipnab --setup-caps", "sudo sipnab --setup-caps"] {
         assert_eq!(
-            classify(cmd),
+            classify(cmd)?,
             Plan::SideEffects,
             "{cmd:?} would be RUN by this gate, and it acts on the host"
         );
     }
     // An ordinary read beside them is not swept up.
-    assert_eq!(classify("sipnab -N -I capture.pcap --report"), Plan::Reads);
+    assert_eq!(classify("sipnab -N -I capture.pcap --report")?, Plan::Reads);
     assert_eq!(
-        classify("sipnab -N -I capture.pcap --wireshark"),
+        classify("sipnab -N -I capture.pcap --wireshark")?,
         Plan::Reads,
         "--wireshark prints a display filter without opening a GUI"
     );
+    Ok(())
 }
 
 /// Every documented command runs with a home of its own, inside its sandbox
@@ -1330,10 +1335,10 @@ fn privilege_escalation_is_never_run_but_printing_a_filter_is() {
 /// A variable the documentation itself sets in front of a command still
 /// wins: it is part of what the example says.
 #[test]
-fn every_command_gets_a_home_of_its_own_inside_the_sandbox() {
+fn every_command_gets_a_home_of_its_own_inside_the_sandbox() -> Result<(), TestError> {
     let sandbox = std::env::temp_dir().join(format!("sipnab-doc-home-{}", std::process::id()));
-    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
-    let p = prepare("sipnab --version", &sandbox, 7).expect("splits into words");
+    std::fs::create_dir_all(&sandbox)?;
+    let p = prepare("sipnab --version", &sandbox, 7)?.ok_or("splits into words")?;
     let last = |env: &[(String, String)], key: &str| {
         env.iter()
             .rev()
@@ -1347,18 +1352,19 @@ fn every_command_gets_a_home_of_its_own_inside_the_sandbox() {
         "XDG_STATE_HOME",
         "XDG_CACHE_HOME",
     ] {
-        let value = last(&p.env, key).unwrap_or_else(|| panic!("{key} is not set: {:?}", p.env));
+        let value = last(&p.env, key).ok_or_else(|| format!("{key} is not set: {:?}", p.env))?;
         assert!(
             Path::new(&value).starts_with(&p.cwd),
             "{key}={value} is outside the command's own directory {}",
             p.cwd.display()
         );
     }
-    let documented = prepare("HOME=/documented sipnab --version", &sandbox, 8).expect("splits");
+    let documented = prepare("HOME=/documented sipnab --version", &sandbox, 8)?.ok_or("splits")?;
     assert_eq!(
         last(&documented.env, "HOME").as_deref(),
         Some("/documented"),
         "a HOME the example itself sets must win"
     );
     let _ = std::fs::remove_dir_all(&sandbox);
+    Ok(())
 }

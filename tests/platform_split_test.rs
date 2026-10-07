@@ -25,6 +25,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -232,11 +236,12 @@ fn ungated_uses(source: &str) -> Vec<(usize, String)> {
 
 /// A Linux-only symbol with no cfg anywhere is reported.
 #[test]
-fn a_linux_only_symbol_outside_a_linux_cfg_is_reported() {
+fn a_linux_only_symbol_outside_a_linux_cfg_is_reported() -> Result<(), TestError> {
     let src = "use libc;\n\nfn helper() -> bool {\n    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1) == 0 }\n}\n";
     let found = ungated_uses(src);
     assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
     assert_eq!(found[0].0, 4, "the line number must name the use");
+    Ok(())
 }
 
 /// The same symbol under an item-level cfg is not.
@@ -245,7 +250,7 @@ fn a_linux_only_symbol_outside_a_linux_cfg_is_reported() {
 /// rule that reported correctly gated code would be turned off the first week,
 /// and the tree is full of correctly gated Linux code.
 #[test]
-fn a_linux_only_symbol_inside_a_linux_cfg_is_not_reported() {
+fn a_linux_only_symbol_inside_a_linux_cfg_is_not_reported() -> Result<(), TestError> {
     let item_level = "use libc;\n\n/// Doc.\n#[cfg(target_os = \"linux\")]\nfn helper() -> bool {\n    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1) == 0 }\n}\n";
     assert!(
         ungated_uses(item_level).is_empty(),
@@ -268,6 +273,7 @@ fn a_linux_only_symbol_inside_a_linux_cfg_is_not_reported() {
         1,
         "a not(linux) arm using a Linux-only symbol is the bug, not the fix"
     );
+    Ok(())
 }
 
 /// The rule reaches past `libc`, because the failure does.
@@ -280,7 +286,7 @@ fn a_linux_only_symbol_inside_a_linux_cfg_is_not_reported() {
 /// `std::os::unix` is deliberately absent: it exists on macOS, and a rule
 /// reporting it would fire on most of this tree and be switched off.
 #[test]
-fn the_rule_reaches_past_libc_to_the_linux_only_std_namespace() {
+fn the_rule_reaches_past_libc_to_the_linux_only_std_namespace() -> Result<(), TestError> {
     assert!(
         LINUX_ONLY.contains(&"std::os::linux::"),
         "the list stops at libc, so a Linux-only std path fails on macOS unseen"
@@ -302,6 +308,7 @@ fn the_rule_reaches_past_libc_to_the_linux_only_std_namespace() {
         "and a gated one must not: {:?}",
         ungated_uses(gated)
     );
+    Ok(())
 }
 
 /// The inverted-tree check still compiles TEST targets.
@@ -312,9 +319,8 @@ fn the_rule_reaches_past_libc_to_the_linux_only_std_namespace() {
 /// where the break that motivated this file lived. A flag dropped for speed
 /// would restore the blind spot silently.
 #[test]
-fn the_inverted_tree_check_still_compiles_test_targets() {
-    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
-        .expect("read scripts/check-non-linux.sh");
+fn the_inverted_tree_check_still_compiles_test_targets() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))?;
     let compiles: Vec<&str> = script
         .lines()
         .map(str::trim)
@@ -334,6 +340,7 @@ fn the_inverted_tree_check_still_compiles_test_targets() {
              this file lived: {line}"
         );
     }
+    Ok(())
 }
 
 /// And the script says what it cannot see, beside the thing that can.
@@ -345,9 +352,8 @@ fn the_inverted_tree_check_still_compiles_test_targets() {
 /// push. A tool with a known limit states it where somebody is standing when
 /// they rely on it.
 #[test]
-fn the_inverted_tree_check_records_the_class_it_cannot_see() {
-    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
-        .expect("read scripts/check-non-linux.sh");
+fn the_inverted_tree_check_records_the_class_it_cannot_see() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))?;
     assert!(
         script.contains("platform_split_test"),
         "the script does not name the gate that covers what it cannot: a reader \
@@ -358,6 +364,7 @@ fn the_inverted_tree_check_records_the_class_it_cannot_see() {
         "the script does not say WHICH class it is blind to, so the pointer \
          above reads as a suggestion rather than as a division of work"
     );
+    Ok(())
 }
 
 /// No file in the tree uses one outside a Linux cfg.
@@ -366,7 +373,7 @@ fn the_inverted_tree_check_records_the_class_it_cannot_see() {
 /// names `SYS_` constants in several places, so a scan finding no occurrences
 /// at all has stopped matching rather than found a clean tree.
 #[test]
-fn no_source_file_uses_a_linux_only_symbol_outside_a_linux_cfg() {
+fn no_source_file_uses_a_linux_only_symbol_outside_a_linux_cfg() -> Result<(), TestError> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut stack = vec![repo().join("src"), repo().join("tests")];
     while let Some(dir) = stack.pop() {
@@ -411,6 +418,7 @@ fn no_source_file_uses_a_linux_only_symbol_outside_a_linux_cfg() {
          cannot see them because there is no split to invert:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 // ── The three owed for breaking the macOS build on 2026-09-10 ───────────────
@@ -428,7 +436,7 @@ fn no_source_file_uses_a_linux_only_symbol_outside_a_linux_cfg() {
 /// test comparing this crate's `SockFilter` against the kernel's — the type is
 /// classic BPF, which macOS's libc does not carry.
 #[test]
-fn the_scanner_knows_every_symbol_that_has_broken_this_build() {
+fn the_scanner_knows_every_symbol_that_has_broken_this_build() -> Result<(), TestError> {
     /// `(symbol, where it broke)`, appended to and never trimmed.
     const HAS_BROKEN_THE_BUILD: &[(&str, &str)] = &[
         (
@@ -451,6 +459,7 @@ fn the_scanner_knows_every_symbol_that_has_broken_this_build() {
              no longer in LINUX_ONLY, so it can break it again unnoticed"
         );
     }
+    Ok(())
 }
 
 /// The scan reaches inside `#[cfg(test)] mod tests`, which is where it broke.
@@ -460,7 +469,7 @@ fn the_scanner_knows_every_symbol_that_has_broken_this_build() {
 /// macOS refused to compile it. `#[cfg(test)]` is not a platform predicate, so
 /// the outward walk must not mistake it for one.
 #[test]
-fn a_linux_only_symbol_inside_a_test_module_is_still_reported() {
+fn a_linux_only_symbol_inside_a_test_module_is_still_reported() -> Result<(), TestError> {
     // Built from parts, and the continuation deliberately does not START with
     // the marker: `fixture_isolation_test` counts any trimmed line beginning
     // `#[test]` as a real test, and a fixture laid out that way arms it. That
@@ -492,6 +501,7 @@ fn a_linux_only_symbol_inside_a_test_module_is_still_reported() {
         "a Linux-gated test module was reported: {:?}",
         ungated_uses(gated)
     );
+    Ok(())
 }
 
 /// The inverted-tree script says it cannot see an ABSENT libc item.
@@ -503,9 +513,8 @@ fn a_linux_only_symbol_inside_a_test_module_is_still_reported() {
 /// elsewhere still resolves there. Anyone reading that script has to be told
 /// so, or they will assume it covers what it does not.
 #[test]
-fn the_inverted_tree_check_says_it_cannot_see_an_absent_libc_item() {
-    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
-        .expect("scripts/check-non-linux.sh is in the tree");
+fn the_inverted_tree_check_says_it_cannot_see_an_absent_libc_item() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))?;
     let lower = script.to_lowercase();
     assert!(
         lower.contains("platform_split_test"),
@@ -519,6 +528,7 @@ fn the_inverted_tree_check_says_it_cannot_see_an_absent_libc_item() {
              invisible to it"
         );
     }
+    Ok(())
 }
 
 // ── Three owed for a constant that broke the non-Linux build ────────────────
@@ -531,9 +541,8 @@ fn the_inverted_tree_check_says_it_cannot_see_an_absent_libc_item() {
 /// day, and both were caught by this check — which is only worth anything if
 /// the check actually runs before the push rather than after it in CI.
 #[test]
-fn the_non_linux_check_runs_before_every_push() {
-    let hook = std::fs::read_to_string(repo().join(".githooks/pre-push"))
-        .expect(".githooks/pre-push is in the tree");
+fn the_non_linux_check_runs_before_every_push() -> Result<(), TestError> {
+    let hook = std::fs::read_to_string(repo().join(".githooks/pre-push"))?;
     assert!(
         hook.contains("check-non-linux.sh"),
         "the push gate does not run the non-Linux check, so a platform split \
@@ -546,6 +555,7 @@ fn the_non_linux_check_runs_before_every_push() {
         unconditional,
         "the non-Linux check appears only in a comment in the push gate"
     );
+    Ok(())
 }
 
 /// Dead code off Linux is an error there, not a warning.
@@ -554,14 +564,14 @@ fn the_non_linux_check_runs_before_every_push() {
 /// would have let `EXIT_ENFORCED_AND_SURVIVED` through, and the break would
 /// have surfaced as a red main instead of a refused push.
 #[test]
-fn the_non_linux_check_treats_dead_code_as_an_error() {
-    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
-        .expect("the script is in the tree");
+fn the_non_linux_check_treats_dead_code_as_an_error() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))?;
     assert!(
         script.contains("-D warnings") || script.contains("RUSTFLAGS"),
         "the non-Linux check does not promote warnings to errors, so an item \
          that is merely unused off Linux passes it"
     );
+    Ok(())
 }
 
 /// The class this check exists for is written down where a reader will find it.
@@ -571,9 +581,8 @@ fn the_non_linux_check_treats_dead_code_as_an_error() {
 /// person reads a failure about an unused constant and deletes the constant
 /// rather than gating it.
 #[test]
-fn the_non_linux_check_names_the_shape_that_keeps_breaking() {
-    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))
-        .expect("the script is in the tree");
+fn the_non_linux_check_names_the_shape_that_keeps_breaking() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join("scripts/check-non-linux.sh"))?;
     let lower = script.to_lowercase();
     assert!(
         lower.contains("written twice") || lower.contains("one platform split"),
@@ -585,4 +594,5 @@ fn the_non_linux_check_names_the_shape_that_keeps_breaking() {
         "the script does not mention that an item unused off Linux is the shape \
          it most often reports"
     );
+    Ok(())
 }

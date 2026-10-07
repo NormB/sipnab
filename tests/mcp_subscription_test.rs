@@ -29,6 +29,9 @@ use std::time::{Duration, Instant};
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The capture the server starts on.
 const PCAP: &str = "tests/pcap-samples/sip-register.pcap";
 
@@ -67,7 +70,7 @@ struct Wire {
 
 impl Wire {
     /// Spawn the server on [`PCAP`], handshake, and wait for the replay to drain.
-    fn start() -> Self {
+    fn start() -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args([
@@ -83,11 +86,10 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sipnab --mcp");
+            .spawn()?;
 
         {
-            let stdin = child.stdin.as_mut().expect("stdin");
+            let stdin = child.stdin.as_mut().ok_or("stdin")?;
             for message in [
                 json!({
                     "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -99,21 +101,21 @@ impl Wire {
                 }),
                 json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             ] {
-                writeln!(stdin, "{message}").expect("write handshake");
+                writeln!(stdin, "{message}")?;
             }
-            stdin.flush().expect("flush");
+            stdin.flush()?;
         }
 
-        let stdout = child.stdout.take().expect("stdout");
+        let stdout = child.stdout.take().ok_or("stdout")?;
         let mut wire = Self {
             child,
             reader: BufReader::new(stdout),
             next_id: 2,
             notifications: Vec::new(),
         };
-        wire.await_reply(1);
-        wire.await_load();
-        wire
+        wire.await_reply(1)?;
+        wire.await_load()?;
+        Ok(wire)
     }
 
     /// Poll `capture_status` until the source is drained.
@@ -121,57 +123,56 @@ impl Wire {
     /// Bounded, so a genuine hang fails rather than running forever. Without
     /// it these tests race the pcap reader and a notification caused by the
     /// INITIAL load would be counted as one caused by the change under test.
-    fn await_load(&mut self) {
+    fn await_load(&mut self) -> Result<(), TestError> {
         const MAX_POLLS: usize = 400;
         for _ in 0..MAX_POLLS {
             let reply = self.request(
                 "tools/call",
                 json!({"name": "capture_status", "arguments": {}}),
-            );
-            if text_payload(&reply)["source_exhausted"] == json!(true) {
-                return;
+            )?;
+            if text_payload(&reply)?["source_exhausted"] == json!(true) {
+                return Ok(());
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        panic!("the capture never finished loading");
+        Err("the capture never finished loading".into())
     }
 
     /// Issue one request and return the raw JSON-RPC reply.
-    fn request(&mut self, method: &str, params: Value) -> Value {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-            )
-            .expect("write request");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
         self.await_reply(id)
     }
 
     /// Read until the reply carrying `id` arrives, KEEPING notifications.
-    fn await_reply(&mut self, id: i64) -> Value {
+    fn await_reply(&mut self, id: i64) -> Result<Value, TestError> {
         let mut line = String::new();
         for _ in 0..MAX_LINES {
             line.clear();
             if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                panic!("sipnab closed stdout while waiting for id {id}");
+                return Err(format!("sipnab closed stdout while waiting for id {id}").into());
             }
             let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
             if msg["id"] == json!(id) {
-                return msg;
+                return Ok(msg);
             }
             if msg["method"].is_string() && msg["id"].is_null() {
                 self.notifications.push(msg);
             }
         }
-        panic!("no reply to id {id} within {MAX_LINES} lines");
+        Err(format!("no reply to id {id} within {MAX_LINES} lines").into())
     }
 
     /// Read the wire for `window`, collecting whatever notifications arrive.
@@ -181,15 +182,16 @@ impl Wire {
     /// drains anything the server has queued, and the reply loop files the
     /// notifications. That is also closer to what a real client does than a
     /// silent sleep would be.
-    fn drain_for(&mut self, window: Duration) {
+    fn drain_for(&mut self, window: Duration) -> Result<(), TestError> {
         let until = Instant::now() + window;
         while Instant::now() < until {
             self.request(
                 "tools/call",
                 json!({"name": "capture_status", "arguments": {}}),
-            );
+            )?;
             std::thread::sleep(Duration::from_millis(50));
         }
+        Ok(())
     }
 
     /// Every `notifications/resources/updated` seen so far, by URI.
@@ -208,16 +210,17 @@ impl Wire {
     }
 
     /// Swap the loaded capture, and wait for the new one to drain.
-    fn swap_to(&mut self, filename: &str) {
+    fn swap_to(&mut self, filename: &str) -> Result<(), TestError> {
         let reply = self.request(
             "tools/call",
             json!({"name": "open_capture", "arguments": {"filename": filename}}),
-        );
+        )?;
         assert!(
             reply["error"].is_null() && reply["result"]["isError"] != json!(true),
             "open_capture({filename}) failed: {reply}"
         );
-        self.await_load();
+        self.await_load()?;
+        Ok(())
     }
 }
 
@@ -228,11 +231,11 @@ impl Drop for Wire {
 }
 
 /// The payload block of a successful tool result, parsed.
-fn text_payload(reply: &Value) -> Value {
+fn text_payload(reply: &Value) -> Result<Value, TestError> {
     let text = reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("expected a text payload, got {reply}"));
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("payload is not JSON: {text}"))
+        .ok_or_else(|| format!("expected a text payload, got {reply}"))?;
+    Ok(serde_json::from_str(text).map_err(|_| format!("payload is not JSON: {text}"))?)
 }
 
 /// The live dialog list is listed as a resource, so a client can find it.
@@ -240,12 +243,12 @@ fn text_payload(reply: &Value) -> Value {
 /// A subscribable resource nothing enumerates is one only a client that read
 /// the source could ever ask for.
 #[test]
-fn the_live_dialog_list_is_listed_as_a_resource() {
-    let mut wire = Wire::start();
-    let listed = wire.request("resources/list", json!({}));
+fn the_live_dialog_list_is_listed_as_a_resource() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let listed = wire.request("resources/list", json!({}))?;
     let uris: Vec<String> = listed["result"]["resources"]
         .as_array()
-        .unwrap_or_else(|| panic!("no resources array in {listed}"))
+        .ok_or_else(|| format!("no resources array in {listed}"))?
         .iter()
         .filter_map(|r| r["uri"].as_str().map(str::to_string))
         .collect();
@@ -253,6 +256,7 @@ fn the_live_dialog_list_is_listed_as_a_resource() {
         uris.contains(&"sipnab://live/dialogs".to_string()),
         "the subscribable resource is not in resources/list: {uris:?}"
     );
+    Ok(())
 }
 
 /// The resource door and the tool door render the same dialogs.
@@ -260,17 +264,17 @@ fn the_live_dialog_list_is_listed_as_a_resource() {
 /// Two renderers would eventually disagree, and an operator holding two
 /// versions of one capture has no way to decide which to believe.
 #[test]
-fn the_live_resource_reads_back_what_list_dialogs_returns() {
-    let mut wire = Wire::start();
+fn the_live_resource_reads_back_what_list_dialogs_returns() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let from_tool = text_payload(&wire.request(
         "tools/call",
         json!({"name": "list_dialogs", "arguments": {"limit": 1000}}),
-    ));
-    let read = wire.request("resources/read", json!({"uri": "sipnab://live/dialogs"}));
+    )?)?;
+    let read = wire.request("resources/read", json!({"uri": "sipnab://live/dialogs"}))?;
     let text = read["result"]["contents"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no text in {read}"));
-    let from_resource: Value = serde_json::from_str(text).expect("the resource is JSON");
+        .ok_or_else(|| format!("no text in {read}"))?;
+    let from_resource: Value = serde_json::from_str(text)?;
     assert_eq!(
         from_resource["dialogs"], from_tool["dialogs"],
         "the resource door and the tool door describe different dialogs"
@@ -279,48 +283,50 @@ fn the_live_resource_reads_back_what_list_dialogs_returns() {
         from_resource["total_matched"], from_tool["total_matched"],
         "the two doors disagree about how many dialogs the capture holds"
     );
+    Ok(())
 }
 
 /// A URI built from the per-Call-ID template reads exactly that dialog.
 #[test]
-fn a_per_call_live_resource_reads_the_dialog_it_names() {
-    let mut wire = Wire::start();
+fn a_per_call_live_resource_reads_the_dialog_it_names() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let listed = text_payload(&wire.request(
         "tools/call",
         json!({"name": "list_dialogs", "arguments": {"limit": 1}}),
-    ));
+    )?)?;
     let call_id = listed["dialogs"][0]["call_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("{PCAP} holds no dialogs: {listed}"))
+        .ok_or_else(|| format!("{PCAP} holds no dialogs: {listed}"))?
         .to_string();
 
     let read = wire.request(
         "resources/read",
         json!({"uri": format!("sipnab://live/dialogs/{call_id}")}),
-    );
+    )?;
     let text = read["result"]["contents"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no text in {read}"));
-    let page: Value = serde_json::from_str(text).expect("the resource is JSON");
+        .ok_or_else(|| format!("no text in {read}"))?;
+    let page: Value = serde_json::from_str(text)?;
     assert_eq!(page["returned"], json!(1), "expected one dialog: {page}");
     assert_eq!(page["dialogs"][0]["call_id"], json!(call_id));
+    Ok(())
 }
 
 /// Subscribe, change the capture, get exactly ONE notification.
 #[test]
-fn subscribe_then_change_yields_exactly_one_notification() {
-    let mut wire = Wire::start();
+fn subscribe_then_change_yields_exactly_one_notification() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let ok = wire.request(
         "resources/subscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     assert!(ok["error"].is_null(), "subscribe failed: {ok}");
 
     wire.forget_notifications();
-    wire.swap_to(SWAPS[0]);
+    wire.swap_to(SWAPS[0])?;
     // Two debounce windows: one for the change to be announced, one to catch a
     // second announcement if the server were sending per mutation.
-    wire.drain_for(DEBOUNCE * 3);
+    wire.drain_for(DEBOUNCE * 3)?;
 
     assert_eq!(
         wire.updates(),
@@ -328,6 +334,7 @@ fn subscribe_then_change_yields_exactly_one_notification() {
         "one change must produce exactly one notification, naming the URI \
          that changed"
     );
+    Ok(())
 }
 
 /// Unsubscribe, change the capture, get NOTHING.
@@ -335,17 +342,17 @@ fn subscribe_then_change_yields_exactly_one_notification() {
 /// The other half, and the one a broken cancellation passes silently: a
 /// watcher that keeps running is invisible until someone counts.
 #[test]
-fn unsubscribe_then_change_yields_no_notification() {
-    let mut wire = Wire::start();
+fn unsubscribe_then_change_yields_no_notification() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     wire.request(
         "resources/subscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     // Prove the subscription was live before it is canceled, so a test that
     // passes because nothing ever worked fails here instead.
     wire.forget_notifications();
-    wire.swap_to(SWAPS[0]);
-    wire.drain_for(DEBOUNCE * 3);
+    wire.swap_to(SWAPS[0])?;
+    wire.drain_for(DEBOUNCE * 3)?;
     assert_eq!(
         wire.updates().len(),
         1,
@@ -355,17 +362,18 @@ fn unsubscribe_then_change_yields_no_notification() {
     let stop = wire.request(
         "resources/unsubscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     assert!(stop["error"].is_null(), "unsubscribe failed: {stop}");
 
     wire.forget_notifications();
-    wire.swap_to(SWAPS[1]);
-    wire.drain_for(DEBOUNCE * 3);
+    wire.swap_to(SWAPS[1])?;
+    wire.drain_for(DEBOUNCE * 3)?;
     assert_eq!(
         wire.updates(),
         Vec::<String>::new(),
         "a canceled subscription is still delivering"
     );
+    Ok(())
 }
 
 /// A burst of changes collapses into far fewer notifications than changes.
@@ -403,7 +411,7 @@ fn debounce_ceiling(burst: Duration) -> usize {
 /// Pins the defect directly: a two-second burst drained for two more seconds
 /// must still be judged against the burst.
 #[test]
-fn the_debounce_ceiling_excludes_the_drain_that_follows_the_burst() {
+fn the_debounce_ceiling_excludes_the_drain_that_follows_the_burst() -> Result<(), TestError> {
     let burst = DEBOUNCE * 2;
     let with_drain = burst + DEBOUNCE * 2;
     assert_eq!(
@@ -422,6 +430,7 @@ fn the_debounce_ceiling_excludes_the_drain_that_follows_the_burst() {
         3,
         "the ceiling must not depend on how long the caller drains afterwards"
     );
+    Ok(())
 }
 
 /// The ceiling must leave a fixture room to fail.
@@ -433,7 +442,7 @@ fn the_debounce_ceiling_excludes_the_drain_that_follows_the_burst() {
 /// actually produces, so the guard fires on a real defect rather than on the
 /// machine it happened to run on.
 #[test]
-fn the_ceiling_leaves_room_for_a_fixture_that_can_fail() {
+fn the_ceiling_leaves_room_for_a_fixture_that_can_fail() -> Result<(), TestError> {
     // A change every 100ms is the burst test's spacing; even at a tenth of
     // that rate the fixture must still be able to fail.
     for secs in [2u64, 3, 5, 10, 20] {
@@ -452,25 +461,26 @@ fn the_ceiling_leaves_room_for_a_fixture_that_can_fail() {
         2,
         "a burst shorter than one window still allows the pending flush"
     );
+    Ok(())
 }
 
 #[test]
-fn a_burst_of_changes_collapses_into_fewer_notifications() {
+fn a_burst_of_changes_collapses_into_fewer_notifications() -> Result<(), TestError> {
     /// Gap between changes, comfortably longer than the watcher's look
     /// interval so that an undebounced server would get a look in between.
     const SPACING: Duration = Duration::from_millis(100);
 
-    let mut wire = Wire::start();
+    let mut wire = Wire::start()?;
     wire.request(
         "resources/subscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     wire.forget_notifications();
 
     let started = Instant::now();
     let mut changes = 0;
     while started.elapsed() < DEBOUNCE * 2 {
-        wire.swap_to(SWAPS[changes % SWAPS.len()]);
+        wire.swap_to(SWAPS[changes % SWAPS.len()])?;
         changes += 1;
         std::thread::sleep(SPACING);
     }
@@ -483,7 +493,7 @@ fn a_burst_of_changes_collapses_into_fewer_notifications() {
     // fast machine and failed on CI, which is the shape of every timing bug
     // in this file.
     let burst = started.elapsed();
-    wire.drain_for(DEBOUNCE * 2);
+    wire.drain_for(DEBOUNCE * 2)?;
     let observed = started.elapsed();
     let updates = wire.updates().len();
 
@@ -503,6 +513,7 @@ fn a_burst_of_changes_collapses_into_fewer_notifications() {
          past the {ceiling} a one-per-{DEBOUNCE:?} floor allows; a busy capture \
          would be a notification storm"
     );
+    Ok(())
 }
 
 /// A quiet capture produces nothing, however long a client waits.
@@ -510,20 +521,21 @@ fn a_burst_of_changes_collapses_into_fewer_notifications() {
 /// The "not on a timer" half. A watcher that announced on a schedule would
 /// wake the client here, where the store has not moved since it subscribed.
 #[test]
-fn a_quiet_capture_produces_no_notifications() {
-    let mut wire = Wire::start();
+fn a_quiet_capture_produces_no_notifications() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     wire.request(
         "resources/subscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     wire.forget_notifications();
-    wire.drain_for(DEBOUNCE * 4);
+    wire.drain_for(DEBOUNCE * 4)?;
     assert_eq!(
         wire.updates(),
         Vec::<String>::new(),
         "the capture is drained and nothing changed; a notification here means \
          the watcher is announcing on a clock rather than on a change"
     );
+    Ok(())
 }
 
 /// Subscribing twice is idempotent from the client's side: one change, one
@@ -538,26 +550,27 @@ fn a_quiet_capture_produces_no_notifications() {
 /// worth pinning on the wire, and it is the assertion that would catch a
 /// second watcher racing the first into a double delivery.
 #[test]
-fn subscribing_twice_does_not_double_the_notifications() {
-    let mut wire = Wire::start();
+fn subscribing_twice_does_not_double_the_notifications() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     for _ in 0..3 {
         let ok = wire.request(
             "resources/subscribe",
             json!({"uri": "sipnab://live/dialogs"}),
-        );
+        )?;
         assert!(
             ok["error"].is_null(),
             "a repeated subscribe was refused: {ok}"
         );
     }
     wire.forget_notifications();
-    wire.swap_to(SWAPS[0]);
-    wire.drain_for(DEBOUNCE * 3);
+    wire.swap_to(SWAPS[0])?;
+    wire.drain_for(DEBOUNCE * 3)?;
     assert_eq!(
         wire.updates().len(),
         1,
         "three subscribes to one URI must still yield one notification per change"
     );
+    Ok(())
 }
 
 /// A resource that cannot change is refused, and the refusal names what can.
@@ -566,23 +579,24 @@ fn subscribing_twice_does_not_double_the_notifications() {
 /// compiled into the binary, so a client waiting on it waits forever and has
 /// no way to tell that from a quiet network.
 #[test]
-fn subscribing_to_a_resource_that_cannot_change_is_refused_by_name() {
-    let mut wire = Wire::start();
+fn subscribing_to_a_resource_that_cannot_change_is_refused_by_name() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     for uri in [
         "sipnab://reference/filter-dsl",
         "sipnab:///sip-proxy.pcap",
         "sipnab://live/streams",
         "file:///etc/passwd",
     ] {
-        let reply = wire.request("resources/subscribe", json!({"uri": uri}));
+        let reply = wire.request("resources/subscribe", json!({"uri": uri}))?;
         let message = reply["error"]["message"]
             .as_str()
-            .unwrap_or_else(|| panic!("subscribing to '{uri}' was accepted: {reply}"));
+            .ok_or_else(|| format!("subscribing to '{uri}' was accepted: {reply}"))?;
         assert!(
             message.contains("sipnab://live/dialogs"),
             "the refusal for '{uri}' does not name what IS subscribable: {message}"
         );
     }
+    Ok(())
 }
 
 /// Unsubscribing from something never subscribed says so.
@@ -590,18 +604,19 @@ fn subscribing_to_a_resource_that_cannot_change_is_refused_by_name() {
 /// A silent success would leave a client that unsubscribed from the wrong URI
 /// believing it had stopped, while the right one keeps delivering.
 #[test]
-fn unsubscribing_from_an_unwatched_uri_is_refused() {
-    let mut wire = Wire::start();
+fn unsubscribing_from_an_unwatched_uri_is_refused() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let reply = wire.request(
         "resources/unsubscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     assert!(
         reply["error"]["message"]
             .as_str()
             .is_some_and(|m| m.contains("not subscribed")),
         "unsubscribing from an unwatched URI reported success: {reply}"
     );
+    Ok(())
 }
 
 /// Each subscribed URI is notified under its OWN name, and tracked separately.
@@ -611,26 +626,26 @@ fn unsubscribing_from_an_unwatched_uri_is_refused() {
 /// watching one call that the LIST had changed — which sends it to read the
 /// wrong resource.
 #[test]
-fn each_subscribed_uri_is_notified_under_its_own_name() {
-    let mut wire = Wire::start();
+fn each_subscribed_uri_is_notified_under_its_own_name() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let listed = text_payload(&wire.request(
         "tools/call",
         json!({"name": "list_dialogs", "arguments": {"limit": 1}}),
-    ));
+    )?)?;
     let call_id = listed["dialogs"][0]["call_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("{PCAP} holds no dialogs"))
+        .ok_or_else(|| format!("{PCAP} holds no dialogs"))?
         .to_string();
     let per_call = format!("sipnab://live/dialogs/{call_id}");
 
     for uri in [&per_call, &"sipnab://live/dialogs".to_string()] {
-        let ok = wire.request("resources/subscribe", json!({"uri": uri}));
+        let ok = wire.request("resources/subscribe", json!({"uri": uri}))?;
         assert!(ok["error"].is_null(), "subscribe to {uri} failed: {ok}");
     }
 
     wire.forget_notifications();
-    wire.swap_to(SWAPS[0]);
-    wire.drain_for(DEBOUNCE * 3);
+    wire.swap_to(SWAPS[0])?;
+    wire.drain_for(DEBOUNCE * 3)?;
     let mut both = wire.updates();
     both.sort();
     let mut want = vec![per_call.clone(), "sipnab://live/dialogs".to_string()];
@@ -644,18 +659,19 @@ fn each_subscribed_uri_is_notified_under_its_own_name() {
     let stop = wire.request(
         "resources/unsubscribe",
         json!({"uri": "sipnab://live/dialogs"}),
-    );
+    )?;
     assert!(stop["error"].is_null(), "unsubscribe failed: {stop}");
 
     wire.forget_notifications();
-    wire.swap_to(SWAPS[1]);
-    wire.drain_for(DEBOUNCE * 3);
+    wire.swap_to(SWAPS[1])?;
+    wire.drain_for(DEBOUNCE * 3)?;
     assert_eq!(
         wire.updates(),
         vec![per_call],
         "unsubscribing one URI must not disturb the other, and must not leave \
          the canceled one delivering"
     );
+    Ok(())
 }
 
 /// A per-call subscription is told when its dialog leaves.
@@ -665,24 +681,24 @@ fn each_subscribed_uri_is_notified_under_its_own_name() {
 /// pointer that has stopped meaning anything and must be told, even though the
 /// rendered rows are empty on both sides.
 #[test]
-fn a_per_call_subscription_is_told_when_its_capture_is_replaced() {
-    let mut wire = Wire::start();
+fn a_per_call_subscription_is_told_when_its_capture_is_replaced() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let listed = text_payload(&wire.request(
         "tools/call",
         json!({"name": "list_dialogs", "arguments": {"limit": 1}}),
-    ));
+    )?)?;
     let call_id = listed["dialogs"][0]["call_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("{PCAP} holds no dialogs"))
+        .ok_or_else(|| format!("{PCAP} holds no dialogs"))?
         .to_string();
     let uri = format!("sipnab://live/dialogs/{call_id}");
 
-    let ok = wire.request("resources/subscribe", json!({"uri": uri}));
+    let ok = wire.request("resources/subscribe", json!({"uri": uri}))?;
     assert!(ok["error"].is_null(), "subscribe failed: {ok}");
 
     wire.forget_notifications();
-    wire.swap_to(SWAPS[0]);
-    wire.drain_for(DEBOUNCE * 3);
+    wire.swap_to(SWAPS[0])?;
+    wire.drain_for(DEBOUNCE * 3)?;
     assert_eq!(
         wire.updates(),
         vec![uri.clone()],
@@ -690,14 +706,15 @@ fn a_per_call_subscription_is_told_when_its_capture_is_replaced() {
     );
 
     // And the read that follows agrees: the dialog is gone.
-    let read = wire.request("resources/read", json!({"uri": uri}));
+    let read = wire.request("resources/read", json!({"uri": uri}))?;
     let text = read["result"]["contents"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no text in {read}"));
-    let page: Value = serde_json::from_str(text).expect("the resource is JSON");
+        .ok_or_else(|| format!("no text in {read}"))?;
+    let page: Value = serde_json::from_str(text)?;
     assert_eq!(
         page["returned"],
         json!(0),
         "the notification said to re-read, and the re-read must show the change"
     );
+    Ok(())
 }

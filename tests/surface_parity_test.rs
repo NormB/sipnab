@@ -24,6 +24,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/source_scan.rs"]
 mod source_scan;
 
@@ -46,13 +50,13 @@ fn repo() -> &'static Path {
 /// test code is a gate that agrees with whatever the tests happen to build —
 /// and it would have reported a metric as reachable in an interface that had
 /// stopped drawing it, which is the exact drift this file exists to catch.
-fn code(rel: &str) -> String {
+fn code(rel: &str) -> Result<String, TestError> {
     let root = repo().join(rel);
     let mut files = Vec::new();
     if root.is_dir() {
         let mut stack = vec![root];
         while let Some(dir) = stack.pop() {
-            for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+            for e in std::fs::read_dir(&dir)?.flatten() {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);
@@ -75,7 +79,7 @@ fn code(rel: &str) -> String {
         // matter.
         let mut skipping: Option<i32> = None;
         let mut pending_test_mod = false;
-        for line in std::fs::read_to_string(&f).expect("read").lines() {
+        for line in std::fs::read_to_string(&f)?.lines() {
             let t = line.trim_start();
             if let Some(depth) = skipping.as_mut() {
                 *depth += i32::try_from(line.matches('{').count()).unwrap_or(0);
@@ -109,7 +113,7 @@ fn code(rel: &str) -> String {
             out.push('\n');
         }
     }
-    out
+    Ok(out)
 }
 
 /// The REST API's exposed surface: its handlers PLUS the shared projection
@@ -131,13 +135,13 @@ fn code(rel: &str) -> String {
 /// `GET /v1/streams/{{ssrc}}` renders through `output::json::stream_to_json`,
 /// so `burst_gap` has always been on REST while a scan of `api.rs` +
 /// `model.rs` could not see it.
-fn rest_surface() -> String {
-    format!(
+fn rest_surface() -> Result<String, TestError> {
+    Ok(format!(
         "{}\n{}\n{}",
-        code("src/output/api.rs"),
-        code("src/output/model.rs"),
-        code("src/output/json.rs")
-    )
+        code("src/output/api.rs")?,
+        code("src/output/model.rs")?,
+        code("src/output/json.rs")?
+    ))
 }
 
 /// The MCP surface's exposed shape: its tools PLUS the shared stream renderer
@@ -153,8 +157,12 @@ fn rest_surface() -> String {
 ///
 /// A gate that reads a surface's own file cannot see a surface that delegates.
 /// Both surfaces here delegate, to the same renderer, so both scans include it.
-fn mcp_surface() -> String {
-    format!("{}\n{}", code("src/mcp"), code("src/output/json.rs"))
+fn mcp_surface() -> Result<String, TestError> {
+    Ok(format!(
+        "{}\n{}",
+        code("src/mcp")?,
+        code("src/output/json.rs")?
+    ))
 }
 
 /// Does `hay` use `needle` as a whole identifier?
@@ -275,13 +283,13 @@ struct Answer {
 
 /// Every answer one door can give, the other can give too.
 #[test]
-fn both_doors_answer_the_same_questions() {
+fn both_doors_answer_the_same_questions() -> Result<(), TestError> {
     // The whole of `src/mcp`, not `server.rs` alone: tool groups own files
     // under `src/mcp/tools/` now, and a scan of one file reported
     // `hep_senders` (`tools/hep.rs`) as missing from a door that serves it --
     // the narrowing `mcp_tool_descriptions_test` records for its own scan.
-    let mcp = code("src/mcp");
-    let api = code("src/output/api.rs");
+    let mcp = code("src/mcp")?;
+    let api = code("src/output/api.rs")?;
 
     let mut missing = Vec::new();
     for a in CAPTURE_ANSWERS {
@@ -310,6 +318,7 @@ fn both_doors_answer_the_same_questions() {
          is to reimplement the analysis it came to sipnab for.",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// Counters that say what the capture COULD NOT do, which must reach every door.
@@ -396,16 +405,16 @@ struct Caveat {
 /// uses. These change what a whole response MEANS, and a client that never
 /// learns the number was available cannot know to ask for it.
 #[test]
-fn caveat_counters_reach_both_api_doors() {
-    let mcp = mcp_surface();
-    let api = rest_surface();
+fn caveat_counters_reach_both_api_doors() -> Result<(), TestError> {
+    let mcp = mcp_surface()?;
+    let api = rest_surface()?;
 
     let mut unkept = Vec::new();
     let mut missing = Vec::new();
 
     for c in CAPTURE_CAVEAT_COUNTERS {
         // The list must describe this program, not a past one.
-        if !c.metric.carried_by(&code(c.kept_in)) {
+        if !c.metric.carried_by(&code(c.kept_in)?) {
             unkept.push(format!("`{}` (not in {})", c.metric.name, c.kept_in));
             continue;
         }
@@ -439,6 +448,7 @@ fn caveat_counters_reach_both_api_doors() {
          answer this project exists not to give.",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// Provenance sipnab RECORDS on a stream, which must reach somebody.
@@ -482,11 +492,11 @@ const RECORDED_PROVENANCE: &[Metric] = &[
 /// else in this suite notices. The second half holds the ones that DO get out
 /// to the same standard the quality metrics are held to.
 #[test]
-fn provenance_the_program_records_reaches_a_reader() {
-    let stream = code("src/rtp/stream.rs");
-    let mcp = mcp_surface();
-    let api = rest_surface();
-    let tui = code("src/tui");
+fn provenance_the_program_records_reaches_a_reader() -> Result<(), TestError> {
+    let stream = code("src/rtp/stream.rs")?;
+    let mcp = mcp_surface()?;
+    let api = rest_surface()?;
+    let tui = code("src/tui")?;
 
     let mut unrecorded = Vec::new();
     let mut invisible = Vec::new();
@@ -536,6 +546,7 @@ fn provenance_the_program_records_reaches_a_reader() {
         "provenance on one API door and not the other:\n  {}",
         asymmetric.join("\n  ")
     );
+    Ok(())
 }
 
 /// A quality metric and every identifier that carries it.
@@ -561,9 +572,9 @@ impl Metric {
 /// Every metric must be reachable from MCP and from the REST API, or from
 /// neither. One surface alone is drift.
 #[test]
-fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
-    let mcp = mcp_surface();
-    let api = rest_surface();
+fn every_quality_metric_is_on_both_mcp_and_the_rest_api() -> Result<(), TestError> {
+    let mcp = mcp_surface()?;
+    let api = rest_surface()?;
 
     let mut asymmetric = Vec::new();
     let mut both = 0usize;
@@ -604,6 +615,7 @@ fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
          before 1.0 and expensive after.",
         asymmetric.join("\n  ")
     );
+    Ok(())
 }
 
 /// The browser demo says what its MOS is worth, like every other door.
@@ -622,8 +634,8 @@ fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
 /// gaining or losing a metric is not evidence about MCP and REST, and folding
 /// it into that comparison would make one gate answer two questions.
 #[test]
-fn the_browser_surface_says_what_its_mos_is_worth() {
-    let wasm = code("src/wasm.rs");
+fn the_browser_surface_says_what_its_mos_is_worth() -> Result<(), TestError> {
+    let wasm = code("src/wasm.rs")?;
 
     // The scan has to be able to see the thing it is looking for.
     assert!(
@@ -643,6 +655,7 @@ fn the_browser_surface_says_what_its_mos_is_worth() {
          UNKNOWN. Every other door carries `mos_grounded`/`mos_grounding`. \
          This one is the page a stranger lands on."
     );
+    Ok(())
 }
 
 /// The TUI is held to REACHABILITY, not to the same shape.
@@ -653,10 +666,10 @@ fn the_browser_surface_says_what_its_mos_is_worth() {
 /// What matters is that a metric the other surfaces report can be SEEN
 /// somewhere in the interface, not that it is on the summary row.
 #[test]
-fn metrics_the_apis_report_are_reachable_in_the_tui() {
-    let mcp = mcp_surface();
-    let api = rest_surface();
-    let tui = code("src/tui");
+fn metrics_the_apis_report_are_reachable_in_the_tui() -> Result<(), TestError> {
+    let mcp = mcp_surface()?;
+    let api = rest_surface()?;
+    let tui = code("src/tui")?;
 
     let mut missing = Vec::new();
     let mut checked = 0usize;
@@ -680,6 +693,7 @@ fn metrics_the_apis_report_are_reachable_in_the_tui() {
          {missing:?}\n\nSomeone reading the terminal cannot see what an agent \
          and an HTTP client both can."
     );
+    Ok(())
 }
 
 /// Only ONE piece of code turns network conditions into a MOS.
@@ -694,7 +708,7 @@ fn metrics_the_apis_report_are_reachable_in_the_tui() {
 /// So this reads the source rather than the behavior: the E-model's R0
 /// anchor may appear only where the model itself lives.
 #[test]
-fn only_one_place_in_the_tree_scores_a_mos() {
+fn only_one_place_in_the_tree_scores_a_mos() -> Result<(), TestError> {
     // src/rtp/quality.rs        — the narrowband E-model, the one scorer.
     // src/rtp/emodel_wb.rs      — G.107.1 wideband. A DIFFERENT model on a
     //                             different scale (anchored at 129, not 93.2),
@@ -706,7 +720,7 @@ fn only_one_place_in_the_tree_scores_a_mos() {
     let mut anchors_seen = 0usize;
     let mut stack = vec![repo().join("src")];
     while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
@@ -715,12 +729,8 @@ fn only_one_place_in_the_tree_scores_a_mos() {
             if p.extension().and_then(|s| s.to_str()) != Some("rs") {
                 continue;
             }
-            let rel = p
-                .strip_prefix(repo())
-                .expect("under repo")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let text = std::fs::read_to_string(&p).expect("read");
+            let rel = p.strip_prefix(repo())?.to_string_lossy().replace('\\', "/");
+            let text = std::fs::read_to_string(&p)?;
             for (i, line) in text.lines().enumerate() {
                 // Comments may DISCUSS the constant — the fix for this very
                 // defect explains the old formula in prose, and a gate that
@@ -750,6 +760,7 @@ fn only_one_place_in_the_tree_scores_a_mos() {
          disagrees with the display.",
         strays.join("\n  ")
     );
+    Ok(())
 }
 
 /// No surface scores a MOS on the assumed one-way delay.
@@ -775,7 +786,7 @@ fn only_one_place_in_the_tree_scores_a_mos() {
 /// it is a legitimate thing for a downstream crate to call, and an illegitimate
 /// thing for a surface of this one to.
 #[test]
-fn no_surface_scores_a_mos_on_the_assumed_delay() {
+fn no_surface_scores_a_mos_on_the_assumed_delay() -> Result<(), TestError> {
     // Where the assumption is allowed to be named: the model's own home, which
     // defines the wrapper, documents it and doc-tests it.
     const HOME: &str = "src/rtp/quality.rs";
@@ -784,7 +795,7 @@ fn no_surface_scores_a_mos_on_the_assumed_delay() {
     let mut delay_aware = 0usize;
     let mut stack = vec![repo().join("src")];
     while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).expect("read_dir src").flatten() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
@@ -793,12 +804,8 @@ fn no_surface_scores_a_mos_on_the_assumed_delay() {
             if p.extension().and_then(|s| s.to_str()) != Some("rs") {
                 continue;
             }
-            let rel = p
-                .strip_prefix(repo())
-                .expect("under repo")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let text = std::fs::read_to_string(&p).expect("read");
+            let rel = p.strip_prefix(repo())?.to_string_lossy().replace('\\', "/");
+            let text = std::fs::read_to_string(&p)?;
             // Production only. A unit test may legitimately hold the delay term
             // still by naming the assumed wrapper, and `dashboard.rs` does.
             for (i, line) in source_scan::production_source(&text).lines().enumerate() {
@@ -842,6 +849,7 @@ fn no_surface_scores_a_mos_on_the_assumed_delay() {
         strays.join("\n  "),
         assumed = sipnab::rtp::quality::DEFAULT_ONE_WAY_DELAY_MS,
     );
+    Ok(())
 }
 
 /// No view may band jitter, loss or MOS with its own numbers.
@@ -870,7 +878,7 @@ fn no_surface_scores_a_mos_on_the_assumed_delay() {
 /// Only the color is a triage verdict an operator can find disagreeing with
 /// itself, and only the color is caught here.
 #[test]
-fn no_view_carries_its_own_quality_bands() {
+fn no_view_carries_its_own_quality_bands() -> Result<(), TestError> {
     // The literals that used to be band boundaries. A number here is only a
     // finding when it sits in a comparison.
     const SUSPECT: &[&str] = &["20.0", "30.0", "50.0", "0.5", "1.0", "2.0", "5.0", "3.5"];
@@ -886,7 +894,7 @@ fn no_view_carries_its_own_quality_bands() {
     let mut views: Vec<std::path::PathBuf> = Vec::new();
     let mut stack = vec![repo().join("src/tui")];
     while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).expect("read_dir src/tui").flatten() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
@@ -902,11 +910,10 @@ fn no_view_carries_its_own_quality_bands() {
     let mut severity_seen = 0usize;
     for view in &views {
         let rel = view
-            .strip_prefix(repo())
-            .expect("under repo")
+            .strip_prefix(repo())?
             .to_string_lossy()
             .replace('\\', "/");
-        let text = std::fs::read_to_string(view).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let text = std::fs::read_to_string(view).map_err(|e| format!("read {rel}: {e}"))?;
         let all: Vec<&str> = text.lines().collect();
         let bare = |l: &str| l.split("//").next().unwrap_or("").to_string();
         // Everything from the test MODULE on is assertions ABOUT the bands,
@@ -995,6 +1002,7 @@ fn no_view_carries_its_own_quality_bands() {
          stream:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// A limit that refuses legitimate work must say so at a level an operator sees.
@@ -1018,7 +1026,7 @@ fn no_view_carries_its_own_quality_bands() {
 /// has one — a future edit that quietly drops back to `debug!` restores a
 /// silent failure, which is the defect rather than a style change.
 #[test]
-fn a_limit_that_refuses_real_work_warns_where_it_refuses() {
+fn a_limit_that_refuses_real_work_warns_where_it_refuses() -> Result<(), TestError> {
     struct Site {
         file: &'static str,
         marker: &'static str,
@@ -1072,8 +1080,7 @@ fn a_limit_that_refuses_real_work_warns_where_it_refuses() {
 
     let mut missing = Vec::new();
     for s in &sites {
-        let text =
-            std::fs::read_to_string(s.file).unwrap_or_else(|e| panic!("read {}: {e}", s.file));
+        let text = std::fs::read_to_string(s.file).map_err(|e| format!("read {}: {e}", s.file))?;
         // The message must exist AND be reachable from a warn!, not a debug!.
         let Some(at) = text.find(s.marker) else {
             missing.push(format!("{}: no diagnostic for {}", s.file, s.what));
@@ -1095,4 +1102,5 @@ fn a_limit_that_refuses_real_work_warns_where_it_refuses() {
          somewhere else entirely:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }

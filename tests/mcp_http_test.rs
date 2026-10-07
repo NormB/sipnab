@@ -12,26 +12,29 @@
 #[path = "support/mcp.rs"]
 mod mcp;
 
-use mcp::{post_json_or_panic, shutdown, spawn_http_or_panic};
+use mcp::{post_json, shutdown, spawn_http};
+
+use mcp::TestError;
 
 /// Binding `0.0.0.0` without `--mcp-token` refuses to start (decision D18) —
 /// `spawn_http` observes the refusal and returns `None`.
 #[test]
-fn http_mcp_non_loopback_without_token_refuses_to_start() {
-    let result = spawn_http_or_panic(&["--mcp-bind", "0.0.0.0:0"]);
+fn http_mcp_non_loopback_without_token_refuses_to_start() -> Result<(), TestError> {
+    let result = spawn_http(&["--mcp-bind", "0.0.0.0:0"])?;
     assert!(
         result.is_none(),
         "non-loopback bind without --mcp-token must refuse to start (D18)"
     );
+    Ok(())
 }
 
 /// On loopback with no token configured, an unauthenticated JSON-RPC
 /// `initialize` POST returns 200.
 #[test]
-fn http_mcp_loopback_no_auth_initialize_succeeds() {
-    let (child, addr) = match spawn_http_or_panic(&["--mcp-bind", "127.0.0.1:0"]) {
+fn http_mcp_loopback_no_auth_initialize_succeeds() -> Result<(), TestError> {
+    let (child, addr) = match spawn_http(&["--mcp-bind", "127.0.0.1:0"])? {
         Some(p) => p,
-        None => panic!("failed to start MCP HTTP server"),
+        None => return Err("failed to start MCP HTTP server".into()),
     };
     let url = format!("http://{addr}/mcp");
 
@@ -42,7 +45,7 @@ fn http_mcp_loopback_no_auth_initialize_succeeds() {
         "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                    "clientInfo": {"name": "test", "version": "0"}}
     });
-    let resp = post_json_or_panic(&url, None, &payload);
+    let resp = post_json(&url, None, &payload)?;
     assert_eq!(
         resp.status, 200,
         "initialize should succeed; body: {}",
@@ -50,18 +53,18 @@ fn http_mcp_loopback_no_auth_initialize_succeeds() {
     );
 
     shutdown(child);
+    Ok(())
 }
 
 /// With `--mcp-token` set: missing and wrong bearer tokens get 401, the
 /// correct token gets 200 on `initialize`.
 #[test]
-fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
+fn http_mcp_with_token_rejects_missing_and_wrong_tokens() -> Result<(), TestError> {
     let token = "supersecret-test-token";
-    let (child, addr) =
-        match spawn_http_or_panic(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token]) {
-            Some(p) => p,
-            None => panic!("failed to start MCP HTTP server with token"),
-        };
+    let (child, addr) = match spawn_http(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])? {
+        Some(p) => p,
+        None => return Err("failed to start MCP HTTP server with token".into()),
+    };
     let url = format!("http://{addr}/mcp");
 
     let payload = serde_json::json!({
@@ -71,15 +74,15 @@ fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
     });
 
     // No auth header → 401
-    let resp = post_json_or_panic(&url, None, &payload);
+    let resp = post_json(&url, None, &payload)?;
     assert_eq!(resp.status, 401, "missing token must be 401");
 
     // Wrong token → 401
-    let resp = post_json_or_panic(&url, Some("wrong-token-value"), &payload);
+    let resp = post_json(&url, Some("wrong-token-value"), &payload)?;
     assert_eq!(resp.status, 401, "wrong token must be 401");
 
     // Right token → 200
-    let resp = post_json_or_panic(&url, Some(token), &payload);
+    let resp = post_json(&url, Some(token), &payload)?;
     assert_eq!(
         resp.status, 200,
         "correct token must succeed; body: {}",
@@ -87,6 +90,7 @@ fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
     );
 
     shutdown(child);
+    Ok(())
 }
 
 // ── RFC 9728 / RFC 6750 discovery ───────────────────────────────────────
@@ -140,13 +144,14 @@ fn auth_param<'a>(challenge: &'a str, name: &str) -> Option<&'a str> {
 /// which leaves a client unable to tell "present a bearer token" from "this
 /// server is broken".
 #[test]
-fn an_unauthenticated_401_carries_a_bearer_challenge_without_an_error_code() {
+fn an_unauthenticated_401_carries_a_bearer_challenge_without_an_error_code() -> Result<(), TestError>
+{
     let token = "supersecret-test-token";
-    let (child, addr) = spawn_http_or_panic(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])
-        .expect("failed to start MCP HTTP server with token");
+    let (child, addr) = spawn_http(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])?
+        .ok_or("failed to start MCP HTTP server with token")?;
     let url = format!("http://{addr}/mcp");
 
-    let resp = post_json_or_panic(&url, None, &mcp::initialize_payload());
+    let resp = post_json(&url, None, &mcp::initialize_payload())?;
     assert_eq!(resp.status, 401, "missing token must stay 401");
     assert_eq!(
         resp.header_count("WWW-Authenticate"),
@@ -155,7 +160,7 @@ fn an_unauthenticated_401_carries_a_bearer_challenge_without_an_error_code() {
          got headers {:?}",
         resp.headers
     );
-    let challenge = resp.header("WWW-Authenticate").expect("challenge present");
+    let challenge = resp.header("WWW-Authenticate").ok_or("challenge present")?;
     assert!(
         challenge.starts_with("Bearer "),
         "RFC 6750 §3: the auth-scheme MUST be Bearer and MUST be followed by \
@@ -173,6 +178,7 @@ fn an_unauthenticated_401_carries_a_bearer_challenge_without_an_error_code() {
     );
 
     shutdown(child);
+    Ok(())
 }
 
 /// A token that was presented and failed verification is `invalid_token`.
@@ -181,15 +187,15 @@ fn an_unauthenticated_401_carries_a_bearer_challenge_without_an_error_code() {
 /// nothing" and "the thing you sent is expired, revoked or forged" are
 /// different problems and were previously the same empty 401.
 #[test]
-fn a_rejected_token_401_names_the_rfc6750_invalid_token_error() {
+fn a_rejected_token_401_names_the_rfc6750_invalid_token_error() -> Result<(), TestError> {
     let token = "supersecret-test-token";
-    let (child, addr) = spawn_http_or_panic(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])
-        .expect("failed to start MCP HTTP server with token");
+    let (child, addr) = spawn_http(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])?
+        .ok_or("failed to start MCP HTTP server with token")?;
     let url = format!("http://{addr}/mcp");
 
-    let resp = post_json_or_panic(&url, Some("wrong-token-value"), &mcp::initialize_payload());
+    let resp = post_json(&url, Some("wrong-token-value"), &mcp::initialize_payload())?;
     assert_eq!(resp.status, 401, "wrong token must stay 401");
-    let challenge = resp.header("WWW-Authenticate").expect("challenge present");
+    let challenge = resp.header("WWW-Authenticate").ok_or("challenge present")?;
     assert_eq!(
         auth_param(challenge, "error"),
         Some("invalid_token"),
@@ -198,30 +204,31 @@ fn a_rejected_token_401_names_the_rfc6750_invalid_token_error() {
     );
 
     shutdown(child);
+    Ok(())
 }
 
 /// With a resource identifier configured, the challenge points at the metadata
 /// document and the document is there, unauthenticated, in the shape RFC 9728
 /// §3.2 requires.
 #[test]
-fn the_challenge_points_at_an_rfc9728_metadata_document() {
+fn the_challenge_points_at_an_rfc9728_metadata_document() -> Result<(), TestError> {
     let token = "supersecret-test-token";
-    let (child, addr) = spawn_http_or_panic(&[
+    let (child, addr) = spawn_http(&[
         "--mcp-bind",
         "127.0.0.1:0",
         "--mcp-token",
         token,
         "--mcp-resource-url",
         RESOURCE_URL,
-    ])
-    .expect("failed to start MCP HTTP server with a resource URL");
+    ])?
+    .ok_or("failed to start MCP HTTP server with a resource URL")?;
 
-    let resp = post_json_or_panic(
+    let resp = post_json(
         &format!("http://{addr}/mcp"),
         None,
         &mcp::initialize_payload(),
-    );
-    let challenge = resp.header("WWW-Authenticate").expect("challenge present");
+    )?;
+    let challenge = resp.header("WWW-Authenticate").ok_or("challenge present")?;
     assert_eq!(
         auth_param(challenge, "resource_metadata"),
         Some(METADATA_URL),
@@ -233,10 +240,10 @@ fn the_challenge_points_at_an_rfc9728_metadata_document() {
     // The client now fetches that document. It reaches this process on the
     // loopback socket rather than through the proxy the identifier names, so
     // the path is what is replayed — which is exactly the part §3.1 specifies.
-    let doc = mcp::get_or_panic(
+    let doc = mcp::get(
         &format!("http://{addr}/.well-known/oauth-protected-resource/mcp"),
         None,
-    );
+    )?;
     assert_eq!(
         doc.status, 200,
         "RFC 9728 §3.2: a successful response MUST use 200 OK; body {}",
@@ -249,7 +256,7 @@ fn the_challenge_points_at_an_rfc9728_metadata_document() {
          type; got {:?}",
         doc.header("content-type")
     );
-    let v: serde_json::Value = serde_json::from_str(&doc.body).expect("metadata is JSON");
+    let v: serde_json::Value = serde_json::from_str(&doc.body)?;
     assert_eq!(
         v["resource"], RESOURCE_URL,
         "RFC 9728 §3.3: the resource value MUST be identical to the URL the \
@@ -265,7 +272,7 @@ fn the_challenge_points_at_an_rfc9728_metadata_document() {
     );
     let scopes = v["scopes_supported"]
         .as_array()
-        .unwrap_or_else(|| panic!("scopes_supported must be a JSON array; got {}", doc.body));
+        .ok_or_else(|| format!("scopes_supported must be a JSON array; got {}", doc.body))?;
     assert!(
         scopes.iter().any(|s| s == "full") && scopes.iter().any(|s| s == "read"),
         "scopes_supported must list the scopes this surface understands; got {}",
@@ -280,16 +287,17 @@ fn the_challenge_points_at_an_rfc9728_metadata_document() {
     );
 
     shutdown(child);
+    Ok(())
 }
 
 /// The metadata document is public by design, so what it does NOT contain is
 /// the assertion worth having: not the token, not the signing key, not the
 /// bind address, not the Host allowlist, not the capture.
 #[test]
-fn the_metadata_document_discloses_no_credentials_or_internals() {
+fn the_metadata_document_discloses_no_credentials_or_internals() -> Result<(), TestError> {
     let token = "supersecret-test-token";
     let signing_key = "metadata-leak-probe-signing-key";
-    let (child, addr) = spawn_http_or_panic(&[
+    let (child, addr) = spawn_http(&[
         "--mcp-bind",
         "127.0.0.1:0",
         "--mcp-token",
@@ -300,13 +308,13 @@ fn the_metadata_document_discloses_no_credentials_or_internals() {
         "internal-capture-host.corp",
         "--mcp-resource-url",
         RESOURCE_URL,
-    ])
-    .expect("failed to start MCP HTTP server for the disclosure probe");
+    ])?
+    .ok_or("failed to start MCP HTTP server for the disclosure probe")?;
 
-    let doc = mcp::get_or_panic(
+    let doc = mcp::get(
         &format!("http://{addr}/.well-known/oauth-protected-resource/mcp"),
         None,
-    );
+    )?;
     assert_eq!(
         doc.status, 200,
         "metadata must be served; body {}",
@@ -327,6 +335,7 @@ fn the_metadata_document_discloses_no_credentials_or_internals() {
     }
 
     shutdown(child);
+    Ok(())
 }
 
 /// Mounting an unauthenticated route must not unmount the guard on the routes
@@ -338,45 +347,46 @@ fn the_metadata_document_discloses_no_credentials_or_internals() {
 /// every route registered alongside it. Nothing about the 200 that would
 /// follow looks wrong.
 #[test]
-fn the_metadata_route_does_not_unauthenticate_the_mcp_surface() {
+fn the_metadata_route_does_not_unauthenticate_the_mcp_surface() -> Result<(), TestError> {
     let token = "supersecret-test-token";
-    let (child, addr) = spawn_http_or_panic(&[
+    let (child, addr) = spawn_http(&[
         "--mcp-bind",
         "127.0.0.1:0",
         "--mcp-token",
         token,
         "--mcp-resource-url",
         RESOURCE_URL,
-    ])
-    .expect("failed to start MCP HTTP server with a resource URL");
+    ])?
+    .ok_or("failed to start MCP HTTP server with a resource URL")?;
 
     assert_eq!(
-        post_json_or_panic(
+        post_json(
             &format!("http://{addr}/mcp"),
             None,
             &mcp::initialize_payload()
-        )
+        )?
         .status,
         401,
         "/mcp must still require the bearer token"
     );
     assert_eq!(
-        mcp::get_or_panic(&format!("http://{addr}/health"), None).status,
+        mcp::get(&format!("http://{addr}/health"), None)?.status,
         401,
         "/health must still require the bearer token"
     );
     assert_eq!(
-        post_json_or_panic(
+        post_json(
             &format!("http://{addr}/mcp"),
             Some(token),
             &mcp::initialize_payload()
-        )
+        )?
         .status,
         200,
         "the configured token must still be accepted"
     );
 
     shutdown(child);
+    Ok(())
 }
 
 /// A resource identifier with no path component publishes at the bare
@@ -387,26 +397,27 @@ fn the_metadata_route_does_not_unauthenticate_the_mcp_surface() {
 /// and "any terminating slash (/) following the host component MUST be removed
 /// before inserting /.well-known/".
 #[test]
-fn a_resource_identifier_without_a_path_publishes_at_the_bare_well_known_path() {
+fn a_resource_identifier_without_a_path_publishes_at_the_bare_well_known_path()
+-> Result<(), TestError> {
     let token = "supersecret-test-token";
-    let (child, addr) = spawn_http_or_panic(&[
+    let (child, addr) = spawn_http(&[
         "--mcp-bind",
         "127.0.0.1:0",
         "--mcp-token",
         token,
         "--mcp-resource-url",
         "https://sipnab.example.com/",
-    ])
-    .expect("failed to start MCP HTTP server with a path-less resource URL");
+    ])?
+    .ok_or("failed to start MCP HTTP server with a path-less resource URL")?;
 
-    let challenge_resp = post_json_or_panic(
+    let challenge_resp = post_json(
         &format!("http://{addr}/mcp"),
         None,
         &mcp::initialize_payload(),
-    );
+    )?;
     let challenge = challenge_resp
         .header("WWW-Authenticate")
-        .expect("challenge present");
+        .ok_or("challenge present")?;
     assert_eq!(
         auth_param(challenge, "resource_metadata"),
         Some("https://sipnab.example.com/.well-known/oauth-protected-resource"),
@@ -414,16 +425,16 @@ fn a_resource_identifier_without_a_path_publishes_at_the_bare_well_known_path() 
          suffix; got {challenge:?}"
     );
 
-    let doc = mcp::get_or_panic(
+    let doc = mcp::get(
         &format!("http://{addr}/.well-known/oauth-protected-resource"),
         None,
-    );
+    )?;
     assert_eq!(
         doc.status, 200,
         "metadata must be served; body {}",
         doc.body
     );
-    let v: serde_json::Value = serde_json::from_str(&doc.body).expect("metadata is JSON");
+    let v: serde_json::Value = serde_json::from_str(&doc.body)?;
     assert_eq!(
         v["resource"], "https://sipnab.example.com",
         "the terminating slash MUST be removed from the resource identifier; \
@@ -432,6 +443,7 @@ fn a_resource_identifier_without_a_path_publishes_at_the_bare_well_known_path() 
     );
 
     shutdown(child);
+    Ok(())
 }
 
 /// Without a resource identifier there is nothing to publish, so no well-known
@@ -443,31 +455,33 @@ fn a_resource_identifier_without_a_path_publishes_at_the_bare_well_known_path() 
 /// that a forwarded header is not trusted here, and a guessed scheme produces
 /// a document a conformant client MUST reject under §3.3.
 #[test]
-fn without_a_resource_url_the_challenge_stands_alone_and_nothing_is_published() {
+fn without_a_resource_url_the_challenge_stands_alone_and_nothing_is_published()
+-> Result<(), TestError> {
     let token = "supersecret-test-token";
-    let (child, addr) = spawn_http_or_panic(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])
-        .expect("failed to start MCP HTTP server with token");
+    let (child, addr) = spawn_http(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])?
+        .ok_or("failed to start MCP HTTP server with token")?;
 
-    let resp = post_json_or_panic(
+    let resp = post_json(
         &format!("http://{addr}/mcp"),
         None,
         &mcp::initialize_payload(),
-    );
-    let challenge = resp.header("WWW-Authenticate").expect("challenge present");
+    )?;
+    let challenge = resp.header("WWW-Authenticate").ok_or("challenge present")?;
     assert!(
         auth_param(challenge, "resource_metadata").is_none(),
         "an unconfigured resource identifier must not be guessed; got \
          {challenge:?}"
     );
     assert_eq!(
-        mcp::get_or_panic(
+        mcp::get(
             &format!("http://{addr}/.well-known/oauth-protected-resource"),
             None
-        )
+        )?
         .status,
         404,
         "nothing is published when no resource identifier is configured"
     );
 
     shutdown(child);
+    Ok(())
 }

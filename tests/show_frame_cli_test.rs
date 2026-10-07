@@ -17,44 +17,45 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name)
 }
 
-fn show_frame(pointer: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sipnab"))
+fn show_frame(pointer: &str) -> Result<Output, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .arg("--show-frame")
         .arg(pointer)
-        .output()
-        .expect("run sipnab --show-frame")
+        .output()?)
 }
 
 /// A pointer as a surface actually emits it, so the test cannot drift from the
 /// wire format by constructing one by hand.
-fn emitted_pointer() -> String {
+fn emitted_pointer() -> Result<String, TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "--json-dialogs", "-I"])
         .arg(fixture("sip_call.pcap"))
-        .output()
-        .expect("run sipnab --json-dialogs");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .expect("--json-dialogs emitted no JSON object");
-    let v: serde_json::Value = serde_json::from_str(line).expect("parse NDJSON line");
-    v.get("frame")
+        .ok_or("--json-dialogs emitted no JSON object")?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    Ok(v.get("frame")
         .and_then(|f| f.as_str())
-        .unwrap_or_else(|| panic!("--json-dialogs emitted no `frame`: {line}"))
-        .to_string()
+        .ok_or_else(|| format!("--json-dialogs emitted no `frame`: {line}"))?
+        .to_string())
 }
 
 /// The whole loop: a surface emits a pointer, the CLI follows it.
 #[test]
-fn a_pointer_emitted_by_json_dialogs_can_be_followed() {
-    let out = show_frame(&emitted_pointer());
+fn a_pointer_emitted_by_json_dialogs_can_be_followed() -> Result<(), TestError> {
+    let out = show_frame(&emitted_pointer()?)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -70,18 +71,19 @@ fn a_pointer_emitted_by_json_dialogs_can_be_followed() {
         stdout.contains("INVITE"),
         "the hexdump does not contain the INVITE this dialog opened with; got: {stdout}"
     );
+    Ok(())
 }
 
 /// The human-typed form works and is labeled honestly.
 #[test]
-fn a_pointer_without_a_digest_is_printed_but_called_unverified() {
-    let full = emitted_pointer();
+fn a_pointer_without_a_digest_is_printed_but_called_unverified() -> Result<(), TestError> {
+    let full = emitted_pointer()?;
     let short = full
         .split_once('@')
-        .expect("emitted form carries a digest")
+        .ok_or("emitted form carries a digest")?
         .0;
 
-    let out = show_frame(short);
+    let out = show_frame(short)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "the short form must still resolve");
     assert!(
@@ -92,16 +94,17 @@ fn a_pointer_without_a_digest_is_printed_but_called_unverified() {
         stdout.contains("not checked against anything"),
         "the caveat must be stated, not implied by a one-word label; got: {stdout}"
     );
+    Ok(())
 }
 
 /// The refusal that matters: same ordinal and digest, different capture.
 #[test]
-fn a_capture_that_changed_is_refused_rather_than_answered() {
-    let full = emitted_pointer();
-    let tail = full.rsplit_once('#').expect("pointer has a tail").1;
+fn a_capture_that_changed_is_refused_rather_than_answered() -> Result<(), TestError> {
+    let full = emitted_pointer()?;
+    let tail = full.rsplit_once('#').ok_or("pointer has a tail")?.1;
     let elsewhere = format!("{}#{tail}", fixture("udp_5060.pcap").display());
 
-    let out = show_frame(&elsewhere);
+    let out = show_frame(&elsewhere)?;
     assert!(
         !out.status.success(),
         "a digest mismatch returned success; the bytes at that ordinal were \
@@ -117,24 +120,26 @@ fn a_capture_that_changed_is_refused_rather_than_answered() {
         "nothing may be printed to stdout when the pointer is refused -- a \
          hexdump above an error still reads as an answer"
     );
+    Ok(())
 }
 
 /// An ordinal past the end names the real count rather than guessing.
 #[test]
-fn an_ordinal_past_the_end_is_refused_with_the_real_count() {
-    let out = show_frame(&format!("{}#99999", fixture("sip_call.pcap").display()));
+fn an_ordinal_past_the_end_is_refused_with_the_real_count() -> Result<(), TestError> {
+    let out = show_frame(&format!("{}#99999", fixture("sip_call.pcap").display()))?;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("holds 7 frame(s)"),
         "the refusal should say how many frames are actually there; got: {stderr}"
     );
+    Ok(())
 }
 
 /// Unreadable source, and garbage input, are distinguishable from a refusal.
 #[test]
-fn unreadable_and_malformed_are_reported_separately() {
-    let missing = show_frame("/nonexistent/nowhere.pcap#0");
+fn unreadable_and_malformed_are_reported_separately() -> Result<(), TestError> {
+    let missing = show_frame("/nonexistent/nowhere.pcap#0")?;
     assert_eq!(
         missing.status.code(),
         Some(1),
@@ -142,10 +147,11 @@ fn unreadable_and_malformed_are_reported_separately() {
     );
     assert!(String::from_utf8_lossy(&missing.stderr).contains("cannot read"));
 
-    let garbage = show_frame("not-a-pointer");
+    let garbage = show_frame("not-a-pointer")?;
     assert_eq!(
         garbage.status.code(),
         Some(2),
         "input that is not a pointer is a usage error (2), not a refusal"
     );
+    Ok(())
 }

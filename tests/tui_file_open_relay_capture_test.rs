@@ -22,6 +22,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use sipnab::tui::{App, View};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The Call-ID OpenSIPS gave the relay, `1-4062@198.51.100.21`, cut to the
 /// eleven characters the stream list's Call-ID column shows. Its host part
 /// was a container address until September 2026, when the fixture pair was
@@ -30,15 +32,14 @@ const CALL_ID_CELL: &str = "1-4062@198.";
 
 /// Open `fixture` through the file browser the way a user would — `O`, step
 /// past `..`, Enter — and return the app once the background load has settled.
-fn open_through_the_browser(fixture: &str) -> App {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn open_through_the_browser(fixture: &str) -> Result<App, TestError> {
+    let dir = tempfile::tempdir()?;
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(fixture),
         dir.path().join(fixture),
-    )
-    .expect("copy the fixture");
+    )?;
     let mut app = App::new_test();
     app.set_open_dir_for_test(dir.path().to_path_buf());
     app.handle_key(KeyCode::Char('O'));
@@ -49,53 +50,55 @@ fn open_through_the_browser(fixture: &str) -> App {
     app.handle_key(KeyCode::Down);
     // `handle_key` settles the background load before it returns.
     app.handle_key(KeyCode::Enter);
-    app
+    Ok(app)
 }
 
 /// Render one tick of the current view into a wide in-memory terminal and
 /// return its text, one line per row.
-fn screen(app: &mut App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(200, 30)).expect("terminal");
-    terminal.draw(|frame| app.render(frame)).expect("draw");
+fn screen(app: &mut App) -> Result<String, TestError> {
+    let mut terminal = Terminal::new(TestBackend::new(200, 30))?;
+    terminal.draw(|frame| app.render(frame))?;
     let buf = terminal.backend().buffer();
     let mut out = String::new();
     for y in 0..buf.area.height {
         for x in 0..buf.area.width {
-            out.push_str(buf.cell((x, y)).expect("cell in bounds").symbol());
+            out.push_str(buf.cell((x, y)).ok_or("cell in bounds")?.symbol());
         }
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 /// With the control plane in the capture, the load opens on the stream list
 /// (there is no SIP to list calls from) and both legs carry the proxy's
 /// Call-ID.
 #[test]
-fn a_relay_capture_opens_on_streams_named_from_its_control_plane() {
-    let mut app = open_through_the_browser("rtpengine-opensips-ng.pcap");
+fn a_relay_capture_opens_on_streams_named_from_its_control_plane() -> Result<(), TestError> {
+    let mut app = open_through_the_browser("rtpengine-opensips-ng.pcap")?;
     assert_eq!(app.current_view(), &View::StreamList);
     assert_eq!(app.stream_count_for_test(), 2);
-    let text = screen(&mut app);
+    let text = screen(&mut app)?;
     assert_eq!(
         text.matches(CALL_ID_CELL).count(),
         2,
         "both legs are named from the control plane:\n{text}"
     );
+    Ok(())
 }
 
 /// The same media with its control plane stripped loads the same two streams,
 /// and nothing names them.
 #[test]
-fn the_same_media_without_its_control_plane_names_nothing() {
-    let mut app = open_through_the_browser("rtpengine-opensips-media-only.pcap");
+fn the_same_media_without_its_control_plane_names_nothing() -> Result<(), TestError> {
+    let mut app = open_through_the_browser("rtpengine-opensips-media-only.pcap")?;
     assert_eq!(app.current_view(), &View::StreamList);
     assert_eq!(app.stream_count_for_test(), 2);
-    let text = screen(&mut app);
+    let text = screen(&mut app)?;
     assert!(
         !text.contains(CALL_ID_CELL),
         "without the control plane nothing names the streams:\n{text}"
     );
+    Ok(())
 }
 
 // ── rtpproxy, whose control plane is named on the command line ──────────────
@@ -109,8 +112,8 @@ const RTPPROXY_CELL: &str = "rp-tui@192.";
 
 /// rtpproxy's `U` command and reply, then media on the port the reply names,
 /// written to `dir`. The shapes are the lab relay's (rtpproxy 3.2.0).
-fn write_rtpproxy_capture(dir: &std::path::Path) -> &'static str {
-    use pcap_build::{udp_frame, write_pcap_or_panic};
+fn write_rtpproxy_capture(dir: &std::path::Path) -> Result<&'static str, TestError> {
+    use pcap_build::{udp_frame, write_pcap};
     let (proxy, relay, party) = ([192, 0, 2, 10], [192, 0, 2, 40], [192, 0, 2, 60]);
     let command = format!("c1 U {RTPPROXY_CALL} 192.0.2.60 40000 ftag1\n");
     let mut frames = vec![
@@ -126,13 +129,13 @@ fn write_rtpproxy_capture(dir: &std::path::Path) -> &'static str {
         frames.push(udp_frame(party, relay, 40000, 49514, &rtp));
     }
     let name = "rtpproxy-relay.pcap";
-    write_pcap_or_panic(&dir.join(name), &frames);
-    name
+    write_pcap(&dir.join(name), &frames)?;
+    Ok(name)
 }
 
-fn open_rtpproxy_capture(control: Option<std::net::SocketAddr>) -> App {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let name = write_rtpproxy_capture(dir.path());
+fn open_rtpproxy_capture(control: Option<std::net::SocketAddr>) -> Result<App, TestError> {
+    let dir = tempfile::tempdir()?;
+    let name = write_rtpproxy_capture(dir.path())?;
     // Through the session's startup options, the path `src/app` takes, rather
     // than a setter a test could call and production never does.
     let options = sipnab::tui::TuiOptions {
@@ -158,29 +161,32 @@ fn open_rtpproxy_capture(control: Option<std::net::SocketAddr>) -> App {
     );
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Enter);
-    app
+    Ok(app)
 }
 
 /// `--rtpproxy-control` reaches a capture opened from inside the TUI, not
 /// only the one named on the command line.
 #[test]
-fn an_rtpproxy_capture_opened_in_the_tui_is_named_from_its_control_socket() {
-    let mut app = open_rtpproxy_capture(Some("192.0.2.40:7722".parse().unwrap()));
+fn an_rtpproxy_capture_opened_in_the_tui_is_named_from_its_control_socket() -> Result<(), TestError>
+{
+    let mut app = open_rtpproxy_capture(Some("192.0.2.40:7722".parse()?))?;
     assert_eq!(app.stream_count_for_test(), 1);
-    let text = screen(&mut app);
+    let text = screen(&mut app)?;
     assert!(
         text.contains(RTPPROXY_CELL),
         "the stream is named from rtpproxy's reply:\n{text}"
     );
+    Ok(())
 }
 
 #[test]
-fn without_the_control_socket_the_tui_names_nothing() {
-    let mut app = open_rtpproxy_capture(None);
+fn without_the_control_socket_the_tui_names_nothing() -> Result<(), TestError> {
+    let mut app = open_rtpproxy_capture(None)?;
     assert_eq!(app.stream_count_for_test(), 1);
-    let text = screen(&mut app);
+    let text = screen(&mut app)?;
     assert!(
         !text.contains(RTPPROXY_CELL),
         "nothing names the stream:\n{text}"
     );
+    Ok(())
 }

@@ -18,7 +18,10 @@ use std::process::Command;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
+
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
 
 const CALL_ID: &str = "rp-wire-e2e@192.0.2.10";
 const PROXY_IP: [u8; 4] = [192, 0, 2, 10];
@@ -53,19 +56,19 @@ fn frames_on(control_port: u16) -> Vec<Vec<u8>> {
     frames
 }
 
-fn capture() -> (tempfile::TempDir, PathBuf) {
+fn capture() -> Result<(tempfile::TempDir, PathBuf), TestError> {
     capture_on(CONTROL_PORT)
 }
 
-fn capture_on(control_port: u16) -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn capture_on(control_port: u16) -> Result<(tempfile::TempDir, PathBuf), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let path = dir.path().join("rtpproxy.pcap");
-    write_pcap_or_panic(&path, &frames_on(control_port));
-    (dir, path)
+    write_pcap(&path, &frames_on(control_port))?;
+    Ok((dir, path))
 }
 
 /// Run sipnab over `path` with `--report`, returning `(success, stdout, stderr)`.
-fn run(path: &Path, extra: &[&str]) -> (bool, String, String) {
+fn run(path: &Path, extra: &[&str]) -> Result<(bool, String, String), TestError> {
     let mut args: Vec<String> = vec![
         "-N".into(),
         "-I".into(),
@@ -78,12 +81,12 @@ fn run(path: &Path, extra: &[&str]) -> (bool, String, String) {
         .args(&args)
         .env("SIPNAB_LOG", "warn")
         .output()
-        .expect("run sipnab");
-    (
+        .map_err(|e| format!("run sipnab: {e}"))?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 fn assert_named(stdout: &str, how: &str) {
@@ -110,21 +113,23 @@ fn assert_not_named(stdout: &str, how: &str) {
 
 /// The positive control every refusal below is measured against.
 #[test]
-fn naming_the_relays_control_socket_names_the_call_its_media_belongs_to() {
-    let (_dir, path) = capture();
-    let (ok, stdout, stderr) = run(&path, &["--rtpproxy-control", "192.0.2.40:7722"]);
+fn naming_the_relays_control_socket_names_the_call_its_media_belongs_to() -> Result<(), TestError> {
+    let (_dir, path) = capture()?;
+    let (ok, stdout, stderr) = run(&path, &["--rtpproxy-control", "192.0.2.40:7722"])?;
     assert!(ok, "sipnab failed; stderr:\n{stderr}");
     assert_named(&stdout, "--rtpproxy-control 192.0.2.40:7722");
+    Ok(())
 }
 
 /// The same bytes without the flag: sipnab believes only the socket it is
 /// told, so nothing is believed and the media is back to orphaned.
 #[test]
-fn without_the_flag_the_same_capture_names_nothing() {
-    let (_dir, path) = capture();
-    let (ok, stdout, stderr) = run(&path, &[]);
+fn without_the_flag_the_same_capture_names_nothing() -> Result<(), TestError> {
+    let (_dir, path) = capture()?;
+    let (ok, stdout, stderr) = run(&path, &[])?;
     assert!(ok, "sipnab failed; stderr:\n{stderr}");
     assert_not_named(&stdout, "no flag");
+    Ok(())
 }
 
 /// rtpproxy's UDP control socket listens on 22222 when started without a
@@ -134,49 +139,53 @@ fn without_the_flag_the_same_capture_names_nothing() {
 /// it. Control traffic on 22222 names nothing until `--rtpproxy-control`
 /// names that socket.
 #[test]
-fn the_default_port_is_not_assumed() {
-    let (_dir, path) = capture_on(22222);
-    let (ok, stdout, stderr) = run(&path, &[]);
+fn the_default_port_is_not_assumed() -> Result<(), TestError> {
+    let (_dir, path) = capture_on(22222)?;
+    let (ok, stdout, stderr) = run(&path, &[])?;
     assert!(ok, "sipnab failed; stderr:\n{stderr}");
     assert_not_named(&stdout, "22222, no flag");
-    let (ok, stdout, stderr) = run(&path, &["--rtpproxy-control", "192.0.2.40:22222"]);
+    let (ok, stdout, stderr) = run(&path, &["--rtpproxy-control", "192.0.2.40:22222"])?;
     assert!(ok, "sipnab failed; stderr:\n{stderr}");
     assert_named(&stdout, "--rtpproxy-control 192.0.2.40:22222");
+    Ok(())
 }
 
 /// Naming a different socket believes none of this relay's datagrams.
 #[test]
-fn naming_another_socket_names_nothing() {
-    let (_dir, path) = capture();
+fn naming_another_socket_names_nothing() -> Result<(), TestError> {
+    let (_dir, path) = capture()?;
     for other in ["192.0.2.40:7723", "192.0.2.41:7722"] {
-        let (ok, stdout, stderr) = run(&path, &["--rtpproxy-control", other]);
+        let (ok, stdout, stderr) = run(&path, &["--rtpproxy-control", other])?;
         assert!(ok, "sipnab failed; stderr:\n{stderr}");
         assert_not_named(&stdout, other);
     }
+    Ok(())
 }
 
 /// The sharded path reaches the same answer as the single-threaded one.
 #[test]
-fn the_sharded_path_names_the_call_too() {
-    let (_dir, path) = capture();
+fn the_sharded_path_names_the_call_too() -> Result<(), TestError> {
+    let (_dir, path) = capture()?;
     let (ok, stdout, stderr) = run(
         &path,
         &["--rtpproxy-control", "192.0.2.40:7722", "--cores", "2"],
-    );
+    )?;
     assert!(ok, "sipnab failed; stderr:\n{stderr}");
     assert_named(&stdout, "--cores 2");
+    Ok(())
 }
 
 /// A value that is not an address and port is refused, not ignored.
 #[test]
-fn a_value_that_is_not_a_socket_address_is_refused() {
-    let (_dir, path) = capture();
+fn a_value_that_is_not_a_socket_address_is_refused() -> Result<(), TestError> {
+    let (_dir, path) = capture()?;
     for bad in ["192.0.2.40", "relay.example:7722", "7722"] {
-        let (ok, _, stderr) = run(&path, &["--rtpproxy-control", bad]);
+        let (ok, _, stderr) = run(&path, &["--rtpproxy-control", bad])?;
         assert!(!ok, "{bad:?} must be refused");
         assert!(
             stderr.contains("--rtpproxy-control"),
             "{bad:?}: the refusal names the flag; stderr:\n{stderr}"
         );
     }
+    Ok(())
 }

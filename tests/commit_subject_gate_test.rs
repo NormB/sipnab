@@ -28,12 +28,16 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// Git invocations that measure HEAD against history rather than reading the
@@ -61,19 +65,19 @@ const NOT_ABOUT_THIS_COMMIT: [(&str, &str); 1] = [(
 
 /// Every test file asking about HEAD-versus-history must run at push time.
 #[test]
-fn every_history_relative_test_runs_where_the_commit_exists() {
-    let pre_push = read(".githooks/pre-push");
+fn every_history_relative_test_runs_where_the_commit_exists() -> Result<(), TestError> {
+    let pre_push = read(".githooks/pre-push")?;
     let dir = repo().join("tests");
     let mut history_relative: BTreeMap<String, Vec<&str>> = BTreeMap::new();
 
-    for entry in std::fs::read_dir(&dir).expect("read tests/") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
         if path.extension().is_some_and(|x| x != "rs") || path.is_dir() {
             continue;
         }
         let name = path
             .file_name()
-            .expect("file name")
+            .ok_or("file name")?
             .to_string_lossy()
             .into_owned();
         // This file names every signal in a constant, so it matches all of
@@ -120,6 +124,7 @@ fn every_history_relative_test_runs_where_the_commit_exists() {
          NOT_ABOUT_THIS_COMMIT with the reason its subject is something else.",
         unrun.join("\n  ")
     );
+    Ok(())
 }
 
 /// An exemption must carry a reason, and must name a file that exists.
@@ -129,7 +134,7 @@ fn every_history_relative_test_runs_where_the_commit_exists() {
 /// nothing is checked either — but the entry reads as though a decision was
 /// made.
 #[test]
-fn every_exemption_names_a_real_file_and_says_why() {
+fn every_exemption_names_a_real_file_and_says_why() -> Result<(), TestError> {
     for (file, reason) in NOT_ABOUT_THIS_COMMIT {
         assert!(
             repo().join("tests").join(file).is_file(),
@@ -140,6 +145,7 @@ fn every_exemption_names_a_real_file_and_says_why() {
             "the exemption for {file} does not explain itself: {reason:?}"
         );
     }
+    Ok(())
 }
 
 /// Push-time strictness is armed by the hook, not by hope.
@@ -151,12 +157,13 @@ fn every_exemption_names_a_real_file_and_says_why() {
 /// hook says so by setting the variable; without that line the strict path
 /// exists and nothing ever takes it.
 #[test]
-fn the_push_hook_arms_strict_release_gates() {
-    let pre_push = read(".githooks/pre-push");
+fn the_push_hook_arms_strict_release_gates() -> Result<(), TestError> {
+    let pre_push = read(".githooks/pre-push")?;
     assert!(
         pre_push.contains("SIPNAB_RELEASE_GATES_STRICT=1"),
         ".githooks/pre-push does not set SIPNAB_RELEASE_GATES_STRICT=1, so a \
          release gate that cannot answer skips silently at the one moment it \
          has everything it needs to answer"
     );
+    Ok(())
 }

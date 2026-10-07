@@ -25,6 +25,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The DLT_NULL sample: 49 frames, all BSD loopback.
 const FIXTURE: &str = "tests/pcap-samples/h263-over-rtp.pcap";
 
@@ -62,17 +64,16 @@ fn repo_path(rel: &str) -> String {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run_sipnab(args: &[&str]) -> (String, String, i32) {
+fn run_sipnab(args: &[&str]) -> Result<(String, String, i32), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("failed to execute sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code().unwrap_or(-1),
-    )
+    ))
 }
 
 /// Every JSON object on stdout that carries `key`, in order.
@@ -98,8 +99,8 @@ fn json_objects(stdout: &str, key: &str) -> Vec<serde_json::Value> {
 /// wrong and either nothing parses or the "addresses" come out of the middle
 /// of the header.
 #[test]
-fn null_loopback_capture_yields_the_exact_messages_it_contains() {
-    let (stdout, stderr, code) = run_sipnab(&["-N", "-I", &repo_path(FIXTURE), "--json"]);
+fn null_loopback_capture_yields_the_exact_messages_it_contains() -> Result<(), TestError> {
+    let (stdout, stderr, code) = run_sipnab(&["-N", "-I", &repo_path(FIXTURE), "--json"])?;
     assert_eq!(code, 0, "sipnab exited {code}; stderr:\n{stderr}");
 
     let msgs = json_objects(&stdout, "cseq");
@@ -128,19 +129,20 @@ fn null_loopback_capture_yields_the_exact_messages_it_contains() {
     }
     assert_eq!(msgs[0]["src_port"], serde_json::json!(13764));
     assert_eq!(msgs[0]["dst_port"], serde_json::json!(5060));
+    Ok(())
 }
 
 /// The fixture yields exactly one dialog, of exactly four messages, answered
 /// 200 — and the 45 RTP packets that account for every remaining frame.
 #[test]
-fn null_loopback_capture_yields_the_exact_dialog_it_contains() {
+fn null_loopback_capture_yields_the_exact_dialog_it_contains() -> Result<(), TestError> {
     let (stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
         &repo_path(FIXTURE),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(code, 0, "sipnab exited {code}; stderr:\n{stderr}");
 
     let dialogs = json_objects(&stdout, "msg_count");
@@ -160,13 +162,14 @@ fn null_loopback_capture_yields_the_exact_dialog_it_contains() {
 
     // The media half of the file: one stream, every packet of it. This is what
     // rules out "the SIP was recovered and the other 45 frames were dropped".
-    let streams = d["streams"].as_array().expect("dialog carries streams");
+    let streams = d["streams"].as_array().ok_or("dialog carries streams")?;
     assert_eq!(streams.len(), 1, "expected exactly one RTP stream");
     assert_eq!(
         streams[0]["packets"],
         serde_json::json!(EXPECTED_RTP_PACKETS)
     );
     assert_eq!(streams[0]["codec"], serde_json::json!("H263"));
+    Ok(())
 }
 
 /// The report renders the call rather than claiming the capture holds no SIP.
@@ -174,14 +177,14 @@ fn null_loopback_capture_yields_the_exact_dialog_it_contains() {
 /// The advice line goes to stderr and the table to stdout, so both streams are
 /// checked — asserting only on stdout would be an assertion that cannot fail.
 #[test]
-fn null_loopback_capture_report_does_not_deny_the_sip() {
+fn null_loopback_capture_report_does_not_deny_the_sip() -> Result<(), TestError> {
     let (stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
         &repo_path(FIXTURE),
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(code, 0, "sipnab exited {code}; stderr:\n{stderr}");
 
     for (stream, text) in [("stdout", &stdout), ("stderr", &stderr)] {
@@ -198,7 +201,7 @@ fn null_loopback_capture_report_does_not_deny_the_sip() {
     let row = stdout
         .lines()
         .find(|l| l.starts_with(shown))
-        .unwrap_or_else(|| panic!("report has no dialog row for {CALL_ID}:\n{stdout}"));
+        .ok_or_else(|| format!("report has no dialog row for {CALL_ID}:\n{stdout}"))?;
     assert!(
         row.split_whitespace().any(|f| f == "4"),
         "dialog row reports a message count other than {EXPECTED_MSG_COUNT}: {row}"
@@ -207,6 +210,7 @@ fn null_loopback_capture_report_does_not_deny_the_sip() {
         row.contains("200"),
         "dialog row reports no final status code: {row}"
     );
+    Ok(())
 }
 
 /// Sharding across `--cores` does not change the result.
@@ -216,9 +220,9 @@ fn null_loopback_capture_report_does_not_deny_the_sip() {
 /// peek that does not understand a link type the full parse does understand is
 /// a split brain: the two dispatch sites disagree about the same frame.
 #[test]
-fn null_loopback_capture_shards_identically_across_cores() {
+fn null_loopback_capture_shards_identically_across_cores() -> Result<(), TestError> {
     let path = repo_path(FIXTURE);
-    let one = run_sipnab(&["-N", "-I", &path, "--json-dialogs", "--no-cli-print"]);
+    let one = run_sipnab(&["-N", "-I", &path, "--json-dialogs", "--no-cli-print"])?;
     let two = run_sipnab(&[
         "-N",
         "-I",
@@ -227,7 +231,7 @@ fn null_loopback_capture_shards_identically_across_cores() {
         "2",
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(one.2, 0, "single-core run failed:\n{}", one.1);
     assert_eq!(two.2, 0, "--cores 2 run failed:\n{}", two.1);
 
@@ -241,4 +245,5 @@ fn null_loopback_capture_shards_identically_across_cores() {
         "--cores 2 lost messages the single-core run found"
     );
     assert_eq!(a[0]["call_id"], b[0]["call_id"]);
+    Ok(())
 }

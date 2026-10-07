@@ -22,6 +22,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -30,20 +33,21 @@ fn keycast() -> PathBuf {
     repo().join("demos/keycast.py")
 }
 
-fn run_self_test(script: &Path, optimized: bool) -> std::process::Output {
+fn run_self_test(script: &Path, optimized: bool) -> Result<std::process::Output, TestError> {
     let mut cmd = Command::new("python3");
     if optimized {
         cmd.arg("-O");
     }
     cmd.arg(script).arg("--self-test");
-    cmd.output()
-        .unwrap_or_else(|e| panic!("run python3 on {}: {e}", script.display()))
+    Ok(cmd
+        .output()
+        .map_err(|e| format!("run python3 on {}: {e}", script.display()))?)
 }
 
 /// It passes, and CI is the thing running it.
 #[test]
-fn the_keycast_self_test_passes() {
-    let out = run_self_test(&keycast(), false);
+fn the_keycast_self_test_passes() -> Result<(), TestError> {
+    let out = run_self_test(&keycast(), false)?;
     assert!(
         out.status.success(),
         "keycast --self-test failed:\nstdout: {}\nstderr: {}",
@@ -55,6 +59,7 @@ fn the_keycast_self_test_passes() {
         "self-test did not report success; stdout: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+    Ok(())
 }
 
 /// The `-O` case, which is the defect #227 is actually about.
@@ -65,8 +70,8 @@ fn the_keycast_self_test_passes() {
 /// converted back to bare `assert`, the mutated copy would pass and this test
 /// would fail, which is the point.
 #[test]
-fn the_checks_survive_python_dash_o() {
-    let out = run_self_test(&keycast(), true);
+fn the_checks_survive_python_dash_o() -> Result<(), TestError> {
+    let out = run_self_test(&keycast(), true)?;
     assert!(
         out.status.success(),
         "keycast --self-test failed under -O:\nstderr: {}",
@@ -74,7 +79,7 @@ fn the_checks_survive_python_dash_o() {
     );
 
     // Break one expectation, then require -O to catch it.
-    let src = std::fs::read_to_string(keycast()).expect("read keycast.py");
+    let src = std::fs::read_to_string(keycast()).map_err(|e| format!("read keycast.py: {e}"))?;
     let broken_src = src.replace(
         r#"_check(labels == ["↓", "↓", "Enter"], "unexpected badge labels", labels)"#,
         r#"_check(labels == ["NOPE"], "unexpected badge labels", labels)"#,
@@ -86,15 +91,16 @@ fn the_checks_survive_python_dash_o() {
     );
 
     let dir = std::env::temp_dir().join(format!("sipnab-keycast-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("tmpdir");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("tmpdir: {e}"))?;
     let broken = dir.join("keycast_broken.py");
-    std::fs::write(&broken, &broken_src).expect("write broken copy");
+    std::fs::write(&broken, &broken_src).map_err(|e| format!("write broken copy: {e}"))?;
 
-    let out = run_self_test(&broken, true);
+    let out = run_self_test(&broken, true)?;
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         !out.status.success(),
         "a deliberately broken expectation passed under `python3 -O`, which \
          means the checks are being stripped and the self-test proves nothing"
     );
+    Ok(())
 }

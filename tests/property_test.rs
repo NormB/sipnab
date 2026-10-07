@@ -21,14 +21,21 @@ use sipnab::sip::dsl::FilterExpr;
 use sipnab::sip::parser::parse_sip;
 use sipnab::sip::sdp::parse_sdp;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Fixed endpoint address (10.0.0.1) used for every generated message.
 fn ip() -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
 }
 
 /// Fixed deterministic timestamp (2024-06-15 12:00:00 UTC) for parses.
-fn ts() -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+fn ts() -> Result<chrono::DateTime<Utc>, TestError> {
+    Ok(Utc
+        .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+        .single()
+        .ok_or("2024-06-15 12:00:00 is not a single UTC instant")?)
 }
 
 // ── SIP build → parse field round-trip ──────────────────────────────
@@ -61,8 +68,8 @@ proptest! {
              CSeq: {cseq} INVITE\r\n\
              Content-Length: 0\r\n\r\n"
         );
-        let msg = parse_sip(raw.as_bytes(), ts(), ip(), ip(), 5060, 5060, TransportProto::Udp)
-            .expect("a well-formed INVITE must parse");
+        let msg = parse_sip(raw.as_bytes(), ts().map_err(|e| TestCaseError::fail(e.to_string()))?, ip(), ip(), 5060, 5060, TransportProto::Udp)
+            .map_err(|e| TestCaseError::fail(format!("a well-formed INVITE must parse: {e}")))?;
 
         prop_assert!(msg.is_request);
         prop_assert_eq!(msg.call_id(), Some(call_id.as_str()));
@@ -107,7 +114,7 @@ proptest! {
              m=audio {port} RTP/AVP {pt}\r\n\
              a=rtpmap:{pt} {codec}/{clock}\r\n"
         );
-        let sdp = parse_sdp(body.as_bytes()).expect("well-formed SDP must parse");
+        let sdp = parse_sdp(body.as_bytes()).map_err(|e| TestCaseError::fail(format!("well-formed SDP must parse: {e}")))?;
         prop_assert_eq!(sdp.media.len(), 1);
         let m = &sdp.media[0];
         prop_assert_eq!(&m.media_type, "audio");
@@ -122,7 +129,7 @@ proptest! {
             "v=0\r\nc=IN IP4 10.0.0.2\r\nm={} {} RTP/AVP {}\r\na=rtpmap:{} {}/{}\r\n",
             m.media_type, m.port, pt, pt, m.rtpmap[0].encoding, m.rtpmap[0].clock_rate
         );
-        let again = parse_sdp(rebuilt.as_bytes()).expect("rebuild must parse");
+        let again = parse_sdp(rebuilt.as_bytes()).map_err(|e| TestCaseError::fail(format!("rebuild must parse: {e}")))?;
         prop_assert_eq!(again.media[0].port, port);
         prop_assert_eq!(&again.media[0].rtpmap[0].encoding, codec);
     }
@@ -132,7 +139,7 @@ proptest! {
 
 /// A concrete `SipDialog` built from a fixed INVITE, used as the evaluation
 /// target for generated filter expressions.
-fn sample_dialog() -> SipDialog {
+fn sample_dialog() -> Result<SipDialog, TestError> {
     let raw = b"INVITE sip:2002@example.com SIP/2.0\r\n\
         Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKprop\r\n\
         From: <sip:1001@example.com>;tag=t1\r\n\
@@ -140,8 +147,8 @@ fn sample_dialog() -> SipDialog {
         Call-ID: prop@example.com\r\n\
         CSeq: 1 INVITE\r\n\
         Content-Length: 0\r\n\r\n";
-    let msg = parse_sip(raw, ts(), ip(), ip(), 5060, 5060, TransportProto::Udp).unwrap();
-    SipDialog::new(&msg).expect("dialog from INVITE")
+    let msg = parse_sip(raw, ts()?, ip(), ip(), 5060, 5060, TransportProto::Udp)?;
+    Ok(SipDialog::new(&msg).ok_or("dialog from INVITE")?)
 }
 
 proptest! {
@@ -150,7 +157,7 @@ proptest! {
     /// that parses must also evaluate against a dialog without panicking.
     #[test]
     fn filter_dsl_parse_is_total(s in ".{0,120}") {
-        let dialog = sample_dialog();
+        let dialog = sample_dialog().map_err(|e| TestCaseError::fail(e.to_string()))?;
         if let Ok(filter) = FilterExpr::parse(&s) {
             // Evaluation is likewise total: a parsed expression never
             // panics against a real dialog (empty stream slice).
@@ -171,10 +178,10 @@ proptest! {
         op in prop::sample::select(vec!["==", "!=", "=~"]),
         loss in 0u8..=100u8,
     ) {
-        let dialog = sample_dialog();
+        let dialog = sample_dialog().map_err(|e| TestCaseError::fail(e.to_string()))?;
         let expr = format!("from.user {op} '{user}' AND rtp.loss > {loss}");
         let filter = FilterExpr::parse(&expr)
-            .unwrap_or_else(|e| panic!("valid expr {expr:?} must parse: {e}"));
+            .map_err(|e| TestCaseError::fail(format!("valid expr {expr:?} must parse: {e}")))?;
         let _got: bool = filter.matches_dialog(
                 &dialog,
                 &[],
@@ -190,6 +197,7 @@ proptest! {
 /// every feature combination CI checks.
 #[cfg(feature = "native")]
 mod rfc7951_round_trip {
+    use super::TestError;
     use proptest::prelude::*;
 
     /// A string for an evidence field: printable ASCII most of the time, any
@@ -293,9 +301,9 @@ mod rfc7951_round_trip {
     }
 
     /// The structural rules of RFC 7951 and of the module, checked on a document.
-    fn assert_rfc7951_shape(doc: &serde_json::Value) {
+    fn assert_rfc7951_shape(doc: &serde_json::Value) -> Result<(), TestError> {
         use serde_json::Value;
-        let top = doc.as_object().expect("the document is an object");
+        let top = doc.as_object().ok_or("the document is an object")?;
         assert_eq!(top.len(), 1, "exactly one top-level member: {doc}");
         let body = &top["sipnab-diagnosis:capture-analysis"];
         for key in ["frames-read", "dialogs-examined", "streams-examined"] {
@@ -330,6 +338,7 @@ mod rfc7951_round_trip {
                 }
             }
         }
+        Ok(())
     }
 
     proptest! {
@@ -339,10 +348,10 @@ mod rfc7951_round_trip {
         #[test]
         fn every_analysis_survives_the_rfc_7951_round_trip(analysis in capture_analysis()) {
             use sipnab::analysis::yang;
-            let plain = serde_json::to_value(&analysis).expect("serializes");
-            let doc = yang::to_rfc7951(&analysis).expect("every analysis encodes");
-            assert_rfc7951_shape(&doc);
-            let back = yang::decode(&doc).expect("every document decodes");
+            let plain = serde_json::to_value(&analysis).map_err(|e| TestCaseError::fail(format!("serializes: {e}")))?;
+            let doc = yang::to_rfc7951(&analysis).map_err(|e| TestCaseError::fail(format!("every analysis encodes: {e}")))?;
+            assert_rfc7951_shape(&doc).map_err(|e| TestCaseError::fail(e.to_string()))?;
+            let back = yang::decode(&doc).map_err(|e| TestCaseError::fail(format!("every document decodes: {e}")))?;
             prop_assert_eq!(back, yang_strings(&plain));
         }
     }

@@ -25,7 +25,7 @@
 #[path = "support/server.rs"]
 mod server;
 
-use server::ApiServer;
+use server::{ApiServer, TestError};
 
 /// A capture with real dialogs AND real media, so both collections are non-empty.
 const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
@@ -57,12 +57,12 @@ fn encode_segment(s: &str) -> String {
 /// Asserted for EVERY row, not the first: a defect that only affects ids
 /// carrying a particular character would hide behind a well-behaved first row.
 #[test]
-fn every_dialog_the_list_returns_can_be_fetched_by_its_own_id() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(G711, &[]);
+fn every_dialog_the_list_returns_can_be_fetched_by_its_own_id() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(G711, &[])?;
 
-    let list = srv.get_or_panic("/v1/dialogs");
+    let list = srv.get("/v1/dialogs")?;
     assert_eq!(list.status, 200, "/v1/dialogs must serve");
-    let body = list.json_or_panic();
+    let body = list.json()?;
     let rows = body["dialogs"].as_array().cloned().unwrap_or_default();
     assert!(
         !rows.is_empty(),
@@ -72,12 +72,12 @@ fn every_dialog_the_list_returns_can_be_fetched_by_its_own_id() {
     for row in &rows {
         let id = row["call_id"]
             .as_str()
-            .unwrap_or_else(|| panic!("a listed dialog carries no call_id: {row}"));
+            .ok_or_else(|| format!("a listed dialog carries no call_id: {row}"))?;
         let enc = encode_segment(id);
 
         for suffix in ["", "/report"] {
             let path = format!("/v1/dialogs/{enc}{suffix}");
-            let resp = srv.get_or_panic(&path);
+            let resp = srv.get(&path)?;
             assert_eq!(
                 resp.status, 200,
                 "the list returned call_id '{id}', and GET {path} answered {}. \
@@ -87,16 +87,17 @@ fn every_dialog_the_list_returns_can_be_fetched_by_its_own_id() {
             );
         }
     }
+    Ok(())
 }
 
 /// **Follow a stream.** Every id `/v1/streams` lists resolves on its detail route.
 #[test]
-fn every_stream_the_list_returns_can_be_fetched_by_its_own_id() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(G711, &[]);
+fn every_stream_the_list_returns_can_be_fetched_by_its_own_id() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(G711, &[])?;
 
-    let list = srv.get_or_panic("/v1/streams");
+    let list = srv.get("/v1/streams")?;
     assert_eq!(list.status, 200, "/v1/streams must serve");
-    let body = list.json_or_panic();
+    let body = list.json()?;
     let rows = body["streams"].as_array().cloned().unwrap_or_default();
     assert!(
         !rows.is_empty(),
@@ -107,9 +108,9 @@ fn every_stream_the_list_returns_can_be_fetched_by_its_own_id() {
         // The detail route is keyed on the SSRC the list prints.
         let ssrc = row["ssrc"]
             .as_str()
-            .unwrap_or_else(|| panic!("a listed stream carries no ssrc: {row}"));
+            .ok_or_else(|| format!("a listed stream carries no ssrc: {row}"))?;
         let path = format!("/v1/streams/{}", encode_segment(ssrc));
-        let resp = srv.get_or_panic(&path);
+        let resp = srv.get(&path)?;
         assert_eq!(
             resp.status, 200,
             "the list returned ssrc '{ssrc}', and GET {path} answered {}. The \
@@ -118,6 +119,7 @@ fn every_stream_the_list_returns_can_be_fetched_by_its_own_id() {
             resp.status
         );
     }
+    Ok(())
 }
 
 /// **A dialog's stream and a stream's dialog agree.**
@@ -126,9 +128,9 @@ fn every_stream_the_list_returns_can_be_fetched_by_its_own_id() {
 /// fetchable on the dialog route — the two collections have to describe one
 /// world, or a client walking from media to signaling lands on a 404.
 #[test]
-fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(G711, &[]);
-    let streams = srv.get_or_panic("/v1/streams").json_or_panic();
+fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(G711, &[])?;
+    let streams = srv.get("/v1/streams")?.json()?;
 
     let mut checked = 0;
     for row in streams["streams"].as_array().cloned().unwrap_or_default() {
@@ -136,7 +138,7 @@ fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() {
             continue; // an orphaned stream legitimately names no dialog
         };
         let path = format!("/v1/dialogs/{}", encode_segment(owner));
-        let resp = srv.get_or_panic(&path);
+        let resp = srv.get(&path)?;
         assert_eq!(
             resp.status, 200,
             "a stream says it belongs to dialog '{owner}', and GET {path} \
@@ -150,6 +152,7 @@ fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() {
         "no stream in the fixture named an owning dialog, so this test compared \
          nothing — pick a fixture where media is attributed"
     );
+    Ok(())
 }
 
 /// **Paging returns different rows, and `total` describes the filtered set.**
@@ -159,13 +162,11 @@ fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() {
 /// broken". The fixture is the 1334-dialog one because every smaller capture
 /// fits in one page, where a broken pager and a correct one look identical.
 #[test]
-fn paging_advances_and_the_total_describes_what_is_being_paged() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(BRANCH, &[]);
+fn paging_advances_and_the_total_describes_what_is_being_paged() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(BRANCH, &[])?;
 
-    let p1 = srv.get_or_panic("/v1/dialogs?limit=5").json_or_panic();
-    let p2 = srv
-        .get_or_panic("/v1/dialogs?limit=5&offset=5")
-        .json_or_panic();
+    let p1 = srv.get("/v1/dialogs?limit=5")?.json()?;
+    let p2 = srv.get("/v1/dialogs?limit=5&offset=5")?.json()?;
 
     let ids = |v: &serde_json::Value| -> Vec<String> {
         v["dialogs"]
@@ -190,6 +191,7 @@ fn paging_advances_and_the_total_describes_what_is_being_paged() {
         total > 5,
         "`total` must describe the whole matching set, not the page: {p1}"
     );
+    Ok(())
 }
 
 /// **An id that does not exist gets 404, not 200 with an empty body.**
@@ -198,13 +200,13 @@ fn paging_advances_and_the_total_describes_what_is_being_paged() {
 /// by a route that answers 200 to anything, and "the row is fetchable" would
 /// mean nothing at all.
 #[test]
-fn an_unknown_identifier_is_refused_rather_than_answered_emptily() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(G711, &[]);
+fn an_unknown_identifier_is_refused_rather_than_answered_emptily() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap(G711, &[])?;
     for path in [
         "/v1/dialogs/definitely-not-a-call%40nowhere.invalid",
         "/v1/streams/0xDEADBEEF",
     ] {
-        let resp = srv.get_or_panic(path);
+        let resp = srv.get(path)?;
         assert_eq!(
             resp.status, 404,
             "GET {path} must 404. If unknown ids answered 200, every \
@@ -213,4 +215,5 @@ fn an_unknown_identifier_is_refused_rather_than_answered_emptily() {
             resp.status
         );
     }
+    Ok(())
 }

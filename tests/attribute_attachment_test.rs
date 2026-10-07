@@ -62,6 +62,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -155,11 +157,11 @@ fn attribute_end(lines: &[&str], i: usize) -> usize {
 /// `every_walk_in_this_file_found_a_plausible_tree` is what would notice the
 /// scan drifting.
 #[test]
-fn no_outer_attribute_is_separated_from_its_item_by_a_blank_line() {
+fn no_outer_attribute_is_separated_from_its_item_by_a_blank_line() -> Result<(), TestError> {
     let mut orphaned = Vec::new();
     let mut attributes = 0usize;
     for path in rust_files("src") {
-        let src = std::fs::read_to_string(&path).expect("read source file");
+        let src = std::fs::read_to_string(&path)?;
         let lines: Vec<&str> = src.lines().collect();
         let mut i = 0;
         while i < lines.len() {
@@ -188,6 +190,7 @@ fn no_outer_attribute_is_separated_from_its_item_by_a_blank_line() {
          `is_ng_over_hep`'s doc comment. Move the attribute back onto its item.",
         orphaned.join("\n")
     );
+    Ok(())
 }
 
 /// No doc comment is split in two by an attribute wedged into the middle.
@@ -234,11 +237,11 @@ fn no_outer_attribute_is_separated_from_its_item_by_a_blank_line() {
 /// by an attribute and then more doc lines. The rule is therefore a real
 /// invariant of this repository rather than a style preference imposed on it.
 #[test]
-fn no_doc_comment_block_is_split_by_an_intervening_attribute() {
+fn no_doc_comment_block_is_split_by_an_intervening_attribute() -> Result<(), TestError> {
     let mut split = Vec::new();
     let mut blocks = 0usize;
     for path in rust_files("src") {
-        let src = std::fs::read_to_string(&path).expect("read source file");
+        let src = std::fs::read_to_string(&path)?;
         let lines: Vec<&str> = src.lines().collect();
         let mut i = 0;
         while i < lines.len() {
@@ -287,6 +290,7 @@ fn no_doc_comment_block_is_split_by_an_intervening_attribute() {
          above the attribute run.",
         split.join("\n")
     );
+    Ok(())
 }
 
 /// One `mod NAME;` declaration, with everything the scanner needs about it.
@@ -343,11 +347,10 @@ fn module_target(file: &Path, name: &str, cfgs_and_attrs: &[String]) -> Option<P
 
 /// Every `mod NAME;` declared in one file, with its attributes and the comment
 /// block above them.
-fn mod_decls(path: &Path) -> Vec<ModDecl> {
+fn mod_decls(path: &Path) -> Result<Vec<ModDecl>, TestError> {
     let decl =
-        regex::Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
-            .expect("mod declaration pattern");
-    let cfg_re = regex::Regex::new(r"^#\[cfg\((.*)\)\]$").expect("cfg pattern");
+        regex::Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")?;
+    let cfg_re = regex::Regex::new(r"^#\[cfg\((.*)\)\]$")?;
     let src = std::fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
@@ -393,7 +396,7 @@ fn mod_decls(path: &Path) -> Vec<ModDecl> {
             target: module_target(path, &c[1], &attrs),
         });
     }
-    out
+    Ok(out)
 }
 
 /// Every `.rs` byte of a module: the file itself, plus the directory beside it
@@ -447,8 +450,11 @@ fn module_body(target: &Path) -> String {
 /// comment instance 4 stole. `every_walk_in_this_file_found_a_plausible_tree`
 /// pins that count, and the paired fixtures below exercise the rule in both
 /// directions so it is not resting on a single live case.
-fn comment_claims(decl: &ModDecl, siblings: &BTreeSet<String>) -> Vec<(String, String)> {
-    let backticked = regex::Regex::new(r"`([^`]+)`").expect("backtick pattern");
+fn comment_claims(
+    decl: &ModDecl,
+    siblings: &BTreeSet<String>,
+) -> Result<Vec<(String, String)>, TestError> {
+    let backticked = regex::Regex::new(r"`([^`]+)`")?;
     let mut out = Vec::new();
     for c in backticked.captures_iter(&decl.comment) {
         let quoted = c[1].trim();
@@ -466,7 +472,7 @@ fn comment_claims(decl: &ModDecl, siblings: &BTreeSet<String>) -> Vec<(String, S
             .to_string();
         out.push((quoted.to_string(), needle));
     }
-    out
+    Ok(out)
 }
 
 /// A comment gating a module describes THAT module.
@@ -492,11 +498,11 @@ fn comment_claims(decl: &ModDecl, siblings: &BTreeSet<String>) -> Vec<(String, S
 /// says it uses. `comment_claims` documents which forms count and which two
 /// weaker extractions were rejected against this tree and why.
 #[test]
-fn every_comment_gating_a_module_names_a_path_that_module_reaches() {
+fn every_comment_gating_a_module_names_a_path_that_module_reaches() -> Result<(), TestError> {
     let mut unmet = Vec::new();
     let mut claims = 0usize;
     for path in rust_files("src") {
-        let decls = mod_decls(&path);
+        let decls = mod_decls(&path)?;
         let siblings: BTreeSet<String> = decls.iter().map(|d| d.name.clone()).collect();
         for decl in &decls {
             if decl.comment.is_empty() {
@@ -505,7 +511,7 @@ fn every_comment_gating_a_module_names_a_path_that_module_reaches() {
             let Some(target) = decl.target.as_ref() else {
                 continue;
             };
-            let found = comment_claims(decl, &siblings);
+            let found = comment_claims(decl, &siblings)?;
             if found.is_empty() {
                 continue;
             }
@@ -559,7 +565,7 @@ fn every_comment_gating_a_module_names_a_path_that_module_reaches() {
         comment: claim.to_string(),
         target: None,
     };
-    let extracted = comment_claims(&on_relay, &siblings);
+    let extracted = comment_claims(&on_relay, &siblings)?;
     assert_eq!(
         extracted,
         vec![(
@@ -569,8 +575,7 @@ fn every_comment_gating_a_module_names_a_path_that_module_reaches() {
         "the claim extractor no longer reads instance 4's own comment"
     );
     let relay_body = std::fs::read_to_string(repo().join("src/relay/mod.rs"))
-        .map(|_| module_body(&repo().join("src/relay/mod.rs")))
-        .expect("read src/relay/mod.rs");
+        .map(|_| module_body(&repo().join("src/relay/mod.rs")))?;
     assert!(
         !relay_body.contains(&extracted[0].1),
         "src/relay no longer reaches `pipeline::extract_sdp_links`, so the \
@@ -582,6 +587,7 @@ fn every_comment_gating_a_module_names_a_path_that_module_reaches() {
         "src/rtpengine no longer reaches `pipeline::extract_sdp_links`, so the \
          fixture proving this rule can PASS has stopped proving it"
     );
+    Ok(())
 }
 
 /// One `cfg` predicate, evaluated in the environment the wasm gate builds in.
@@ -668,6 +674,10 @@ fn split_top_level(s: &str) -> Vec<String> {
     out
 }
 
+/// A module tree: `::`-joined path to the backing file and whether the wasm
+/// build compiles it.
+type ModuleTree = BTreeMap<String, (PathBuf, Option<bool>)>;
+
 /// The crate's module tree, keyed by `::`-joined path, with the file backing
 /// each module and whether the wasm build compiles it.
 ///
@@ -675,8 +685,8 @@ fn split_top_level(s: &str) -> Vec<String> {
 /// have children it compiles, so the walk does not descend past one. That is
 /// what keeps `capture::fanout` -- `#[cfg(feature = "native")]`, and full of
 /// `crate::parallel` -- out of the scan below without an exclusion list.
-fn wasm_module_tree() -> (BTreeMap<String, (PathBuf, Option<bool>)>, usize) {
-    let mut out: BTreeMap<String, (PathBuf, Option<bool>)> = BTreeMap::new();
+fn wasm_module_tree() -> Result<(ModuleTree, usize), TestError> {
+    let mut out: ModuleTree = BTreeMap::new();
     let mut unknown = 0usize;
     let root = repo().join("src/lib.rs");
     let mut stack = vec![(String::new(), root, Some(true))];
@@ -685,7 +695,7 @@ fn wasm_module_tree() -> (BTreeMap<String, (PathBuf, Option<bool>)>, usize) {
             continue;
         }
         out.insert(path.clone(), (file.clone(), compiled));
-        for decl in mod_decls(&file) {
+        for decl in mod_decls(&file)? {
             let Some(target) = decl.target else {
                 continue;
             };
@@ -710,7 +720,7 @@ fn wasm_module_tree() -> (BTreeMap<String, (PathBuf, Option<bool>)>, usize) {
             stack.push((key, target, child));
         }
     }
-    (out, unknown)
+    Ok((out, unknown))
 }
 
 /// For each line of `lines`, whether the wasm build compiles it.
@@ -730,8 +740,8 @@ fn wasm_module_tree() -> (BTreeMap<String, (PathBuf, Option<bool>)>, usize) {
 /// whole `#[cfg(test)] mod` (`src/capture/mod.rs`). Inverting this function's
 /// own condition reports all 21, which is what says it is doing the work
 /// rather than returning a convenient constant.
-fn wasm_dead_lines(lines: &[&str]) -> Vec<bool> {
-    let cfg_re = regex::Regex::new(r"^#\[cfg\((.*)\)\]$").expect("cfg pattern");
+fn wasm_dead_lines(lines: &[&str]) -> Result<Vec<bool>, TestError> {
+    let cfg_re = regex::Regex::new(r"^#\[cfg\((.*)\)\]$")?;
     let indent = |l: &str| l.len() - l.trim_start().len();
     let mut dead = vec![false; lines.len()];
     for i in 0..lines.len() {
@@ -769,7 +779,7 @@ fn wasm_dead_lines(lines: &[&str]) -> Vec<bool> {
             *slot = true;
         }
     }
-    dead
+    Ok(dead)
 }
 
 /// No module the wasm build compiles reaches a module the wasm build excludes.
@@ -800,8 +810,8 @@ fn wasm_dead_lines(lines: &[&str]) -> Vec<bool> {
 /// `cargo test` seconds after the edit, on a machine with no wasm32 toolchain,
 /// instead of at the last gate before a push.
 #[test]
-fn no_module_the_wasm_build_compiles_reaches_a_module_it_excludes() {
-    let (tree, _) = wasm_module_tree();
+fn no_module_the_wasm_build_compiles_reaches_a_module_it_excludes() -> Result<(), TestError> {
+    let (tree, _) = wasm_module_tree()?;
     let excluded: BTreeSet<String> = tree
         .iter()
         .filter(|(k, (_, c))| !k.is_empty() && !k.contains("::") && *c == Some(false))
@@ -823,13 +833,13 @@ fn no_module_the_wasm_build_compiles_reaches_a_module_it_excludes() {
         compiled.len()
     );
 
-    let ref_re = regex::Regex::new(r"\bcrate::([a-z_][a-z0-9_]*)\b").expect("crate path pattern");
+    let ref_re = regex::Regex::new(r"\bcrate::([a-z_][a-z0-9_]*)\b")?;
     let mut candidates = 0usize;
     let mut unreachable_on_wasm = Vec::new();
     for (_, file) in &compiled {
         let src = std::fs::read_to_string(file).unwrap_or_default();
         let lines: Vec<&str> = src.lines().collect();
-        let dead = wasm_dead_lines(&lines);
+        let dead = wasm_dead_lines(&lines)?;
         for (idx, line) in lines.iter().enumerate() {
             let t = line.trim();
             if t.starts_with("//") || t.starts_with('*') {
@@ -867,6 +877,7 @@ fn no_module_the_wasm_build_compiles_reaches_a_module_it_excludes() {
          `.githooks/pre-push`.",
         unreachable_on_wasm.join("\n")
     );
+    Ok(())
 }
 
 /// One paragraph of a doc comment, after markdown block structure is resolved.
@@ -969,32 +980,31 @@ fn paragraphs(body: &[String]) -> Vec<Para> {
 /// Code spans and markdown links are blanked first, because a `[`Foo`](bar)`
 /// and a version number both carry full stops that end no sentence, and the
 /// three abbreviations this tree actually uses are folded away.
-fn sentence_count(text: &str) -> usize {
-    static CODE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    static LINK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    static END: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let code = CODE.get_or_init(|| regex::Regex::new(r"`[^`]*`").expect("code span pattern"));
-    let link =
-        LINK.get_or_init(|| regex::Regex::new(r"\[[^\]]*\]\([^)]*\)").expect("link pattern"));
-    let end = END.get_or_init(|| regex::Regex::new(r"[.!?](\s|$)").expect("sentence end pattern"));
+fn sentence_count(text: &str) -> Result<usize, TestError> {
+    static CODE: CachedRegex = std::sync::OnceLock::new();
+    static LINK: CachedRegex = std::sync::OnceLock::new();
+    static END: CachedRegex = std::sync::OnceLock::new();
+    let code = cached(&CODE, r"`[^`]*`")?;
+    let link = cached(&LINK, r"\[[^\]]*\]\([^)]*\)")?;
+    let end = cached(&END, r"[.!?](\s|$)")?;
     let blanked = code.replace_all(text, "X");
     let blanked = link.replace_all(&blanked, "X");
     let folded = blanked
         .replace("e.g.", "eg")
         .replace("i.e.", "ie")
         .replace("etc.", "etc");
-    end.find_iter(&folded).count()
+    Ok(end.find_iter(&folded).count())
 }
 
 /// Does this paragraph read as an item's opening summary line?
 ///
 /// One sentence, short, and not a list, table, quote or fenced block.
-fn reads_as_a_summary(text: &str) -> bool {
+fn reads_as_a_summary(text: &str) -> Result<bool, TestError> {
     const NOT_PROSE: &[&str] = &["- ", "* ", "1. ", "|", "```", ">"];
     if NOT_PROSE.iter().any(|o| text.starts_with(o)) {
-        return false;
+        return Ok(false);
     }
-    sentence_count(text) <= 1 && text.chars().count() <= 120
+    Ok(sentence_count(text)? <= 1 && text.chars().count() <= 120)
 }
 
 /// The paragraph that opens a SECOND summary inside one doc block, if any.
@@ -1012,10 +1022,12 @@ fn reads_as_a_summary(text: &str) -> bool {
 /// `skip_lead_ins` exists so the paired discriminator test can ask for the
 /// same rule with the `:` condition switched off, and check that every
 /// paragraph the condition removes really is a lead-in.
-fn second_summary(paras: &[Para], skip_lead_ins: bool) -> Option<String> {
-    let first_heading = paras.iter().position(|p| matches!(p, Para::Heading(_)))?;
+fn second_summary(paras: &[Para], skip_lead_ins: bool) -> Result<Option<String>, TestError> {
+    let Some(first_heading) = paras.iter().position(|p| matches!(p, Para::Heading(_))) else {
+        return Ok(None);
+    };
     if first_heading == 0 {
-        return None;
+        return Ok(None);
     }
     for i in (first_heading + 1)..paras.len() {
         let Para::Prose(text) = &paras[i] else {
@@ -1024,7 +1036,7 @@ fn second_summary(paras: &[Para], skip_lead_ins: bool) -> Option<String> {
         if matches!(paras[i - 1], Para::Heading(_)) {
             continue;
         }
-        if !reads_as_a_summary(text) {
+        if !reads_as_a_summary(text)? {
             continue;
         }
         if skip_lead_ins && text.trim_end().ends_with(':') {
@@ -1033,19 +1045,19 @@ fn second_summary(paras: &[Para], skip_lead_ins: bool) -> Option<String> {
         if !matches!(paras.get(i + 1), Some(Para::Prose(_))) {
             continue;
         }
-        return Some(text.clone());
+        return Ok(Some(text.clone()));
     }
-    None
+    Ok(None)
 }
 
 /// The doc block sitting above one item declaration, read from the tree.
-fn doc_block_above(path: &Path, item: &str) -> Vec<String> {
-    let src = std::fs::read_to_string(path).expect("read source file");
+fn doc_block_above(path: &Path, item: &str) -> Result<Vec<String>, TestError> {
+    let src = std::fs::read_to_string(path)?;
     let lines: Vec<&str> = src.lines().collect();
     let at = lines
         .iter()
         .position(|l| l.starts_with(item))
-        .unwrap_or_else(|| panic!("{} no longer declares `{item}`", show(path)));
+        .ok_or_else(|| format!("{} no longer declares `{item}`", show(path)))?;
     let mut j = at;
     while j > 0 && is_outer_attr(lines[j - 1].trim()) {
         j -= 1;
@@ -1054,10 +1066,10 @@ fn doc_block_above(path: &Path, item: &str) -> Vec<String> {
     while s > 0 && is_doc_line(lines[s - 1].trim()) {
         s -= 1;
     }
-    lines[s..j]
+    Ok(lines[s..j]
         .iter()
         .map(|l| strip_doc_marker(l.trim()))
-        .collect()
+        .collect())
 }
 
 /// No doc block opens a second summary after a section heading.
@@ -1138,7 +1150,7 @@ fn doc_block_above(path: &Path, item: &str) -> Vec<String> {
 /// never be. It is not offered as a rule; it was run once as an audit, and
 /// what it found is in the report rather than in a test.
 #[test]
-fn no_doc_block_opens_a_second_summary_after_a_section_heading() {
+fn no_doc_block_opens_a_second_summary_after_a_section_heading() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut blocks = 0usize;
     let mut with_heading = 0usize;
@@ -1152,10 +1164,10 @@ fn no_doc_block_opens_a_second_summary_after_a_section_heading() {
             if paras.iter().any(|p| matches!(p, Para::Heading(_))) {
                 with_heading += 1;
             }
-            if second_summary(&paras, false).is_some() {
+            if second_summary(&paras, false)?.is_some() {
                 before_the_lead_in_filter += 1;
             }
-            if let Some(text) = second_summary(&paras, true) {
+            if let Some(text) = second_summary(&paras, true)? {
                 offenders.push(format!("  {}:{line}: {text}", show(&path)));
             }
         }
@@ -1187,6 +1199,7 @@ fn no_doc_block_opens_a_second_summary_after_a_section_heading() {
          render; what the reader gets is one item documented as two.",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// The second-summary rule tells a stranded block from a list lead-in.
@@ -1210,15 +1223,16 @@ fn no_doc_block_opens_a_second_summary_after_a_section_heading() {
 ///   hypothetical: it is the arrangement instance 5 actually had. Asserting it
 ///   keeps a measured limit from decaying into an assumed capability.
 #[test]
-fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() {
+fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() -> Result<(), TestError>
+{
     let orphan = doc_block_above(
         &repo().join("src/rtpengine/control.rs"),
         "pub struct ControlClient {",
-    );
+    )?;
     let victim = doc_block_above(
         &repo().join("src/relay/types.rs"),
         "pub struct RelayStream {",
-    );
+    )?;
     let orphan_paras = paragraphs(&orphan);
     let headings = orphan_paras
         .iter()
@@ -1244,7 +1258,7 @@ fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() {
     );
     let victim_summary = match victim.first() {
         Some(s) => s.clone(),
-        None => panic!("`RelayStream` has no doc comment to strand a block above"),
+        None => return Err("`RelayStream` has no doc comment to strand a block above".into()),
     };
     assert!(
         !victim_summary.trim_end().ends_with(':'),
@@ -1258,7 +1272,7 @@ fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() {
     stranded.push(String::new());
     stranded.extend(victim.iter().cloned());
     assert_eq!(
-        second_summary(&paragraphs(&stranded), true).as_deref(),
+        second_summary(&paragraphs(&stranded), true)?.as_deref(),
         Some(victim_summary.trim()),
         "the rule no longer reports the stranded block that instance 5 was"
     );
@@ -1270,7 +1284,7 @@ fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() {
     let mut joined = orphan.clone();
     joined.extend(victim.iter().cloned());
     assert_eq!(
-        second_summary(&paragraphs(&joined), true),
+        second_summary(&paragraphs(&joined), true)?,
         None,
         "the no-blank-line concatenation is now visible to this rule. That is \
          the arrangement instance 5 had, so this is an improvement rather than \
@@ -1284,8 +1298,8 @@ fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() {
     for path in rust_files("src") {
         for (line, body) in doc_blocks_of(&path) {
             let paras = paragraphs(&body);
-            if second_summary(&paras, true).is_none()
-                && let Some(text) = second_summary(&paras, false)
+            if second_summary(&paras, true)?.is_none()
+                && let Some(text) = second_summary(&paras, false)?
             {
                 spared.push((show(&path), line, text));
             }
@@ -1310,6 +1324,7 @@ fn the_second_summary_rule_separates_a_stranded_block_from_a_list_lead_in() {
          exclusion has become the narrowing it was written to avoid.",
         not_lead_ins.join("\n")
     );
+    Ok(())
 }
 
 /// The declaration a doc block sits on, flattened to one line.
@@ -1363,11 +1378,21 @@ fn item_below(lines: &[&str], after: usize) -> String {
 const FUNCTION_ONLY_SECTIONS: &[&str] =
     &["errors", "panics", "returns", "arguments", "side effects"];
 
+/// A regex compiled once; the compile error is kept so every caller sees it.
+type CachedRegex = std::sync::OnceLock<Result<regex::Regex, regex::Error>>;
+
+/// The regex in `cell`, compiling `pattern` on first use.
+fn cached(cell: &'static CachedRegex, pattern: &str) -> Result<&'static regex::Regex, TestError> {
+    Ok(cell
+        .get_or_init(|| regex::Regex::new(pattern))
+        .as_ref()
+        .map_err(|e| e.to_string())?)
+}
+
 /// Does this declaration declare a function?
-fn declares_a_function(sig: &str) -> bool {
-    static FN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    FN.get_or_init(|| regex::Regex::new(r"\bfn\s+[A-Za-z_]").expect("fn pattern"))
-        .is_match(sig)
+fn declares_a_function(sig: &str) -> Result<bool, TestError> {
+    static FN: CachedRegex = std::sync::OnceLock::new();
+    Ok(cached(&FN, r"\bfn\s+[A-Za-z_]")?.is_match(sig))
 }
 
 /// The `#` heading text of a doc line, lowercased, if it is one.
@@ -1570,7 +1595,7 @@ fn every_rust_tree() -> Vec<PathBuf> {
 /// Five instances of one defect now, across two trees. The scan is the cheap
 /// part; not running it over everything was the whole gap.
 #[test]
-fn no_doc_block_in_any_rust_tree_opens_with_a_stranded_continuation() {
+fn no_doc_block_in_any_rust_tree_opens_with_a_stranded_continuation() -> Result<(), TestError> {
     let mut stranded = Vec::new();
     let mut checked = 0usize;
     let mut trees = std::collections::BTreeSet::new();
@@ -1604,6 +1629,7 @@ fn no_doc_block_in_any_rust_tree_opens_with_a_stranded_continuation() {
         stranded.len(),
         stranded.join("\n")
     );
+    Ok(())
 }
 
 /// **Second of ten.** Every word on the shared list really arms the rule.
@@ -1615,7 +1641,7 @@ fn no_doc_block_in_any_rust_tree_opens_with_a_stranded_continuation() {
 /// as the opening word of a fragment, and the list is checked for the shape
 /// that makes an entry inert.
 #[test]
-fn every_continuation_word_arms_the_rule() {
+fn every_continuation_word_arms_the_rule() -> Result<(), TestError> {
     assert!(
         CONTINUATION_WORDS.len() >= 80,
         "the list has shrunk to {} words; it covered 94 when the rule was \
@@ -1644,6 +1670,7 @@ fn every_continuation_word_arms_the_rule() {
         CONTINUATION_WORDS.len(),
         "the continuation-word list repeats an entry"
     );
+    Ok(())
 }
 
 /// No doc block opens with the tail of somebody else's sentence.
@@ -1669,7 +1696,7 @@ fn every_continuation_word_arms_the_rule() {
 /// in: the second item always inherits a fragment, and a fragment does not
 /// start with a capital.
 #[test]
-fn no_doc_block_opens_with_the_tail_of_another_items_sentence() {
+fn no_doc_block_opens_with_the_tail_of_another_items_sentence() -> Result<(), TestError> {
     let mut stranded = Vec::new();
     let mut checked = 0usize;
     for path in rust_files("src") {
@@ -1695,6 +1722,7 @@ fn no_doc_block_opens_with_the_tail_of_another_items_sentence() {
         stranded.len(),
         stranded.join("\n")
     );
+    Ok(())
 }
 
 /// The scan above can actually fire.
@@ -1709,7 +1737,7 @@ fn no_doc_block_opens_with_the_tail_of_another_items_sentence() {
 /// shipped and on the shapes the exclusions admit. Both directions: what must
 /// fire, and what must not.
 #[test]
-fn the_stranded_continuation_scan_fires_on_the_shape_it_names() {
+fn the_stranded_continuation_scan_fires_on_the_shape_it_names() -> Result<(), TestError> {
     // The real fragment, from `src/net.rs` as released in 0.5.158.
     assert!(
         opens_like_a_stranded_continuation("they asked for."),
@@ -1765,6 +1793,7 @@ fn the_stranded_continuation_scan_fires_on_the_shape_it_names() {
             "{admitted:?} is a legitimate opening and must not be reported"
         );
     }
+    Ok(())
 }
 
 /// No doc block carries a contract section its item cannot have.
@@ -1795,18 +1824,18 @@ fn the_stranded_continuation_scan_fires_on_the_shape_it_names() {
 /// shape, so if it ever stops being the reason, the exclusion stops being
 /// justified and this fails.
 #[test]
-fn no_doc_block_carries_a_contract_section_its_item_cannot_have() {
+fn no_doc_block_carries_a_contract_section_its_item_cannot_have() -> Result<(), TestError> {
     let mut misplaced = Vec::new();
     let mut sections = 0usize;
     let mut blocks = 0usize;
     let mut safety_on_a_safe_fn = 0usize;
     for path in rust_files("src") {
-        let src = std::fs::read_to_string(&path).expect("read source file");
+        let src = std::fs::read_to_string(&path)?;
         let lines: Vec<&str> = src.lines().collect();
         for (start, body) in doc_blocks_of(&path) {
             blocks += 1;
             let sig = item_below(&lines, start - 1 + body.len());
-            let is_fn = declares_a_function(&sig);
+            let is_fn = declares_a_function(&sig)?;
             for text in &body {
                 let Some(name) = heading_name(text) else {
                     continue;
@@ -1851,6 +1880,7 @@ fn no_doc_block_carries_a_contract_section_its_item_cannot_have() {
          item's block. Split the block and put each half on what it describes.",
         misplaced.join("\n")
     );
+    Ok(())
 }
 
 /// Every walk in this file found a tree, not an empty directory.
@@ -1867,14 +1897,14 @@ fn no_doc_block_carries_a_contract_section_its_item_cannot_have() {
 /// raise it silently -- turning a rule that reads the tree into one that reads
 /// part of it.
 #[test]
-fn every_walk_in_this_file_found_a_plausible_tree() {
+fn every_walk_in_this_file_found_a_plausible_tree() -> Result<(), TestError> {
     let files = rust_files("src");
     let mut attributes = 0usize;
     let mut blocks = 0usize;
     let mut declarations = 0usize;
     let mut commented = 0usize;
     for path in &files {
-        let src = std::fs::read_to_string(path).expect("read source file");
+        let src = std::fs::read_to_string(path)?;
         let lines: Vec<&str> = src.lines().collect();
         let mut i = 0;
         while i < lines.len() {
@@ -1893,14 +1923,14 @@ fn every_walk_in_this_file_found_a_plausible_tree() {
             }
             i += 1;
         }
-        for decl in mod_decls(path) {
+        for decl in mod_decls(path)? {
             declarations += 1;
             if !decl.comment.is_empty() {
                 commented += 1;
             }
         }
     }
-    let (tree, unknown_cfgs) = wasm_module_tree();
+    let (tree, unknown_cfgs) = wasm_module_tree()?;
     let compiled = tree.values().filter(|(_, c)| *c == Some(true)).count();
     let excluded = tree.values().filter(|(_, c)| *c == Some(false)).count();
 
@@ -1938,6 +1968,7 @@ fn every_walk_in_this_file_found_a_plausible_tree() {
          stops reading, and it stops reading it quietly. Teach the evaluator \
          the spelling rather than letting the number drift."
     );
+    Ok(())
 }
 
 /// The last line of a doc block that says anything, ignoring trailing blanks.
@@ -1984,7 +2015,7 @@ fn block_ends_on_a_heading(body: &[String]) -> bool {
 /// measured count on a clean tree is zero, which is why this is an equality
 /// rather than a ratchet.
 #[test]
-fn no_doc_block_ends_on_a_section_heading() {
+fn no_doc_block_ends_on_a_section_heading() -> Result<(), TestError> {
     let mut cut = Vec::new();
     let mut blocks = 0usize;
     let mut with_headings = 0usize;
@@ -2026,6 +2057,7 @@ fn no_doc_block_ends_on_a_section_heading() {
          was inserted:\n{}",
         cut.join("\n")
     );
+    Ok(())
 }
 
 /// The heading rule fires on the split that caused it, and spares intact blocks.
@@ -2041,7 +2073,7 @@ fn no_doc_block_ends_on_a_section_heading() {
 /// continuation line landed between the heading and its prose. The half left
 /// behind ended on `# Side effects` with nothing under it.
 #[test]
-fn the_heading_rule_fires_on_a_cut_block_and_spares_an_intact_one() {
+fn the_heading_rule_fires_on_a_cut_block_and_spares_an_intact_one() -> Result<(), TestError> {
     let doc = |lines: &[&str]| -> Vec<String> { lines.iter().map(|l| (*l).to_string()).collect() };
 
     // The wound: a block cut immediately after a section heading.
@@ -2097,4 +2129,5 @@ fn the_heading_rule_fires_on_a_cut_block_and_spares_an_intact_one() {
          reopens the exact near miss that put it there: an orphan carrying \
          `# Side effects` and no other contract section, sitting on a static."
     );
+    Ok(())
 }

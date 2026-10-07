@@ -38,6 +38,8 @@ use std::path::{Path, PathBuf};
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Skip captures larger than this: the corpus root can hold archives that are
 /// not captures at all, and each file is parsed in full.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
@@ -100,7 +102,7 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 /// third of the traffic is not measured. The exit code comes back rather than
 /// being swallowed: a run that died reads as "zero dialogs matched" to anyone
 /// counting lines.
-fn dialogs(capture: &Path) -> (Vec<serde_json::Value>, Option<i32>) {
+fn dialogs(capture: &Path) -> Result<(Vec<serde_json::Value>, Option<i32>), TestError> {
     let capture = capture.to_string_lossy().into_owned();
     let argv = [
         "-N",
@@ -111,18 +113,18 @@ fn dialogs(capture: &Path) -> (Vec<serde_json::Value>, Option<i32>) {
         "--portrange",
         "1-65535",
     ];
-    let (stdout, _stderr, code) = run_support::run_or_panic(&argv, Some("error"));
+    let (stdout, _stderr, code) = run_support::run(&argv, Some("error"))?;
     let parsed = stdout
         .lines()
         .filter(|l| l.starts_with('{'))
-        .map(|l| serde_json::from_str(l).expect("dialog line must be JSON"))
-        .collect();
-    (parsed, code)
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    Ok((parsed, code))
 }
 
 /// Readable captures under the size cap, as `(filename, dialogs)`: every one
 /// that carries RTP, and [`WANT_WITHOUT_MEDIA`] that do not.
-fn corpus_captures(root: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
+fn corpus_captures(root: &Path) -> Result<Vec<(String, Vec<serde_json::Value>)>, TestError> {
     let (mut with_media, mut without_media) = (Vec::new(), Vec::new());
     let (mut too_big, mut unreadable, mut scanned) = (0usize, 0usize, 0usize);
     // The whole corpus: a cap on files opened is a cap on which captures can
@@ -133,7 +135,7 @@ fn corpus_captures(root: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
             continue;
         }
         scanned += 1;
-        let (all, code) = dialogs(&path);
+        let (all, code) = dialogs(&path)?;
         if code != Some(0) || all.is_empty() {
             unreadable += 1;
             continue;
@@ -162,7 +164,7 @@ fn corpus_captures(root: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
         MAX_FILE_BYTES / (1024 * 1024),
     );
     with_media.extend(without_media);
-    with_media
+    Ok(with_media)
 }
 
 /// The address part of an `ip:port` string, or the whole string when it holds
@@ -220,11 +222,13 @@ fn flag(dialog: &serde_json::Value, name: &str) -> bool {
 /// started firing on calls whose media came from an address the SDP did name
 /// fails the comparison.
 #[test]
-fn corpus_nat_mismatch_fires_and_agrees_with_the_rendered_sdp() {
-    let Some(root) = corpus_root() else { return };
+fn corpus_nat_mismatch_fires_and_agrees_with_the_rendered_sdp() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let (mut flagged, mut with_media, mut disagreements) = (0usize, 0usize, 0usize);
-    for (name, all) in corpus_captures(&root) {
+    for (name, all) in corpus_captures(&root)? {
         let mut per_file = 0usize;
         for dialog in &all {
             if has_streams(dialog) {
@@ -271,6 +275,7 @@ fn corpus_nat_mismatch_fires_and_agrees_with_the_rendered_sdp() {
          a diagnosis that selects nearly every call is a false-positive problem, not a fix",
         share * 100.0
     );
+    Ok(())
 }
 
 // ── no_media ────────────────────────────────────────────────────────────
@@ -281,11 +286,13 @@ fn corpus_nat_mismatch_fires_and_agrees_with_the_rendered_sdp() {
 /// the capture-level guard the flag selects all of them and describes where
 /// the tap sits rather than what happened on any call.
 #[test]
-fn corpus_signaling_only_captures_report_no_no_media() {
-    let Some(root) = corpus_root() else { return };
+fn corpus_signaling_only_captures_report_no_no_media() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let (mut checked, mut answered_in_them) = (0usize, 0usize);
-    for (name, all) in corpus_captures(&root) {
+    for (name, all) in corpus_captures(&root)? {
         if all.iter().any(has_streams) {
             continue; // this capture carries media; a different test's job
         }
@@ -311,6 +318,7 @@ fn corpus_signaling_only_captures_report_no_no_media() {
         checked > 0,
         "no capture under SIPNAB_CORPUS is free of RTP, so the guard was never exercised"
     );
+    Ok(())
 }
 
 /// `no_media` never fires on a dialog that carries linked RTP.
@@ -318,11 +326,13 @@ fn corpus_signaling_only_captures_report_no_no_media() {
 /// The two are contradictory by definition, and the check is cheap enough to
 /// hold over the whole corpus rather than trusting the branch to stay ordered.
 #[test]
-fn corpus_no_media_never_claimed_for_a_dialog_that_has_streams() {
-    let Some(root) = corpus_root() else { return };
+fn corpus_no_media_never_claimed_for_a_dialog_that_has_streams() -> Result<(), TestError> {
+    let Some(root) = corpus_root() else {
+        return Ok(());
+    };
 
     let mut with_media = 0usize;
-    for (name, all) in corpus_captures(&root) {
+    for (name, all) in corpus_captures(&root)? {
         for dialog in &all {
             if !has_streams(dialog) {
                 continue;
@@ -340,4 +350,5 @@ fn corpus_no_media_never_claimed_for_a_dialog_that_has_streams() {
         with_media > 0,
         "the corpus holds no dialog with linked RTP, so this proves nothing"
     );
+    Ok(())
 }

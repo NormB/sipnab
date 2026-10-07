@@ -41,6 +41,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/corpus.rs"]
 mod corpus_support;
 #[path = "support/pcap_build.rs"]
@@ -50,7 +52,7 @@ mod readability;
 
 /// A capture with one SIP datagram in it — something the reader accepts and
 /// that yields a packet, so it lands in the `read` column.
-fn write_readable_capture(path: &Path) {
+fn write_readable_capture(path: &Path) -> Result<(), TestError> {
     let frame = pcap_build::udp_frame(
         [192, 0, 2, 1],
         [192, 0, 2, 2],
@@ -58,7 +60,8 @@ fn write_readable_capture(path: &Path) {
         5060,
         b"OPTIONS sip:probe SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n",
     );
-    pcap_build::write_pcap_or_panic(path, &[frame]);
+    pcap_build::write_pcap(path, &[frame])?;
+    Ok(())
 }
 
 /// Run the gate in a child process against `root`, returning `(stderr, code)`.
@@ -68,17 +71,16 @@ fn write_readable_capture(path: &Path) {
 /// a non-zero exit and a line on a stderr libtest would otherwise have
 /// swallowed. A helper that returns a struct can be right while the suite
 /// still reports `ok`, which is the entire defect this file exists about.
-fn run_gate(root: &Path) -> (String, Option<i32>) {
-    let exe = std::env::current_exe().expect("current_exe");
+fn run_gate(root: &Path) -> Result<(String, Option<i32>), TestError> {
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args(["corpus_readability_probe", "--exact", "--ignored"])
         .env(corpus_support::ENV_VAR, root)
-        .output()
-        .expect("spawn self");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// The gate itself, spawned by the fixture tests against a synthetic corpus and
@@ -86,9 +88,10 @@ fn run_gate(root: &Path) -> (String, Option<i32>) {
 /// real one. Ignored so a normal pass of this binary never fires it twice.
 #[test]
 #[ignore = "spawned against a synthetic corpus root by the gate tests in this file"]
-fn corpus_readability_probe() {
-    let root = corpus_support::root().expect("the probe must run with the corpus set");
+fn corpus_readability_probe() -> Result<(), TestError> {
+    let root = corpus_support::root().ok_or("the probe must run with the corpus set")?;
     readability::survey(&root).assert_every_capture_was_read();
+    Ok(())
 }
 
 /// A capture the reader refuses is counted, named, and fails the run.
@@ -99,13 +102,12 @@ fn corpus_readability_probe() {
 /// this gate existed the same directory produced a green run from every corpus
 /// binary in the tree.
 #[test]
-fn an_unopenable_capture_fails_the_gate_and_is_counted() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_readable_capture(&dir.path().join("readable.pcap"));
-    std::fs::write(dir.path().join("refused.pcap"), b"not a capture at all")
-        .expect("write the unopenable fixture");
+fn an_unopenable_capture_fails_the_gate_and_is_counted() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_readable_capture(&dir.path().join("readable.pcap"))?;
+    std::fs::write(dir.path().join("refused.pcap"), b"not a capture at all")?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_ne!(
         code,
         Some(0),
@@ -121,6 +123,7 @@ fn an_unopenable_capture_fails_the_gate_and_is_counted() {
         stderr.contains(readability::REPORT_MARKER),
         "the sweep must report its counts on the failing path too: {stderr:?}"
     );
+    Ok(())
 }
 
 /// The count is reported even when it is zero.
@@ -130,12 +133,12 @@ fn an_unopenable_capture_fails_the_gate_and_is_counted() {
 /// that appears solely on failure leaves a passing run claiming nothing about
 /// how much of the corpus it actually read.
 #[test]
-fn a_readable_corpus_passes_and_still_reports_what_it_read() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_readable_capture(&dir.path().join("one.pcap"));
-    write_readable_capture(&dir.path().join("two.pcapng"));
+fn a_readable_corpus_passes_and_still_reports_what_it_read() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_readable_capture(&dir.path().join("one.pcap"))?;
+    write_readable_capture(&dir.path().join("two.pcapng"))?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_eq!(
         code,
         Some(0),
@@ -155,6 +158,7 @@ fn a_readable_corpus_passes_and_still_reports_what_it_read() {
         "the report must state the unread count explicitly, including when it is \
          zero: {stderr:?}"
     );
+    Ok(())
 }
 
 /// Files that are not captures are not captures.
@@ -164,14 +168,14 @@ fn a_readable_corpus_passes_and_still_reports_what_it_read() {
 /// fires on every run gets its floor raised until it fires on nothing — which
 /// is how a ratchet becomes a rubber stamp.
 #[test]
-fn a_file_that_is_not_a_capture_is_not_counted_as_unread() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_readable_capture(&dir.path().join("real.pcap"));
-    std::fs::write(dir.path().join("notes.txt"), b"a note").expect("write");
-    std::fs::write(dir.path().join("run.sh"), b"#!/bin/sh\nexit 0\n").expect("write");
-    std::fs::write(dir.path().join("bundle.zip"), b"PK\x03\x04nope").expect("write");
+fn a_file_that_is_not_a_capture_is_not_counted_as_unread() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_readable_capture(&dir.path().join("real.pcap"))?;
+    std::fs::write(dir.path().join("notes.txt"), b"a note")?;
+    std::fs::write(dir.path().join("run.sh"), b"#!/bin/sh\nexit 0\n")?;
+    std::fs::write(dir.path().join("bundle.zip"), b"PK\x03\x04nope")?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_eq!(
         code,
         Some(0),
@@ -182,6 +186,7 @@ fn a_file_that_is_not_a_capture_is_not_counted_as_unread() {
         "the sweep must account for every file it walked, so the non-captures are \
          counted rather than dropped: {stderr:?}"
     );
+    Ok(())
 }
 
 /// A capture-shaped name is enough to demand a successful open.
@@ -191,12 +196,12 @@ fn a_file_that_is_not_a_capture_is_not_counted_as_unread() {
 /// as "not a capture". The corpus is a directory of captures — a `.pcap` in it
 /// that holds no capture is a finding, not a stray file.
 #[test]
-fn a_capture_shaped_name_with_no_magic_is_still_demanded_to_open() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_readable_capture(&dir.path().join("real.pcap"));
-    std::fs::write(dir.path().join("truncated.pcapng"), b"").expect("write");
+fn a_capture_shaped_name_with_no_magic_is_still_demanded_to_open() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_readable_capture(&dir.path().join("real.pcap"))?;
+    std::fs::write(dir.path().join("truncated.pcapng"), b"")?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_ne!(
         code,
         Some(0),
@@ -206,6 +211,7 @@ fn a_capture_shaped_name_with_no_magic_is_still_demanded_to_open() {
         stderr.contains("truncated.pcapng"),
         "the failure must name it: {stderr:?}"
     );
+    Ok(())
 }
 
 /// A pcap header with no records is "opened it, found nothing" — which is the
@@ -216,12 +222,12 @@ fn a_capture_shaped_name_with_no_magic_is_still_demanded_to_open() {
 /// zero packets to every total. Indistinguishable, from the totals alone, from
 /// a capture that was never opened.
 #[test]
-fn a_capture_that_opens_and_yields_no_packets_is_unread() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_readable_capture(&dir.path().join("real.pcap"));
-    pcap_build::write_pcap_or_panic(&dir.path().join("headers-only.pcap"), &[]);
+fn a_capture_that_opens_and_yields_no_packets_is_unread() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_readable_capture(&dir.path().join("real.pcap"))?;
+    pcap_build::write_pcap(&dir.path().join("headers-only.pcap"), &[])?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_ne!(
         code,
         Some(0),
@@ -231,6 +237,7 @@ fn a_capture_that_opens_and_yields_no_packets_is_unread() {
         stderr.contains("headers-only.pcap"),
         "the failure must name it: {stderr:?}"
     );
+    Ok(())
 }
 
 /// The RDR1 class, generated rather than borrowed from the corpus.
@@ -248,8 +255,8 @@ fn a_capture_that_opens_and_yields_no_packets_is_unread() {
 /// against a fixture built here rather than against a corpus that is never
 /// committed.
 #[test]
-fn a_merged_pcapng_must_open_through_the_product_read_path_too() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_merged_pcapng_must_open_through_the_product_read_path_too() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let sip = b"OPTIONS sip:probe SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
     let eth = pcap_build::udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 5060, 5060, sip);
     let raw_ip = pcap_build::strip_ethernet(&pcap_build::udp_frame(
@@ -260,12 +267,12 @@ fn a_merged_pcapng_must_open_through_the_product_read_path_too() {
         sip,
     ));
     // Interface 0 is Ethernet at snaplen 65535, interface 1 raw IP at 2048.
-    pcap_build::write_pcapng_multi_iface_or_panic(
+    pcap_build::write_pcapng_multi_iface(
         &dir.path().join("merged.pcapng"),
         &[(0, eth), (1, raw_ip)],
-    );
+    )?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_eq!(
         code,
         Some(0),
@@ -275,20 +282,22 @@ fn a_merged_pcapng_must_open_through_the_product_read_path_too() {
         stderr.contains("1 read"),
         "the merged capture must land in the read column, not be classified away: {stderr:?}"
     );
+    Ok(())
 }
 
 /// An empty corpus fails rather than satisfying the gate vacuously.
 #[test]
-fn a_corpus_with_no_captures_fails_rather_than_passing_over_nothing() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join("readme.txt"), b"no captures here").expect("write");
+fn a_corpus_with_no_captures_fails_rather_than_passing_over_nothing() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("readme.txt"), b"no captures here")?;
 
-    let (stderr, code) = run_gate(dir.path());
+    let (stderr, code) = run_gate(dir.path())?;
     assert_ne!(
         code,
         Some(0),
         "zero captures satisfies \"nothing was unread\" perfectly and proves nothing: {stderr:?}"
     );
+    Ok(())
 }
 
 /// The report reaches a stderr libtest would have swallowed.
@@ -298,11 +307,11 @@ fn a_corpus_with_no_captures_fails_rather_than_passing_over_nothing() {
 /// libtest redirects per test and discards on success, so a report written that
 /// way would exist, compile, and reach nobody.
 #[test]
-fn the_report_survives_libtests_output_capture() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_readable_capture(&dir.path().join("one.pcap"));
+fn the_report_survives_libtests_output_capture() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_readable_capture(&dir.path().join("one.pcap"))?;
 
-    let (stderr, _) = run_gate(dir.path());
+    let (stderr, _) = run_gate(dir.path())?;
     assert!(
         stderr.contains(readability::REPORT_MARKER),
         "the sweep's report left no trace on a captured stderr: {stderr:?}"
@@ -313,6 +322,7 @@ fn the_report_survives_libtests_output_capture() {
         "one report line per binary, not one per capture — a wall of lines is the \
          same failure in a louder font: {stderr:?}"
     );
+    Ok(())
 }
 
 /// The gate, against the real corpus.
@@ -321,7 +331,7 @@ fn the_report_survives_libtests_output_capture() {
 /// only test in the tree that can tell "read it, found nothing" from "never
 /// opened it" across the whole corpus.
 #[test]
-fn every_capture_under_the_corpus_root_is_actually_read() {
+fn every_capture_under_the_corpus_root_is_actually_read() -> Result<(), TestError> {
     let Some(root) = corpus_support::root() else {
         // Audible, and to the REAL stderr, for the same reason `announce()`
         // writes there: libtest throws its buffer away when a test passes, so
@@ -336,7 +346,8 @@ fn every_capture_under_the_corpus_root_is_actually_read() {
              capture was checked. Set it to validate: \
              SIPNAB_CORPUS=/path/to/pcaps cargo test --features full"
         );
-        return;
+        return Ok(());
     };
     readability::survey(&root).assert_every_capture_was_read();
+    Ok(())
 }

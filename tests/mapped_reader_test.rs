@@ -10,14 +10,16 @@
 
 use sipnab::capture::mapped::MappedPcap;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Every frame libpcap reads, the mapping reads identically.
 #[test]
-fn a_mapped_read_yields_the_same_frames_as_libpcap() {
+fn a_mapped_read_yields_the_same_frames_as_libpcap() -> Result<(), TestError> {
     for fixture in [
         "tests/fixtures/sip_call.pcap",
         "tests/fixtures/udp_5060.pcap",
     ] {
-        let mut cap = pcap::Capture::from_file(fixture).expect("fixture opens");
+        let mut cap = pcap::Capture::from_file(fixture)?;
         let reference_link = cap.get_datalink().0;
         let mut reference = Vec::new();
         while let Ok(pkt) = cap.next_packet() {
@@ -36,9 +38,8 @@ fn a_mapped_read_yields_the_same_frames_as_libpcap() {
         }
         assert!(!reference.is_empty(), "{fixture} has frames to compare");
 
-        let mut mapped = MappedPcap::open(std::path::Path::new(fixture))
-            .expect("fixture opens")
-            .unwrap_or_else(|| panic!("{fixture} is a classic pcap and must map"));
+        let mut mapped = MappedPcap::open(std::path::Path::new(fixture))?
+            .ok_or_else(|| format!("{fixture} is a classic pcap and must map"))?;
         assert_eq!(mapped.link_type(), reference_link, "{fixture} datalink");
 
         let mut n = 0usize;
@@ -61,6 +62,7 @@ fn a_mapped_read_yields_the_same_frames_as_libpcap() {
         }
         assert_eq!(n, reference.len(), "{fixture} frame count");
     }
+    Ok(())
 }
 
 /// Build a one-record classic pcap by hand, so the record's declared lengths
@@ -91,13 +93,13 @@ fn one_record_pcap(snaplen: u32, incl_len: u32, orig_len: u32) -> Vec<u8> {
 /// rejects the record and stops, which would silently truncate a user's capture
 /// at its first snapped packet while reporting success.
 #[test]
-fn a_snapped_capture_reads_every_frame_just_as_libpcap_does() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_snapped_capture_reads_every_frame_just_as_libpcap_does() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("snapped.pcap");
-    std::fs::write(&path, one_record_pcap(96, 96, 1500)).expect("write");
+    std::fs::write(&path, one_record_pcap(96, 96, 1500))?;
 
     // libpcap is the reference: whatever it reads, the mapping must read.
-    let mut cap = pcap::Capture::from_file(&path).expect("libpcap opens");
+    let mut cap = pcap::Capture::from_file(&path)?;
     let mut expected = Vec::new();
     while let Ok(pkt) = cap.next_packet() {
         expected.push((pkt.header.caplen as usize, pkt.header.len as usize));
@@ -108,9 +110,7 @@ fn a_snapped_capture_reads_every_frame_just_as_libpcap_does() {
         "libpcap reads the snapped record"
     );
 
-    let mut mapped = MappedPcap::open(&path)
-        .expect("opens")
-        .expect("a classic pcap maps");
+    let mut mapped = MappedPcap::open(&path)?.ok_or("a classic pcap maps")?;
     let mut got = Vec::new();
     while let Some(f) = mapped.next_frame() {
         got.push((f.caplen, f.origlen));
@@ -119,13 +119,14 @@ fn a_snapped_capture_reads_every_frame_just_as_libpcap_does() {
         got, expected,
         "the mapping dropped a snapped record libpcap read"
     );
+    Ok(())
 }
 
 /// A format the mapping cannot read declines, so the caller falls back to
 /// libpcap rather than reading nothing. `None` is the contract, not an error.
 #[test]
-fn a_format_the_mapping_cannot_read_declines_rather_than_failing() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_format_the_mapping_cannot_read_declines_rather_than_failing() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
 
     let pcapng = dir.path().join("capture.pcapng");
     // A pcapng Section Header Block: valid capture, wrong container for us.
@@ -134,38 +135,31 @@ fn a_format_the_mapping_cannot_read_declines_rather_than_failing() {
         [
             0x0a, 0x0d, 0x0d, 0x0a, 0x1c, 0, 0, 0, 0x4d, 0x3c, 0x2b, 0x1a, 1, 0, 0, 0,
         ],
-    )
-    .expect("write");
-    assert!(
-        MappedPcap::open(&pcapng).expect("open succeeds").is_none(),
-        "pcapng declines"
-    );
+    )?;
+    assert!(MappedPcap::open(&pcapng)?.is_none(), "pcapng declines");
 
     let garbage = dir.path().join("garbage.pcap");
-    std::fs::write(&garbage, b"not a capture file at all").expect("write");
-    assert!(
-        MappedPcap::open(&garbage).expect("open succeeds").is_none(),
-        "garbage declines"
-    );
+    std::fs::write(&garbage, b"not a capture file at all")?;
+    assert!(MappedPcap::open(&garbage)?.is_none(), "garbage declines");
 
     let empty = dir.path().join("empty.pcap");
-    std::fs::write(&empty, b"").expect("write");
+    std::fs::write(&empty, b"")?;
     assert!(
-        MappedPcap::open(&empty).expect("open succeeds").is_none(),
+        MappedPcap::open(&empty)?.is_none(),
         "an empty file declines"
     );
+    Ok(())
 }
 
 /// A truncated file stops at the last whole frame instead of panicking or
 /// inventing one. Capture files are routinely cut off mid-write.
 #[test]
-fn a_truncated_file_stops_at_the_last_whole_frame() {
-    let whole = std::fs::read("tests/fixtures/sip_call.pcap").expect("fixture reads");
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_truncated_file_stops_at_the_last_whole_frame() -> Result<(), TestError> {
+    let whole = std::fs::read("tests/fixtures/sip_call.pcap")?;
+    let dir = tempfile::tempdir()?;
 
-    let mut full = MappedPcap::open(std::path::Path::new("tests/fixtures/sip_call.pcap"))
-        .expect("opens")
-        .expect("maps");
+    let mut full =
+        MappedPcap::open(std::path::Path::new("tests/fixtures/sip_call.pcap"))?.ok_or("maps")?;
     let mut count = 0usize;
     while full.next_frame().is_some() {
         count += 1;
@@ -180,8 +174,8 @@ fn a_truncated_file_stops_at_the_last_whole_frame() {
     // none may yield more frames than the intact file.
     for cut in 1..=std::cmp::min(64, whole.len() - 24) {
         let path = dir.path().join(format!("cut{cut}.pcap"));
-        std::fs::write(&path, &whole[..whole.len() - cut]).expect("write");
-        let Some(mut trunc) = MappedPcap::open(&path).expect("open succeeds") else {
+        std::fs::write(&path, &whole[..whole.len() - cut])?;
+        let Some(mut trunc) = MappedPcap::open(&path)? else {
             continue;
         };
         let mut got = 0usize;
@@ -202,6 +196,7 @@ fn a_truncated_file_stops_at_the_last_whole_frame() {
             );
         }
     }
+    Ok(())
 }
 
 /// A snapped capture is COUNTED as snapped, not merely read -- once, when the
@@ -218,7 +213,7 @@ fn a_truncated_file_stops_at_the_last_whole_frame() {
 /// packet on one thread and decodes it on another, so counting in both places
 /// would count every snapped frame twice.
 #[test]
-fn a_snapped_frame_is_counted_and_an_intact_one_is_not() {
+fn a_snapped_frame_is_counted_and_an_intact_one_is_not() -> Result<(), TestError> {
     use sipnab::capture::PacketProcessor;
     use sipnab::capture::packet::Packet;
 
@@ -260,4 +255,5 @@ fn a_snapped_frame_is_counted_and_an_intact_one_is_not() {
         1,
         "a frame cut short by the snaplen must be counted, once"
     );
+    Ok(())
 }

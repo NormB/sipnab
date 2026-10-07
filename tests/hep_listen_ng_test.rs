@@ -21,6 +21,8 @@ use sipnab::capture::parse::parse_packet;
 use sipnab::pipeline::{self, PacketAction, PipelineOptions};
 use sipnab::rtp::heuristic::RtpHeuristic;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// rtpengine's own capture protocol for a mirrored `ng` datagram.
 const NG_PROTO: u8 = 0x3d;
 
@@ -62,21 +64,26 @@ fn delivered_by_the_listener(body: Vec<u8>, correlation_id: Option<&str>) -> Pac
     )
 }
 
-fn classify(packet: &Packet) -> PacketAction {
-    let parsed = parse_packet(packet).expect("a pre-parsed datagram parses");
+fn classify(packet: &Packet) -> Result<PacketAction, TestError> {
+    let parsed = parse_packet(packet)?;
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions::default();
     let mut decrypt = pipeline::MediaDecrypt::default();
-    pipeline::classify_packet(&parsed, &mut heuristic, &opts, &mut decrypt)
+    Ok(pipeline::classify_packet(
+        &parsed,
+        &mut heuristic,
+        &opts,
+        &mut decrypt,
+    ))
 }
 
 /// SUCCESS: a request delivered over HEP is claimed as relay control, and its
 /// media endpoint is read.
 #[test]
-fn an_ng_request_delivered_over_hep_names_its_media_endpoint() {
-    let action = classify(&delivered_by_the_listener(offer_body(), None));
+fn an_ng_request_delivered_over_hep_names_its_media_endpoint() -> Result<(), TestError> {
+    let action = classify(&delivered_by_the_listener(offer_body(), None))?;
     let PacketAction::RelayControl(message) = action else {
-        panic!("an ng offer over --hep-listen must be claimed as relay control");
+        return Err("an ng offer over --hep-listen must be claimed as relay control".into());
     };
     let sdp_links = message.sdp_links;
     assert_eq!(
@@ -88,19 +95,20 @@ fn an_ng_request_delivered_over_hep_names_its_media_endpoint() {
     assert_eq!(addr.to_string(), "10.0.0.60");
     assert_eq!(*port, 40001);
     assert_eq!(call_id, "km-670bd208@sipnab");
+    Ok(())
 }
 
 /// SUCCESS, and the half that only the correlation id can carry: a REPLY names
 /// no call in its body, so the wrapper's correlation id is the sole route from
 /// the relay's allocated port back to the call it belongs to.
 #[test]
-fn an_ng_reply_is_attributed_by_the_hep_correlation_id() {
+fn an_ng_reply_is_attributed_by_the_hep_correlation_id() -> Result<(), TestError> {
     let action = classify(&delivered_by_the_listener(
         offer_reply_body(),
         Some("km-670bd208@sipnab"),
-    ));
+    ))?;
     let PacketAction::RelayControl(message) = action else {
-        panic!("an ng reply over --hep-listen must be claimed as relay control");
+        return Err("an ng reply over --hep-listen must be claimed as relay control".into());
     };
     let sdp_links = message.sdp_links;
     assert_eq!(sdp_links.len(), 1, "the reply rewrites one endpoint");
@@ -112,6 +120,7 @@ fn an_ng_reply_is_attributed_by_the_hep_correlation_id() {
         "a reply carries no call-id of its own; drop the correlation id and \
          the relay's allocated port belongs to no call"
     );
+    Ok(())
 }
 
 /// FAILURE: a reply with NO correlation id names no call, and sipnab must not
@@ -121,16 +130,17 @@ fn an_ng_reply_is_attributed_by_the_hep_correlation_id() {
 /// would put a relay port on the wrong conversation, which is worse than
 /// leaving it unattributed.
 #[test]
-fn an_ng_reply_without_a_correlation_id_attributes_nothing() {
-    let action = classify(&delivered_by_the_listener(offer_reply_body(), None));
+fn an_ng_reply_without_a_correlation_id_attributes_nothing() -> Result<(), TestError> {
+    let action = classify(&delivered_by_the_listener(offer_reply_body(), None))?;
     let PacketAction::RelayControl(message) = action else {
-        panic!("the datagram is still relay control");
+        return Err("the datagram is still relay control".into());
     };
     let sdp_links = message.sdp_links;
     assert!(
         sdp_links.is_empty(),
         "nothing names this call, so nothing may be attributed: {sdp_links:?}"
     );
+    Ok(())
 }
 
 /// FAILURE: a datagram the listener delivers that is NOT ng is left alone.
@@ -138,7 +148,7 @@ fn an_ng_reply_without_a_correlation_id_attributes_nothing() {
 /// The listener carries ordinary SIP too — that is what it is for — and a
 /// claim here would eat every SIP message an operator sent over HEP.
 #[test]
-fn sip_delivered_over_hep_is_not_claimed_as_relay_control() {
+fn sip_delivered_over_hep_is_not_claimed_as_relay_control() -> Result<(), TestError> {
     let sip = b"INVITE sip:bob@example.net SIP/2.0\r\nCall-ID: x@y\r\n\r\n".to_vec();
     let packet = Packet::with_pre_parsed(
         Utc::now(),
@@ -158,9 +168,10 @@ fn sip_delivered_over_hep_is_not_claimed_as_relay_control() {
         },
     );
     assert!(
-        !matches!(classify(&packet), PacketAction::RelayControl(_)),
+        !matches!(classify(&packet)?, PacketAction::RelayControl(_)),
         "a SIP message over HEP must reach the SIP path, not the relay path"
     );
+    Ok(())
 }
 
 /// The relay's own declaration is honored even when sipnab cannot decode the
@@ -178,15 +189,16 @@ fn sip_delivered_over_hep_is_not_claimed_as_relay_control() {
 /// Falling through would hand a control datagram to the RTP heuristic, which
 /// is the one outcome the whole block is ordered to prevent.
 #[test]
-fn a_body_sipnab_cannot_parse_is_still_control_when_the_relay_says_so() {
+fn a_body_sipnab_cannot_parse_is_still_control_when_the_relay_says_so() -> Result<(), TestError> {
     let undecodable = b"d7:command9:some-verb".to_vec();
     let packet = delivered_by_the_listener(undecodable, Some("km-670bd208@sipnab"));
 
-    let action = classify(&packet);
+    let action = classify(&packet)?;
     let PacketAction::RelayControl(message) = action else {
-        panic!(
+        return Err(
             "rtpengine declared this ng; an undecodable body is not a reason \
              to reconsider it as media"
+                .into(),
         );
     };
     let sdp_links = message.sdp_links;
@@ -194,4 +206,5 @@ fn a_body_sipnab_cannot_parse_is_still_control_when_the_relay_says_so() {
         sdp_links.is_empty(),
         "nothing was decoded, so nothing may be attributed: {sdp_links:?}"
     );
+    Ok(())
 }

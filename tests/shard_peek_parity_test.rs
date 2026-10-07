@@ -77,6 +77,8 @@ use sipnab::capture::parse::{parse_packet, peek_host_pair};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+type TestError = Box<dyn std::error::Error>;
+
 // ── the known endpoints every readable case must resolve to ───────────
 
 /// The IPv4 source every readable case carries. Deliberately not
@@ -960,16 +962,18 @@ fn cases() -> Vec<Case> {
     c
 }
 
-fn packet(case: &Case) -> Packet {
+fn packet(case: &Case) -> Result<Packet, TestError> {
     let len = case.frame.len();
-    Packet::new(
-        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+    Ok(Packet::new(
+        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+            .single()
+            .ok_or("the timestamp is not a single valid instant")?,
         case.frame.clone(),
         len,
         len,
         None,
         case.dlt_value,
-    )
+    ))
 }
 
 // ── the gate ──────────────────────────────────────────────────────────
@@ -981,7 +985,7 @@ fn packet(case: &Case) -> Packet {
 /// returned `Some` for every frame it fabricated a pair for, so an
 /// `is_some()` assertion would have passed on it.
 #[test]
-fn shard_peek_returns_the_exact_outer_pair_for_every_encapsulation() {
+fn shard_peek_returns_the_exact_outer_pair_for_every_encapsulation() -> Result<(), TestError> {
     let mut wrong = Vec::new();
     for case in cases() {
         let (want, why) = match case.want {
@@ -989,7 +993,7 @@ fn shard_peek_returns_the_exact_outer_pair_for_every_encapsulation() {
             Want::Ipv6 => (Some(v6_pair()), "the pair the frame carries"),
             Want::Nothing(reason) => (None, reason),
         };
-        let got = peek_host_pair(&packet(&case));
+        let got = peek_host_pair(&packet(&case)?);
         if got != want {
             wrong.push(format!(
                 "  {}: want {want:?}, got {got:?}\n      because: {why}",
@@ -1004,6 +1008,7 @@ fn shard_peek_returns_the_exact_outer_pair_for_every_encapsulation() {
         wrong.len(),
         wrong.join("\n")
     );
+    Ok(())
 }
 
 /// The differential: the peek and the full parse must agree about every
@@ -1021,13 +1026,13 @@ fn shard_peek_returns_the_exact_outer_pair_for_every_encapsulation() {
 ///   be discarded. Not a correctness loss, but it is the signature of a
 ///   fabricated read, so it is enumerated rather than tolerated.
 #[test]
-fn shard_peek_and_full_parse_agree_on_every_link_layer_encapsulation() {
+fn shard_peek_and_full_parse_agree_on_every_link_layer_encapsulation() -> Result<(), TestError> {
     let mut collapse = Vec::new();
     let mut torn = Vec::new();
     let mut fabricated = Vec::new();
 
     for case in cases() {
-        let pkt = packet(&case);
+        let pkt = packet(&case)?;
         let peek = peek_host_pair(&pkt);
         let parsed = parse_packet(&pkt);
         match (peek, parsed) {
@@ -1077,34 +1082,35 @@ fn shard_peek_and_full_parse_agree_on_every_link_layer_encapsulation() {
         fabricated.len(),
         fabricated.join("\n")
     );
+    Ok(())
 }
 
 // ── coverage gates: the enumeration must not be hand-maintained ───────
 
 /// The parser's source, read once per gate.
-fn parse_source() -> String {
+fn parse_source() -> Result<String, TestError> {
     let path = format!("{}/src/capture/parse.rs", env!("CARGO_MANIFEST_DIR"));
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?)
 }
 
 /// The body of a top-level `fn` — from its signature to the first `}` in
 /// column 0.
-fn body_of(src: &str, signature: &str) -> String {
+fn body_of(src: &str, signature: &str) -> Result<String, TestError> {
     let start = src
         .find(signature)
-        .unwrap_or_else(|| panic!("`{signature}` not found in src/capture/parse.rs"));
+        .ok_or_else(|| format!("`{signature}` not found in src/capture/parse.rs"))?;
     let rest = &src[start..];
     let end = rest
         .find("\n}\n")
-        .unwrap_or_else(|| panic!("no closing brace for `{signature}`"));
-    rest[..end].to_string()
+        .ok_or_else(|| format!("no closing brace for `{signature}`"))?;
+    Ok(rest[..end].to_string())
 }
 
 /// The `{ … }` block introduced by `header`, brace-balanced.
-fn block_after(body: &str, header: &str) -> String {
+fn block_after(body: &str, header: &str) -> Result<String, TestError> {
     let start = body
         .find(header)
-        .unwrap_or_else(|| panic!("`{header}` not found"));
+        .ok_or_else(|| format!("`{header}` not found"))?;
     let open = start + header.len() - 1;
     let bytes = body.as_bytes();
     let mut depth = 0usize;
@@ -1114,35 +1120,35 @@ fn block_after(body: &str, header: &str) -> String {
             b'}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return body[open..=i].to_string();
+                    return Ok(body[open..=i].to_string());
                 }
             }
             _ => {}
         }
     }
-    panic!("`{header}` is not brace-balanced");
+    Err(format!("`{header}` is not brace-balanced").into())
 }
 
 /// Every `const DLT_*: i32 = N;` the parser declares.
-fn declared_dlts(src: &str) -> Vec<(String, i32)> {
-    let re = regex::Regex::new(r"(?m)^const (DLT_[A-Z0-9_]+): i32 = (-?\d+);").expect("regex");
+fn declared_dlts(src: &str) -> Result<Vec<(String, i32)>, TestError> {
+    let re = regex::Regex::new(r"(?m)^const (DLT_[A-Z0-9_]+): i32 = (-?\d+);")?;
     let found: Vec<_> = re
         .captures_iter(src)
-        .map(|c| (c[1].to_string(), c[2].parse::<i32>().expect("DLT number")))
-        .collect();
+        .map(|c| Ok::<_, TestError>((c[1].to_string(), c[2].parse::<i32>()?)))
+        .collect::<Result<_, _>>()?;
     assert!(
         found.len() >= 11,
         "the DLT scan found only {} constants — the regex has drifted from the \
          source and this gate would pass vacuously",
         found.len()
     );
-    found
+    Ok(found)
 }
 
 /// Every variant of the `LinkType` enum.
-fn link_type_variants(src: &str) -> Vec<String> {
-    let block = block_after(src, "enum LinkType {");
-    let re = regex::Regex::new(r"(?m)^    ([A-Z][A-Za-z0-9]*),$").expect("regex");
+fn link_type_variants(src: &str) -> Result<Vec<String>, TestError> {
+    let block = block_after(src, "enum LinkType {")?;
+    let re = regex::Regex::new(r"(?m)^    ([A-Z][A-Za-z0-9]*),$")?;
     let found: Vec<_> = re.captures_iter(&block).map(|c| c[1].to_string()).collect();
     assert!(
         found.len() >= 11,
@@ -1150,7 +1156,7 @@ fn link_type_variants(src: &str) -> Vec<String> {
          drifted and this gate would pass vacuously",
         found.len()
     );
-    found
+    Ok(found)
 }
 
 /// Every link type the parser decodes is exercised, at the number the parser
@@ -1159,10 +1165,10 @@ fn link_type_variants(src: &str) -> Vec<String> {
 /// Two halves, because two things can rot: a `LinkType` variant that no case
 /// reaches, and a DLT constant whose number this file copied wrongly.
 #[test]
-fn every_link_type_the_parser_decodes_has_a_parity_case() {
-    let src = parse_source();
-    let declared = declared_dlts(&src);
-    let variants = link_type_variants(&src);
+fn every_link_type_the_parser_decodes_has_a_parity_case() -> Result<(), TestError> {
+    let src = parse_source()?;
+    let declared = declared_dlts(&src)?;
+    let variants = link_type_variants(&src)?;
 
     assert_eq!(
         variants.len(),
@@ -1206,6 +1212,7 @@ fn every_link_type_the_parser_decodes_has_a_parity_case() {
         unknown.is_empty(),
         "these cases name a DLT constant the parser does not declare: {unknown:?}"
     );
+    Ok(())
 }
 
 /// Every EtherType the Ethernet walk follows is exercised on EN10MB.
@@ -1214,9 +1221,9 @@ fn every_link_type_the_parser_decodes_has_a_parity_case() {
 /// variants, so the compiler cannot force a new one into this file. Reading
 /// the arms out of the source is what replaces that.
 #[test]
-fn every_ethertype_the_ethernet_walk_follows_has_a_parity_case() {
-    let src = parse_source();
-    let walked = ethertypes_in(&body_of(&src, "fn eth_payload("));
+fn every_ethertype_the_ethernet_walk_follows_has_a_parity_case() -> Result<(), TestError> {
+    let src = parse_source()?;
+    let walked = ethertypes_in(&body_of(&src, "fn eth_payload(")?)?;
     let covered = covered_ethertypes(|c| c.dlt == "DLT_EN10MB");
     let missing: Vec<&String> = walked.difference(&covered).collect();
     assert!(
@@ -1224,6 +1231,7 @@ fn every_ethertype_the_ethernet_walk_follows_has_a_parity_case() {
         "`eth_payload` follows these EtherTypes and no EN10MB parity case \
          exercises them: {missing:?}"
     );
+    Ok(())
 }
 
 /// Every EtherType the cooked-capture walk follows is exercised on BOTH SLL
@@ -1232,9 +1240,9 @@ fn every_ethertype_the_ethernet_walk_follows_has_a_parity_case() {
 /// Both, because SLL2 is not a longer SLL — its protocol field moved to offset
 /// 0 — so a case on one proves nothing about the other.
 #[test]
-fn every_ethertype_the_cooked_walk_follows_has_a_parity_case() {
-    let src = parse_source();
-    let walked = ethertypes_in(&body_of(&src, "fn sll_payload("));
+fn every_ethertype_the_cooked_walk_follows_has_a_parity_case() -> Result<(), TestError> {
+    let src = parse_source()?;
+    let walked = ethertypes_in(&body_of(&src, "fn sll_payload(")?)?;
     for dlt in ["DLT_LINUX_SLL", "DLT_LINUX_SLL2"] {
         let covered = covered_ethertypes(|c| c.dlt == dlt);
         let missing: Vec<&String> = walked.difference(&covered).collect();
@@ -1244,11 +1252,12 @@ fn every_ethertype_the_cooked_walk_follows_has_a_parity_case() {
              exercises them: {missing:?}"
         );
     }
+    Ok(())
 }
 
 /// Every `ETHERTYPE_*` constant a function body mentions.
-fn ethertypes_in(body: &str) -> BTreeSet<String> {
-    let re = regex::Regex::new(r"ETHERTYPE_[A-Z0-9_]+").expect("regex");
+fn ethertypes_in(body: &str) -> Result<BTreeSet<String>, TestError> {
+    let re = regex::Regex::new(r"ETHERTYPE_[A-Z0-9_]+")?;
     let found: BTreeSet<String> = re.find_iter(body).map(|m| m.as_str().to_string()).collect();
     assert!(
         found.len() >= 6,
@@ -1256,7 +1265,7 @@ fn ethertypes_in(body: &str) -> BTreeSet<String> {
          and this gate would pass vacuously",
         found.len()
     );
-    found
+    Ok(found)
 }
 
 /// The EtherTypes the case table exercises for the cases `pick` selects.
@@ -1303,14 +1312,14 @@ fn top_level_of(block: &str) -> String {
 /// detected: the three confirmed instances were all found by a person looking
 /// at one case, and the fourth encapsulation would have diverged the same way.
 #[test]
-fn the_shard_peek_dispatch_is_exhaustive_over_link_type() {
-    let src = parse_source();
-    let wildcard = regex::Regex::new(r"(^|[^A-Za-z0-9_])_([^A-Za-z0-9_]|$)").expect("regex");
+fn the_shard_peek_dispatch_is_exhaustive_over_link_type() -> Result<(), TestError> {
+    let src = parse_source()?;
+    let wildcard = regex::Regex::new(r"(^|[^A-Za-z0-9_])_([^A-Za-z0-9_]|$)")?;
     // The peek's dispatch lives in `outer_ip_offset`, which the decrypted
     // export shares (one walk, not two), so that is where it is checked; the
     // peek must still go through it.
     assert!(
-        body_of(&src, "fn peek_host_pair(").contains("outer_ip_offset(packet)"),
+        body_of(&src, "fn peek_host_pair(")?.contains("outer_ip_offset(packet)"),
         "`peek_host_pair` no longer finds its IP header through `outer_ip_offset`, \
          so the dispatch checked below is not the peek's"
     );
@@ -1319,13 +1328,13 @@ fn the_shard_peek_dispatch_is_exhaustive_over_link_type() {
         // it; `LinkType::from_dlt` is what turns an unrecognized DLT number
         // away BEFORE the dispatch, which is what lets the dispatch be
         // exhaustive at all.
-        let body = body_of(&src, func);
+        let body = body_of(&src, func)?;
         assert!(
             body.contains("LinkType::from_dlt("),
             "`{func}` no longer resolves the DLT number to the closed LinkType \
              set, so its dispatch cannot be exhaustive"
         );
-        let arms = top_level_of(&block_after(&body, "match link {"));
+        let arms = top_level_of(&block_after(&body, "match link {")?);
         assert!(
             arms.contains("LinkType::"),
             "`{func}` no longer dispatches on the LinkType enum:\n{arms}"
@@ -1338,4 +1347,5 @@ fn the_shard_peek_dispatch_is_exhaustive_over_link_type() {
              came to know different sets of link types.\n{arms}"
         );
     }
+    Ok(())
 }

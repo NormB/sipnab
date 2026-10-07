@@ -55,6 +55,8 @@ use sipnab::security::ScannerDetector;
 #[path = "support/corpus.rs"]
 mod corpus_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// A verdict TFPS reached about one source, at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label {
@@ -267,8 +269,8 @@ mod tests {
     );
 
     #[test]
-    fn the_agreed_format_is_accepted() {
-        let labels = parse_labels(GOLDEN).expect("the golden fixture must parse");
+    fn the_agreed_format_is_accepted() -> Result<(), TestError> {
+        let labels = parse_labels(GOLDEN)?;
         assert_eq!(labels.len(), 3, "every line is a label");
         let verdicts: BTreeSet<Verdict> = labels.iter().map(|l| l.verdict).collect();
         assert_eq!(
@@ -278,31 +280,34 @@ mod tests {
              the exempt or would-block classes, so the corpus it exports today \
              carries no hard negatives"
         );
+        Ok(())
     }
 
     /// The reader must still understand the classes a released TFPS cannot
     /// write, or a later one that records them needs this file rewritten.
     #[test]
-    fn every_disposition_class_is_understood() {
-        let labels = parse_labels(ALL_CLASSES).expect("the synthetic set must parse");
+    fn every_disposition_class_is_understood() -> Result<(), TestError> {
+        let labels = parse_labels(ALL_CLASSES)?;
         assert_eq!(labels.len(), 5);
         let verdicts: BTreeSet<Verdict> = labels.iter().map(|l| l.verdict).collect();
         assert_eq!(
             verdicts,
             BTreeSet::from([Verdict::Blocked, Verdict::WouldBlock, Verdict::Exempt])
         );
+        Ok(())
     }
 
     /// A line this reader cannot understand must be an error, never a silently
     /// dropped label. A corpus quietly missing rows scores a detector against
     /// less evidence than it claims.
     #[test]
-    fn an_unreadable_line_is_an_error_not_a_skipped_label() {
+    fn an_unreadable_line_is_an_error_not_a_skipped_label() -> Result<(), TestError> {
         let bad = format!("{GOLDEN}\nnot json at all\n");
         assert!(
             parse_labels(&bad).is_err(),
             "an unparseable line must fail loudly; dropping it would shrink the corpus in silence"
         );
+        Ok(())
     }
 
     /// An unknown disposition is the shape a future TFPS release takes. Guessing
@@ -310,17 +315,18 @@ mod tests {
     /// well formed, so the refusal is about the disposition value and not a
     /// missing field.
     #[test]
-    fn an_unknown_disposition_is_refused_rather_than_guessed() {
+    fn an_unknown_disposition_is_refused_rather_than_guessed() -> Result<(), TestError> {
         let line = r#"{"ip":"192.0.2.1","reason":"x","detail":"d","first_seen":1,"expires":null,"unbanned_at":null,"enforced":false,"disposition":"quarantined"}"#;
         assert!(
             parse_labels(line).is_err(),
             "an unknown disposition must not be assumed benign"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_condemnation_is_hostile_and_an_exemption_is_benign() {
-        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
+    fn a_condemnation_is_hostile_and_an_exemption_is_benign() -> Result<(), TestError> {
+        let t = ground_truth(&parse_labels(ALL_CLASSES)?);
         assert_eq!(t.get("198.51.100.10"), Some(&Ground::Hostile), "blocked");
         assert_eq!(
             t.get("198.51.100.12"),
@@ -337,40 +343,42 @@ mod tests {
             Some(&Ground::Benign),
             "exempt as a registered peer"
         );
+        Ok(())
     }
 
     /// The gold negative outranks the condemnation it followed. That is the
     /// whole reason the operator unban is recorded.
     #[test]
-    fn an_operator_lift_turns_a_condemnation_into_a_benign_source() {
-        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
+    fn an_operator_lift_turns_a_condemnation_into_a_benign_source() -> Result<(), TestError> {
+        let t = ground_truth(&parse_labels(ALL_CLASSES)?);
         assert_eq!(
             t.get("198.51.100.11"),
             Some(&Ground::Benign),
             "a human lifted this block; the machine was wrong about it"
         );
+        Ok(())
     }
 
     /// Every hostile and benign source of the fixture is in the corpus.
-    fn everyone_present() -> BTreeSet<String> {
-        ground_truth(&parse_labels(ALL_CLASSES).unwrap())
+    fn everyone_present() -> Result<BTreeSet<String>, TestError> {
+        Ok(ground_truth(&parse_labels(ALL_CLASSES)?)
             .keys()
             .cloned()
-            .collect()
+            .collect())
     }
 
     /// The score NAMES each source under its outcome. A count alone was how
     /// "recalled 1 of 15" got read as the wrong address: the harness said one
     /// source was caught and a human guessed which, and guessed backwards.
     #[test]
-    fn the_score_separates_recall_from_false_positives() {
-        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
+    fn the_score_separates_recall_from_false_positives() -> Result<(), TestError> {
+        let t = ground_truth(&parse_labels(ALL_CLASSES)?);
         let flagged = BTreeSet::from([
             "198.51.100.10".to_string(), // hostile, caught
             "192.0.2.5".to_string(),     // benign, flagged anyway
             "203.0.113.99".to_string(),  // nothing is known about it
         ]);
-        let s = score(&t, &flagged, &everyone_present());
+        let s = score(&t, &flagged, &everyone_present()?);
         assert_eq!(s.hostile, 2);
         assert_eq!(s.benign, 3);
         assert_eq!(s.recalled, BTreeSet::from(["198.51.100.10".to_string()]));
@@ -385,6 +393,7 @@ mod tests {
             BTreeSet::from(["203.0.113.99".to_string()]),
             "a flagged source the labels say nothing about is neither a hit nor a miss"
         );
+        Ok(())
     }
 
     /// A hostile source that never appears in the pcaps is not a miss.
@@ -394,8 +403,8 @@ mod tests {
     /// and make every corpus narrower than the ban log read as a detector
     /// failure.
     #[test]
-    fn a_hostile_source_absent_from_the_corpus_is_not_a_miss() {
-        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
+    fn a_hostile_source_absent_from_the_corpus_is_not_a_miss() -> Result<(), TestError> {
+        let t = ground_truth(&parse_labels(ALL_CLASSES)?);
         // Only one of the two hostile sources ever sent a packet.
         let present = BTreeSet::from(["198.51.100.10".to_string()]);
         let s = score(&t, &BTreeSet::new(), &present);
@@ -412,15 +421,16 @@ mod tests {
             s.hostile, 2,
             "absence from the corpus does not change the labels"
         );
+        Ok(())
     }
 
     /// NEGATIVE CONTROL. A detector that flags nothing must score zero recall
     /// and zero false positives — not an empty score that reads as perfect —
     /// and every hostile source in the corpus is then a named miss.
     #[test]
-    fn flagging_nothing_scores_no_recall_rather_than_no_error() {
-        let t = ground_truth(&parse_labels(ALL_CLASSES).unwrap());
-        let s = score(&t, &BTreeSet::new(), &everyone_present());
+    fn flagging_nothing_scores_no_recall_rather_than_no_error() -> Result<(), TestError> {
+        let t = ground_truth(&parse_labels(ALL_CLASSES)?);
+        let s = score(&t, &BTreeSet::new(), &everyone_present()?);
         assert!(s.recalled.is_empty());
         assert!(s.false_positives.is_empty());
         assert!(s.flagged_unlabeled.is_empty());
@@ -433,6 +443,7 @@ mod tests {
             s.hostile > 0,
             "the ground truth must not be empty, or this proves nothing"
         );
+        Ok(())
     }
 
     /// The review's §6: if the labels turn out to be dominated by a reputation
@@ -440,8 +451,8 @@ mod tests {
     /// signatures. Reporting the breakdown makes that visible without anyone
     /// having to remember to look.
     #[test]
-    fn the_rule_breakdown_is_reported() {
-        let b = rule_breakdown(&parse_labels(ALL_CLASSES).unwrap());
+    fn the_rule_breakdown_is_reported() -> Result<(), TestError> {
+        let b = rule_breakdown(&parse_labels(ALL_CLASSES)?);
         assert_eq!(b.get("scanner"), Some(&1));
         assert_eq!(b.get("injection"), Some(&1));
         assert_eq!(b.get("reg-scan"), Some(&1));
@@ -450,6 +461,7 @@ mod tests {
             5,
             "every label is attributed to a rule"
         );
+        Ok(())
     }
 }
 
@@ -470,12 +482,12 @@ fn labels_path() -> Option<PathBuf> {
 }
 
 #[test]
-fn scanner_detect_is_scored_against_the_ban_log() {
+fn scanner_detect_is_scored_against_the_ban_log() -> Result<(), TestError> {
     let (Some(labels_file), Some(root)) = (labels_path(), corpus_support::root()) else {
-        return;
+        return Ok(());
     };
-    let raw = std::fs::read_to_string(&labels_file).expect("TFPS_LABELS must be readable");
-    let labels = parse_labels(&raw).expect("the label export must parse");
+    let raw = std::fs::read_to_string(&labels_file)?;
+    let labels = parse_labels(&raw)?;
     assert!(
         !labels.is_empty(),
         "TFPS_LABELS holds no labels — this test would pass without proving anything"
@@ -563,6 +575,7 @@ fn scanner_detect_is_scored_against_the_ban_log() {
             labels.len()
         );
     }
+    Ok(())
 }
 
 // ---- TFPS is optional, and that is a tested property ----
@@ -582,7 +595,7 @@ fn scanner_detect_is_scored_against_the_ban_log() {
 /// `Option<String>` for the same reason; R1 does not become the first
 /// exception.
 #[test]
-fn sipnab_does_not_depend_on_tfps() {
+fn sipnab_does_not_depend_on_tfps() -> Result<(), TestError> {
     let manifest = include_str!("../Cargo.toml");
     for line in manifest.lines() {
         let l = line.trim();
@@ -596,12 +609,13 @@ fn sipnab_does_not_depend_on_tfps() {
              JSON precisely so a machine without TFPS installed is unaffected."
         );
     }
+    Ok(())
 }
 
 /// With nothing configured, every corpus-backed test here must skip rather than
 /// fail. A machine that has none of this software runs a green suite.
 #[test]
-fn nothing_configured_is_a_skip_and_not_a_failure() {
+fn nothing_configured_is_a_skip_and_not_a_failure() -> Result<(), TestError> {
     // Deliberately reads the real environment: on a developer machine with the
     // variable unset this is the ordinary path, and in CI it always is.
     if std::env::var("TFPS_LABELS").is_err() {
@@ -610,6 +624,7 @@ fn nothing_configured_is_a_skip_and_not_a_failure() {
             "with TFPS_LABELS unset there must be no label source, and the suite skips"
         );
     }
+    Ok(())
 }
 
 // ---- Owed: the contract copy on this side is enforced on this side ----
@@ -623,7 +638,7 @@ fn nothing_configured_is_a_skip_and_not_a_failure() {
 /// Every field on every row. Absence is never how a value is expressed, because
 /// a reader in another project cannot ask what a missing key means.
 #[test]
-fn the_contract_fixture_carries_every_agreed_field() {
+fn the_contract_fixture_carries_every_agreed_field() -> Result<(), TestError> {
     const FIELDS: &[&str] = &[
         "ip",
         "reason",
@@ -637,27 +652,28 @@ fn the_contract_fixture_carries_every_agreed_field() {
     let rows: Vec<serde_json::Value> = GOLDEN
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).expect("each golden line is JSON"))
-        .collect();
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
     assert!(!rows.is_empty(), "the fixture is empty");
     for (i, r) in rows.iter().enumerate() {
-        let o = r.as_object().expect("each line is an object");
+        let o = r.as_object().ok_or("each line is an object")?;
         for f in FIELDS {
             assert!(o.contains_key(*f), "row {i} has no {f:?}");
         }
         assert_eq!(o.len(), FIELDS.len(), "row {i} carries an unagreed key");
     }
+    Ok(())
 }
 
 /// `expires` means three different things and the fixture must exercise all
 /// three, or a reader could implement two of them and still pass here.
 #[test]
-fn the_contract_fixture_exercises_every_meaning_of_expires() {
+fn the_contract_fixture_exercises_every_meaning_of_expires() -> Result<(), TestError> {
     let rows: Vec<serde_json::Value> = GOLDEN
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
     assert!(rows.iter().any(|r| r["expires"] == 0), "no 'never' case");
     assert!(
         rows.iter()
@@ -668,4 +684,5 @@ fn the_contract_fixture_exercises_every_meaning_of_expires() {
         rows.iter().any(|r| r["expires"].is_null()),
         "no 'nothing was blocked' case"
     );
+    Ok(())
 }

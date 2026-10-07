@@ -21,6 +21,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Flags that legitimately have no reader, each with the reason.
 ///
 /// Adding an entry is a deliberate act. If a flag lands here because it is
@@ -34,9 +37,9 @@ const ACCEPTED_WITHOUT_A_READER: &[(&str, &str)] = &[(
 )];
 
 /// Read a repo file relative to the manifest directory.
-fn repo_file(rel: &str) -> String {
+fn repo_file(rel: &str) -> Result<String, TestError> {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `pub <field>:` declared on the `Cli` struct.
@@ -63,11 +66,11 @@ fn cli_fields(src: &str) -> Vec<String> {
 }
 
 #[test]
-fn every_cli_flag_reaches_something_that_reads_it() {
+fn every_cli_flag_reaches_something_that_reads_it() -> Result<(), TestError> {
     /// Fewest Cli fields the parser must still find.
     const MIN_CLI_FIELDS: usize = 140;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let cli_src = repo_file("src/cli.rs");
+    let cli_src = repo_file("src/cli.rs")?;
     let fields: BTreeSet<String> = cli_fields(&cli_src).into_iter().collect();
 
     // Pinned. A parser that silently stops matching would make this gate pass
@@ -84,14 +87,14 @@ fn every_cli_flag_reaches_something_that_reads_it() {
     let mut sources = String::new();
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("read_dir") {
-            let p = entry.expect("entry").path();
+        for entry in std::fs::read_dir(&dir)? {
+            let p = entry?.path();
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|e| e == "rs")
                 && p.file_name().is_some_and(|n| n != "cli.rs")
             {
-                sources.push_str(&std::fs::read_to_string(&p).expect("read"));
+                sources.push_str(&std::fs::read_to_string(&p)?);
                 sources.push('\n');
             }
         }
@@ -130,11 +133,12 @@ fn every_cli_flag_reaches_something_that_reads_it() {
          ACCEPTED_WITHOUT_A_READER with a reason — and if the reason is \
          'unimplemented', say so in its help text and its documentation too."
     );
+    Ok(())
 }
 
 #[test]
-fn accepted_flags_still_exist_and_carry_a_reason() {
-    let cli_src = repo_file("src/cli.rs");
+fn accepted_flags_still_exist_and_carry_a_reason() -> Result<(), TestError> {
+    let cli_src = repo_file("src/cli.rs")?;
     let fields: BTreeSet<String> = cli_fields(&cli_src).into_iter().collect();
 
     for (flag, reason) in ACCEPTED_WITHOUT_A_READER {
@@ -148,4 +152,5 @@ fn accepted_flags_still_exist_and_carry_a_reason() {
             "{flag}'s exemption reason is too short to be a reason: {reason:?}"
         );
     }
+    Ok(())
 }

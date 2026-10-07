@@ -15,13 +15,18 @@ mod server;
 
 use server::ApiServer;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// One non-comment sample line: `name{labels}? value` (value may be -0, +Inf
 /// handled within buckets). Validates the exposition grammar loosely.
 ///
 /// # Returns
 /// The compiled regex for a Prometheus sample line.
-fn sample_re() -> Regex {
-    Regex::new(r#"^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^}]*\})?\s+-?[0-9eE.+-]+(\s+[0-9]+)?$"#).unwrap()
+fn sample_re() -> Result<Regex, TestError> {
+    Ok(Regex::new(
+        r#"^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^}]*\})?\s+-?[0-9eE.+-]+(\s+[0-9]+)?$"#,
+    )?)
 }
 
 /// Map of `family -> type` from the `# TYPE` lines.
@@ -44,9 +49,9 @@ fn type_lines(body: &str) -> std::collections::HashMap<String, String> {
 /// The `/metrics` exposition declares every expected metric family with
 /// the correct `# TYPE` (counter/gauge/histogram).
 #[test]
-fn metrics_expose_expected_families_with_types() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
-    let resp = srv.get_or_panic("/metrics");
+fn metrics_expose_expected_families_with_types() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[])?;
+    let resp = srv.get("/metrics")?;
     assert_eq!(resp.status, 200);
     let body = resp.body;
     let types = type_lines(&body);
@@ -95,15 +100,16 @@ fn metrics_expose_expected_families_with_types() {
             "metric family `{name}` should be declared as `{ty}`"
         );
     }
+    Ok(())
 }
 
 /// Every non-comment line matches the exposition grammar, and the expected
 /// label sets (dialog state, method, stream status) appear for the RTP fixture.
 #[test]
-fn metrics_sample_lines_parse_and_labels_are_correct() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
-    let body = srv.get_or_panic("/metrics").body;
-    let re = sample_re();
+fn metrics_sample_lines_parse_and_labels_are_correct() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[])?;
+    let body = srv.get("/metrics")?.body;
+    let re = sample_re()?;
 
     for line in body.lines() {
         if line.is_empty() || line.starts_with('#') {
@@ -117,14 +123,15 @@ fn metrics_sample_lines_parse_and_labels_are_correct() {
     assert!(body.contains(r#"sipnab_messages_total{method="INVITE"}"#));
     assert!(body.contains(r#"sipnab_rtp_streams_total{status="established"}"#));
     assert!(body.contains(r#"sipnab_rtp_streams_total{status="orphaned"}"#));
+    Ok(())
 }
 
 /// Each of the four histogram families carries `_bucket` lines (including
 /// `+Inf`), `_count`, and `_sum`.
 #[test]
-fn histograms_have_bucket_count_and_sum() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
-    let body = srv.get_or_panic("/metrics").body;
+fn histograms_have_bucket_count_and_sum() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[])?;
+    let body = srv.get("/metrics")?.body;
 
     for h in [
         "sipnab_mos",
@@ -143,4 +150,5 @@ fn histograms_have_bucket_count_and_sum() {
         assert!(body.contains(&format!("{h}_count")), "{h} missing _count");
         assert!(body.contains(&format!("{h}_sum")), "{h} missing _sum");
     }
+    Ok(())
 }

@@ -31,6 +31,8 @@ use sipnab::rtp::stream::{RtpStream, StreamKey, clock_rate_from_pt, codec_from_p
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::sdp::{SdpConnection, SdpDirection, SdpMedia, SdpSession};
 
+type TestError = Box<dyn std::error::Error>;
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Absolute path to the `tests/pcap-samples` directory of real capture files.
@@ -41,8 +43,8 @@ fn pcap_samples_dir() -> PathBuf {
 }
 
 /// Deterministic timestamp `secs` seconds after the fixed base 1_700_000_000.
-fn ts(secs: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+fn ts(secs: i64) -> Result<DateTime<Utc>, TestError> {
+    Ok(DateTime::from_timestamp(1_700_000_000 + secs, 0).ok_or("valid timestamp")?)
 }
 
 /// The UDP 4-tuple a test packet travels on.
@@ -68,7 +70,7 @@ struct RtpFields {
 /// # Arguments
 /// * `flow` — the UDP 4-tuple.
 /// * `rtp` — RTP header fields; payload is 160 bytes (20ms of G.711).
-fn make_rtp_parsed(flow: Flow, rtp: RtpFields) -> ParsedPacket {
+fn make_rtp_parsed(flow: Flow, rtp: RtpFields) -> Result<ParsedPacket, TestError> {
     let Flow {
         src_ip,
         dst_ip,
@@ -92,10 +94,10 @@ fn make_rtp_parsed(flow: Flow, rtp: RtpFields) -> ParsedPacket {
     // 160 bytes of audio payload (20ms of G.711)
     payload.extend_from_slice(&[0x7F; 160]);
 
-    ParsedPacket {
+    Ok(ParsedPacket {
         frame_bytes: None,
         frame: None,
-        timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+        timestamp: DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?,
         src_addr: IpAddr::V4(Ipv4Addr::from(src_ip)),
         dst_addr: IpAddr::V4(Ipv4Addr::from(dst_ip)),
         src_port,
@@ -111,7 +113,7 @@ fn make_rtp_parsed(flow: Flow, rtp: RtpFields) -> ParsedPacket {
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
         hep: None,
-    }
+    })
 }
 
 /// Builds an `RtpHeader` struct directly (V=2, no padding/extension/marker)
@@ -179,8 +181,8 @@ fn make_sdp(addr: &str, port: u16) -> SdpSession {
 fn pcap_packet_to_packet(pkt: &sipnab::capture::pcap_reader::PcapPacket, link_type: u32) -> Packet {
     let ts_secs = pkt.timestamp_secs as i64;
     let ts_usecs = pkt.timestamp_usecs;
-    let timestamp = DateTime::from_timestamp(ts_secs, ts_usecs * 1000)
-        .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap());
+    let timestamp =
+        DateTime::from_timestamp(ts_secs, ts_usecs * 1000).unwrap_or(DateTime::UNIX_EPOCH);
     Packet::new(
         timestamp,
         pkt.data.clone(),
@@ -201,13 +203,13 @@ fn pcap_packet_to_packet(pkt: &sipnab::capture::pcap_reader::PcapPacket, link_ty
 
 /// Real sip-rtp-g711.pcap packets yield >50 detected RTP packets via `is_rtp_packet` + `parse_rtp_header` — the guard that would have caught the port-filter-drops-all-RTP bug.
 #[test]
-fn rtp_packets_detected_in_pcap() {
+fn rtp_packets_detected_in_pcap() -> Result<(), TestError> {
     let path = pcap_samples_dir().join("sip-rtp-g711.pcap");
     let data =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+        std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
     let reader = PcapReader::new(&data)
-        .unwrap_or_else(|e| panic!("Failed to parse pcap {}: {e}", path.display()));
+        .map_err(|e| format!("Failed to parse pcap {}: {e}", path.display()))?;
     let link_type = reader.link_type;
 
     let mut rtp_count = 0u64;
@@ -247,6 +249,7 @@ fn rtp_packets_detected_in_pcap() {
         "Expected >50 RTP packets in sip-rtp-g711.pcap, got {rtp_count}. \
          This suggests partial RTP detection failure."
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -255,7 +258,7 @@ fn rtp_packets_detected_in_pcap() {
 
 /// 50 synthetic PCMU packets create one stream with correct packet count, PT/codec/clock rate, zero loss, and finite jitter.
 #[test]
-fn stream_store_tracks_streams_from_parsed_rtp() {
+fn stream_store_tracks_streams_from_parsed_rtp() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     let ssrc = 0xAABBCCDD;
@@ -274,9 +277,10 @@ fn stream_store_tracks_streams_from_parsed_rtp() {
                 rtp_ts: i as u32 * 160,
                 pt: 0, /* PCMU */
             },
-        );
-        let rtp = parse_rtp_header(&parsed.payload).expect("valid synthetic RTP");
-        store.process_rtp(&parsed, &rtp, ts(i as i64));
+        )?;
+        let rtp =
+            parse_rtp_header(&parsed.payload).map_err(|e| format!("valid synthetic RTP: {e}"))?;
+        store.process_rtp(&parsed, &rtp, ts(i as i64)?);
     }
 
     assert_eq!(store.len(), 1, "Should create exactly one stream");
@@ -286,7 +290,7 @@ fn stream_store_tracks_streams_from_parsed_rtp() {
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
-    let stream = store.get(&key).expect("stream should exist");
+    let stream = store.get(&key).ok_or("stream should exist")?;
 
     assert_eq!(stream.packet_count, 50, "Should count all 50 packets");
     assert_eq!(stream.payload_type, 0, "Should track PT=0 (PCMU)");
@@ -301,11 +305,12 @@ fn stream_store_tracks_streams_from_parsed_rtp() {
         stream.jitter.is_finite(),
         "Jitter should be a finite number"
     );
+    Ok(())
 }
 
 /// Two SSRCs on opposite directions create two separate streams.
 #[test]
-fn stream_store_multiple_ssrcs_create_separate_streams() {
+fn stream_store_multiple_ssrcs_create_separate_streams() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     // Two different SSRCs on different ports (bidirectional call)
@@ -323,7 +328,7 @@ fn stream_store_multiple_ssrcs_create_separate_streams() {
                 rtp_ts: i as u32 * 160,
                 pt: 0,
             },
-        );
+        )?;
         let rev = make_rtp_parsed(
             Flow {
                 src_ip: [10, 0, 0, 2],
@@ -337,11 +342,11 @@ fn stream_store_multiple_ssrcs_create_separate_streams() {
                 rtp_ts: i as u32 * 160,
                 pt: 0,
             },
-        );
-        let rtp_fwd = parse_rtp_header(&fwd.payload).unwrap();
-        let rtp_rev = parse_rtp_header(&rev.payload).unwrap();
-        store.process_rtp(&fwd, &rtp_fwd, ts(i as i64));
-        store.process_rtp(&rev, &rtp_rev, ts(i as i64));
+        )?;
+        let rtp_fwd = parse_rtp_header(&fwd.payload)?;
+        let rtp_rev = parse_rtp_header(&rev.payload)?;
+        store.process_rtp(&fwd, &rtp_fwd, ts(i as i64)?);
+        store.process_rtp(&rev, &rtp_rev, ts(i as i64)?);
     }
 
     assert_eq!(
@@ -349,6 +354,7 @@ fn stream_store_multiple_ssrcs_create_separate_streams() {
         2,
         "Two SSRCs should create two separate streams"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -357,7 +363,7 @@ fn stream_store_multiple_ssrcs_create_separate_streams() {
 
 /// Zero jitter and zero loss on G.711 give a MOS above 4.0 (never above 4.5).
 #[test]
-fn mos_good_quality_is_high() {
+fn mos_good_quality_is_high() -> Result<(), TestError> {
     // Perfect conditions: minimal jitter, zero loss, G.711
     let mos = estimate_mos(0.0, 0.0, Some("PCMU"));
     assert!(
@@ -365,11 +371,12 @@ fn mos_good_quality_is_high() {
         "Good quality (0 jitter, 0 loss, G.711) should give MOS > 4.0, got {mos}"
     );
     assert!(mos <= 4.5, "MOS should never exceed 4.5, got {mos}");
+    Ok(())
 }
 
 /// 100ms jitter with 10% loss gives a MOS below 2.5 (never below 1.0).
 #[test]
-fn mos_bad_quality_is_low() {
+fn mos_bad_quality_is_low() -> Result<(), TestError> {
     // Terrible conditions: 100ms jitter, 10% loss
     let mos = estimate_mos(100.0, 10.0, Some("PCMU"));
     assert!(
@@ -377,11 +384,12 @@ fn mos_bad_quality_is_low() {
         "Bad quality (100ms jitter, 10% loss) should give MOS < 2.5, got {mos}"
     );
     assert!(mos >= 1.0, "MOS should never go below 1.0, got {mos}");
+    Ok(())
 }
 
 /// Sweeping jitter/loss/codec combinations keeps MOS finite and within 0.95-4.5 (0.95 floor allows the known E-model polynomial dip).
 #[test]
-fn mos_always_in_valid_range() {
+fn mos_always_in_valid_range() -> Result<(), TestError> {
     // Sweep across conditions and verify MOS is in a sane range.
     //
     // The simplified E-model polynomial (r_to_mos) can produce values slightly
@@ -404,11 +412,12 @@ fn mos_always_in_valid_range() {
             }
         }
     }
+    Ok(())
 }
 
 /// Low jitter and no loss produce MOS above 4.0 for PCMU, PCMA, and opus.
 #[test]
-fn mos_good_conditions_above_four() {
+fn mos_good_conditions_above_four() -> Result<(), TestError> {
     // Under good conditions (low jitter, no loss), MOS should be solidly above 4.0
     for codec in [Some("PCMU"), Some("PCMA"), Some("opus")] {
         let mos = estimate_mos(5.0, 0.0, codec);
@@ -417,11 +426,12 @@ fn mos_good_conditions_above_four() {
             "Good conditions ({codec:?}) should produce MOS > 4.0, got {mos}"
         );
     }
+    Ok(())
 }
 
 /// MOS is monotonically non-increasing as loss rises from 0% to 50%.
 #[test]
-fn mos_degrades_monotonically_with_loss() {
+fn mos_degrades_monotonically_with_loss() -> Result<(), TestError> {
     // As loss increases, MOS should decrease (or stay same)
     let mut prev_mos = 5.0;
     for loss in [0.0, 1.0, 5.0, 10.0, 20.0, 50.0] {
@@ -432,6 +442,7 @@ fn mos_degrades_monotonically_with_loss() {
         );
         prev_mos = mos;
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -440,14 +451,14 @@ fn mos_degrades_monotonically_with_loss() {
 
 /// A PT=0 stream adopts the 8kHz PCMU clock rate and computes positive finite jitter from jittery arrival times.
 #[test]
-fn jitter_uses_pcmu_clock_rate() {
+fn jitter_uses_pcmu_clock_rate() -> Result<(), TestError> {
     let key = StreamKey {
         ssrc: 0xAAAA,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
     let hdr = make_rtp_header(0xAAAA, 100, 0, 0); // PT=0 PCMU, 8kHz
-    let mut stream = RtpStream::new(key, &hdr, ts(0));
+    let mut stream = RtpStream::new(key, &hdr, ts(0)?);
     assert_eq!(stream.clock_rate, 8000);
 
     // Feed packets with known timing: 20ms apart, 160 samples per packet
@@ -460,7 +471,7 @@ fn jitter_uses_pcmu_clock_rate() {
         let wall_secs = wall_ms / 1000;
         let wall_nanos = ((wall_ms % 1000) * 1_000_000) as u32;
         let arrival = DateTime::from_timestamp(1_700_000_000 + wall_secs, wall_nanos)
-            .expect("valid timestamp");
+            .ok_or("valid timestamp")?;
         stream.update(&h, arrival, 160);
     }
 
@@ -474,18 +485,19 @@ fn jitter_uses_pcmu_clock_rate() {
         "With arrival jitter, computed jitter should be > 0, got {}",
         stream.jitter
     );
+    Ok(())
 }
 
 /// A PT=34 stream adopts the 90kHz H263 clock rate and computes positive finite jitter from varying frame arrivals.
 #[test]
-fn jitter_uses_h263_clock_rate() {
+fn jitter_uses_h263_clock_rate() -> Result<(), TestError> {
     let key = StreamKey {
         ssrc: 0xBBBB,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
     let hdr = make_rtp_header(0xBBBB, 100, 0, 34); // PT=34 H263, 90kHz
-    let mut stream = RtpStream::new(key, &hdr, ts(0));
+    let mut stream = RtpStream::new(key, &hdr, ts(0)?);
     assert_eq!(stream.clock_rate, 90000);
     assert_eq!(
         clock_rate_from_pt(34),
@@ -501,7 +513,7 @@ fn jitter_uses_h263_clock_rate() {
         let wall_secs = wall_ms / 1000;
         let wall_nanos = ((wall_ms % 1000) * 1_000_000) as u32;
         let arrival = DateTime::from_timestamp(1_700_000_000 + wall_secs, wall_nanos)
-            .expect("valid timestamp");
+            .ok_or("valid timestamp")?;
         let h = make_rtp_header(0xBBBB, 100 + i, rtp_ts, 34);
         stream.update(&h, arrival, 1000);
     }
@@ -513,6 +525,7 @@ fn jitter_uses_h263_clock_rate() {
         "H263 stream with arrival jitter should have non-zero jitter, got {}",
         stream.jitter
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -521,7 +534,7 @@ fn jitter_uses_h263_clock_rate() {
 
 /// A seq gap 100→105 records exactly 4 lost packets against 3 received.
 #[test]
-fn packet_loss_detected_from_sequence_gaps() {
+fn packet_loss_detected_from_sequence_gaps() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     let ssrc = 0xDEAD;
@@ -539,9 +552,9 @@ fn packet_loss_detected_from_sequence_gaps() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let r1 = parse_rtp_header(&p1.payload).unwrap();
-    store.process_rtp(&p1, &r1, ts(0));
+    )?;
+    let r1 = parse_rtp_header(&p1.payload)?;
+    store.process_rtp(&p1, &r1, ts(0)?);
 
     // Packet 2: seq=105 (gap of 4: 101, 102, 103, 104 missing)
     let p2 = make_rtp_parsed(
@@ -557,9 +570,9 @@ fn packet_loss_detected_from_sequence_gaps() {
             rtp_ts: 800,
             pt: 0,
         },
-    );
-    let r2 = parse_rtp_header(&p2.payload).unwrap();
-    store.process_rtp(&p2, &r2, ts(1));
+    )?;
+    let r2 = parse_rtp_header(&p2.payload)?;
+    store.process_rtp(&p2, &r2, ts(1)?);
 
     // Packet 3: seq=106 (no gap)
     let p3 = make_rtp_parsed(
@@ -575,26 +588,27 @@ fn packet_loss_detected_from_sequence_gaps() {
             rtp_ts: 960,
             pt: 0,
         },
-    );
-    let r3 = parse_rtp_header(&p3.payload).unwrap();
-    store.process_rtp(&p3, &r3, ts(2));
+    )?;
+    let r3 = parse_rtp_header(&p3.payload)?;
+    store.process_rtp(&p3, &r3, ts(2)?);
 
     let key = StreamKey {
         ssrc,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
-    let stream = store.get(&key).unwrap();
+    let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
         stream.lost_packets, 4,
         "Should detect exactly 4 lost packets (seq 101-104)"
     );
     assert_eq!(stream.packet_count, 3, "Should count 3 received packets");
+    Ok(())
 }
 
 /// 100 perfectly sequential packets report zero loss.
 #[test]
-fn no_false_loss_on_sequential_packets() {
+fn no_false_loss_on_sequential_packets() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
     let ssrc = 0xBEEF;
 
@@ -612,9 +626,9 @@ fn no_false_loss_on_sequential_packets() {
                 rtp_ts: i as u32 * 160,
                 pt: 0,
             },
-        );
-        let r = parse_rtp_header(&p.payload).unwrap();
-        store.process_rtp(&p, &r, ts(i as i64));
+        )?;
+        let r = parse_rtp_header(&p.payload)?;
+        store.process_rtp(&p, &r, ts(i as i64)?);
     }
 
     let key = StreamKey {
@@ -622,11 +636,12 @@ fn no_false_loss_on_sequential_packets() {
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
-    let stream = store.get(&key).unwrap();
+    let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
         stream.lost_packets, 0,
         "Sequential packets should report zero loss"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -635,14 +650,14 @@ fn no_false_loss_on_sequential_packets() {
 
 /// 15 seconds of packets produce at least 2 quality intervals, each with finite jitter, nonzero packets, and loss_pct within 0-100.
 #[test]
-fn quality_intervals_recorded_after_five_seconds() {
+fn quality_intervals_recorded_after_five_seconds() -> Result<(), TestError> {
     let key = StreamKey {
         ssrc: 0x5555,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
     let hdr = make_rtp_header(0x5555, 100, 0, 0);
-    let mut stream = RtpStream::new(key, &hdr, ts(0));
+    let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
     // Feed packets spanning 15 seconds (should trigger at least 2 intervals)
     // 50 packets/second * 15 seconds = 750 packets
@@ -652,7 +667,7 @@ fn quality_intervals_recorded_after_five_seconds() {
         let wall_secs = wall_ms / 1000;
         let wall_nanos = ((wall_ms % 1000) * 1_000_000) as u32;
         let arrival = DateTime::from_timestamp(1_700_000_000 + wall_secs, wall_nanos)
-            .expect("valid timestamp");
+            .ok_or("valid timestamp")?;
         let h = make_rtp_header(0x5555, 100 + i, rtp_ts_val, 0);
         stream.update(&h, arrival, 160);
     }
@@ -683,6 +698,7 @@ fn quality_intervals_recorded_after_five_seconds() {
             interval.loss_pct
         );
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -691,7 +707,7 @@ fn quality_intervals_recorded_after_five_seconds() {
 
 /// PT=13 packets are counted as CN frames (8 total) and grouped into at least 2 silence periods, the first exactly 100ms.
 #[test]
-fn comfort_noise_counted_and_silence_tracked() {
+fn comfort_noise_counted_and_silence_tracked() -> Result<(), TestError> {
     let key = StreamKey {
         ssrc: 0xCCCC,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -699,31 +715,31 @@ fn comfort_noise_counted_and_silence_tracked() {
     };
     // Start with normal audio (PT=0)
     let hdr = make_rtp_header(0xCCCC, 100, 0, 0);
-    let mut stream = RtpStream::new(key, &hdr, ts(0));
+    let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
     // 10 normal audio packets
     for i in 1u16..11 {
         let h = make_rtp_header(0xCCCC, 100 + i, i as u32 * 160, 0);
-        stream.update(&h, ts(i as i64), 160);
+        stream.update(&h, ts(i as i64)?, 160);
     }
 
     // 5 consecutive CN packets (PT=13) — silence period
     for i in 11u16..16 {
         let h = make_rtp_header(0xCCCC, 100 + i, i as u32 * 160, 13);
-        stream.update(&h, ts(i as i64), 1);
+        stream.update(&h, ts(i as i64)?, 1);
     }
 
     // 5 more normal audio packets
     for i in 16u16..21 {
         let h = make_rtp_header(0xCCCC, 100 + i, i as u32 * 160, 0);
-        stream.update(&h, ts(i as i64), 160);
+        stream.update(&h, ts(i as i64)?, 160);
     }
 
     // 3 more CN packets — second silence period (non-consecutive with first)
     // Note: we need a gap of at least 1 non-CN packet, which we already have
     for i in 21u16..24 {
         let h = make_rtp_header(0xCCCC, 100 + i, i as u32 * 160, 13);
-        stream.update(&h, ts(i as i64), 1);
+        stream.update(&h, ts(i as i64)?, 1);
     }
 
     assert_eq!(stream.cn_frames, 8, "Should count 8 CN frames (5 + 3)");
@@ -742,6 +758,7 @@ fn comfort_noise_counted_and_silence_tracked() {
 
     // Verify codec_from_pt recognizes CN
     assert_eq!(codec_from_pt(13), Some("CN"));
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -750,7 +767,7 @@ fn comfort_noise_counted_and_silence_tracked() {
 
 /// `link_to_dialog` by destination endpoint sets `associated_dialog` and clears the orphan flag.
 #[test]
-fn stream_linked_to_dialog() {
+fn stream_linked_to_dialog() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     // Create a stream: 10.0.0.1:20000 -> 10.0.0.2:30000
@@ -767,9 +784,9 @@ fn stream_linked_to_dialog() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0));
+    )?;
+    let rtp = parse_rtp_header(&parsed.payload)?;
+    store.process_rtp(&parsed, &rtp, ts(0)?);
 
     // Link by destination endpoint (as if SDP says media at 10.0.0.2:30000)
     store.link_to_dialog(
@@ -783,18 +800,19 @@ fn stream_linked_to_dialog() {
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
-    let stream = store.get(&key).unwrap();
+    let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
         stream.associated_dialog.as_deref(),
         Some("call-id-test-123@sip.example.com"),
         "Stream should be linked to the dialog Call-ID"
     );
     assert!(!stream.orphaned(), "Linked stream should not be orphaned");
+    Ok(())
 }
 
 /// `link_to_dialog` also matches when the stream's SOURCE endpoint equals the SDP endpoint.
 #[test]
-fn link_by_source_endpoint() {
+fn link_by_source_endpoint() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     let parsed = make_rtp_parsed(
@@ -810,19 +828,20 @@ fn link_by_source_endpoint() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0));
+    )?;
+    let rtp = parse_rtp_header(&parsed.payload)?;
+    store.process_rtp(&parsed, &rtp, ts(0)?);
 
     // Link by source endpoint
     store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000, "call-by-src");
 
-    let stream = store.iter().next().unwrap();
+    let stream = store.iter().next().ok_or("stream should exist")?;
     assert_eq!(
         stream.associated_dialog.as_deref(),
         Some("call-by-src"),
         "Should link when source matches SDP endpoint"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -836,7 +855,7 @@ fn link_by_source_endpoint() {
 /// `tests/pcap-samples/codec-negotiation.pcap` — four streams, no dialogs,
 /// three seconds long — report four NON-orphans over MCP.
 #[test]
-fn unlinked_stream_is_orphaned_immediately() {
+fn unlinked_stream_is_orphaned_immediately() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     let parsed = make_rtp_parsed(
@@ -852,26 +871,27 @@ fn unlinked_stream_is_orphaned_immediately() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0));
+    )?;
+    let rtp = parse_rtp_header(&parsed.payload)?;
+    store.process_rtp(&parsed, &rtp, ts(0)?);
 
     assert_eq!(
         store.orphaned_count(),
         1,
         "a stream no dialog claims is an orphan as soon as it exists"
     );
-    let stream = store.iter().next().unwrap();
+    let stream = store.iter().next().ok_or("stream should exist")?;
     assert!(stream.orphaned(), "Stream should report as orphaned");
     assert!(
         stream.associated_dialog.is_none(),
         "Orphaned stream should have no dialog"
     );
+    Ok(())
 }
 
 /// A dialog-linked stream is never orphaned.
 #[test]
-fn linked_stream_not_orphaned() {
+fn linked_stream_not_orphaned() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     let parsed = make_rtp_parsed(
@@ -887,9 +907,9 @@ fn linked_stream_not_orphaned() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0));
+    )?;
+    let rtp = parse_rtp_header(&parsed.payload)?;
+    store.process_rtp(&parsed, &rtp, ts(0)?);
 
     store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000, "linked-call");
 
@@ -898,6 +918,7 @@ fn linked_stream_not_orphaned() {
         0,
         "Linked stream should never be orphaned"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -906,7 +927,7 @@ fn linked_stream_not_orphaned() {
 
 /// A crafted RTCP SR parses to a `SenderReport` with exact SSRC, NTP/RTP timestamps, and packet/octet counts.
 #[test]
-fn rtcp_sender_report_parsed() {
+fn rtcp_sender_report_parsed() -> Result<(), TestError> {
     // Build a Sender Report: V=2, P=0, RC=0, PT=200
     let mut data = Vec::new();
     data.push(0x80); // V=2, P=0, RC=0
@@ -931,13 +952,14 @@ fn rtcp_sender_report_parsed() {
             assert_eq!(sr.packet_count, 500);
             assert_eq!(sr.octet_count, 80000);
         }
-        other => panic!("Expected SenderReport, got {other:?}"),
+        other => return Err(format!("Expected SenderReport, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// A crafted RTCP RR parses one report block with exact fraction lost, cumulative lost, and jitter.
 #[test]
-fn rtcp_receiver_report_with_jitter() {
+fn rtcp_receiver_report_with_jitter() -> Result<(), TestError> {
     // Build an RR with one report block containing jitter data
     let mut data = Vec::new();
     data.push(0x81); // V=2, P=0, RC=1
@@ -965,13 +987,14 @@ fn rtcp_receiver_report_with_jitter() {
             assert_eq!(rr.reports[0].cumulative_lost, 42);
             assert_eq!(rr.reports[0].jitter, 320);
         }
-        other => panic!("Expected ReceiverReport, got {other:?}"),
+        other => return Err(format!("Expected ReceiverReport, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// A compound SR+BYE datagram parses to exactly two packets with the BYE's SSRC list intact.
 #[test]
-fn rtcp_compound_packet_parsed() {
+fn rtcp_compound_packet_parsed() -> Result<(), TestError> {
     // Compound: SR + BYE
     let mut data = Vec::new();
 
@@ -992,6 +1015,7 @@ fn rtcp_compound_packet_parsed() {
     assert_eq!(packets.len(), 2, "Should parse compound SR+BYE");
     assert!(matches!(&packets[0], RtcpPacket::SenderReport(_)));
     assert!(matches!(&packets[1], RtcpPacket::Bye(bye) if bye.ssrc_list == vec![0xBBBB]));
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1000,7 +1024,7 @@ fn rtcp_compound_packet_parsed() {
 
 /// A single-direction stream set flags `one_way_audio` with a hint naming the unidirectional flow.
 #[test]
-fn diagnose_one_way_audio() {
+fn diagnose_one_way_audio() -> Result<(), TestError> {
     // Create streams in only one direction
     let key = StreamKey {
         ssrc: 0x1111,
@@ -1008,11 +1032,11 @@ fn diagnose_one_way_audio() {
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
     let hdr = make_rtp_header(0x1111, 100, 0, 0);
-    let mut stream = RtpStream::new(key, &hdr, ts(0));
+    let mut stream = RtpStream::new(key, &hdr, ts(0)?);
     // Add some packets so it's not trivially empty
     for i in 1u16..10 {
         let h = make_rtp_header(0x1111, 100 + i, i as u32 * 160, 0);
-        stream.update(&h, ts(i as i64), 160);
+        stream.update(&h, ts(i as i64)?, 160);
     }
 
     let streams: Vec<&RtpStream> = vec![&stream];
@@ -1027,11 +1051,12 @@ fn diagnose_one_way_audio() {
         "Hints should mention unidirectional flow: {:?}",
         diag.hints
     );
+    Ok(())
 }
 
 /// Streams in both directions do not flag `one_way_audio`.
 #[test]
-fn diagnose_bidirectional_no_one_way() {
+fn diagnose_bidirectional_no_one_way() -> Result<(), TestError> {
     // Forward stream
     let key_fwd = StreamKey {
         ssrc: 0x1111,
@@ -1039,10 +1064,10 @@ fn diagnose_bidirectional_no_one_way() {
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
     let hdr_fwd = make_rtp_header(0x1111, 100, 0, 0);
-    let mut fwd = RtpStream::new(key_fwd, &hdr_fwd, ts(0));
+    let mut fwd = RtpStream::new(key_fwd, &hdr_fwd, ts(0)?);
     for i in 1u16..5 {
         let h = make_rtp_header(0x1111, 100 + i, i as u32 * 160, 0);
-        fwd.update(&h, ts(i as i64), 160);
+        fwd.update(&h, ts(i as i64)?, 160);
     }
 
     // Reverse stream
@@ -1052,10 +1077,10 @@ fn diagnose_bidirectional_no_one_way() {
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
     };
     let hdr_rev = make_rtp_header(0x2222, 200, 0, 0);
-    let mut rev = RtpStream::new(key_rev, &hdr_rev, ts(0));
+    let mut rev = RtpStream::new(key_rev, &hdr_rev, ts(0)?);
     for i in 1u16..5 {
         let h = make_rtp_header(0x2222, 200 + i, i as u32 * 160, 0);
-        rev.update(&h, ts(i as i64), 160);
+        rev.update(&h, ts(i as i64)?, 160);
     }
 
     let streams: Vec<&RtpStream> = vec![&fwd, &rev];
@@ -1065,6 +1090,7 @@ fn diagnose_bidirectional_no_one_way() {
         !diag.one_way_audio,
         "Bidirectional streams should NOT flag one_way_audio"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1073,7 +1099,7 @@ fn diagnose_bidirectional_no_one_way() {
 
 /// An empty stream list with an SDP offer flags `no_media` and hints at zero RTP packets.
 #[test]
-fn diagnose_no_media_with_sdp() {
+fn diagnose_no_media_with_sdp() -> Result<(), TestError> {
     let streams: Vec<&RtpStream> = vec![];
     let sdp = make_sdp("10.0.0.1", 20000);
 
@@ -1100,11 +1126,12 @@ fn diagnose_no_media_with_sdp() {
         !diag.no_media,
         "a bare SDP session is not a negotiation and must not flag no_media"
     );
+    Ok(())
 }
 
 /// No streams and no SDP flags nothing (no_media/one_way/nat all false).
 #[test]
-fn diagnose_no_streams_no_sdp_is_clean() {
+fn diagnose_no_streams_no_sdp_is_clean() -> Result<(), TestError> {
     let streams: Vec<&RtpStream> = vec![];
     let diag = diagnose_media(&streams, &MediaContext::default());
 
@@ -1114,6 +1141,7 @@ fn diagnose_no_streams_no_sdp_is_clean() {
     );
     assert!(!diag.one_way_audio);
     assert!(!diag.nat_mismatch);
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1125,13 +1153,13 @@ fn diagnose_no_streams_no_sdp_is_clean() {
 
 /// SIP_CALL_RTP_G711 end-to-end: >100 RTP packets, >=2 streams, finite jitter (some nonzero), identifiable static-PT codecs, and per-stream counts summing to the processed total.
 #[test]
-fn end_to_end_pcap_to_streams_g711() {
+fn end_to_end_pcap_to_streams_g711() -> Result<(), TestError> {
     let path = pcap_samples_dir().join("SIP_CALL_RTP_G711");
     let data =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+        std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
     let reader = PcapReader::new(&data)
-        .unwrap_or_else(|e| panic!("Failed to parse pcap {}: {e}", path.display()));
+        .map_err(|e| format!("Failed to parse pcap {}: {e}", path.display()))?;
     let link_type = reader.link_type;
 
     let mut store = StreamStore::new(1000);
@@ -1208,6 +1236,7 @@ fn end_to_end_pcap_to_streams_g711() {
         total_stream_packets, rtp_packets,
         "Sum of stream packet counts should equal total RTP packets processed"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1216,12 +1245,12 @@ fn end_to_end_pcap_to_streams_g711() {
 
 /// sip-rtp-g711.pcap yields >50 RTP packets, >=2 streams, and at least one PCMU/PCMA stream.
 #[test]
-fn end_to_end_g711_pcap() {
+fn end_to_end_g711_pcap() -> Result<(), TestError> {
     let path = pcap_samples_dir().join("sip-rtp-g711.pcap");
     let data =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+        std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
-    let reader = PcapReader::new(&data).unwrap();
+    let reader = PcapReader::new(&data)?;
     let link_type = reader.link_type;
 
     let mut store = StreamStore::new(1000);
@@ -1261,6 +1290,7 @@ fn end_to_end_g711_pcap() {
         has_g711,
         "sip-rtp-g711.pcap should have at least one PCMU/PCMA stream"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1274,7 +1304,7 @@ fn end_to_end_g711_pcap() {
 /// `ReceptionReport` values, so the byte-level path — sign-extended
 /// `cumulative_lost` included — is the one under test.
 #[test]
-fn rtcp_is_recorded_beside_the_measurement() {
+fn rtcp_is_recorded_beside_the_measurement() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
 
     // Create a stream
@@ -1291,9 +1321,9 @@ fn rtcp_is_recorded_beside_the_measurement() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0));
+    )?;
+    let rtp = parse_rtp_header(&parsed.payload)?;
+    store.process_rtp(&parsed, &rtp, ts(0)?);
 
     // Build and process an RTCP RR that reports on this stream
     let mut rr_data = Vec::new();
@@ -1317,7 +1347,7 @@ fn rtcp_is_recorded_beside_the_measurement() {
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
-    let stream = store.get(&key).unwrap();
+    let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
         stream.jitter, 0.0,
         "one packet has produced no interarrival sample; the report's jitter \
@@ -1329,7 +1359,7 @@ fn rtcp_is_recorded_beside_the_measurement() {
          cumulative_lost counts the reporter's session on the reporter's path"
     );
 
-    let remote = store.remote_report(&key).expect("report recorded");
+    let remote = store.remote_report(&key).ok_or("report recorded")?;
     assert_eq!(remote.reporter_ssrc, 0x9999);
     assert_eq!(remote.cumulative_lost, 15);
     assert_eq!(remote.highest_seq, 500);
@@ -1337,13 +1367,14 @@ fn rtcp_is_recorded_beside_the_measurement() {
     // 128 RTP-timestamp units at 8 kHz → 128 * 1000 / 8000 = 16.0 ms.
     assert_eq!(remote.jitter_ms, Some(16.0));
     assert!((remote.fraction_lost_pct() - 25.0 * 100.0 / 256.0).abs() < 1e-9);
+    Ok(())
 }
 
 /// A `cumulative_lost` field with its sign bit set (net duplicates) survives
 /// as a negative count instead of being clamped to zero and read as "no
 /// loss" — the sign is the whole information content of that case.
 #[test]
-fn negative_cumulative_lost_survives_as_negative() {
+fn negative_cumulative_lost_survives_as_negative() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
     let parsed = make_rtp_parsed(
         Flow {
@@ -1358,9 +1389,9 @@ fn negative_cumulative_lost_survives_as_negative() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0));
+    )?;
+    let rtp = parse_rtp_header(&parsed.payload)?;
+    store.process_rtp(&parsed, &rtp, ts(0)?);
 
     let mut rr = vec![0x81u8, 201];
     rr.extend_from_slice(&7u16.to_be_bytes());
@@ -1384,6 +1415,7 @@ fn negative_cumulative_lost_survives_as_negative() {
         Some(-5),
         "net duplicates are reported as a negative count, not clamped away"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1392,18 +1424,19 @@ fn negative_cumulative_lost_survives_as_negative() {
 
 /// A SIP INVITE payload is not detected as RTP.
 #[test]
-fn is_rtp_packet_rejects_sip() {
+fn is_rtp_packet_rejects_sip() -> Result<(), TestError> {
     // A SIP INVITE is NOT RTP
     let sip = b"INVITE sip:1002@10.0.0.2:5060 SIP/2.0\r\nVia: SIP/2.0/UDP 10.0.0.1\r\n";
     assert!(
         !sipnab::rtp::is_rtp_packet(sip),
         "SIP message should not be detected as RTP"
     );
+    Ok(())
 }
 
 /// Empty and 2-byte payloads are not detected as RTP.
 #[test]
-fn is_rtp_packet_rejects_too_short() {
+fn is_rtp_packet_rejects_too_short() -> Result<(), TestError> {
     assert!(
         !sipnab::rtp::is_rtp_packet(&[0x80, 0x00]),
         "2-byte payload should not be detected as RTP"
@@ -1412,21 +1445,23 @@ fn is_rtp_packet_rejects_too_short() {
         !sipnab::rtp::is_rtp_packet(&[]),
         "Empty payload should not be detected as RTP"
     );
+    Ok(())
 }
 
 /// A well-formed 160-byte-payload RTP packet is detected.
 #[test]
-fn is_rtp_packet_accepts_valid_rtp() {
+fn is_rtp_packet_accepts_valid_rtp() -> Result<(), TestError> {
     let rtp = build_rtp_bytes(0xABCD, 1000, 160000, 0, &[0x7F; 160]);
     assert!(
         sipnab::rtp::is_rtp_packet(&rtp),
         "Valid RTP packet should be detected"
     );
+    Ok(())
 }
 
 /// A payload type in the RTCP collision range (72-76) is rejected.
 #[test]
-fn is_rtp_packet_rejects_rtcp_pt_range() {
+fn is_rtp_packet_rejects_rtcp_pt_range() -> Result<(), TestError> {
     // PT=72 maps to RTCP SR (200) when high bit considered
     let mut data = vec![0x80, 72];
     data.extend_from_slice(&[0u8; 10]);
@@ -1434,6 +1469,7 @@ fn is_rtp_packet_rejects_rtcp_pt_range() {
         !sipnab::rtp::is_rtp_packet(&data),
         "PT in RTCP range (72-76) should be rejected by is_rtp_packet"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1442,12 +1478,12 @@ fn is_rtp_packet_rejects_rtcp_pt_range() {
 
 /// sip-rtp-g722.pcap yields at least one detected RTP packet.
 #[test]
-fn rtp_detected_in_g722_pcap() {
+fn rtp_detected_in_g722_pcap() -> Result<(), TestError> {
     let path = pcap_samples_dir().join("sip-rtp-g722.pcap");
     let data =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+        std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
-    let reader = PcapReader::new(&data).unwrap();
+    let reader = PcapReader::new(&data)?;
     let link_type = reader.link_type;
 
     let mut rtp_count = 0u64;
@@ -1466,6 +1502,7 @@ fn rtp_detected_in_g722_pcap() {
         rtp_count > 0,
         "sip-rtp-g722.pcap should contain RTP packets, found 0"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1474,12 +1511,12 @@ fn rtp_detected_in_g722_pcap() {
 
 /// sip-rtp-g729a.pcap yields at least one detected RTP packet.
 #[test]
-fn rtp_detected_in_g729a_pcap() {
+fn rtp_detected_in_g729a_pcap() -> Result<(), TestError> {
     let path = pcap_samples_dir().join("sip-rtp-g729a.pcap");
     let data =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+        std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
-    let reader = PcapReader::new(&data).unwrap();
+    let reader = PcapReader::new(&data)?;
     let link_type = reader.link_type;
 
     let mut rtp_count = 0u64;
@@ -1498,6 +1535,7 @@ fn rtp_detected_in_g729a_pcap() {
         rtp_count > 0,
         "sip-rtp-g729a.pcap should contain RTP packets, found 0"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1506,17 +1544,17 @@ fn rtp_detected_in_g729a_pcap() {
 
 /// An SDP media address differing from the actual RTP source flags `nat_mismatch` with both addresses and a NAT hint.
 #[test]
-fn diagnose_nat_mismatch() {
+fn diagnose_nat_mismatch() -> Result<(), TestError> {
     let key = StreamKey {
         ssrc: 0x3333,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
     let hdr = make_rtp_header(0x3333, 100, 0, 0);
-    let mut stream = RtpStream::new(key, &hdr, ts(0));
+    let mut stream = RtpStream::new(key, &hdr, ts(0)?);
     for i in 1u16..5 {
         let h = make_rtp_header(0x3333, 100 + i, i as u32 * 160, 0);
-        stream.update(&h, ts(i as i64), 160);
+        stream.update(&h, ts(i as i64)?, 160);
     }
 
     let streams: Vec<&RtpStream> = vec![&stream];
@@ -1538,6 +1576,7 @@ fn diagnose_nat_mismatch() {
         diag.hints.iter().any(|h| h.contains("NAT")),
         "Should include NAT hint"
     );
+    Ok(())
 }
 
 // h263-over-rtp.pcap is DLT_NULL (link type 0). It used to be skipped here
@@ -1556,7 +1595,7 @@ fn diagnose_nat_mismatch() {
 
 /// Inserting 5 unique streams into a max_streams=3 store leaves exactly 3.
 #[test]
-fn stream_store_evicts_at_capacity() {
+fn stream_store_evicts_at_capacity() -> Result<(), TestError> {
     let mut store = StreamStore::new(3);
 
     for i in 0u32..5 {
@@ -1573,9 +1612,9 @@ fn stream_store_evicts_at_capacity() {
                 rtp_ts: 0,
                 pt: 0,
             },
-        );
-        let rtp = parse_rtp_header(&parsed.payload).unwrap();
-        store.process_rtp(&parsed, &rtp, ts(i as i64));
+        )?;
+        let rtp = parse_rtp_header(&parsed.payload)?;
+        store.process_rtp(&parsed, &rtp, ts(i as i64)?);
     }
 
     assert_eq!(
@@ -1583,6 +1622,7 @@ fn stream_store_evicts_at_capacity() {
         3,
         "Store should not exceed max_streams=3 after inserting 5 streams"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1591,7 +1631,7 @@ fn stream_store_evicts_at_capacity() {
 
 /// The seq wraparound 65534→65535→0→1 records zero loss and 4 packets.
 #[test]
-fn sequence_wraparound_no_false_loss_in_store() {
+fn sequence_wraparound_no_false_loss_in_store() -> Result<(), TestError> {
     let mut store = StreamStore::new(100);
     let ssrc_val = 0xDDDD_u32;
 
@@ -1609,9 +1649,9 @@ fn sequence_wraparound_no_false_loss_in_store() {
             rtp_ts: 0,
             pt: 0,
         },
-    );
-    let r1 = parse_rtp_header(&p1.payload).unwrap();
-    store.process_rtp(&p1, &r1, ts(0));
+    )?;
+    let r1 = parse_rtp_header(&p1.payload)?;
+    store.process_rtp(&p1, &r1, ts(0)?);
 
     // seq 65535
     let p2 = make_rtp_parsed(
@@ -1627,9 +1667,9 @@ fn sequence_wraparound_no_false_loss_in_store() {
             rtp_ts: 160,
             pt: 0,
         },
-    );
-    let r2 = parse_rtp_header(&p2.payload).unwrap();
-    store.process_rtp(&p2, &r2, ts(1));
+    )?;
+    let r2 = parse_rtp_header(&p2.payload)?;
+    store.process_rtp(&p2, &r2, ts(1)?);
 
     // seq 0 (wraparound)
     let p3 = make_rtp_parsed(
@@ -1645,9 +1685,9 @@ fn sequence_wraparound_no_false_loss_in_store() {
             rtp_ts: 320,
             pt: 0,
         },
-    );
-    let r3 = parse_rtp_header(&p3.payload).unwrap();
-    store.process_rtp(&p3, &r3, ts(2));
+    )?;
+    let r3 = parse_rtp_header(&p3.payload)?;
+    store.process_rtp(&p3, &r3, ts(2)?);
 
     // seq 1
     let p4 = make_rtp_parsed(
@@ -1663,21 +1703,22 @@ fn sequence_wraparound_no_false_loss_in_store() {
             rtp_ts: 480,
             pt: 0,
         },
-    );
-    let r4 = parse_rtp_header(&p4.payload).unwrap();
-    store.process_rtp(&p4, &r4, ts(3));
+    )?;
+    let r4 = parse_rtp_header(&p4.payload)?;
+    store.process_rtp(&p4, &r4, ts(3)?);
 
     let key = StreamKey {
         ssrc: ssrc_val,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
     };
-    let stream = store.get(&key).unwrap();
+    let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
         stream.lost_packets, 0,
         "Sequence wraparound (65534->65535->0->1) should report zero loss"
     );
     assert_eq!(stream.packet_count, 4);
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1692,7 +1733,7 @@ fn sequence_wraparound_no_false_loss_in_store() {
 /// shows MOS, Jitter, Quality, PCMU, and SSRC.
 #[cfg(feature = "tui")]
 #[test]
-fn stream_detail_render_does_not_panic() {
+fn stream_detail_render_does_not_panic() -> Result<(), TestError> {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
@@ -1717,9 +1758,10 @@ fn stream_detail_render_does_not_panic() {
                 rtp_ts: i as u32 * 160,
                 pt: 0, /* PCMU */
             },
-        );
-        let rtp = parse_rtp_header(&parsed.payload).expect("valid synthetic RTP");
-        store.process_rtp(&parsed, &rtp, ts(i as i64));
+        )?;
+        let rtp =
+            parse_rtp_header(&parsed.payload).map_err(|e| format!("valid synthetic RTP: {e}"))?;
+        store.process_rtp(&parsed, &rtp, ts(i as i64)?);
     }
 
     let key = StreamKey {
@@ -1730,7 +1772,7 @@ fn stream_detail_render_does_not_panic() {
 
     // Render to a test terminal — this should not panic
     let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let mut terminal = Terminal::new(backend).map_err(|e| format!("test terminal: {e}"))?;
     let theme = Theme::default();
 
     terminal
@@ -1751,7 +1793,7 @@ fn stream_detail_render_does_not_panic() {
                 },
             );
         })
-        .expect("render should not panic");
+        .map_err(|e| format!("render should not panic: {e}"))?;
 
     // Extract rendered text from the buffer
     let buffer = terminal.backend().buffer();
@@ -1784,6 +1826,7 @@ fn stream_detail_render_does_not_panic() {
         text.contains("SSRC"),
         "Stream detail should display the SSRC"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1798,13 +1841,13 @@ fn stream_detail_render_does_not_panic() {
 /// - G.711 decoder producing silence or garbage
 /// - WAV writer producing invalid/empty files
 #[test]
-fn end_to_end_pcap_to_wav_export() {
+fn end_to_end_pcap_to_wav_export() -> Result<(), TestError> {
     use sipnab::rtp::audio_export::export_dialog_to_wav;
 
     let pcap_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples/sip-rtp-g711.pcap");
-    let data = std::fs::read(&pcap_path).expect("read pcap");
-    let reader = PcapReader::new(&data).expect("parse pcap");
+    let data = std::fs::read(&pcap_path).map_err(|e| format!("read pcap: {e}"))?;
+    let reader = PcapReader::new(&data).map_err(|e| format!("parse pcap: {e}"))?;
 
     let mut store = StreamStore::new(1000);
 
@@ -1864,20 +1907,21 @@ fn end_to_end_pcap_to_wav_export() {
     }
 
     // Export to WAV
-    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let tmp_dir = tempfile::tempdir().map_err(|e| format!("create temp dir: {e}"))?;
     let wav_path = tmp_dir.path().join("test_output.wav");
 
     let result = export_dialog_to_wav(&streams_with_audio, &wav_path);
     assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
-    let summary = result.expect("export succeeded");
+    let summary = result.map_err(|e| format!("export succeeded: {e:?}"))?;
     assert!(
         summary.contains("Exported"),
         "summary should confirm export: {summary}"
     );
 
     // Verify the WAV file exists and has reasonable size
-    let wav_metadata = std::fs::metadata(&wav_path).expect("WAV file should exist");
+    let wav_metadata =
+        std::fs::metadata(&wav_path).map_err(|e| format!("WAV file should exist: {e}"))?;
     let wav_size = wav_metadata.len();
     assert!(
         wav_size > 44,
@@ -1889,7 +1933,7 @@ fn end_to_end_pcap_to_wav_export() {
     );
 
     // Read the WAV file and verify it's valid
-    let wav_data = std::fs::read(&wav_path).expect("read WAV file");
+    let wav_data = std::fs::read(&wav_path).map_err(|e| format!("read WAV file: {e}"))?;
 
     // Check RIFF header
     assert_eq!(&wav_data[0..4], b"RIFF", "WAV should start with RIFF");
@@ -1927,18 +1971,19 @@ fn end_to_end_pcap_to_wav_export() {
         "WAV should contain audible audio (non-silent samples), \
          got {non_zero_samples}/{total_samples} ({non_zero_pct:.1}%) above threshold"
     );
+    Ok(())
 }
 
 /// Verify that a pcap with only SIP (no RTP) produces an empty payload buffer,
 /// and WAV export returns an appropriate error.
 #[test]
-fn wav_export_no_rtp_returns_error() {
+fn wav_export_no_rtp_returns_error() -> Result<(), TestError> {
     use sipnab::rtp::audio_export::export_dialog_to_wav;
 
     let pcap_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples/sip-register.pcap");
-    let data = std::fs::read(&pcap_path).expect("read pcap");
-    let reader = PcapReader::new(&data).expect("parse pcap");
+    let data = std::fs::read(&pcap_path).map_err(|e| format!("read pcap: {e}"))?;
+    let reader = PcapReader::new(&data).map_err(|e| format!("parse pcap: {e}"))?;
     let link_type = reader.link_type as i32;
 
     let mut store = StreamStore::new(1000);
@@ -1962,7 +2007,7 @@ fn wav_export_no_rtp_returns_error() {
     }
 
     let streams: Vec<&RtpStream> = store.iter().collect();
-    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let tmp_dir = tempfile::tempdir().map_err(|e| format!("create temp dir: {e}"))?;
     let wav_path = tmp_dir.path().join("should_not_exist.wav");
 
     let result = export_dialog_to_wav(&streams, &wav_path);
@@ -1970,6 +2015,7 @@ fn wav_export_no_rtp_returns_error() {
         result.is_err(),
         "WAV export should fail when no G.711 streams exist"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════

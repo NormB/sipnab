@@ -26,6 +26,8 @@
 
 use sipnab::capture::evidence_ring::{EvidenceRing, Lookup};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// A frame of `len` bytes whose first byte names it.
 fn frame(tag: u8, len: usize) -> bytes::Bytes {
     let mut v = vec![tag; len];
@@ -35,7 +37,7 @@ fn frame(tag: u8, len: usize) -> bytes::Bytes {
 
 /// A retained frame comes back byte for byte.
 #[test]
-fn a_retained_frame_comes_back_exactly() {
+fn a_retained_frame_comes_back_exactly() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(4096);
     ring.insert("eth0", 7, frame(0xAB, 100));
     match ring.lookup("eth0", 7) {
@@ -43,8 +45,9 @@ fn a_retained_frame_comes_back_exactly() {
             assert_eq!(bytes.len(), 100);
             assert_eq!(bytes[0], 0xAB);
         }
-        other => panic!("expected the frame back, got {other:?}"),
+        other => return Err(format!("expected the frame back, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// A frame the ring has moved past says EVICTED, not "no".
@@ -53,7 +56,7 @@ fn a_retained_frame_comes_back_exactly() {
 /// the answer is a bigger ring or a faster question; "not seen" means something
 /// else entirely.
 #[test]
-fn a_frame_the_ring_moved_past_is_evicted_not_unknown() {
+fn a_frame_the_ring_moved_past_is_evicted_not_unknown() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(1000);
     for ordinal in 0..20u64 {
         ring.insert("eth0", ordinal, frame(ordinal as u8, 100));
@@ -67,11 +70,12 @@ fn a_frame_the_ring_moved_past_is_evicted_not_unknown() {
         matches!(ring.lookup("eth0", 19), Lookup::Retained(_)),
         "the newest frame must still be there"
     );
+    Ok(())
 }
 
 /// An ordinal the ring has not reached is NOT SEEN, which is a different fact.
 #[test]
-fn an_ordinal_beyond_the_ring_is_not_seen_rather_than_evicted() {
+fn an_ordinal_beyond_the_ring_is_not_seen_rather_than_evicted() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(4096);
     ring.insert("eth0", 3, frame(1, 100));
     assert!(
@@ -79,11 +83,12 @@ fn an_ordinal_beyond_the_ring_is_not_seen_rather_than_evicted() {
         "an ordinal past the newest retained frame was reported as evicted, \
          which tells an operator to buy memory for a frame that never existed"
     );
+    Ok(())
 }
 
 /// A source the ring holds nothing for says so in its own words.
 #[test]
-fn an_unknown_source_is_not_retained_rather_than_evicted() {
+fn an_unknown_source_is_not_retained_rather_than_evicted() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(4096);
     ring.insert("eth0", 1, frame(1, 100));
     assert!(
@@ -91,6 +96,7 @@ fn an_unknown_source_is_not_retained_rather_than_evicted() {
         "a pointer into a source nothing is kept for must not borrow another \
          source's eviction story"
     );
+    Ok(())
 }
 
 /// The budget is a byte budget, and it is honored.
@@ -100,7 +106,7 @@ fn an_unknown_source_is_not_retained_rather_than_evicted() {
 /// capture, and jumbo frames are two orders of magnitude larger than a SIP
 /// datagram.
 #[test]
-fn the_budget_is_in_bytes_and_is_never_exceeded() {
+fn the_budget_is_in_bytes_and_is_never_exceeded() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(1000);
     for ordinal in 0..50u64 {
         ring.insert("eth0", ordinal, frame(ordinal as u8, 300));
@@ -114,6 +120,7 @@ fn the_budget_is_in_bytes_and_is_never_exceeded() {
         ring.retained_bytes() > 0,
         "a ring that evicted everything protects memory by being useless"
     );
+    Ok(())
 }
 
 /// A frame larger than the whole budget is refused, not obeyed.
@@ -122,7 +129,7 @@ fn the_budget_is_in_bytes_and_is_never_exceeded() {
 /// would end up holding one frame it cannot afford. Refusing keeps the budget
 /// the operator set.
 #[test]
-fn a_frame_larger_than_the_budget_is_refused() {
+fn a_frame_larger_than_the_budget_is_refused() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(500);
     ring.insert("eth0", 1, frame(1, 100));
     ring.insert("eth0", 2, frame(2, 5000));
@@ -135,6 +142,7 @@ fn a_frame_larger_than_the_budget_is_refused() {
         matches!(ring.lookup("eth0", 1), Lookup::Retained(_)),
         "and it must not have evicted the frames that DO fit on its way in"
     );
+    Ok(())
 }
 
 /// Two sources are kept apart.
@@ -144,25 +152,27 @@ fn a_frame_larger_than_the_budget_is_refused() {
 /// source's question with another's bytes, which is the single worst outcome
 /// this mechanism can produce.
 #[test]
-fn two_sources_never_answer_for_each_other() {
+fn two_sources_never_answer_for_each_other() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(4096);
     ring.insert("eth0", 5, frame(0xE0, 100));
     ring.insert("hep:9060", 5, frame(0x4E, 100));
     let Lookup::Retained(a) = ring.lookup("eth0", 5) else {
-        panic!("eth0 frame missing");
+        return Err("eth0 frame missing".into());
     };
     let Lookup::Retained(b) = ring.lookup("hep:9060", 5) else {
-        panic!("hep frame missing");
+        return Err("hep frame missing".into());
     };
     assert_eq!(a[0], 0xE0);
     assert_eq!(b[0], 0x4E, "one source answered with another's bytes");
+    Ok(())
 }
 
 /// A zero budget retains nothing and says so.
 #[test]
-fn a_zero_budget_retains_nothing_and_admits_it() {
+fn a_zero_budget_retains_nothing_and_admits_it() -> Result<(), TestError> {
     let mut ring = EvidenceRing::with_capacity_bytes(0);
     ring.insert("eth0", 1, frame(1, 10));
     assert_eq!(ring.retained_bytes(), 0);
     assert!(matches!(ring.lookup("eth0", 1), Lookup::NotRetained));
+    Ok(())
 }

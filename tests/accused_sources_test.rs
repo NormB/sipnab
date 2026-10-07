@@ -15,12 +15,14 @@
 
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
 
 /// An `INVITE` to `ext<n>@` from one source, with a unique branch.
 ///
@@ -50,27 +52,27 @@ fn probe(n: usize) -> Vec<u8> {
 
 /// A sweep from one address is reported as ONE accused source, not N findings.
 #[test]
-fn the_summary_names_the_source_behind_a_sweep() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn the_summary_names_the_source_behind_a_sweep() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let pcap = tmp.path().join("sweep.pcap");
 
     // Twelve distinct extensions, none answered: past both the enumeration
     // threshold and the rate threshold, and unanswered is the evidence the
     // rate test rests on.
     let frames: Vec<Vec<u8>> = (0..12).map(probe).collect();
-    write_pcap_or_panic(Path::new(&pcap), &frames);
+    write_pcap(Path::new(&pcap), &frames)?;
 
-    let (stdout, stderr, code) = run_support::run_or_panic(
+    let (stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "-I",
-            pcap.to_str().expect("utf-8 path"),
+            pcap.to_str().ok_or("utf-8 path")?,
             "--portrange",
             "1-65535",
             "--kill-scanner",
         ],
         None,
-    );
+    )?;
     let out = format!("{stdout}{stderr}");
     assert_eq!(code, Some(0), "run failed:\n{out}");
 
@@ -94,12 +96,13 @@ fn the_summary_names_the_source_behind_a_sweep() {
         "the summary carries {summary_lines} accusation lines; one source \
          sweeping is one line:\n{out}"
     );
+    Ok(())
 }
 
 /// An ordinary answered call must not be accused, or the summary is noise.
 #[test]
-fn an_ordinary_call_is_not_accused() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn an_ordinary_call_is_not_accused() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let pcap = tmp.path().join("ordinary.pcap");
 
     let invite = udp_frame(
@@ -114,23 +117,24 @@ fn an_ordinary_call_is_not_accused() {
           Call-ID: ordinary-1@198.51.100.20\r\n\
           CSeq: 1 INVITE\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n",
     );
-    write_pcap_or_panic(Path::new(&pcap), &[invite]);
+    write_pcap(Path::new(&pcap), &[invite])?;
 
-    let (stdout, stderr, code) = run_support::run_or_panic(
+    let (stdout, stderr, code) = run_support::run(
         &[
             "-N",
             "-I",
-            pcap.to_str().expect("utf-8 path"),
+            pcap.to_str().ok_or("utf-8 path")?,
             "--portrange",
             "1-65535",
             "--kill-scanner",
         ],
         None,
-    );
+    )?;
     let out = format!("{stdout}{stderr}");
     assert_eq!(code, Some(0), "run failed:\n{out}");
     assert!(
         !out.contains("named by security detections"),
         "one ordinary INVITE was accused; the summary would be noise:\n{out}"
     );
+    Ok(())
 }

@@ -18,6 +18,8 @@
 use crossterm::event::KeyCode;
 use sipnab::tui::{App, RelayStatsMode, View};
 
+type TestError = Box<dyn std::error::Error>;
+
 const SPEC: &str = include_str!("../docs/design/relay-statistics-surfaces.md");
 const SURFACES: [&str; 4] = ["CLI", "REST", "MCP", "TUI"];
 const CAPABILITIES: [&str; 5] = ["C1", "C2", "C3", "C4", "C5"];
@@ -25,11 +27,11 @@ const CAPABILITIES: [&str; 5] = ["C1", "C2", "C3", "C4", "C5"];
 /// The spelling the spec gives `surface` under capability section `cap` (e.g.
 /// `C5`), read from the `| Surface | Spelling |` table that follows the
 /// `### C5 …` heading. `None` if the row is missing entirely.
-fn spelling(cap: &str, surface: &str) -> Option<String> {
+fn spelling(cap: &str, surface: &str) -> Result<Option<String>, TestError> {
     let heading = format!("### {cap} ");
     let start = SPEC
         .find(&heading)
-        .unwrap_or_else(|| panic!("no `{heading}` section in the spec"));
+        .ok_or_else(|| format!("no `{heading}` section in the spec"))?;
     // The section runs to the next `### ` capability heading (or a `## ` one).
     let rest = &SPEC[start + heading.len()..];
     let end = rest
@@ -38,22 +40,22 @@ fn spelling(cap: &str, surface: &str) -> Option<String> {
         .unwrap_or(rest.len());
     let section = &rest[..end];
     let prefix = format!("| {surface} | ");
-    section.lines().find(|l| l.starts_with(&prefix)).map(|l| {
+    Ok(section.lines().find(|l| l.starts_with(&prefix)).map(|l| {
         l.trim_start_matches(&prefix)
             .trim_end_matches(" |")
             .trim()
             .to_string()
-    })
+    }))
 }
 
 /// Every capability names every surface, and only C5/REST and C5/MCP are the
 /// deliberate omissions ("not offered"), each with its reason still in the doc.
 #[test]
-fn the_capability_matrix_is_complete_and_c5_omissions_are_reasoned() {
+fn the_capability_matrix_is_complete_and_c5_omissions_are_reasoned() -> Result<(), TestError> {
     for cap in CAPABILITIES {
         for surface in SURFACES {
-            let cell = spelling(cap, surface)
-                .unwrap_or_else(|| panic!("{cap} has no {surface} row in the surfaces spec"));
+            let cell = spelling(cap, surface)?
+                .ok_or_else(|| format!("{cap} has no {surface} row in the surfaces spec"))?;
             assert!(!cell.is_empty(), "{cap}/{surface} row is empty");
 
             let omitted = cell.eq_ignore_ascii_case("not offered");
@@ -77,6 +79,7 @@ fn the_capability_matrix_is_complete_and_c5_omissions_are_reasoned() {
             || SPEC.contains("A poll is a standing instruction to transmit"),
         "the reason must actually explain the omission, not merely assert one"
     );
+    Ok(())
 }
 
 /// No surface introduces a BARE `stats` spelling for the relay capability: the
@@ -85,10 +88,11 @@ fn the_capability_matrix_is_complete_and_c5_omissions_are_reasoned() {
 /// about sipnab (ST-S3's naming decision). Checked on CLI/REST/MCP, whose cells
 /// are the literal spellings; the TUI cell is prose describing keys.
 #[test]
-fn no_surface_introduces_a_bare_stats_spelling() {
+fn no_surface_introduces_a_bare_stats_spelling() -> Result<(), TestError> {
     for cap in CAPABILITIES {
         for surface in ["CLI", "REST", "MCP"] {
-            let cell = spelling(cap, surface).unwrap();
+            let cell = spelling(cap, surface)?
+                .ok_or_else(|| format!("{cap} has no {surface} row in the surfaces spec"))?;
             if cell.eq_ignore_ascii_case("not offered") {
                 continue;
             }
@@ -98,6 +102,7 @@ fn no_surface_introduces_a_bare_stats_spelling() {
             );
         }
     }
+    Ok(())
 }
 
 /// The TUI surface is real, not just a row in the doc: `S` from the call list
@@ -105,7 +110,7 @@ fn no_surface_introduces_a_bare_stats_spelling() {
 /// knows (C3) -- the two capabilities reachable without a loaded call. C2, C4
 /// and C5 are grounded in `tui_state_test` and `tui_relay_stats_test`.
 #[test]
-fn the_tui_cells_are_backed_by_a_real_view() {
+fn the_tui_cells_are_backed_by_a_real_view() -> Result<(), TestError> {
     let mut app = App::new_test();
     app.handle_key(KeyCode::Char('S'));
     assert_eq!(
@@ -125,4 +130,5 @@ fn the_tui_cells_are_backed_by_a_real_view() {
         },
         "C3: ? shows the names the relay knows"
     );
+    Ok(())
 }

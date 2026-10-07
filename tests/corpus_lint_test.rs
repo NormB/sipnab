@@ -32,6 +32,9 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 use sipnab::sip::lint::{Finding, LintConfig, Linter, ObservedMedia, ObservedRtcp, RULES};
 
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Files larger than this are skipped: the corpus root holds archives that are
 /// not captures, and the pure-Rust reader works from a whole-file slice.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
@@ -270,9 +273,9 @@ fn scan_corpus() -> Option<CorpusScan> {
 /// asked a question the capture cannot answer, and both are indistinguishable
 /// from a genuine epidemic until somebody reads the section.
 #[test]
-fn rule_hit_rates_are_plausible() {
+fn rule_hit_rates_are_plausible() -> Result<(), TestError> {
     let Some(scan) = scan_corpus() else {
-        return;
+        return Ok(());
     };
     assert!(scan.dialogs > 0, "corpus produced no dialogs");
 
@@ -302,6 +305,7 @@ fn rule_hit_rates_are_plausible() {
         "rules firing on more than {:.0}% of dialogs — investigate the rule, not the traffic: {implausible:?}",
         IMPLAUSIBLE_HIT_RATE * 100.0
     );
+    Ok(())
 }
 
 /// The observation rules had real media to read.
@@ -311,9 +315,9 @@ fn rule_hit_rates_are_plausible() {
 /// linking would turn every media rule silent and the hit table would call it a
 /// clean corpus.
 #[test]
-fn observation_rules_have_media_to_read() {
+fn observation_rules_have_media_to_read() -> Result<(), TestError> {
     let Some(scan) = scan_corpus() else {
-        return;
+        return Ok(());
     };
     assert!(
         scan.dialogs_with_media > 0,
@@ -323,6 +327,7 @@ fn observation_rules_have_media_to_read() {
         "{} of {} dialogs carried linked media ({} declared SDP)",
         scan.dialogs_with_media, scan.dialogs, scan.dialogs_with_sdp
     );
+    Ok(())
 }
 
 /// Linting the whole corpus never panics, and every finding carries a citation
@@ -331,9 +336,9 @@ fn observation_rules_have_media_to_read() {
 /// A finding whose `rule_id` is not in `RULES` cannot be suppressed, documented
 /// or looked up, which makes it worse than no finding at all.
 #[test]
-fn every_finding_is_wellformed() {
+fn every_finding_is_wellformed() -> Result<(), TestError> {
     let Some(root) = corpus_root() else {
-        return;
+        return Ok(());
     };
     let config = LintConfig::new();
     let mut checked = 0usize;
@@ -347,13 +352,13 @@ fn every_finding_is_wellformed() {
         };
         for (index, findings) in lint_capture(&ingested, &config) {
             for f in &findings {
-                let rule = sipnab::sip::lint::rule_by_id(f.rule_id).unwrap_or_else(|| {
-                    panic!(
+                let rule = sipnab::sip::lint::rule_by_id(f.rule_id).ok_or_else(|| {
+                    format!(
                         "{}: dialog {index} raised unknown rule {}",
                         path.display(),
                         f.rule_id
                     )
-                });
+                })?;
                 assert_eq!(f.rfc, rule.rfc, "{}: citation drift", f.rule_id);
                 assert_eq!(f.section, rule.section, "{}: citation drift", f.rule_id);
                 assert!(!f.observed.is_empty(), "{}: empty observation", f.rule_id);
@@ -368,6 +373,7 @@ fn every_finding_is_wellformed() {
         }
     }
     eprintln!("{checked} findings checked across the corpus");
+    Ok(())
 }
 
 /// Suppression works against real traffic, not only against fixtures.
@@ -375,9 +381,9 @@ fn every_finding_is_wellformed() {
 /// The corpus is where a suppression pattern that silences nothing, or
 /// everything, would show up.
 #[test]
-fn suppression_reduces_corpus_findings() {
+fn suppression_reduces_corpus_findings() -> Result<(), TestError> {
     let Some(root) = corpus_root() else {
-        return;
+        return Ok(());
     };
     let all = LintConfig::new();
     let quiet = LintConfig::new().suppress("OBS-*").suppress("SIP-*");
@@ -406,4 +412,5 @@ fn suppression_reduces_corpus_findings() {
         total_quiet < total_all,
         "suppressing SIP-* and OBS-* changed nothing: {total_all} before, {total_quiet} after"
     );
+    Ok(())
 }

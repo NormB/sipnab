@@ -28,13 +28,15 @@
 
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Files that generate Mermaid source from capture-derived text.
 const GENERATORS: &[&str] = &["src/wasm.rs", "src/tui/call_flow/export.rs"];
 
 /// Read a source file relative to the crate root.
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel} is readable: {e}"))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("{rel} is readable: {e}"))?)
 }
 
 /// No generator interpolates a capture-derived field into Mermaid source
@@ -43,10 +45,10 @@ fn read(rel: &str) -> String {
 /// `reason` is the sharpest case — it is a free-text field the sender writes,
 /// with no grammar constraining it — so it stands for the class.
 #[test]
-fn no_mermaid_generator_interpolates_an_unescaped_reason_phrase() {
+fn no_mermaid_generator_interpolates_an_unescaped_reason_phrase() -> Result<(), TestError> {
     let mut offenders: Vec<String> = Vec::new();
     for rel in GENERATORS {
-        let src = read(rel);
+        let src = read(rel)?;
         // A generator that DELEGATES to `crate::mermaid::sequence_diagram`
         // satisfies this rule at one remove: that function escapes every
         // message label and every participant label itself, which
@@ -132,6 +134,7 @@ fn no_mermaid_generator_interpolates_an_unescaped_reason_phrase() {
          routing it through the shared escaper:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// Exactly one escaper exists.
@@ -140,12 +143,12 @@ fn no_mermaid_generator_interpolates_an_unescaped_reason_phrase() {
 /// lives in an ungated module so both `native` and `wasm32` builds can reach
 /// it; a `fn escape_mermaid_label` defined anywhere else is a fork.
 #[test]
-fn the_mermaid_escaper_has_exactly_one_definition() {
+fn the_mermaid_escaper_has_exactly_one_definition() -> Result<(), TestError> {
     let mut definitions: Vec<String> = Vec::new();
     let mut stack = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src/ is readable") {
-            let path = entry.expect("entry").path();
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("src/ is readable: {e}"))? {
+            let path = entry?.path();
             if path.is_dir() {
                 stack.push(path);
                 continue;
@@ -153,7 +156,8 @@ fn the_mermaid_escaper_has_exactly_one_definition() {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).expect("readable");
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("{} readable: {e}", path.display()))?;
             for line in text.lines() {
                 let t = line.trim_start();
                 // Exact, not a prefix. The first version of this check used
@@ -175,6 +179,7 @@ fn the_mermaid_escaper_has_exactly_one_definition() {
         1,
         "the Mermaid escaper must have exactly one definition, found: {definitions:?}"
     );
+    Ok(())
 }
 
 /// No generator builds Mermaid source itself; every one delegates.
@@ -191,10 +196,10 @@ fn the_mermaid_escaper_has_exactly_one_definition() {
 /// literal is the signature of a hand-rolled generator, and the shared entry
 /// point is the only place it belongs.
 #[test]
-fn no_generator_emits_the_diagram_header_itself() {
+fn no_generator_emits_the_diagram_header_itself() -> Result<(), TestError> {
     let mut offenders: Vec<String> = Vec::new();
     for rel in GENERATORS {
-        let whole = read(rel);
+        let whole = read(rel)?;
         // Production only. A test that asserts the header appears in the
         // OUTPUT is the test doing its job, and a scanner that counts its own
         // fixtures is measuring itself.
@@ -217,6 +222,7 @@ fn no_generator_emits_the_diagram_header_itself() {
          positional ids do not reach them:\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// Every generator names the shared entry point.
@@ -225,15 +231,16 @@ fn no_generator_emits_the_diagram_header_itself() {
 /// the gate above while producing no diagram at all, and a file that stopped
 /// exporting entirely would look identical to one that was fixed.
 #[test]
-fn every_generator_calls_the_shared_diagram_builder() {
+fn every_generator_calls_the_shared_diagram_builder() -> Result<(), TestError> {
     for rel in GENERATORS {
-        let src = read(rel);
+        let src = read(rel)?;
         assert!(
             src.contains("sequence_diagram"),
             "{rel} generates Mermaid but never calls the shared builder, so \
              nothing gives it a cap"
         );
     }
+    Ok(())
 }
 
 /// The shipped cap stays under the renderer's own ceiling.
@@ -242,8 +249,8 @@ fn every_generator_calls_the_shared_diagram_builder() {
 /// reader looks for the renderer's limits, and because the number that matters
 /// is the one in the vendored bundle rather than a remembered one.
 #[test]
-fn the_message_cap_is_below_the_vendored_renderers_ceiling() {
-    let bundle = read("website/static/js/mermaid.min.js");
+fn the_message_cap_is_below_the_vendored_renderers_ceiling() -> Result<(), TestError> {
+    let bundle = read("website/static/js/mermaid.min.js")?;
     let declared = bundle
         .find("maxEdges:")
         .map(|i| {
@@ -253,7 +260,7 @@ fn the_message_cap_is_below_the_vendored_renderers_ceiling() {
                 .collect::<String>()
         })
         .and_then(|d| d.parse::<usize>().ok())
-        .expect("the vendored bundle declares maxEdges");
+        .ok_or("the vendored bundle declares maxEdges")?;
 
     assert_eq!(
         declared,
@@ -266,4 +273,5 @@ fn the_message_cap_is_below_the_vendored_renderers_ceiling() {
         "the shipped cap ({}) must stay under the renderer's ceiling ({declared})",
         sipnab::mermaid::MAX_MESSAGES
     );
+    Ok(())
 }

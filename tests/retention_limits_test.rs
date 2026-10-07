@@ -46,6 +46,9 @@ use sipnab::sip::dialog_store::{
     set_keep_messages_per_idle_dialog,
 };
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 #[cfg(feature = "native")]
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -67,7 +70,7 @@ fn fixture(name: &str) -> String {
 #[cfg(feature = "native")]
 fn store_with_long_dialog(
     target: usize,
-) -> (DialogStore, String, usize, chrono::DateTime<chrono::Utc>) {
+) -> Result<(DialogStore, String, usize, chrono::DateTime<chrono::Utc>), TestError> {
     use sipnab::capture::parse::parse_packet;
     use sipnab::pipeline::{self, PacketAction, PipelineOptions};
     use sipnab::rtp::heuristic::RtpHeuristic;
@@ -92,9 +95,9 @@ fn store_with_long_dialog(
     }
     let _ = reader.join();
 
-    let call_id = store.iter().next().expect("a dialog").call_id.clone();
+    let call_id = store.iter().next().ok_or("a dialog")?.call_id.clone();
     let (grown_to, updated_at) = {
-        let d = store.get_mut(&call_id).expect("dialog");
+        let d = store.get_mut(&call_id).ok_or("dialog")?;
         let seed: Vec<_> = d.messages.clone();
         assert!(
             !seed.is_empty(),
@@ -105,7 +108,7 @@ fn store_with_long_dialog(
         }
         (d.messages.len(), d.updated_at)
     };
-    (store, call_id, grown_to, updated_at)
+    Ok((store, call_id, grown_to, updated_at))
 }
 
 /// Raising `keep_messages_per_idle_dialog` keeps more of the ladder.
@@ -118,9 +121,9 @@ fn store_with_long_dialog(
 #[test]
 #[cfg(feature = "native")]
 #[serial_test::serial(dialog_retention_knobs)]
-fn raising_the_keep_limit_keeps_more_of_the_ladder() {
+fn raising_the_keep_limit_keeps_more_of_the_ladder() -> Result<(), TestError> {
     let raised = DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 4;
-    let (mut store, call_id, grown_to, updated_at) = store_with_long_dialog(raised * 2);
+    let (mut store, call_id, grown_to, updated_at) = store_with_long_dialog(raised * 2)?;
 
     set_keep_messages_per_idle_dialog(raised);
     assert_eq!(keep_messages_per_idle_dialog(), raised);
@@ -133,7 +136,7 @@ fn raising_the_keep_limit_keeps_more_of_the_ladder() {
         "compaction evicted nothing from a {grown_to}-message dialog, so this \
          test proves nothing about the keep-limit"
     );
-    let survived = store.get(&call_id).expect("dialog").messages.len();
+    let survived = store.get(&call_id).ok_or("dialog")?.messages.len();
     assert_eq!(
         survived, raised,
         "compaction honored neither the raised limit nor the default; it left \
@@ -146,6 +149,7 @@ fn raising_the_keep_limit_keeps_more_of_the_ladder() {
     );
 
     set_keep_messages_per_idle_dialog(DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG);
+    Ok(())
 }
 
 /// Raising `idle_compact_after_secs` puts a dialog back OUTSIDE the window.
@@ -156,10 +160,10 @@ fn raising_the_keep_limit_keeps_more_of_the_ladder() {
 #[test]
 #[cfg(feature = "native")]
 #[serial_test::serial(dialog_retention_knobs)]
-fn widening_the_idle_window_spares_a_quiet_dialog() {
+fn widening_the_idle_window_spares_a_quiet_dialog() -> Result<(), TestError> {
     let (mut store, call_id, _, updated_at) =
-        store_with_long_dialog(DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 3);
-    let before = store.get(&call_id).expect("dialog").messages.len();
+        store_with_long_dialog(DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 3)?;
+    let before = store.get(&call_id).ok_or("dialog")?.messages.len();
 
     // Twenty minutes of silence: past the ten-minute default, inside an hour.
     let quiet_for = chrono::TimeDelta::minutes(20);
@@ -179,7 +183,7 @@ fn widening_the_idle_window_spares_a_quiet_dialog() {
         "a dialog quiet for 20 minutes was compacted against a 1-hour window"
     );
     assert_eq!(
-        store.get(&call_id).expect("dialog").messages.len(),
+        store.get(&call_id).ok_or("dialog")?.messages.len(),
         before,
         "messages were dropped from a dialog inside the idle window"
     );
@@ -194,6 +198,7 @@ fn widening_the_idle_window_spares_a_quiet_dialog() {
         "nothing was evicted under the default window either, so the previous \
          assertion did not measure the window"
     );
+    Ok(())
 }
 
 /// Zero is refused on both keys, and refused for a stated reason.
@@ -202,14 +207,15 @@ fn widening_the_idle_window_spares_a_quiet_dialog() {
 /// the exact opposite — compact every dialog on every sweep, including one
 /// still being written to. An operator who types it must be told, not obeyed.
 #[test]
-fn zero_is_refused_on_both_retention_keys() {
+fn zero_is_refused_on_both_retention_keys() -> Result<(), TestError> {
     let mut limits = sipnab::config::LimitsConfig::default();
     assert!(limits.validate().is_ok(), "an empty [limits] must be valid");
 
     limits.idle_compact_after_secs = Some(0);
     let err = limits
         .validate()
-        .expect_err("idle_compact_after_secs = 0 must be refused")
+        .err()
+        .ok_or("idle_compact_after_secs = 0 must be refused")?
         .to_string();
     assert!(
         err.contains("idle_compact_after_secs"),
@@ -220,7 +226,8 @@ fn zero_is_refused_on_both_retention_keys() {
     limits.keep_messages_per_idle_dialog = Some(0);
     let err = limits
         .validate()
-        .expect_err("keep_messages_per_idle_dialog = 0 must be refused")
+        .err()
+        .ok_or("keep_messages_per_idle_dialog = 0 must be refused")?
         .to_string();
     assert!(
         err.contains("keep_messages_per_idle_dialog"),
@@ -234,4 +241,5 @@ fn zero_is_refused_on_both_retention_keys() {
         limits.validate().is_ok(),
         "a valid retention pair was refused"
     );
+    Ok(())
 }

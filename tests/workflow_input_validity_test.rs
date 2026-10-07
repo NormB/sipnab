@@ -25,13 +25,15 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn workflow(name: &str) -> String {
+fn workflow(name: &str) -> Result<String, TestError> {
     let p = repo().join(".github/workflows").join(name);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `with:` key given to one action in one workflow.
@@ -125,8 +127,8 @@ const BUILD_PUSH_INPUTS: &[&str] = &[
 /// The defect: `no-cache-filter` singular. Unknown inputs warn rather than
 /// fail, so the step stayed green while doing nothing.
 #[test]
-fn every_build_push_input_is_one_the_action_reads() {
-    let text = workflow("docker.yml");
+fn every_build_push_input_is_one_the_action_reads() -> Result<(), TestError> {
+    let text = workflow("docker.yml")?;
     let used = keys_for_action(&text, "docker/build-push-action");
     assert!(
         !used.is_empty(),
@@ -142,14 +144,15 @@ fn every_build_push_input_is_one_the_action_reads() {
         "these inputs are not read by docker/build-push-action, and an unknown \
          input only WARNS: {unknown:?}"
     );
+    Ok(())
 }
 
 /// GIVEN the cache-busting input
 /// WHEN its exact spelling is checked
 /// THEN it is the plural one.
 #[test]
-fn the_cache_bust_input_is_spelled_plural() {
-    let text = workflow("docker.yml");
+fn the_cache_bust_input_is_spelled_plural() -> Result<(), TestError> {
+    let text = workflow("docker.yml")?;
     assert!(
         text.contains("no-cache-filters:"),
         "the cache-bust is missing or singular"
@@ -158,6 +161,7 @@ fn the_cache_bust_input_is_spelled_plural() {
         !text.contains("no-cache-filter:"),
         "the singular spelling is not an input and does nothing"
     );
+    Ok(())
 }
 
 /// GIVEN the stage the cache-bust names
@@ -167,9 +171,9 @@ fn the_cache_bust_input_is_spelled_plural() {
 /// A filter naming a stage that does not exist is the same silent no-op by
 /// another route: buildx has nothing to exclude and says nothing about it.
 #[test]
-fn the_cache_bust_names_a_stage_that_exists() {
-    let text = workflow("docker.yml");
-    let dockerfile = std::fs::read_to_string(repo().join("Dockerfile")).expect("Dockerfile");
+fn the_cache_bust_names_a_stage_that_exists() -> Result<(), TestError> {
+    let text = workflow("docker.yml")?;
+    let dockerfile = std::fs::read_to_string(repo().join("Dockerfile"))?;
     for line in text.lines() {
         if let Some(stage) = line.trim().strip_prefix("no-cache-filters:") {
             let stage = stage.trim();
@@ -180,6 +184,7 @@ fn the_cache_bust_names_a_stage_that_exists() {
             );
         }
     }
+    Ok(())
 }
 
 // ── The scan that tested a stale image ───────────────────────────────────────
@@ -193,8 +198,8 @@ fn the_cache_bust_names_a_stage_that_exists() {
 /// filled. It passed for weeks and then failed with the image two point
 /// releases behind.
 #[test]
-fn the_package_upgrade_layer_is_never_served_from_cache() {
-    let dockerfile = std::fs::read_to_string(repo().join("Dockerfile")).expect("Dockerfile");
+fn the_package_upgrade_layer_is_never_served_from_cache() -> Result<(), TestError> {
+    let dockerfile = std::fs::read_to_string(repo().join("Dockerfile"))?;
     assert!(
         dockerfile.contains("apt-get upgrade"),
         "the runtime stage no longer upgrades; this test is guarding nothing"
@@ -203,11 +208,12 @@ fn the_package_upgrade_layer_is_never_served_from_cache() {
         dockerfile.contains("AS runtime"),
         "the upgrading stage must be NAMED, or the build cannot exclude it"
     );
-    let text = workflow("docker.yml");
+    let text = workflow("docker.yml")?;
     assert!(
         text.contains("no-cache-filters: runtime"),
         "the stage that upgrades packages is being served from cache"
     );
+    Ok(())
 }
 
 /// GIVEN every build step in the docker workflow
@@ -217,8 +223,8 @@ fn the_package_upgrade_layer_is_never_served_from_cache() {
 /// One step fixed and another left cached would mean the scanned image and the
 /// published image were built differently, which is worse than either.
 #[test]
-fn every_build_step_busts_the_same_cache() {
-    let text = workflow("docker.yml");
+fn every_build_step_busts_the_same_cache() -> Result<(), TestError> {
+    let text = workflow("docker.yml")?;
     let builds = text.matches("docker/build-push-action").count();
     let busts = text.matches("no-cache-filters: runtime").count();
     assert!(
@@ -230,18 +236,20 @@ fn every_build_step_busts_the_same_cache() {
         "{builds} build step(s) and {busts} cache-bust(s): the scanned image \
          and the published image would not be built the same way"
     );
+    Ok(())
 }
 
 /// GIVEN the scan step
 /// WHEN its settings are read
 /// THEN it fails the build and ignores only what cannot be acted on.
 #[test]
-fn the_scan_can_still_fail_the_build() {
-    let text = workflow("docker.yml");
+fn the_scan_can_still_fail_the_build() -> Result<(), TestError> {
+    let text = workflow("docker.yml")?;
     assert!(text.contains("ignore-unfixed: true"));
     assert!(
         text.contains("exit-code: '1'"),
         "a scan that cannot fail the build is a report, not a gate"
     );
     assert!(text.contains("severity: HIGH,CRITICAL"));
+    Ok(())
 }

@@ -14,14 +14,16 @@ use std::path::Path;
 
 use sipnab::security::tfps::TfpsCommand;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[test]
-fn the_config_reference_describes_the_db_argument_as_sipnab_passes_it() {
+fn the_config_reference_describes_the_db_argument_as_sipnab_passes_it() -> Result<(), TestError> {
     let db = Path::new("/var/lib/tfps/tfps.db");
     let argv = TfpsCommand::Status.argv(Some(db));
     let at = argv
         .iter()
         .position(|a| a == "--db")
-        .expect("sipnab passes --db when a database is configured");
+        .ok_or("sipnab passes --db when a database is configured")?;
     assert_eq!(
         argv.get(at + 1),
         Some(&OsString::from(db.as_os_str())),
@@ -30,15 +32,15 @@ fn the_config_reference_describes_the_db_argument_as_sipnab_passes_it() {
 
     let page = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/config-reference.md"),
-    )
-    .expect("read docs/config-reference.md");
+    )?;
     let row = page
         .lines()
         .find(|l| l.starts_with("| `db` |"))
-        .expect("the [tfps] db row");
+        .ok_or("the [tfps] db row")?;
     assert!(
         row.contains("`--db <path>`") && !row.contains("--db="),
         "the [tfps] db row must describe the two-argument form sipnab builds \
          ({argv:?}), not --db=<path>:\n{row}"
     );
+    Ok(())
 }

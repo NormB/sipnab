@@ -13,6 +13,9 @@ use serde_json::json;
 use sipnab::journal::Record;
 use sipnab::journal::ledger::{Ledger, Resolution, TfpsView};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 const T0: u64 = 1_790_600_000;
 
 fn rec(seq: u64, kind: &str, body: serde_json::Value) -> Record {
@@ -51,7 +54,7 @@ fn outcome(seq: u64, id: &str, result: &str) -> Record {
 // ── what is owned ────────────────────────────────────────────────────────
 
 #[test]
-fn an_applied_ban_is_owned_until_it_expires() {
+fn an_applied_ban_is_owned_until_it_expires() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -59,7 +62,7 @@ fn an_applied_ban_is_owned_until_it_expires() {
         ],
         T0 + 10,
     );
-    let owned = l.owned("198.51.100.20").expect("owned");
+    let owned = l.owned("198.51.100.20").ok_or("owned")?;
     assert_eq!(owned.id, "a-1");
     assert_eq!(owned.expires, T0 + 3600);
     let later = Ledger::from_records(
@@ -73,10 +76,11 @@ fn an_applied_ban_is_owned_until_it_expires() {
         later.owned("198.51.100.20").is_none(),
         "expired, so no longer in force"
     );
+    Ok(())
 }
 
 #[test]
-fn a_refused_or_failed_ban_is_not_owned() {
+fn a_refused_or_failed_ban_is_not_owned() -> Result<(), TestError> {
     for result in ["refused", "failed"] {
         let l = Ledger::from_records(
             &[
@@ -87,10 +91,11 @@ fn a_refused_or_failed_ban_is_not_owned() {
         );
         assert!(l.owned("198.51.100.20").is_none(), "{result}");
     }
+    Ok(())
 }
 
 #[test]
-fn an_applied_unban_ends_ownership() {
+fn an_applied_unban_ends_ownership() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -101,10 +106,11 @@ fn an_applied_unban_ends_ownership() {
         T0 + 70,
     );
     assert!(l.owned("198.51.100.20").is_none());
+    Ok(())
 }
 
 #[test]
-fn a_ban_tfps_dropped_early_is_no_longer_owned() {
+fn a_ban_tfps_dropped_early_is_no_longer_owned() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -118,10 +124,11 @@ fn a_ban_tfps_dropped_early_is_no_longer_owned() {
         T0 + 70,
     );
     assert!(l.owned("198.51.100.20").is_none());
+    Ok(())
 }
 
 #[test]
-fn owned_bans_are_listed_newest_first_for_revert_all() {
+fn owned_bans_are_listed_newest_first_for_revert_all() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -137,12 +144,13 @@ fn owned_bans_are_listed_newest_first_for_revert_all() {
         .map(|o| o.id.as_str())
         .collect();
     assert_eq!(ids, ["a-2", "a-1"]);
+    Ok(())
 }
 
 // ── what is in doubt ─────────────────────────────────────────────────────
 
 #[test]
-fn an_intent_with_no_outcome_is_in_doubt() {
+fn an_intent_with_no_outcome_is_in_doubt() -> Result<(), TestError> {
     let l = Ledger::from_records(&[ban_intent(1, "a-1", "198.51.100.20", T0, 3600)], T0 + 10);
     let doubt = l.in_doubt();
     assert_eq!(doubt.len(), 1);
@@ -151,10 +159,11 @@ fn an_intent_with_no_outcome_is_in_doubt() {
         l.owned("198.51.100.20").is_none(),
         "not owned until resolved"
     );
+    Ok(())
 }
 
 #[test]
-fn a_reconciled_intent_is_no_longer_in_doubt() {
+fn a_reconciled_intent_is_no_longer_in_doubt() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -171,10 +180,11 @@ fn a_reconciled_intent_is_no_longer_in_doubt() {
         l.owned("198.51.100.20").is_some(),
         "reconciled as applied: owned"
     );
+    Ok(())
 }
 
 #[test]
-fn an_unknown_resolution_is_listed_and_never_owned() {
+fn an_unknown_resolution_is_listed_and_never_owned() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -188,6 +198,7 @@ fn an_unknown_resolution_is_listed_and_never_owned() {
     );
     assert!(l.owned("198.51.100.20").is_none());
     assert_eq!(l.unknown().len(), 1);
+    Ok(())
 }
 
 // ── resolving an action left in doubt (the spec's table) ─────────────────
@@ -197,7 +208,7 @@ fn intent_of(r: &Record) -> sipnab::journal::ledger::Intent {
 }
 
 #[test]
-fn every_row_of_the_in_doubt_table() {
+fn every_row_of_the_in_doubt_table() -> Result<(), TestError> {
     let ban = intent_of(&ban_intent(1, "a-1", "198.51.100.20", T0, 3600));
     let unban = intent_of(&unban_intent(1, "a-2", "198.51.100.20", T0));
     let banned = |expires: Option<u64>| TfpsView::Banned { expires };
@@ -228,12 +239,13 @@ fn every_row_of_the_in_doubt_table() {
     );
     assert_eq!(ban.resolve(TfpsView::Unreachable), None, "stays in doubt");
     assert_eq!(unban.resolve(TfpsView::Unreachable), None, "stays in doubt");
+    Ok(())
 }
 
 // ── limits rebuilt after a restart ───────────────────────────────────────
 
 #[test]
-fn the_last_minute_of_actions_is_available_to_rebuild_the_limits() {
+fn the_last_minute_of_actions_is_available_to_rebuild_the_limits() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -248,10 +260,11 @@ fn the_last_minute_of_actions_is_available_to_rebuild_the_limits() {
     assert_eq!(recent[0].address, "198.51.100.21");
     assert_eq!(recent[0].caller, "token:ops");
     assert_eq!(recent[0].at, T0 + 50);
+    Ok(())
 }
 
 #[test]
-fn refused_actions_count_for_nothing_when_rebuilding_limits() {
+fn refused_actions_count_for_nothing_when_rebuilding_limits() -> Result<(), TestError> {
     let l = Ledger::from_records(
         &[rec(
             1,
@@ -261,12 +274,13 @@ fn refused_actions_count_for_nothing_when_rebuilding_limits() {
         T0 + 1,
     );
     assert!(l.recent_actions(T0 + 1, 60).is_empty());
+    Ok(())
 }
 
 // ── checkpoints ──────────────────────────────────────────────────────────
 
 #[test]
-fn a_checkpoint_carries_owned_bans_forward_and_round_trips() {
+fn a_checkpoint_carries_owned_bans_forward_and_round_trips() -> Result<(), TestError> {
     let before = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -278,21 +292,23 @@ fn a_checkpoint_carries_owned_bans_forward_and_round_trips() {
     let after = Ledger::from_records(&[rec(9, "checkpoint", json!({"state": state}))], T0 + 20);
     let owned = after
         .owned("198.51.100.20")
-        .expect("carried by the checkpoint");
+        .ok_or("carried by the checkpoint")?;
     assert_eq!(owned.id, "a-1");
     assert_eq!(owned.expires, T0 + 3600);
+    Ok(())
 }
 
 #[test]
-fn a_checkpoint_carries_actions_still_in_doubt() {
+fn a_checkpoint_carries_actions_still_in_doubt() -> Result<(), TestError> {
     let before = Ledger::from_records(&[ban_intent(1, "a-1", "198.51.100.20", T0, 3600)], T0 + 1);
     let state = before.checkpoint_state();
     let after = Ledger::from_records(&[rec(9, "checkpoint", json!({"state": state}))], T0 + 2);
     assert_eq!(after.in_doubt().len(), 1);
+    Ok(())
 }
 
 #[test]
-fn records_after_a_checkpoint_apply_on_top_of_it() {
+fn records_after_a_checkpoint_apply_on_top_of_it() -> Result<(), TestError> {
     let before = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -309,16 +325,18 @@ fn records_after_a_checkpoint_apply_on_top_of_it() {
         T0 + 70,
     );
     assert!(after.owned("198.51.100.20").is_none());
+    Ok(())
 }
 
 #[test]
-fn an_unrecognized_record_kind_is_ignored_not_fatal() {
+fn an_unrecognized_record_kind_is_ignored_not_fatal() -> Result<(), TestError> {
     let l = Ledger::from_records(&[rec(1, "run_start", json!({"version": "0.5.196"}))], T0);
     assert!(l.in_doubt().is_empty());
+    Ok(())
 }
 
 #[test]
-fn a_checkpoint_never_carries_a_ban_that_has_expired() {
+fn a_checkpoint_never_carries_a_ban_that_has_expired() -> Result<(), TestError> {
     // The purge on reading the clock: an expired ban must not travel forward
     // in a checkpoint and be read back as state.
     let l = Ledger::from_records(
@@ -334,10 +352,11 @@ fn a_checkpoint_never_carries_a_ban_that_has_expired() {
         json!({}),
         "an expired ban must not be carried forward as owned: {state}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_ban_already_expired_when_its_record_arrives_is_not_owned() {
+fn a_ban_already_expired_when_its_record_arrives_is_not_owned() -> Result<(), TestError> {
     // Applied at runtime, after the ledger's clock was set: the answer must
     // still respect expiry, whatever order records and the clock arrive in.
     let mut l = Ledger::from_records(&[], T0 + 7200);
@@ -345,10 +364,12 @@ fn a_ban_already_expired_when_its_record_arrives_is_not_owned() {
     l.apply(&outcome(2, "a-1", "applied"));
     assert!(l.owned("198.51.100.20").is_none());
     assert!(l.owned_newest_first().is_empty());
+    Ok(())
 }
 
 #[test]
-fn tfps_dropping_an_old_ban_does_not_end_a_newer_one_on_the_same_address() {
+fn tfps_dropping_an_old_ban_does_not_end_a_newer_one_on_the_same_address() -> Result<(), TestError>
+{
     let l = Ledger::from_records(
         &[
             ban_intent(1, "a-1", "198.51.100.20", T0, 3600),
@@ -366,4 +387,5 @@ fn tfps_dropping_an_old_ban_does_not_end_a_newer_one_on_the_same_address() {
         T0 + 30,
     );
     assert_eq!(l.owned("198.51.100.20").map(|o| o.id.as_str()), Some("a-3"));
+    Ok(())
 }

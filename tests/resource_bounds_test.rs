@@ -21,6 +21,10 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 use sipnab::sip::parser::parse_sip;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Number of unique hostile identities (Call-IDs / SSRCs) each flood sends.
 const FLOOD: usize = 50_000;
 /// Store capacity the flood must never exceed.
@@ -43,8 +47,8 @@ fn invite_bytes(call_id: &str) -> Vec<u8> {
 
 /// Parses the crafted INVITE for `call_id` into a `SipMessage` via the real
 /// `parse_sip` entry point.
-fn parse_invite(call_id: &str) -> sipnab::sip::SipMessage {
-    parse_sip(
+fn parse_invite(call_id: &str) -> Result<sipnab::sip::SipMessage, TestError> {
+    Ok(parse_sip(
         &invite_bytes(call_id),
         Utc::now(),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -52,17 +56,16 @@ fn parse_invite(call_id: &str) -> sipnab::sip::SipMessage {
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("crafted INVITE must parse")
+    )?)
 }
 
 /// rotate=true (LRU eviction): a unique-Call-ID flood is capped at
 /// `max_dialogs`; the table never exceeds the cap.
 #[test]
-fn dialog_flood_bounded_with_rotate() {
+fn dialog_flood_bounded_with_rotate() -> Result<(), TestError> {
     let mut store = DialogStore::new(CAP, true);
     for i in 0..FLOOD {
-        store.process_message(parse_invite(&format!("flood-{i}")));
+        store.process_message(parse_invite(&format!("flood-{i}"))?);
         // Invariant must hold at EVERY step, not just at the end.
         assert!(
             store.len() <= CAP,
@@ -81,16 +84,17 @@ fn dialog_flood_bounded_with_rotate() {
         "store should be saturated to within one eviction batch of the cap: len={}",
         store.len()
     );
+    Ok(())
 }
 
 /// rotate=false (drop-new): a unique-Call-ID flood is still bounded —
 /// new dialogs are dropped at capacity rather than evicting, but memory
 /// never grows past the cap.
 #[test]
-fn dialog_flood_bounded_without_rotate() {
+fn dialog_flood_bounded_without_rotate() -> Result<(), TestError> {
     let mut store = DialogStore::new(CAP, false);
     for i in 0..FLOOD {
-        store.process_message(parse_invite(&format!("flood-{i}")));
+        store.process_message(parse_invite(&format!("flood-{i}"))?);
         assert!(
             store.len() <= CAP,
             "dialog store exceeded cap: len={} cap={} at i={}",
@@ -109,6 +113,7 @@ fn dialog_flood_bounded_without_rotate() {
         "drop-new store should be saturated at exactly the cap: len={}",
         store.len()
     );
+    Ok(())
 }
 
 /// A valid RTP packet (V=2, PT=0) with the given SSRC/seq and a 160-byte
@@ -157,12 +162,12 @@ fn parsed_for(ssrc: u32, payload: Vec<u8>) -> ParsedPacket {
 /// A unique-SSRC flood is capped at `max_streams`; the RTP stream table
 /// never exceeds the cap (always-evict policy).
 #[test]
-fn rtp_stream_flood_bounded() {
+fn rtp_stream_flood_bounded() -> Result<(), TestError> {
     let mut store = StreamStore::new(CAP);
     for i in 0..FLOOD as u32 {
         let pkt = rtp_packet(i, (i & 0xffff) as u16);
         let parsed = parsed_for(i, pkt.clone());
-        let hdr = parse_rtp_header(&pkt).expect("crafted RTP must parse");
+        let hdr = parse_rtp_header(&pkt)?;
         store.process_rtp(&parsed, &hdr, parsed.timestamp);
         assert!(
             store.len() <= CAP,
@@ -177,6 +182,7 @@ fn rtp_stream_flood_bounded() {
         CAP,
         "stream store should be saturated at the cap"
     );
+    Ok(())
 }
 
 /// A HEP listener's sender roster under a spoofed flood: every packet claims a
@@ -195,7 +201,7 @@ fn rtp_stream_flood_bounded() {
 /// flood.
 #[cfg(feature = "hep")]
 #[test]
-fn hep_sender_roster_flood_bounded() {
+fn hep_sender_roster_flood_bounded() -> Result<(), TestError> {
     use sipnab::capture::hep_roster::{
         HEP_REFUSED_SOURCES_TRACKED, HepRefusal, RosterState, SenderTrust, hep_source_label,
     };
@@ -250,4 +256,5 @@ fn hep_sender_roster_flood_bounded() {
         Some(FLOOD as u64),
         "the reason totals keep every refusal the table evicted"
     );
+    Ok(())
 }

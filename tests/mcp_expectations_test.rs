@@ -22,7 +22,7 @@
 #[path = "support/mcp.rs"]
 mod mcp;
 
-use mcp::McpSession;
+use mcp::{McpSession, TestError};
 
 /// 4 dialogs: three OPTIONS pings and one INVITE that ends 488.
 ///
@@ -63,16 +63,16 @@ fn one(rule: serde_json::Value) -> serde_json::Value {
 /// Both halves against one capture and one session, so a verdict that ignored
 /// the scope, or one wired to a constant, cannot satisfy both.
 #[test]
-fn the_gate_goes_red_on_the_capture_that_violates_it() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
+fn the_gate_goes_red_on_the_capture_that_violates_it() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
 
-    let red = s.ok_or_panic(
+    let red = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "count", "op": "==", "value": 0,
             "scope": "filter:response_code == 488"
         })),
-    );
+    )?;
     assert_eq!(red["verdict"], "fail", "{red}");
     assert_eq!(red["exit_code"], 1, "{red}");
     assert_eq!(red["results"][0]["observed"], 1.0, "{red}");
@@ -81,16 +81,17 @@ fn the_gate_goes_red_on_the_capture_that_violates_it() {
         "the population is the whole capture: {red}"
     );
 
-    let green = s.ok_or_panic(
+    let green = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "count", "op": "==", "value": 0,
             "scope": "filter:response_code == 503"
         })),
-    );
+    )?;
     assert_eq!(green["verdict"], "pass", "{green}");
     assert_eq!(green["exit_code"], 0, "{green}");
     assert_eq!(green["results"][0]["observed"], 0.0, "{green}");
+    Ok(())
 }
 
 /// An ASR gate on a capture with no INVITE fails as unevaluable, and declaring
@@ -100,13 +101,13 @@ fn the_gate_goes_red_on_the_capture_that_violates_it() {
 /// exit code, because a file of rules that never ran is the shape a gate takes
 /// when it has quietly stopped guarding anything.
 #[test]
-fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() {
-    let mut s = McpSession::start_or_panic(REGISTERS, &[]);
+fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() -> Result<(), TestError> {
+    let mut s = McpSession::start(REGISTERS, &[])?;
 
-    let unevaluable = s.ok_or_panic(
+    let unevaluable = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({ "metric": "asr", "op": ">=", "value": 0.99 })),
-    );
+    )?;
     assert_eq!(
         unevaluable["verdict"], "fail",
         "1334 dialogs and no INVITE among them: the threshold rests on nothing, \
@@ -126,16 +127,17 @@ fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() {
          {unevaluable}"
     );
 
-    let declared = s.ok_or_panic(
+    let declared = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "asr", "op": ">=", "value": 0.99, "min_sample": 50
         })),
-    );
+    )?;
     assert_eq!(declared["results"][0]["verdict"], "skipped", "{declared}");
     assert_eq!(declared["passed"], 0, "a skip is not a pass: {declared}");
     assert_eq!(declared["verdict"], "not_evaluated", "{declared}");
     assert_eq!(declared["exit_code"], 2, "{declared}");
+    Ok(())
 }
 
 /// `grounded_only` decides the answer, and the same rule flips verdict with it.
@@ -145,13 +147,13 @@ fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() {
 /// scores are admitted. A `grounded_only` that parsed and did nothing would
 /// give the same verdict twice.
 #[test]
-fn grounded_only_changes_the_verdict_it_is_supposed_to_change() {
-    let mut s = McpSession::start_or_panic(CODECS, &[]);
+fn grounded_only_changes_the_verdict_it_is_supposed_to_change() -> Result<(), TestError> {
+    let mut s = McpSession::start(CODECS, &[])?;
 
-    let grounded = s.ok_or_panic(
+    let grounded = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({ "metric": "mos_p0", "op": ">=", "value": 4.3 })),
-    );
+    )?;
     assert_eq!(
         grounded["verdict"], "pass",
         "the two PCMU streams score ~4.358: {grounded}"
@@ -165,68 +167,71 @@ fn grounded_only_changes_the_verdict_it_is_supposed_to_change() {
         "and the answer says what it could not judge: {grounded}"
     );
 
-    let everything = s.ok_or_panic(
+    let everything = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "mos_p0", "op": ">=", "value": 4.3, "grounded_only": false
         })),
-    );
+    )?;
     assert_eq!(
         everything["verdict"], "fail",
         "admitting the G.722 placeholder (~4.223) breaks the threshold: \
          {everything}"
     );
     assert_eq!(everything["results"][0]["sample"], 4, "{everything}");
+    Ok(())
 }
 
 /// A count rule on a capture holding no dialogs fails rather than passing on an
 /// empty store.
 #[test]
-fn a_count_gate_on_a_capture_with_no_dialogs_is_unevaluable() {
-    let mut s = McpSession::start_or_panic(CODECS, &[]);
-    let v = s.ok_or_panic(
+fn a_count_gate_on_a_capture_with_no_dialogs_is_unevaluable() -> Result<(), TestError> {
+    let mut s = McpSession::start(CODECS, &[])?;
+    let v = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "count", "op": "==", "value": 0,
             "scope": "filter:state == 'Failed'"
         })),
-    );
+    )?;
     assert_eq!(
         v["verdict"], "fail",
         "no dialog was judged, so 'zero failures' is a claim about nothing: {v}"
     );
     assert_eq!(v["dialogs_in_capture"], 0, "{v}");
+    Ok(())
 }
 
 /// A malformed rule is refused outright, not evaluated in part.
 #[test]
-fn a_malformed_rule_refuses_the_whole_suite() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
-    let msg = s.call_or_panic(
+fn a_malformed_rule_refuses_the_whole_suite() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
+    let msg = s.call(
         "evaluate_expectations",
         serde_json::json!({ "rules": [
             { "metric": "count", "op": "==", "value": 0 },
             { "metric": "count", "op": "==", "value": 0, "scope": "filter:not a filter" }
         ]}),
-    );
+    )?;
     assert_eq!(
         msg["error"]["code"], -32602,
         "one bad rule must refuse the run rather than let the good one report \
          green: {msg}"
     );
+    Ok(())
 }
 
 /// A `lint_errors` rule reads the linter and reports the severity floor it
 /// counted from.
 #[test]
-fn a_lint_gate_counts_findings_at_the_declared_severity() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
-    let v = s.ok_or_panic(
+fn a_lint_gate_counts_findings_at_the_declared_severity() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
+    let v = s.ok(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "lint_errors", "op": ">=", "value": 0, "scope": "severity:info"
         })),
-    );
+    )?;
     assert_eq!(v["results"][0]["verdict"], "pass", "{v}");
     assert_eq!(
         v["results"][0]["sample"], 4,
@@ -242,18 +247,19 @@ fn a_lint_gate_counts_findings_at_the_declared_severity() {
         v["suppressions_applied"], false,
         "no .sipnablint sits beside this fixture: {v}"
     );
+    Ok(())
 }
 
 /// The repro scenario for a real rejected call asserts the real rejection, and
 /// pinning carries that call's own SDP into it.
 #[test]
-fn a_repro_for_a_real_rejected_call_asserts_the_rejection() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
+fn a_repro_for_a_real_rejected_call_asserts_the_rejection() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
 
-    let generic = s.ok_or_panic(
+    let generic = s.ok(
         "generate_repro",
         serde_json::json!({ "call_id": REJECT_CALL }),
-    );
+    )?;
     let xml = generic["scenario"].as_str().unwrap_or_default();
     assert!(
         xml.contains("<recv response=\"488\"/>"),
@@ -261,10 +267,10 @@ fn a_repro_for_a_real_rejected_call_asserts_the_rejection() {
     );
     assert_eq!(generic["asserted"]["final"], 488, "{generic}");
 
-    let pinned = s.ok_or_panic(
+    let pinned = s.ok(
         "generate_repro",
         serde_json::json!({ "call_id": REJECT_CALL, "pin": ["sdp"] }),
-    );
+    )?;
     let pinned_xml = pinned["scenario"].as_str().unwrap_or_default();
     assert!(
         pinned_xml.contains("m=audio"),
@@ -282,28 +288,30 @@ fn a_repro_for_a_real_rejected_call_asserts_the_rejection() {
         serde_json::json!(["sdp"]),
         "{pinned}"
     );
+    Ok(())
 }
 
 /// A repro for a Call-ID the capture does not hold is refused.
 #[test]
-fn a_repro_for_an_unknown_call_is_refused() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
-    let msg = s.call_or_panic(
+fn a_repro_for_an_unknown_call_is_refused() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
+    let msg = s.call(
         "generate_repro",
         serde_json::json!({ "call_id": "not-in-this-capture" }),
-    );
+    )?;
     assert_eq!(msg["error"]["code"], -32602, "{msg}");
+    Ok(())
 }
 
 /// The Wireshark filter names the call and, with media on this capture, nothing
 /// else — there is no RTP attributed to a rejected INVITE.
 #[test]
-fn a_wireshark_filter_selects_the_call_and_says_when_there_is_no_media() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
-    let v = s.ok_or_panic(
+fn a_wireshark_filter_selects_the_call_and_says_when_there_is_no_media() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
+    let v = s.ok(
         "generate_wireshark_filter",
         serde_json::json!({ "call_id": REJECT_CALL }),
-    );
+    )?;
     assert_eq!(
         v["display_filter"],
         format!("sip.Call-ID == \"{REJECT_CALL}\""),
@@ -316,13 +324,14 @@ fn a_wireshark_filter_selects_the_call_and_says_when_there_is_no_media() {
             .is_some_and(|t| t.contains("sip-488-codec-reject.pcapng")),
         "the command line must name the capture it applies to: {v}"
     );
+    Ok(())
 }
 
 /// All four tools are registered and reachable over the wire.
 #[test]
-fn the_gate_and_the_generators_are_registered() {
-    let mut s = McpSession::start_or_panic(REJECT, &[]);
-    let tools = s.list_tools_or_panic();
+fn the_gate_and_the_generators_are_registered() -> Result<(), TestError> {
+    let mut s = McpSession::start(REJECT, &[])?;
+    let tools = s.list_tools()?;
     for name in [
         "evaluate_expectations",
         "generate_fail2ban_rule",
@@ -334,6 +343,7 @@ fn the_gate_and_the_generators_are_registered() {
             "{name} is not registered: {tools:?}"
         );
     }
+    Ok(())
 }
 
 /// The published unit for a metric matches the unit the evaluator reports.
@@ -361,15 +371,15 @@ fn the_gate_and_the_generators_are_registered() {
 /// evaluator reports for a metric, the description must not name a different
 /// one.
 #[test]
-fn the_published_metric_units_match_what_the_evaluator_reports() {
+fn the_published_metric_units_match_what_the_evaluator_reports() -> Result<(), TestError> {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/mcp/tools/expectations.rs"
     ))
-    .expect("read expectations.rs");
+    .map_err(|e| format!("read expectations.rs: {e}"))?;
     let start = src
         .find("name = \"evaluate_expectations\"")
-        .expect("the tool is still registered");
+        .ok_or("the tool is still registered")?;
     let description = &src[start
         ..src[start..]
             .find("annotations(")
@@ -396,4 +406,5 @@ fn the_published_metric_units_match_what_the_evaluator_reports() {
          nothing leaves a client to guess, and the guess that reads naturally \
          from a 0.0-1.0 habit is off by a hundred."
     );
+    Ok(())
 }

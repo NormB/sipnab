@@ -35,6 +35,8 @@ use sipnab::sip::lint::finding::{SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE};
 use sipnab::sip::lint::{LintConfig, Linter, RULES, Severity, rule_by_id};
 use sipnab::sip::parser::parse_sip;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// One endpoint's conforming `sess-uuid`. RFC 7989 §5's own example value.
 const UUID_A: &str = "ab30317f1a784dc48ff824d0d3715d86";
 
@@ -50,7 +52,7 @@ fn ts() -> DateTime<Utc> {
 ///
 /// RFC 5737 documentation addresses throughout: nothing in this file may carry
 /// an address, a number or a Call-ID that belongs to anybody.
-fn ingest_leg(store: &mut DialogStore, call_id: &str, session_id: &str) {
+fn ingest_leg(store: &mut DialogStore, call_id: &str, session_id: &str) -> Result<(), TestError> {
     let raw = format!(
         "INVITE sip:bob@example.net SIP/2.0\r\n\
          Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{call_id}\r\n\
@@ -72,19 +74,19 @@ fn ingest_leg(store: &mut DialogStore, call_id: &str, session_id: &str) {
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("the fixture must parse");
+    )?;
     store.process_message(msg);
+    Ok(())
 }
 
 /// Rule identifiers the default linter raises for the dialog under `call_id`.
-fn dialog_rule_ids(store: &DialogStore, call_id: &str) -> Vec<&'static str> {
-    let dialog = store.get(call_id).expect("the leg must be stored");
-    Linter::new(LintConfig::new())
+fn dialog_rule_ids(store: &DialogStore, call_id: &str) -> Result<Vec<&'static str>, TestError> {
+    let dialog = store.get(call_id).ok_or("the leg must be stored")?;
+    Ok(Linter::new(LintConfig::new())
         .lint_dialog(dialog)
         .into_iter()
         .map(|f| f.rule_id)
-        .collect()
+        .collect())
 }
 
 /// THE GATE: a dialog carrying a `Session-ID` that breaks the RFC 7989 §5 ABNF
@@ -94,15 +96,16 @@ fn dialog_rule_ids(store: &DialogStore, call_id: &str) -> Vec<&'static str> {
 /// the dialog goes through the linter, and the assertion is on the identifier
 /// a carrier ticket quotes and a suppression file names.
 #[test]
-fn a_dialog_carrying_a_deviating_session_id_produces_a_visible_finding() {
+fn a_dialog_carrying_a_deviating_session_id_produces_a_visible_finding() -> Result<(), TestError> {
     let mut store = DialogStore::new(100, false);
-    ingest_leg(&mut store, "deviating-leg@example.net", "not-a-uuid");
+    ingest_leg(&mut store, "deviating-leg@example.net", "not-a-uuid")?;
 
-    let ids = dialog_rule_ids(&store, "deviating-leg@example.net");
+    let ids = dialog_rule_ids(&store, "deviating-leg@example.net")?;
     assert!(
         ids.contains(&SESSION_ID_MALFORMED.id),
         "the deviation must reach the findings: {ids:?}"
     );
+    Ok(())
 }
 
 /// The finding carries the clause it enforces, as data rather than as prose.
@@ -112,16 +115,16 @@ fn a_dialog_carrying_a_deviating_session_id_produces_a_visible_finding() {
 /// inventing a section that reads plausibly, and this asserts the whole record
 /// an MCP client receives under `findings[]`.
 #[test]
-fn the_finding_cites_rfc_7989_section_5_and_quotes_the_abnf() {
+fn the_finding_cites_rfc_7989_section_5_and_quotes_the_abnf() -> Result<(), TestError> {
     let mut store = DialogStore::new(100, false);
-    ingest_leg(&mut store, "deviating-leg@example.net", "not-a-uuid");
-    let dialog = store.get("deviating-leg@example.net").expect("stored");
+    ingest_leg(&mut store, "deviating-leg@example.net", "not-a-uuid")?;
+    let dialog = store.get("deviating-leg@example.net").ok_or("stored")?;
 
     let finding = Linter::new(LintConfig::new())
         .lint_dialog(dialog)
         .into_iter()
         .find(|f| f.rule_id == SESSION_ID_MALFORMED.id)
-        .expect("the malformed rule must fire");
+        .ok_or("the malformed rule must fire")?;
 
     assert_eq!(finding.rfc, 7989);
     assert_eq!(finding.section, "5");
@@ -141,7 +144,7 @@ fn the_finding_cites_rfc_7989_section_5_and_quotes_the_abnf() {
     // The exact JSON an agent reads back from `lint_dialog` and
     // `validate_message`, both of which serialize `Finding` straight into
     // `findings[]`.
-    let json = serde_json::to_value(&finding).expect("a finding must serialize");
+    let json = serde_json::to_value(&finding)?;
     assert_eq!(json["rule_id"], SESSION_ID_MALFORMED.id);
     assert_eq!(json["rfc"], 7989);
     assert_eq!(json["section"], "5");
@@ -153,6 +156,7 @@ fn the_finding_cites_rfc_7989_section_5_and_quotes_the_abnf() {
             "{field} must reach the client: {json}"
         );
     }
+    Ok(())
 }
 
 /// RFC 7989 §5's `nil` — 32 zeros, "the far end has not contributed a UUID
@@ -174,18 +178,19 @@ const NIL: &str = "00000000000000000000000000000000";
 /// non-nil halves rather than comparing the pair. That is exactly why the
 /// finding has to be raised on the deviation itself and not on a failed match.
 #[test]
-fn a_deviating_half_explains_a_correlation_that_should_have_matched_and_did_not() {
+fn a_deviating_half_explains_a_correlation_that_should_have_matched_and_did_not()
+-> Result<(), TestError> {
     let mut store = DialogStore::new(100, false);
     ingest_leg(
         &mut store,
         "access-leg@example.com",
         &format!("{UUID_A};remote={NIL}"),
-    );
+    )?;
     ingest_leg(
         &mut store,
         "core-leg@example.net",
         &format!("{};remote={NIL}", &UUID_A[..31]),
-    );
+    )?;
 
     let correlated = store.find_correlated_scored("access-leg@example.com");
     assert!(
@@ -195,11 +200,12 @@ fn a_deviating_half_explains_a_correlation_that_should_have_matched_and_did_not(
         "a truncated half cannot correlate — that is the failure being explained"
     );
 
-    let ids = dialog_rule_ids(&store, "core-leg@example.net");
+    let ids = dialog_rule_ids(&store, "core-leg@example.net")?;
     assert!(
         ids.contains(&SESSION_ID_MALFORMED.id),
         "the leg holding the broken half must carry the explanation: {ids:?}"
     );
+    Ok(())
 }
 
 /// The mutation guard for the test above: the same two legs, conforming, match
@@ -211,18 +217,18 @@ fn a_deviating_half_explains_a_correlation_that_should_have_matched_and_did_not(
 /// linter that reported them would fire on the first message of practically
 /// every conformant call.
 #[test]
-fn the_same_two_legs_correlate_and_stay_silent_when_both_halves_conform() {
+fn the_same_two_legs_correlate_and_stay_silent_when_both_halves_conform() -> Result<(), TestError> {
     let mut store = DialogStore::new(100, false);
     ingest_leg(
         &mut store,
         "access-leg@example.com",
         &format!("{UUID_A};remote={NIL}"),
-    );
+    )?;
     ingest_leg(
         &mut store,
         "core-leg@example.net",
         &format!("{UUID_A};remote={UUID_B}"),
-    );
+    )?;
 
     let correlated = store.find_correlated_scored("access-leg@example.com");
     assert!(
@@ -233,12 +239,13 @@ fn the_same_two_legs_correlate_and_stay_silent_when_both_halves_conform() {
     );
 
     for call_id in ["access-leg@example.com", "core-leg@example.net"] {
-        let ids = dialog_rule_ids(&store, call_id);
+        let ids = dialog_rule_ids(&store, call_id)?;
         assert!(
             !ids.contains(&SESSION_ID_MALFORMED.id) && !ids.contains(&SESSION_ID_UPPERCASE.id),
             "{call_id} is conformant and must raise nothing: {ids:?}"
         );
     }
+    Ok(())
 }
 
 /// Uppercase hex is reported even though sipnab still correlates on it.
@@ -249,13 +256,13 @@ fn the_same_two_legs_correlate_and_stay_silent_when_both_halves_conform() {
 /// only when it broke something would report it only after somebody else's
 /// equipment had already been blamed.
 #[test]
-fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
+fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() -> Result<(), TestError> {
     let mut store = DialogStore::new(100, false);
     ingest_leg(
         &mut store,
         "access-leg@example.com",
         &format!("{UUID_A};remote={UUID_B}"),
-    );
+    )?;
     ingest_leg(
         &mut store,
         "core-leg@example.net",
@@ -264,7 +271,7 @@ fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
             UUID_B.to_ascii_uppercase(),
             UUID_A.to_ascii_uppercase()
         ),
-    );
+    )?;
 
     assert!(
         store
@@ -274,7 +281,7 @@ fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
         "case must not split a session inside sipnab"
     );
 
-    let ids = dialog_rule_ids(&store, "core-leg@example.net");
+    let ids = dialog_rule_ids(&store, "core-leg@example.net")?;
     assert!(
         ids.contains(&SESSION_ID_UPPERCASE.id),
         "the conformance fact is still worth reporting: {ids:?}"
@@ -283,6 +290,7 @@ fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
         !ids.contains(&SESSION_ID_MALFORMED.id),
         "an uppercase UUID is usable, not malformed: {ids:?}"
     );
+    Ok(())
 }
 
 /// Both rules are in the catalog and resolvable by identifier.
@@ -291,14 +299,14 @@ fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
 /// that fires without being cataloged hands an agent an identifier it cannot
 /// resolve — which is where a hallucinated citation comes from.
 #[test]
-fn both_session_id_rules_are_cataloged_and_resolvable_by_identifier() {
+fn both_session_id_rules_are_cataloged_and_resolvable_by_identifier() -> Result<(), TestError> {
     for rule in [SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE] {
         assert!(
             RULES.iter().any(|r| r.id == rule.id),
             "{} is not in the catalog, so the engine cannot report it",
             rule.id
         );
-        let found = rule_by_id(rule.id).unwrap_or_else(|| panic!("{} does not resolve", rule.id));
+        let found = rule_by_id(rule.id).ok_or_else(|| format!("{} does not resolve", rule.id))?;
         assert_eq!(found.rfc, 7989);
         assert_eq!(found.section, "5");
         assert_eq!(
@@ -308,4 +316,5 @@ fn both_session_id_rules_are_cataloged_and_resolvable_by_identifier() {
             rule.id
         );
     }
+    Ok(())
 }

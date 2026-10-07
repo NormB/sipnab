@@ -37,7 +37,7 @@
 #[path = "support/mcp.rs"]
 mod mcp;
 
-use mcp::McpSession;
+use mcp::{McpSession, TestError};
 
 /// 1334 dialogs, 127 failed: big enough that pagination and cursors are real.
 const BRANCH: &str = "tests/pcap-samples/sipp-branch-scenario.pcapng";
@@ -47,26 +47,31 @@ const LINT: &str = "tests/pcap-samples/sip-lint-findings.pcap";
 const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
 /// Fail with the tool and arguments that broke, not just "assertion failed".
-fn expect_ok(msg: &serde_json::Value, tool: &str, arg: &str) -> serde_json::Value {
+fn expect_ok(
+    msg: &serde_json::Value,
+    tool: &str,
+    arg: &str,
+) -> Result<serde_json::Value, TestError> {
     if let Some(err) = msg.get("error") {
-        panic!(
+        return Err(format!(
             "{tool} refused an identifier another tool produced.\n  \
              argument: {arg}\n  error: {err}\n\n\
              An operator never invents these values — they follow what the \
              previous answer handed them. A tool that will not accept its own \
              surface's output is broken for every real caller."
-        );
+        )
+        .into());
     }
     let text = msg["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("{tool} returned no text payload: {msg}"));
+        .ok_or_else(|| format!("{tool} returned no text payload: {msg}"))?;
     // Not every tool answers in JSON. `render_ladder` returns a rendered
     // markdown ladder, which is the right shape for what it is — the surface
     // is deliberately not uniform, and a chain test must accept that rather
     // than demand JSON everywhere. What matters is that the call SUCCEEDED
     // with the identifier it was handed; the payload shape is the tool's own
     // business.
-    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_string()))
+    Ok(serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_string())))
 }
 
 /// Pull every string at `key`, at any depth.
@@ -92,14 +97,14 @@ fn harvest(v: &serde_json::Value, key: &str, out: &mut Vec<String>) {
 /// `find_problems` says which call is broken; everything after it takes that
 /// Call-ID. Nothing here knows a Call-ID up front — that is the point.
 #[test]
-fn flow_find_a_broken_call_then_ask_every_question_about_it() {
-    let mut s = McpSession::start_or_panic(BRANCH, &[]);
+fn flow_find_a_broken_call_then_ask_every_question_about_it() -> Result<(), TestError> {
+    let mut s = McpSession::start(BRANCH, &[])?;
 
     let problems = expect_ok(
-        &s.call_or_panic("find_problems", serde_json::json!({})),
+        &s.call("find_problems", serde_json::json!({}))?,
         "find_problems",
         "{}",
-    );
+    )?;
     let mut ids = Vec::new();
     harvest(&problems, "call_id", &mut ids);
     assert!(
@@ -120,9 +125,10 @@ fn flow_find_a_broken_call_then_ask_every_question_about_it() {
         "find_correlated",
         "rtp_stats",
     ] {
-        let msg = s.call_or_panic(tool, serde_json::json!({ "call_id": call_id }));
-        expect_ok(&msg, tool, &call_id);
+        let msg = s.call(tool, serde_json::json!({ "call_id": call_id }))?;
+        expect_ok(&msg, tool, &call_id)?;
     }
+    Ok(())
 }
 
 /// **Follow a finding to the bytes.** The evidence chain, end to end.
@@ -132,25 +138,25 @@ fn flow_find_a_broken_call_then_ask_every_question_about_it() {
 /// written for output paths was applied to a read. Asserted on the DIGEST, not
 /// on a status flag — resolving without verifying is not evidence.
 #[test]
-fn flow_a_finding_leads_to_the_captured_bytes() {
+fn flow_a_finding_leads_to_the_captured_bytes() -> Result<(), TestError> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
-    let mut s = McpSession::start_or_panic(LINT, &["--mcp-file-root", root]);
+    let mut s = McpSession::start(LINT, &["--mcp-file-root", root])?;
 
     let dialogs = expect_ok(
-        &s.call_or_panic("list_dialogs", serde_json::json!({})),
+        &s.call("list_dialogs", serde_json::json!({}))?,
         "list_dialogs",
         "{}",
-    );
+    )?;
     let mut ids = Vec::new();
     harvest(&dialogs, "call_id", &mut ids);
 
     let mut refs = Vec::new();
     for id in &ids {
         let lint = expect_ok(
-            &s.call_or_panic("lint_dialog", serde_json::json!({ "call_id": id })),
+            &s.call("lint_dialog", serde_json::json!({ "call_id": id }))?,
             "lint_dialog",
             id,
-        );
+        )?;
         harvest(&lint, "frame_ref", &mut refs);
     }
     assert!(
@@ -160,10 +166,10 @@ fn flow_a_finding_leads_to_the_captured_bytes() {
     );
 
     let evidence = expect_ok(
-        &s.call_or_panic("show_evidence", serde_json::json!({ "refs": [refs[0]] })),
+        &s.call("show_evidence", serde_json::json!({ "refs": [refs[0]] }))?,
         "show_evidence",
         &refs[0],
-    );
+    )?;
     assert_eq!(
         evidence["resolved"], 1,
         "a pointer lint_dialog just produced must resolve: {evidence}"
@@ -178,6 +184,7 @@ fn flow_a_finding_leads_to_the_captured_bytes() {
         hex.split_whitespace().count() >= 8,
         "the frame bytes must come back: {evidence}"
     );
+    Ok(())
 }
 
 /// **Page through a big result set.** A cursor is only useful if it is accepted.
@@ -186,14 +193,14 @@ fn flow_a_finding_leads_to_the_captured_bytes() {
 /// and treated as a fresh call, gives an agent the FIRST page twice and it
 /// looks like a short capture rather than a broken loop.
 #[test]
-fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
-    let mut s = McpSession::start_or_panic(BRANCH, &[]);
+fn flow_a_cursor_advances_rather_than_repeating_the_first_page() -> Result<(), TestError> {
+    let mut s = McpSession::start(BRANCH, &[])?;
 
     let p1 = expect_ok(
-        &s.call_or_panic("list_dialogs", serde_json::json!({ "limit": 5 })),
+        &s.call("list_dialogs", serde_json::json!({ "limit": 5 }))?,
         "list_dialogs",
         "limit=5",
-    );
+    )?;
     let cursor = p1["next_cursor"].as_str().unwrap_or_default().to_string();
     assert!(
         !cursor.is_empty(),
@@ -201,13 +208,13 @@ fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
     );
 
     let p2 = expect_ok(
-        &s.call_or_panic(
+        &s.call(
             "list_dialogs",
             serde_json::json!({ "limit": 5, "cursor": cursor }),
-        ),
+        )?,
         "list_dialogs",
         &cursor,
-    );
+    )?;
 
     let (mut a, mut b) = (Vec::new(), Vec::new());
     harvest(&p1, "call_id", &mut a);
@@ -221,6 +228,7 @@ fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
         "the second page repeated dialogs from the first — a cursor that is \
          ignored looks exactly like a capture that ended.\n  page 1: {a:?}\n  page 2: {b:?}"
     );
+    Ok(())
 }
 
 /// **A rule id from a finding explains itself.**
@@ -229,42 +237,43 @@ fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
 /// written in different modules and nothing but this holds their vocabulary
 /// together.
 #[test]
-fn flow_a_rule_a_finding_names_can_be_explained() {
-    let mut s = McpSession::start_or_panic(LINT, &[]);
+fn flow_a_rule_a_finding_names_can_be_explained() -> Result<(), TestError> {
+    let mut s = McpSession::start(LINT, &[])?;
     let dialogs = expect_ok(
-        &s.call_or_panic("list_dialogs", serde_json::json!({})),
+        &s.call("list_dialogs", serde_json::json!({}))?,
         "list_dialogs",
         "{}",
-    );
+    )?;
     let mut ids = Vec::new();
     harvest(&dialogs, "call_id", &mut ids);
 
     let mut rules = Vec::new();
     for id in &ids {
         let lint = expect_ok(
-            &s.call_or_panic("lint_dialog", serde_json::json!({ "call_id": id })),
+            &s.call("lint_dialog", serde_json::json!({ "call_id": id }))?,
             "lint_dialog",
             id,
-        );
+        )?;
         harvest(&lint, "rule_id", &mut rules);
     }
     assert!(!rules.is_empty(), "the lint fixture must produce a rule_id");
 
     for rule in rules.iter().take(4) {
-        let msg = s.call_or_panic("explain_rule", serde_json::json!({ "rule_id": rule }));
-        expect_ok(&msg, "explain_rule", rule);
+        let msg = s.call("explain_rule", serde_json::json!({ "rule_id": rule }))?;
+        expect_ok(&msg, "explain_rule", rule)?;
     }
+    Ok(())
 }
 
 /// **A stream identifier from the media list is accepted by the media tools.**
 #[test]
-fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() {
-    let mut s = McpSession::start_or_panic(G711, &[]);
+fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() -> Result<(), TestError> {
+    let mut s = McpSession::start(G711, &[])?;
     let stats = expect_ok(
-        &s.call_or_panic("rtp_stats", serde_json::json!({})),
+        &s.call("rtp_stats", serde_json::json!({}))?,
         "rtp_stats",
         "{}",
-    );
+    )?;
 
     // The media surface names the owning dialog `associated_dialog`, where the
     // dialog surface calls the same thing `call_id`. Harvesting only `call_id`
@@ -280,16 +289,17 @@ fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() {
     );
     for id in ids.iter().take(2) {
         expect_ok(
-            &s.call_or_panic("rtp_stats", serde_json::json!({ "call_id": id })),
+            &s.call("rtp_stats", serde_json::json!({ "call_id": id }))?,
             "rtp_stats",
             id,
-        );
+        )?;
         expect_ok(
-            &s.call_or_panic("get_dialog_report", serde_json::json!({ "call_id": id })),
+            &s.call("get_dialog_report", serde_json::json!({ "call_id": id }))?,
             "get_dialog_report",
             id,
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// **The sweep.** Harvest identifiers from the whole surface, feed each back.
@@ -304,9 +314,10 @@ fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() {
 /// property that was missing — not coverage of each tool, but coverage of the
 /// SEAMS between them.
 #[test]
-fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
+fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed()
+-> Result<(), TestError> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
-    let mut s = McpSession::start_or_panic(LINT, &["--mcp-file-root", root]);
+    let mut s = McpSession::start(LINT, &["--mcp-file-root", root])?;
 
     // Producers: read-only, no arguments, safe to call blind.
     let producers = [
@@ -319,7 +330,7 @@ fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     ];
     let (mut call_ids, mut frame_refs) = (Vec::new(), Vec::new());
     for tool in producers {
-        let payload = expect_ok(&s.call_or_panic(tool, serde_json::json!({})), tool, "{}");
+        let payload = expect_ok(&s.call(tool, serde_json::json!({}))?, tool, "{}")?;
         harvest(&payload, "call_id", &mut call_ids);
         // Same identifier, different name on the media surface.
         harvest(&payload, "associated_dialog", &mut call_ids);
@@ -329,10 +340,10 @@ fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     // lint_dialog is where frame_refs actually come from.
     for id in call_ids.clone().iter().take(3) {
         let lint = expect_ok(
-            &s.call_or_panic("lint_dialog", serde_json::json!({ "call_id": id })),
+            &s.call("lint_dialog", serde_json::json!({ "call_id": id }))?,
             "lint_dialog",
             id,
-        );
+        )?;
         harvest(&lint, "frame_ref", &mut frame_refs);
     }
 
@@ -363,18 +374,19 @@ fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     for id in call_ids.iter().take(3) {
         for tool in call_id_consumers {
             expect_ok(
-                &s.call_or_panic(tool, serde_json::json!({ "call_id": id })),
+                &s.call(tool, serde_json::json!({ "call_id": id }))?,
                 tool,
                 id,
-            );
+            )?;
         }
     }
     for r in frame_refs.iter().take(3) {
-        let msg = s.call_or_panic("show_evidence", serde_json::json!({ "refs": [r] }));
-        let payload = expect_ok(&msg, "show_evidence", r);
+        let msg = s.call("show_evidence", serde_json::json!({ "refs": [r] }))?;
+        let payload = expect_ok(&msg, "show_evidence", r)?;
         assert_eq!(
             payload["resolved"], 1,
             "a pointer this surface emitted must be followable: {r} -> {payload}"
         );
     }
+    Ok(())
 }

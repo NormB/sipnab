@@ -42,6 +42,8 @@ use sipnab::pipeline::{
 };
 use sipnab::rtp::heuristic::RtpHeuristic;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Build a UDP `ParsedPacket` carrying `payload` between the given ports.
 fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
     ParsedPacket {
@@ -99,11 +101,11 @@ fn classify(pp: &ParsedPacket, opts: &PipelineOptions) -> PacketAction {
 /// expected, `update_state` falls to the generic handler — but "we cannot model
 /// its state" is not a reason to pretend the packet did not arrive.
 #[test]
-fn an_extension_method_request_is_not_dropped() {
+fn an_extension_method_request_is_not_dropped() -> Result<(), TestError> {
     let pp = parsed(request("KDMQ", "ext-kdmq@test"), 8090, 8090);
     let action = classify(&pp, &PipelineOptions::default());
     let PacketAction::Sip { msg, .. } = action else {
-        panic!("an extension-method request must classify as SIP, not vanish");
+        return Err("an extension-method request must classify as SIP, not vanish".into());
     };
     assert!(msg.is_request, "KDMQ is a request");
     assert_eq!(
@@ -112,18 +114,19 @@ fn an_extension_method_request_is_not_dropped() {
         "the method must be reported under its own name, not renamed or erased"
     );
     assert_eq!(msg.call_id(), Some("ext-kdmq@test"));
+    Ok(())
 }
 
 /// Several unrelated extension methods, so the fix is not a special case for
 /// one vendor's token.
 #[test]
-fn extension_methods_generally_survive() {
+fn extension_methods_generally_survive() -> Result<(), TestError> {
     // Real deployments: Kamailio DMQ, the RFC 2976-era INFO relatives, and
     // tokens using the punctuation RFC 3261's `token` production allows.
     for method in ["KDMQ", "SERVICE", "QAUTH", "SPIRIT", "DO", "X-VENDOR.PING"] {
         let pp = parsed(request(method, "ext@test"), 5060, 5060);
         let PacketAction::Sip { msg, .. } = classify(&pp, &PipelineOptions::default()) else {
-            panic!("{method} must classify as SIP");
+            return Err(format!("{method} must classify as SIP").into());
         };
         assert_eq!(
             msg.method.as_ref().map(SipMethod::as_str),
@@ -131,6 +134,7 @@ fn extension_methods_generally_survive() {
             "{method} must keep its name"
         );
     }
+    Ok(())
 }
 
 /// The sniff stays strict: accepting extension methods must not turn the
@@ -146,7 +150,7 @@ fn extension_methods_generally_survive() {
 /// catch the mistake. A loose sniff would report an operator's HTTP traffic as
 /// SIP they are failing to analyze.
 #[test]
-fn extension_method_acceptance_stays_strict() {
+fn extension_method_acceptance_stays_strict() -> Result<(), TestError> {
     let cases: &[(&str, &[u8])] = &[
         ("HTTP request", b"OPTIONS / HTTP/1.1\r\nHost: x\r\n\r\n"),
         ("HTTP GET", b"GET /index.html HTTP/1.1\r\n\r\n"),
@@ -190,6 +194,7 @@ fn extension_method_acceptance_stays_strict() {
             "{name} must not classify as SIP either"
         );
     }
+    Ok(())
 }
 
 /// No message that used to be analyzed is lost.
@@ -206,7 +211,7 @@ fn extension_method_acceptance_stays_strict() {
 /// earlier is a tightening on input that was never a message, and the
 /// parse-succeeds qualifier is what distinguishes the two.
 #[test]
-fn no_message_the_old_sniff_analyzed_is_lost() {
+fn no_message_the_old_sniff_analyzed_is_lost() -> Result<(), TestError> {
     /// Inputs the old sniff accepted and parsed.
     const EXPECTED_OLD_SNIFF_INPUTS: usize = 18;
     const METHODS: [&str; 14] = [
@@ -278,6 +283,7 @@ fn no_message_the_old_sniff_analyzed_is_lost() {
         "expected {EXPECTED_OLD_SNIFF_INPUTS} inputs to be \
          accepted-and-parseable under the old sniff"
     );
+    Ok(())
 }
 
 // ── 2. The --portrange gate reports what it discarded ────────────────
@@ -287,7 +293,7 @@ fn no_message_the_old_sniff_analyzed_is_lost() {
 /// disappearing.
 #[test]
 #[serial_test::serial(portrange_skips)]
-fn portrange_skips_are_counted_not_silent() {
+fn portrange_skips_are_counted_not_silent() -> Result<(), TestError> {
     let gated = PipelineOptions {
         sip_portrange: Some((5060, 5061)),
         ..Default::default()
@@ -322,6 +328,7 @@ fn portrange_skips_are_counted_not_silent() {
          --portrange to widen to, not an ephemeral client port"
     );
     assert_eq!(report.ports[0].messages, 3);
+    Ok(())
 }
 
 /// Non-SIP traffic outside the range is not counted as a skipped SIP message.
@@ -334,7 +341,7 @@ fn portrange_skips_are_counted_not_silent() {
 /// non-SIP protocols live.
 #[test]
 #[serial_test::serial(portrange_skips)]
-fn portrange_skips_count_only_sip() {
+fn portrange_skips_count_only_sip() -> Result<(), TestError> {
     let gated = PipelineOptions {
         sip_portrange: Some((5060, 5061)),
         // Media tracking off: this test is only about what the skip counter
@@ -374,6 +381,7 @@ fn portrange_skips_count_only_sip() {
         "only SIP counts as skipped SIP — reporting HTTP or RTSP here would \
          send an operator widening --portrange onto a web server"
     );
+    Ok(())
 }
 
 /// In-range SIP is classified and never counted as a skip, and an ungated
@@ -381,7 +389,7 @@ fn portrange_skips_count_only_sip() {
 /// filtered) records no skips at all.
 #[test]
 #[serial_test::serial(portrange_skips)]
-fn in_range_and_ungated_traffic_records_no_skips() {
+fn in_range_and_ungated_traffic_records_no_skips() -> Result<(), TestError> {
     pipeline::reset_portrange_skips();
 
     let gated = PipelineOptions {
@@ -408,6 +416,7 @@ fn in_range_and_ungated_traffic_records_no_skips() {
          already filtered) reported a skip; with no range configured there is \
          nothing to skip and nothing to widen"
     );
+    Ok(())
 }
 
 // ── 3. The WebSocket port set reports what it discarded ──────────────
@@ -447,7 +456,7 @@ fn parsed_tcp(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
 /// used to be consistent with "this deployment has no WebRTC".
 #[test]
 #[serial_test::serial(ws_port_skips)]
-fn websocket_skips_are_counted_not_silent() {
+fn websocket_skips_are_counted_not_silent() -> Result<(), TestError> {
     sipnab::capture::websocket::set_ws_port_range(None);
     pipeline::reset_ws_port_skips();
     // Ungated: this test is about the WebSocket set, and the --portrange gate
@@ -486,6 +495,7 @@ fn websocket_skips_are_counted_not_silent() {
          --ws-portrange to widen to, not an ephemeral browser port"
     );
     assert_eq!(report.ports[0].messages, 3);
+    Ok(())
 }
 
 /// A declared range REPLACES the shipped set: 8081 is unwrapped and 443 is
@@ -497,14 +507,14 @@ fn websocket_skips_are_counted_not_silent() {
 /// meant to exclude turned up in their dialogs.
 #[test]
 #[serial_test::serial(ws_port_skips)]
-fn a_declared_ws_range_replaces_the_shipped_set() {
+fn a_declared_ws_range_replaces_the_shipped_set() -> Result<(), TestError> {
     sipnab::capture::websocket::set_ws_port_range(Some((8081, 8081)));
     pipeline::reset_ws_port_skips();
     let opts = PipelineOptions::default();
 
     let pp = parsed_tcp(ws_frame(&request("INVITE", "ws-on@test")), 51000, 8081);
     let PacketAction::Sip { msg, .. } = classify(&pp, &opts) else {
-        panic!("--ws-portrange 8081-8081 must unwrap SIP-over-WebSocket on 8081");
+        return Err("--ws-portrange 8081-8081 must unwrap SIP-over-WebSocket on 8081".into());
     };
     assert_eq!(msg.call_id(), Some("ws-on@test"));
     assert_eq!(
@@ -529,6 +539,7 @@ fn a_declared_ws_range_replaces_the_shipped_set() {
     );
 
     sipnab::capture::websocket::set_ws_port_range(None);
+    Ok(())
 }
 
 /// Non-SIP WebSocket traffic outside the set is not counted as skipped SIP.
@@ -540,7 +551,7 @@ fn a_declared_ws_range_replaces_the_shipped_set() {
 /// every port now, so only the SIP test stands between the two.
 #[test]
 #[serial_test::serial(ws_port_skips)]
-fn websocket_skips_count_only_sip() {
+fn websocket_skips_count_only_sip() -> Result<(), TestError> {
     sipnab::capture::websocket::set_ws_port_range(None);
     pipeline::reset_ws_port_skips();
     let opts = PipelineOptions {
@@ -568,4 +579,5 @@ fn websocket_skips_count_only_sip() {
          reporting a chat socket here would send an operator widening \
          --ws-portrange onto their own application"
     );
+    Ok(())
 }

@@ -16,6 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -52,16 +54,14 @@ fn mcp_sources() -> String {
 /// registered name contains a character the gates do not accept, that name is
 /// invisible to every count in the repository and this says so by name.
 #[test]
-fn no_registered_tool_name_is_invisible_to_the_registry_scanner() {
+fn no_registered_tool_name_is_invisible_to_the_registry_scanner() -> Result<(), TestError> {
     let text = mcp_sources();
-    let narrow: std::collections::BTreeSet<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)
-        .expect("regex")
+    let narrow: std::collections::BTreeSet<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)?
         .captures_iter(&text)
         .map(|c| c[1].to_string())
         .collect();
     // Deliberately permissive: anything that could plausibly be a tool name.
-    let wide: std::collections::BTreeSet<String> = regex::Regex::new(r#"name = "([^"]+)""#)
-        .expect("regex")
+    let wide: std::collections::BTreeSet<String> = regex::Regex::new(r#"name = "([^"]+)""#)?
         .captures_iter(&text)
         .map(|c| c[1].to_string())
         // "Plausible tool name" means an ASCII identifier. Without the ASCII
@@ -89,6 +89,7 @@ fn no_registered_tool_name_is_invisible_to_the_registry_scanner() {
          doc-drift gates scan with, so every count derived from it is short by \
          one per name and stays green as more arrive: {missed:?}"
     );
+    Ok(())
 }
 
 /// 2. The scanner's alphabet actually accepts a digit.
@@ -96,10 +97,9 @@ fn no_registered_tool_name_is_invisible_to_the_registry_scanner() {
 /// Gate 1 compares two regexes; if BOTH excluded digits it would pass while
 /// both were blind. This pins the alphabet itself against a literal.
 #[test]
-fn the_scanner_alphabet_accepts_a_digit_in_a_tool_name() {
+fn the_scanner_alphabet_accepts_a_digit_in_a_tool_name() -> Result<(), TestError> {
     let sample = r#"    name = "generate_fail2ban_rule","#;
-    let found: Vec<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)
-        .expect("regex")
+    let found: Vec<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)?
         .captures_iter(sample)
         .map(|c| c[1].to_string())
         .collect();
@@ -112,8 +112,7 @@ fn the_scanner_alphabet_accepts_a_digit_in_a_tool_name() {
 
     // And it must not have become so wide that it swallows neighboring text.
     let noisy = r#"name = "a_tool", description = "not a name""#;
-    let found: Vec<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)
-        .expect("regex")
+    let found: Vec<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)?
         .captures_iter(noisy)
         .map(|c| c[1].to_string())
         .collect();
@@ -122,4 +121,5 @@ fn the_scanner_alphabet_accepts_a_digit_in_a_tool_name() {
         vec!["a_tool".to_string()],
         "widening the class must not make it match past the closing quote"
     );
+    Ok(())
 }

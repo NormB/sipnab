@@ -11,6 +11,8 @@ use std::process::Command;
 #[path = "support/mod.rs"]
 mod support;
 
+use support::TestError;
+
 /// Spawns `sipnab --panic-selftest` under a `[crash]` config built from
 /// `crash_toml`, with `ulimit -c 0` so no real core file is ever written.
 ///
@@ -24,18 +26,19 @@ mod support;
 ///
 /// # Side effects
 /// Writes a temp config file and spawns the sipnab binary via `sh -c`.
-fn run_selftest(crash_toml: &str) -> (std::process::ExitStatus, String, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
+fn run_selftest(
+    crash_toml: &str,
+) -> Result<(std::process::ExitStatus, String, tempfile::TempDir), TestError> {
+    let dir = tempfile::tempdir()?;
     let report_dir = dir.path().join("reports");
     let config_path = dir.path().join("crash.toml");
-    let mut f = std::fs::File::create(&config_path).unwrap();
+    let mut f = std::fs::File::create(&config_path)?;
     writeln!(
         f,
         "[crash]\nreport_dir = \"{}\"\n{}",
         report_dir.display(),
         crash_toml
-    )
-    .unwrap();
+    )?;
 
     // ulimit -c 0: never write an actual core file on this box even when
     // the abort path is exercised; the SIGABRT itself is the observable.
@@ -52,10 +55,9 @@ fn run_selftest(crash_toml: &str) -> (std::process::ExitStatus, String, tempfile
             env!("CARGO_BIN_EXE_sipnab"),
             config_path.display()
         ))
-        .output()
-        .unwrap();
+        .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (output.status, stderr, dir)
+    Ok((output.status, stderr, dir))
 }
 
 /// Lists crash-report files under the tempdir's `reports/` directory.
@@ -65,19 +67,19 @@ fn run_selftest(crash_toml: &str) -> (std::process::ExitStatus, String, tempfile
 ///
 /// # Returns
 /// Paths of all report files; empty if the directory does not exist.
-fn report_files(dir: &tempfile::TempDir) -> Vec<std::path::PathBuf> {
+fn report_files(dir: &tempfile::TempDir) -> Result<Vec<std::path::PathBuf>, TestError> {
     let reports = dir.path().join("reports");
     match std::fs::read_dir(&reports) {
-        Ok(rd) => rd.map(|e| e.unwrap().path()).collect(),
-        Err(_) => Vec::new(),
+        Ok(rd) => Ok(rd.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?),
+        Err(_) => Ok(Vec::new()),
     }
 }
 
 /// Default crash policy: the process exits 101 (no signal), writes exactly one
 /// report containing the panic message and a backtrace, and stderr names the file.
 #[test]
-fn default_policy_writes_report_with_backtrace_and_exits_101() {
-    let (status, stderr, dir) = run_selftest("");
+fn default_policy_writes_report_with_backtrace_and_exits_101() -> Result<(), TestError> {
+    let (status, stderr, dir) = run_selftest("")?;
     assert_eq!(
         status.code(),
         Some(101),
@@ -85,13 +87,13 @@ fn default_policy_writes_report_with_backtrace_and_exits_101() {
     );
     assert_eq!(status.signal(), None, "no signal death by default");
 
-    let files = report_files(&dir);
+    let files = report_files(&dir)?;
     assert_eq!(
         files.len(),
         1,
         "exactly one crash report, stderr:\n{stderr}"
     );
-    let contents = std::fs::read_to_string(&files[0]).unwrap();
+    let contents = std::fs::read_to_string(&files[0])?;
     assert!(
         contents.contains("panic-selftest: intentional panic"),
         "report carries the panic message:\n{contents}"
@@ -104,46 +106,50 @@ fn default_policy_writes_report_with_backtrace_and_exits_101() {
         stderr.contains("crash report written to"),
         "stderr points at the report:\n{stderr}"
     );
+    Ok(())
 }
 
 /// With `core = true` the process dies by SIGABRT (so the OS can dump core)
 /// but still writes the crash report first.
 #[test]
-fn core_true_dies_by_sigabrt_for_core_dump() {
-    let (status, stderr, dir) = run_selftest("core = true");
+fn core_true_dies_by_sigabrt_for_core_dump() -> Result<(), TestError> {
+    let (status, stderr, dir) = run_selftest("core = true")?;
     assert_eq!(
         status.signal(),
         Some(libc::SIGABRT),
         "core=true must abort so the OS can dump core, stderr:\n{stderr}"
     );
     // The report is still written before the abort.
-    assert_eq!(report_files(&dir).len(), 1, "stderr:\n{stderr}");
+    assert_eq!(report_files(&dir)?.len(), 1, "stderr:\n{stderr}");
+    Ok(())
 }
 
 /// With `reports = false` no report file is written, but the backtrace still
 /// reaches stderr and the exit code stays 101.
 #[test]
-fn reports_false_writes_nothing_but_backtrace_goes_to_stderr() {
-    let (status, stderr, dir) = run_selftest("reports = false");
+fn reports_false_writes_nothing_but_backtrace_goes_to_stderr() -> Result<(), TestError> {
+    let (status, stderr, dir) = run_selftest("reports = false")?;
     assert_eq!(status.code(), Some(101));
-    assert_eq!(report_files(&dir).len(), 0, "no report file");
+    assert_eq!(report_files(&dir)?.len(), 0, "no report file");
     assert!(
         stderr.contains("Backtrace:"),
         "backtrace must not be lost when reports are off:\n{stderr}"
     );
+    Ok(())
 }
 
 /// With `backtrace = false` the report is written without a `Backtrace:`
 /// section and instead notes that backtraces are disabled.
 #[test]
-fn backtrace_false_report_says_disabled() {
-    let (status, _stderr, dir) = run_selftest("backtrace = false");
+fn backtrace_false_report_says_disabled() -> Result<(), TestError> {
+    let (status, _stderr, dir) = run_selftest("backtrace = false")?;
     assert_eq!(status.code(), Some(101));
-    let files = report_files(&dir);
+    let files = report_files(&dir)?;
     assert_eq!(files.len(), 1);
-    let contents = std::fs::read_to_string(&files[0]).unwrap();
+    let contents = std::fs::read_to_string(&files[0])?;
     assert!(!contents.contains("Backtrace:"));
     assert!(contents.to_ascii_lowercase().contains("disabled"));
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -151,12 +157,12 @@ fn backtrace_false_report_says_disabled() {
 mod dbgsym;
 
 /// The one crash report written under the default policy, as text.
-fn default_report() -> String {
-    let (status, stderr, dir) = run_selftest("");
+fn default_report() -> Result<String, TestError> {
+    let (status, stderr, dir) = run_selftest("")?;
     assert_eq!(status.code(), Some(101), "stderr:\n{stderr}");
-    let files = report_files(&dir);
+    let files = report_files(&dir)?;
     assert_eq!(files.len(), 1, "stderr:\n{stderr}");
-    std::fs::read_to_string(&files[0]).unwrap()
+    Ok(std::fs::read_to_string(&files[0])?)
 }
 
 /// The `image+0x…` address of every frame the report attributes to the
@@ -175,8 +181,8 @@ fn executable_frames(report: &str) -> Vec<String> {
 /// Mach-O UUID (macOS), its load base, the target triple, and the raw address
 /// of every frame. The build ID is checked against the binary on disk.
 #[test]
-fn the_report_records_the_image_identity_and_raw_frames() {
-    let report = default_report();
+fn the_report_records_the_image_identity_and_raw_frames() -> Result<(), TestError> {
+    let report = default_report()?;
     assert!(report.contains("Load base: 0x"), "no load base:\n{report}");
     assert!(report.contains("Raw frames"), "no raw frames:\n{report}");
     let target = report
@@ -195,8 +201,8 @@ fn the_report_records_the_image_identity_and_raw_frames() {
 
     #[cfg(target_os = "linux")]
     {
-        let on_disk = dbgsym::build_id_or_panic(std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")))
-            .expect("the test binary carries a build ID");
+        let on_disk = dbgsym::build_id(std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")))?
+            .ok_or("the test binary carries a build ID")?;
         assert!(
             report.contains(&format!("Build ID:  {on_disk}")),
             "the report must carry the binary's build ID {on_disk}:\n{report}"
@@ -204,6 +210,7 @@ fn the_report_records_the_image_identity_and_raw_frames() {
     }
     #[cfg(target_os = "macos")]
     assert!(report.contains("UUID:  "), "no Mach-O UUID:\n{report}");
+    Ok(())
 }
 
 /// (b)+(c) The whole chain on the real binary: split a copy of it into a
@@ -213,19 +220,19 @@ fn the_report_records_the_image_identity_and_raw_frames() {
 /// names it.
 #[test]
 #[cfg(target_os = "linux")]
-fn the_report_frames_resolve_against_the_published_symbol_file() {
+fn the_report_frames_resolve_against_the_published_symbol_file() -> Result<(), TestError> {
     if !dbgsym::have("llvm-symbolizer") && !dbgsym::have("addr2line") {
         eprintln!("SKIPPED: neither llvm-symbolizer nor addr2line is installed");
-        return;
+        return Ok(());
     }
-    let report = default_report();
+    let report = default_report()?;
     let frames = executable_frames(&report);
     assert!(!frames.is_empty(), "no executable frames:\n{report}");
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir()?;
     let copy = dir.path().join("sipnab");
-    std::fs::copy(env!("CARGO_BIN_EXE_sipnab"), &copy).unwrap();
-    let out = dbgsym::split_or_panic(&copy, &dir.path().join("sipnab-test"));
+    std::fs::copy(env!("CARGO_BIN_EXE_sipnab"), &copy)?;
+    let out = dbgsym::split(&copy, &dir.path().join("sipnab-test"))?;
     assert!(
         out.status.success(),
         "split failed:\n{}",
@@ -234,7 +241,7 @@ fn the_report_frames_resolve_against_the_published_symbol_file() {
     let debug = dir.path().join("sipnab-test.debug");
 
     let addresses: Vec<&str> = frames.iter().map(String::as_str).collect();
-    let resolved = dbgsym::symbolize_all_or_panic(&debug, &addresses).unwrap_or_default();
+    let resolved = dbgsym::symbolize_all(&debug, &addresses)?.unwrap_or_default();
     // The panic's own `Location:` line, minus the column: a frame must
     // resolve to exactly that line. This does NOT pin the call-site rule
     // (return address minus one): in this unoptimized test binary both
@@ -245,7 +252,7 @@ fn the_report_frames_resolve_against_the_published_symbol_file() {
     let location = report
         .lines()
         .find_map(|l| l.strip_prefix("Location: "))
-        .expect("report has a Location line")
+        .ok_or("report has a Location line")?
         .trim();
     let file_line = location.rsplit_once(':').map_or(location, |(fl, _col)| fl);
     assert!(
@@ -257,4 +264,5 @@ fn the_report_frames_resolve_against_the_published_symbol_file() {
         "no frame resolved to the panic at {file_line}.\nframes: {frames:?}\n\
          resolved:\n{resolved}\nreport:\n{report}"
     );
+    Ok(())
 }

@@ -30,6 +30,9 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -60,13 +63,13 @@ fn source() -> String {
 /// bounds it named as documented there and nowhere else, so this gate passed
 /// locally and failed in CI over the same commit. A bound a caller can hit has
 /// to be named somewhere they can read.
-fn documentation() -> String {
+fn documentation() -> Result<String, TestError> {
     let mut out = String::new();
     let listed = std::process::Command::new("git")
         .args(["ls-files", "-z", "--", ":(glob)docs/**/*.md"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files docs/");
+        .map_err(|e| format!("git ls-files docs/: {e}"))?;
     assert!(listed.status.success(), "git ls-files failed");
     for rel in String::from_utf8_lossy(&listed.stdout).split('\0') {
         if rel.is_empty() {
@@ -78,7 +81,7 @@ fn documentation() -> String {
     for f in ["README.md", "SECURITY.md", "CHANGELOG.md"] {
         out.push_str(&std::fs::read_to_string(repo().join(f)).unwrap_or_default());
     }
-    out
+    Ok(out)
 }
 
 /// Environment variables read only by tests, and why each is exempt.
@@ -99,9 +102,9 @@ const TEST_ONLY_ENV: &[(&str, &str)] = &[(
 
 /// The scanners see a real tree.
 #[test]
-fn the_coverage_scanners_read_a_real_tree() {
+fn the_coverage_scanners_read_a_real_tree() -> Result<(), TestError> {
     let src = source();
-    let docs = documentation();
+    let docs = documentation()?;
     assert!(
         src.len() > 500_000,
         "read only {} bytes of source; every count below would be low for the \
@@ -120,6 +123,7 @@ fn the_coverage_scanners_read_a_real_tree() {
          gate below needs no exemptions and the table should go, not sit here \
          unused"
     );
+    Ok(())
 }
 
 // ── DOC10: environment variables ────────────────────────────────────
@@ -129,10 +133,11 @@ fn the_coverage_scanners_read_a_real_tree() {
 /// Not a ratchet: the gap was one variable, and it was a test-only one. This
 /// is the shape the others are aiming at.
 #[test]
-fn every_operator_environment_variable_is_documented() {
-    let re = regex::Regex::new(r#"env::var(?:_os)?\(\s*"([A-Z][A-Z0-9_]+)""#).expect("pattern");
+fn every_operator_environment_variable_is_documented() -> Result<(), TestError> {
+    let re = regex::Regex::new(r#"env::var(?:_os)?\(\s*"([A-Z][A-Z0-9_]+)""#)
+        .map_err(|e| format!("pattern: {e}"))?;
     let src = source();
-    let docs = documentation();
+    let docs = documentation()?;
     let read: BTreeSet<String> = re.captures_iter(&src).map(|c| c[1].to_string()).collect();
     assert!(
         read.len() >= 8,
@@ -161,6 +166,7 @@ fn every_operator_environment_variable_is_documented() {
          them about, and a credential-bearing one they do not know about is \
          worse than that."
     );
+    Ok(())
 }
 
 // ── DOC13: clap aliases ─────────────────────────────────────────────
@@ -173,11 +179,11 @@ fn every_operator_environment_variable_is_documented() {
 /// is exactly the argument for writing it down -- a reader with an old script
 /// needs to find out that the spelling still works.
 #[test]
-fn every_flag_alias_is_documented() {
+fn every_flag_alias_is_documented() -> Result<(), TestError> {
     let re = regex::Regex::new(r#"(?:visible_)?alias(?:es)?\s*=\s*"([a-z0-9][a-z0-9-]+)""#)
-        .expect("pattern");
+        .map_err(|e| format!("pattern: {e}"))?;
     let src = source();
-    let docs = documentation();
+    let docs = documentation()?;
     let aliases: BTreeSet<String> = re.captures_iter(&src).map(|c| c[1].to_string()).collect();
     assert!(
         !aliases.is_empty(),
@@ -197,6 +203,7 @@ fn every_flag_alias_is_documented() {
          {undocumented:?}\n\nA script written against the old spelling keeps \
          working, and its author has no way to learn that from the docs."
     );
+    Ok(())
 }
 
 // ── DOC11: numeric policy ceilings ──────────────────────────────────
@@ -237,11 +244,14 @@ const UNDOCUMENTED_CEILINGS: usize = 99;
 /// resolving one means evaluating Rust. The count of declarations that DID
 /// parse is returned and asserted, so the skip cannot quietly swallow the
 /// whole scan.
-fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usize) {
+fn documented_ceiling_values(
+    src: &str,
+    docs: &str,
+) -> Result<(Vec<String>, usize, usize), TestError> {
     let decl = regex::Regex::new(
         r"(?m)^\s*(?:pub(?:\([a-z]+\))?\s+)?const ((?:MAX|MIN|DEFAULT)_[A-Z0-9_]+)\s*:\s*(?:usize|u\d+)\s*=\s*([^;]+);",
     )
-    .expect("declaration pattern");
+    .map_err(|e| format!("declaration pattern: {e}"))?;
     // Every value a name is declared with: two modules may reuse a name (see
     // `a_name_declared_twice_agrees_with_either_value_in_any_order`).
     let mut values: std::collections::BTreeMap<String, std::collections::BTreeSet<u128>> =
@@ -258,7 +268,7 @@ fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usiz
     }
 
     let cited = regex::Regex::new(r"`((?:MAX|MIN|DEFAULT)_[A-Z0-9_]+)`\s*\((\d[\d,_]*)\)")
-        .expect("citation pattern");
+        .map_err(|e| format!("citation pattern: {e}"))?;
     let mut disagreeing = Vec::new();
     let mut checked = 0usize;
     for c in cited.captures_iter(docs) {
@@ -279,7 +289,7 @@ fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usiz
             ));
         }
     }
-    (disagreeing, checked, values.len())
+    Ok((disagreeing, checked, values.len()))
 }
 
 /// **First of two tests owed** for the ceiling ratchet this change turned red.
@@ -288,8 +298,8 @@ fn documented_ceiling_values(src: &str, docs: &str) -> (Vec<String>, usize, usiz
 /// the number beside the name is the one the code enforces — the other half of
 /// a fact written twice, and the half a reader actually uses.
 #[test]
-fn a_documented_ceiling_carries_the_number_the_code_enforces() {
-    let (disagreeing, checked, declared) = documented_ceiling_values(&source(), &documentation());
+fn a_documented_ceiling_carries_the_number_the_code_enforces() -> Result<(), TestError> {
+    let (disagreeing, checked, declared) = documented_ceiling_values(&source(), &documentation()?)?;
     assert!(
         declared >= 50,
         "only {declared} ceiling declaration(s) parsed; the pattern has \
@@ -307,6 +317,7 @@ fn a_documented_ceiling_carries_the_number_the_code_enforces() {
         disagreeing.len(),
         disagreeing.join("\n")
     );
+    Ok(())
 }
 
 /// **Second of two.** The comparison above can actually fail.
@@ -316,11 +327,11 @@ fn a_documented_ceiling_carries_the_number_the_code_enforces() {
 /// to notice that. So the predicate is driven on synthetic input in both
 /// directions.
 #[test]
-fn the_ceiling_value_comparison_fires_on_a_disagreement() {
+fn the_ceiling_value_comparison_fires_on_a_disagreement() -> Result<(), TestError> {
     let src = "pub const MAX_PROBE_ONE: usize = 200;\nconst MAX_PROBE_TWO: u32 = 1_000;\n";
 
     let (bad, checked, declared) =
-        documented_ceiling_values(src, "keeps `MAX_PROBE_ONE` (500) of them");
+        documented_ceiling_values(src, "keeps `MAX_PROBE_ONE` (500) of them")?;
     assert_eq!(declared, 2, "both declarations must parse");
     assert_eq!(checked, 1, "one citation carried a number");
     assert_eq!(bad.len(), 1, "the disagreement must be reported: {bad:?}");
@@ -329,7 +340,7 @@ fn the_ceiling_value_comparison_fires_on_a_disagreement() {
     let (good, checked, _) = documented_ceiling_values(
         src,
         "keeps `MAX_PROBE_ONE` (200) of them, and `MAX_PROBE_TWO` (1,000) of those",
-    );
+    )?;
     assert_eq!(checked, 2, "both citations must be compared");
     assert!(
         good.is_empty(),
@@ -338,9 +349,10 @@ fn the_ceiling_value_comparison_fires_on_a_disagreement() {
 
     // A name nothing declares is not this gate's business, and must not be
     // reported as a disagreement.
-    let (unknown, checked, _) = documented_ceiling_values(src, "`MAX_NOT_DECLARED` (7)");
+    let (unknown, checked, _) = documented_ceiling_values(src, "`MAX_NOT_DECLARED` (7)")?;
     assert_eq!(checked, 0);
     assert!(unknown.is_empty(), "{unknown:?}");
+    Ok(())
 }
 
 /// Two modules may declare a bound under the same name.
@@ -353,16 +365,16 @@ fn the_ceiling_value_comparison_fires_on_a_disagreement() {
 /// citing either value is citing a real bound, so both orders must agree with
 /// both values, and a number matching neither must still be reported.
 #[test]
-fn a_name_declared_twice_agrees_with_either_value_in_any_order() {
+fn a_name_declared_twice_agrees_with_either_value_in_any_order() -> Result<(), TestError> {
     let archive = "pub const MAX_SHARED: usize = 4;\n";
     let bencode = "pub const MAX_SHARED: usize = 16;\n";
     for src in [format!("{archive}{bencode}"), format!("{bencode}{archive}")] {
         for cited in ["`MAX_SHARED` (4)", "`MAX_SHARED` (16)"] {
-            let (bad, checked, _) = documented_ceiling_values(&src, cited);
+            let (bad, checked, _) = documented_ceiling_values(&src, cited)?;
             assert_eq!(checked, 1, "{cited} must be compared");
             assert!(bad.is_empty(), "{cited} is a real bound: {bad:?}");
         }
-        let (bad, checked, _) = documented_ceiling_values(&src, "`MAX_SHARED` (9)");
+        let (bad, checked, _) = documented_ceiling_values(&src, "`MAX_SHARED` (9)")?;
         assert_eq!(checked, 1);
         assert_eq!(bad.len(), 1, "9 matches neither declaration: {bad:?}");
         assert!(
@@ -370,16 +382,17 @@ fn a_name_declared_twice_agrees_with_either_value_in_any_order() {
             "the report names every declared value: {bad:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn undocumented_numeric_ceilings_do_not_increase() {
+fn undocumented_numeric_ceilings_do_not_increase() -> Result<(), TestError> {
     let re = regex::Regex::new(
         r"(?m)^\s*(?:pub\s+)?const ((?:MAX|MIN|DEFAULT)_[A-Z0-9_]+)\s*:\s*(?:usize|u\d+)\s*=",
     )
-    .expect("pattern");
+    .map_err(|e| format!("pattern: {e}"))?;
     let src = source();
-    let docs = documentation();
+    let docs = documentation()?;
     let all: BTreeSet<String> = re.captures_iter(&src).map(|c| c[1].to_string()).collect();
     assert!(
         all.len() >= 50,
@@ -400,6 +413,7 @@ fn undocumented_numeric_ceilings_do_not_increase() {
          but lower the constant in the same commit so the gain is held.",
         undocumented.len()
     );
+    Ok(())
 }
 
 // ── DOC14: REST schema strictness ───────────────────────────────────
@@ -510,8 +524,9 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 const PERMISSIVE_SCHEMA_COMPONENTS: usize = 61;
 
 #[test]
-fn permissive_rest_schema_components_do_not_increase() {
-    let re = regex::Regex::new(r"#\[derive\([^)]*ToSchema[^)]*\)\]").expect("pattern");
+fn permissive_rest_schema_components_do_not_increase() -> Result<(), TestError> {
+    let re = regex::Regex::new(r"#\[derive\([^)]*ToSchema[^)]*\)\]")
+        .map_err(|e| format!("pattern: {e}"))?;
     let src = source();
     let total = re.find_iter(&src).count();
     assert!(
@@ -528,6 +543,7 @@ fn permissive_rest_schema_components_do_not_increase() {
          the contract test will pass while carrying a field the schema never \
          described."
     );
+    Ok(())
 }
 
 // ── DOC15: MCP output schemas ───────────────────────────────────────
@@ -540,8 +556,9 @@ fn permissive_rest_schema_components_do_not_increase() {
 const TOOLS_WITHOUT_OUTPUT_SCHEMA: usize = 45;
 
 #[test]
-fn mcp_tools_without_an_output_schema_do_not_increase() {
-    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#).expect("pattern");
+fn mcp_tools_without_an_output_schema_do_not_increase() -> Result<(), TestError> {
+    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#)
+        .map_err(|e| format!("pattern: {e}"))?;
     let mut src = String::new();
     let mut stack = vec![repo().join("src/mcp")];
     while let Some(dir) = stack.pop() {
@@ -569,4 +586,5 @@ fn mcp_tools_without_an_output_schema_do_not_increase() {
          {TOOLS_WITHOUT_OUTPUT_SCHEMA} to {without}. A client written against \
          one of these cannot tell a renamed key from a missing one."
     );
+    Ok(())
 }

@@ -34,6 +34,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -145,20 +147,20 @@ fn placeholders_in_shell_blocks(text: &str) -> Vec<(usize, String)> {
 }
 
 /// The pages a user reads: the README and the top level of `docs/`.
-fn user_pages() -> Vec<PathBuf> {
+fn user_pages() -> Result<Vec<PathBuf>, TestError> {
     let mut pages: Vec<PathBuf> = std::fs::read_dir(repo().join("docs"))
-        .expect("docs/ is readable")
+        .map_err(|e| format!("docs/ is readable: {e}"))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
         .collect();
     pages.push(repo().join("README.md"));
     pages.sort();
-    pages
+    Ok(pages)
 }
 
 #[test]
-fn the_matcher_flags_placeholders_in_shell_blocks_only() {
+fn the_matcher_flags_placeholders_in_shell_blocks_only() -> Result<(), TestError> {
     let page = "\
 Prose may say <call-id> freely.
 
@@ -174,10 +176,11 @@ INVITE <call-id> is output, not a command
         placeholders_in_shell_blocks(page),
         vec![(4, "<call-id>".to_string())]
     );
+    Ok(())
 }
 
 #[test]
-fn the_matcher_reads_every_shell_fence_and_indented_fences() {
+fn the_matcher_reads_every_shell_fence_and_indented_fences() -> Result<(), TestError> {
     let page = "\
 1. Download it:
 
@@ -202,10 +205,11 @@ V=<version>
             (12, "<version>".to_string()),
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn the_matcher_passes_shell_syntax_uris_and_heredoc_bodies() {
+fn the_matcher_passes_shell_syntax_uris_and_heredoc_bodies() -> Result<(), TestError> {
     let page = "\
 ```bash
 sipnab -N -I capture.pcap --filter \"rtp.mos < 3.5\"
@@ -227,10 +231,11 @@ sipnab -N -I capture.pcap --call-report \"$CALL_ID\"
         "{:?}",
         placeholders_in_shell_blocks(page)
     );
+    Ok(())
 }
 
 #[test]
-fn a_heredoc_ends_at_its_terminator() {
+fn a_heredoc_ends_at_its_terminator() -> Result<(), TestError> {
     // After the terminator the block is shell again, and a placeholder there
     // is a placeholder.
     let page = "\
@@ -245,11 +250,12 @@ sipnab --call-report <call-id>
         placeholders_in_shell_blocks(page),
         vec![(5, "<call-id>".to_string())]
     );
+    Ok(())
 }
 
 #[test]
-fn no_user_page_puts_a_placeholder_in_a_shell_block() {
-    let pages = user_pages();
+fn no_user_page_puts_a_placeholder_in_a_shell_block() -> Result<(), TestError> {
+    let pages = user_pages()?;
     assert!(
         pages.len() >= 20,
         "only {} page(s) read — the walk is not reading the tree",
@@ -257,7 +263,8 @@ fn no_user_page_puts_a_placeholder_in_a_shell_block() {
     );
     let mut found = Vec::new();
     for page in &pages {
-        let text = std::fs::read_to_string(page).expect("a readable page");
+        let text = std::fs::read_to_string(page)
+            .map_err(|e| format!("a readable page {}: {e}", page.display()))?;
         let rel = page
             .strip_prefix(repo())
             .unwrap_or(page)
@@ -275,4 +282,5 @@ fn no_user_page_puts_a_placeholder_in_a_shell_block() {
         found.len(),
         found.join("\n  ")
     );
+    Ok(())
 }

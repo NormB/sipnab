@@ -10,6 +10,10 @@ use sipnab::capture::CaptureSource;
 use sipnab::cli::Cli;
 use sipnab::config::Config;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Parses `args` as if passed on a `sipnab` command line (the binary name is
 /// prepended automatically).
 ///
@@ -35,67 +39,72 @@ const FIXTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 /// Source selection precedence: `-I file` beats `-d device` beats the
 /// config-file device; with none set the plan defers to auto-detection.
 #[test]
-fn source_selection_precedence() {
+fn source_selection_precedence() -> Result<(), TestError> {
     let mut config = Config::default();
     config.capture.device = Some("cfg0".into());
 
-    let p = bootstrap::plan(&cli(&["-I", FIXTURE, "-d", "eth9"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["-I", FIXTURE, "-d", "eth9"]), &config)
+        .map_err(|e| format!("{e:?}"))?;
     assert!(
         matches!(p.source, Some(CaptureSource::File { .. })),
         "input file must win"
     );
 
-    let p = bootstrap::plan(&cli(&["-d", "eth9"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["-d", "eth9"]), &config).map_err(|e| format!("{e:?}"))?;
     match p.source {
         Some(CaptureSource::Live { ref device }) => assert_eq!(device, "eth9"),
-        _ => panic!("CLI device must beat config device"),
+        _ => return Err("CLI device must beat config device".into()),
     }
 
-    let p = bootstrap::plan(&cli(&[]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&[]), &config).map_err(|e| format!("{e:?}"))?;
     match p.source {
         Some(CaptureSource::Live { ref device }) => assert_eq!(device, "cfg0"),
-        _ => panic!("config device must be used when CLI has none"),
+        _ => return Err("config device must be used when CLI has none".into()),
     }
 
-    let p = bootstrap::plan(&cli(&[]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&[]), &Config::default()).map_err(|e| format!("{e:?}"))?;
     assert!(
         p.source.is_none(),
         "no source anywhere ⇒ defer to auto-detect at launch"
     );
+    Ok(())
 }
 
 /// Portrange resolution: CLI wins, then config, then the default; an
 /// invalid range is a plan error with the argument-error exit code (2).
 #[test]
-fn portrange_resolution_and_error() {
+fn portrange_resolution_and_error() -> Result<(), TestError> {
     let mut config = Config::default();
     config.capture.portrange = Some("6000-6001".into());
 
-    let p = bootstrap::plan(&cli(&["--portrange", "7000-7010", "-N"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["--portrange", "7000-7010", "-N"]), &config)
+        .map_err(|e| format!("{e:?}"))?;
     assert_eq!(p.portrange, (7000, 7010));
 
     // Explicitly passing the DEFAULT range must still beat the config —
     // clap can't distinguish "defaulted" from "explicitly set to the
     // default" with a String field, so the flag is an Option now.
-    let p = bootstrap::plan(&cli(&["--portrange", "5060-5061", "-N"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["--portrange", "5060-5061", "-N"]), &config)
+        .map_err(|e| format!("{e:?}"))?;
     assert_eq!(
         p.portrange,
         (5060, 5061),
         "an explicit --portrange equal to the default must override config"
     );
 
-    let p = bootstrap::plan(&cli(&["-N"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["-N"]), &config).map_err(|e| format!("{e:?}"))?;
     assert_eq!(p.portrange, (6000, 6001), "config fallback");
 
-    let p = bootstrap::plan(&cli(&["-N"]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&["-N"]), &Config::default()).map_err(|e| format!("{e:?}"))?;
     assert_eq!(p.portrange, (5060, 5061), "built-in default");
 
     let err = match bootstrap::plan(&cli(&["--portrange", "9-1", "-N"]), &Config::default()) {
         Err(e) => e,
-        Ok(_) => panic!("inverted range must fail"),
+        Ok(_) => return Err("inverted range must fail".into()),
     };
     assert_eq!(err.exit_code, 2);
     assert!(err.message.contains("--portrange"), "got: {}", err.message);
+    Ok(())
 }
 
 /// The BPF filter is auto-generated from the portrange for live captures
@@ -106,7 +115,7 @@ fn portrange_resolution_and_error() {
 /// the media arm), whose own tests pin it to exact frame counts
 /// through libpcap. Here the question is only which runs get one.
 #[test]
-fn bpf_autogeneration_rules() {
+fn bpf_autogeneration_rules() -> Result<(), TestError> {
     /// The BPF filter `args` plans to, with the plan itself dropped here.
     ///
     /// Extracted so each case's `Cli` and `RunPlan` live in THIS frame and are
@@ -117,21 +126,21 @@ fn bpf_autogeneration_rules() {
     /// `augment_args` already needs for ~250 flags. Measured: the inline form
     /// aborted with `has overflowed its stack` at the default size and passed
     /// at `RUST_MIN_STACK=2129920`. Keep new cases going through here.
-    fn bpf_for(args: &[&str]) -> Option<String> {
-        bootstrap::plan(&cli(args), &Config::default())
-            .expect("plan")
+    fn bpf_for(args: &[&str]) -> Result<Option<String>, TestError> {
+        Ok(bootstrap::plan(&cli(args), &Config::default())
+            .map_err(|e| format!("plan: {e:?}"))?
             .capture_config
-            .bpf_filter
+            .bpf_filter)
     }
 
-    let f = bpf_for(&["-d", "eth0"]);
+    let f = bpf_for(&["-d", "eth0"])?;
     assert_eq!(
         f.as_deref(),
         Some(bootstrap::auto_capture_filter(5060, 5061, &[], true).as_str()),
         "live capture with no explicit filter gets the auto-generated BPF, media included"
     );
     assert_eq!(
-        bpf_for(&["-d", "eth0", "--no-rtp"]).as_deref(),
+        bpf_for(&["-d", "eth0", "--no-rtp"])?.as_deref(),
         Some(bootstrap::auto_bpf_filter(5060, 5061, &[]).as_str()),
         "--no-rtp keeps the generated filter signaling-only"
     );
@@ -142,7 +151,7 @@ fn bpf_autogeneration_rules() {
     );
 
     assert_eq!(
-        bpf_for(&["-d", "eth0", "--portrange", "5080-5080"]).as_deref(),
+        bpf_for(&["-d", "eth0", "--portrange", "5080-5080"])?.as_deref(),
         Some(bootstrap::auto_capture_filter(5080, 5080, &[], true).as_str()),
         "degenerate range uses the single-port form"
     );
@@ -150,7 +159,7 @@ fn bpf_autogeneration_rules() {
     // Opt-in UDP tunnel coverage reaches the generated filter, and only when
     // asked for: it captures whole ports, so it can never be a default.
     assert_eq!(
-        bpf_for(&["-d", "eth0", "--capture-tunnels"]).as_deref(),
+        bpf_for(&["-d", "eth0", "--capture-tunnels"])?.as_deref(),
         Some(
             bootstrap::auto_capture_filter(5060, 5061, bootstrap::TUNNEL_PORTS_DEFAULT, true)
                 .as_str()
@@ -159,38 +168,41 @@ fn bpf_autogeneration_rules() {
     );
 
     assert_eq!(
-        bpf_for(&["-d", "eth0", "--capture-tunnels=8472"]).as_deref(),
+        bpf_for(&["-d", "eth0", "--capture-tunnels=8472"])?.as_deref(),
         Some(bootstrap::auto_capture_filter(5060, 5061, &[8472], true).as_str()),
         "a custom tunnel port list is honored verbatim"
     );
 
     // Positional trailing args are the explicit BPF filter (tcpdump-style).
     assert_eq!(
-        bpf_for(&["-d", "eth0", "udp"]).as_deref(),
+        bpf_for(&["-d", "eth0", "udp"])?.as_deref(),
         Some("udp"),
         "an explicit filter is never overridden"
     );
 
     assert!(
-        bpf_for(&["-I", FIXTURE]).is_none(),
+        bpf_for(&["-I", FIXTURE])?.is_none(),
         "offline input gets no auto BPF"
     );
+    Ok(())
 }
 
 /// Mode precedence: `--cores N` with an offline input takes the multi-core
 /// file path even when the TUI would otherwise run; `--no-tui` forces batch.
 #[test]
-fn run_mode_precedence() {
-    let p =
-        bootstrap::plan(&cli(&["--cores", "4", "-I", FIXTURE]), &Config::default()).expect("plan");
+fn run_mode_precedence() -> Result<(), TestError> {
+    let p = bootstrap::plan(&cli(&["--cores", "4", "-I", FIXTURE]), &Config::default())
+        .map_err(|e| format!("{e:?}"))?;
     assert!(matches!(p.mode, RunMode::CoresFile));
 
-    let p = bootstrap::plan(&cli(&["-I", FIXTURE, "-N"]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&["-I", FIXTURE, "-N"]), &Config::default())
+        .map_err(|e| format!("{e:?}"))?;
     assert!(matches!(p.mode, RunMode::Batch));
 
     #[cfg(feature = "tui")]
     {
-        let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default()).expect("plan");
+        let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default())
+            .map_err(|e| format!("{e:?}"))?;
         assert!(matches!(p.mode, RunMode::Tui), "default is the TUI");
     }
 
@@ -199,16 +211,19 @@ fn run_mode_precedence() {
         &cli(&["--cores", "1", "-I", FIXTURE, "-N"]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("{e:?}"))?;
     assert!(matches!(p.mode, RunMode::Batch));
+    Ok(())
 }
 
 /// MCP forces batch mode (it owns stdio, so the TUI must not start).
 #[cfg(feature = "mcp")]
 #[test]
-fn mcp_forces_batch_mode() {
-    let p = bootstrap::plan(&cli(&["--mcp", "-I", FIXTURE]), &Config::default()).expect("plan");
+fn mcp_forces_batch_mode() -> Result<(), TestError> {
+    let p = bootstrap::plan(&cli(&["--mcp", "-I", FIXTURE]), &Config::default())
+        .map_err(|e| format!("{e:?}"))?;
     assert!(matches!(p.mode, RunMode::Batch));
+    Ok(())
 }
 
 /// `--call-report` forces batch mode, because it is only ever read there.
@@ -226,12 +241,12 @@ fn mcp_forces_batch_mode() {
 /// Six published invocations used the no-`-N` form, so this was the
 /// documented spelling, not a corner case.
 #[test]
-fn call_report_forces_batch_mode() {
+fn call_report_forces_batch_mode() -> Result<(), TestError> {
     let p = bootstrap::plan(
         &cli(&["-I", FIXTURE, "--call-report", "abc123@host"]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("{e:?}"))?;
     assert!(
         matches!(p.mode, RunMode::Batch),
         "--call-report must select batch; it is read nowhere else, so the TUI \
@@ -244,7 +259,7 @@ fn call_report_forces_batch_mode() {
         &["-I", FIXTURE, "--call-report", "abc123@host", "--markdown"][..],
         &["-I", FIXTURE, "--call-report", "abc123@host", "-N"][..],
     ] {
-        let p = bootstrap::plan(&cli(args), &Config::default()).expect("plan");
+        let p = bootstrap::plan(&cli(args), &Config::default()).map_err(|e| format!("{e:?}"))?;
         assert!(matches!(p.mode, RunMode::Batch), "{args:?} must be batch");
     }
 
@@ -252,20 +267,22 @@ fn call_report_forces_batch_mode() {
     // not turn every offline run into batch.
     #[cfg(feature = "tui")]
     {
-        let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default()).expect("plan");
+        let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default())
+            .map_err(|e| format!("{e:?}"))?;
         assert!(matches!(p.mode, RunMode::Tui));
     }
+    Ok(())
 }
 
 /// Autostop and split parsing feed the capture policy; errors are exit-2
 /// plan errors carrying the flag name.
 #[test]
-fn policy_autostop_and_split() {
+fn policy_autostop_and_split() -> Result<(), TestError> {
     let p = bootstrap::plan(
         &cli(&["-N", "--autostop", "duration:30", "-I", FIXTURE]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("{e:?}"))?;
     assert_eq!(
         p.policy.autostop_duration,
         Some(std::time::Duration::from_secs(30))
@@ -277,10 +294,11 @@ fn policy_autostop_and_split() {
         &Config::default(),
     ) {
         Err(e) => e,
-        Ok(_) => panic!("unknown autostop key must fail"),
+        Ok(_) => return Err("unknown autostop key must fail".into()),
     };
     assert_eq!(err.exit_code, 2);
     assert!(err.message.contains("--autostop"), "got: {}", err.message);
+    Ok(())
 }
 
 /// `--split-keep` reaches the capture policy, and reaches it as `None` unless
@@ -292,7 +310,7 @@ fn policy_autostop_and_split() {
 /// file being written among the things it would remove, so it turns the bound
 /// off rather than emptying the directory.
 #[test]
-fn split_keep_reaches_the_capture_policy_only_when_asked_for() {
+fn split_keep_reaches_the_capture_policy_only_when_asked_for() -> Result<(), TestError> {
     let p = bootstrap::plan(
         &cli(&[
             "-N",
@@ -305,14 +323,14 @@ fn split_keep_reaches_the_capture_policy_only_when_asked_for() {
         ]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("{e:?}"))?;
     assert_eq!(p.policy.split_keep, Some(3));
 
     let p = bootstrap::plan(
         &cli(&["-N", "--split", "filesize:1", "-I", FIXTURE]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("{e:?}"))?;
     assert_eq!(
         p.policy.split_keep, None,
         "no --split-keep must mean no deletion"
@@ -330,11 +348,12 @@ fn split_keep_reaches_the_capture_policy_only_when_asked_for() {
         ]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("{e:?}"))?;
     assert_eq!(
         p.policy.split_keep, None,
         "--split-keep 0 turns the bound off"
     );
+    Ok(())
 }
 
 /// The hook-command queue depth reaches the engine the plan builds, and
@@ -347,12 +366,12 @@ fn split_keep_reaches_the_capture_policy_only_when_asked_for() {
 /// Every run below leaves the rate limit at its default, so the only thing
 /// separating an event that ran from one that was dropped is the depth.
 #[test]
-fn the_exec_queue_depth_reaches_the_engine_the_plan_builds() {
+fn the_exec_queue_depth_reaches_the_engine_the_plan_builds() -> Result<(), TestError> {
     /// A minimal dialog to fire hooks with.
-    fn dialog() -> sipnab::sip::dialog::SipDialog {
+    fn dialog() -> Result<sipnab::sip::dialog::SipDialog, TestError> {
         use std::net::{IpAddr, Ipv4Addr};
         let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("timestamp")?;
         let raw: &[u8] = b"INVITE sip:bob@example.com SIP/2.0\r\n\
              From: <sip:alice@example.com>;tag=t1\r\n\
              To: <sip:bob@example.com>\r\n\
@@ -367,43 +386,43 @@ fn the_exec_queue_depth_reaches_the_engine_the_plan_builds() {
             5060,
             5060,
             sipnab::capture::parse::TransportProto::Udp,
-        )
-        .expect("parse");
-        sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog")
+        )?;
+        Ok(sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?)
     }
 
     /// Fire four slow hooks through a plan built from `args` plus `config`,
     /// and report `(spawned, dropped)`.
-    fn fire_four(args: &[&str], config: &Config) -> (u64, u64) {
+    fn fire_four(args: &[&str], config: &Config) -> Result<(u64, u64), TestError> {
         let mut full = vec!["-N", "-I", FIXTURE, "--on-dialog-exec", "sleep 5"];
         full.extend_from_slice(args);
-        let mut plan = bootstrap::plan(&cli(&full), config).expect("plan");
-        let d = dialog();
+        let mut plan = bootstrap::plan(&cli(&full), config).map_err(|e| format!("{e:?}"))?;
+        let d = dialog()?;
         for _ in 0..4 {
             plan.event_exec.fire_dialog_event(&d);
         }
         let counts = plan.event_exec.outcomes();
-        (counts.spawned, counts.queue_full)
+        Ok((counts.spawned, counts.queue_full))
     }
 
     let mut narrowed = Config::default();
     narrowed.limits.exec_queue_depth = Some(2);
     assert_eq!(
-        fire_four(&[], &narrowed),
+        fire_four(&[], &narrowed)?,
         (2, 2),
         "[limits] exec_queue_depth = 2 must reach the engine the plan builds"
     );
 
     assert_eq!(
-        fire_four(&["--exec-queue-depth", "8"], &narrowed),
+        fire_four(&["--exec-queue-depth", "8"], &narrowed)?,
         (4, 0),
         "--exec-queue-depth must beat the config key"
     );
 
     assert_eq!(
-        fire_four(&[], &Config::default()),
+        fire_four(&[], &Config::default())?,
         (4, 0),
         "the shipped depth must still admit four hooks, or the runs above \
          prove nothing about the depth"
     );
+    Ok(())
 }

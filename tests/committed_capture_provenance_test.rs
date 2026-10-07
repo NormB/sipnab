@@ -42,6 +42,9 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The manifest, relative to the repository root.
 const MANIFEST: &str = "tests/PROVENANCE.md";
 
@@ -469,13 +472,16 @@ fn hash_problem(entry: &Entry, actual: &str) -> Option<String> {
 fn hash_problems(
     entries: &[Entry],
     tracked: &BTreeMap<String, Option<Format>>,
-    hash_of: impl Fn(&str) -> String,
-) -> Vec<String> {
-    entries
+    hash_of: impl Fn(&str) -> Result<String, TestError>,
+) -> Result<Vec<String>, TestError> {
+    let mut out = Vec::new();
+    for e in entries
         .iter()
         .filter(|e| tracked.get(&e.path).is_some_and(Option::is_some))
-        .filter_map(|e| hash_problem(e, &hash_of(&e.path)))
-        .collect()
+    {
+        out.extend(hash_problem(e, &hash_of(&e.path)?));
+    }
+    Ok(out)
 }
 
 // ── reading the repository ──────────────────────────────────────────
@@ -489,23 +495,23 @@ fn repo() -> PathBuf {
 ///
 /// The hook's `GIT_INDEX_FILE` is inherited on purpose: under `git commit` it
 /// names the index being committed, which is the set this gate is about.
-fn tracked_paths() -> Vec<String> {
+fn tracked_paths() -> Result<Vec<String>, TestError> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo())
         .args(["ls-files", "-z"])
-        .output()
-        .expect("run git ls-files");
+        .output()?;
     assert!(
         out.status.success(),
         "git ls-files failed, so the gate cannot see the index: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    out.stdout
+    Ok(out
+        .stdout
         .split(|b| *b == 0)
         .filter(|p| !p.is_empty())
         .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect()
+        .collect())
 }
 
 /// Up to [`HEAD`] leading bytes of a tracked file, or `None` if it is not on
@@ -518,13 +524,13 @@ fn head_of(rel: &str) -> Option<Vec<u8>> {
 }
 
 /// The lowercase hex SHA-256 of a tracked file.
-fn sha256_of(rel: &str) -> String {
+fn sha256_of(rel: &str) -> Result<String, TestError> {
     use sha2::{Digest as _, Sha256};
-    let bytes = std::fs::read(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"));
-    Sha256::digest(&bytes)
+    let bytes = std::fs::read(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?;
+    Ok(Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect()
+        .collect())
 }
 
 // ── the gate ────────────────────────────────────────────────────────
@@ -532,16 +538,16 @@ fn sha256_of(rel: &str) -> String {
 /// Every capture in the index is accounted for, and the manifest vouches only
 /// for files that are there, with the bytes it names.
 #[test]
-fn every_committed_capture_is_public_or_synthetic() {
+fn every_committed_capture_is_public_or_synthetic() -> Result<(), TestError> {
     let text = std::fs::read_to_string(repo().join(MANIFEST))
-        .unwrap_or_else(|e| panic!("read {MANIFEST}: {e}"));
+        .map_err(|e| format!("read {MANIFEST}: {e}"))?;
     let (entries, mut problems) = parse_manifest(&text);
     let listed: BTreeSet<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
     let mut tracked: BTreeMap<String, Option<Format>> = BTreeMap::new();
     let mut captures = 0usize;
     let mut deferred = 0usize;
-    for path in tracked_paths() {
+    for path in tracked_paths()? {
         let Some(head) = head_of(&path) else {
             tracked.insert(path, None);
             continue;
@@ -559,7 +565,7 @@ fn every_committed_capture_is_public_or_synthetic() {
     }
 
     problems.extend(manifest_problems(&entries, &tracked, UNRESOLVED));
-    problems.extend(hash_problems(&entries, &tracked, sha256_of));
+    problems.extend(hash_problems(&entries, &tracked, sha256_of)?);
 
     assert!(
         problems.is_empty(),
@@ -585,8 +591,9 @@ fn every_committed_capture_is_public_or_synthetic() {
          the path rule has stopped matching"
     );
     if let Some(why) = over_ceiling(UNRESOLVED, UNRESOLVED_CEILING) {
-        panic!("{why}");
+        return Err(why.to_string().into());
     }
+    Ok(())
 }
 
 /// The ratchet: why `unresolved` breaks `ceiling`, or `None` if it does not.
@@ -650,11 +657,11 @@ fn pcapng_head() -> Vec<u8> {
 }
 
 /// `data` gzip-compressed with real deflate, as `gzip` on a shell would.
-fn gzip(data: &[u8]) -> Vec<u8> {
+fn gzip(data: &[u8]) -> Result<Vec<u8>, TestError> {
     use std::io::Write as _;
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    enc.write_all(data).expect("compress");
-    enc.finish().expect("finish")
+    enc.write_all(data)?;
+    Ok(enc.finish()?)
 }
 
 /// A manifest entry in the shape `tests/PROVENANCE.md` uses.
@@ -668,7 +675,7 @@ fn synthetic_entry(path: &str, generator: &str, sha: &str) -> String {
 const SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[test]
-fn classic_pcap_is_recognized_in_both_byte_orders_and_both_precisions() {
+fn classic_pcap_is_recognized_in_both_byte_orders_and_both_precisions() -> Result<(), TestError> {
     for (magic, big_endian, nanosecond) in [
         (0xA1B2_C3D4u32, false, false),
         (0xA1B2_C3D4, true, false),
@@ -689,10 +696,11 @@ fn classic_pcap_is_recognized_in_both_byte_orders_and_both_precisions() {
             if big_endian { "big" } else { "little" }
         );
     }
+    Ok(())
 }
 
 #[test]
-fn pcapng_and_netmon_are_recognized() {
+fn pcapng_and_netmon_are_recognized() -> Result<(), TestError> {
     assert_eq!(
         capture_format(&pcapng_head()).map(|f| f.container),
         Some(Container::Pcapng)
@@ -703,6 +711,7 @@ fn pcapng_and_netmon_are_recognized() {
         capture_format(&netmon).map(|f| f.container),
         Some(Container::NetMon)
     );
+    Ok(())
 }
 
 /// A pcapng magic alone is not enough: the byte-order magic must follow.
@@ -710,15 +719,16 @@ fn pcapng_and_netmon_are_recognized() {
 /// `0A 0D 0D 0A` is CR/LF bytes, which a text file can start with; the
 /// byte-order magic eight bytes in is what makes it a Section Header Block.
 #[test]
-fn text_that_starts_like_pcapng_is_not_a_capture() {
+fn text_that_starts_like_pcapng_is_not_a_capture() -> Result<(), TestError> {
     assert_eq!(capture_format(b"\n\r\r\nhello, this is prose\n"), None);
+    Ok(())
 }
 
 #[test]
-fn a_gzip_wrapped_capture_is_recognized_by_looking_inside() {
+fn a_gzip_wrapped_capture_is_recognized_by_looking_inside() -> Result<(), TestError> {
     let pcap = pcap_header(0xA1B2_C3D4, false);
     assert_eq!(
-        capture_format(&gzip(&pcap)),
+        capture_format(&gzip(&pcap)?),
         Some(Format {
             container: Container::Pcap {
                 big_endian: false,
@@ -728,22 +738,24 @@ fn a_gzip_wrapped_capture_is_recognized_by_looking_inside() {
         })
     );
     assert_eq!(
-        capture_format(&gzip(&pcapng_head())).map(|f| (f.container, f.gzip)),
+        capture_format(&gzip(&pcapng_head())?).map(|f| (f.container, f.gzip)),
         Some((Container::Pcapng, true))
     );
+    Ok(())
 }
 
 /// gzip around something that is not a capture is not a capture.
 #[test]
-fn gzip_around_text_is_not_a_capture() {
-    assert_eq!(capture_format(&gzip(b"just a compressed README\n")), None);
+fn gzip_around_text_is_not_a_capture() -> Result<(), TestError> {
+    assert_eq!(capture_format(&gzip(b"just a compressed README\n")?), None);
+    Ok(())
 }
 
 #[test]
-fn a_renamed_pcap_is_caught_and_the_message_says_what_to_do() {
+fn a_renamed_pcap_is_caught_and_the_message_says_what_to_do() -> Result<(), TestError> {
     let head = pcap_header(0xA1B2_C3D4, false);
     let Verdict::Unlisted(why) = verdict("docs/diagram.png", &head, &BTreeSet::new(), &[]) else {
-        panic!("a pcap renamed to .png must still be caught");
+        return Err("a pcap renamed to .png must still be caught".into());
     };
     assert!(why.contains("docs/diagram.png"), "names the file: {why}");
     assert!(why.contains("classic pcap"), "names the format: {why}");
@@ -752,33 +764,36 @@ fn a_renamed_pcap_is_caught_and_the_message_says_what_to_do() {
         why.contains("generator") && why.contains("public"),
         "says how to account for it, either way: {why}"
     );
+    Ok(())
 }
 
 #[test]
-fn an_extensionless_pcapng_is_caught() {
+fn an_extensionless_pcapng_is_caught() -> Result<(), TestError> {
     let Verdict::Unlisted(why) = verdict(
         "fuzz/corpus/pcap_reader/seed-7",
         &pcapng_head(),
         &BTreeSet::new(),
         &[],
     ) else {
-        panic!("an extensionless pcapng must be caught");
+        return Err("an extensionless pcapng must be caught".into());
     };
     assert!(why.contains("pcapng"), "{why}");
+    Ok(())
 }
 
 #[test]
-fn a_gzip_wrapped_pcap_is_caught() {
-    let head = gzip(&pcap_header(0xA1B2_3C4D, true));
+fn a_gzip_wrapped_pcap_is_caught() -> Result<(), TestError> {
+    let head = gzip(&pcap_header(0xA1B2_3C4D, true))?;
     let Verdict::Unlisted(why) = verdict("tests/fixtures/call.bin", &head, &BTreeSet::new(), &[])
     else {
-        panic!("a gzip-wrapped pcap must be caught");
+        return Err("a gzip-wrapped pcap must be caught".into());
     };
     assert!(why.contains("gzip-compressed classic pcap"), "{why}");
+    Ok(())
 }
 
 #[test]
-fn a_text_file_is_not_flagged() {
+fn a_text_file_is_not_flagged() -> Result<(), TestError> {
     assert_eq!(
         verdict(
             "tests/fixtures/notes.pcap",
@@ -789,20 +804,22 @@ fn a_text_file_is_not_flagged() {
         Verdict::NotACapture,
         "a name is not a format"
     );
+    Ok(())
 }
 
 #[test]
-fn a_listed_capture_passes() {
+fn a_listed_capture_passes() -> Result<(), TestError> {
     let head = pcap_header(0xA1B2_C3D4, false);
     let listed: BTreeSet<&str> = ["tests/fixtures/call.pcap"].into_iter().collect();
     assert_eq!(
         verdict("tests/fixtures/call.pcap", &head, &listed, &[]),
         Verdict::Listed
     );
+    Ok(())
 }
 
 #[test]
-fn an_unresolved_capture_passes_and_nothing_else_does() {
+fn an_unresolved_capture_passes_and_nothing_else_does() -> Result<(), TestError> {
     let head = pcap_header(0xA1B2_C3D4, false);
     let unresolved = [("tests/fixtures/old.pcap", "why")];
     assert_eq!(
@@ -823,12 +840,13 @@ fn an_unresolved_capture_passes_and_nothing_else_does() {
         ),
         Verdict::Unlisted(_)
     ));
+    Ok(())
 }
 
 /// Direct children of tests/pcap-samples/ answer to that directory's gate;
 /// anything deeper answers to this one, because that gate reads one level.
 #[test]
-fn only_direct_children_of_the_samples_directory_are_deferred() {
+fn only_direct_children_of_the_samples_directory_are_deferred() -> Result<(), TestError> {
     let head = pcap_header(0xA1B2_C3D4, false);
     assert_eq!(
         verdict("tests/pcap-samples/x.pcap", &head, &BTreeSet::new(), &[]),
@@ -843,10 +861,11 @@ fn only_direct_children_of_the_samples_directory_are_deferred() {
         ),
         Verdict::Unlisted(_)
     ));
+    Ok(())
 }
 
 #[test]
-fn a_synthetic_entry_parses() {
+fn a_synthetic_entry_parses() -> Result<(), TestError> {
     let text = format!(
         "# heading\n\nprose\n\n{}",
         synthetic_entry("tests/fixtures/a.pcap", "tests/support/gen.rs", SHA)
@@ -863,10 +882,11 @@ fn a_synthetic_entry_parses() {
             sha256: SHA.into(),
         }]
     );
+    Ok(())
 }
 
 #[test]
-fn a_public_entry_parses_and_needs_a_url_and_a_license() {
+fn a_public_entry_parses_and_needs_a_url_and_a_license() -> Result<(), TestError> {
     let good = format!(
         "### a.pcap\n\n- {CATEGORY} public\n- {SOURCE} <https://example.org/a.pcap>\n\
          - {LICENSE} CC0-1.0\n- {SHA256} `{SHA}`\n"
@@ -894,6 +914,7 @@ fn a_public_entry_parses_and_needs_a_url_and_a_license() {
             .any(|p| p.contains("License")),
         "a public entry with no license is refused"
     );
+    Ok(())
 }
 
 /// A fenced block can show an entry without the manifest counting it.
@@ -901,7 +922,7 @@ fn a_public_entry_parses_and_needs_a_url_and_a_license() {
 /// Otherwise an example in the prose would vouch for a file, or fail as an
 /// entry for one that is not in the index.
 #[test]
-fn an_entry_inside_a_fenced_block_is_only_an_example() {
+fn an_entry_inside_a_fenced_block_is_only_an_example() -> Result<(), TestError> {
     let text = format!(
         "# heading\n\n```markdown\n{}```\n",
         synthetic_entry("tests/fixtures/example.pcap", "tests/support/gen.rs", SHA)
@@ -912,12 +933,13 @@ fn an_entry_inside_a_fenced_block_is_only_an_example() {
         entries.is_empty(),
         "an example in a fence is not an entry: {entries:?}"
     );
+    Ok(())
 }
 
 /// The hash is 64 lowercase hex digits or the entry is refused: a hash the
 /// gate cannot compare vouches for nothing.
 #[test]
-fn a_hash_that_is_not_sixty_four_lowercase_hex_digits_is_refused() {
+fn a_hash_that_is_not_sixty_four_lowercase_hex_digits_is_refused() -> Result<(), TestError> {
     for bad in [
         SHA.to_uppercase().replace('0', "A"),
         SHA[..63].to_string(),
@@ -931,12 +953,13 @@ fn a_hash_that_is_not_sixty_four_lowercase_hex_digits_is_refused() {
             "{bad}: {problems:?}"
         );
     }
+    Ok(())
 }
 
 /// An unresolved capture carries its reason, because the reason is the
 /// whole of what the next person has to go on.
 #[test]
-fn an_unresolved_capture_needs_a_reason() {
+fn an_unresolved_capture_needs_a_reason() -> Result<(), TestError> {
     let problems = manifest_problems(&[], &index(), &[("tests/fixtures/a.pcap", "  ")]);
     assert!(
         problems
@@ -944,10 +967,11 @@ fn an_unresolved_capture_needs_a_reason() {
             .any(|p| p.contains("tests/fixtures/a.pcap") && p.contains("no reason")),
         "{problems:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_malformed_entry_is_refused() {
+fn a_malformed_entry_is_refused() -> Result<(), TestError> {
     let unknown = format!("### a.pcap\n\n- {CATEGORY} found-it-somewhere\n- {SHA256} `{SHA}`\n");
     assert!(
         parse_manifest(&unknown)
@@ -981,6 +1005,7 @@ fn a_malformed_entry_is_refused() {
         parse_manifest(&twice).1.iter().any(|p| p.contains("twice")),
         "a path described twice is refused"
     );
+    Ok(())
 }
 
 /// Tracked paths for the manifest checks: one capture, one generator.
@@ -1004,7 +1029,7 @@ fn entry(path: &str, generator: &str) -> Entry {
 }
 
 #[test]
-fn an_entry_whose_file_is_gone_is_refused() {
+fn an_entry_whose_file_is_gone_is_refused() -> Result<(), TestError> {
     let problems = manifest_problems(
         &[entry("tests/fixtures/deleted.pcap", "tests/support/gen.rs")],
         &index(),
@@ -1016,10 +1041,11 @@ fn an_entry_whose_file_is_gone_is_refused() {
             .any(|p| p.contains("tests/fixtures/deleted.pcap") && p.contains("not in the index")),
         "{problems:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_sound_manifest_has_no_problems() {
+fn a_sound_manifest_has_no_problems() -> Result<(), TestError> {
     let problems = manifest_problems(
         &[
             entry("tests/fixtures/a.pcap", "tests/support/gen.rs"),
@@ -1029,10 +1055,11 @@ fn a_sound_manifest_has_no_problems() {
         &[],
     );
     assert!(problems.is_empty(), "{problems:?}");
+    Ok(())
 }
 
 #[test]
-fn an_entry_for_a_file_that_is_not_a_capture_is_refused() {
+fn an_entry_for_a_file_that_is_not_a_capture_is_refused() -> Result<(), TestError> {
     let problems = manifest_problems(
         &[entry("tests/support/gen.rs", "tests/support/gen.rs")],
         &index(),
@@ -1042,10 +1069,11 @@ fn an_entry_for_a_file_that_is_not_a_capture_is_refused() {
         problems.iter().any(|p| p.contains("not a capture")),
         "{problems:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_generator_that_is_not_tracked_is_refused() {
+fn a_generator_that_is_not_tracked_is_refused() -> Result<(), TestError> {
     let problems = manifest_problems(
         &[entry(
             "tests/fixtures/a.pcap",
@@ -1060,10 +1088,11 @@ fn a_generator_that_is_not_tracked_is_refused() {
             .any(|p| p.contains("tools/generate-lost-capture.py")),
         "{problems:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_samples_fixture_belongs_to_its_own_manifest() {
+fn a_samples_fixture_belongs_to_its_own_manifest() -> Result<(), TestError> {
     let mut idx = index();
     let pcap = capture_format(&pcap_header(0xA1B2_C3D4, false));
     idx.insert("tests/pcap-samples/s.pcap".into(), pcap);
@@ -1078,10 +1107,11 @@ fn a_samples_fixture_belongs_to_its_own_manifest() {
             .any(|p| p.contains("tests/pcap-samples/PROVENANCE.md")),
         "{problems:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn the_unresolved_list_must_name_live_captures_and_stay_disjoint() {
+fn the_unresolved_list_must_name_live_captures_and_stay_disjoint() -> Result<(), TestError> {
     let listed_and_unresolved = manifest_problems(
         &[entry("tests/fixtures/a.pcap", "tests/support/gen.rs")],
         &index(),
@@ -1096,24 +1126,26 @@ fn the_unresolved_list_must_name_live_captures_and_stay_disjoint() {
         stale.iter().any(|p| p.contains("tests/fixtures/gone.pcap")),
         "an unresolved entry for a file that is gone is refused: {stale:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_hash_that_does_not_match_is_refused() {
+fn a_hash_that_does_not_match_is_refused() -> Result<(), TestError> {
     let e = entry("tests/fixtures/a.pcap", "tests/support/gen.rs");
     assert_eq!(hash_problem(&e, SHA), None);
     let other = "1".repeat(64);
-    let why = hash_problem(&e, &other).expect("a changed file is refused");
+    let why = hash_problem(&e, &other).ok_or("a changed file is refused")?;
     assert!(
         why.contains("tests/fixtures/a.pcap") && why.contains(&other),
         "{why}"
     );
+    Ok(())
 }
 
 /// Every entry whose file is a capture is hashed and compared; an entry
 /// whose file is not one is left to the problems above rather than hashed.
 #[test]
-fn every_listed_capture_is_hashed_and_compared() {
+fn every_listed_capture_is_hashed_and_compared() -> Result<(), TestError> {
     let entries = [
         entry("tests/fixtures/a.pcap", "tests/support/gen.rs"),
         entry("tests/fixtures/b.pcap", "tests/support/gen.rs"),
@@ -1123,12 +1155,12 @@ fn every_listed_capture_is_hashed_and_compared() {
     let hashed = std::cell::RefCell::new(Vec::new());
     let problems = hash_problems(&entries, &index(), |path| {
         hashed.borrow_mut().push(path.to_string());
-        if path == "tests/fixtures/b.pcap" {
+        Ok(if path == "tests/fixtures/b.pcap" {
             changed.clone()
         } else {
             SHA.to_string()
-        }
-    });
+        })
+    })?;
     assert_eq!(
         hashed.into_inner(),
         ["tests/fixtures/a.pcap", "tests/fixtures/b.pcap"],
@@ -1139,18 +1171,20 @@ fn every_listed_capture_is_hashed_and_compared() {
         problems[0].contains("tests/fixtures/b.pcap") && problems[0].contains(&changed),
         "{problems:?}"
     );
+    Ok(())
 }
 
 /// The ratchet holds at the ceiling and breaks one past it, naming both
 /// numbers and what to do instead.
 #[test]
-fn the_unresolved_list_cannot_grow_past_its_ceiling() {
+fn the_unresolved_list_cannot_grow_past_its_ceiling() -> Result<(), TestError> {
     let one = [("tests/fixtures/a.pcap", "why")];
     assert_eq!(over_ceiling(&[], 0), None);
     assert_eq!(over_ceiling(&one, 1), None);
-    let why = over_ceiling(&one, 0).expect("one entry over a ceiling of zero");
+    let why = over_ceiling(&one, 0).ok_or("one entry over a ceiling of zero")?;
     assert!(
         why.contains("holds 1") && why.contains("ceiling of 0") && why.contains(MANIFEST),
         "{why}"
     );
+    Ok(())
 }

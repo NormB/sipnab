@@ -41,6 +41,8 @@
 use std::net::UdpSocket;
 use std::time::Duration;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
@@ -52,17 +54,16 @@ const QUIET_WINDOW: Duration = Duration::from_secs(3);
 ///
 /// The port is what the synthetic capture will record as the scanner's source
 /// port, so any kill response is addressed straight back here.
-fn bound_listener() -> (UdpSocket, u16) {
-    let sock = UdpSocket::bind(("127.0.0.1", 0)).expect("bind loopback listener");
-    let port = sock.local_addr().expect("local addr").port();
-    sock.set_read_timeout(Some(QUIET_WINDOW))
-        .expect("set read timeout");
-    (sock, port)
+fn bound_listener() -> Result<(UdpSocket, u16), TestError> {
+    let sock = UdpSocket::bind(("127.0.0.1", 0))?;
+    let port = sock.local_addr()?.port();
+    sock.set_read_timeout(Some(QUIET_WINDOW))?;
+    Ok((sock, port))
 }
 
 /// Write a one-packet capture holding a SIP OPTIONS from `127.0.0.1:port`
 /// carrying a scanner User-Agent, and return its path.
-fn scanner_capture(dir: &std::path::Path, port: u16) -> std::path::PathBuf {
+fn scanner_capture(dir: &std::path::Path, port: u16) -> Result<std::path::PathBuf, TestError> {
     let msg = format!(
         "OPTIONS sip:target@127.0.0.1 SIP/2.0\r\n\
          Via: SIP/2.0/UDP 127.0.0.1:{port};branch=z9hG4bK-offline-kill\r\n\
@@ -76,24 +77,27 @@ fn scanner_capture(dir: &std::path::Path, port: u16) -> std::path::PathBuf {
     );
     let frame = pcap_build::udp_frame([127, 0, 0, 1], [127, 0, 0, 1], port, 5060, msg.as_bytes());
     let path = dir.join("scanner.pcap");
-    pcap_build::write_pcap_or_panic(&path, &[frame]);
-    path
+    pcap_build::write_pcap(&path, &[frame])?;
+    Ok(path)
 }
 
 /// A fresh temp directory for one test's capture.
-fn tmp_dir(name: &str) -> std::path::PathBuf {
+fn tmp_dir(name: &str) -> Result<std::path::PathBuf, TestError> {
     let d = std::env::temp_dir().join(format!(
         "sipnab-offline-transmit-{name}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("create temp dir");
-    d
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
 }
 
 /// Run sipnab over `pcap` with the given extra flags, returning
 /// `(stdout, stderr, exit_code)`.
-fn run_offline(pcap: &std::path::Path, extra: &[&str]) -> (String, String, Option<i32>) {
+fn run_offline(
+    pcap: &std::path::Path,
+    extra: &[&str],
+) -> Result<(String, String, Option<i32>), TestError> {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(["-N", "-I"])
@@ -102,59 +106,61 @@ fn run_offline(pcap: &std::path::Path, extra: &[&str]) -> (String, String, Optio
         .args(extra)
         .env("SIPNAB_LOG", "info")
         .env("NO_COLOR", "1");
-    let out = cmd.output().expect("spawn sipnab");
-    (
+    let out = cmd.output()?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
 }
 
 /// Assert that nothing at all arrived on `sock` within the quiet window.
-fn assert_silent(sock: &UdpSocket, what: &str) {
+fn assert_silent(sock: &UdpSocket, what: &str) -> Result<(), TestError> {
     let mut buf = [0u8; 4096];
     match sock.recv_from(&mut buf) {
-        Ok((n, from)) => panic!(
-            "{what}: sipnab TRANSMITTED {n} bytes to the address recorded in the \
+        Ok((n, from)) => {
+            return Err(format!(
+                "{what}: sipnab TRANSMITTED {n} bytes to the address recorded in the \
              capture (seen arriving from {from}). Offline analysis must never \
              put a packet on the network. First bytes: {:?}",
-            String::from_utf8_lossy(&buf[..n.min(120)])
-        ),
+                String::from_utf8_lossy(&buf[..n.min(120)])
+            )
+            .into());
+        }
         Err(e)
             if e.kind() == std::io::ErrorKind::WouldBlock
                 || e.kind() == std::io::ErrorKind::TimedOut => {}
-        Err(e) => panic!("{what}: unexpected socket error waiting for silence: {e}"),
+        Err(e) => {
+            return Err(format!("{what}: unexpected socket error waiting for silence: {e}").into());
+        }
     }
+    Ok(())
 }
 
 /// The listener really can see a datagram sent to it by the same route the
 /// kill path would use. Without this control, every "nothing arrived"
 /// assertion in this file could be passing for the wrong reason.
 #[test]
-fn harness_observes_a_transmit_when_one_happens() {
-    let (sock, port) = bound_listener();
-    let sender = UdpSocket::bind(("127.0.0.1", 0)).expect("bind sender");
-    sender
-        .send_to(b"SIP/2.0 200 OK\r\n\r\n", ("127.0.0.1", port))
-        .expect("send control datagram");
+fn harness_observes_a_transmit_when_one_happens() -> Result<(), TestError> {
+    let (sock, port) = bound_listener()?;
+    let sender = UdpSocket::bind(("127.0.0.1", 0))?;
+    sender.send_to(b"SIP/2.0 200 OK\r\n\r\n", ("127.0.0.1", port))?;
 
     let mut buf = [0u8; 4096];
-    let (n, _from) = sock.recv_from(&mut buf).expect(
-        "the control datagram must arrive — otherwise this harness \
-                 cannot detect a transmit at all",
-    );
+    let (n, _from) = sock.recv_from(&mut buf)?;
     assert!(n > 0, "control datagram was empty");
+    Ok(())
 }
 
 /// `--kill-scanner` while reading a FILE must detect the scanner and transmit
 /// nothing.
 #[test]
-fn kill_scanner_on_a_capture_file_transmits_nothing() {
-    let (sock, port) = bound_listener();
-    let dir = tmp_dir("kill-scanner");
-    let pcap = scanner_capture(&dir, port);
+fn kill_scanner_on_a_capture_file_transmits_nothing() -> Result<(), TestError> {
+    let (sock, port) = bound_listener()?;
+    let dir = tmp_dir("kill-scanner")?;
+    let pcap = scanner_capture(&dir, port)?;
 
-    let (stdout, stderr, code) = run_offline(&pcap, &["--kill-scanner"]);
+    let (stdout, stderr, code) = run_offline(&pcap, &["--kill-scanner"])?;
 
     // Detection must still have happened — otherwise the silence below proves
     // nothing about the transmit guard.
@@ -165,19 +171,20 @@ fn kill_scanner_on_a_capture_file_transmits_nothing() {
     );
     assert_eq!(code, Some(0), "the analysis itself must still succeed");
 
-    assert_silent(&sock, "--kill-scanner -I file");
+    assert_silent(&sock, "--kill-scanner -I file")?;
+    Ok(())
 }
 
 /// `-K/--kill-target` while reading a FILE must transmit nothing either. It
 /// spawns the kill worker on its own, without `--kill-scanner`.
 #[test]
-fn kill_target_on_a_capture_file_transmits_nothing() {
-    let (sock, port) = bound_listener();
-    let dir = tmp_dir("kill-target");
-    let pcap = scanner_capture(&dir, port);
+fn kill_target_on_a_capture_file_transmits_nothing() -> Result<(), TestError> {
+    let (sock, port) = bound_listener()?;
+    let dir = tmp_dir("kill-target")?;
+    let pcap = scanner_capture(&dir, port)?;
     let target = format!("127.0.0.1:{port}");
 
-    let (stdout, stderr, code) = run_offline(&pcap, &["-K", &target]);
+    let (stdout, stderr, code) = run_offline(&pcap, &["-K", &target])?;
 
     assert!(
         stdout.contains("scanner_detected"),
@@ -186,19 +193,20 @@ fn kill_target_on_a_capture_file_transmits_nothing() {
     );
     assert_eq!(code, Some(0), "the analysis itself must still succeed");
 
-    assert_silent(&sock, "-K -I file");
+    assert_silent(&sock, "-K -I file")?;
+    Ok(())
 }
 
 /// `--kill-spoof raw` must not turn the file path back into a transmitting
 /// one, and must not fail the run either: there is nothing to spoof offline,
 /// so the raw socket is never wanted and its absence is not an error.
 #[test]
-fn kill_spoof_raw_on_a_capture_file_transmits_nothing() {
-    let (sock, port) = bound_listener();
-    let dir = tmp_dir("kill-spoof-raw");
-    let pcap = scanner_capture(&dir, port);
+fn kill_spoof_raw_on_a_capture_file_transmits_nothing() -> Result<(), TestError> {
+    let (sock, port) = bound_listener()?;
+    let dir = tmp_dir("kill-spoof-raw")?;
+    let pcap = scanner_capture(&dir, port)?;
 
-    let (stdout, stderr, code) = run_offline(&pcap, &["--kill-scanner", "--kill-spoof", "raw"]);
+    let (stdout, stderr, code) = run_offline(&pcap, &["--kill-scanner", "--kill-spoof", "raw"])?;
 
     assert_eq!(
         code,
@@ -206,7 +214,8 @@ fn kill_spoof_raw_on_a_capture_file_transmits_nothing() {
         "--kill-spoof raw on a FILE must not fail the analysis (there is \
          nothing to spoof).\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert_silent(&sock, "--kill-scanner --kill-spoof raw -I file");
+    assert_silent(&sock, "--kill-scanner --kill-spoof raw -I file")?;
+    Ok(())
 }
 
 /// `--rtpengine-control` on a FILE is refused, and says why.
@@ -220,12 +229,12 @@ fn kill_spoof_raw_on_a_capture_file_transmits_nothing() {
 /// operator who asked and got silence will believe they were told everything
 /// the relay knew.
 #[test]
-fn offline_rtpengine_control_is_refused_and_says_why() {
-    let (_sock, port) = bound_listener();
-    let dir = tmp_dir("rtpengine-offline");
-    let pcap = scanner_capture(&dir, port);
+fn offline_rtpengine_control_is_refused_and_says_why() -> Result<(), TestError> {
+    let (_sock, port) = bound_listener()?;
+    let dir = tmp_dir("rtpengine-offline")?;
+    let pcap = scanner_capture(&dir, port)?;
 
-    let (_stdout, stderr, code) = run_offline(&pcap, &["--rtpengine-control", "127.0.0.1:22222"]);
+    let (_stdout, stderr, code) = run_offline(&pcap, &["--rtpengine-control", "127.0.0.1:22222"])?;
 
     assert_eq!(
         code,
@@ -244,6 +253,7 @@ fn offline_rtpengine_control_is_refused_and_says_why() {
         "the refusal must explain that a live answer would describe different \
          calls, not just that it was refused:\n{stderr}"
     );
+    Ok(())
 }
 
 /// The refusal must be visible: an operator who asked for a kill and got
@@ -253,16 +263,17 @@ fn offline_rtpengine_control_is_refused_and_says_why() {
 /// a substring like "offline" appears in unrelated log lines and would let
 /// this test pass while the message said nothing about the kill path.
 #[test]
-fn offline_kill_request_is_reported_not_silently_dropped() {
-    let (_sock, port) = bound_listener();
-    let dir = tmp_dir("reported");
-    let pcap = scanner_capture(&dir, port);
+fn offline_kill_request_is_reported_not_silently_dropped() -> Result<(), TestError> {
+    let (_sock, port) = bound_listener()?;
+    let dir = tmp_dir("reported")?;
+    let pcap = scanner_capture(&dir, port)?;
 
-    let (_stdout, stderr, _code) = run_offline(&pcap, &["--kill-scanner"]);
+    let (_stdout, stderr, _code) = run_offline(&pcap, &["--kill-scanner"])?;
 
     assert!(
         stderr.contains("offline analysis never transmits"),
         "the run must say why no kill response was sent when reading a file; \
          got stderr: {stderr}"
     );
+    Ok(())
 }

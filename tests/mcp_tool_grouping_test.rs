@@ -41,6 +41,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -51,8 +54,9 @@ fn repo() -> PathBuf {
 /// Derived from the source, never hand-listed, for the reason the walk in
 /// `site_journey_test` exists: a fixed list cannot notice a new member, which
 /// is the one thing this gate is for.
-fn registered_tools() -> BTreeSet<String> {
-    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#).expect("pattern compiles");
+fn registered_tools() -> Result<BTreeSet<String>, TestError> {
+    let re = regex::Regex::new(r#"(?m)^\s+name = "([a-z0-9_]+)","#)
+        .map_err(|e| format!("pattern compiles: {e}"))?;
     let mut out = BTreeSet::new();
     let mut stack = vec![repo().join("src/mcp")];
     while let Some(dir) = stack.pop() {
@@ -68,7 +72,7 @@ fn registered_tools() -> BTreeSet<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// `tool name -> the `##` groups it appears under` in the reference.
@@ -77,9 +81,9 @@ fn registered_tools() -> BTreeSet<String> {
 /// call report that contains `## Summary`, `## Timing`, `## Media Streams` and
 /// `## Issues`; counting those as groups would put ten tools in a section
 /// called "Timing".
-fn tool_groups() -> BTreeMap<String, Vec<String>> {
+fn tool_groups() -> Result<BTreeMap<String, Vec<String>>, TestError> {
     let src = std::fs::read_to_string(repo().join("docs/mcp-tools.md"))
-        .expect("docs/mcp-tools.md is readable");
+        .map_err(|e| format!("docs/mcp-tools.md is readable: {e}"))?;
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut group: Option<String> = None;
     let mut in_fence = false;
@@ -102,7 +106,7 @@ fn tool_groups() -> BTreeMap<String, Vec<String>> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// The scanners see a real page and a real tool set.
@@ -110,21 +114,22 @@ fn tool_groups() -> BTreeMap<String, Vec<String>> {
 /// Both rules below are `is_empty()` assertions over derived collections, and
 /// both are vacuously true if either derivation returns nothing.
 #[test]
-fn the_grouping_scanners_read_a_real_page_and_a_real_tool_set() {
-    let tools = registered_tools();
+fn the_grouping_scanners_read_a_real_page_and_a_real_tool_set() -> Result<(), TestError> {
+    let tools = registered_tools()?;
     assert!(
         tools.len() >= 40,
         "found only {} registered MCP tool(s); the registration pattern has \
          stopped matching and every rule below proves nothing",
         tools.len()
     );
-    let grouped = tool_groups();
+    let grouped = tool_groups()?;
     assert!(
         grouped.len() >= 40,
         "found only {} tool section(s) under a group heading in \
          docs/mcp-tools.md; the heading scan is not matching the page",
         grouped.len()
     );
+    Ok(())
 }
 
 /// Every registered tool appears under exactly one group.
@@ -133,9 +138,9 @@ fn the_grouping_scanners_read_a_real_page_and_a_real_tool_set() {
 /// reader navigating by question, and a tool under two is a reference
 /// disagreeing with itself about what the tool is for.
 #[test]
-fn every_registered_tool_is_in_exactly_one_group() {
-    let tools = registered_tools();
-    let grouped = tool_groups();
+fn every_registered_tool_is_in_exactly_one_group() -> Result<(), TestError> {
+    let tools = registered_tools()?;
+    let grouped = tool_groups()?;
 
     let ungrouped: Vec<&String> = tools.iter().filter(|t| !grouped.contains_key(*t)).collect();
     assert!(
@@ -157,6 +162,7 @@ fn every_registered_tool_is_in_exactly_one_group() {
          groups answer \"which tool do I reach for\", and a tool in two places \
          means the page has two answers."
     );
+    Ok(())
 }
 
 /// Every documented tool is a tool that exists.
@@ -165,15 +171,16 @@ fn every_registered_tool_is_in_exactly_one_group() {
 /// longer registered is a reader following a map to a tool the server will
 /// refuse.
 #[test]
-fn every_grouped_tool_is_actually_registered() {
-    let tools = registered_tools();
-    let grouped = tool_groups();
+fn every_grouped_tool_is_actually_registered() -> Result<(), TestError> {
+    let tools = registered_tools()?;
+    let grouped = tool_groups()?;
     let stale: Vec<&String> = grouped.keys().filter(|t| !tools.contains(*t)).collect();
     assert!(
         stale.is_empty(),
         "docs/mcp-tools.md groups these tools, and `src/mcp/` registers none \
          of them: {stale:?}"
     );
+    Ok(())
 }
 
 /// The groups are phrased as questions, not as subsystems.
@@ -184,8 +191,8 @@ fn every_grouped_tool_is_actually_registered() {
 /// the code. Named subsystems are refused explicitly rather than left to
 /// judgement.
 #[test]
-fn no_group_is_named_after_a_subsystem() {
-    let groups: BTreeSet<String> = tool_groups().values().flatten().cloned().collect();
+fn no_group_is_named_after_a_subsystem() -> Result<(), TestError> {
+    let groups: BTreeSet<String> = tool_groups()?.values().flatten().cloned().collect();
     assert!(!groups.is_empty(), "no groups found at all");
     for g in &groups {
         let lower = g.to_ascii_lowercase();
@@ -198,6 +205,7 @@ fn no_group_is_named_after_a_subsystem() {
             );
         }
     }
+    Ok(())
 }
 
 /// Every group holds at least one tool.
@@ -205,9 +213,9 @@ fn no_group_is_named_after_a_subsystem() {
 /// An empty group is a heading a reader scans past and a promise the page does
 /// not keep. It is also what a careless removal leaves behind.
 #[test]
-fn no_group_is_empty() {
+fn no_group_is_empty() -> Result<(), TestError> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for gs in tool_groups().values() {
+    for gs in tool_groups()?.values() {
         for g in gs {
             *counts.entry(g.clone()).or_default() += 1;
         }
@@ -223,6 +231,7 @@ fn no_group_is_empty() {
         .map(|(g, _)| g)
         .collect();
     assert!(empty.is_empty(), "these groups hold no tools: {empty:?}");
+    Ok(())
 }
 
 /// The reference carries exactly the groups it is supposed to.
@@ -238,7 +247,7 @@ fn no_group_is_empty() {
 /// makes and records, not a diff that slips through. Adding a ninth group is
 /// fine; adding it here at the same time is the cost.
 #[test]
-fn the_reference_carries_exactly_the_expected_groups() {
+fn the_reference_carries_exactly_the_expected_groups() -> Result<(), TestError> {
     const EXPECTED_GROUPS: &[&str] = &[
         "Survey — what is in this capture",
         "Find — narrow to the calls that matter",
@@ -249,7 +258,7 @@ fn the_reference_carries_exactly_the_expected_groups() {
         "Export and handoff",
         "Capture control (opt-in, off by default)",
     ];
-    let found: BTreeSet<String> = tool_groups().values().flatten().cloned().collect();
+    let found: BTreeSet<String> = tool_groups()?.values().flatten().cloned().collect();
     let expected: BTreeSet<String> = EXPECTED_GROUPS.iter().map(|s| (*s).to_string()).collect();
 
     let missing: Vec<&String> = expected.difference(&found).collect();
@@ -267,4 +276,5 @@ fn the_reference_carries_exactly_the_expected_groups() {
          reader's question, so a new one is an editorial decision worth making \
          on purpose."
     );
+    Ok(())
 }
