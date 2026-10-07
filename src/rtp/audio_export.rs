@@ -1324,7 +1324,7 @@ mod tests {
         codec: Option<&str>,
         payloads: Vec<(u32, Vec<u8>)>,
     ) -> Result<RtpStream, TestError> {
-        Ok(make_stream_ssrc(codec, payloads, 0x1234_5678)?)
+        make_stream_ssrc(codec, payloads, 0x1234_5678)
     }
 
     /// A stream from a named source.

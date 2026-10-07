@@ -8998,9 +8998,11 @@ mod tests {
                     p.origin.map(|o| o.ordinal),
                 )),
                 Err(e) => {
-                    return Err(
-                        format!("expected {} packets, got {got:?}: {e}", capture_ids.len()).into(),
-                    );
+                    return Err(format!(
+                        "expected {} packets, got {got:?}: {e}",
+                        capture_ids.len()
+                    )
+                    .into());
                 }
             }
         }

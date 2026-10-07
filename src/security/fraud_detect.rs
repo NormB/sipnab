@@ -1002,7 +1002,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, src, when)?)
+        parse_at(&raw, src, when)
     }
 
     /// The callee's `200 OK` answering the INVITE of `call_id`.
@@ -1018,7 +1018,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, localhost(), when)?)
+        parse_at(&raw, localhost(), when)
     }
 
     /// The caller's `BYE`, which ends the dialog.
@@ -1039,7 +1039,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, src, when)?)
+        parse_at(&raw, src, when)
     }
 
     /// Feed one message the way `app::batch` does: through the dialog store
@@ -1139,7 +1139,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, localhost(), when)?)
+        parse_at(&raw, localhost(), when)
     }
 
     /// Replay one INVITE per destination, each refused with `404`, and return

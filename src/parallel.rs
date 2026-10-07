@@ -2508,7 +2508,7 @@ mod tests {
         name: &str,
         frames: &[Vec<u8>],
     ) -> Result<std::path::PathBuf, TestError> {
-        Ok(write_eth_pcap_at(dir, name, frames, 1_700_000_000)?)
+        write_eth_pcap_at(dir, name, frames, 1_700_000_000)
     }
 
     /// The same, with the first record's timestamp chosen by the caller.

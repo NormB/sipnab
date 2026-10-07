@@ -390,7 +390,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, attacker(), 5060, localhost(), ts()?)?)
+        parse_at(&raw, attacker(), 5060, localhost(), ts()?)
     }
 
     /// An ordinary INVITE from `src`:`src_port` with a PBX's `User-Agent`.
@@ -408,7 +408,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, src, src_port, localhost(), ts()?)?)
+        parse_at(&raw, src, src_port, localhost(), ts()?)
     }
 
     /// A `200 OK` from the attacker's address: a response, not a request.
@@ -425,7 +425,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, attacker(), 5075, localhost(), ts()?)?)
+        parse_at(&raw, attacker(), 5075, localhost(), ts()?)
     }
 
     /// A 401 whose challenge names MD5, the weak algorithm the digest
@@ -444,7 +444,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, localhost(), 5060, attacker(), ts()?)?)
+        parse_at(&raw, localhost(), 5060, attacker(), ts()?)
     }
 
     /// A credentialed REGISTER from the attacker on transaction `branch`.
@@ -463,7 +463,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, attacker(), 5060, localhost(), at)?)
+        parse_at(&raw, attacker(), 5060, localhost(), at)
     }
 
     /// The registrar's 401 refusing the REGISTER on `branch`.
@@ -480,7 +480,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, localhost(), 5060, attacker(), at)?)
+        parse_at(&raw, localhost(), 5060, attacker(), at)
     }
 
     /// Three credentialed REGISTERs, each refused: one more challenged
@@ -509,7 +509,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, attacker(), 5060, localhost(), at)?)
+        parse_at(&raw, attacker(), 5060, localhost(), at)
     }
 
     /// The callee's `404` refusing `call_id`.
@@ -526,7 +526,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, localhost(), 5060, attacker(), at)?)
+        parse_at(&raw, localhost(), 5060, attacker(), at)
     }
 
     /// The policy of a wire-origin `--fail2ban` run with a kill worker.

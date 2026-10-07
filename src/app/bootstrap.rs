@@ -7017,7 +7017,7 @@ mod tests {
     ) -> Result<usize, TestError> {
         let path = dir.join(format!("{name}.pcap"));
         write_pcap(&path, linktype, frames)?;
-        Ok(count_matching(&path, filter)?)
+        count_matching(&path, filter)
     }
 
     /// The checked-in PPPoE capture that proved the defect: 32 frames, every

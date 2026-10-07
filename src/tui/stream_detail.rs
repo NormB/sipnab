@@ -1884,7 +1884,7 @@ mod tests {
             }
             return Ok((in_muted, in_other));
         }
-        return Err("the MOS trend row was not drawn".into());
+        Err("the MOS trend row was not drawn".into())
     }
 
     /// Edge case: a long quality history must not emit one sparkline glyph per
