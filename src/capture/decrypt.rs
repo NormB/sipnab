@@ -1011,146 +1011,178 @@ impl TlsDecryptor {
             // RSA key exchange.
             Some(1) => {
                 if let Some(cr) = parse_client_hello_random(&record.payload) {
-                    if !self.pending_client_randoms.contains_key(&conn)
-                        && self.pending_client_randoms.len() >= MAX_PENDING_HANDSHAKE_CONNS
-                    {
-                        // Evicting here means a CLIENT_RANDOM is discarded
-                        // before its ServerHello arrives, so that session never
-                        // decrypts. Nothing said so: decryption simply stopped
-                        // working for some sessions and not others, which reads
-                        // as a bad keylog or a broken tap rather than a cap.
-                        //
-                        // Warned once per process; the condition persists while
-                        // the tap is busy and a line per handshake would be its
-                        // own flood.
-                        static EVICT_WARNED: std::sync::atomic::AtomicBool =
-                            std::sync::atomic::AtomicBool::new(false);
-                        if !EVICT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            tracing::warn!(
-                                "TLS: {MAX_PENDING_HANDSHAKE_CONNS} handshakes are already \
-                                 waiting for a ServerHello, so the oldest is being dropped \
-                                 before it can be paired. Sessions evicted this way never \
-                                 decrypt, and the keylog is not at fault — the tap is seeing \
-                                 more concurrent handshakes than sipnab tracks."
-                            );
-                        }
-                        self.pending_client_randoms.shift_remove_index(0);
-                    }
-                    let queue = self.pending_client_randoms.entry(conn).or_default();
-                    if queue.len() >= MAX_PENDING_PER_CONN {
-                        queue.remove(0);
-                    }
-                    queue.push(cr);
-                    if let Some(rsa) = self.rsa.as_mut() {
-                        rsa.client_random = Some(cr);
-                    }
+                    self.observe_client_hello(conn, cr);
                 }
             }
             // ServerHello — server_random + negotiated cipher.
             Some(2) => {
-                if let Some(mut info) = parse_server_hello(&record.payload) {
-                    tracing::debug!(
-                        "Observed ServerHello: cipher=0x{:04X}",
-                        info.cipher_suite_code.unwrap_or(0)
-                    );
-                    if let Some(rsa) = self.rsa.as_mut() {
-                        rsa.server_random = info.server_random;
-                        rsa.cipher = info.cipher_suite_code;
-                    }
-                    // Pair with the oldest still-unanswered ClientHello of THIS
-                    // connection only (per TCP connection the ClientHello
-                    // precedes its ServerHello, so a per-connection FIFO binds
-                    // each ServerHello to its own handshake's client_random).
-                    // Cross-connection interleavings like CH1(A), CH2(B),
-                    // SH2(B), SH1(A) must never cross-pair.
-                    if let Some(queue) = self.pending_client_randoms.get_mut(&conn) {
-                        if !queue.is_empty() {
-                            info.client_random = Some(queue.remove(0));
-                        }
-                        if queue.is_empty() {
-                            self.pending_client_randoms.shift_remove(&conn);
-                        }
-                    }
-                    // Tell the session, if it already exists, that we watched
-                    // its handshake.
-                    //
-                    // Order is why this is here and not only where sessions are
-                    // built. With a complete keylog on disk, every session is
-                    // derived at STARTUP -- before a single packet is read --
-                    // so a flag computed at construction is computed against an
-                    // empty observed-handshake list and is false forever.
-                    // Measured on Dan Jenkins's reproduction capture: two
-                    // sessions ready before packet one, `observed=0`, and the
-                    // handshake-seen path never engaged. The information
-                    // arrives later than the session does, so it has to be
-                    // delivered when it arrives.
-                    if let Some(cr) = info.client_random {
-                        let key = TlsSessionKey { client_random: cr };
-                        if let Some(session) = self.sessions.get_mut(&key) {
-                            session.handshake_seen = true;
-                            // Learning that we watched the handshake INVALIDATES
-                            // every floor already drawn for this session, because
-                            // each one was inferred while sipnab still believed
-                            // it might have joined mid-stream. Measured on Dan
-                            // Jenkins's capture: by the time the ServerHello was
-                            // paired the floor stood at 16, so the INVITE at
-                            // sequence 0 was tried at 16 and failed -- the flag
-                            // was set, the guard held, and the record was still
-                            // buried by a conclusion drawn before the guard
-                            // existed. Stopping further advance is not enough;
-                            // the earlier advances have to go too.
-                            session.lockon_floor.clear();
-                            session.lockon_attempts = 0;
-                        }
-                    }
-                    self.observed_handshakes.push(info);
-                    // Drop only TLS 1.2 sessions, not TLS 1.3 ones.
-                    //
-                    // A TLS 1.2 session in `ensure_sessions_populated` is looked
-                    // up by pairing a CLIENT_RANDOM keylog entry with a
-                    // same-client_random handshake if one has been observed yet,
-                    // falling back to the oldest handshake with an unknown
-                    // client_random otherwise (`has_exact` above). If that
-                    // CLIENT_RANDOM entry arrived and got paired via the fallback
-                    // *before* this ServerHello supplied the real match, the
-                    // session already in the map is bound to the wrong
-                    // server_random/cipher — this ServerHello is what makes that
-                    // pairing resolvable, so TLS 1.2 sessions need a chance to
-                    // re-derive against it.
-                    //
-                    // TLS 1.3 sessions have no such ambiguity to correct:
-                    // `ensure_sessions_populated`'s TLS 1.3 branch derives keys
-                    // straight from CLIENT_TRAFFIC_SECRET_0/SERVER_TRAFFIC_SECRET_0
-                    // keylog entries grouped by client_random alone, never
-                    // consulting `observed_handshakes`. Clearing them here bought
-                    // nothing — it only meant that any TLS 1.3 session already
-                    // marked ready (and about to decrypt its call's actual SIP
-                    // traffic) got silently destroyed the moment a second,
-                    // unrelated TLS connection did its own ServerHello, e.g. a
-                    // trunk that opens more than one TLS connection around the
-                    // same time (a keepalive, a second concurrent call). The
-                    // decrypt failure this produced looked exactly like a missing
-                    // key: no error anywhere, `try_decrypt` just stopped finding
-                    // a session for a client_random it had already keyed.
-                    self.sessions
-                        .retain(|_, session| session.version != SessionVersion::Tls12);
+                if let Some(info) = parse_server_hello(&record.payload) {
+                    self.observe_server_hello(conn, info);
                 }
             }
             // ClientKeyExchange — RSA-encrypted pre-master; derive the session.
-            Some(16) => {
-                if self.rsa.is_some()
-                    && let Some(ct) = parse_client_key_exchange_rsa(&record.payload)
-                    && let Some((skey, session)) = self.derive_rsa_session(ct)
-                {
-                    tracing::info!(
-                        "TLS RSA session ready [session={}, cipher={}]",
-                        hex_id(&skey.client_random),
-                        session.cipher_suite
-                    );
-                    self.sessions.insert(skey, session);
-                }
-            }
+            Some(16) => self.observe_client_key_exchange(&record.payload),
             _ => {}
+        }
+    }
+
+    /// Queue a ClientHello's `cr` (client_random) on its connection `conn`
+    /// for pairing with the ServerHello that answers it, and hand it to the
+    /// RSA key exchange.
+    ///
+    /// # Side effects
+    ///
+    /// Evicts the oldest connection's queue when [`MAX_PENDING_HANDSHAKE_CONNS`]
+    /// connections are already waiting (warning once per process), and the
+    /// oldest entry of this connection's queue when it holds
+    /// [`MAX_PENDING_PER_CONN`].
+    fn observe_client_hello(&mut self, conn: (SocketAddr, SocketAddr), cr: [u8; 32]) {
+        if !self.pending_client_randoms.contains_key(&conn)
+            && self.pending_client_randoms.len() >= MAX_PENDING_HANDSHAKE_CONNS
+        {
+            static EVICT_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            warn_handshake_eviction(&EVICT_WARNED);
+            self.pending_client_randoms.shift_remove_index(0);
+        }
+        let queue = self.pending_client_randoms.entry(conn).or_default();
+        if queue.len() >= MAX_PENDING_PER_CONN {
+            queue.remove(0);
+        }
+        queue.push(cr);
+        if let Some(rsa) = self.rsa.as_mut() {
+            rsa.client_random = Some(cr);
+        }
+    }
+
+    /// Record a ServerHello seen on connection `conn`: pair it with that
+    /// connection's oldest unanswered ClientHello, tell an existing session
+    /// its handshake was watched, and let TLS 1.2 sessions re-derive against
+    /// it.
+    ///
+    /// # Side effects
+    ///
+    /// Updates the RSA key-exchange state, the pending ClientHello queue, the
+    /// observed-handshake list and the session map; logs at `debug`.
+    fn observe_server_hello(&mut self, conn: (SocketAddr, SocketAddr), mut info: HandshakeInfo) {
+        tracing::debug!(
+            "Observed ServerHello: cipher=0x{:04X}",
+            info.cipher_suite_code.unwrap_or(0)
+        );
+        if let Some(rsa) = self.rsa.as_mut() {
+            rsa.server_random = info.server_random;
+            rsa.cipher = info.cipher_suite_code;
+        }
+        if let Some(cr) = self.pair_pending_client_random(conn) {
+            info.client_random = Some(cr);
+        }
+        if let Some(cr) = info.client_random {
+            self.mark_handshake_seen(cr);
+        }
+        self.observed_handshakes.push(info);
+        // Drop only TLS 1.2 sessions, not TLS 1.3 ones.
+        //
+        // A TLS 1.2 session in `ensure_sessions_populated` is looked
+        // up by pairing a CLIENT_RANDOM keylog entry with a
+        // same-client_random handshake if one has been observed yet,
+        // falling back to the oldest handshake with an unknown
+        // client_random otherwise (`has_exact` above). If that
+        // CLIENT_RANDOM entry arrived and got paired via the fallback
+        // *before* this ServerHello supplied the real match, the
+        // session already in the map is bound to the wrong
+        // server_random/cipher — this ServerHello is what makes that
+        // pairing resolvable, so TLS 1.2 sessions need a chance to
+        // re-derive against it.
+        //
+        // TLS 1.3 sessions have no such ambiguity to correct:
+        // `ensure_sessions_populated`'s TLS 1.3 branch derives keys
+        // straight from CLIENT_TRAFFIC_SECRET_0/SERVER_TRAFFIC_SECRET_0
+        // keylog entries grouped by client_random alone, never
+        // consulting `observed_handshakes`. Clearing them here bought
+        // nothing — it only meant that any TLS 1.3 session already
+        // marked ready (and about to decrypt its call's actual SIP
+        // traffic) got silently destroyed the moment a second,
+        // unrelated TLS connection did its own ServerHello, e.g. a
+        // trunk that opens more than one TLS connection around the
+        // same time (a keepalive, a second concurrent call). The
+        // decrypt failure this produced looked exactly like a missing
+        // key: no error anywhere, `try_decrypt` just stopped finding
+        // a session for a client_random it had already keyed.
+        self.sessions
+            .retain(|_, session| session.version != SessionVersion::Tls12);
+    }
+
+    /// Take the oldest still-unanswered ClientHello random of connection
+    /// `conn`, if any, dropping the connection's queue once it is empty.
+    ///
+    /// Pairs with THIS connection only: per TCP connection the ClientHello
+    /// precedes its ServerHello, so a per-connection FIFO binds each
+    /// ServerHello to its own handshake's client_random. Cross-connection
+    /// interleavings like CH1(A), CH2(B), SH2(B), SH1(A) must never
+    /// cross-pair.
+    fn pair_pending_client_random(&mut self, conn: (SocketAddr, SocketAddr)) -> Option<[u8; 32]> {
+        let queue = self.pending_client_randoms.get_mut(&conn)?;
+        let paired = if queue.is_empty() {
+            None
+        } else {
+            Some(queue.remove(0))
+        };
+        if queue.is_empty() {
+            self.pending_client_randoms.shift_remove(&conn);
+        }
+        paired
+    }
+
+    /// Tell the session keyed by `cr`, if it already exists, that we watched
+    /// its handshake.
+    ///
+    /// Order is why this is here and not only where sessions are
+    /// built. With a complete keylog on disk, every session is
+    /// derived at STARTUP -- before a single packet is read --
+    /// so a flag computed at construction is computed against an
+    /// empty observed-handshake list and is false forever.
+    /// Measured on Dan Jenkins's reproduction capture: two
+    /// sessions ready before packet one, `observed=0`, and the
+    /// handshake-seen path never engaged. The information
+    /// arrives later than the session does, so it has to be
+    /// delivered when it arrives.
+    fn mark_handshake_seen(&mut self, cr: [u8; 32]) {
+        let key = TlsSessionKey { client_random: cr };
+        if let Some(session) = self.sessions.get_mut(&key) {
+            session.handshake_seen = true;
+            // Learning that we watched the handshake INVALIDATES
+            // every floor already drawn for this session, because
+            // each one was inferred while sipnab still believed
+            // it might have joined mid-stream. Measured on Dan
+            // Jenkins's capture: by the time the ServerHello was
+            // paired the floor stood at 16, so the INVITE at
+            // sequence 0 was tried at 16 and failed -- the flag
+            // was set, the guard held, and the record was still
+            // buried by a conclusion drawn before the guard
+            // existed. Stopping further advance is not enough;
+            // the earlier advances have to go too.
+            session.lockon_floor.clear();
+            session.lockon_attempts = 0;
+        }
+    }
+
+    /// Derive a TLS 1.2 session from a ClientKeyExchange's RSA-encrypted
+    /// pre-master, when an RSA key is installed.
+    ///
+    /// # Side effects
+    ///
+    /// Inserts the derived session and logs it at `info`.
+    fn observe_client_key_exchange(&mut self, payload: &[u8]) {
+        if self.rsa.is_some()
+            && let Some(ct) = parse_client_key_exchange_rsa(payload)
+            && let Some((skey, session)) = self.derive_rsa_session(ct)
+        {
+            tracing::info!(
+                "TLS RSA session ready [session={}, cipher={}]",
+                hex_id(&skey.client_random),
+                session.cipher_suite
+            );
+            self.sessions.insert(skey, session);
         }
     }
 
@@ -1622,221 +1654,343 @@ impl TlsDecryptor {
         } = self;
         *keylog_processed_count = keylog_entries.len();
 
-        // Group entries by client_random
-        let mut grouped: HashMap<[u8; 32], Vec<&KeyLogEntry>> = HashMap::new();
-        for entry in keylog_entries.iter() {
-            if entry.client_random.len() == 32 {
-                let mut cr = [0u8; 32];
-                cr.copy_from_slice(&entry.client_random);
-                grouped.entry(cr).or_default().push(entry);
-            }
-        }
-
-        for (cr, entries) in &grouped {
+        for (cr, entries) in &group_by_client_random(keylog_entries) {
             let session_key = TlsSessionKey { client_random: *cr };
             if sessions.contains_key(&session_key) {
                 continue;
             }
+            warn_on_conflicting_traffic_secrets(entries);
 
-            // Look for TLS 1.3 traffic secrets — the LAST matching entry, not
-            // the first. eCapture's own extraction hooks fire on every
-            // `SSL_write` on the connection (confirmed live: its debug log
-            // shows a dozen+ "mastersecret event"s for the same client_random
-            // within the same handshake), not once at the point the traffic
-            // secret is actually derived. An early hook firing mid-handshake
-            // can log a premature snapshot under the same
-            // CLIENT_TRAFFIC_SECRET_0/SERVER_TRAFFIC_SECRET_0 label before the
-            // real post-handshake secret is established; taking the first
-            // match locked onto that stale value permanently for the
-            // connection's whole life. Confirmed live with an independent
-            // reference AES-GCM decrypt (not sipnab's own code): a session
-            // derived from the first-seen entry never decrypted a single real
-            // record, on both a long-lived persistent connection and a
-            // brand-new one — ruling out staleness-over-time and pointing
-            // squarely at picking the wrong entry within one handshake.
-            let client_secret = entries
-                .iter()
-                .rev()
-                .find(|e| e.label == "CLIENT_TRAFFIC_SECRET_0")
-                .map(|e| &e.secret);
-            let server_secret = entries
-                .iter()
-                .rev()
-                .find(|e| e.label == "SERVER_TRAFFIC_SECRET_0")
-                .map(|e| &e.secret);
-
-            // Two entries under one label for one client_random that DISAGREE
-            // are the signature of a mid-life re-attach, and which one is right
-            // is not decidable here. eCapture dedups per (label, client_random)
-            // and truncates on start, so a single run yields one entry; more
-            // than one means the log was reloaded across an extractor restart.
-            // If a KeyUpdate happened in between, OpenSSL's tls13_update_key()
-            // overwrote the traffic secret in place and the later entry is a
-            // ratcheted secret still labeled _0, which cannot open records
-            // from before the ratchet. Say so rather than pick silently: the
-            // operator can restart the connection and get an unambiguous log.
-            for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
-                let mut seen: Option<&Vec<u8>> = None;
-                for e in entries.iter().filter(|e| e.label == label) {
-                    match seen {
-                        None => seen = Some(&e.secret),
-                        Some(first) if first != &e.secret => {
-                            tracing::warn!(
-                                "{label} for this session was logged more than once with \
-                                 different values; using the latest. A key log reloaded \
-                                 across an extractor restart can carry a secret rotated \
-                                 by a TLS 1.3 KeyUpdate, which cannot decrypt records \
-                                 from before the rotation. Restart the connection while \
-                                 capturing for an unambiguous log."
-                            );
-                            break;
-                        }
-                        Some(_) => {}
-                    }
+            match tls13_session_from_keylog(crypto.as_ref(), cr, entries, observed_handshakes) {
+                Ok(Some(session)) => {
+                    sessions.insert(session_key.clone(), session);
                 }
+                Ok(None) => {}
+                Err(UnsupportedSecretLength) => continue,
             }
-
-            // Did we watch this session's own handshake? If so the record
-            // stream starts at 0 and a failed open is the wrong key, not a
-            // later sequence -- see `TlsSession::handshake_seen`.
-            let saw_handshake = observed_handshakes
-                .iter()
-                .any(|h| h.client_random.as_ref().is_some_and(|r| r == cr));
-
-            if let (Some(cs), Some(ss)) = (client_secret, server_secret) {
-                // Determine cipher suite from secret length:
-                // - 32 bytes (SHA-256 output) -> AES-128-GCM
-                // - 48 bytes (SHA-384 output) -> AES-256-GCM
-                let suite = match cs.len() {
-                    32 => CipherSuite::Aes128Gcm,
-                    48 => CipherSuite::Aes256Gcm,
-                    _ => {
-                        tracing::debug!(
-                            "Skipping session with unsupported secret length: {}",
-                            cs.len()
-                        );
-                        continue;
-                    }
-                };
-
-                match (
-                    derive_key_iv(crypto.as_ref(), cs, suite),
-                    derive_key_iv(crypto.as_ref(), ss, suite),
-                ) {
-                    (Ok((ck, civ)), Ok((sk, siv))) => {
-                        tracing::info!(
-                            "TLS session ready [session={}, cipher={}]",
-                            hex_id(cr),
-                            suite
-                        );
-                        sessions.insert(
-                            session_key.clone(),
-                            TlsSession {
-                                version: SessionVersion::Tls13,
-                                client_secret: cs.clone(),
-                                server_secret: ss.clone(),
-                                client_write_key: ck,
-                                server_write_key: sk,
-                                client_write_iv: civ,
-                                server_write_iv: siv,
-                                cipher_suite: suite,
-                                sequence_client: 0,
-                                sequence_server: 0,
-                                locked_client: false,
-                                locked_server: false,
-                                lockon_attempts: 0,
-                                lockon_floor: Vec::new(),
-                                handshake_seen: saw_handshake,
-                                client_addr: None,
-                            },
-                        );
-                    }
-                    (Err(e), _) | (_, Err(e)) => {
-                        tracing::debug!("Failed to derive keys for session {}: {e}", hex_id(cr));
-                    }
-                }
-            }
-            // TLS 1.2 CLIENT_RANDOM: derive keys via the full TLS PRF if we have
-            // a master_secret and an observed ServerHello with matching parameters.
-            let master_secret = entries
-                .iter()
-                .find(|e| e.label == "CLIENT_RANDOM")
-                .map(|e| &e.secret);
-
-            if let Some(ms) = master_secret {
-                // Bind the entry to the handshake whose ClientHello random
-                // matches this entry's client_random exactly. Only when no
-                // observed ServerHello was paired with this client_random
-                // (e.g. the ClientHello predates the capture) fall back to
-                // handshakes with an unknown client_random — never to a
-                // handshake bound to a DIFFERENT session, which would
-                // silently derive keys from the wrong server_random.
-                let has_exact = observed_handshakes
-                    .iter()
-                    .any(|hs| hs.client_random == Some(*cr));
-                let candidates = observed_handshakes.iter().filter(|hs| {
-                    if has_exact {
-                        hs.client_random == Some(*cr)
-                    } else {
-                        hs.client_random.is_none()
-                    }
-                });
-                for hs in candidates {
-                    let Some(server_random) = hs.server_random else {
-                        continue;
-                    };
-                    let Some(cipher_code) = hs.cipher_suite_code else {
-                        continue;
-                    };
-                    let Some(suite) = CipherSuite::from_code_point(cipher_code) else {
-                        tracing::debug!(
-                            "Unsupported TLS 1.2 cipher suite 0x{:04X} for session {}",
-                            cipher_code,
-                            hex_id(cr)
-                        );
-                        continue;
-                    };
-
-                    match derive_tls12_keys(crypto.as_ref(), ms, cr, &server_random, suite) {
-                        Ok((ck, sk, civ, siv)) => {
-                            tracing::info!(
-                                "TLS 1.2 session ready [session={}, cipher={}]",
-                                hex_id(cr),
-                                suite
-                            );
-                            sessions.insert(
-                                session_key.clone(),
-                                TlsSession {
-                                    client_secret: Vec::new(),
-                                    server_secret: Vec::new(),
-                                    version: SessionVersion::Tls12,
-                                    client_write_key: ck,
-                                    server_write_key: sk,
-                                    client_write_iv: civ,
-                                    server_write_iv: siv,
-                                    cipher_suite: suite,
-                                    sequence_client: 0,
-                                    sequence_server: 0,
-                                    locked_client: false,
-                                    locked_server: false,
-                                    lockon_attempts: 0,
-                                    lockon_floor: Vec::new(),
-                                    handshake_seen: false,
-                                    client_addr: None,
-                                },
-                            );
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "Failed to derive TLS 1.2 keys for session {}: {e}",
-                                hex_id(cr)
-                            );
-                        }
-                    }
-                }
+            if let Some(session) =
+                tls12_session_from_keylog(crypto.as_ref(), cr, entries, observed_handshakes)
+            {
+                sessions.insert(session_key.clone(), session);
             }
         }
+    }
+}
+
+impl TlsSession {
+    /// A session at the start of its record stream: nothing decrypted yet, no
+    /// direction locked on, no lock-on floor, no traffic secrets kept.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` — the record-layer framing.
+    /// * `keys` — client write key, server write key, client write IV,
+    ///   server write IV, in that order.
+    /// * `cipher_suite` — the suite the keys belong to.
+    /// * `handshake_seen` — whether this session's own handshake was watched.
+    fn at_stream_start(
+        version: SessionVersion,
+        keys: Tls12KeyBlock,
+        cipher_suite: CipherSuite,
+        handshake_seen: bool,
+    ) -> Self {
+        let (client_write_key, server_write_key, client_write_iv, server_write_iv) = keys;
+        Self {
+            client_secret: Vec::new(),
+            server_secret: Vec::new(),
+            version,
+            client_write_key,
+            server_write_key,
+            client_write_iv,
+            server_write_iv,
+            cipher_suite,
+            sequence_client: 0,
+            sequence_server: 0,
+            locked_client: false,
+            locked_server: false,
+            lockon_attempts: 0,
+            lockon_floor: Vec::new(),
+            handshake_seen,
+            client_addr: None,
+        }
+    }
+}
+
+/// Keylog entries grouped by their 32-byte client_random, in no particular
+/// order. Entries whose client_random is any other length are left out.
+fn group_by_client_random(entries: &[KeyLogEntry]) -> HashMap<[u8; 32], Vec<&KeyLogEntry>> {
+    let mut grouped: HashMap<[u8; 32], Vec<&KeyLogEntry>> = HashMap::new();
+    for entry in entries {
+        if let Ok(cr) = <[u8; 32]>::try_from(entry.client_random.as_slice()) {
+            grouped.entry(cr).or_default().push(entry);
+        }
+    }
+    grouped
+}
+
+/// The secret of the LAST entry under `label`, if any.
+///
+/// The last, not the first. eCapture's own extraction hooks fire on every
+/// `SSL_write` on the connection (confirmed live: its debug log shows a
+/// dozen+ "mastersecret event"s for the same client_random within the same
+/// handshake), not once at the point the traffic secret is actually derived.
+/// An early hook firing mid-handshake can log a premature snapshot under the
+/// same CLIENT_TRAFFIC_SECRET_0/SERVER_TRAFFIC_SECRET_0 label before the real
+/// post-handshake secret is established; taking the first match locked onto
+/// that stale value permanently for the connection's whole life. Confirmed
+/// live with an independent reference AES-GCM decrypt (not sipnab's own
+/// code): a session derived from the first-seen entry never decrypted a
+/// single real record, on both a long-lived persistent connection and a
+/// brand-new one — ruling out staleness-over-time and pointing squarely at
+/// picking the wrong entry within one handshake.
+fn latest_secret<'e>(entries: &[&'e KeyLogEntry], label: &str) -> Option<&'e Vec<u8>> {
+    entries
+        .iter()
+        .rev()
+        .find(|e| e.label == label)
+        .map(|e| &e.secret)
+}
+
+/// Warn when one client_random's entries carry two DIFFERENT secrets under
+/// the same TLS 1.3 traffic-secret label. At most one line per label.
+///
+/// Two entries under one label for one client_random that DISAGREE are the
+/// signature of a mid-life re-attach, and which one is right is not
+/// decidable here. eCapture dedups per (label, client_random) and truncates
+/// on start, so a single run yields one entry; more than one means the log
+/// was reloaded across an extractor restart. If a KeyUpdate happened in
+/// between, OpenSSL's tls13_update_key() overwrote the traffic secret in
+/// place and the later entry is a ratcheted secret still labeled _0, which
+/// cannot open records from before the ratchet. Say so rather than pick
+/// silently: the operator can restart the connection and get an unambiguous
+/// log.
+fn warn_on_conflicting_traffic_secrets(entries: &[&KeyLogEntry]) {
+    for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
+        if label_has_conflicting_secrets(entries, label) {
+            tracing::warn!(
+                "{label} for this session was logged more than once with \
+                 different values; using the latest. A key log reloaded \
+                 across an extractor restart can carry a secret rotated \
+                 by a TLS 1.3 KeyUpdate, which cannot decrypt records \
+                 from before the rotation. Restart the connection while \
+                 capturing for an unambiguous log."
+            );
+        }
+    }
+}
+
+/// Whether any entry under `label` carries a secret different from the
+/// first entry under it.
+fn label_has_conflicting_secrets(entries: &[&KeyLogEntry], label: &str) -> bool {
+    let mut secrets = entries
+        .iter()
+        .filter(|e| e.label == label)
+        .map(|e| &e.secret);
+    let Some(first) = secrets.next() else {
+        return false;
+    };
+    secrets.any(|s| s != first)
+}
+
+/// A client TLS 1.3 traffic secret whose length no supported suite
+/// produces. The client_random it was logged under is skipped entirely, its
+/// TLS 1.2 entry included.
+#[derive(Debug)]
+struct UnsupportedSecretLength;
+
+/// Derive a TLS 1.3 session for `cr` from its `entries`' latest
+/// CLIENT_TRAFFIC_SECRET_0 and SERVER_TRAFFIC_SECRET_0.
+///
+/// # Returns
+///
+/// The session; or `None` when a traffic secret is missing or key derivation
+/// failed, in which case a TLS 1.2 CLIENT_RANDOM entry for the same
+/// client_random may still yield one.
+///
+/// # Errors
+///
+/// [`UnsupportedSecretLength`] for a client secret that is neither 32 nor 48
+/// bytes.
+///
+/// # Side effects
+///
+/// Logs the session at `info` when it is ready, and at `debug` why it is
+/// not when a secret was found but no session came of it.
+fn tls13_session_from_keylog(
+    crypto: &dyn CryptoBackend,
+    cr: &[u8; 32],
+    entries: &[&KeyLogEntry],
+    observed_handshakes: &[HandshakeInfo],
+) -> std::result::Result<Option<TlsSession>, UnsupportedSecretLength> {
+    let (Some(cs), Some(ss)) = (
+        latest_secret(entries, "CLIENT_TRAFFIC_SECRET_0"),
+        latest_secret(entries, "SERVER_TRAFFIC_SECRET_0"),
+    ) else {
+        return Ok(None);
+    };
+    // Determine cipher suite from secret length:
+    // - 32 bytes (SHA-256 output) -> AES-128-GCM
+    // - 48 bytes (SHA-384 output) -> AES-256-GCM
+    let suite = match cs.len() {
+        32 => CipherSuite::Aes128Gcm,
+        48 => CipherSuite::Aes256Gcm,
+        _ => {
+            tracing::debug!(
+                "Skipping session with unsupported secret length: {}",
+                cs.len()
+            );
+            return Err(UnsupportedSecretLength);
+        }
+    };
+
+    // Did we watch this session's own handshake? If so the record
+    // stream starts at 0 and a failed open is the wrong key, not a
+    // later sequence -- see `TlsSession::handshake_seen`.
+    let saw_handshake = observed_handshakes
+        .iter()
+        .any(|h| h.client_random.as_ref().is_some_and(|r| r == cr));
+
+    match (
+        derive_key_iv(crypto, cs, suite),
+        derive_key_iv(crypto, ss, suite),
+    ) {
+        (Ok((ck, civ)), Ok((sk, siv))) => {
+            tracing::info!(
+                "TLS session ready [session={}, cipher={}]",
+                hex_id(cr),
+                suite
+            );
+            let mut session = TlsSession::at_stream_start(
+                SessionVersion::Tls13,
+                (ck, sk, civ, siv),
+                suite,
+                saw_handshake,
+            );
+            session.client_secret = cs.clone();
+            session.server_secret = ss.clone();
+            Ok(Some(session))
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::debug!("Failed to derive keys for session {}: {e}", hex_id(cr));
+            Ok(None)
+        }
+    }
+}
+
+/// The observed handshakes a TLS 1.2 CLIENT_RANDOM entry for `cr` may be
+/// bound to.
+///
+/// Bind the entry to the handshake whose ClientHello random matches this
+/// entry's client_random exactly. Only when no observed ServerHello was
+/// paired with this client_random (e.g. the ClientHello predates the capture)
+/// fall back to handshakes with an unknown client_random — never to a
+/// handshake bound to a DIFFERENT session, which would silently derive keys
+/// from the wrong server_random.
+fn tls12_handshake_candidates<'h>(
+    cr: &[u8; 32],
+    observed_handshakes: &'h [HandshakeInfo],
+) -> impl Iterator<Item = &'h HandshakeInfo> {
+    let has_exact = observed_handshakes
+        .iter()
+        .any(|hs| hs.client_random == Some(*cr));
+    let wanted = if has_exact { Some(*cr) } else { None };
+    observed_handshakes
+        .iter()
+        .filter(move |hs| hs.client_random == wanted)
+}
+
+/// Derive a TLS 1.2 session for `cr` from its CLIENT_RANDOM entry: the
+/// master secret, keyed against the first candidate handshake (see
+/// [`tls12_handshake_candidates`]) whose server_random and supported cipher
+/// suite yield keys.
+///
+/// # Side effects
+///
+/// Logs the session at `info` when it is ready, and at `debug` each
+/// candidate that could not be used.
+fn tls12_session_from_keylog(
+    crypto: &dyn CryptoBackend,
+    cr: &[u8; 32],
+    entries: &[&KeyLogEntry],
+    observed_handshakes: &[HandshakeInfo],
+) -> Option<TlsSession> {
+    // TLS 1.2 CLIENT_RANDOM: derive keys via the full TLS PRF if we have
+    // a master_secret and an observed ServerHello with matching parameters.
+    let ms = entries
+        .iter()
+        .find(|e| e.label == "CLIENT_RANDOM")
+        .map(|e| &e.secret)?;
+    tls12_handshake_candidates(cr, observed_handshakes)
+        .find_map(|hs| tls12_session_for_handshake(crypto, cr, ms, hs))
+}
+
+/// The TLS 1.2 session master secret `ms` of `cr` yields against one
+/// observed handshake `hs`, or `None` when `hs` lacks a server_random or
+/// cipher suite, the suite is unsupported, or key derivation fails.
+///
+/// # Side effects
+///
+/// Logs at `info` on success and at `debug` for an unsupported suite or a
+/// derivation failure.
+fn tls12_session_for_handshake(
+    crypto: &dyn CryptoBackend,
+    cr: &[u8; 32],
+    ms: &[u8],
+    hs: &HandshakeInfo,
+) -> Option<TlsSession> {
+    let server_random = hs.server_random?;
+    let cipher_code = hs.cipher_suite_code?;
+    let Some(suite) = CipherSuite::from_code_point(cipher_code) else {
+        tracing::debug!(
+            "Unsupported TLS 1.2 cipher suite 0x{:04X} for session {}",
+            cipher_code,
+            hex_id(cr)
+        );
+        return None;
+    };
+    match derive_tls12_keys(crypto, ms, cr, &server_random, suite) {
+        Ok(keys) => {
+            tracing::info!(
+                "TLS 1.2 session ready [session={}, cipher={}]",
+                hex_id(cr),
+                suite
+            );
+            Some(TlsSession::at_stream_start(
+                SessionVersion::Tls12,
+                keys,
+                suite,
+                false,
+            ))
+        }
+        Err(e) => {
+            tracing::debug!(
+                "Failed to derive TLS 1.2 keys for session {}: {e}",
+                hex_id(cr)
+            );
+            None
+        }
+    }
+}
+
+/// Warn, the first time `warned` is claimed, that a ClientHello is being
+/// evicted before its ServerHello can be paired.
+///
+/// Evicting means a CLIENT_RANDOM is discarded before its ServerHello
+/// arrives, so that session never decrypts. Nothing said so: decryption
+/// simply stopped working for some sessions and not others, which reads as a
+/// bad keylog or a broken tap rather than a cap.
+///
+/// Warned once per process; the condition persists while the tap is busy and
+/// a line per handshake would be its own flood.
+fn warn_handshake_eviction(warned: &std::sync::atomic::AtomicBool) {
+    if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            "TLS: {MAX_PENDING_HANDSHAKE_CONNS} handshakes are already \
+             waiting for a ServerHello, so the oldest is being dropped \
+             before it can be paired. Sessions evicted this way never \
+             decrypt, and the keylog is not at fault — the tap is seeing \
+             more concurrent handshakes than sipnab tracks."
+        );
     }
 }
 
@@ -1926,17 +2080,7 @@ fn try_decrypt_with_session(
         window: lockon_window,
         replay,
     } = lockon;
-    // Determine direction: try both if we haven't established client_addr yet.
-    //
-    // An address only discriminates when the two ends have different ones. A
-    // loopback connection has the same IP on both sides, so `src_addr ==
-    // client` is true for every record and pinning the direction from it would
-    // lock the session to one side and silently drop everything the other side
-    // sent. Fall back to trying both; the AEAD tag decides, at no risk.
-    let directions: Vec<bool> = match session.client_addr {
-        Some(client) if src_addr != dst_addr => vec![src_addr == client],
-        _ => vec![true, false],
-    };
+    let directions = candidate_directions(session.client_addr, src_addr, dst_addr);
 
     // Refuse TLS 1.2 CBC: those suites are MAC-then-encrypt and we do not
     // verify the record MAC, so emitting CBC plaintext would surface
@@ -1952,16 +2096,11 @@ fn try_decrypt_with_session(
         return None;
     }
 
-    let version = session.version;
-
     // Read ONCE per record. Both key guesses must be tried over the SAME
     // range: advancing between them would try the client key over one span and
     // the server key over the next, which proves nothing about either.
-    let pair_floor = session
-        .lockon_floor
-        .iter()
-        .find(|(pair, _)| *pair == (src_addr, dst_addr))
-        .map_or(0, |(_, floor)| *floor);
+    let pair = (src_addr, dst_addr);
+    let pair_floor = session.lockon_floor_for(pair);
     let mut searched: Option<u64> = None;
     // Fixed for this record, like `pair_floor`. Computing it per direction
     // lets the attempt counter advance between the two key guesses, so one key
@@ -1971,81 +2110,24 @@ fn try_decrypt_with_session(
         .saturating_mul(1u64 << session.lockon_attempts.min(24))
         .min(lockon_window);
 
-    for is_client_to_server in directions {
-        let (write_key, write_iv, seq, locked) = if is_client_to_server {
-            (
-                &session.client_write_key,
-                &session.client_write_iv,
-                session.sequence_client,
-                session.locked_client,
-            )
-        } else {
-            (
-                &session.server_write_key,
-                &session.server_write_iv,
-                session.sequence_server,
-                session.locked_server,
-            )
-        };
+    for &is_client_to_server in directions {
+        let (seq, locked) = session.direction_position(is_client_to_server);
 
         // Not locked on means the counter is a guess, so the base is the
         // floor earlier failures established for THIS wire direction, not the
         // role's counter — see `lockon_floor`.
         let seq = if locked { seq } else { pair_floor };
+        let window = sequence_search_window(replay, locked, record_window, *lockon_budget);
 
-        // How far forward to search for the sequence number that opens this
-        // record. A direction that has decrypted before is counting, and needs
-        // only to step over records the capture missed; one that has not is
-        // guessing from zero, and the capture may have joined an established
-        // connection at any record number.
-        // A replay tries the sequence it already has and nothing beyond it.
-        // Widening is how a failed replay would consume the run's lock-on
-        // budget on ciphertext that can never open, starving the live path
-        // that needs it.
-        let window = if replay {
-            // Replay, or a session whose handshake we watched: the sequence is
-            // known, so a failed open is the wrong key rather than a later
-            // record. Widening here is what lets handshake-epoch
-            // ApplicationData -- which TLS 1.3 disguises under the same
-            // content type, sealed with the HANDSHAKE secret no application
-            // key will open -- walk the floor past the INVITE at seq 0.
-            1
-        } else if locked {
-            SEQ_RESYNC_WINDOW
-        } else {
-            // Widen with each failed RECORD, not each direction: see
-            // `record_window`, which is fixed before the guesses begin.
-            record_window.min(*lockon_budget)
-        };
-
-        // Decrypt with the per-version AEAD framing. On success both paths
-        // return (plaintext, matched_seq) so the per-direction counter can
-        // resync — important for TLS 1.2, where the encrypted Finished is a
-        // Handshake record we never see, leaving the app-data counter offset,
-        // and for TLS 1.3, where the server's NewSessionTickets ride inside
-        // ApplicationData records and offset it the same way.
         let mut trials = 0u64;
-        let decrypted: Option<(Vec<u8>, u64, Option<u8>)> = match version {
-            SessionVersion::Tls13 => decrypt_tls13_record(
-                crypto,
-                write_key,
-                write_iv,
-                seq,
-                window,
-                record,
-                &mut trials,
-            ),
-            SessionVersion::Tls12 => decrypt_tls12_gcm_record(
-                crypto,
-                write_key,
-                write_iv,
-                seq,
-                window,
-                record,
-                &mut trials,
-            )
-            .map(|(pt, seq)| (pt, seq, None)),
-        };
+        let decrypted = session.open_record(
+            crypto,
+            record,
+            is_client_to_server,
+            seq,
+            window,
+            &mut trials,
+        );
         if !locked && !replay {
             *lockon_budget = lockon_budget.saturating_sub(trials);
             if decrypted.is_none() {
@@ -2071,92 +2153,11 @@ fn try_decrypt_with_session(
         }
 
         if let Some((plaintext, used_seq, inner_type)) = decrypted {
-            // Update direction tracking and sequence number
-            if session.client_addr.is_none() {
-                session.client_addr = Some(if is_client_to_server {
-                    src_addr
-                } else {
-                    dst_addr
-                });
+            session.lock_on(is_client_to_server, used_seq, src_addr, dst_addr);
+            if is_key_update(session.version, inner_type, &plaintext) {
+                session.follow_key_update(crypto, is_client_to_server);
             }
-
-            if is_client_to_server {
-                session.sequence_client = used_seq + 1;
-                session.locked_client = true;
-            } else {
-                session.sequence_server = used_seq + 1;
-                session.locked_server = true;
-            }
-
-            // A post-handshake KeyUpdate (inner type 22 = handshake, handshake
-            // type 24) means this sender has rotated its application traffic
-            // secret and, per RFC 8446 5.3, restarted its record counter at
-            // zero. Follow it, or every later record from this direction is
-            // sealed under a secret sipnab does not hold at a number it is not
-            // expecting — indistinguishable from keys that were simply wrong.
-            //
-            // Only the SENDER's direction rotates here. A KeyUpdate carrying
-            // update_requested obliges the peer to send its own, which arrives
-            // as its own record and is handled when it does; inferring the
-            // peer's rotation from this message would rotate a direction that
-            // has not actually changed.
-            if version == SessionVersion::Tls13
-                && inner_type == Some(22)
-                && plaintext.first() == Some(&24)
-            {
-                let current = if is_client_to_server {
-                    &session.client_secret
-                } else {
-                    &session.server_secret
-                };
-                if !current.is_empty() {
-                    let info = hkdf_expand_label_info(b"traffic upd", &[], current.len() as u16);
-                    let hash = if current.len() == 48 {
-                        HashAlg::Sha384
-                    } else {
-                        HashAlg::Sha256
-                    };
-                    if let Ok(next) = crypto.hkdf_expand(current, &info, current.len(), hash)
-                        && let Ok((k, iv)) = derive_key_iv(crypto, &next, session.cipher_suite)
-                    {
-                        tracing::info!(
-                            "TLS 1.3 KeyUpdate followed; {} traffic secret rotated and its \
-                             record counter reset to zero",
-                            if is_client_to_server {
-                                "client"
-                            } else {
-                                "server"
-                            }
-                        );
-                        if is_client_to_server {
-                            session.client_secret = next;
-                            session.client_write_key = k;
-                            session.client_write_iv = iv;
-                            session.sequence_client = 0;
-                        } else {
-                            session.server_secret = next;
-                            session.server_write_key = k;
-                            session.server_write_iv = iv;
-                            session.sequence_server = 0;
-                        }
-                    }
-                }
-            }
-
-            // Only real application data reaches the caller. In TLS 1.3 the
-            // OUTER content type of every protected record is 23, so a
-            // NewSessionTicket or a KeyUpdate is indistinguishable from a SIP
-            // message until it is opened -- the INNER type is the only thing
-            // that separates them (RFC 8446 5.2). Handing handshake plaintext
-            // on looks harmless because it does not parse as SIP, and is not:
-            // the caller reassembles a BYTE STREAM, so ticket bytes prepend
-            // themselves to the next real message and frame it as garbage.
-            // Measured on a loopback TLS call: two NewSessionTickets ahead of
-            // the responses cost the `100 Trying` outright.
-            if inner_type.is_some_and(|t| t != 23) {
-                return None;
-            }
-            return Some(plaintext);
+            return application_data(plaintext, inner_type);
         }
     }
 
@@ -2180,21 +2181,246 @@ fn try_decrypt_with_session(
         && !replay
         && !session.handshake_seen
     {
-        // Once per record, for the same reason the window is: advancing per
-        // direction gives the two key guesses different spans.
-        session.lockon_attempts = session.lockon_attempts.saturating_add(1);
-        let floor = pair_floor.saturating_add(width);
-        match session
-            .lockon_floor
-            .iter_mut()
-            .find(|(pair, _)| *pair == (src_addr, dst_addr))
-        {
-            Some((_, existing)) => *existing = (*existing).max(floor),
-            None => session.lockon_floor.push(((src_addr, dst_addr), floor)),
-        }
+        session.raise_lockon_floor(pair, pair_floor.saturating_add(width));
     }
 
     None
+}
+
+/// The directions to try a record in: `true` is client-to-server.
+///
+/// Both, until the session knows its client's address. An address only
+/// discriminates when the two ends have different ones. A loopback connection
+/// has the same IP on both sides, so `src_addr == client` is true for every
+/// record and pinning the direction from it would lock the session to one
+/// side and silently drop everything the other side sent. Fall back to trying
+/// both; the AEAD tag decides, at no risk.
+#[inline]
+fn candidate_directions(
+    client_addr: Option<IpAddr>,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+) -> &'static [bool] {
+    match client_addr {
+        Some(client) if src_addr != dst_addr => {
+            if src_addr == client {
+                &[true]
+            } else {
+                &[false]
+            }
+        }
+        _ => &[true, false],
+    }
+}
+
+/// How far forward to search for the sequence number that opens this record.
+///
+/// A direction that has decrypted before (`locked`) is counting, and needs
+/// only to step over records the capture missed; one that has not is
+/// guessing from zero, and the capture may have joined an established
+/// connection at any record number.
+///
+/// A replay tries the sequence it already has and nothing beyond it.
+/// Widening is how a failed replay would consume the run's lock-on budget on
+/// ciphertext that can never open, starving the live path that needs it.
+#[inline]
+fn sequence_search_window(replay: bool, locked: bool, record_window: u64, budget: u64) -> u64 {
+    if replay {
+        // Replay, or a session whose handshake we watched: the sequence is
+        // known, so a failed open is the wrong key rather than a later
+        // record. Widening here is what lets handshake-epoch
+        // ApplicationData -- which TLS 1.3 disguises under the same
+        // content type, sealed with the HANDSHAKE secret no application
+        // key will open -- walk the floor past the INVITE at seq 0.
+        1
+    } else if locked {
+        SEQ_RESYNC_WINDOW
+    } else {
+        // Widen with each failed RECORD, not each direction: see
+        // `record_window`, which is fixed before the guesses begin.
+        record_window.min(budget)
+    }
+}
+
+/// Whether an opened record is a TLS 1.3 post-handshake KeyUpdate: inner
+/// type 22 (handshake) carrying handshake type 24.
+#[inline]
+fn is_key_update(version: SessionVersion, inner_type: Option<u8>, plaintext: &[u8]) -> bool {
+    version == SessionVersion::Tls13 && inner_type == Some(22) && plaintext.first() == Some(&24)
+}
+
+/// The plaintext to hand the caller: only real application data.
+///
+/// In TLS 1.3 the OUTER content type of every protected record is 23, so a
+/// NewSessionTicket or a KeyUpdate is indistinguishable from a SIP message
+/// until it is opened -- the INNER type is the only thing that separates
+/// them (RFC 8446 5.2). Handing handshake plaintext on looks harmless because
+/// it does not parse as SIP, and is not: the caller reassembles a BYTE
+/// STREAM, so ticket bytes prepend themselves to the next real message and
+/// frame it as garbage. Measured on a loopback TLS call: two
+/// NewSessionTickets ahead of the responses cost the `100 Trying` outright.
+#[inline]
+fn application_data(plaintext: Vec<u8>, inner_type: Option<u8>) -> Option<Vec<u8>> {
+    if inner_type.is_some_and(|t| t != 23) {
+        return None;
+    }
+    Some(plaintext)
+}
+
+impl TlsSession {
+    /// The lock-on floor recorded for wire direction `pair`, or 0.
+    #[inline]
+    fn lockon_floor_for(&self, pair: (IpAddr, IpAddr)) -> u64 {
+        self.lockon_floor
+            .iter()
+            .find(|(p, _)| *p == pair)
+            .map_or(0, |(_, floor)| *floor)
+    }
+
+    /// Raise the lock-on floor of wire direction `pair` to `floor`, never
+    /// lowering it, and count one more failed lock-on attempt.
+    ///
+    /// Once per record, for the same reason the window is: advancing per
+    /// direction gives the two key guesses different spans.
+    fn raise_lockon_floor(&mut self, pair: (IpAddr, IpAddr), floor: u64) {
+        self.lockon_attempts = self.lockon_attempts.saturating_add(1);
+        match self.lockon_floor.iter_mut().find(|(p, _)| *p == pair) {
+            Some((_, existing)) => *existing = (*existing).max(floor),
+            None => self.lockon_floor.push((pair, floor)),
+        }
+    }
+
+    /// The next expected sequence number of one direction (`true` is
+    /// client-to-server), and whether that direction has locked on.
+    #[inline]
+    fn direction_position(&self, is_client_to_server: bool) -> (u64, bool) {
+        if is_client_to_server {
+            (self.sequence_client, self.locked_client)
+        } else {
+            (self.sequence_server, self.locked_server)
+        }
+    }
+
+    /// Try to open `record` with one direction's keys, searching sequence
+    /// numbers `seq..=seq + window`.
+    ///
+    /// Decrypt with the per-version AEAD framing. On success both paths
+    /// return (plaintext, matched_seq) so the per-direction counter can
+    /// resync — important for TLS 1.2, where the encrypted Finished is a
+    /// Handshake record we never see, leaving the app-data counter offset,
+    /// and for TLS 1.3, where the server's NewSessionTickets ride inside
+    /// ApplicationData records and offset it the same way.
+    ///
+    /// # Returns
+    ///
+    /// The plaintext, the sequence number that opened it, and for TLS 1.3
+    /// the inner content type; `None` when no sequence in the window opens
+    /// it. `trials` is incremented once per sequence tried.
+    #[inline]
+    fn open_record(
+        &self,
+        crypto: &dyn CryptoBackend,
+        record: &TlsRecord,
+        is_client_to_server: bool,
+        seq: u64,
+        window: u64,
+        trials: &mut u64,
+    ) -> Option<(Vec<u8>, u64, Option<u8>)> {
+        let (write_key, write_iv) = if is_client_to_server {
+            (&self.client_write_key, &self.client_write_iv)
+        } else {
+            (&self.server_write_key, &self.server_write_iv)
+        };
+        match self.version {
+            SessionVersion::Tls13 => {
+                decrypt_tls13_record(crypto, write_key, write_iv, seq, window, record, trials)
+            }
+            SessionVersion::Tls12 => {
+                decrypt_tls12_gcm_record(crypto, write_key, write_iv, seq, window, record, trials)
+                    .map(|(pt, seq)| (pt, seq, None))
+            }
+        }
+    }
+
+    /// Record that one direction (`true` is client-to-server) opened a
+    /// record at `used_seq`: it is locked on, its next sequence follows, and
+    /// the client's address is learned if it was not known.
+    fn lock_on(&mut self, is_client_to_server: bool, used_seq: u64, src: IpAddr, dst: IpAddr) {
+        // Update direction tracking and sequence number
+        if self.client_addr.is_none() {
+            self.client_addr = Some(if is_client_to_server { src } else { dst });
+        }
+        if is_client_to_server {
+            self.sequence_client = used_seq + 1;
+            self.locked_client = true;
+        } else {
+            self.sequence_server = used_seq + 1;
+            self.locked_server = true;
+        }
+    }
+
+    /// Follow a TLS 1.3 KeyUpdate sent by one direction (`true` is
+    /// client-to-server): ratchet its traffic secret, re-derive its key and
+    /// IV, and restart its record counter at zero.
+    ///
+    /// A post-handshake KeyUpdate means this sender has rotated its
+    /// application traffic secret and, per RFC 8446 5.3, restarted its record
+    /// counter at zero. Follow it, or every later record from this direction
+    /// is sealed under a secret sipnab does not hold at a number it is not
+    /// expecting — indistinguishable from keys that were simply wrong.
+    ///
+    /// Only the SENDER's direction rotates here. A KeyUpdate carrying
+    /// update_requested obliges the peer to send its own, which arrives as
+    /// its own record and is handled when it does; inferring the peer's
+    /// rotation from this message would rotate a direction that has not
+    /// actually changed.
+    ///
+    /// # Side effects
+    ///
+    /// Logs at `info` when the rotation is followed. A direction with no
+    /// kept secret, or a derivation that fails, is left unchanged.
+    fn follow_key_update(&mut self, crypto: &dyn CryptoBackend, is_client_to_server: bool) {
+        let current = if is_client_to_server {
+            &self.client_secret
+        } else {
+            &self.server_secret
+        };
+        if current.is_empty() {
+            return;
+        }
+        let info = hkdf_expand_label_info(b"traffic upd", &[], current.len() as u16);
+        let hash = if current.len() == 48 {
+            HashAlg::Sha384
+        } else {
+            HashAlg::Sha256
+        };
+        let Ok(next) = crypto.hkdf_expand(current, &info, current.len(), hash) else {
+            return;
+        };
+        let Ok((k, iv)) = derive_key_iv(crypto, &next, self.cipher_suite) else {
+            return;
+        };
+        tracing::info!(
+            "TLS 1.3 KeyUpdate followed; {} traffic secret rotated and its \
+             record counter reset to zero",
+            if is_client_to_server {
+                "client"
+            } else {
+                "server"
+            }
+        );
+        if is_client_to_server {
+            self.client_secret = next;
+            self.client_write_key = k;
+            self.client_write_iv = iv;
+            self.sequence_client = 0;
+        } else {
+            self.server_secret = next;
+            self.server_write_key = k;
+            self.server_write_iv = iv;
+            self.sequence_server = 0;
+        }
+    }
 }
 
 /// Decrypt a TLS 1.3 AEAD record ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2)), searching forward from
@@ -2391,6 +2617,9 @@ pub fn feed_embedded_secrets(path: &Path, decryptor: &mut TlsDecryptor) -> usize
 mod tests {
     use super::*;
     use crate::capture::tls::{TlsContentType, TlsVersion};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A minimal crypto backend for testing that tracks calls.
     struct MockCrypto {
@@ -5187,5 +5416,359 @@ mod tests {
             assert_eq!(u16::from_be_bytes([aad[1], aad[2]]), want_ver);
             assert_eq!(u16::from_be_bytes([aad[3], aad[4]]), 5);
         }
+    }
+
+    /// Each connection keeps at most [`MAX_PENDING_PER_CONN`] unanswered
+    /// ClientHellos, dropping the oldest, and a ServerHello pairs with the
+    /// oldest one still kept.
+    #[test]
+    fn a_connections_pending_clienthellos_are_capped_and_paired_oldest_first() {
+        let client = client_sock();
+        let server = server_sock();
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let random = |i: usize| -> [u8; 32] {
+            let mut cr = [0u8; 32];
+            cr[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            cr
+        };
+        for i in 0..=MAX_PENDING_PER_CONN {
+            d.process_record(
+                &handshake_record(client_hello_record(&random(i)).payload),
+                client,
+                server,
+            );
+        }
+        assert_eq!(
+            d.pending_client_randoms
+                .get(&conn_key(client, server))
+                .map(Vec::len),
+            Some(MAX_PENDING_PER_CONN)
+        );
+        for want in [1, 2] {
+            d.process_record(
+                &handshake_record(server_hello_with_random(0x009C, 0, &[0x5A; 32])),
+                server,
+                client,
+            );
+            assert_eq!(
+                d.observed_handshakes.last().and_then(|h| h.client_random),
+                Some(random(want)),
+                "ClientHello {want} is the oldest one kept"
+            );
+        }
+    }
+
+    /// A connection whose every ClientHello has been answered no longer
+    /// occupies a slot in the pending map.
+    #[test]
+    fn an_answered_connection_leaves_the_pending_map() {
+        let client = client_sock();
+        let server = server_sock();
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.process_record(
+            &handshake_record(client_hello_record(&[0x11; 32]).payload),
+            client,
+            server,
+        );
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, &[0x5A; 32])),
+            server,
+            client,
+        );
+        assert!(
+            !d.pending_client_randoms
+                .contains_key(&conn_key(client, server)),
+            "an emptied queue must not hold a slot against the cap"
+        );
+    }
+
+    /// Learning that a session's handshake was watched discards every
+    /// lock-on floor drawn while that was unknown.
+    #[test]
+    fn a_paired_serverhello_clears_the_floors_of_its_session() {
+        let client = client_sock();
+        let server = server_sock();
+        let cr = [0x33u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let mut session = TlsSession::at_stream_start(
+            SessionVersion::Tls13,
+            (vec![0; 16], vec![0; 16], vec![0; 12], vec![0; 12]),
+            CipherSuite::Aes128Gcm,
+            false,
+        );
+        session.lockon_floor = vec![((client.ip(), server.ip()), 16)];
+        session.lockon_attempts = 3;
+        d.sessions
+            .insert(TlsSessionKey { client_random: cr }, session);
+
+        d.process_record(
+            &handshake_record(client_hello_record(&cr).payload),
+            client,
+            server,
+        );
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, &[0x5A; 32])),
+            server,
+            client,
+        );
+
+        let session = &d.sessions[&TlsSessionKey { client_random: cr }];
+        assert!(session.handshake_seen);
+        assert!(session.lockon_floor.is_empty(), "every earlier floor goes");
+        assert_eq!(session.lockon_attempts, 0);
+    }
+
+    /// A ServerHello gives every TLS 1.2 session a chance to re-derive
+    /// against it, and leaves every TLS 1.3 session alone.
+    #[test]
+    fn a_serverhello_drops_tls12_sessions_and_keeps_tls13_ones() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let keys = || (vec![0; 16], vec![0; 16], vec![0; 12], vec![0; 12]);
+        let tls12 = TlsSessionKey {
+            client_random: [0x12; 32],
+        };
+        let tls13 = TlsSessionKey {
+            client_random: [0x13; 32],
+        };
+        d.sessions.insert(
+            tls12.clone(),
+            TlsSession::at_stream_start(
+                SessionVersion::Tls12,
+                keys(),
+                CipherSuite::Aes128Gcm,
+                false,
+            ),
+        );
+        d.sessions.insert(
+            tls13.clone(),
+            TlsSession::at_stream_start(
+                SessionVersion::Tls13,
+                keys(),
+                CipherSuite::Aes128Gcm,
+                false,
+            ),
+        );
+
+        d.process_record(&server_hello_record(0x009C), server_sock(), client_sock());
+
+        assert!(!d.sessions.contains_key(&tls12), "TLS 1.2 is re-derived");
+        assert!(d.sessions.contains_key(&tls13), "TLS 1.3 is kept");
+    }
+
+    /// A client_random whose TLS 1.3 client secret has a length no suite
+    /// produces is skipped whole: its CLIENT_RANDOM entry is not tried
+    /// either. Pinned as the behavior the keylog loader has, so a change to
+    /// it is deliberate.
+    #[test]
+    fn a_client_random_with_an_unsupported_secret_length_is_skipped_whole() {
+        let cr = [0x44u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.observed_handshakes.push(HandshakeInfo {
+            server_random: Some([0x5A; 32]),
+            cipher_suite_code: Some(0x009C),
+            client_random: Some(cr),
+        });
+        for (label, len) in [
+            ("CLIENT_TRAFFIC_SECRET_0", 20),
+            ("SERVER_TRAFFIC_SECRET_0", 20),
+            ("CLIENT_RANDOM", 48),
+        ] {
+            d.keylog_entries.push(KeyLogEntry {
+                label: label.to_string(),
+                client_random: cr.to_vec(),
+                secret: vec![0x0B; len],
+            });
+        }
+
+        d.ensure_sessions_populated();
+
+        assert!(d.sessions.is_empty());
+    }
+
+    /// A TLS 1.3 session derived from the keylog knows whether its own
+    /// handshake was watched, and only its own.
+    #[test]
+    fn a_keylog_session_knows_whether_its_own_handshake_was_watched() {
+        let watched = [0xAAu8; 32];
+        let unwatched = [0xBBu8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.observed_handshakes.push(HandshakeInfo {
+            server_random: Some([0x5A; 32]),
+            cipher_suite_code: Some(0x1301),
+            client_random: Some(watched),
+        });
+        for cr in [watched, unwatched] {
+            for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
+                d.keylog_entries.push(KeyLogEntry {
+                    label: label.to_string(),
+                    client_random: cr.to_vec(),
+                    secret: vec![0x11; 32],
+                });
+            }
+        }
+
+        d.ensure_sessions_populated();
+
+        let seen = |cr: [u8; 32]| d.sessions[&TlsSessionKey { client_random: cr }].handshake_seen;
+        assert!(seen(watched));
+        assert!(!seen(unwatched));
+    }
+
+    /// A CLIENT_RANDOM entry with no exact handshake falls back over every
+    /// handshake of unknown client_random, past ones it cannot use, to the
+    /// first that yields keys.
+    #[test]
+    fn a_tls12_entry_tries_each_candidate_handshake_until_one_yields_keys() -> Result<(), TestError>
+    {
+        let cr = [0x55u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        for cipher in [0xFFFF, 0x009C] {
+            d.observed_handshakes.push(HandshakeInfo {
+                server_random: Some([0x5A; 32]),
+                cipher_suite_code: Some(cipher),
+                client_random: None,
+            });
+        }
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: cr.to_vec(),
+            secret: vec![0x0B; 48],
+        });
+
+        d.ensure_sessions_populated();
+
+        let session = d
+            .sessions
+            .get(&TlsSessionKey { client_random: cr })
+            .ok_or("the second candidate yields a session")?;
+        assert_eq!(session.cipher_suite, CipherSuite::Aes128Gcm);
+        assert_eq!(session.version, SessionVersion::Tls12);
+        Ok(())
+    }
+
+    /// How far one record's search reaches: one sequence on a replay, the
+    /// resync window once a direction is counting, and otherwise the
+    /// record's window capped by what is left of the run's budget.
+    #[test]
+    fn the_search_window_follows_replay_lock_and_budget() {
+        assert_eq!(sequence_search_window(true, false, 64, 1000), 1);
+        assert_eq!(sequence_search_window(true, true, 64, 1000), 1);
+        assert_eq!(
+            sequence_search_window(false, true, 64, 0),
+            SEQ_RESYNC_WINDOW
+        );
+        assert_eq!(sequence_search_window(false, false, 64, 1000), 64);
+        assert_eq!(
+            sequence_search_window(false, false, 64, 3),
+            3,
+            "a nearly spent budget caps the search"
+        );
+    }
+
+    /// Only application data reaches the caller: a TLS 1.3 record whose
+    /// inner type is anything but 23 is withheld; TLS 1.2 carries no inner
+    /// type and is passed on.
+    #[test]
+    fn only_application_data_reaches_the_caller() {
+        let pt = || b"SIP/2.0 200 OK".to_vec();
+        assert_eq!(application_data(pt(), Some(23)), Some(pt()));
+        assert_eq!(application_data(pt(), None), Some(pt()));
+        for inner in [21, 22, 24] {
+            assert_eq!(application_data(pt(), Some(inner)), None, "inner {inner}");
+        }
+    }
+
+    /// Every trial spent guessing an unestablished sequence comes out of the
+    /// run's lock-on budget.
+    #[test]
+    fn a_failed_lockon_search_spends_the_runs_budget() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+
+        assert!(d.try_decrypt(&far, client, server).is_none());
+
+        assert!(
+            d.lockon_budget < LOCKON_TRIAL_BUDGET,
+            "the trials just spent must be charged: budget still {}",
+            d.lockon_budget
+        );
+        Ok(())
+    }
+
+    /// A record that opens resets the failed-attempt count, so the next
+    /// search a direction needs starts narrow again.
+    #[test]
+    fn a_record_that_opens_resets_the_failed_attempt_count() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        assert!(d.try_decrypt(&far, client, server).is_none());
+        assert!(d.try_decrypt(&far, client, server).is_none());
+        let session = d.sessions.values().next().ok_or("a session must exist")?;
+        assert_eq!(session.lockon_attempts, 2);
+        let floor = session.lockon_floor_for((client, server));
+
+        let near = seal_tls13_record(&key, &iv, floor, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        assert!(d.try_decrypt(&near, client, server).is_some());
+
+        let session = d.sessions.values().next().ok_or("a session must exist")?;
+        assert_eq!(session.lockon_attempts, 0);
+        Ok(())
+    }
+
+    /// A direction that opens a record at sequence N expects N + 1 next, and
+    /// is locked on.
+    #[test]
+    fn a_record_that_opens_advances_its_direction_past_it() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
+        let first = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+
+        assert!(d.try_decrypt(&first, client, server).is_some());
+
+        let session = d.sessions.values().next().ok_or("a session must exist")?;
+        assert!(session.locked_client);
+        assert_eq!(session.sequence_client, 1);
+        assert_eq!(session.client_addr, Some(client));
+        Ok(())
+    }
+
+    /// The handshake-eviction warning is said once, however many handshakes
+    /// are evicted.
+    #[test]
+    #[cfg(feature = "native")]
+    fn the_handshake_eviction_warning_is_said_once() {
+        let warned = std::sync::atomic::AtomicBool::new(false);
+        let first = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+            warn_handshake_eviction(&warned);
+        });
+        assert_eq!(
+            first.matches("waiting for a ServerHello").count(),
+            1,
+            "the first eviction is warned about: {first}"
+        );
+        let later = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+            warn_handshake_eviction(&warned);
+            warn_handshake_eviction(&warned);
+        });
+        assert!(later.is_empty(), "later evictions are not: {later}");
     }
 }

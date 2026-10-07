@@ -439,9 +439,6 @@ pub fn render_call_flow_direct(
     nav: &FlowNavigation,
     theme: &Theme,
 ) {
-    let scroll_offset = nav.scroll_offset;
-    let mark_index = nav.mark_index;
-    let selected_index = nav.selected_index;
     let buf = frame.buffer_mut();
     let width = area.width;
     let height = area.height;
@@ -471,399 +468,66 @@ pub fn render_call_flow_direct(
         return;
     }
 
-    let ts_col = area.x;
     let ts_width = TS_COL_WIDTH as u16;
-
-    // Calculate pipe positions for each participant
-    let pipe_positions: Vec<u16> = if n <= 1 {
-        vec![area.x + ts_width]
-    } else {
-        let usable = width.saturating_sub(ts_width + 2);
-        (0..n)
-            .map(|i| area.x + ts_width + (i as u16 * usable / (n as u16 - 1)))
-            .collect()
-    };
+    let pipe_positions = pipe_positions(area, n, ts_width);
 
     // Verify minimum arrow width between adjacent pipes
-    if n >= 2 {
-        let min_gap = pipe_positions
-            .windows(2)
-            .map(|w| w[1].saturating_sub(w[0]))
-            .min()
-            .unwrap_or(0);
-        if min_gap < 10 {
-            // Wrapped, not clipped: this is the case where the pane is narrow,
-            // so a one-row notice would lose its own remedy off the edge.
-            ratatui::widgets::Widget::render(
-                Paragraph::new(TOO_NARROW_NOTICE)
-                    .wrap(Wrap { trim: true })
-                    .style(Style::default().fg(theme.bad)),
-                area,
-                buf,
-            );
-            return;
-        }
+    if min_pipe_gap(&pipe_positions) < 10 {
+        // Wrapped, not clipped: this is the case where the pane is narrow,
+        // so a one-row notice would lose its own remedy off the edge.
+        ratatui::widgets::Widget::render(
+            Paragraph::new(TOO_NARROW_NOTICE)
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(theme.bad)),
+            area,
+            buf,
+        );
+        return;
     }
 
     let label_style = Style::default()
         .fg(theme.header)
         .add_modifier(Modifier::BOLD);
-    let pipe_style = Style::default().fg(theme.muted);
+    let ladder = Ladder {
+        area,
+        pipes: pipe_positions,
+        ts_width,
+        pipe_style: Style::default().fg(theme.muted),
+        theme,
+        noted: &nav.noted,
+    };
 
     // Row 0: Labels above each pipe. Each label is confined to its own
     // non-overlapping cell so packed multi-leg columns can never overwrite
     // each other into garbage like "172.16.98172.16.98.101:5060". The
     // area's last column is reserved: the ladder scrollbar renders there.
     let area_right = area.x + area.width;
-    let label_cells =
-        participant_label_cells(&pipe_positions, area.x, area_right.saturating_sub(1));
+    let label_cells = participant_label_cells(&ladder.pipes, area.x, area_right.saturating_sub(1));
     draw_participant_labels(
         buf,
         area.y,
         participants,
-        &pipe_positions,
+        &ladder.pipes,
         &label_cells,
         22,
         label_style,
     );
 
     // Row 1: Pipes
-    for &px in &pipe_positions {
-        crate::tui::render::set_string_clipped(buf, area, px, area.y + 1, "\u{2502}", pipe_style); // │
-    }
+    ladder.draw_pipes(buf, area.y + 1, "\u{2502}", ladder.pipe_style); // │
 
-    // Mark + Delta badge (Feature 1): render in the top-right corner
-    use unicode_width::UnicodeWidthStr;
-    if let Some(mi) = mark_index
-        && mi != selected_index
-        && mi < messages.len()
-        && selected_index < messages.len()
-    {
-        let mark_ts = messages[mi].raw_timestamp;
-        let sel_ts = messages[selected_index].raw_timestamp;
-        let delta_ms = sel_ts.signed_duration_since(mark_ts).num_milliseconds();
-        let badge = if delta_ms.abs() >= 1000 {
-            format!("\u{0394} {:+.3}s", delta_ms as f64 / 1000.0)
-        } else {
-            format!("\u{0394} {:+}ms", delta_ms)
-        };
-        // Display width, not byte length: the leading `Δ` (U+0394) is 2 bytes
-        // but occupies a single column, so byte length would shove the badge
-        // one column left of its flush-right position.
-        let badge_len = UnicodeWidthStr::width(badge.as_str()) as u16;
-        let badge_x = (area.x + width).saturating_sub(badge_len + 1);
-        let badge_style = Style::default()
-            .fg(theme.accent)
-            .bg(Color::Rgb(40, 35, 20))
-            .add_modifier(Modifier::BOLD);
-        // Render on row 1 (pipe row) at the far right — avoids overlapping endpoint labels
-        crate::tui::render::set_string_clipped(buf, area, badge_x, area.y + 1, &badge, badge_style);
-    }
+    draw_mark_badge(buf, area, messages, nav, theme);
 
     // Message rows: we expand each FormattedMessage into 1 + extra_lines rows
     // Scrollable area starts at row 2, ends 2 rows before bottom (footer pipe + labels)
-    let mut row: usize = 2;
-    let mut logical_row: usize = 0;
-    let max_row = (height as usize).saturating_sub(2); // leave room for footer
-
+    let mut window = RowWindow {
+        row: 2,
+        logical_row: 0,
+        max_row: (height as usize).saturating_sub(2), // leave room for footer
+        scroll_offset: nav.scroll_offset,
+    };
     for msg in messages {
-        let msg_rows = 1 + msg.extra_lines.len();
-
-        // Skip if entirely before the scroll window
-        if logical_row + msg_rows <= scroll_offset {
-            logical_row += msg_rows;
-            continue;
-        }
-
-        // Render the main arrow row (may be partially scrolled)
-        if logical_row >= scroll_offset && row < max_row {
-            let y = area.y + row as u16;
-
-            // Spacer rows: only render pipes and optional gap timestamp
-            if msg.is_spacer {
-                let spacer_style = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
-                // Timestamp (gap label on first spacer, blank otherwise)
-                if !msg.timestamp.trim().is_empty() {
-                    crate::tui::render::set_string_clipped(
-                        buf,
-                        area,
-                        ts_col,
-                        y,
-                        &msg.timestamp,
-                        spacer_style,
-                    );
-                }
-                // Dotted pipes at all column positions
-                for &px in &pipe_positions {
-                    crate::tui::render::set_string_clipped(
-                        buf,
-                        area,
-                        px,
-                        y,
-                        "\u{250A}",
-                        spacer_style,
-                    ); // ┊
-                }
-                row += 1;
-                logical_row += msg_rows;
-                if row >= max_row {
-                    break;
-                }
-                continue;
-            }
-
-            // Timestamp column. The current row is shown by a full-row
-            // background highlight applied after all content is drawn (see
-            // below) — never a leading marker glyph, which would shift the
-            // whole row's content right by one column as the cursor moves.
-            match msg.selection_state {
-                SelectionState::Selected => {
-                    if !msg.timestamp.is_empty() {
-                        crate::tui::render::set_string_clipped(
-                            buf,
-                            area,
-                            ts_col,
-                            y,
-                            &msg.timestamp,
-                            msg.timestamp_style,
-                        );
-                    }
-                }
-                SelectionState::Normal => {
-                    if !msg.timestamp.is_empty() {
-                        let dim_ts = msg.timestamp_style.add_modifier(Modifier::DIM);
-                        crate::tui::render::set_string_clipped(
-                            buf,
-                            area,
-                            ts_col,
-                            y,
-                            &msg.timestamp,
-                            dim_ts,
-                        );
-                    }
-                }
-                SelectionState::Related => {
-                    if !msg.timestamp.is_empty() {
-                        crate::tui::render::set_string_clipped(
-                            buf,
-                            area,
-                            ts_col,
-                            y,
-                            &msg.timestamp,
-                            msg.timestamp_style,
-                        );
-                    }
-                }
-            }
-
-            // Pipes at ALL positions
-            for &px in &pipe_positions {
-                crate::tui::render::set_string_clipped(buf, area, px, y, "\u{2502}", pipe_style); // │
-            }
-
-            // Clamp src_col and dst_col to valid range
-            let src_col = msg.src_col.min(n.saturating_sub(1));
-            let dst_col = msg.dst_col.min(n.saturating_sub(1));
-
-            // RTP bar: render as a full-width label between the pipes
-            if msg.is_rtp_bar {
-                let left_pipe = pipe_positions.first().copied().unwrap_or(ts_width);
-                let right_pipe = pipe_positions.last().copied().unwrap_or(area.right());
-                let bar_x = left_pipe + 1;
-                let bar_width = right_pipe.saturating_sub(left_pipe).saturating_sub(1) as usize;
-                let padded = rtp_channel_bar(&msg.label, bar_width);
-                let bar_style = match msg.selection_state {
-                    SelectionState::Selected => {
-                        msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
-                    }
-                    _ => msg.style,
-                };
-                crate::tui::render::set_string_clipped(buf, area, bar_x, y, &padded, bar_style);
-            } else {
-                // Arrow between source and destination pipes
-                let src_x = pipe_positions[src_col];
-                let dst_x = pipe_positions[dst_col];
-                if src_x == dst_x {
-                    // ONE endpoint: the message leaves and arrives at the same
-                    // pipe. There is no span between columns to draw an arrow
-                    // in, and the old code simply skipped the row — so a PBX
-                    // talking to itself (every message
-                    // `100.127.26.27:5060 -> 100.127.26.27:5060`) rendered a
-                    // pipe and nothing else. The detail pane does not use
-                    // endpoints, so it showed the whole message beside an empty
-                    // ladder, which reads as a broken tool rather than as a
-                    // one-sided capture.
-                    //
-                    // Drawn the way a sequence diagram shows a self-message: a
-                    // loop glyph against the pipe, then the label.
-                    let mut label = match &msg.fold_label {
-                        Some(fl) if msg.folded_count > 0 && fl.starts_with("(+") => {
-                            format!("{} (+{} retx)", msg.label, msg.folded_count)
-                        }
-                        _ => msg.label.clone(),
-                    };
-                    if let Some(ref note) = msg.diagnosis_note {
-                        label.push_str(&format!(" [{note}]"));
-                    }
-                    let style = match msg.selection_state {
-                        SelectionState::Selected => {
-                            msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
-                        }
-                        _ => msg.style,
-                    };
-                    let start = src_x.saturating_add(1);
-                    let room = area.right().saturating_sub(start) as usize;
-                    if room > 2 {
-                        let text = format!("\u{21ba} {label}");
-                        crate::tui::render::set_string_clipped(
-                            buf,
-                            area,
-                            start,
-                            y,
-                            truncate(&text, room),
-                            style,
-                        );
-                    }
-                } else {
-                    // Retx fold headers carry their count ON the arrow: the
-                    // annotation zone right of the ladder may be covered by
-                    // the split detail pane, and a hidden fold reads as data
-                    // loss. (Auth fold headers already say so in the label.)
-                    let mut arrow_label = match &msg.fold_label {
-                        Some(fl) if msg.folded_count > 0 && fl.starts_with("(+") => {
-                            format!("{} (+{} retx)", msg.label, msg.folded_count)
-                        }
-                        _ => msg.label.clone(),
-                    };
-                    // Evidence tags ride on the arrow for the same reason the retx
-                    // count above does. The annotation zone right of the ladder
-                    // starts one column left of the rightmost pipe, so at 80
-                    // columns there is room for a single character before the
-                    // clip — a tag drawn there is invisible in practice, and an
-                    // invisible "this is the message your problem came from" is
-                    // worse than none, because the reader trusts the ladder to be
-                    // showing them everything.
-                    if let Some(ref note) = msg.diagnosis_note {
-                        arrow_label.push_str(&format!(" [{note}]"));
-                    }
-                    let (arrow_str, arrow_x) =
-                        format_arrow(&arrow_label, src_x, dst_x, msg.is_response);
-                    let arrow_style = match msg.selection_state {
-                        SelectionState::Selected => {
-                            msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
-                        }
-                        SelectionState::Related => msg.style,
-                        SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
-                    };
-                    crate::tui::render::set_string_clipped(
-                        buf,
-                        area,
-                        arrow_x,
-                        y,
-                        &arrow_str,
-                        arrow_style,
-                    );
-                }
-            }
-
-            // Annotations after the rightmost pipe. Clipped to the ladder
-            // area: anything written past it lands under the split detail
-            // pane (rendered later), so it would either vanish or corrupt
-            // that pane.
-            let right_edge = area.x + area.width;
-            let mut annotation_x = {
-                let rightmost = pipe_positions.last().copied().unwrap_or(0);
-                rightmost + 1
-            };
-            let draw_annotation =
-                |buf: &mut ratatui::buffer::Buffer, x: u16, s: &str, style: Style| -> u16 {
-                    if x >= right_edge {
-                        return 0;
-                    }
-                    let avail = (right_edge - x) as usize;
-                    let clipped: String = s.chars().take(avail).collect();
-                    crate::tui::render::set_string_clipped(buf, area, x, y, &clipped, style);
-                    clipped.chars().count() as u16
-                };
-            // PDD annotation
-            if let Some(ref pdd) = msg.pdd_note {
-                let w = draw_annotation(buf, annotation_x, pdd, Style::default().fg(theme.accent));
-                annotation_x += w + 1;
-            }
-
-            // SDP delta badge (Feature 4)
-            if let Some(ref badge) = msg.sdp_badge {
-                let badge_str = format!(" [{badge}]");
-                let badge_style = Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD);
-                let w = draw_annotation(buf, annotation_x, &badge_str, badge_style);
-                annotation_x += w;
-            }
-
-            // The signaling-diagnosis tag is NOT drawn here. It rides on the
-            // arrow label above instead — see the comment there: this zone has
-            // about one usable column at 80 wide, so an evidence tag placed here
-            // would be clipped away and the reader would never know a message had
-            // been cited.
-
-            // Fold label (Feature 3)
-            if let Some(ref fl) = msg.fold_label {
-                let fold_str = format!(" {fl}");
-                let fold_style = Style::default()
-                    .fg(theme.muted)
-                    .add_modifier(Modifier::ITALIC);
-                draw_annotation(buf, annotation_x, &fold_str, fold_style);
-            }
-
-            // An operator note on this message: a marker in the column every
-            // timestamp mode leaves blank, just left of the first pipe, so no
-            // content moves.
-            if !msg.is_rtp_bar
-                && msg
-                    .raw_index
-                    .is_some_and(|r| nav.noted.binary_search(&r).is_ok())
-            {
-                crate::tui::render::set_string_clipped(
-                    buf,
-                    area,
-                    ts_col + ts_width - 1,
-                    y,
-                    crate::annotate::tui::MARKER,
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                );
-            }
-
-            // Full-row highlight for the current message: patch a background
-            // across the whole row (content keeps its own fg). This marks the
-            // cursor without shifting any content horizontally.
-            if msg.selection_state == SelectionState::Selected {
-                buf.set_style(
-                    Rect::new(area.x, y, area.width, 1),
-                    Style::default().bg(SELECTION_BG),
-                );
-            }
-
-            row += 1;
-        } else if logical_row < scroll_offset {
-            // This main row is scrolled off; advance logical but not visual
-        }
-
-        // Render extra lines (SDP, RTP markers)
-        for (ei, (text, style)) in msg.extra_lines.iter().enumerate() {
-            let extra_logical = logical_row + 1 + ei;
-            if extra_logical >= scroll_offset && row < max_row {
-                let y = area.y + row as u16;
-                crate::tui::render::set_string_clipped(buf, area, area.x, y, text, *style);
-                row += 1;
-            }
-        }
-
-        logical_row += msg_rows;
-
-        if row >= max_row {
+        if window.draw_message(buf, &ladder, msg).is_break() {
             break;
         }
     }
@@ -872,27 +536,405 @@ pub fn render_call_flow_direct(
     let footer_pipe_y = area.y + height.saturating_sub(2);
     let footer_label_y = area.y + height.saturating_sub(1);
     if height >= 4 {
-        for &px in &pipe_positions {
-            crate::tui::render::set_string_clipped(
-                buf,
-                area,
-                px,
-                footer_pipe_y,
-                "\u{2502}",
-                pipe_style,
-            ); // │
-        }
+        ladder.draw_pipes(buf, footer_pipe_y, "\u{2502}", ladder.pipe_style); // │
 
         // Footer labels — same non-overlapping cells as the header row.
         draw_participant_labels(
             buf,
             footer_label_y,
             participants,
-            &pipe_positions,
+            &ladder.pipes,
             &label_cells,
             20,
             label_style,
         );
+    }
+}
+
+/// Pipe column for each of `n` participants: spread evenly across the width
+/// after the timestamp column, or the single column after it when there is
+/// one participant.
+fn pipe_positions(area: Rect, n: usize, ts_width: u16) -> Vec<u16> {
+    if n <= 1 {
+        return vec![area.x + ts_width];
+    }
+    let usable = area.width.saturating_sub(ts_width + 2);
+    (0..n)
+        .map(|i| area.x + ts_width + (i as u16 * usable / (n as u16 - 1)))
+        .collect()
+}
+
+/// The narrowest gap between adjacent pipes, in columns; `u16::MAX` when
+/// there is a single pipe and so no gap to draw an arrow in.
+fn min_pipe_gap(pipes: &[u16]) -> u16 {
+    if pipes.len() < 2 {
+        return u16::MAX;
+    }
+    pipes
+        .windows(2)
+        .map(|w| w[1].saturating_sub(w[0]))
+        .min()
+        .unwrap_or(0)
+}
+
+/// Mark + Delta badge (Feature 1): the time from the marked row to the
+/// selected one, in the top-right corner of the pipe row.
+fn draw_mark_badge(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    messages: &[FormattedMessage],
+    nav: &FlowNavigation,
+    theme: &Theme,
+) {
+    use unicode_width::UnicodeWidthStr;
+    let selected_index = nav.selected_index;
+    let Some(mi) = nav.mark_index else {
+        return;
+    };
+    if mi == selected_index || mi >= messages.len() || selected_index >= messages.len() {
+        return;
+    }
+    let mark_ts = messages[mi].raw_timestamp;
+    let sel_ts = messages[selected_index].raw_timestamp;
+    let delta_ms = sel_ts.signed_duration_since(mark_ts).num_milliseconds();
+    let badge = if delta_ms.abs() >= 1000 {
+        format!("\u{0394} {:+.3}s", delta_ms as f64 / 1000.0)
+    } else {
+        format!("\u{0394} {:+}ms", delta_ms)
+    };
+    // Display width, not byte length: the leading `Δ` (U+0394) is 2 bytes
+    // but occupies a single column, so byte length would shove the badge
+    // one column left of its flush-right position.
+    let badge_len = UnicodeWidthStr::width(badge.as_str()) as u16;
+    let badge_x = (area.x + area.width).saturating_sub(badge_len + 1);
+    let badge_style = Style::default()
+        .fg(theme.accent)
+        .bg(Color::Rgb(40, 35, 20))
+        .add_modifier(Modifier::BOLD);
+    // Render on row 1 (pipe row) at the far right — avoids overlapping endpoint labels
+    crate::tui::render::set_string_clipped(buf, area, badge_x, area.y + 1, &badge, badge_style);
+}
+
+/// The ladder's geometry and the inputs every row shares.
+struct Ladder<'a> {
+    /// The area the ladder paints into; also the clip bounds.
+    area: Rect,
+    /// Pipe column per participant.
+    pipes: Vec<u16>,
+    /// Width of the timestamp column.
+    ts_width: u16,
+    /// Style of the participant pipes.
+    pipe_style: Style,
+    /// Color theme.
+    theme: &'a Theme,
+    /// `raw_index` of every row whose message carries an operator note,
+    /// sorted.
+    noted: &'a [usize],
+}
+
+impl Ladder<'_> {
+    /// Paint `glyph` at every pipe column on row `y`.
+    fn draw_pipes(&self, buf: &mut ratatui::buffer::Buffer, y: u16, glyph: &str, style: Style) {
+        for &px in &self.pipes {
+            crate::tui::render::set_string_clipped(buf, self.area, px, y, glyph, style);
+        }
+    }
+
+    /// Spacer rows: only render pipes and optional gap timestamp.
+    fn draw_spacer_row(&self, buf: &mut ratatui::buffer::Buffer, msg: &FormattedMessage, y: u16) {
+        let spacer_style = Style::default()
+            .fg(self.theme.muted)
+            .add_modifier(Modifier::DIM);
+        // Timestamp (gap label on first spacer, blank otherwise)
+        if !msg.timestamp.trim().is_empty() {
+            crate::tui::render::set_string_clipped(
+                buf,
+                self.area,
+                self.area.x,
+                y,
+                &msg.timestamp,
+                spacer_style,
+            );
+        }
+        // Dotted pipes at all column positions
+        self.draw_pipes(buf, y, "\u{250A}", spacer_style); // ┊
+    }
+
+    /// Paint one message's main row at `y`: timestamp, pipes, the arrow or
+    /// RTP bar, the annotations, the note marker and the selection
+    /// highlight.
+    fn draw_message_row(&self, buf: &mut ratatui::buffer::Buffer, msg: &FormattedMessage, y: u16) {
+        let area = self.area;
+        // Timestamp column. The current row is shown by a full-row
+        // background highlight applied after all content is drawn (see
+        // below) — never a leading marker glyph, which would shift the
+        // whole row's content right by one column as the cursor moves.
+        if !msg.timestamp.is_empty() {
+            let ts_style = match msg.selection_state {
+                SelectionState::Selected | SelectionState::Related => msg.timestamp_style,
+                SelectionState::Normal => msg.timestamp_style.add_modifier(Modifier::DIM),
+            };
+            crate::tui::render::set_string_clipped(buf, area, area.x, y, &msg.timestamp, ts_style);
+        }
+
+        // Pipes at ALL positions
+        self.draw_pipes(buf, y, "\u{2502}", self.pipe_style); // │
+
+        if msg.is_rtp_bar {
+            self.draw_rtp_bar(buf, msg, y);
+        } else {
+            self.draw_arrow(buf, msg, y);
+        }
+
+        self.draw_annotations(buf, msg, y);
+
+        // An operator note on this message: a marker in the column every
+        // timestamp mode leaves blank, just left of the first pipe, so no
+        // content moves.
+        if !msg.is_rtp_bar
+            && msg
+                .raw_index
+                .is_some_and(|r| self.noted.binary_search(&r).is_ok())
+        {
+            crate::tui::render::set_string_clipped(
+                buf,
+                area,
+                area.x + self.ts_width - 1,
+                y,
+                crate::annotate::tui::MARKER,
+                Style::default()
+                    .fg(self.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+
+        // Full-row highlight for the current message: patch a background
+        // across the whole row (content keeps its own fg). This marks the
+        // cursor without shifting any content horizontally.
+        if msg.selection_state == SelectionState::Selected {
+            buf.set_style(
+                Rect::new(area.x, y, area.width, 1),
+                Style::default().bg(SELECTION_BG),
+            );
+        }
+    }
+
+    /// RTP bar: render as a full-width label between the pipes.
+    fn draw_rtp_bar(&self, buf: &mut ratatui::buffer::Buffer, msg: &FormattedMessage, y: u16) {
+        let left_pipe = self.pipes.first().copied().unwrap_or(self.ts_width);
+        let right_pipe = self.pipes.last().copied().unwrap_or(self.area.right());
+        let bar_x = left_pipe + 1;
+        let bar_width = right_pipe.saturating_sub(left_pipe).saturating_sub(1) as usize;
+        let padded = rtp_channel_bar(&msg.label, bar_width);
+        let bar_style = match msg.selection_state {
+            SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
+            _ => msg.style,
+        };
+        crate::tui::render::set_string_clipped(buf, self.area, bar_x, y, &padded, bar_style);
+    }
+
+    /// Arrow between source and destination pipes, or a self-message loop
+    /// when both are the same pipe.
+    fn draw_arrow(&self, buf: &mut ratatui::buffer::Buffer, msg: &FormattedMessage, y: u16) {
+        // Clamp src_col and dst_col to valid range
+        let last = self.pipes.len().saturating_sub(1);
+        let src_x = self.pipes[msg.src_col.min(last)];
+        let dst_x = self.pipes[msg.dst_col.min(last)];
+        let label = arrow_label(msg);
+        if src_x == dst_x {
+            // ONE endpoint: the message leaves and arrives at the same
+            // pipe. There is no span between columns to draw an arrow
+            // in, and the old code simply skipped the row — so a PBX
+            // talking to itself (every message
+            // `100.127.26.27:5060 -> 100.127.26.27:5060`) rendered a
+            // pipe and nothing else. The detail pane does not use
+            // endpoints, so it showed the whole message beside an empty
+            // ladder, which reads as a broken tool rather than as a
+            // one-sided capture.
+            //
+            // Drawn the way a sequence diagram shows a self-message: a
+            // loop glyph against the pipe, then the label.
+            let style = match msg.selection_state {
+                SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
+                _ => msg.style,
+            };
+            let start = src_x.saturating_add(1);
+            let room = self.area.right().saturating_sub(start) as usize;
+            if room > 2 {
+                let text = format!("\u{21ba} {label}");
+                crate::tui::render::set_string_clipped(
+                    buf,
+                    self.area,
+                    start,
+                    y,
+                    truncate(&text, room),
+                    style,
+                );
+            }
+            return;
+        }
+        let (arrow_str, arrow_x) = format_arrow(&label, src_x, dst_x, msg.is_response);
+        let arrow_style = match msg.selection_state {
+            SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
+            SelectionState::Related => msg.style,
+            SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
+        };
+        crate::tui::render::set_string_clipped(buf, self.area, arrow_x, y, &arrow_str, arrow_style);
+    }
+
+    /// Annotations after the rightmost pipe: PDD, SDP delta badge, fold
+    /// label. Clipped to the ladder area: anything written past it lands
+    /// under the split detail pane (rendered later), so it would either
+    /// vanish or corrupt that pane.
+    fn draw_annotations(&self, buf: &mut ratatui::buffer::Buffer, msg: &FormattedMessage, y: u16) {
+        let area = self.area;
+        let theme = self.theme;
+        let right_edge = area.x + area.width;
+        let mut annotation_x = {
+            let rightmost = self.pipes.last().copied().unwrap_or(0);
+            rightmost + 1
+        };
+        let draw_annotation =
+            |buf: &mut ratatui::buffer::Buffer, x: u16, s: &str, style: Style| -> u16 {
+                if x >= right_edge {
+                    return 0;
+                }
+                let avail = (right_edge - x) as usize;
+                let clipped: String = s.chars().take(avail).collect();
+                crate::tui::render::set_string_clipped(buf, area, x, y, &clipped, style);
+                clipped.chars().count() as u16
+            };
+        // PDD annotation
+        if let Some(ref pdd) = msg.pdd_note {
+            let w = draw_annotation(buf, annotation_x, pdd, Style::default().fg(theme.accent));
+            annotation_x += w + 1;
+        }
+
+        // SDP delta badge (Feature 4)
+        if let Some(ref badge) = msg.sdp_badge {
+            let badge_str = format!(" [{badge}]");
+            let badge_style = Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD);
+            let w = draw_annotation(buf, annotation_x, &badge_str, badge_style);
+            annotation_x += w;
+        }
+
+        // The signaling-diagnosis tag is NOT drawn here. It rides on the
+        // arrow label instead — see `arrow_label`: this zone has about one
+        // usable column at 80 wide, so an evidence tag placed here would be
+        // clipped away and the reader would never know a message had been
+        // cited.
+
+        // Fold label (Feature 3)
+        if let Some(ref fl) = msg.fold_label {
+            let fold_str = format!(" {fl}");
+            let fold_style = Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC);
+            draw_annotation(buf, annotation_x, &fold_str, fold_style);
+        }
+    }
+}
+
+/// The text drawn on a message's arrow (or beside its self-message loop):
+/// the label, a retransmission fold header's count, and any evidence tag.
+fn arrow_label(msg: &FormattedMessage) -> String {
+    // Retx fold headers carry their count ON the arrow: the
+    // annotation zone right of the ladder may be covered by
+    // the split detail pane, and a hidden fold reads as data
+    // loss. (Auth fold headers already say so in the label.)
+    let mut label = match &msg.fold_label {
+        Some(fl) if msg.folded_count > 0 && fl.starts_with("(+") => {
+            format!("{} (+{} retx)", msg.label, msg.folded_count)
+        }
+        _ => msg.label.clone(),
+    };
+    // Evidence tags ride on the arrow for the same reason the retx
+    // count above does. The annotation zone right of the ladder
+    // starts one column left of the rightmost pipe, so at 80
+    // columns there is room for a single character before the
+    // clip — a tag drawn there is invisible in practice, and an
+    // invisible "this is the message your problem came from" is
+    // worse than none, because the reader trusts the ladder to be
+    // showing them everything.
+    if let Some(ref note) = msg.diagnosis_note {
+        label.push_str(&format!(" [{note}]"));
+    }
+    label
+}
+
+/// Which buffer rows the scrolled message window has filled.
+struct RowWindow {
+    /// The next buffer row to paint, relative to the area's top.
+    row: usize,
+    /// Logical rows (main rows plus extra lines) passed so far.
+    logical_row: usize,
+    /// The first row of the footer; painting stops before it.
+    max_row: usize,
+    /// Logical rows scrolled off the top.
+    scroll_offset: usize,
+}
+
+impl RowWindow {
+    /// Paint the visible rows of one message: its main row and its extra
+    /// lines. `Break` once the window is full.
+    fn draw_message(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        ladder: &Ladder<'_>,
+        msg: &FormattedMessage,
+    ) -> std::ops::ControlFlow<()> {
+        let msg_rows = 1 + msg.extra_lines.len();
+
+        // Skip if entirely before the scroll window
+        if self.logical_row + msg_rows <= self.scroll_offset {
+            self.logical_row += msg_rows;
+            return std::ops::ControlFlow::Continue(());
+        }
+
+        // Render the main arrow row (may be partially scrolled). A main row
+        // scrolled off advances logical but not visual.
+        if self.logical_row >= self.scroll_offset && self.row < self.max_row {
+            let y = ladder.area.y + self.row as u16;
+            if msg.is_spacer {
+                ladder.draw_spacer_row(buf, msg, y);
+                self.row += 1;
+                self.logical_row += msg_rows;
+                return self.full();
+            }
+            ladder.draw_message_row(buf, msg, y);
+            self.row += 1;
+        }
+
+        // Render extra lines (SDP, RTP markers)
+        for (ei, (text, style)) in msg.extra_lines.iter().enumerate() {
+            let extra_logical = self.logical_row + 1 + ei;
+            if extra_logical >= self.scroll_offset && self.row < self.max_row {
+                let y = ladder.area.y + self.row as u16;
+                crate::tui::render::set_string_clipped(
+                    buf,
+                    ladder.area,
+                    ladder.area.x,
+                    y,
+                    text,
+                    *style,
+                );
+                self.row += 1;
+            }
+        }
+
+        self.logical_row += msg_rows;
+        self.full()
+    }
+
+    /// `Break` once every row above the footer is painted.
+    fn full(&self) -> std::ops::ControlFlow<()> {
+        if self.row >= self.max_row {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
     }
 }
 
@@ -1782,6 +1824,9 @@ mod tests {
     use super::*;
     use crate::capture::parse::TransportProto;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     // ── rtp_channel_bar: double-rail centered media channel ───────────
 
     /// The `═` double-rail glyph the RTP channel bar is built from.
@@ -2305,6 +2350,53 @@ mod tests {
             row.starts_with("12:00:00.000"),
             "ts at col 0, unshifted: {row:?}"
         );
+    }
+
+    /// The timestamp of a row that is neither selected nor related is
+    /// dimmed; the selected and related rows keep their timestamp style.
+    #[test]
+    fn only_unrelated_rows_dim_their_timestamp() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "10.0.0.1:5060".into(),
+                label: "10.0.0.1:5060".into(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".into(),
+                label: "10.0.0.2:5060".into(),
+            },
+        ];
+        let msgs = vec![
+            fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1),
+            fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0),
+            fmt_msg("12:00:00.200", SelectionState::Related, 0, 1),
+        ];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 1,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(80, 24);
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })?;
+        let buf = term.backend().buffer().clone();
+        let dim = |y: u16| -> Result<bool, TestError> {
+            Ok(buf
+                .cell((0, y))
+                .ok_or_else(|| format!("row {y} has a cell at column 0"))?
+                .style()
+                .add_modifier
+                .contains(Modifier::DIM))
+        };
+        // Message rows start at row 2.
+        assert!(dim(2)?, "the unrelated row's timestamp is dimmed");
+        assert!(!dim(3)?, "the selected row's timestamp is not dimmed");
+        assert!(!dim(4)?, "a related row's timestamp is not dimmed");
+        Ok(())
     }
 
     /// The mark/delta badge is right-aligned against the ladder's reserved

@@ -117,26 +117,8 @@ fn a_real_capture_exports_a_complete_signaling_only_container() -> Result<(), Te
     assert!(v["uuid"].as_str().is_some_and(|u| u.len() == 36));
     assert!(v["created_at"].as_str().is_some());
 
-    // Parties: the observed two, then the observer. A `name` may appear, and
-    // `validation: "none"` is what keeps it readable as what a header said
-    // rather than as an identity anyone established.
-    let parties = v["parties"].as_array().ok_or("parties")?;
-    assert_eq!(parties.len(), 3);
-    for party in parties {
-        assert_eq!(party["validation"], "none");
-        assert!(
-            party.get("validation").is_some(),
-            "a party carrying a name without its disclaimer asserts an \
-             identity: {party}"
-        );
-    }
-    assert!(
-        parties[2].get("name").is_none(),
-        "the observer is not a named participant: {}",
-        parties[2]
-    );
+    assert_parties(&v)?;
     assert_eq!(vcon.observer_index(), 2);
-    assert_eq!(parties[2]["role"], "observer");
 
     // The dialog object names the call it came from.
     assert_eq!(v["dialog"][0]["sip_call_id"], dialog.call_id);
@@ -166,7 +148,40 @@ fn a_real_capture_exports_a_complete_signaling_only_container() -> Result<(), Te
         "the two completeness surfaces describe one capture and must agree"
     );
 
-    // No credential, and nothing signed.
+    assert_nothing_withheld_is_carried(&json, &v, &dialog.call_id)
+}
+
+/// The parties: the observed two, then the observer.
+///
+/// A `name` may appear, and `validation: "none"` is what keeps it readable as
+/// what a header said rather than as an identity anyone established.
+fn assert_parties(v: &serde_json::Value) -> Result<(), TestError> {
+    let parties = v["parties"].as_array().ok_or("parties")?;
+    assert_eq!(parties.len(), 3);
+    for party in parties {
+        assert_eq!(party["validation"], "none");
+        assert!(
+            party.get("validation").is_some(),
+            "a party carrying a name without its disclaimer asserts an \
+             identity: {party}"
+        );
+    }
+    assert!(
+        parties[2].get("name").is_none(),
+        "the observer is not a named participant: {}",
+        parties[2]
+    );
+    assert_eq!(parties[2]["role"], "observer");
+    Ok(())
+}
+
+/// No credential, nothing signed, and a subject that names the dialog
+/// without a verdict about it.
+fn assert_nothing_withheld_is_carried(
+    json: &str,
+    v: &serde_json::Value,
+    call_id: &str,
+) -> Result<(), TestError> {
     let lowered = json.to_ascii_lowercase();
     for header in CREDENTIAL_HEADERS {
         assert!(
@@ -186,7 +201,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() -> Result<(), Te
     // two completeness surfaces asserted above.
     let subject = v["subject"].as_str().ok_or("a subject is present")?;
     assert!(
-        subject.contains(&dialog.call_id),
+        subject.contains(call_id),
         "the subject must identify the dialog it stands for: {subject:?}"
     );
     for verdict in ["SIGNALING ONLY", "incomplete", "PARTIAL", "failed"] {

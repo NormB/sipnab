@@ -132,10 +132,6 @@ pub struct PcapngMetadata {
 ///
 /// Reads the whole file into memory (bounded by [`max_metadata_file_bytes`]).
 pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
-    use pcap_file::pcapng::Block;
-    use pcap_file::pcapng::blocks::name_resolution::Record;
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
     let mut meta = PcapngMetadata::default();
     ensure_within_size_cap(std::fs::metadata(path)?.len(), max_metadata_file_bytes())?;
     let bytes = std::fs::read(path)?;
@@ -151,76 +147,101 @@ pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
     let Ok(frames) = BlockFrames::new(&bytes) else {
         return Ok(meta);
     };
+    meta.collect_blocks(frames);
+    meta.warn_about_unread_blocks(path);
+    Ok(meta)
+}
 
-    // Blocks are framed by their lengths and only the two kinds this reads are
-    // decoded, each on its own. It used to decode every block through one
-    // `pcap-file` reader and stop at the first it could not decode -- under a
-    // comment saying malformed blocks were skipped -- so one bad block, of any
-    // kind, silently cost every name and TLS secret after it. A block whose
-    // contents are bad is now skipped and counted; only a length that cannot
-    // be trusted stops the walk, because nothing after it can be found.
-    let mut section: &[u8] = &[];
-    for frame in frames {
-        let frame = match frame {
-            Ok(frame) => frame,
-            Err(offset) => {
-                meta.stopped_at = Some(offset);
-                break;
+impl PcapngMetadata {
+    /// Walk the framed blocks, taking every name and TLS secret.
+    ///
+    /// Blocks are framed by their lengths and only the two kinds this reads are
+    /// decoded, each on its own. It used to decode every block through one
+    /// `pcap-file` reader and stop at the first it could not decode -- under a
+    /// comment saying malformed blocks were skipped -- so one bad block, of any
+    /// kind, silently cost every name and TLS secret after it. A block whose
+    /// contents are bad is now skipped and counted; only a length that cannot
+    /// be trusted stops the walk, because nothing after it can be found.
+    fn collect_blocks(&mut self, frames: BlockFrames<'_>) {
+        let mut section: &[u8] = &[];
+        for frame in frames {
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(offset) => {
+                    self.stopped_at = Some(offset);
+                    break;
+                }
+            };
+            match frame.kind {
+                SHB_TYPE => section = frame.bytes,
+                NRB_TYPE | DSB_TYPE => self.take_block(decode_in_section(section, frame.bytes)),
+                _ => {}
             }
-        };
-        match frame.kind {
-            SHB_TYPE => section = frame.bytes,
-            NRB_TYPE | DSB_TYPE => match decode_in_section(section, frame.bytes) {
-                Some(Block::NameResolution(nrb)) => {
-                    for rec in &nrb.records {
-                        match rec {
-                            Record::Ipv4(r) if r.ip_addr.len() == 4 => {
-                                let o = r.ip_addr.as_ref();
-                                let ip = IpAddr::V4(Ipv4Addr::new(o[0], o[1], o[2], o[3]));
-                                for n in &r.names {
-                                    meta.names.push((ip, n.to_string()));
-                                }
-                            }
-                            Record::Ipv6(r) if r.ip_addr.len() == 16 => {
-                                let mut a = [0u8; 16];
-                                a.copy_from_slice(r.ip_addr.as_ref());
-                                let ip = IpAddr::V6(Ipv6Addr::from(a));
-                                for n in &r.names {
-                                    meta.names.push((ip, n.to_string()));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // Decryption Secrets Block -- not a typed pcap-file block.
-                Some(Block::Unknown(u)) if u.type_ == DSB_TYPE => {
-                    if let Some(secret) = parse_dsb_tls_secret(u.value.as_ref()) {
-                        meta.tls_secrets.push(secret);
-                        meta.key_log_blocks += 1;
-                    }
-                }
-                _ => meta.malformed_blocks += 1,
-            },
-            _ => {}
         }
     }
-    if meta.malformed_blocks > 0 {
-        tracing::warn!(
-            "{}: skipped {} malformed name-resolution or decryption-secrets block(s); \
-             any names or TLS secrets in them were not read",
-            path.display(),
-            meta.malformed_blocks
-        );
+
+    /// Take the names or the TLS secret from one decoded name-resolution or
+    /// decryption-secrets block, or count it as malformed.
+    fn take_block(&mut self, block: Option<pcap_file::pcapng::Block<'_>>) {
+        use pcap_file::pcapng::Block;
+        match block {
+            Some(Block::NameResolution(nrb)) => {
+                for rec in &nrb.records {
+                    self.take_record(rec);
+                }
+            }
+            // Decryption Secrets Block -- not a typed pcap-file block.
+            Some(Block::Unknown(u)) if u.type_ == DSB_TYPE => {
+                if let Some(secret) = parse_dsb_tls_secret(u.value.as_ref()) {
+                    self.tls_secrets.push(secret);
+                    self.key_log_blocks += 1;
+                }
+            }
+            _ => self.malformed_blocks += 1,
+        }
     }
-    if let Some(offset) = meta.stopped_at {
-        tracing::warn!(
-            "{}: stopped reading pcapng metadata at byte {offset}: that block's length \
-             cannot be trusted, so names and TLS secrets after it were not read",
-            path.display()
-        );
+
+    /// Take every name of one name-resolution record whose address has the
+    /// length its family requires. Other records are ignored.
+    fn take_record(&mut self, rec: &pcap_file::pcapng::blocks::name_resolution::Record<'_>) {
+        use pcap_file::pcapng::blocks::name_resolution::Record;
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        let (ip, names) = match rec {
+            Record::Ipv4(r) if r.ip_addr.len() == 4 => {
+                let o = r.ip_addr.as_ref();
+                (IpAddr::V4(Ipv4Addr::new(o[0], o[1], o[2], o[3])), &r.names)
+            }
+            Record::Ipv6(r) if r.ip_addr.len() == 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(r.ip_addr.as_ref());
+                (IpAddr::V6(Ipv6Addr::from(a)), &r.names)
+            }
+            _ => return,
+        };
+        for n in names {
+            self.names.push((ip, n.to_string()));
+        }
     }
-    Ok(meta)
+
+    /// Log what the walk could not read: malformed blocks it skipped, and the
+    /// offset where an untrustworthy length stopped it.
+    fn warn_about_unread_blocks(&self, path: &Path) {
+        if self.malformed_blocks > 0 {
+            tracing::warn!(
+                "{}: skipped {} malformed name-resolution or decryption-secrets block(s); \
+                 any names or TLS secrets in them were not read",
+                path.display(),
+                self.malformed_blocks
+            );
+        }
+        if let Some(offset) = self.stopped_at {
+            tracing::warn!(
+                "{}: stopped reading pcapng metadata at byte {offset}: that block's length \
+                 cannot be trusted, so names and TLS secrets after it were not read",
+                path.display()
+            );
+        }
+    }
 }
 
 /// Parse the TLS Key Log text from a Decryption Secrets Block body
@@ -697,8 +718,13 @@ mod malformed_block_tests {
     //! decode, under a comment saying it skipped them, so a single malformed
     //! block silently dropped every name and TLS secret after it and TLS
     //! decryption then failed with nothing said.
+
     use super::*;
     use crate::capture::{PcapExportMode, PcapWriter};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Name-resolution block type.
     const NRB: u32 = 0x0000_0004;
     /// Enhanced packet block type.
@@ -858,5 +884,63 @@ mod malformed_block_tests {
             "nothing past an untrusted length can be found"
         );
         assert_eq!(meta.stopped_at, Some(at));
+    }
+
+    /// Reading a file whose walk stopped early logs where it stopped, so the
+    /// loss is reported by the reader itself and not only by its caller.
+    #[cfg(feature = "native")]
+    #[test]
+    fn reading_a_file_that_stops_early_logs_where() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let bytes = fixture(dir.path());
+        let (be, at) = after_first_nrb(&bytes);
+        let w32 = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&w32(NRB));
+        bad.extend_from_slice(&w32(0x7FFF_FFF0));
+        bad.extend_from_slice(&[0; 8]);
+        let path = splice(&bytes, at, &bad, dir.path());
+
+        let mut read = None;
+        let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+            read = Some(read_pcapng_metadata(&path));
+        });
+        read.ok_or("the read ran")?
+            .map_err(|e| format!("read the metadata: {e:?}"))?;
+        assert!(
+            logs.contains(&format!("stopped reading pcapng metadata at byte {at}")),
+            "{logs}"
+        );
+        Ok(())
+    }
+
+    /// What the walk could not read is said, each kind once, naming the file;
+    /// a walk that read everything says nothing.
+    #[cfg(feature = "native")]
+    #[test]
+    fn what_the_walk_could_not_read_is_logged() {
+        let path = Path::new("caps/x.pcapng");
+        let meta = PcapngMetadata {
+            malformed_blocks: 1,
+            stopped_at: Some(96),
+            ..Default::default()
+        };
+        let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+            meta.warn_about_unread_blocks(path);
+        });
+        assert!(
+            logs.contains(
+                "caps/x.pcapng: skipped 1 malformed name-resolution or decryption-secrets block(s)"
+            ),
+            "{logs}"
+        );
+        assert!(
+            logs.contains("caps/x.pcapng: stopped reading pcapng metadata at byte 96"),
+            "{logs}"
+        );
+        let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+            PcapngMetadata::default().warn_about_unread_blocks(path);
+        });
+        assert!(logs.is_empty(), "{logs}");
     }
 }

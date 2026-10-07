@@ -226,16 +226,16 @@ impl Prepared {
                 listener,
                 state,
                 config,
-            } => {
-                if let Err(e) = crate::output::api::serve_on(listener, *state, config).await {
-                    tracing::error!("API server error: {e}");
-                }
-            }
+            } => log_server_end(
+                "API",
+                crate::output::api::serve_on(listener, *state, config).await,
+            ),
             #[cfg(feature = "mcp")]
             Prepared::McpStdio { server, done } => {
-                if let Err(e) = crate::mcp::transport::serve_stdio(*server).await {
-                    tracing::error!("MCP stdio server error: {e}");
-                }
+                log_server_end(
+                    "MCP stdio",
+                    crate::mcp::transport::serve_stdio(*server).await,
+                );
                 done.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             #[cfg(feature = "mcp-http")]
@@ -246,8 +246,9 @@ impl Prepared {
                 extra_allowed_hosts,
                 resource,
                 tls,
-            } => {
-                if let Err(e) = crate::mcp::transport::serve_http(
+            } => log_server_end(
+                "MCP HTTP",
+                crate::mcp::transport::serve_http(
                     *server,
                     bind,
                     auth,
@@ -255,12 +256,19 @@ impl Prepared {
                     resource,
                     tls,
                 )
-                .await
-                {
-                    tracing::error!("MCP HTTP server error: {e}");
-                }
-            }
+                .await,
+            ),
         }
+    }
+}
+
+/// Log how a server ended, when it ended in an error: `"{name} server error:
+/// {e}"`. Logged, not propagated -- one failed server must not tear down the
+/// others.
+#[cfg(any(feature = "api", feature = "mcp"))]
+fn log_server_end<E: std::fmt::Display>(name: &str, result: Result<(), E>) {
+    if let Err(e) = result {
+        tracing::error!("{name} server error: {e}");
     }
 }
 

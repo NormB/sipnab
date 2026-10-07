@@ -1141,33 +1141,55 @@ impl App {
     ///   `last_rendered_dialog_rows`).
     /// * Marks each rebuilt cache's `ChurnFloor`.
     fn sync_caches(&mut self) {
-        // Quality dashboard: rebuild the snapshot outside the render pass
-        // (render is read-only under the skip-tick contract). try_read so
-        // a write-saturated capture skips the refresh, not the frame.
-        if matches!(self.current_view, View::QualityDashboard)
-            && let Some(ss) = self.stream_store.try_read()
-        {
-            let g = ss.generation();
-            // First snapshot immediately; churn refreshes at the floor.
-            let force = self.dashboard_snapshot.is_none();
-            let stale = self.dashboard_generation != Some(g);
-            if force || (stale && self.dashboard_floor.ready()) {
-                let snap =
-                    dashboard::DashboardSnapshot::from_streams(&ss, self.declared_one_way_delay_ms);
-                self.dashboard_selected = self
-                    .dashboard_selected
-                    .min(snap.rows.len().saturating_sub(1));
-                self.dashboard_snapshot = Some(snap);
-                self.dashboard_generation = Some(g);
-                self.dashboard_floor.mark();
-            }
-        }
+        self.sync_dashboard();
 
-        let Some(store) = self.dialog_store.try_read() else {
+        // A handle of its own, so the read guard borrows it rather than
+        // `self` and every cache below can be written while it is held.
+        let dialog_store = Arc::clone(&self.dialog_store);
+        let Some(store) = dialog_store.try_read() else {
             return;
         };
         self.cached_dialog_count = store.len();
 
+        self.sync_displayed_dialogs(&store);
+        self.cached_displayed_count = self.displayed.ids.len();
+        if self.current_view == View::CallList {
+            self.autoscroll_call_list();
+        }
+        self.sync_stream_list(&store);
+        self.sync_text_views(&store);
+        self.sync_ladder(&store);
+    }
+
+    /// Quality dashboard: rebuild the snapshot outside the render pass
+    /// (render is read-only under the skip-tick contract). try_read so
+    /// a write-saturated capture skips the refresh, not the frame.
+    fn sync_dashboard(&mut self) {
+        if !matches!(self.current_view, View::QualityDashboard) {
+            return;
+        }
+        let Some(ss) = self.stream_store.try_read() else {
+            return;
+        };
+        let g = ss.generation();
+        // First snapshot immediately; churn refreshes at the floor.
+        let force = self.dashboard_snapshot.is_none();
+        let stale = self.dashboard_generation != Some(g);
+        if force || (stale && self.dashboard_floor.ready()) {
+            let snap =
+                dashboard::DashboardSnapshot::from_streams(&ss, self.declared_one_way_delay_ms);
+            self.dashboard_selected = self
+                .dashboard_selected
+                .min(snap.rows.len().saturating_sub(1));
+            self.dashboard_snapshot = Some(snap);
+            self.dashboard_generation = Some(g);
+            self.dashboard_floor.mark();
+        }
+    }
+
+    /// The displayed dialog list (filter + search + sort), rebuilt when a
+    /// user input changed, or at the churn floor when only the store did.
+    fn sync_displayed_dialogs(&mut self, store: &DialogStore) {
         let inputs_fresh = self.displayed.key.as_ref().is_some_and(|k| {
             k.filter_text == self.active_filter_text
                 && k.query == self.search_query
@@ -1185,128 +1207,142 @@ impl App {
         // A changed user input (filter/search/sort) always rebuilds now.
         let churn_floored = inputs_fresh && !self.displayed.floor.ready();
         let fresh = inputs_fresh && data_fresh;
-        if !fresh && !churn_floored {
-            self.displayed.ids = call_list::displayed_dialogs(
-                &store,
-                self.active_filter.as_ref(),
-                self.active_time_after,
-                self.active_time_before,
-                &self.search_query,
-                self.call_list.sort_column(),
-                self.call_list.sort_ascending(),
-            )
-            .iter()
-            .map(|d| d.call_id.clone())
-            .collect();
-            self.displayed.key = Some(DisplayedKey {
-                generation: store.generation(),
-                filter_text: self.active_filter_text.clone(),
-                query: self.search_query.clone(),
-                sort_column: self.call_list.sort_column(),
-                sort_ascending: self.call_list.sort_ascending(),
-            });
-            self.displayed.floor.mark();
+        if fresh || churn_floored {
+            return;
         }
-        self.cached_displayed_count = self.displayed.ids.len();
+        self.displayed.ids = call_list::displayed_dialogs(
+            store,
+            self.active_filter.as_ref(),
+            self.active_time_after,
+            self.active_time_before,
+            &self.search_query,
+            self.call_list.sort_column(),
+            self.call_list.sort_ascending(),
+        )
+        .iter()
+        .map(|d| d.call_id.clone())
+        .collect();
+        self.displayed.key = Some(DisplayedKey {
+            generation: store.generation(),
+            filter_text: self.active_filter_text.clone(),
+            query: self.search_query.clone(),
+            sort_column: self.call_list.sort_column(),
+            sort_ascending: self.call_list.sort_ascending(),
+        });
+        self.displayed.floor.mark();
+    }
 
-        // Autoscroll: sticky-bottom. When enabled and the selection already
-        // sits on the last row, newly arrived dialogs pull it to the new
-        // bottom; a selection elsewhere is never yanked.
-        if self.current_view == View::CallList {
-            let displayed_len = self.displayed.ids.len();
-            // A narrowed filter/search (or eviction) can strand the
-            // selection past the new end; pull it back onto a real row.
-            self.call_list.clamp_to(displayed_len);
-            if self.call_list.autoscroll
-                && self.last_rendered_dialog_rows > 0
-                && displayed_len > self.last_rendered_dialog_rows
-                && self.call_list.selected() + 1 >= self.last_rendered_dialog_rows
-            {
-                self.call_list.move_to_bottom(displayed_len);
-            }
-            self.last_rendered_dialog_rows = displayed_len;
-        }
-
-        // Stream-list rows (search + filter): derived here at most once
-        // per churn floor. The render and every navigation clamp
-        // previously re-filtered the whole stream store — under a
-        // BLOCKING read — on each keypress.
-        if self.current_view == View::StreamList
-            && let Some(ss) = self.stream_store.try_read()
+    /// Autoscroll: sticky-bottom. When enabled and the selection already
+    /// sits on the last row, newly arrived dialogs pull it to the new
+    /// bottom; a selection elsewhere is never yanked.
+    fn autoscroll_call_list(&mut self) {
+        let displayed_len = self.displayed.ids.len();
+        // A narrowed filter/search (or eviction) can strand the
+        // selection past the new end; pull it back onto a real row.
+        self.call_list.clamp_to(displayed_len);
+        if self.call_list.autoscroll
+            && self.last_rendered_dialog_rows > 0
+            && displayed_len > self.last_rendered_dialog_rows
+            && self.call_list.selected() + 1 >= self.last_rendered_dialog_rows
         {
-            // The display filter matches through the associated dialog,
-            // so dialog churn reshapes the list only when a filter is on.
-            let dialog_generation = self.active_filter.as_ref().map(|_| store.generation());
-            let inputs_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
-                k.filter_text == self.active_filter_text && k.query == self.search_query
-            });
-            let data_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
-                k.stream_generation == ss.generation() && k.dialog_generation == dialog_generation
-            });
-            let churn_floored = inputs_fresh && !self.stream_displayed.floor.ready();
-            let fresh = inputs_fresh && data_fresh;
-            if !fresh && !churn_floored {
-                self.stream_displayed.keys = stream_list::displayed_streams(
-                    ss.iter(),
-                    Some(&store),
-                    self.active_filter.as_ref(),
-                    &self.search_query,
-                    crate::rtp::quality::MosDelay::of_run(self.declared_one_way_delay_ms, &ss),
-                )
-                .iter()
-                .map(|s| s.key.clone())
-                .collect();
-                self.stream_displayed.key = Some(StreamDisplayedKey {
-                    stream_generation: ss.generation(),
-                    dialog_generation,
-                    filter_text: self.active_filter_text.clone(),
-                    query: self.search_query.clone(),
-                });
-                self.stream_displayed.floor.mark();
-            }
+            self.call_list.move_to_bottom(displayed_len);
         }
+        self.last_rendered_dialog_rows = displayed_len;
+    }
 
+    /// Stream-list rows (search + filter): derived here at most once
+    /// per churn floor. The render and every navigation clamp
+    /// previously re-filtered the whole stream store — under a
+    /// BLOCKING read — on each keypress.
+    fn sync_stream_list(&mut self, store: &DialogStore) {
+        if self.current_view != View::StreamList {
+            return;
+        }
+        let Some(ss) = self.stream_store.try_read() else {
+            return;
+        };
+        // The display filter matches through the associated dialog,
+        // so dialog churn reshapes the list only when a filter is on.
+        let dialog_generation = self.active_filter.as_ref().map(|_| store.generation());
+        let inputs_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
+            k.filter_text == self.active_filter_text && k.query == self.search_query
+        });
+        let data_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
+            k.stream_generation == ss.generation() && k.dialog_generation == dialog_generation
+        });
+        let churn_floored = inputs_fresh && !self.stream_displayed.floor.ready();
+        let fresh = inputs_fresh && data_fresh;
+        if fresh || churn_floored {
+            return;
+        }
+        self.stream_displayed.keys = stream_list::displayed_streams(
+            ss.iter(),
+            Some(store),
+            self.active_filter.as_ref(),
+            &self.search_query,
+            crate::rtp::quality::MosDelay::of_run(self.declared_one_way_delay_ms, &ss),
+        )
+        .iter()
+        .map(|s| s.key.clone())
+        .collect();
+        self.stream_displayed.key = Some(StreamDisplayedKey {
+            stream_generation: ss.generation(),
+            dialog_generation,
+            filter_text: self.active_filter_text.clone(),
+            query: self.search_query.clone(),
+        });
+        self.stream_displayed.floor.mark();
+    }
+
+    /// The pre-rendered text of the full-store aggregate views, each cached
+    /// across ticks and keyed on the store generations it reads.
+    fn sync_text_views(&mut self, store: &DialogStore) {
         // Statistics text: a full-store aggregation, previously recomputed
         // on every frame while the view was open.
         if self.current_view == View::Statistics
             && let Some(ss) = self.stream_store.try_read()
         {
-            let key = (store.generation(), ss.generation());
-            let force = self.stats.key.is_none();
-            let stale = self.stats.key != Some(key);
-            if force || (stale && self.stats.floor.ready()) {
-                self.stats.text = render::statistics_text(&store, &ss);
-                self.stats.key = Some(key);
-                self.stats.floor.mark();
-            }
+            let c = &mut self.stats;
+            refresh_text(
+                TextCacheParts {
+                    key: &mut c.key,
+                    text: &mut c.text,
+                    floor: &mut c.floor,
+                },
+                (store.generation(), ss.generation()),
+                || render::statistics_text(store, &ss),
+            );
         }
 
         // Talkers ranking: a full-store aggregation like the statistics text,
         // and cached for the same reason. Dialog-derived only, so it needs no
         // stream store and keys on the dialog generation alone.
         if self.current_view == View::Talkers {
-            let key = store.generation();
-            let force = self.talkers.key.is_none();
-            let stale = self.talkers.key != Some(key);
-            if force || (stale && self.talkers.floor.ready()) {
-                self.talkers.text = render::talkers_text(&store);
-                self.talkers.key = Some(key);
-                self.talkers.floor.mark();
-            }
+            let c = &mut self.talkers;
+            refresh_text(
+                TextCacheParts {
+                    key: &mut c.key,
+                    text: &mut c.text,
+                    floor: &mut c.floor,
+                },
+                store.generation(),
+                || render::talkers_text(store),
+            );
         }
 
         // Call-volume histogram: a full-store bucketing like the talkers
         // ranking — dialog-derived, so it keys on the dialog generation alone.
         if self.current_view == View::CallVolume {
-            let key = store.generation();
-            let force = self.call_volume.key.is_none();
-            let stale = self.call_volume.key != Some(key);
-            if force || (stale && self.call_volume.floor.ready()) {
-                self.call_volume.text =
-                    render::volume_histogram_text(&store, render::VOLUME_BUCKET_SECONDS);
-                self.call_volume.key = Some(key);
-                self.call_volume.floor.mark();
-            }
+            let c = &mut self.call_volume;
+            refresh_text(
+                TextCacheParts {
+                    key: &mut c.key,
+                    text: &mut c.text,
+                    floor: &mut c.floor,
+                },
+                store.generation(),
+                || render::volume_histogram_text(store, render::VOLUME_BUCKET_SECONDS),
+            );
         }
 
         // Carrier metrics table: a full-store aggregation that also grounds MOS
@@ -1314,272 +1350,291 @@ impl App {
         if self.current_view == View::CarrierMetrics
             && let Some(ss) = self.stream_store.try_read()
         {
-            let key = (store.generation(), ss.generation());
-            let force = self.carrier_metrics.key.is_none();
-            let stale = self.carrier_metrics.key != Some(key);
-            if force || (stale && self.carrier_metrics.floor.ready()) {
-                self.carrier_metrics.text = render::carrier_metrics_text(&store, &ss);
-                self.carrier_metrics.key = Some(key);
-                self.carrier_metrics.floor.mark();
-            }
+            let c = &mut self.carrier_metrics;
+            refresh_text(
+                TextCacheParts {
+                    key: &mut c.key,
+                    text: &mut c.text,
+                    floor: &mut c.floor,
+                },
+                (store.generation(), ss.generation()),
+                || render::carrier_metrics_text(store, &ss),
+            );
         }
 
-        // Endpoint rollup: a full-store scan like the carrier metrics, keyed on
-        // both generations PLUS the endpoint identity, because the view is
-        // parameterized. The address is lifted out of the view first so the
-        // match borrow is released before `self.endpoint` is written.
-        let endpoint_ip = if let View::EndpointRollup { ref ip } = self.current_view {
-            Some(ip.clone())
-        } else {
-            None
+        self.sync_endpoint(store);
+    }
+
+    /// Endpoint rollup: a full-store scan like the carrier metrics, keyed on
+    /// both generations PLUS the endpoint identity, because the view is
+    /// parameterized.
+    fn sync_endpoint(&mut self, store: &DialogStore) {
+        // The address is lifted out of the view first so the match borrow is
+        // released before `self.endpoint` is written.
+        let View::EndpointRollup { ref ip } = self.current_view else {
+            return;
         };
-        if let Some(ip) = endpoint_ip
-            && let Some(ss) = self.stream_store.try_read()
-        {
-            let key = (ip.clone(), store.generation(), ss.generation());
-            let force = self.endpoint.key.is_none();
-            let stale = self.endpoint.key.as_ref() != Some(&key);
-            if force || (stale && self.endpoint.floor.ready()) {
-                self.endpoint.text = match ip.parse::<std::net::IpAddr>() {
-                    Ok(addr) => render::endpoint_text(
-                        &store,
-                        &ss,
-                        &crate::sip::endpoint::Selector::Ip(addr),
-                    ),
-                    Err(_) => format!("Endpoint {ip}\n\n  (not a valid address)\n"),
-                };
-                self.endpoint.key = Some(key);
-                self.endpoint.floor.mark();
+        let ip = ip.clone();
+        let Some(ss) = self.stream_store.try_read() else {
+            return;
+        };
+        let key = (ip.clone(), store.generation(), ss.generation());
+        let c = &mut self.endpoint;
+        refresh_text(
+            TextCacheParts {
+                key: &mut c.key,
+                text: &mut c.text,
+                floor: &mut c.floor,
+            },
+            key,
+            || match ip.parse::<std::net::IpAddr>() {
+                Ok(addr) => {
+                    render::endpoint_text(store, &ss, &crate::sip::endpoint::Selector::Ip(addr))
+                }
+                Err(_) => format!("Endpoint {ip}\n\n  (not a valid address)\n"),
+            },
+        );
+    }
+
+    /// CallFlow ladder cache (WS4.3c): the theme-free layout half is
+    /// derived at most once here, keyed on everything that shapes it
+    /// ([`LadderKey`]); the render pass only re-styles the cached rows.
+    fn sync_ladder(&mut self, store: &DialogStore) {
+        let View::CallFlow(ref view_cid) = self.current_view else {
+            return;
+        };
+        let cid = view_cid.clone();
+
+        let stream_generation = self.sync_ladder_segments(&cid);
+        let key = LadderKey {
+            call_id: cid.clone(),
+            source: self.ladder_source(store, &cid),
+            transaction_filter: self.flow.transaction_filter.clone(),
+            sdp_mode: self.sdp_display_mode,
+            ts_mode: self.timestamp_mode,
+            show_rtp: self.flow.show_rtp,
+            name_mode: self.name_mode,
+            resolver_generation: self.resolver.generation(),
+            stream_generation,
+            fold_expanded: self.flow.fold_expanded.clone(),
+            merged_calls: self.flow.merged_calls.clone(),
+        };
+        if self.flow.ladder.key.as_ref() == Some(&key) {
+            return;
+        }
+        // Provenance travels with the layout: cleared here, filled
+        // by the merged/extended branches that interleave dialogs.
+        self.flow.ladder.index_map.clear();
+        let (participants, rows) = if !self.flow.merged_calls.is_empty() {
+            self.merged_ladder(store)
+        } else if self.flow.extended {
+            self.extended_ladder(store, &cid)
+        } else {
+            self.dialog_ladder(store, &cid)
+        };
+        self.flow.ladder.participants = participants;
+        self.flow.ladder.rows = rows;
+        self.flow.ladder.key = Some(key);
+        self.flow.ladder.churn.mark();
+    }
+
+    /// RTP codec segments feed the layout only in the plain view
+    /// with RTP bars on; recompute them only when the stream store
+    /// structurally changed (on contention keep the previous ones).
+    ///
+    /// Returns the stream generation the cached segments belong to, for the
+    /// ladder key; `None` when the view draws no RTP bars.
+    fn sync_ladder_segments(&mut self, cid: &str) -> Option<u64> {
+        if !self.flow.show_rtp || self.flow.extended {
+            return None;
+        }
+        let Some(ss) = self.stream_store.try_read() else {
+            // Contended: reuse the segments (and their generation)
+            // the cache already holds so the ladder key still hits.
+            return self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g);
+        };
+        let g = ss.generation();
+        let same_cid = self
+            .flow
+            .ladder
+            .segs_key
+            .as_ref()
+            .is_some_and(|(c, _)| c == cid);
+        let same = self
+            .flow
+            .ladder
+            .segs_key
+            .as_ref()
+            .is_some_and(|(c, gg)| c == cid && *gg == g);
+        // Same dialog + stream churn only: adopt the new
+        // generation at the churn floor. A different dialog
+        // (user navigation) refreshes immediately.
+        if !same && (!same_cid || self.flow.ladder.churn.ready()) {
+            self.flow.ladder.rtp_segs = Self::rtp_codec_segments_from(&ss, cid);
+            self.flow.ladder.segs_key = Some((cid.to_string(), g));
+            self.flow.ladder.churn.mark();
+        }
+        self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g)
+    }
+
+    /// What the ladder for `cid` is derived from, for the ladder key.
+    fn ladder_source(&self, store: &DialogStore, cid: &str) -> LadderSource {
+        if self.flow.extended || !self.flow.merged_calls.is_empty() {
+            // Extended legs / merged multi-selection can span the whole
+            // store, so store changes must re-derive — but a busy store
+            // bumps its generation every tick, which forced a full
+            // multi-leg relayout per tick. Adopt a new generation at
+            // most once per churn floor; between adoptions the held
+            // generation keeps the ladder key (and layout) stable.
+            let g_now = store.generation();
+            let held = match &self.flow.ladder.key {
+                Some(k) if k.call_id == cid => match &k.source {
+                    LadderSource::ExtendedStore(g) => Some(*g),
+                    LadderSource::Dialog(..) => None,
+                },
+                _ => None,
+            };
+            let g = match held {
+                Some(h) if h != g_now && !self.flow.ladder.churn.ready() => h,
+                _ => g_now,
+            };
+            return LadderSource::ExtendedStore(g);
+        }
+        match store.get(cid) {
+            Some(d) => LadderSource::Dialog(d.messages.len(), d.updated_at),
+            // Dialog gone (evicted/cleared): an empty layout still
+            // gets cached so this doesn't rescan every tick.
+            None => LadderSource::Dialog(0, chrono::DateTime::<chrono::Utc>::MIN_UTC),
+        }
+    }
+
+    /// Merged multi-selection flow: every checked dialog's
+    /// messages, chronological, with per-row provenance so
+    /// drill-down opens the row's OWN dialog.
+    fn merged_ladder(
+        &mut self,
+        store: &DialogStore,
+    ) -> (Vec<call_flow::Participant>, Vec<call_flow::LayoutRow>) {
+        let mut tagged: Vec<(&crate::sip::SipMessage, (String, usize))> = Vec::new();
+        for mcid in &self.flow.merged_calls {
+            if let Some(d) = store.get(mcid) {
+                tagged.extend(
+                    d.messages
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| (m, (mcid.clone(), i))),
+                );
             }
         }
+        self.interleaved_ladder(tagged)
+    }
 
-        // CallFlow ladder cache (WS4.3c): the theme-free layout half is
-        // derived at most once here, keyed on everything that shapes it
-        // ([`LadderKey`]); the render pass only re-styles the cached rows.
-        if let View::CallFlow(ref view_cid) = self.current_view {
-            let cid = view_cid.clone();
-
-            // RTP codec segments feed the layout only in the plain view
-            // with RTP bars on; recompute them only when the stream store
-            // structurally changed (on contention keep the previous ones).
-            let mut stream_generation = None;
-            if self.flow.show_rtp && !self.flow.extended {
-                if let Some(ss) = self.stream_store.try_read() {
-                    let g = ss.generation();
-                    let same_cid = self
-                        .flow
-                        .ladder
-                        .segs_key
-                        .as_ref()
-                        .is_some_and(|(c, _)| c == &cid);
-                    let same = self
-                        .flow
-                        .ladder
-                        .segs_key
-                        .as_ref()
-                        .is_some_and(|(c, gg)| c == &cid && *gg == g);
-                    // Same dialog + stream churn only: adopt the new
-                    // generation at the churn floor. A different dialog
-                    // (user navigation) refreshes immediately.
-                    if !same && (!same_cid || self.flow.ladder.churn.ready()) {
-                        self.flow.ladder.rtp_segs = Self::rtp_codec_segments_from(&ss, &cid);
-                        self.flow.ladder.segs_key = Some((cid.clone(), g));
-                        self.flow.ladder.churn.mark();
-                    }
-                    stream_generation = self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g);
-                } else {
-                    // Contended: reuse the segments (and their generation)
-                    // the cache already holds so the ladder key still hits.
-                    stream_generation = self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g);
-                }
-            }
-
-            let source = if self.flow.extended || !self.flow.merged_calls.is_empty() {
-                // Extended legs / merged multi-selection can span the whole
-                // store, so store changes must re-derive — but a busy store
-                // bumps its generation every tick, which forced a full
-                // multi-leg relayout per tick. Adopt a new generation at
-                // most once per churn floor; between adoptions the held
-                // generation keeps the ladder key (and layout) stable.
-                let g_now = store.generation();
-                let held = match &self.flow.ladder.key {
-                    Some(k) if k.call_id == cid => match &k.source {
-                        LadderSource::ExtendedStore(g) => Some(*g),
-                        LadderSource::Dialog(..) => None,
-                    },
-                    _ => None,
-                };
-                let g = match held {
-                    Some(h) if h != g_now && !self.flow.ladder.churn.ready() => h,
-                    _ => g_now,
-                };
-                LadderSource::ExtendedStore(g)
-            } else {
-                match store.get(&cid) {
-                    Some(d) => LadderSource::Dialog(d.messages.len(), d.updated_at),
-                    // Dialog gone (evicted/cleared): an empty layout still
-                    // gets cached so this doesn't rescan every tick.
-                    None => LadderSource::Dialog(0, chrono::DateTime::<chrono::Utc>::MIN_UTC),
-                }
-            };
-            let key = LadderKey {
-                call_id: cid.clone(),
-                source,
-                transaction_filter: self.flow.transaction_filter.clone(),
-                sdp_mode: self.sdp_display_mode,
-                ts_mode: self.timestamp_mode,
-                show_rtp: self.flow.show_rtp,
-                name_mode: self.name_mode,
-                resolver_generation: self.resolver.generation(),
-                stream_generation,
-                fold_expanded: self.flow.fold_expanded.clone(),
-                merged_calls: self.flow.merged_calls.clone(),
-            };
-            if self.flow.ladder.key.as_ref() != Some(&key) {
-                // Provenance travels with the layout: cleared here, filled
-                // by the merged/extended branches that interleave dialogs.
-                self.flow.ladder.index_map.clear();
-                let (participants, rows) = if !self.flow.merged_calls.is_empty() {
-                    // Merged multi-selection flow: every checked dialog's
-                    // messages, chronological, with per-row provenance so
-                    // drill-down opens the row's OWN dialog.
-                    let mut tagged: Vec<(&crate::sip::SipMessage, (String, usize))> = Vec::new();
-                    for mcid in &self.flow.merged_calls {
-                        if let Some(d) = store.get(mcid) {
-                            tagged.extend(
-                                d.messages
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, m)| (m, (mcid.clone(), i))),
-                            );
-                        }
-                    }
-                    // Sort references (the timestamp key is Copy) and clone
-                    // each message once AFTER the sort, mirroring the extended
-                    // branch — the sort no longer shuffles full SipMessages.
-                    tagged.sort_by_key(|(m, _)| m.timestamp);
-                    let (owned, index_map): (Vec<crate::sip::SipMessage>, Vec<(String, usize)>) =
-                        tagged.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
-                    self.flow.ladder.index_map = index_map;
-                    if owned.is_empty() {
-                        (Vec::new(), Vec::new())
-                    } else {
-                        let lopts = call_flow::LayoutOptions {
-                            sdp_mode: self.sdp_display_mode,
-                            ts_mode: self.timestamp_mode,
-                            // Merged view spans dialogs: no RTP bars (the
-                            // cached segments belong to one dialog) and no
-                            // single-dialog PDD note.
-                            show_rtp: false,
-                            resolver: self.resolver.as_ref(),
-                            name_mode: self.name_mode,
-                            rtp_segments: &[],
-                        };
-                        call_flow::layout(
-                            &owned,
-                            owned[0].timestamp,
-                            None,
-                            &lopts,
-                            &self.flow.fold_expanded,
-                        )
-                    }
-                } else if self.flow.extended {
-                    // Extended: merge all correlated legs (only on a miss).
-                    match store.get(&cid) {
-                        Some(d) => {
-                            let mut all: Vec<(&crate::sip::SipMessage, (String, usize))> = d
-                                .messages
-                                .iter()
-                                .enumerate()
-                                .map(|(i, m)| (m, (cid.clone(), i)))
-                                .collect();
-                            let correlated = store.find_correlated(&cid);
-                            for leg in &correlated {
-                                all.extend(
-                                    leg.messages
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, m)| (m, (leg.call_id.clone(), i))),
-                                );
-                            }
-                            all.sort_by_key(|(m, _)| m.timestamp);
-                            let (owned, index_map): (
-                                Vec<crate::sip::SipMessage>,
-                                Vec<(String, usize)>,
-                            ) = all.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
-                            self.flow.ladder.index_map = index_map;
-                            if owned.is_empty() {
-                                (Vec::new(), Vec::new())
-                            } else {
-                                let lopts = call_flow::LayoutOptions {
-                                    sdp_mode: self.sdp_display_mode,
-                                    ts_mode: self.timestamp_mode,
-                                    // Extended/combined view draws no RTP bars.
-                                    show_rtp: false,
-                                    resolver: self.resolver.as_ref(),
-                                    name_mode: self.name_mode,
-                                    rtp_segments: &[],
-                                };
-                                call_flow::layout(
-                                    &owned,
-                                    owned[0].timestamp,
-                                    None,
-                                    &lopts,
-                                    &self.flow.fold_expanded,
-                                )
-                            }
-                        }
-                        None => (Vec::new(), Vec::new()),
-                    }
-                } else {
-                    match store.get(&cid) {
-                        Some(d) => {
-                            // Transaction filter (R5a): when active, show only
-                            // the anchored transaction's messages. A stale key
-                            // that matches nothing falls back to the dialog.
-                            let filtered: Option<Vec<crate::sip::SipMessage>> =
-                                self.flow.transaction_filter.as_ref().and_then(|key| {
-                                    let v: Vec<crate::sip::SipMessage> = d
-                                        .messages
-                                        .iter()
-                                        .filter(|m| {
-                                            call_flow::transaction_key(m).as_ref() == Some(key)
-                                        })
-                                        .cloned()
-                                        .collect();
-                                    (!v.is_empty()).then_some(v)
-                                });
-                            let msgs_ref: &[crate::sip::SipMessage] =
-                                filtered.as_deref().unwrap_or(&d.messages);
-                            if msgs_ref.is_empty() {
-                                (Vec::new(), Vec::new())
-                            } else {
-                                let lopts = call_flow::LayoutOptions {
-                                    sdp_mode: self.sdp_display_mode,
-                                    ts_mode: self.timestamp_mode,
-                                    show_rtp: self.flow.show_rtp,
-                                    resolver: self.resolver.as_ref(),
-                                    name_mode: self.name_mode,
-                                    rtp_segments: &self.flow.ladder.rtp_segs,
-                                };
-                                call_flow::layout(
-                                    msgs_ref,
-                                    msgs_ref[0].timestamp,
-                                    d.timing.pdd_ms(),
-                                    &lopts,
-                                    &self.flow.fold_expanded,
-                                )
-                            }
-                        }
-                        None => (Vec::new(), Vec::new()),
-                    }
-                };
-                self.flow.ladder.participants = participants;
-                self.flow.ladder.rows = rows;
-                self.flow.ladder.key = Some(key);
-                self.flow.ladder.churn.mark();
-            }
+    /// Extended: merge all correlated legs (only on a miss).
+    fn extended_ladder(
+        &mut self,
+        store: &DialogStore,
+        cid: &str,
+    ) -> (Vec<call_flow::Participant>, Vec<call_flow::LayoutRow>) {
+        let Some(d) = store.get(cid) else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut all: Vec<(&crate::sip::SipMessage, (String, usize))> = d
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m, (cid.to_string(), i)))
+            .collect();
+        let correlated = store.find_correlated(cid);
+        for leg in &correlated {
+            all.extend(
+                leg.messages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (m, (leg.call_id.clone(), i))),
+            );
         }
+        self.interleaved_ladder(all)
+    }
+
+    /// Lay out messages drawn from several dialogs, each tagged with the
+    /// dialog and index it came from, in time order, and keep the tags as
+    /// the ladder's row provenance.
+    ///
+    /// Draws no RTP bars and no PDD note: the view spans dialogs, the cached
+    /// segments belong to one dialog, and a post-dial delay belongs to one.
+    fn interleaved_ladder(
+        &mut self,
+        mut tagged: Vec<(&crate::sip::SipMessage, (String, usize))>,
+    ) -> (Vec<call_flow::Participant>, Vec<call_flow::LayoutRow>) {
+        // Sort references (the timestamp key is Copy) and clone
+        // each message once AFTER the sort, so the sort never shuffles
+        // full SipMessages.
+        tagged.sort_by_key(|(m, _)| m.timestamp);
+        let (owned, index_map): (Vec<crate::sip::SipMessage>, Vec<(String, usize)>) =
+            tagged.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
+        self.flow.ladder.index_map = index_map;
+        if owned.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let lopts = call_flow::LayoutOptions {
+            sdp_mode: self.sdp_display_mode,
+            ts_mode: self.timestamp_mode,
+            show_rtp: false,
+            resolver: self.resolver.as_ref(),
+            name_mode: self.name_mode,
+            rtp_segments: &[],
+        };
+        call_flow::layout(
+            &owned,
+            owned[0].timestamp,
+            None,
+            &lopts,
+            &self.flow.fold_expanded,
+        )
+    }
+
+    /// The single dialog's ladder, narrowed to the anchored transaction
+    /// when a transaction filter is active.
+    fn dialog_ladder(
+        &self,
+        store: &DialogStore,
+        cid: &str,
+    ) -> (Vec<call_flow::Participant>, Vec<call_flow::LayoutRow>) {
+        let Some(d) = store.get(cid) else {
+            return (Vec::new(), Vec::new());
+        };
+        // Transaction filter (R5a): when active, show only
+        // the anchored transaction's messages. A stale key
+        // that matches nothing falls back to the dialog.
+        let filtered: Option<Vec<crate::sip::SipMessage>> =
+            self.flow.transaction_filter.as_ref().and_then(|key| {
+                let v: Vec<crate::sip::SipMessage> = d
+                    .messages
+                    .iter()
+                    .filter(|m| call_flow::transaction_key(m).as_ref() == Some(key))
+                    .cloned()
+                    .collect();
+                (!v.is_empty()).then_some(v)
+            });
+        let msgs_ref: &[crate::sip::SipMessage] = filtered.as_deref().unwrap_or(&d.messages);
+        if msgs_ref.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let lopts = call_flow::LayoutOptions {
+            sdp_mode: self.sdp_display_mode,
+            ts_mode: self.timestamp_mode,
+            show_rtp: self.flow.show_rtp,
+            resolver: self.resolver.as_ref(),
+            name_mode: self.name_mode,
+            rtp_segments: &self.flow.ladder.rtp_segs,
+        };
+        call_flow::layout(
+            msgs_ref,
+            msgs_ref[0].timestamp,
+            d.timing.pdd_ms(),
+            &lopts,
+            &self.flow.fold_expanded,
+        )
     }
 
     /// Write back the geometry- and content-dependent values a render pass
@@ -2114,6 +2169,32 @@ pub(crate) fn count_noun(n: usize, singular: &str, plural: &str) -> String {
 /// Unit tests for the App event-loop contracts: cache churn floors,
 /// contended-store render ticks, multi-selection flows, filter/search
 /// visibility, and the display-mode enum cycles.
+/// The three fields every cached aggregate-view text holds.
+struct TextCacheParts<'a, K> {
+    /// What the text was derived from; `None` before the first build.
+    key: &'a mut Option<K>,
+    /// The cached text.
+    text: &'a mut String,
+    /// Floors generation-driven rebuilds.
+    floor: &'a mut ChurnFloor,
+}
+
+/// Rebuild a cached view text from `build` when nothing is cached yet, or
+/// when `now` differs from the cached key and the churn floor allows it.
+fn refresh_text<K: PartialEq>(
+    cache: TextCacheParts<'_, K>,
+    now: K,
+    build: impl FnOnce() -> String,
+) {
+    let force = cache.key.is_none();
+    let stale = cache.key.as_ref() != Some(&now);
+    if force || (stale && cache.floor.ready()) {
+        *cache.text = build();
+        *cache.key = Some(now);
+        cache.floor.mark();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::render::fkey_bar_items;
@@ -2731,6 +2812,78 @@ mod tests {
             "floor elapsed: text must pick up the new dialog: {}",
             app.stats.text
         );
+    }
+
+    /// A merged multi-selection ladder interleaves its dialogs in time
+    /// order, whatever order they were checked in, and keeps each row's
+    /// provenance in step with it.
+    #[test]
+    fn a_merged_ladder_is_in_time_order_with_matching_provenance() {
+        use controllers::test_support::{base_ts, make_invite};
+        let later = base_ts() + chrono::TimeDelta::seconds(10);
+        let mut app = App::with_processed_messages(vec![
+            make_invite("m-late@test", "1001", "1002", later),
+            make_invite("m-early@test", "1003", "1004", base_ts()),
+        ]);
+        app.current_view = View::CallFlow("m-late@test".to_string());
+        app.flow.merged_calls = vec!["m-late@test".to_string(), "m-early@test".to_string()];
+        app.sync_caches();
+        let cids: Vec<&str> = app
+            .flow
+            .ladder
+            .index_map
+            .iter()
+            .map(|(c, _)| c.as_str())
+            .collect();
+        assert_eq!(cids, vec!["m-early@test", "m-late@test"]);
+    }
+
+    /// RTP codec segments feed only a plain ladder with RTP bars on: with the
+    /// bars off, none are fetched and the ladder key carries no stream
+    /// generation, so stream churn cannot force a relayout.
+    #[test]
+    fn a_ladder_without_rtp_bars_ignores_the_stream_store() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "nobars@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        app.current_view = View::CallFlow("nobars@test".to_string());
+        app.flow.show_rtp = false;
+        app.sync_caches();
+        assert_eq!(app.flow.ladder.segs_key, None);
+        assert_eq!(
+            app.flow.ladder.key.as_ref().map(|k| k.stream_generation),
+            Some(None)
+        );
+    }
+
+    /// A single dialog's ladder carries the dialog's post-dial delay on its
+    /// first 180.
+    #[test]
+    fn a_dialog_ladder_annotates_its_post_dial_delay() {
+        use controllers::test_support::{base_ts, make_invite, make_response};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("pdd@test", "1001", "1002", base_ts()),
+            make_response(
+                "180 Ringing",
+                "pdd@test",
+                "INVITE",
+                base_ts() + chrono::TimeDelta::milliseconds(250),
+            ),
+        ]);
+        app.current_view = View::CallFlow("pdd@test".to_string());
+        app.sync_caches();
+        let notes: Vec<&str> = app
+            .flow
+            .ladder
+            .rows
+            .iter()
+            .filter_map(|r| r.pdd_note.as_deref())
+            .collect();
+        assert_eq!(notes, vec!["  PDD: 250ms"]);
     }
 
     /// Extended/merged call-flow: a busy store must not force a full

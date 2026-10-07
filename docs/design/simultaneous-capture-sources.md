@@ -78,7 +78,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:1796`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1796)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:2252`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2252)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:356`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L356)), `capture_hep` ([`src/capture/hep.rs:2521`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2521)), the
+([`src/capture/file.rs:383`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L383)), `capture_hep` ([`src/capture/hep.rs:2835`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2835)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:631`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L631)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -151,7 +151,7 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 `extract_sdp_links` ([`src/pipeline.rs:1717`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1717)) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:2636`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2636)) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:2757`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2757)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1251`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1251)), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:1339`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1339)). That function does two things:
 
@@ -258,13 +258,13 @@ compliant proxy keeps an unanswered INVITE transaction alive.
 *sender's* clock, read from the `TS_SEC`/`TS_USEC` chunks by `parse_hep_v3`
 ([`src/capture/hep.rs:980`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L980) onward) and carried verbatim into `Packet::timestamp`
 by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)). A live packet's timestamp comes
-from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:1042`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1042)). Two
+from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:1276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1276)). Two
 clocks, no discipline between them. Every figure that subtracts a signaling time
 from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
 Two details soften this and one sharpens it. HEP v2 carries no timestamp at all,
-so `parse_hep_v2` ([`src/capture/hep.rs:1270`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1270)) stamps local receive time, and v3
+so `parse_hep_v2` ([`src/capture/hep.rs:1320`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1320)) stamps local receive time, and v3
 falls back the same way when the chunk pair is unrepresentable — a v2 mirror
 therefore has *one* clock, not two. And when the skew runs the wrong way,
 `elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)) refuses a backwards pair rather than
@@ -416,7 +416,7 @@ blocks at the cap ([`src/capture/channel.rs:289`](https://github.com/NormB/sipna
 on one slot pool with one `CaptureMeter`. A burst on either source blocks the
 other, and the two then fail *differently*: a blocked live reader stops calling
 `pcap_next`, the kernel ring overflows, and libpcap counts it — surfaced by
-`fold_stats` ([`src/capture/live.rs:991`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L991)) and reported at
+`fold_stats` ([`src/capture/live.rs:1225`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1225)) and reported at
 [`src/capture/live.rs:653`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L653). A blocked HEP listener stops calling `recv_from`, the
 kernel UDP receive buffer overflows, and **nothing counts it**, because UDP
 reports nothing to a receiver that was not listening. So the same backpressure
@@ -432,7 +432,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:4196`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4196)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:4925`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4925)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -496,7 +496,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:4196`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4196)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:4925`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4925)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
@@ -846,7 +846,7 @@ Things this design could not settle from the code alone.
   advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
   Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
-  ([`src/capture/hep.rs:836`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L836)) parses protocol type 5 as RTCP, and SRC1 says such a
+  ([`src/capture/hep.rs:886`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L886)) parses protocol type 5 as RTCP, and SRC1 says such a
   report has nothing to attach to. Whether it becomes attachable once the NIC
   supplies the stream depends on whether the HEP path reaches RTCP ingestion at
   all, which this design did not trace.

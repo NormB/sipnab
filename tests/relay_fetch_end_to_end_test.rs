@@ -530,6 +530,116 @@ fn a_silent_relay_is_reported_as_unanswered_by_every_form() -> Result<(), TestEr
     Ok(())
 }
 
+/// Under `--json` each polled reading is one JSON object that says it was
+/// polled and at what interval, the same form the one-shot ask prints.
+#[test]
+fn a_polled_reading_honors_json() -> Result<(), TestError> {
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let relay = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        "statistics" => Answer::Body(statistics.clone()),
+        _ => Answer::Silent,
+    })?;
+    let mut run = Run::start(&relay, &["--json", "--relay-stats-interval", "1"])?;
+    assert!(
+        run.wait_stdout("\"origin\":\"polled\"", 1),
+        "a polled reading must print as JSON:\n{}",
+        run.out.join("\n")
+    );
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    let line = done
+        .stdout
+        .lines()
+        .find(|l| l.contains("\"origin\":\"polled\""))
+        .ok_or_else(|| format!("no polled JSON line:\n{}", done.dump()))?;
+    let value: serde_json::Value = serde_json::from_str(line)
+        .map_err(|e| format!("one JSON object per line: {e:?}\n{line}"))?;
+    assert_eq!(value["interval_secs"], 1, "{line}");
+    Ok(())
+}
+
+/// A media stream nothing in the signaling explains is offered to the
+/// reconciler, which asks the relay again (RE4's second trigger).
+///
+/// The relay holds no call, so the startup snapshot is one `list`; an RTP
+/// stream arriving over the HEP listener with no SDP behind it is an orphan,
+/// and offering it makes the reconciler re-enumerate: a second `list`.
+#[test]
+fn an_unexplained_stream_is_offered_to_the_reconciler() -> Result<(), TestError> {
+    let relay = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let run = Run::start(&relay, &[])?;
+    let port: u16 = run
+        .err
+        .iter()
+        .find_map(|l| l.split("HEP listener started on ").nth(1))
+        .and_then(|rest| rest.trim().rsplit(':').next())
+        .and_then(|p| p.parse().ok())
+        .ok_or("the listener names its port")?;
+
+    let mut rtp = vec![0x80, 0x00, 0x00, 0x01, 0, 0, 0, 160, 0x0a, 0x0b, 0x0c, 0x0d];
+    rtp.extend_from_slice(&[0xff; 160]);
+    let endpoint = sipnab::capture::hep::HepEndpoint {
+        src_addr: "192.0.2.50".parse()?,
+        dst_addr: "192.0.2.60".parse()?,
+        src_port: 40000,
+        dst_port: 40002,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let datagram = sipnab::capture::hep::build_hep_v3(
+        &endpoint,
+        chrono::Utc::now(),
+        sipnab::capture::hep::HepProtocol::Rtp,
+        0,
+        None,
+        &rtp,
+    );
+    let sender = UdpSocket::bind("127.0.0.1:0")?;
+    sender.send_to(&datagram, ("127.0.0.1", port))?;
+
+    let deadline = Instant::now() + WAIT;
+    while relay.asked()?.iter().filter(|v| *v == "list").count() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let asked = relay.asked()?;
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    assert!(
+        asked.iter().filter(|v| *v == "list").count() >= 2,
+        "the orphan stream must reach the reconciler, which asks the relay again: \
+         {asked:?}\n{}",
+        done.dump()
+    );
+    Ok(())
+}
+
+/// A poll whose round trip outlasts the interval says the cadence slipped.
+///
+/// The relay stays silent, so each poll waits out the control timeout (two
+/// seconds), twice the one-second interval. The serial poll loop cannot
+/// stack requests, so the cadence slows; the poller has to say so rather
+/// than leave the operator reading readings further apart than they asked
+/// for with nothing explaining why.
+#[test]
+fn a_poll_slower_than_its_interval_says_the_cadence_slipped() -> Result<(), TestError> {
+    let relay = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let mut run = Run::start(&relay, &["--relay-stats-interval", "1"])?;
+    assert!(
+        run.wait_stderr("longer than the 1s interval; the polling cadence has slipped"),
+        "{}",
+        run.err.join("\n")
+    );
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    Ok(())
+}
+
 /// A cumulative counter that goes down between two polls is flagged as a
 /// probable relay restart, and each reading still prints.
 #[test]

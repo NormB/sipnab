@@ -1609,8 +1609,22 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
     if app.active_popup.is_some() {
         return;
     }
-    match &app.current_view {
-        View::CallList => {
+    match wheel_target(app) {
+        WheelTarget::Text(offset) => {
+            *offset = if down {
+                offset.saturating_add(3)
+            } else {
+                offset.saturating_sub(3)
+            };
+        }
+        WheelTarget::StreamDetail(offset) => {
+            *offset = if down {
+                offset.saturating_add(3)
+            } else {
+                offset.saturating_sub(3)
+            };
+        }
+        WheelTarget::CallList => {
             if down {
                 let count = filtered_dialog_count(app);
                 app.call_list.move_down(count);
@@ -1618,7 +1632,7 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.call_list.move_up();
             }
         }
-        View::QualityDashboard => {
+        WheelTarget::Dashboard => {
             // One wheel step = one row, exactly like Down/Up. Rather than
             // re-implement the row clamp (which the renderer's centering
             // window and the keyboard handler already own), replay the wheel
@@ -1626,7 +1640,7 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
             let code = if down { KeyCode::Down } else { KeyCode::Up };
             dashboard::handle_dashboard_key(app, KeyEvent::new(code, KeyModifiers::NONE));
         }
-        View::StreamList => {
+        WheelTarget::StreamList => {
             if down {
                 // Navigate over the per-tick sync_caches-derived rows, the
                 // same cache the keyboard path uses — the wheel must never
@@ -1637,151 +1651,86 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.stream_list.move_up();
             }
         }
-        View::CallFlow(_) => {
-            if down {
-                let count = app.flow.cached_msg_count;
-                if count > 0 && app.flow.selected < count - 1 {
-                    app.flow.selected += 1;
-                    app.flow.detail_scroll = 0;
-                }
-            } else if app.flow.selected > 0 {
-                app.flow.selected -= 1;
-                app.flow.detail_scroll = 0;
-            }
-        }
+        WheelTarget::CallFlow => wheel_call_flow(app, down),
+        WheelTarget::Fixed => {}
+    }
+}
+
+/// What one wheel step acts on in the current view.
+enum WheelTarget<'a> {
+    /// A free-scrolling text view's offset: a step moves it three rows.
+    Text(&'a mut u16),
+    /// The stream detail view's offset, counted in `usize` rows: a step
+    /// moves it three rows.
+    StreamDetail(&'a mut usize),
+    /// The call list selection.
+    CallList,
+    /// The quality dashboard selection.
+    Dashboard,
+    /// The stream list selection.
+    StreamList,
+    /// The call-flow ladder selection.
+    CallFlow,
+    /// A fixed single-screen view: the wheel does nothing.
+    Fixed,
+}
+
+/// What a wheel step acts on in the current view. Exhaustive over [`View`],
+/// so a new view cannot be added without deciding what the wheel does there.
+fn wheel_target(app: &mut App) -> WheelTarget<'_> {
+    match &app.current_view {
+        View::CallList => WheelTarget::CallList,
+        View::QualityDashboard => WheelTarget::Dashboard,
+        View::StreamList => WheelTarget::StreamList,
+        View::CallFlow(_) => WheelTarget::CallFlow,
         View::RawMessage { .. } | View::CombinedDetail { .. } => {
-            app.raw_msg_scroll = if down {
-                app.raw_msg_scroll.saturating_add(3)
-            } else {
-                app.raw_msg_scroll.saturating_sub(3)
-            };
+            WheelTarget::Text(&mut app.raw_msg_scroll)
         }
-        View::MessageDiff { .. } => {
-            app.diff_scroll = if down {
-                app.diff_scroll.saturating_add(3)
-            } else {
-                app.diff_scroll.saturating_sub(3)
-            };
-        }
-        View::StreamDetail(_) => {
-            app.stream_detail_scroll = if down {
-                app.stream_detail_scroll.saturating_add(3)
-            } else {
-                app.stream_detail_scroll.saturating_sub(3)
-            };
-        }
-        View::Help => {
-            app.help_scroll = if down {
-                app.help_scroll.saturating_add(3)
-            } else {
-                app.help_scroll.saturating_sub(3)
-            };
-        }
-        View::Statistics => {
-            app.stats_scroll = if down {
-                app.stats_scroll.saturating_add(3)
-            } else {
-                app.stats_scroll.saturating_sub(3)
-            };
-        }
-        View::Talkers => {
-            app.talkers_scroll = if down {
-                app.talkers_scroll.saturating_add(3)
-            } else {
-                app.talkers_scroll.saturating_sub(3)
-            };
-        }
-        View::CarrierMetrics => {
-            app.carrier_metrics_scroll = if down {
-                app.carrier_metrics_scroll.saturating_add(3)
-            } else {
-                app.carrier_metrics_scroll.saturating_sub(3)
-            };
-        }
-        View::CompareDialogs { .. } => {
-            app.compare_scroll = if down {
-                app.compare_scroll.saturating_add(3)
-            } else {
-                app.compare_scroll.saturating_sub(3)
-            };
-        }
-        View::EndpointRollup { .. } => {
-            app.endpoint_scroll = if down {
-                app.endpoint_scroll.saturating_add(3)
-            } else {
-                app.endpoint_scroll.saturating_sub(3)
-            };
-        }
-        View::CaptureHealth => {
-            app.capture_health_scroll = if down {
-                app.capture_health_scroll.saturating_add(3)
-            } else {
-                app.capture_health_scroll.saturating_sub(3)
-            };
-        }
-        View::HepSenders => {
-            app.hep_senders_scroll = if down {
-                app.hep_senders_scroll.saturating_add(3)
-            } else {
-                app.hep_senders_scroll.saturating_sub(3)
-            };
-        }
-        View::TfpsObserve { .. } => {
-            app.tfps_scroll = if down {
-                app.tfps_scroll.saturating_add(3)
-            } else {
-                app.tfps_scroll.saturating_sub(3)
-            };
-        }
-        View::SecurityFindings => {
-            app.security_scroll = if down {
-                app.security_scroll.saturating_add(3)
-            } else {
-                app.security_scroll.saturating_sub(3)
-            };
-        }
-        View::CallVolume => {
-            app.call_volume_scroll = if down {
-                app.call_volume_scroll.saturating_add(3)
-            } else {
-                app.call_volume_scroll.saturating_sub(3)
-            };
-        }
-        View::SdpTimeline { .. } => {
-            app.sdp_timeline_scroll = if down {
-                app.sdp_timeline_scroll.saturating_add(3)
-            } else {
-                app.sdp_timeline_scroll.saturating_sub(3)
-            };
-        }
-        View::Conformance { .. } => {
-            app.conformance_scroll = if down {
-                app.conformance_scroll.saturating_add(3)
-            } else {
-                app.conformance_scroll.saturating_sub(3)
-            };
-        }
-        View::RelayStats { .. } => {
-            app.relay_stats_scroll = if down {
-                app.relay_stats_scroll.saturating_add(3)
-            } else {
-                app.relay_stats_scroll.saturating_sub(3)
-            };
-        }
+        View::MessageDiff { .. } => WheelTarget::Text(&mut app.diff_scroll),
+        View::StreamDetail(_) => WheelTarget::StreamDetail(&mut app.stream_detail_scroll),
+        View::Help => WheelTarget::Text(&mut app.help_scroll),
+        View::Statistics => WheelTarget::Text(&mut app.stats_scroll),
+        View::Talkers => WheelTarget::Text(&mut app.talkers_scroll),
+        View::CarrierMetrics => WheelTarget::Text(&mut app.carrier_metrics_scroll),
+        View::CompareDialogs { .. } => WheelTarget::Text(&mut app.compare_scroll),
+        View::EndpointRollup { .. } => WheelTarget::Text(&mut app.endpoint_scroll),
+        View::CaptureHealth => WheelTarget::Text(&mut app.capture_health_scroll),
+        View::HepSenders => WheelTarget::Text(&mut app.hep_senders_scroll),
+        View::TfpsObserve { .. } => WheelTarget::Text(&mut app.tfps_scroll),
+        View::SecurityFindings => WheelTarget::Text(&mut app.security_scroll),
+        View::CallVolume => WheelTarget::Text(&mut app.call_volume_scroll),
+        View::SdpTimeline { .. } => WheelTarget::Text(&mut app.sdp_timeline_scroll),
+        View::Conformance { .. } => WheelTarget::Text(&mut app.conformance_scroll),
+        View::RelayStats { .. } => WheelTarget::Text(&mut app.relay_stats_scroll),
         // The full-BPF popup is read-only and its content wraps to a single
         // screen for any real filter, so its wheel arm is intentionally empty
         // (v1). The editor increment adds scrolling.
-        View::BpfFilter => {}
+        View::BpfFilter => WheelTarget::Fixed,
         // The timeline is a fixed single screen (no scroll, no selection),
         // so its wheel arm is intentionally empty. Deleting it is a compile
         // error, but FOLDING it into a neighbor is not, and that was the
         // silent regression: `timeline_wheel_moves_no_selection_and_no_scroll_offset`
         // holds the emptiness by requiring every selection and every scroll
         // offset in the app to be unmoved after a wheel burst here.
-        View::CallTimeline(_) => {}
+        View::CallTimeline(_) => WheelTarget::Fixed,
         // The loss map is likewise a fixed single screen (density strip +
         // header + legend), so its wheel arm is intentionally empty too.
-        View::StreamLossMap(_) => {}
+        View::StreamLossMap(_) => WheelTarget::Fixed,
+    }
+}
+
+/// One wheel step in the call-flow ladder: move the selection one row,
+/// within the cached row count, and reset the detail pane's scroll.
+fn wheel_call_flow(app: &mut App, down: bool) {
+    if down {
+        let count = app.flow.cached_msg_count;
+        if count > 0 && app.flow.selected < count - 1 {
+            app.flow.selected += 1;
+            app.flow.detail_scroll = 0;
+        }
+    } else if app.flow.selected > 0 {
+        app.flow.selected -= 1;
+        app.flow.detail_scroll = 0;
     }
 }
 

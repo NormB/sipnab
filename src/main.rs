@@ -71,18 +71,73 @@ fn main() {
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
 
+    // 1b-4. Everything decided by the command line alone.
+    run_immediate_steps(&cli);
+    run_validation_steps(&cli);
+
+    // 5. Load configuration and apply [limits].
+    let loaded = match bootstrap::load_config(&cli) {
+        Ok(loaded) => loaded,
+        Err(e) => e.exit(),
+    };
+
+    // 5b-6b. The crash policy, and the commands that need only the config.
+    run_config_steps(&cli, &loaded);
+
+    // 7. Decide everything up front: source, capture config, portrange,
+    //    filters, policy, run mode.
+    let plan = match bootstrap::plan(&cli, &loaded.config) {
+        Ok(plan) => plan,
+        Err(e) => e.exit(),
+    };
+    // The capture-source table's size, before any capture can name a source.
+    sipnab::capture::packet::set_max_capture_sources(plan.max_capture_sources);
+    // `-I` is resolved: from here on nothing waits on the terminal for an
+    // archive password.
+    bootstrap::end_archive_prompts();
+
+    // 8. Multi-core offline reconstruction bypasses the capture thread.
+    //
+    //    It still needs the file set, and the set is already on the plan:
+    //    `plan()` ran `input_set::resolve`, so `plan.source` holds the
+    //    resolved, timestamp-ordered `Vec<PathBuf>`. Dispatching here — before
+    //    `launch` — used to discard it and let `run_cores_file` re-derive the
+    //    input from `cli.primary_input()`, i.e. the first `-I` *argument*. For
+    //    `-I <directory>`, `-I '<glob>'` or repeated `-I` that argument is not
+    //    a file, so the pcap opener was handed a directory and the run reported
+    //    nothing while exiting 0.
+    if matches!(plan.mode, RunMode::CoresFile) {
+        run_cores_file(&cli, &loaded, &plan);
+        // Returning from `main` runs no destructor for a static, so the
+        // members `-I` extracted are released explicitly on this way out too.
+        sipnab::capture::archive::release_run();
+        return;
+    }
+
+    // 9-10. Launch the capture and hand it to the selected mode.
+    launch_and_dispatch(cli, loaded, plan);
+
+    // A run that ends by returning, rather than through
+    // `release_run_and_exit`, releases what `-I` extracted here.
+    sipnab::capture::archive::release_run();
+}
+
+/// Steps 1b to 2b of [`main`]: archive passwords, the immediate commands,
+/// and the exec privilege block. Each step either continues or exits the
+/// process.
+fn run_immediate_steps(cli: &Cli) {
     // 1b. Archive passwords, from every source the operator configured,
     //     before anything below resolves `-I`: the immediate commands in step
     //     2 read inputs too. A source that cannot supply one is an argument
     //     error, the same as a malformed flag.
-    if let Err(msg) = bootstrap::install_archive_passwords(&cli) {
+    if let Err(msg) = bootstrap::install_archive_passwords(cli) {
         tracing::error!("{msg}");
         sipnab::capture::archive::release_run_and_exit(2);
     }
 
     // 2. Immediate commands that run before config load (--setup-caps,
     //    --strip-secrets).
-    if let Some(code) = bootstrap::run_startup_commands(&cli) {
+    if let Some(code) = bootstrap::run_startup_commands(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 
@@ -108,7 +163,12 @@ fn main() {
         // between a hardened process and one that only logged that it was.
         tracing::warn!("Could not block privilege escalation through exec: {e}");
     }
+}
 
+/// Steps 3 to 4 of [`main`]: signal handlers and argument validation, the
+/// run provenance record, and `--mint-token`. Each step either continues or
+/// exits the process.
+fn run_validation_steps(cli: &Cli) {
     // 3. Signal handlers + argument-combination validation.
     signals::install_handlers();
     if let Err(msg) = cli.validate() {
@@ -125,22 +185,21 @@ fn main() {
     //     leave its own absence ambiguous -- "not enabled" or "the disk was
     //     full" -- and no reader could tell which. Nothing is lost by stopping
     //     here: no packet has been read.
-    if let Err(msg) = sipnab::app::run_provenance::write_record(&cli) {
+    if let Err(msg) = sipnab::app::run_provenance::write_record(cli) {
         tracing::error!("{msg}");
         sipnab::capture::archive::release_run_and_exit(2);
     }
 
     // 4. --mint-token: mint a signed bearer token and exit.
-    if let Some(code) = bootstrap::run_mint_token(&cli) {
+    if let Some(code) = bootstrap::run_mint_token(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+}
 
-    // 5. Load configuration and apply [limits].
-    let loaded = match bootstrap::load_config(&cli) {
-        Ok(loaded) => loaded,
-        Err(e) => e.exit(),
-    };
-
+/// Steps 5b to 6b of [`main`]: the crash policy, then the commands that need
+/// the loaded config and exit (`--panic-selftest`, `--dump-config`,
+/// `--journal-show`/`--revert-actions`, `--uprobe-list`).
+fn run_config_steps(cli: &Cli, loaded: &sipnab::config::LoadedConfig) {
     // 5b. Crash policy: from here on, a panic restores the terminal,
     //     writes a crash report per [crash], and exits or dumps core.
     sipnab::crash::install_panic_hook(sipnab::crash::CrashPolicy::from_config(
@@ -154,13 +213,13 @@ fn main() {
 
     // 6. --dump-config: print the effective config and exit.
     if cli.config_args.dump_config {
-        sipnab::capture::archive::release_run_and_exit(bootstrap::dump_config(&loaded));
+        sipnab::capture::archive::release_run_and_exit(bootstrap::dump_config(loaded));
     }
 
     // 6a. --journal-show / --revert-actions: see or back out what sipnab did
     //     to other systems, and exit. Before any capture: recovery must not
     //     wait for, or depend on, a packet source.
-    if let Some(code) = bootstrap::run_journal_command(&cli, &loaded.config) {
+    if let Some(code) = bootstrap::run_journal_command(cli, &loaded.config) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 
@@ -168,54 +227,34 @@ fn main() {
     //     exit, without installing anything in the kernel. Answers the question
     //     that decides whether a uprobe capture is worth starting.
     if cli.tls_args.uprobe_list {
-        sipnab::capture::archive::release_run_and_exit(bootstrap::uprobe_list(&cli));
+        sipnab::capture::archive::release_run_and_exit(bootstrap::uprobe_list(cli));
     }
+}
 
-    // 7. Decide everything up front: source, capture config, portrange,
-    //    filters, policy, run mode.
-    let plan = match bootstrap::plan(&cli, &loaded.config) {
-        Ok(plan) => plan,
-        Err(e) => e.exit(),
+/// Step 8 of [`main`]: multi-core offline reconstruction over the file set
+/// the plan resolved.
+fn run_cores_file(cli: &Cli, loaded: &sipnab::config::LoadedConfig, plan: &bootstrap::RunPlan) {
+    let paths: &[std::path::PathBuf] = match &plan.source {
+        Some(sipnab::capture::CaptureSource::File { paths }) => paths,
+        // `CoresFile` is only chosen when `-I` was given, so the source is
+        // always `File`. An empty slice makes `run_cores_file` fail loudly
+        // rather than silently analyzing nothing if that ever changes.
+        _ => &[],
     };
-    // The capture-source table's size, before any capture can name a source.
-    sipnab::capture::packet::set_max_capture_sources(plan.max_capture_sources);
-    // `-I` is resolved: from here on nothing waits on the terminal for an
-    // archive password.
-    bootstrap::end_archive_prompts();
+    batch::run_cores_file(
+        cli,
+        &loaded.config,
+        &plan.capture_config,
+        plan.portrange,
+        paths,
+        plan.filter_expr.as_ref(),
+        plan.vcon_filter_expr.as_ref(),
+    );
+}
 
-    // 8. Multi-core offline reconstruction bypasses the capture thread.
-    //
-    //    It still needs the file set, and the set is already on the plan:
-    //    `plan()` ran `input_set::resolve`, so `plan.source` holds the
-    //    resolved, timestamp-ordered `Vec<PathBuf>`. Dispatching here — before
-    //    `launch` — used to discard it and let `run_cores_file` re-derive the
-    //    input from `cli.primary_input()`, i.e. the first `-I` *argument*. For
-    //    `-I <directory>`, `-I '<glob>'` or repeated `-I` that argument is not
-    //    a file, so the pcap opener was handed a directory and the run reported
-    //    nothing while exiting 0.
-    if matches!(plan.mode, RunMode::CoresFile) {
-        let paths: &[std::path::PathBuf] = match plan.source {
-            Some(sipnab::capture::CaptureSource::File { ref paths }) => paths,
-            // `CoresFile` is only chosen when `-I` was given, so the source is
-            // always `File`. An empty slice makes `run_cores_file` fail loudly
-            // rather than silently analyzing nothing if that ever changes.
-            _ => &[],
-        };
-        batch::run_cores_file(
-            &cli,
-            &loaded.config,
-            &plan.capture_config,
-            plan.portrange,
-            paths,
-            plan.filter_expr.as_ref(),
-            plan.vcon_filter_expr.as_ref(),
-        );
-        // Returning from `main` runs no destructor for a static, so the
-        // members `-I` extracted are released explicitly on this way out too.
-        sipnab::capture::archive::release_run();
-        return;
-    }
-
+/// Steps 9 and 10 of [`main`]: launch the capture, then run the TUI or the
+/// batch runner over it.
+fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: bootstrap::RunPlan) {
     // 9. Launch the capture: channel, capture thread, readiness handshake,
     //    chroot, privilege drop, runtime hardening.
     let launched = bootstrap::launch(
@@ -266,11 +305,8 @@ fn main() {
                 launched.kill_worker,
             );
         }
-        // gate: unreachable because step 8 above returns for CoresFile before
-        // the capture is launched, so this match never sees it.
+        // gate: unreachable because step 8 in `main` returns for CoresFile
+        // before this function is called, so this match never sees it.
         RunMode::CoresFile => unreachable!("handled before launch"),
     }
-    // A run that ends by returning, rather than through
-    // `release_run_and_exit`, releases what `-I` extracted here.
-    sipnab::capture::archive::release_run();
 }

@@ -36,6 +36,11 @@ pub struct PlanError {
 }
 
 impl PlanError {
+    /// An error with an explicit exit code.
+    fn new(exit_code: i32, message: String) -> Self {
+        Self { exit_code, message }
+    }
+
     /// Shorthand for an argument-level error (exit code 2).
     fn arg(message: String) -> Self {
         Self {
@@ -379,6 +384,143 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
+    refuse_unusable_requests(cli, config)?;
+    declare_process_globals(cli, config);
+    refuse_conflicting_sources(cli)?;
+
+    // Capture source precedence: -I file > -d device > config device >
+    // --hep-listen > auto-detect (deferred to launch()).
+    let source = compose_hep_with_live(cli, config, plan_primary_source(cli, config)?)?;
+
+    // The last silent `-L` precedence left in the chain, said out loud.
+    if let Some(msg) = hep_listen_ignored_warning(cli, source.as_ref()) {
+        tracing::warn!("{msg}");
+    }
+
+    refuse_composite_output(cli, source.as_ref())?;
+    warn_offline_transmitters(cli, config, source.as_ref());
+
+    // Capture config from CLI + config file.
+    let mut capture_config = build_capture_config(cli, config)?;
+
+    // Portrange: CLI > config file > default "5060-5061".
+    let portrange_str = cli
+        .capture_args
+        .portrange
+        .as_deref()
+        .or(config.capture.portrange.as_deref())
+        .unwrap_or("5060-5061");
+    let portrange = crate::config::parse_portrange(portrange_str)
+        .map_err(|e| PlanError::arg(format!("Invalid --portrange: {e}")))?;
+
+    apply_capture_filter(cli, config, source.as_ref(), portrange, &mut capture_config)?;
+
+    // --autostop condition.
+    let (autostop_duration, autostop_filesize_bytes) = match cli.capture_args.autostop {
+        Some(ref cond) => {
+            parse_autostop(cond).map_err(|e| PlanError::arg(format!("Invalid --autostop: {e}")))?
+        }
+        None => (None, None),
+    };
+
+    // --split output rotation.
+    let (split_bytes, split_duration) = match cli.capture_args.split {
+        Some(ref split) => {
+            capture::writer::parse_split(split).map_err(|e| PlanError::arg(e.to_string()))?
+        }
+        None => (None, None),
+    };
+
+    let matcher = build_matcher(cli, config)?;
+
+    // Filter DSL expression (--filter or diagnostic aliases), falling back
+    // to config.filter.expression.
+    let filter_expr = build_filter_expr(cli, config)?;
+    let vcon_filter_expr = build_vcon_filter_expr(cli, config)?;
+
+    let output_opts = build_output_options(cli, config);
+
+    // Event exec engine.
+    let event_exec = EventExecEngine::new(
+        cli.exec_args.on_dialog_exec.clone(),
+        cli.exec_args.on_quality_exec.clone(),
+        cli.exec_args.exec_rate_limit,
+        cli.rtp_args.quality_threshold,
+        cli.exec_queue_depth(config),
+    );
+
+    let metrics_bind = parse_metrics_bind(cli)?;
+
+    refuse_cores_without_their_outputs(cli);
+    warn_degraded_run_shape(cli, config);
+
+    let mode = select_run_mode(cli);
+    refuse_unread_detection(cli, config, &mode)?;
+
+    // Immediate mode picks the kernel ring format, so it can only be answered
+    // once the consumer is known — which is here, and not in
+    // `build_capture_config`, which runs before the mode is decided.
+    capture_config.immediate_mode = immediate_mode_for(&mode);
+
+    // Derived from `source` before it moves, so the two cannot disagree about
+    // which files the run reads. Re-resolving here would open every file a
+    // second time and give the two answers a chance to differ.
+    let input_files: Vec<std::path::PathBuf> = match source {
+        Some(CaptureSource::File { ref paths }) => paths.clone(),
+        _ => Vec::new(),
+    };
+
+    // An unknown MCP tool or bundle name refuses the run here, in every
+    // build, rather than when the MCP server starts.
+    cli.mcp_tool_selection(config).map_err(PlanError::arg)?;
+
+    let max_capture_sources = cli.max_capture_sources(config);
+    let hep_senders = if cli.hep_args.hep_listen.is_some() {
+        cli.tracked_peer_capacity(config)
+    } else {
+        0
+    };
+    let inputs = input_files
+        .len()
+        .max(usize::from(cli.capture_args.device.is_some()));
+    if let Some(msg) = capture_source_capacity_refusal(max_capture_sources, inputs, hep_senders) {
+        return Err(PlanError::arg(msg));
+    }
+
+    Ok(RunPlan {
+        source,
+        input_files,
+        capture_config,
+        portrange,
+        policy: CapturePolicy {
+            split_bytes,
+            split_duration,
+            // 0 disables the bound rather than naming the open file among the
+            // things to remove; see `PcapWriter::keep_last_splits`.
+            split_keep: cli.capture_args.split_keep.filter(|&n| n > 0),
+            autostop_duration,
+            autostop_filesize_bytes,
+            portrange,
+        },
+        matcher,
+        filter_expr,
+        vcon_filter_expr,
+        output_opts,
+        event_exec,
+        mode,
+        metrics_bind,
+        max_capture_sources,
+    })
+}
+
+/// Refuse a request sipnab cannot act on, before anything runs: a capture
+/// file typed where a filter belongs, an `[actions]` entry naming nothing
+/// sipnab knows, or an alert rule no detector fires under.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) naming the problem.
+fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError> {
     // `sipnab call.pcap`, typed the sngrep way, would read the file name as a
     // capture filter. Refused before any capture opens, naming the fix.
     if let Some(msg) =
@@ -396,23 +538,45 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         &cli.security_args.alert
     };
     for source in alert_sources {
-        let source = source.trim();
-        if source.contains(':') {
-            let rule = crate::security::AlertRule::parse(source)
-                .map_err(|e| PlanError::arg(e.to_string()))?;
-            // The kinds the detectors fire under, from the one shared list: a
-            // rule naming anything else parses and then never binds.
-            let kinds = crate::security::findings::SECURITY_FINDING_KINDS;
-            if !kinds.contains(&rule.name.as_str()) {
-                return Err(PlanError::arg(format!(
-                    "Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)",
-                    rule.name,
-                    kinds.join(", ")
-                )));
-            }
-        }
+        check_alert_rule(source.trim())?;
     }
+    Ok(())
+}
 
+/// Refuse an `--alert` rule naming a finding kind no detector fires under.
+/// A source without a `:` is not a rule and passes.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) for a rule that does not parse or names an
+/// unknown kind.
+fn check_alert_rule(source: &str) -> Result<(), PlanError> {
+    if !source.contains(':') {
+        return Ok(());
+    }
+    let rule =
+        crate::security::AlertRule::parse(source).map_err(|e| PlanError::arg(e.to_string()))?;
+    // The kinds the detectors fire under, from the one shared list: a
+    // rule naming anything else parses and then never binds.
+    let kinds = crate::security::findings::SECURITY_FINDING_KINDS;
+    if !kinds.contains(&rule.name.as_str()) {
+        return Err(PlanError::arg(format!(
+            "Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)",
+            rule.name,
+            kinds.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// Declare the process-wide settings every surface reads: the node name, the
+/// diagnosis thresholds, and the Prometheus histogram boundaries.
+///
+/// # Side effects
+///
+/// Writes process-global `OnceLock`s; the first writer wins, so this runs
+/// before anything can read them.
+fn declare_process_globals(cli: &Cli, config: &Config) {
     // FIRST, before anything can mint an identity. `set_node_name` writes a
     // process-global `OnceLock` and the first writer wins, so a later call
     // would be silently ignored and answers would carry the hostname while the
@@ -452,12 +616,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             &cli.quality_bands(config),
         ),
     );
+}
 
-    // Capture source precedence: -I file > -d device > config device >
-    // --hep-listen > auto-detect (deferred to launch()).
-    // manual_map: without the `hep` feature the --hep-listen arm cfg-shrinks
-    // to a bare Some(..) that clippy wants as .map(), but the full arm uses
-    // `?` (CIDR parsing), which a map closure cannot.
+/// Warn about, or refuse, source flags given together that cannot all be
+/// honored.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) for `-I` with `-L`, and for `--multi-device`
+/// with `-L`.
+fn refuse_conflicting_sources(cli: &Cli) -> Result<(), PlanError> {
     // `-I` beating `-d` is a silent wrong answer, so say so.
     //
     // Both flags parse happily together and `-I` simply wins: sipnab reads the
@@ -527,73 +695,33 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                 .to_string(),
         ));
     }
+    Ok(())
+}
 
-    #[allow(clippy::manual_map)]
-    let source = if cli.has_input() {
-        // Expand directories, globs and repeated -I into the exact files to
-        // read, ordered by when their packets were captured. Resolution
-        // happens here rather than in the reader so a bad path fails before
-        // any thread starts and the operator sees the count they are about to
-        // analyze.
-        let resolved = match crate::capture::input_set::resolve(
-            &cli.capture_args.input,
-            &cli.input_resolve_options(),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(PlanError {
-                    exit_code: 1,
-                    message: format!("{e:#}"),
-                });
-            }
-        };
-        if resolved.len() > 1 {
-            tracing::info!(
-                "Reading {} capture files in timestamp order (first: '{}')",
-                resolved.len(),
-                resolved[0].name()
-            );
-        }
-        let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
-
-        // Precondition, not a post-hoc error: an output that names an input is
-        // refused here, before any writer exists. `-O` opens with truncation,
-        // so a check made after the open has already destroyed the capture —
-        // and a capture is routinely the only copy of an incident. Checked
-        // against the whole resolved SET and the directories `-I` named, since
-        // `-I` takes a directory or a glob.
-        let protected = crate::capture::output_guard::ProtectedInputs::new(
-            &cli.capture_args.input,
-            &paths,
-            cli.capture_args.recursive,
-        );
-        if let Some(ref out) = cli.capture_args.output {
-            let split_active = cli.capture_args.split.is_some();
-            protected
-                .check(std::path::Path::new(out), "-O/--output", split_active)
-                .map_err(PlanError::arg)?;
-        }
-        // `--vcon-out` writes a file, so it reaches the same mistake by the
-        // same route. A container written over the capture it describes
-        // destroys the evidence the container is a summary of, and the run
-        // would exit 0 having done it. Never rotates, so `split` is false.
-        if let Some(ref out) = cli.output_args.vcon_out {
-            protected
-                .check(out, "--vcon-out", false)
-                .map_err(PlanError::arg)?;
-        }
-
-        Some(CaptureSource::File { paths })
-    } else if let Some(ref device) = cli.capture_args.device {
-        Some(CaptureSource::Live {
+/// The one source the flags name, by precedence: `-I` file > `-d` device >
+/// config device > uprobe > `--hep-listen`. `None` means auto-detect, which
+/// `launch` resolves.
+///
+/// # Errors
+///
+/// A `PlanError` from resolving `-I` (exit code 1), an output that names an
+/// input, an unusable uprobe target, or a malformed HEP listener setting.
+fn plan_primary_source(cli: &Cli, config: &Config) -> Result<Option<CaptureSource>, PlanError> {
+    if cli.has_input() {
+        return plan_file_source(cli).map(Some);
+    }
+    if let Some(device) = cli
+        .capture_args
+        .device
+        .as_ref()
+        .or(config.capture.device.as_ref())
+    {
+        return Ok(Some(CaptureSource::Live {
             device: device.clone(),
-        })
-    } else if let Some(ref device) = config.capture.device {
-        Some(CaptureSource::Live {
-            device: device.clone(),
-        })
-    } else if cli.tls_args.uprobe_tls || !cli.tls_args.uprobe_library.is_empty() {
-        Some(CaptureSource::Uprobe {
+        }));
+    }
+    if cli.tls_args.uprobe_tls || !cli.tls_args.uprobe_library.is_empty() {
+        return Ok(Some(CaptureSource::Uprobe {
             targets: plan_uprobe_targets(cli).map_err(PlanError::arg)?,
             backend: match cli.tls_args.uprobe_backend.as_str() {
                 "bpf" => capture::UprobeBackend::Bpf,
@@ -601,34 +729,108 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                 // would be a parser change rather than operator input.
                 _ => capture::UprobeBackend::Tracefs,
             },
-        })
-    } else if cli.hep_args.hep_listen.is_some() {
-        Some(plan_hep_source(cli, config)?)
-    } else {
-        None
-    };
+        }));
+    }
+    if cli.hep_args.hep_listen.is_some() {
+        return plan_hep_source(cli, config).map(Some);
+    }
+    Ok(None)
+}
 
-    // ── The composite: HEP for signaling, the NIC for media ─────────────
-    //
-    // `-d` and `-L` used to parse happily together and `-d` simply won, so the
-    // listener evaporated with no diagnostic — the same defect class the
-    // `-I`/`-d` warning above names, one arm down and with no warning at all.
-    // An operator running OpenSIPS has two ways to see decrypted SIP: eCapture
-    // plus `--keylog`, which depends on symbol discovery and a keylog channel
-    // staying healthy, and OpenSIPS's own HEP mirror, which is already
-    // plaintext at the source and has nothing to be fragile about. Choosing HEP
-    // cost every RTP stream, because a stream is only ever created from real
-    // RTP packets. Raised by Dan Jenkins (@danjenkins); designed in
-    // `docs/design/simultaneous-capture-sources.md`.
-    //
-    // Only the Live arm composes. `-I` is refused above (a security refusal,
-    // not a scheduling one) and a uprobe read carries no addressing to place
-    // against the other member's traffic, so it warns instead. Composing the
-    // CONFIG-file device as well as `-d`: both arms build the identical
-    // `CaptureSource::Live` and nothing downstream can see which produced it,
-    // so refusing one would make the same run behave differently depending on
-    // where the device name was written.
-    let source = match source {
+/// The `-I` source: every file the inputs resolve to, in capture order, after
+/// refusing an output that names one of them.
+///
+/// # Errors
+///
+/// Exit code 1 when `-I` does not resolve; exit code 2 when `-O` or
+/// `--vcon-out` names an input.
+fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
+    // Expand directories, globs and repeated -I into the exact files to
+    // read, ordered by when their packets were captured. Resolution
+    // happens here rather than in the reader so a bad path fails before
+    // any thread starts and the operator sees the count they are about to
+    // analyze.
+    let resolved = match crate::capture::input_set::resolve(
+        &cli.capture_args.input,
+        &cli.input_resolve_options(),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(PlanError {
+                exit_code: 1,
+                message: format!("{e:#}"),
+            });
+        }
+    };
+    if resolved.len() > 1 {
+        tracing::info!(
+            "Reading {} capture files in timestamp order (first: '{}')",
+            resolved.len(),
+            resolved[0].name()
+        );
+    }
+    let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
+
+    // Precondition, not a post-hoc error: an output that names an input is
+    // refused here, before any writer exists. `-O` opens with truncation,
+    // so a check made after the open has already destroyed the capture —
+    // and a capture is routinely the only copy of an incident. Checked
+    // against the whole resolved SET and the directories `-I` named, since
+    // `-I` takes a directory or a glob.
+    let protected = crate::capture::output_guard::ProtectedInputs::new(
+        &cli.capture_args.input,
+        &paths,
+        cli.capture_args.recursive,
+    );
+    if let Some(ref out) = cli.capture_args.output {
+        let split_active = cli.capture_args.split.is_some();
+        protected
+            .check(std::path::Path::new(out), "-O/--output", split_active)
+            .map_err(PlanError::arg)?;
+    }
+    // `--vcon-out` writes a file, so it reaches the same mistake by the
+    // same route. A container written over the capture it describes
+    // destroys the evidence the container is a summary of, and the run
+    // would exit 0 having done it. Never rotates, so `split` is false.
+    if let Some(ref out) = cli.output_args.vcon_out {
+        protected
+            .check(out, "--vcon-out", false)
+            .map_err(PlanError::arg)?;
+    }
+
+    Ok(CaptureSource::File { paths })
+}
+
+/// The composite: HEP for signaling, the NIC for media.
+///
+/// `-d` and `-L` used to parse happily together and `-d` simply won, so the
+/// listener evaporated with no diagnostic — the same defect class the
+/// `-I`/`-d` warning in [`refuse_conflicting_sources`] names, one arm down and
+/// with no warning at all. An operator running OpenSIPS has two ways to see
+/// decrypted SIP: eCapture plus `--keylog`, which depends on symbol discovery
+/// and a keylog channel staying healthy, and OpenSIPS's own HEP mirror, which
+/// is already plaintext at the source and has nothing to be fragile about.
+/// Choosing HEP cost every RTP stream, because a stream is only ever created
+/// from real RTP packets. Raised by Dan Jenkins (@danjenkins); designed in
+/// `docs/design/simultaneous-capture-sources.md`.
+///
+/// Only the Live arm composes. `-I` is refused earlier (a security refusal,
+/// not a scheduling one) and a uprobe read carries no addressing to place
+/// against the other member's traffic, so it warns instead. Composing the
+/// CONFIG-file device as well as `-d`: both arms build the identical
+/// `CaptureSource::Live` and nothing downstream can see which produced it, so
+/// refusing one would make the same run behave differently depending on where
+/// the device name was written.
+///
+/// # Errors
+///
+/// A malformed HEP listener setting, from [`plan_hep_source`].
+fn compose_hep_with_live(
+    cli: &Cli,
+    config: &Config,
+    source: Option<CaptureSource>,
+) -> Result<Option<CaptureSource>, PlanError> {
+    match source {
         Some(live @ CaptureSource::Live { .. }) if cli.hep_args.hep_listen.is_some() => {
             let hep = plan_hep_source(cli, config)?;
             // The NIC first: it is the member that needs the BPF filter, the
@@ -646,28 +848,31 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                  actually sees the RTP on.",
                 composite.label()
             );
-            Some(composite)
+            Ok(Some(composite))
         }
-        other => other,
-    };
-
-    // The last silent `-L` precedence left in the chain, said out loud.
-    if let Some(msg) = hep_listen_ignored_warning(cli, source.as_ref()) {
-        tracing::warn!("{msg}");
+        other => Ok(other),
     }
+}
 
-    // `-O` cannot write a composite, and the failure it would produce is
-    // non-deterministic rather than merely wrong. The writer initializes on the
-    // FIRST packet's link type, and the members disagree: live capture yields
-    // `DLT_EN10MB`, while a HEP packet carries `link_type = 0` and a `data`
-    // buffer holding the bare transport payload — no Ethernet, no IP, no UDP.
-    // That absence is deliberate (`capture::hep`: fabricating a `DLT_RAW`
-    // header made `etherparse` read `INVITE`'s leading 0x49 as an IPv4 header
-    // with IHL 9 and drop every HEP message silently). Classic pcap then
-    // refuses whichever member arrived second, so which half of the run
-    // survives depends on packet timing; pcapng is worse, appending a second
-    // interface and writing bare SIP text as if it were a frame of the declared
-    // link type, producing an export that decodes into something nobody sent.
+/// Refuse `-O` on a composite source.
+///
+/// `-O` cannot write a composite, and the failure it would produce is
+/// non-deterministic rather than merely wrong. The writer initializes on the
+/// FIRST packet's link type, and the members disagree: live capture yields
+/// `DLT_EN10MB`, while a HEP packet carries `link_type = 0` and a `data`
+/// buffer holding the bare transport payload — no Ethernet, no IP, no UDP.
+/// That absence is deliberate (`capture::hep`: fabricating a `DLT_RAW`
+/// header made `etherparse` read `INVITE`'s leading 0x49 as an IPv4 header
+/// with IHL 9 and drop every HEP message silently). Classic pcap then
+/// refuses whichever member arrived second, so which half of the run
+/// survives depends on packet timing; pcapng is worse, appending a second
+/// interface and writing bare SIP text as if it were a frame of the declared
+/// link type, producing an export that decodes into something nobody sent.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) when `-O` is given with a composite.
+fn refuse_composite_output(cli: &Cli, source: Option<&CaptureSource>) -> Result<(), PlanError> {
     if let Some(ref out) = cli.capture_args.output
         && matches!(source, Some(CaptureSource::Composite(_)))
     {
@@ -681,6 +886,26 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
              forward the signaling to a collector instead of writing it."
         )));
     }
+    Ok(())
+}
+
+/// The flags to name when the kill path is refused offline.
+fn kill_flags_named(cli: &Cli) -> &'static str {
+    if cli.security_args.kill_target.is_empty() {
+        "--kill-scanner"
+    } else if cli.security_args.kill_scanner {
+        "--kill-scanner / -K"
+    } else {
+        "-K/--kill-target"
+    }
+}
+
+/// Tell the operator, once and before any mode branches, which of the ways
+/// sipnab can put a packet on the network this run will not use, or uses on a
+/// file.
+fn warn_offline_transmitters(cli: &Cli, config: &Config, source: Option<&CaptureSource>) {
+    let offline = source
+        .is_some_and(|s| crate::security::transmit_guard::TransmitPermit::for_source(s).is_none());
 
     // An operator who asked for a transmitting feature and is reading a file
     // gets told once, here, before any mode branches. The refusal itself is
@@ -691,20 +916,10 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // than at the spawn site because `plan` runs for every mode, including
     // `--cores` and the TUI, which never reach the spawn site at all.
     let kill_requested = cli.kill_scanner(config) || !cli.security_args.kill_target.is_empty();
-    if kill_requested
-        && let Some(ref s) = source
-        && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
-    {
-        let flags = if cli.security_args.kill_target.is_empty() {
-            "--kill-scanner"
-        } else if cli.security_args.kill_scanner {
-            "--kill-scanner / -K"
-        } else {
-            "-K/--kill-target"
-        };
+    if kill_requested && offline {
         tracing::warn!(
             "{}",
-            crate::security::transmit_guard::offline_refusal(flags)
+            crate::security::transmit_guard::offline_refusal(kill_flags_named(cli))
         );
     }
 
@@ -720,8 +935,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // capture thread opens anything, and so a run that will never ask does not
     // look like one that asked and got nothing.
     if let Some(ref addr) = cli.rtp_args.rtpengine_control
-        && let Some(ref s) = source
-        && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
+        && offline
     {
         tracing::warn!(
             "--rtpengine-control {addr} asks a live relay which calls are up \
@@ -744,7 +958,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // the capture thread opens anything.
     #[cfg(feature = "hep")]
     if let Some(ref addr) = cli.hep_args.hep_send
-        && let Some(CaptureSource::File { ref paths }) = source
+        && let Some(CaptureSource::File { paths }) = source
         && let Some(notice) = crate::capture::hep::file_export_notice(
             &crate::capture::hep::OperatorDestination::from_cli_flag(
                 crate::capture::hep::HEP_SEND_FLAG,
@@ -755,20 +969,21 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     {
         tracing::warn!("{notice}");
     }
+}
 
-    // Capture config from CLI + config file.
-    let mut capture_config = build_capture_config(cli, config)?;
-
-    // Portrange: CLI > config file > default "5060-5061".
-    let portrange_str = cli
-        .capture_args
-        .portrange
-        .as_deref()
-        .or(config.capture.portrange.as_deref())
-        .unwrap_or("5060-5061");
-    let portrange = crate::config::parse_portrange(portrange_str)
-        .map_err(|e| PlanError::arg(format!("Invalid --portrange: {e}")))?;
-
+/// Settle the capture's BPF filter: generate one for a live source that has
+/// none, or say what the operator's own expression cannot see.
+///
+/// # Errors
+///
+/// An unusable `--capture-tunnels` value, from [`resolve_tunnel_ports`].
+fn apply_capture_filter(
+    cli: &Cli,
+    config: &Config,
+    source: Option<&CaptureSource>,
+    portrange: (u16, u16),
+    capture_config: &mut CaptureConfig,
+) -> Result<(), PlanError> {
     // Auto-generate a BPF filter from the portrange for live captures when
     // no explicit filter was set. Critical for performance: without a BPF
     // filter, capturing on 'any' processes ALL traffic. `None` source means
@@ -777,36 +992,27 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // HEP reader never reads `CaptureConfig::bpf_filter`), so answering `false`
     // here would open the NIC with no filter and hand every frame on the link
     // to the parser.
-    let is_live = match source {
-        Some(ref s) => s.has_live_member(),
-        None => true,
-    };
-
-    if let Some(msg) = config_filter_file_notice(cli, config, is_live) {
-        tracing::warn!("{msg}");
-    }
-
-    // The fact no mechanism can fix (F4): a composite's two members timestamp
-    // their packets from two clocks. Said once at startup rather than beside
-    // each suspect figure, because the affected figures are exactly the ones
-    // sipnab cannot tell are affected.
-    if let Some(msg) = two_clocks_warning(source.as_ref()) {
-        tracing::warn!("{msg}");
-    }
+    let is_live = source.is_none_or(CaptureSource::has_live_member);
 
     // Whether this run analyzes media, which decides what the generated
     // filter admits. The same precedence every other reader of `no_rtp` uses.
     let media = !(cli.no_rtp(config));
-    let composite = matches!(source, Some(CaptureSource::Composite(_)));
 
-    // Two sources with a signaling-only filter is a run that measures no media
-    // and doubles every dialog; with media on, the generated filter is
-    // media-only and neither happens. Emitted before the filter is built so
-    // the operator reads it beside the "Auto-generated BPF filter:" line it
-    // explains.
-    if let Some(msg) =
-        composite_filter_warning(source.as_ref(), capture_config.bpf_filter.is_some(), media)
-    {
+    let context = [
+        config_filter_file_notice(cli, config, is_live),
+        // The fact no mechanism can fix (F4): a composite's two members
+        // timestamp their packets from two clocks. Said once at startup rather
+        // than beside each suspect figure, because the affected figures are
+        // exactly the ones sipnab cannot tell are affected.
+        two_clocks_warning(source),
+        // Two sources with a signaling-only filter is a run that measures no
+        // media and doubles every dialog; with media on, the generated filter
+        // is media-only and neither happens. Emitted before the filter is
+        // built so the operator reads it beside the "Auto-generated BPF
+        // filter:" line it explains.
+        composite_filter_warning(source, capture_config.bpf_filter.is_some(), media),
+    ];
+    for msg in context.into_iter().flatten() {
         tracing::warn!("{msg}");
     }
     //
@@ -819,58 +1025,92 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // `auto_bpf_filter` for why this cannot be written with libpcap's `vlan` /
     // `mpls` / `pppoes` qualifiers.
     let tunnel_ports = resolve_tunnel_ports(cli)?;
-    if capture_config.bpf_filter.is_none() && is_live {
-        let (lo, hi) = portrange;
-        // A composite's HEP listener already delivers the signaling, so its
-        // interface takes only the media the mirror cannot carry. Taking the
-        // signaling off the wire too would deliver every message twice.
-        let filter = if composite && media {
-            MEDIA_FILTER_ARM.to_string()
-        } else {
-            auto_capture_filter(lo, hi, &tunnel_ports, media)
-        };
-        tracing::info!("Auto-generated BPF filter: {filter}");
-        if let Some(msg) = tunnel_omission_notice(&tunnel_ports) {
-            tracing::warn!("{msg}");
-        }
-        capture_config.bpf_filter = Some(filter);
-        // The one place the default is generated, so this is where its
-        // provenance is recorded (the TUI summarizes the default from it).
-        capture_config.bpf_filter_generated = true;
-    } else if is_live && let Some(ref filter) = capture_config.bpf_filter {
-        // Their expression, unmodified — but say what it cannot see.
-        let devices = live_device_names(source.as_ref());
-        let devices: Vec<&str> = devices.iter().map(String::as_str).collect();
-        if let Some(msg) = explicit_filter_encap_notice(filter, &devices) {
-            tracing::warn!("{msg}");
-        }
-        if !tunnel_ports.is_empty() {
-            tracing::warn!(
-                "--capture-tunnels is ignored: this run uses the BPF filter you \
-                 supplied, and sipnab does not edit it. Add the tunnel ports to \
-                 your own expression (e.g. `or udp port \
-                 {TUNNEL_PORTS_DEFAULT_LIST}`, one `udp port N` term each)."
+    if !is_live {
+        return Ok(());
+    }
+    match capture_config.bpf_filter {
+        None => {
+            let composite = matches!(source, Some(CaptureSource::Composite(_)));
+            install_generated_filter(
+                capture_config,
+                generated_capture_filter(portrange, &tunnel_ports, composite, media),
+                &tunnel_ports,
             );
         }
+        // Their expression, unmodified — but say what it cannot see.
+        Some(ref filter) => warn_explicit_filter_limits(filter, source, &tunnel_ports),
     }
+    Ok(())
+}
 
-    // --autostop condition.
-    let (autostop_duration, autostop_filesize_bytes) = match cli.capture_args.autostop {
-        Some(ref cond) => {
-            parse_autostop(cond).map_err(|e| PlanError::arg(format!("Invalid --autostop: {e}")))?
-        }
-        None => (None, None),
-    };
+/// Install the filter sipnab generated, saying what it is and which tunnel
+/// ports it leaves out.
+fn install_generated_filter(
+    capture_config: &mut CaptureConfig,
+    filter: String,
+    tunnel_ports: &[u16],
+) {
+    tracing::info!("Auto-generated BPF filter: {filter}");
+    if let Some(msg) = tunnel_omission_notice(tunnel_ports) {
+        tracing::warn!("{msg}");
+    }
+    capture_config.bpf_filter = Some(filter);
+    // The one place the default is generated, so this is where its
+    // provenance is recorded (the TUI summarizes the default from it).
+    capture_config.bpf_filter_generated = true;
+}
 
-    // --split output rotation.
-    let (split_bytes, split_duration) = match cli.capture_args.split {
-        Some(ref split) => {
-            capture::writer::parse_split(split).map_err(|e| PlanError::arg(e.to_string()))?
-        }
-        None => (None, None),
-    };
+/// The BPF filter sipnab generates for a live source with none of its own.
+///
+/// A composite's HEP listener already delivers the signaling, so its
+/// interface takes only the media the mirror cannot carry. Taking the
+/// signaling off the wire too would deliver every message twice.
+fn generated_capture_filter(
+    (lo, hi): (u16, u16),
+    tunnel_ports: &[u16],
+    composite: bool,
+    media: bool,
+) -> String {
+    if composite && media {
+        MEDIA_FILTER_ARM.to_string()
+    } else {
+        auto_capture_filter(lo, hi, tunnel_ports, media)
+    }
+}
 
-    // SIP matcher from CLI filter flags, with config fallbacks.
+/// Say what the operator's own BPF expression cannot see: encapsulated
+/// traffic on the devices it applies to, and the tunnel ports
+/// `--capture-tunnels` would have added.
+fn warn_explicit_filter_limits(filter: &str, source: Option<&CaptureSource>, tunnel_ports: &[u16]) {
+    let devices = live_device_names(source);
+    let devices: Vec<&str> = devices.iter().map(String::as_str).collect();
+    if let Some(msg) = explicit_filter_encap_notice(filter, &devices) {
+        tracing::warn!("{msg}");
+    }
+    if let Some(msg) = tunnel_ports_ignored_notice(tunnel_ports) {
+        tracing::warn!("{msg}");
+    }
+}
+
+/// The notice for `--capture-tunnels` given beside an explicit filter, which
+/// sipnab does not edit; `None` when no tunnel ports were asked for.
+fn tunnel_ports_ignored_notice(tunnel_ports: &[u16]) -> Option<String> {
+    (!tunnel_ports.is_empty()).then(|| {
+        format!(
+            "--capture-tunnels is ignored: this run uses the BPF filter you \
+             supplied, and sipnab does not edit it. Add the tunnel ports to \
+             your own expression (e.g. `or udp port \
+             {TUNNEL_PORTS_DEFAULT_LIST}`, one `udp port N` term each)."
+        )
+    })
+}
+
+/// The SIP matcher from the CLI filter flags, with config fallbacks.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) for a pattern that does not compile.
+fn build_matcher(cli: &Cli, config: &Config) -> Result<SipMatcher, PlanError> {
     let effective_from = cli
         .matching_args
         .from
@@ -881,21 +1121,18 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         .to
         .as_deref()
         .or(config.filter.to.as_deref());
-    let matcher = SipMatcher::new_with_overrides(
+    SipMatcher::new_with_overrides(
         cli,
         cli.matching_args.match_expr.as_deref(),
         effective_from,
         effective_to,
     )
-    .map_err(|e| PlanError::arg(format!("Invalid filter pattern: {e}")))?;
+    .map_err(|e| PlanError::arg(format!("Invalid filter pattern: {e}")))
+}
 
-    // Filter DSL expression (--filter or diagnostic aliases), falling back
-    // to config.filter.expression.
-    let filter_expr = build_filter_expr(cli, config)?;
-    let vcon_filter_expr = build_vcon_filter_expr(cli, config)?;
-
-    // Output options.
-    let output_opts = OutputOptions {
+/// Output options.
+fn build_output_options(cli: &Cli, config: &Config) -> OutputOptions {
+    OutputOptions {
         color: match cli.color_mode(config).as_str() {
             "always" => ColorMode::Always,
             "never" => ColorMode::Never,
@@ -908,117 +1145,149 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             .or(config.display.payload_limit),
         show_empty: cli.output_args.show_empty,
         show_proto_number: cli.output_args.proto_number,
-    };
-
-    // Event exec engine.
-    let event_exec = EventExecEngine::new(
-        cli.exec_args.on_dialog_exec.clone(),
-        cli.exec_args.on_quality_exec.clone(),
-        cli.exec_args.exec_rate_limit,
-        cli.rtp_args.quality_threshold,
-        cli.exec_queue_depth(config),
-    );
-
-    // Parsed --metrics bind address, validated here so a bad address fails at
-    // plan time rather than after a capture is running.
-    //
-    // The comment this replaces claimed "batch starts its own metrics server".
-    // It did not — `start_metrics_server` had one call site, in tui_mode.rs —
-    // and the claim is why the gap survived: a reader checking whether headless
-    // was covered found a note saying it was. `servers::start_servers` now
-    // starts it for both modes, so the `feature = "tui"` coupling below is
-    // gone too.
-    #[cfg(feature = "metrics")]
-    let metrics_bind = match cli.listener_args.metrics.as_deref() {
-        Some(addr_str) => Some(
-            crate::output::prometheus_server::parse_metrics_addr(addr_str)
-                .map_err(|e| PlanError::arg(format!("Invalid --metrics address: {e}")))?,
-        ),
-        None => None,
-    };
-    #[cfg(not(feature = "metrics"))]
-    let metrics_bind = None;
-
-    // Run mode. The multi-core offline file path outranks the TUI/batch
-    // choice; MCP forces batch (it owns stdio, the TUI must not start).
-    //
-    // `--call-report` also lands in batch, but it does so because
-    // `Cli::normalize` has already set `no_tui` — the implication is applied
-    // once at the parse boundary rather than re-derived here. Deriving it
-    // here instead would fix only this decision and leave the three output
-    // gates in `app::batch` still reading `no_tui` as a proxy for "batch".
-    // `--cores N` shards by host pair and rebuilds dialogs per shard. It has no
-    // per-message stream to write, no writer for `-O`, and no replay clock — so
-    // asking for any of those alongside it used to produce NOTHING, exit 0,
-    // beside a summary that cheerfully reported the messages it had found.
-    // Measured on one capture: `--json` 13,460 lines at `--cores 1` and 0 at
-    // `--cores 4`; `--text-dump` 194,321 and 0; `-O` a 100 MB file and no file
-    // at all. An empty output that exits 0 reads as "there was nothing to
-    // report", which is the one conclusion the run had disproved.
-    //
-    // Refusing is not the whole answer — these could be implemented, and #82
-    // records what that would take. It is the honest answer until then, because
-    // the alternative is a silent wrong result.
-    if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
-        let mut unsupported: Vec<&str> = Vec::new();
-        if cli.output_args.json || cli.output_args.json_pretty {
-            unsupported.push("--json");
-        }
-        if cli.output_args.text_dump {
-            unsupported.push("--text-dump");
-        }
-        if cli.output_args.fail2ban {
-            unsupported.push("--fail2ban");
-        }
-        if cli.capture_args.output.is_some() {
-            unsupported.push("-O/--output");
-        }
-        if !unsupported.is_empty() {
-            tracing::error!(
-                "--cores {} cannot produce {}: the parallel reader rebuilds \
-                 dialogs per shard and has no per-message stream or capture \
-                 writer, so it would emit nothing and still exit 0. Drop \
-                 --cores for these, or keep --cores and ask for a whole-capture \
-                 view instead (--json-dialogs, --report, --call-report), which \
-                 the parallel path does produce.",
-                cli.limits_args.cores,
-                unsupported.join(", ")
-            );
-            crate::capture::archive::release_run_and_exit(2);
-        }
     }
+}
 
-    // The complement of the block above: `--cores N` on a source the parallel
-    // reader cannot take. Not fatal — the run is correct, just single-threaded
-    // — but never silent again. See `cores_ignored_warning`.
-    if let Some(msg) = cores_ignored_warning(cli) {
+/// Parsed --metrics bind address, validated here so a bad address fails at
+/// plan time rather than after a capture is running.
+///
+/// The comment this replaces claimed "batch starts its own metrics server".
+/// It did not — `start_metrics_server` had one call site, in tui_mode.rs —
+/// and the claim is why the gap survived: a reader checking whether headless
+/// was covered found a note saying it was. `servers::start_servers` now
+/// starts it for both modes, so the `feature = "tui"` coupling is gone too.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) for an address that does not parse.
+#[cfg(feature = "metrics")]
+fn parse_metrics_bind(cli: &Cli) -> Result<Option<std::net::SocketAddr>, PlanError> {
+    cli.listener_args
+        .metrics
+        .as_deref()
+        .map(|addr_str| {
+            crate::output::prometheus_server::parse_metrics_addr(addr_str)
+                .map_err(|e| PlanError::arg(format!("Invalid --metrics address: {e}")))
+        })
+        .transpose()
+}
+
+/// No metrics server in this build, so there is no address to parse.
+#[cfg(not(feature = "metrics"))]
+fn parse_metrics_bind(_cli: &Cli) -> Result<Option<std::net::SocketAddr>, PlanError> {
+    Ok(None)
+}
+
+/// The per-message outputs a `--cores N` run was asked for and cannot produce.
+///
+/// Empty unless `--cores` above 1 takes the parallel reader: `-I` without
+/// `--multi-device`.
+fn cores_unsupported_outputs(cli: &Cli) -> Vec<&'static str> {
+    if !(cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device) {
+        return Vec::new();
+    }
+    [
+        (
+            cli.output_args.json || cli.output_args.json_pretty,
+            "--json",
+        ),
+        (cli.output_args.text_dump, "--text-dump"),
+        (cli.output_args.fail2ban, "--fail2ban"),
+        (cli.capture_args.output.is_some(), "-O/--output"),
+    ]
+    .into_iter()
+    .filter_map(|(asked, flag)| asked.then_some(flag))
+    .collect()
+}
+
+/// Refuse `--cores N` beside an output the parallel reader cannot produce.
+///
+/// The multi-core offline file path outranks the TUI/batch choice; MCP forces
+/// batch (it owns stdio, the TUI must not start).
+///
+/// `--call-report` also lands in batch, but it does so because
+/// `Cli::normalize` has already set `no_tui` — the implication is applied
+/// once at the parse boundary rather than re-derived here. Deriving it
+/// here instead would fix only this decision and leave the three output
+/// gates in `app::batch` still reading `no_tui` as a proxy for "batch".
+/// `--cores N` shards by host pair and rebuilds dialogs per shard. It has no
+/// per-message stream to write, no writer for `-O`, and no replay clock — so
+/// asking for any of those alongside it used to produce NOTHING, exit 0,
+/// beside a summary that cheerfully reported the messages it had found.
+/// Measured on one capture: `--json` 13,460 lines at `--cores 1` and 0 at
+/// `--cores 4`; `--text-dump` 194,321 and 0; `-O` a 100 MB file and no file
+/// at all. An empty output that exits 0 reads as "there was nothing to
+/// report", which is the one conclusion the run had disproved.
+///
+/// Refusing is not the whole answer — these could be implemented, and #82
+/// records what that would take. It is the honest answer until then, because
+/// the alternative is a silent wrong result.
+///
+/// # Side effects
+///
+/// Exits the process with code 2 when refused.
+fn refuse_cores_without_their_outputs(cli: &Cli) {
+    let unsupported = cores_unsupported_outputs(cli);
+    if !unsupported.is_empty() {
+        tracing::error!(
+            "--cores {} cannot produce {}: the parallel reader rebuilds \
+             dialogs per shard and has no per-message stream or capture \
+             writer, so it would emit nothing and still exit 0. Drop \
+             --cores for these, or keep --cores and ask for a whole-capture \
+             view instead (--json-dialogs, --report, --call-report), which \
+             the parallel path does produce.",
+            cli.limits_args.cores,
+            unsupported.join(", ")
+        );
+        crate::capture::archive::release_run_and_exit(2);
+    }
+}
+
+/// Warn about a run that is correct but less than was asked for.
+fn warn_degraded_run_shape(cli: &Cli, config: &Config) {
+    for msg in degraded_run_warnings(cli, config) {
         tracing::warn!("{msg}");
     }
+}
 
+/// The warnings for a run that is correct but less than was asked for, in
+/// the order they are logged.
+fn degraded_run_warnings(cli: &Cli, config: &Config) -> Vec<String> {
     // The one path `--metrics` still does not reach, said out loud rather than
     // left to be discovered by an empty Grafana panel.
     #[cfg(feature = "metrics")]
-    if let Some(msg) = metrics_ignored_on_cores_warning(cli) {
-        tracing::warn!("{msg}");
-    }
+    let metrics_ignored = metrics_ignored_on_cores_warning(cli);
+    #[cfg(not(feature = "metrics"))]
+    let metrics_ignored = None;
 
-    // A truncating --snaplen feeding -O writes a short pcap that reads as whole:
-    // the one place capture truncation leaves the tool and cannot be inferred
-    // downstream. Warned, not refused — the analysis is complete.
-    if let Some(msg) = snaplen_truncation_warning(cli, config) {
-        tracing::warn!("{msg}");
-    }
+    [
+        // The complement of the `--cores` refusal: `--cores N` on a source the
+        // parallel reader cannot take. Not fatal — the run is correct, just
+        // single-threaded — but never silent again. See `cores_ignored_warning`.
+        cores_ignored_warning(cli),
+        metrics_ignored,
+        // A truncating --snaplen feeding -O writes a short pcap that reads as
+        // whole: the one place capture truncation leaves the tool and cannot be
+        // inferred downstream. Warned, not refused — the analysis is complete.
+        snaplen_truncation_warning(cli, config),
+        // Unlike -O, a truncating --snaplen here reaches sipnab's own analysis:
+        // --retain-audio buffers RTP payload for export_audio to decode, and a
+        // snaplen tuned for signaling truncates that payload before retention
+        // ever sees it.
+        snaplen_audio_retention_warning(cli, config),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
 
-    // Unlike -O, a truncating --snaplen here reaches sipnab's own analysis:
-    // --retain-audio buffers RTP payload for export_audio to decode, and a
-    // snaplen tuned for signaling truncates that payload before retention
-    // ever sees it.
-    if let Some(msg) = snaplen_audio_retention_warning(cli, config) {
-        tracing::warn!("{msg}");
-    }
-
-    let mode = select_run_mode(cli);
-
+/// Refuse a security detection nothing in this mode will read.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) naming the unarmed detection or the unread
+/// scanner pattern.
+fn refuse_unread_detection(cli: &Cli, config: &Config, mode: &RunMode) -> Result<(), PlanError> {
     // Whether a detector will exist at all is a property of the MODE, so it
     // cannot be answered with the warnings above, which run before the mode is
     // decided. Kept beside the refusal further up for the same reason that one
@@ -1035,7 +1304,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // OUTPUT flags already require `-N` (`src/cli.rs`), so a run that asked for
     // fail2ban output without it never started. The DETECTION flags accepted
     // the same mistake silently, which is the sharper end of the same rule.
-    if let Some(msg) = security_detection_unarmed_refusal(cli, config, &mode) {
+    if let Some(msg) = security_detection_unarmed_refusal(cli, config, mode) {
         return Err(PlanError {
             exit_code: 2,
             message: msg,
@@ -1051,84 +1320,47 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             message: msg,
         });
     }
+    Ok(())
+}
 
-    // Immediate mode picks the kernel ring format, so it can only be answered
-    // once the consumer is known — which is here, and not in
-    // `build_capture_config`, which runs before the mode is decided.
-    capture_config.immediate_mode = immediate_mode_for(&mode);
-
-    // Derived from `source` before it moves, so the two cannot disagree about
-    // which files the run reads. Re-resolving here would open every file a
-    // second time and give the two answers a chance to differ.
-    let input_files: Vec<std::path::PathBuf> = match source {
-        Some(CaptureSource::File { ref paths }) => paths.clone(),
-        _ => Vec::new(),
-    };
-
-    // Every capture source the run can have must fit the capture-source
-    // table, or packets from the ones that do not lose their pointer back to
-    // where they came from: each input file, and with --hep-listen every HEP
-    // sender the roster can track. Traced processes (uprobe) have no fixed
-    // count and are not part of the check.
-    // An unknown MCP tool or bundle name refuses the run here, in every
-    // build, rather than when the MCP server starts.
-    cli.mcp_tool_selection(config).map_err(PlanError::arg)?;
-
-    let max_capture_sources = cli.max_capture_sources(config);
-    let hep_senders = if cli.hep_args.hep_listen.is_some() {
-        cli.tracked_peer_capacity(config)
-    } else {
-        0
-    };
-    let needed = input_files
-        .len()
-        .max(usize::from(cli.capture_args.device.is_some()))
-        + hep_senders;
-    if max_capture_sources < needed {
-        return Err(PlanError::arg(format!(
-            "max_capture_sources is {max_capture_sources}, but this run can have {needed} \
-             capture sources ({} input(s){}); raise --max-capture-sources / [limits] \
-             max_capture_sources to at least {needed}{}",
-            input_files
-                .len()
-                .max(usize::from(cli.capture_args.device.is_some())),
-            if hep_senders > 0 {
-                format!(" and up to {hep_senders} HEP senders, max_tracked_peers")
-            } else {
-                String::new()
-            },
-            if hep_senders > 0 {
-                ", or lower max_tracked_peers"
-            } else {
-                ""
-            },
-        )));
+/// The refusal for a run with more capture sources than the capture-source
+/// table holds, or `None` when they fit.
+///
+/// Every capture source the run can have must fit the capture-source
+/// table, or packets from the ones that do not lose their pointer back to
+/// where they came from: each input file, and with --hep-listen every HEP
+/// sender the roster can track. Traced processes (uprobe) have no fixed
+/// count and are not part of the check.
+///
+/// # Arguments
+///
+/// * `max_capture_sources` — the table's size.
+/// * `inputs` — input files, or 1 for a `-d` device.
+/// * `hep_senders` — HEP senders the roster can track; 0 without `-L`.
+fn capture_source_capacity_refusal(
+    max_capture_sources: usize,
+    inputs: usize,
+    hep_senders: usize,
+) -> Option<String> {
+    let needed = inputs + hep_senders;
+    if max_capture_sources >= needed {
+        return None;
     }
-
-    Ok(RunPlan {
-        source,
-        input_files,
-        capture_config,
-        portrange,
-        policy: CapturePolicy {
-            split_bytes,
-            split_duration,
-            // 0 disables the bound rather than naming the open file among the
-            // things to remove; see `PcapWriter::keep_last_splits`.
-            split_keep: cli.capture_args.split_keep.filter(|&n| n > 0),
-            autostop_duration,
-            autostop_filesize_bytes,
-            portrange,
+    Some(format!(
+        "max_capture_sources is {max_capture_sources}, but this run can have {needed} \
+         capture sources ({inputs} input(s){}); raise --max-capture-sources / [limits] \
+         max_capture_sources to at least {needed}{}",
+        if hep_senders > 0 {
+            format!(" and up to {hep_senders} HEP senders, max_tracked_peers")
+        } else {
+            String::new()
         },
-        matcher,
-        filter_expr,
-        vcon_filter_expr,
-        output_opts,
-        event_exec,
-        mode,
-        metrics_bind,
-        max_capture_sources,
-    })
+        if hep_senders > 0 {
+            ", or lower max_tracked_peers"
+        } else {
+            ""
+        },
+    ))
 }
 
 /// The running capture: its thread handle and the packet channel receiver.
@@ -1186,40 +1418,58 @@ pub struct Launched {
 /// reads one error rather than two.
 #[cfg(feature = "tls")]
 fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_source::KeylogSource> {
-    use crate::capture::keylog_source::KeylogSource;
-
     if let Some(fd) = cli.tls_args.keylog_fd {
-        return match KeylogSource::from_fd(fd) {
-            Ok(s) => {
-                tracing::info!("TLS decryption: reading keylog lines from inherited fd {fd}");
-                Some(s)
-            }
-            Err(e) => {
-                tracing::error!("--keylog-fd {fd} is not a readable descriptor: {e}");
-                None
-            }
-        };
+        return adopt_keylog_fd(fd);
     }
-
-    let path = cli.tls_args.keylog.as_deref()?;
-    let path = std::path::Path::new(path);
-    if !KeylogSource::is_fifo(path) {
-        return match KeylogSource::open_file_now(path) {
-            Ok(s) => {
-                tracing::debug!(
-                    "TLS decryption: opened keylog {} while privileged",
-                    path.display()
-                );
-                Some(s)
-            }
-            Err(e) => {
-                tracing::debug!("{e:#}; the decryptor will report it");
-                None
-            }
-        };
+    let path = std::path::Path::new(cli.tls_args.keylog.as_deref()?);
+    if crate::capture::keylog_source::KeylogSource::is_fifo(path) {
+        open_keylog_fifo(path)
+    } else {
+        open_keylog_file(path)
     }
+}
 
-    match KeylogSource::open_auto(path) {
+/// Adopt `--keylog-fd` as a live keylog stream; reported and `None` when the
+/// descriptor is not readable.
+#[cfg(feature = "tls")]
+fn adopt_keylog_fd(fd: i32) -> Option<crate::capture::keylog_source::KeylogSource> {
+    match crate::capture::keylog_source::KeylogSource::from_fd(fd) {
+        Ok(s) => {
+            tracing::info!("TLS decryption: reading keylog lines from inherited fd {fd}");
+            Some(s)
+        }
+        Err(e) => {
+            tracing::error!("--keylog-fd {fd} is not a readable descriptor: {e}");
+            None
+        }
+    }
+}
+
+/// Open an ordinary `--keylog` file now, for the decryptor to read from its
+/// start; `None`, quietly, when it cannot be opened (the decryptor's own
+/// attempt reports that).
+#[cfg(feature = "tls")]
+fn open_keylog_file(path: &std::path::Path) -> Option<crate::capture::keylog_source::KeylogSource> {
+    match crate::capture::keylog_source::KeylogSource::open_file_now(path) {
+        Ok(s) => {
+            tracing::debug!(
+                "TLS decryption: opened keylog {} while privileged",
+                path.display()
+            );
+            Some(s)
+        }
+        Err(e) => {
+            tracing::debug!("{e:#}; the decryptor will report it");
+            None
+        }
+    }
+}
+
+/// Open a FIFO `--keylog` as a live stream; reported and `None` when it
+/// cannot be opened.
+#[cfg(feature = "tls")]
+fn open_keylog_fifo(path: &std::path::Path) -> Option<crate::capture::keylog_source::KeylogSource> {
+    match crate::capture::keylog_source::KeylogSource::open_auto(path) {
         Ok(s) => {
             tracing::info!(
                 "TLS decryption: {} is a FIFO, reading it as a live stream",
@@ -1348,6 +1598,140 @@ pub fn relay_poll_plan(
     }
 }
 
+/// Why a relay ask that `relay_stats_action` decided on will not transmit.
+#[derive(Debug)]
+enum RelayAskBlocked {
+    /// Nothing to say: the ask was not made, or (unreachable) a `Fetch` came
+    /// without the permit it implies.
+    Silent,
+    /// No relay was named -- `--rtpengine-control` absent.
+    NotConfigured,
+    /// This run may not transmit (a file-backed run).
+    NotPermitted,
+    /// The named relay is not an address and port.
+    BadAddress {
+        /// The `--rtpengine-control` value, verbatim.
+        addr: String,
+        /// Why it did not parse.
+        error: std::net::AddrParseError,
+    },
+}
+
+/// A relay ask cleared to transmit: the address as the operator wrote it,
+/// the socket it parsed to, and the permit that makes the ask callable.
+#[derive(Debug)]
+struct RelayAsk {
+    /// The `--rtpengine-control` value, verbatim, for messages.
+    addr: String,
+    /// Where the ask goes.
+    socket: std::net::SocketAddr,
+    /// The run's permission to transmit.
+    permit: TransmitPermit,
+}
+
+/// Turn a [`RelayStatsAction`] and the run's permit into an ask that may
+/// transmit, or the reason it may not.
+///
+/// Pure, so the gate both `--relay-stats` and `--relay-compare` pass through
+/// is tested without a relay. Each caller words the refusals for its own
+/// flag.
+///
+/// # Errors
+///
+/// The [`RelayAskBlocked`] reason when nothing may be sent.
+fn relay_ask(
+    action: RelayStatsAction,
+    permit: Option<TransmitPermit>,
+) -> Result<RelayAsk, RelayAskBlocked> {
+    let addr = match action {
+        RelayStatsAction::Skip => return Err(RelayAskBlocked::Silent),
+        RelayStatsAction::NotConfigured => return Err(RelayAskBlocked::NotConfigured),
+        RelayStatsAction::NotPermitted => return Err(RelayAskBlocked::NotPermitted),
+        RelayStatsAction::Fetch(addr) => addr,
+    };
+    // Unreachable: `Fetch` is only produced when `permit.is_some()`.
+    let Some(permit) = permit else {
+        return Err(RelayAskBlocked::Silent);
+    };
+    match addr.parse::<std::net::SocketAddr>() {
+        Ok(socket) => Ok(RelayAsk {
+            addr,
+            socket,
+            permit,
+        }),
+        Err(error) => Err(RelayAskBlocked::BadAddress { addr, error }),
+    }
+}
+
+/// Report why `--relay-stats` asked nothing.
+fn report_relay_stats_blocked(blocked: &RelayAskBlocked) {
+    match blocked {
+        RelayAskBlocked::Silent => {}
+        RelayAskBlocked::NotConfigured => {
+            tracing::error!(
+                "--relay-stats needs a relay to ask. Name one with \
+                 --rtpengine-control <addr>, for example \
+                 --rtpengine-control 127.0.0.1:22222."
+            );
+        }
+        RelayAskBlocked::NotPermitted => {
+            tracing::error!(
+                "--relay-stats will not ask a relay on a run that reads a file: \
+                 asking transmits, and a file's addresses are historical and \
+                 belong to third parties. Ask from a live capture (-d <device>)."
+            );
+        }
+        RelayAskBlocked::BadAddress { addr, error: e } => {
+            tracing::error!(
+                "--rtpengine-control {addr} is not an address and port ({e}); \
+                 nothing was asked."
+            );
+        }
+    }
+}
+
+/// Report why `--relay-compare` asked nothing.
+fn report_relay_compare_blocked(blocked: &RelayAskBlocked) {
+    match blocked {
+        RelayAskBlocked::Silent => {}
+        RelayAskBlocked::NotConfigured => {
+            tracing::error!(
+                "--relay-compare needs a relay to ask. Name one with \
+                 --rtpengine-control <addr>."
+            );
+        }
+        RelayAskBlocked::NotPermitted => {
+            tracing::error!(
+                "--relay-compare will not ask a relay on a run that reads a file: \
+                 asking transmits. Compare from a live capture (-d <device>)."
+            );
+        }
+        RelayAskBlocked::BadAddress { addr, error: e } => {
+            tracing::error!("--rtpengine-control {addr} is not an address and port ({e}).");
+        }
+    }
+}
+
+/// How one `--relay-stats` answer is printed: which rendering, for which
+/// request, in which output form.
+struct RelayStatsRendering<'a> {
+    /// The `--rtpengine-control` value, for messages.
+    addr: &'a str,
+    /// The label the formatter heads the output with.
+    label: &'a str,
+    /// When the relay was asked.
+    obtained_at: chrono::DateTime<chrono::Utc>,
+    /// `--relay-stats-list`: print the names the relay knows, not values.
+    listing: bool,
+    /// The Call-ID of a per-call (C2) fetch; `None` for a relay-wide or
+    /// name-list request.
+    per_call: Option<&'a str>,
+    /// `--json`.
+    json: bool,
+    /// `--json-pretty`.
+    json_pretty: bool,
+}
+
 /// Ask the relay for its own statistics and print them, when `--relay-stats`
 /// was given (ST1/C1).
 ///
@@ -1357,7 +1741,6 @@ pub fn relay_poll_plan(
 /// through the CLI's statistics formatter.
 fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-    use crate::security::transmit_guard::TransmitPermit;
 
     let permit = source.and_then(TransmitPermit::for_source);
     let asked = cli.rtp_args.relay_stats
@@ -1368,41 +1751,15 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
         cli.rtp_args.rtpengine_control.as_deref(),
         permit.is_some(),
     );
-    let addr = match action {
-        RelayStatsAction::Skip => return,
-        RelayStatsAction::NotConfigured => {
-            tracing::error!(
-                "--relay-stats needs a relay to ask. Name one with \
-                 --rtpengine-control <addr>, for example \
-                 --rtpengine-control 127.0.0.1:22222."
-            );
-            return;
-        }
-        RelayStatsAction::NotPermitted => {
-            tracing::error!(
-                "--relay-stats will not ask a relay on a run that reads a file: \
-                 asking transmits, and a file's addresses are historical and \
-                 belong to third parties. Ask from a live capture (-d <device>)."
-            );
-            return;
-        }
-        RelayStatsAction::Fetch(addr) => addr,
-    };
-    let Some(permit) = permit else {
-        // Unreachable: `Fetch` is only produced when `permit.is_some()`.
-        return;
-    };
-    let socket = match addr.parse::<std::net::SocketAddr>() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(
-                "--rtpengine-control {addr} is not an address and port ({e}); \
-                 nothing was asked."
-            );
+    let ask = match relay_ask(action, permit) {
+        Ok(ask) => ask,
+        Err(blocked) => {
+            report_relay_stats_blocked(&blocked);
             return;
         }
     };
-    let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
+    let addr = ask.addr.as_str();
+    let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
     let obtained_at = chrono::Utc::now();
     // Three renderings over two fetches. C3 (list) and C1 (relay-wide values)
     // both read the relay-wide `statistics` reply; C2 (per-call) reads one
@@ -1410,18 +1767,6 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     // over a Call-ID: naming a call and asking for the name list at once is
     // answered as the name list, since the call's key set is the relay's.
     let listing = cli.rtp_args.relay_stats_list;
-    let (fetched, label) = match (listing, cli.rtp_args.relay_stats_call.as_deref()) {
-        (false, Some(call_id)) => (
-            client.call_statistics(&permit, call_id),
-            format!("rtpengine at {addr}, call {call_id}"),
-        ),
-        _ => (client.statistics(&permit), format!("rtpengine at {addr}")),
-    };
-    use crate::output::relay_statistics as fmt;
-    // ST7: a machine-readable form that AGREES with the table, chosen the same
-    // way the per-message path chooses -- pretty first, else compact, else text.
-    let json = cli.output_args.json;
-    let json_pretty = cli.output_args.json_pretty;
     // Only a per-call fetch (C2) can be refused for the call; a relay-wide or
     // name-list request reads the relay's own `statistics`. `list` takes
     // precedence over a Call-ID above, so a listing fetch is never per-call.
@@ -1430,87 +1775,135 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
     } else {
         cli.rtp_args.relay_stats_call.as_deref()
     };
+    let (fetched, label) = match per_call {
+        Some(call_id) => (
+            client.call_statistics(&ask.permit, call_id),
+            format!("rtpengine at {addr}, call {call_id}"),
+        ),
+        None => (
+            client.statistics(&ask.permit),
+            format!("rtpengine at {addr}"),
+        ),
+    };
     match fetched {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
-            // ST-S4 condition 4: a `result: error` per-call reply is the relay's
-            // own refusal, not statistics. Read it as a refusal carrying the
-            // relay's reason -- never tier it into counter rows (`result ->
-            // error`) -- the same rule REST applies.
-            if let Some(call_id) = per_call
-                && let crate::stats_vocab::PerCallReply::Refused(reason) =
-                    crate::stats_vocab::classify_per_call_reply(&pairs)
-            {
-                tracing::error!(
-                    "relay at {addr} refused the statistics request for call \
-                     {call_id}: {reason}"
-                );
-                return;
-            }
-            let tiered = crate::stats_vocab::relay_reported(&pairs);
-            if listing {
-                // C3: the names the relay knows, listed (rtpengine enumerates
-                // them in the reply), never their values.
-                let names = crate::stats_vocab::known_names(&tiered);
-                let src = crate::stats_vocab::NameSource::Listed;
-                if json || json_pretty {
-                    println!(
-                        "{}",
-                        fmt::maybe_pretty(
-                            fmt::format_relay_stat_names_json(&names, src, &label, obtained_at),
-                            json_pretty
-                        )
-                    );
-                } else {
-                    print!(
-                        "{}",
-                        fmt::format_relay_stat_names(&names, src, &label, obtained_at)
-                    );
-                }
-            } else {
-                let wire = crate::stats_vocab::resolve_for_wire(&tiered);
-                if json || json_pretty {
-                    println!(
-                        "{}",
-                        fmt::maybe_pretty(
-                            fmt::format_relay_statistics_json(
-                                &wire,
-                                &label,
-                                obtained_at,
-                                fmt::FetchOrigin::Asked,
-                            ),
-                            json_pretty
-                        )
-                    );
-                } else {
-                    print!(
-                        "{}",
-                        fmt::format_relay_statistics(
-                            &wire,
-                            &label,
-                            obtained_at,
-                            fmt::FetchOrigin::Asked,
-                        )
-                    );
-                }
-            }
+            // ST7: a machine-readable form that AGREES with the table, chosen the
+            // same way the per-message path chooses -- pretty first, else
+            // compact, else text.
+            print_relay_statistics(
+                &pairs,
+                &RelayStatsRendering {
+                    addr,
+                    label: &label,
+                    obtained_at,
+                    listing,
+                    per_call,
+                    json: cli.output_args.json,
+                    json_pretty: cli.output_args.json_pretty,
+                },
+            );
         }
         Ok(other) => {
             tracing::error!("relay at {addr} answered {other:?}, not statistics");
         }
-        Err(e) => match crate::relay::types::fetch_error_outcome(&e) {
-            // ST-S4 condition 7: a reply arrived and could not be trusted (a
-            // mismatched cookie). Discarded, not interpreted, and reported as the
-            // answer's own problem -- suspect -- not as no answer at all.
-            crate::stats_vocab::StatisticsOutcome::Suspect => tracing::error!(
-                "relay at {addr}: {e}; the reply was discarded and not read (suspect)."
-            ),
-            // Unreachable: over UDP, a timeout is indistinguishable from a down
-            // relay, a filtered port or a lost reply, so it claims none of them.
-            _ => tracing::error!(
-                "relay at {addr} did not answer the statistics request ({e}); \
-                 asked, nothing came back."
-            ),
-        },
+        Err(e) => tracing::error!("{}", relay_stats_fetch_failure(addr, &e)),
+    }
+}
+
+/// What to say when a `--relay-stats` fetch brought back no usable reply.
+fn relay_stats_fetch_failure(addr: &str, e: &anyhow::Error) -> String {
+    match crate::relay::types::fetch_error_outcome(e) {
+        // ST-S4 condition 7: a reply arrived and could not be trusted (a
+        // mismatched cookie). Discarded, not interpreted, and reported as the
+        // answer's own problem -- suspect -- not as no answer at all.
+        crate::stats_vocab::StatisticsOutcome::Suspect => {
+            format!("relay at {addr}: {e}; the reply was discarded and not read (suspect).")
+        }
+        // Unreachable: over UDP, a timeout is indistinguishable from a down
+        // relay, a filtered port or a lost reply, so it claims none of them.
+        _ => format!(
+            "relay at {addr} did not answer the statistics request ({e}); \
+             asked, nothing came back."
+        ),
+    }
+}
+
+/// Print a `statistics` reply as the request asked for it: a per-call
+/// refusal, the name list (C3), or the values (C1/C2).
+fn print_relay_statistics(pairs: &[(String, String)], r: &RelayStatsRendering<'_>) {
+    // ST-S4 condition 4: a `result: error` per-call reply is the relay's
+    // own refusal, not statistics. Read it as a refusal carrying the
+    // relay's reason -- never tier it into counter rows (`result ->
+    // error`) -- the same rule REST applies.
+    if let Some(call_id) = r.per_call
+        && let crate::stats_vocab::PerCallReply::Refused(reason) =
+            crate::stats_vocab::classify_per_call_reply(pairs)
+    {
+        tracing::error!(
+            "relay at {} refused the statistics request for call \
+             {call_id}: {reason}",
+            r.addr
+        );
+        return;
+    }
+    let tiered = crate::stats_vocab::relay_reported(pairs);
+    if r.listing {
+        print_relay_stat_names(&tiered, r);
+    } else {
+        print_relay_stat_values(&tiered, r);
+    }
+}
+
+/// C3: the names the relay knows, listed (rtpengine enumerates them in the
+/// reply), never their values.
+fn print_relay_stat_names(
+    tiered: &[crate::stats_vocab::TieredStatistic],
+    r: &RelayStatsRendering<'_>,
+) {
+    use crate::output::relay_statistics as fmt;
+    let names = crate::stats_vocab::known_names(tiered);
+    let src = crate::stats_vocab::NameSource::Listed;
+    if r.json || r.json_pretty {
+        println!(
+            "{}",
+            fmt::maybe_pretty(
+                fmt::format_relay_stat_names_json(&names, src, r.label, r.obtained_at),
+                r.json_pretty
+            )
+        );
+    } else {
+        print!(
+            "{}",
+            fmt::format_relay_stat_names(&names, src, r.label, r.obtained_at)
+        );
+    }
+}
+
+/// C1/C2: the relay's values, resolved to the three-state wire form.
+fn print_relay_stat_values(
+    tiered: &[crate::stats_vocab::TieredStatistic],
+    r: &RelayStatsRendering<'_>,
+) {
+    use crate::output::relay_statistics as fmt;
+    let wire = crate::stats_vocab::resolve_for_wire(tiered);
+    if r.json || r.json_pretty {
+        println!(
+            "{}",
+            fmt::maybe_pretty(
+                fmt::format_relay_statistics_json(
+                    &wire,
+                    r.label,
+                    r.obtained_at,
+                    fmt::FetchOrigin::Asked,
+                ),
+                r.json_pretty
+            )
+        );
+    } else {
+        print!(
+            "{}",
+            fmt::format_relay_statistics(&wire, r.label, r.obtained_at, fmt::FetchOrigin::Asked,)
+        );
     }
 }
 
@@ -1536,11 +1929,6 @@ pub fn report_relay_comparison(
     stream_store: &crate::rtp::stream_store::StreamStore,
 ) {
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-    use crate::security::transmit_guard::TransmitPermit;
-    use crate::stats_vocab::{
-        CompareOutcome, PerCallReply, RelayCompareValue, classify_per_call_reply, ready_comparison,
-        relay_compare_value, relay_reported,
-    };
 
     let permit = TransmitPermit::for_source(source);
     let action = relay_stats_action(
@@ -1548,34 +1936,14 @@ pub fn report_relay_comparison(
         cli.rtp_args.rtpengine_control.as_deref(),
         permit.is_some(),
     );
-    let addr = match action {
-        RelayStatsAction::Skip => return,
-        RelayStatsAction::NotConfigured => {
-            tracing::error!(
-                "--relay-compare needs a relay to ask. Name one with \
-                 --rtpengine-control <addr>."
-            );
-            return;
-        }
-        RelayStatsAction::NotPermitted => {
-            tracing::error!(
-                "--relay-compare will not ask a relay on a run that reads a file: \
-                 asking transmits. Compare from a live capture (-d <device>)."
-            );
-            return;
-        }
-        RelayStatsAction::Fetch(addr) => addr,
-    };
-    let Some(permit) = permit else {
-        return; // Unreachable: `Fetch` implies `permit.is_some()`.
-    };
-    let socket = match addr.parse::<std::net::SocketAddr>() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("--rtpengine-control {addr} is not an address and port ({e}).");
+    let ask = match relay_ask(action, permit) {
+        Ok(ask) => ask,
+        Err(blocked) => {
+            report_relay_compare_blocked(&blocked);
             return;
         }
     };
+    let addr = ask.addr.as_str();
 
     // sipnab's own side, from the RTP it actually captured for the call. A
     // stream is created only when a packet arrives, so a call with any linked
@@ -1588,111 +1956,193 @@ pub fn report_relay_comparison(
         None
     };
 
-    let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
-    let obtained_at = chrono::Utc::now();
+    let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
     let label = format!("rtpengine at {addr}");
+    let comparison = RelayComparisonRendering {
+        addr,
+        call_id,
+        label: &label,
+        obtained_at: chrono::Utc::now(),
+        json: cli.output_args.json,
+        json_pretty: cli.output_args.json_pretty,
+    };
 
-    match client.call_statistics(&permit, call_id) {
+    match client.call_statistics(&ask.permit, call_id) {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
-            // ST-S4 condition 4: a `result: error` reply is a refusal, carrying
-            // the relay's own reason. Report it as one BEFORE deciding the call
-            // is absent -- otherwise `Unknown call-id` and `No call-id in
-            // message` both collapse into "does not hold call", dropping the
-            // distinction the operator needs.
-            if let PerCallReply::Refused(reason) = classify_per_call_reply(&pairs) {
-                tracing::error!(
-                    "relay at {addr} refused the per-call statistics request for \
-                     call {call_id}: {reason}; nothing to compare."
-                );
-                return;
-            }
-            let tiered = relay_reported(&pairs);
-            // The call-level RTP total, both directions, as the relay counts it.
-            // Absent when the relay does not hold the call (rtpengine answers
-            // `Unknown call-id`, which carries no `totals.RTP.packets`); SUSPECT
-            // (ST-S4 condition 11) when the relay reports a value too large for
-            // u64 -- carried as its digits, never coerced to absent, which would
-            // read as "does not hold the call".
-            let relay_side = match relay_compare_value(&tiered, "totals.RTP.packets") {
-                RelayCompareValue::Overflow(digits) => {
-                    tracing::error!(
-                        "relay at {addr} reported {digits} RTP packet(s) for call \
-                         {call_id}, a value too large to compare; the answer is suspect, \
-                         carried as received and not truncated."
-                    );
-                    return;
-                }
-                RelayCompareValue::Counted(n) => Some(n),
-                RelayCompareValue::Absent => None,
-            };
-            match ready_comparison(relay_side, sipnab_side) {
-                CompareOutcome::Compared(comparison) => {
-                    use crate::output::relay_statistics as fmt;
-                    if cli.output_args.json || cli.output_args.json_pretty {
-                        println!(
-                            "{}",
-                            fmt::maybe_pretty(
-                                fmt::format_relay_comparison_json(
-                                    &comparison,
-                                    call_id,
-                                    &label,
-                                    obtained_at,
-                                ),
-                                cli.output_args.json_pretty
-                            )
-                        );
-                    } else {
-                        print!(
-                            "{}",
-                            fmt::format_relay_comparison(&comparison, call_id, &label, obtained_at)
-                        );
-                    }
-                }
-                CompareOutcome::SipnabHasNoRtp { relay_value } => {
-                    // The call IS on the relay, but sipnab captured no media for
-                    // it. Most often the capture filter: sipnab's default is
-                    // SIP-only, so RTP on the relay's media ports never reached
-                    // the parser. Say that rather than showing 0 vs a big number.
-                    tracing::warn!(
-                        "relay at {addr} reports {relay_value} RTP packet(s) for call \
-                         {call_id}, but sipnab captured no RTP for it, so there is nothing \
-                         to compare. If you expected media, widen the capture filter to \
-                         include the RTP ports -- the default filter is SIP-only."
-                    );
-                }
-                CompareOutcome::RelayDoesNotHoldCall { sipnab_value } => {
-                    tracing::warn!(
-                        "sipnab measured {sipnab_value} RTP packet(s) for call {call_id}, \
-                         but relay at {addr} does not hold it, so there is nothing from the \
-                         relay to compare against."
-                    );
-                }
-                CompareOutcome::NeitherSide => {
-                    tracing::warn!(
-                        "neither does relay at {addr} hold call {call_id} nor did sipnab \
-                         capture RTP for it; nothing to compare."
-                    );
-                }
-            }
+            compare_relay_statistics(&pairs, sipnab_side, &comparison);
         }
         Ok(other) => {
             tracing::error!("relay at {addr} answered {other:?}, not per-call statistics");
         }
-        Err(e) => {
-            let measured = sipnab_side.unwrap_or(0);
-            match crate::relay::types::fetch_error_outcome(&e) {
-                // ST-S4 condition 7: a reply arrived and could not be trusted.
-                crate::stats_vocab::StatisticsOutcome::Suspect => tracing::error!(
-                    "relay at {addr}: {e}; the reply for call {call_id} was discarded and not \
-                     read (suspect). sipnab measured {measured} RTP packet(s)."
-                ),
-                _ => tracing::error!(
-                    "relay at {addr} did not answer the per-call statistics request for \
-                     call {call_id} ({e}); sipnab measured {measured} RTP packet(s), but the \
-                     relay's side did not arrive."
-                ),
+        Err(e) => tracing::error!(
+            "{}",
+            relay_compare_fetch_failure(&comparison, sipnab_side.unwrap_or(0), &e)
+        ),
+    }
+}
+
+/// What to say when a `--relay-compare` fetch brought back no usable reply,
+/// beside the count sipnab measured.
+fn relay_compare_fetch_failure(
+    r: &RelayComparisonRendering<'_>,
+    measured: u64,
+    e: &anyhow::Error,
+) -> String {
+    let (addr, call_id) = (r.addr, r.call_id);
+    match crate::relay::types::fetch_error_outcome(e) {
+        // ST-S4 condition 7: a reply arrived and could not be trusted.
+        crate::stats_vocab::StatisticsOutcome::Suspect => format!(
+            "relay at {addr}: {e}; the reply for call {call_id} was discarded and not \
+             read (suspect). sipnab measured {measured} RTP packet(s)."
+        ),
+        _ => format!(
+            "relay at {addr} did not answer the per-call statistics request for \
+             call {call_id} ({e}); sipnab measured {measured} RTP packet(s), but the \
+             relay's side did not arrive."
+        ),
+    }
+}
+
+/// How one `--relay-compare` answer is printed.
+struct RelayComparisonRendering<'a> {
+    /// The `--rtpengine-control` value, for messages.
+    addr: &'a str,
+    /// The call being compared.
+    call_id: &'a str,
+    /// The label the formatter heads the output with.
+    label: &'a str,
+    /// When the relay was asked.
+    obtained_at: chrono::DateTime<chrono::Utc>,
+    /// `--json`.
+    json: bool,
+    /// `--json-pretty`.
+    json_pretty: bool,
+}
+
+/// Compare a per-call `statistics` reply against sipnab's own count and print
+/// the outcome.
+fn compare_relay_statistics(
+    pairs: &[(String, String)],
+    sipnab_side: Option<u64>,
+    r: &RelayComparisonRendering<'_>,
+) {
+    use crate::stats_vocab::{CompareOutcome, ready_comparison};
+
+    let relay_side = match relay_side_of_comparison(pairs, r.addr, r.call_id) {
+        Ok(v) => v,
+        Err(refusal) => {
+            tracing::error!("{refusal}");
+            return;
+        }
+    };
+    match ready_comparison(relay_side, sipnab_side) {
+        CompareOutcome::Compared(comparison) => print_relay_comparison(&comparison, r),
+        gap => {
+            if let Some(msg) = comparison_gap(&gap, r.addr, r.call_id) {
+                tracing::warn!("{msg}");
             }
         }
+    }
+}
+
+/// The relay's per-call RTP packet total from a `statistics` reply: `None`
+/// when the relay does not hold the call.
+///
+/// # Errors
+///
+/// What to report instead of comparing: the relay's own refusal, or a total
+/// too large to compare.
+fn relay_side_of_comparison(
+    pairs: &[(String, String)],
+    addr: &str,
+    call_id: &str,
+) -> Result<Option<u64>, String> {
+    use crate::stats_vocab::{
+        PerCallReply, RelayCompareValue, classify_per_call_reply, relay_compare_value,
+        relay_reported,
+    };
+
+    // ST-S4 condition 4: a `result: error` reply is a refusal, carrying
+    // the relay's own reason. Report it as one BEFORE deciding the call
+    // is absent -- otherwise `Unknown call-id` and `No call-id in
+    // message` both collapse into "does not hold call", dropping the
+    // distinction the operator needs.
+    if let PerCallReply::Refused(reason) = classify_per_call_reply(pairs) {
+        return Err(format!(
+            "relay at {addr} refused the per-call statistics request for \
+             call {call_id}: {reason}; nothing to compare."
+        ));
+    }
+    let tiered = relay_reported(pairs);
+    // The call-level RTP total, both directions, as the relay counts it.
+    // Absent when the relay does not hold the call (rtpengine answers
+    // `Unknown call-id`, which carries no `totals.RTP.packets`); SUSPECT
+    // (ST-S4 condition 11) when the relay reports a value too large for
+    // u64 -- carried as its digits, never coerced to absent, which would
+    // read as "does not hold the call".
+    match relay_compare_value(&tiered, "totals.RTP.packets") {
+        RelayCompareValue::Overflow(digits) => Err(format!(
+            "relay at {addr} reported {digits} RTP packet(s) for call \
+             {call_id}, a value too large to compare; the answer is suspect, \
+             carried as received and not truncated."
+        )),
+        RelayCompareValue::Counted(n) => Ok(Some(n)),
+        RelayCompareValue::Absent => Ok(None),
+    }
+}
+
+/// What to say when only one side of a comparison, or neither, is present;
+/// `None` for an outcome that was compared.
+fn comparison_gap(
+    outcome: &crate::stats_vocab::CompareOutcome,
+    addr: &str,
+    call_id: &str,
+) -> Option<String> {
+    use crate::stats_vocab::CompareOutcome;
+
+    match outcome {
+        CompareOutcome::Compared(_) => None,
+        // The call IS on the relay, but sipnab captured no media for
+        // it. Most often the capture filter: sipnab's default is
+        // SIP-only, so RTP on the relay's media ports never reached
+        // the parser. Say that rather than showing 0 vs a big number.
+        CompareOutcome::SipnabHasNoRtp { relay_value } => Some(format!(
+            "relay at {addr} reports {relay_value} RTP packet(s) for call \
+             {call_id}, but sipnab captured no RTP for it, so there is nothing \
+             to compare. If you expected media, widen the capture filter to \
+             include the RTP ports -- the default filter is SIP-only."
+        )),
+        CompareOutcome::RelayDoesNotHoldCall { sipnab_value } => Some(format!(
+            "sipnab measured {sipnab_value} RTP packet(s) for call {call_id}, \
+             but relay at {addr} does not hold it, so there is nothing from the \
+             relay to compare against."
+        )),
+        CompareOutcome::NeitherSide => Some(format!(
+            "neither does relay at {addr} hold call {call_id} nor did sipnab \
+             capture RTP for it; nothing to compare."
+        )),
+    }
+}
+
+/// Print a comparison both sides of which are present.
+fn print_relay_comparison(
+    comparison: &crate::stats_vocab::TierComparison,
+    r: &RelayComparisonRendering<'_>,
+) {
+    use crate::output::relay_statistics as fmt;
+    if r.json || r.json_pretty {
+        println!(
+            "{}",
+            fmt::maybe_pretty(
+                fmt::format_relay_comparison_json(comparison, r.call_id, r.label, r.obtained_at,),
+                r.json_pretty
+            )
+        );
+    } else {
+        print!(
+            "{}",
+            fmt::format_relay_comparison(comparison, r.call_id, r.label, r.obtained_at)
+        );
     }
 }
 
@@ -1810,46 +2260,12 @@ pub fn launch(
     // opened: without them the flag silently degrades (--mcp used to run a
     // plain batch capture with no server; --hep-listen used to error late at
     // capture spawn with a generic failure and exit 1).
-    #[cfg(not(feature = "mcp"))]
-    if cli.mcp_args.mcp {
-        tracing::error!("--mcp requires the 'mcp' feature (not compiled in)");
-        crate::capture::archive::release_run_and_exit(2);
-    }
-    #[cfg(not(feature = "hep"))]
-    if cli.hep_args.hep_listen.is_some() {
-        tracing::error!("--hep-listen requires the 'hep' feature (not compiled in)");
+    if let Some(msg) = uncompiled_source_flag(cli) {
+        tracing::error!("{msg}");
         crate::capture::archive::release_run_and_exit(2);
     }
 
-    let source = match source {
-        Some(s) => s,
-        None => {
-            // Auto-detect default network interface
-            match capture::device::find_default_device() {
-                Ok(device) => {
-                    tracing::info!("Auto-detected capture device: {}", device);
-                    CaptureSource::Live { device }
-                }
-                Err(e) => {
-                    let devices = capture::device::list_devices();
-                    if devices.is_empty() {
-                        tracing::error!(
-                            "No capture device found. Use -d <device> or -I <file>\n  \
-                             Try: sudo sipnab"
-                        );
-                    } else {
-                        tracing::error!(
-                            "{}\n  Available devices: {}\n  Try: sipnab -d {}",
-                            e,
-                            devices.join(", "),
-                            devices[0]
-                        );
-                    }
-                    crate::capture::archive::release_run_and_exit(1);
-                }
-            }
-        }
-    };
+    let source = source.unwrap_or_else(auto_detect_source);
 
     // Whether this run may put a packet on the network at all — decided from
     // the source that was actually resolved (auto-detection included), before
@@ -1866,129 +2282,52 @@ pub fn launch(
     // snapshot above is. Prints and returns; the run proceeds.
     report_relay_statistics(cli, Some(&source));
 
-    // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
-    //     grows under load up to the cap and the (unbounded) storage frees its
-    //     segments when idle. Capacity is derived from the memory budget.
-    //
-    //     A file source gets the batched shape: its reader sends whole batches
-    //     (one channel item per FILE_BATCH packets), so the slot pool is
-    //     divided to keep the in-flight PACKET bound the capacity names. A
-    //     live source keeps per-packet slots — its packets must be visible
-    //     the moment they arrive, so nothing batches them.
-    let capacity = capture_config.channel_capacity();
-    let (tx, rx) = match &source {
-        CaptureSource::File { .. } => capture::channel::packet_channel_batched(capacity),
-        _ => capture::channel::packet_channel(capacity),
+    let reconfigure = RuntimeReconfigure::for_source(cli, &source);
+    let (capture, (reconfigure_control, reconfigure_outcomes)) =
+        start_capture_thread(cli, source, capture_config, reconfigure);
+
+    let confined = match confine_after_capture_start(cli, config, mode, transmit_permit) {
+        Ok(c) => c,
+        Err(e) => capture.abort(e),
     };
 
-    // 15. Start the capture thread (multi-device aware).
-    //     Use a rendezvous channel so the capture thread can signal that the
-    //     device/file/socket is open before we drop privileges.
-    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
-
-    // Runtime BPF-filter re-apply is available on a single or fanout LIVE
-    // device only (not `--multi-device`, not a file/uprobe/HEP source). Build
-    // the shared control just for that case; elsewhere the TUI shows the editor
-    // as validate-only rather than pretending an apply that no loop would run.
-    let (reconfigure_control, reconfigure_handle, reconfigure_outcomes) =
-        if !cli.capture_args.multi_device && matches!(source, CaptureSource::Live { .. }) {
-            let control = std::sync::Arc::new(crate::capture::reconfigure::FilterControl::new());
-            let (otx, orx) = crossbeam_channel::unbounded();
-            let handle = crate::capture::reconfigure::ReconfigureHandle {
-                control: std::sync::Arc::clone(&control),
-                outcomes: otx,
-            };
-            (Some(control), Some(handle), Some(orx))
-        } else {
-            (None, None, None)
-        };
-
-    let handle = if cli.capture_args.multi_device {
-        let device_str = match &source {
-            CaptureSource::Live { device } => device.clone(),
-            _ => {
-                tracing::error!("--multi-device requires a live capture device (-d)");
-                crate::capture::archive::release_run_and_exit(2);
-            }
-        };
-        match capture::start_multi_capture(&device_str, capture_config.clone(), tx, Some(ready_tx))
-        {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::error!("Failed to start multi-device capture: {e}");
-                crate::capture::archive::release_run_and_exit(1);
-            }
-        }
-    } else {
-        match capture::start_capture(
-            source,
-            capture_config.clone(),
-            tx,
-            Some(ready_tx),
-            reconfigure_handle,
-        ) {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::error!("Failed to start capture: {e}");
-                crate::capture::archive::release_run_and_exit(1);
-            }
-        }
-    };
-
-    // 15a. Wait for the capture thread to confirm the device/file/socket is open.
-    //      This must happen BEFORE privilege drop so we don't lose CAP_NET_RAW.
-    match ready_rx.recv() {
-        Ok(Ok(())) => {
-            tracing::debug!("Capture source opened successfully");
-        }
-        Ok(Err(e)) => {
-            let is_permission = crate::capture::live::is_permission_error(&e);
-            if is_permission {
-                // A composite names its INTERFACE members only. This message
-                // tells the operator which device to grant capture rights on,
-                // and a HEP listener needs none — naming it here would send
-                // them to run `setcap` for a UDP socket that opened fine.
-                let dev_name = match &handle.source {
-                    CaptureSource::Live { device } => device.clone(),
-                    CaptureSource::Composite(members) => {
-                        let devices: Vec<&str> = members
-                            .iter()
-                            .filter_map(|m| match m {
-                                CaptureSource::Live { device } => Some(device.as_str()),
-                                _ => None,
-                            })
-                            .collect();
-                        if devices.is_empty() {
-                            handle.source.label()
-                        } else {
-                            devices.join(", ")
-                        }
-                    }
-                    _ => "capture source".to_string(),
-                };
-                tracing::error!(
-                    "Permission denied on '{}'. Grant capture capabilities once \
-                     (Linux), then re-run without sudo:\n  \
-                     sipnab --setup-caps\n  \
-                     # or run this invocation under sudo:\n  \
-                     sudo sipnab\n  \
-                     # equivalent manual step:\n  \
-                     sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)",
-                    dev_name
-                );
-            } else {
-                tracing::error!("Capture source failed to open: {e}");
-            }
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(1);
-        }
-        Err(_) => {
-            tracing::error!("Capture thread exited before signaling ready");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(1);
-        }
+    Launched {
+        handle: capture.handle,
+        rx: capture.rx,
+        kill_worker: confined.kill_worker,
+        #[cfg(feature = "tls")]
+        keylog_source: confined.keylog_source,
+        relay,
+        reconfigure_control,
+        reconfigure_outcomes,
     }
+}
 
+/// What the privileged window yielded beside the capture thread.
+struct Confined {
+    /// The scanner-kill worker process, when this run answers scanners.
+    kill_worker: Option<crate::process_isolation::ScannerKillHandle>,
+    /// The keylog source opened while privileged.
+    #[cfg(feature = "tls")]
+    keylog_source: Option<crate::capture::keylog_source::KeylogSource>,
+}
+
+/// Everything `launch` does once the capture source is open, in order: start
+/// the scanner-kill worker, chroot, open the keylog, drop privileges, start
+/// syslog, refuse flags this build cannot honor, protect key material, bound
+/// the reachable files, and record syscalls.
+///
+/// # Errors
+///
+/// The first step that failed, with its message and exit code (1 for an
+/// environment error, 2 for a flag this build cannot honor). The caller stops
+/// the capture thread and exits.
+fn confine_after_capture_start(
+    cli: &Cli,
+    config: &Config,
+    mode: &RunMode,
+    transmit_permit: Option<TransmitPermit>,
+) -> Result<Confined, PlanError> {
     // 16-kill. Start the scanner-kill worker process BEFORE the chroot and
     //         both sandboxes below. It is this binary re-executed, and each of
     //         those can stop an exec: a chroot hides the binary and its loader,
@@ -2002,54 +2341,12 @@ pub fn launch(
     //
     //         Its raw socket is opened first, while this process still holds
     //         CAP_NET_RAW, and only when --kill-spoof permits it.
-    //
-    //         Reading a capture file grants no transmit permit, so no worker is
-    //         started and no raw socket is opened -- which also keeps
-    //         `--kill-spoof raw -I file.pcap` from failing the run over a
-    //         socket it was never going to use. The operator has already been
-    //         told (in `plan`) that the kill response is off for this run.
-    //         Debug-level here: one warning per run, not one per decision
-    //         point.
-    let kill_worker = if matches!(mode, RunMode::Batch) && kill_worker_wanted(cli, config) {
-        match transmit_permit {
-            None => {
-                tracing::debug!("Scanner-kill: offline run, not starting a worker process");
-                None
-            }
-            Some(permit) => {
-                let raw_kill_sock = if cli.security_args.kill_spoof
-                    != crate::cli::KillSpoof::Ephemeral
-                {
-                    match crate::process_isolation::RawKillSocket::open(&permit) {
-                        Ok(sock) => {
-                            tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
-                            Some(sock)
-                        }
-                        Err(e) => {
-                            if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw {
-                                tracing::error!(
-                                    "--kill-spoof raw requires a raw socket but it could not be opened: {e}. \
-                                     Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
-                                     --kill-spoof ephemeral."
-                                );
-                                capture::stop_and_join(handle, rx);
-                                crate::capture::archive::release_run_and_exit(1);
-                            }
-                            tracing::warn!(
-                                "Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral \
-                                 source port. Kill responses will come from sipnab's own port."
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                spawn_kill_worker(cli, config, raw_kill_sock, permit)
-            }
+    let kill_worker = match kill_worker_permit(cli, config, mode, transmit_permit) {
+        Some(permit) => {
+            let raw_kill_sock = open_raw_kill_socket(cli, &permit)?;
+            spawn_kill_worker(cli, config, raw_kill_sock, permit)
         }
-    } else {
-        None
+        None => None,
     };
 
     // 16. Chroot BEFORE dropping privileges (chroot requires root).
@@ -2059,12 +2356,9 @@ pub fn launch(
         .chroot
         .as_ref()
         .or(config.privilege.chroot.as_ref());
-    if let Some(ref chroot_dir) = effective_chroot
-        && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
-    {
-        tracing::error!("Failed to chroot: {e}");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(1);
+    if let Some(ref chroot_dir) = effective_chroot {
+        privilege::do_chroot(std::path::Path::new(chroot_dir))
+            .map_err(|e| PlanError::new(1, format!("Failed to chroot: {e}")))?;
     }
 
     // 15b. Open the keylog source while still privileged, for the same reason
@@ -2081,112 +2375,27 @@ pub fn launch(
     // proxy that wrote it could not be read at all.
     #[cfg(feature = "tls")]
     let keylog_source = open_privileged_keylog_source(cli);
-    #[cfg(not(feature = "tls"))]
-    if cli.tls_args.keylog_fd.is_some() {
-        tracing::error!("--keylog-fd requires the 'tls' feature (not compiled in)");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(2);
+    if !cfg!(feature = "tls") && cli.tls_args.keylog_fd.is_some() {
+        return Err(PlanError::arg(
+            "--keylog-fd requires the 'tls' feature (not compiled in)".to_string(),
+        ));
     }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
     let effective_user = effective_user(cli, config);
     let effective_no_priv_drop = cli.no_priv_drop(config);
-    if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
-        tracing::error!("Failed to drop privileges: {e}");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(1);
-    }
+    privilege::drop_privileges(effective_user, effective_no_priv_drop)
+        .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
 
     // 16b. Initialize syslog if --syslog is set
     if cli.security_args.syslog {
         crate::security::alerting::init_syslog();
     }
 
-    // 16c. Validate --hep-send requires hep feature
-    #[cfg(not(feature = "hep"))]
-    if cli.hep_args.hep_send.is_some() {
-        tracing::error!("HEP support requires --features hep");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(2);
-    }
-
-    // 16d. Validate --hep-parse requires hep feature
-    #[cfg(not(feature = "hep"))]
-    if cli.hep_parse(config) {
-        tracing::error!("HEP support requires --features hep");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(2);
-    }
-
-    // 16d2. Validate TLS flags require tls feature
-    #[cfg(not(feature = "tls"))]
-    {
-        if cli.tls_args.tls_key.is_some() {
-            tracing::error!("--tls-key requires the 'tls' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-        if cli.tls_args.keylog.is_some() {
-            tracing::error!("--keylog requires the 'tls' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-        if cli.tls_args.keylog_watch {
-            tracing::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-        if cli.tls_args.srtp_keys.is_some() {
-            tracing::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-    }
-
-    // 16d3. Validate API flags require api feature
-    #[cfg(not(feature = "api"))]
-    {
-        if cli.listener_args.api.is_some() {
-            tracing::error!("--api requires the 'api' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-        if cli.listener_args.api_key.is_some() {
-            tracing::error!("--api-key requires the 'api' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-        if cli.listener_args.api_tls_cert.is_some() {
-            tracing::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-        if cli.listener_args.api_tls_key.is_some() {
-            tracing::error!("--api-tls-key requires the 'api' feature (not compiled in)");
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-    }
-
-    // 16e. Validate --pcap-export-mode
-    match cli.tls_args.pcap_export_mode.as_str() {
-        "decrypted" | "encrypted+dsb" | "raw" => {}
-        other => {
-            tracing::error!(
-                "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
-            );
-            capture::stop_and_join(handle, rx);
-            crate::capture::archive::release_run_and_exit(2);
-        }
-    }
-
-    // 16f. --dtls-keylog: the DTLS-SRTP extractor is constructed later (alongside
-    // the SRTP context); here we only enforce the feature gate.
-    #[cfg(not(feature = "tls"))]
-    if cli.tls_args.dtls_keylog.is_some() {
-        tracing::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(2);
+    // 16c-16f. Flags whose feature is not compiled in, and
+    // `--pcap-export-mode`. See `post_drop_flag_refusal`.
+    if let Some(msg) = post_drop_flag_refusal(cli, config) {
+        return Err(PlanError::arg(msg));
     }
 
     // 16g. --api-tls-cert/--api-tls-key consistency is checked with the
@@ -2194,38 +2403,8 @@ pub fn launch(
     // either half may come from `[api] tls_cert` / `tls_key`.
 
     // 17. Disable core dumps if any decryption keys are loaded (D19)
-    // `--keylog-fd` counts: the secrets arrive over a pipe instead of from a
-    // path, but they land in the same process memory, so a core file would
-    // expose exactly what this disables core dumps to protect.
-    let has_decrypt_keys = cli.tls_args.tls_key.is_some()
-        || cli.tls_args.keylog.is_some()
-        || cli.tls_args.keylog_fd.is_some()
-        || cli.tls_args.srtp_keys.is_some()
-        || cli.tls_args.dtls_keylog.is_some();
-    if has_decrypt_keys
-        && !cli.tls_args.allow_coredump
-        && let Err(e) = privilege::disable_core_dumps()
-    {
-        tracing::error!("Failed to disable core dumps: {e}");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(1);
-    }
-
-    // Same trigger as core dumps: key material is resident in this process.
-    // Reported either way, because a low RLIMIT_MEMLOCK is common and an
-    // operator who is told nothing cannot tell a locked run from an unlocked
-    // one. Not fatal -- see `privilege::lock_key_memory`.
-    if has_decrypt_keys {
-        match privilege::lock_key_memory() {
-            privilege::MemoryLock::Locked => {
-                tracing::info!(
-                    "Key material locked into RAM (decryption active); it cannot reach swap"
-                );
-            }
-            privilege::MemoryLock::Unlocked(reason) => {
-                tracing::warn!("Key material is NOT locked into RAM: {reason}");
-            }
-        }
+    if has_decrypt_keys(cli) {
+        protect_key_material(cli.tls_args.allow_coredump)?;
     }
 
     // 18. Bound which files the rest of this run can reach.
@@ -2246,11 +2425,8 @@ pub fn launch(
     // line of it downstream of the packet channel — is inside the domain, and
     // the thread outside it does no filesystem work at all.
     let sandbox_status = install_path_sandbox(cli, config);
-    if let Err(refusal) = crate::sandbox::requirement_verdict(sandbox_mode(cli), &sandbox_status) {
-        tracing::error!("{refusal}");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(1);
-    }
+    crate::sandbox::requirement_verdict(sandbox_mode(cli), &sandbox_status)
+        .map_err(|refusal| PlanError::new(1, refusal))?;
 
     // 19. Record what this run asks the kernel for, if asked to.
     //
@@ -2273,15 +2449,481 @@ pub fn launch(
     // `SECCOMP_RET_LOG`, which allows.
     install_syscall_logging(cli);
 
-    Launched {
-        handle,
-        rx,
+    Ok(Confined {
         kill_worker,
         #[cfg(feature = "tls")]
         keylog_source,
-        relay,
-        reconfigure_control,
-        reconfigure_outcomes,
+    })
+}
+
+/// Keep loaded key material out of core files and swap.
+///
+/// Core dumps are disabled unless `--allow-coredump` was given. Memory is
+/// locked either way, and reported either way, because a low RLIMIT_MEMLOCK
+/// is common and an operator who is told nothing cannot tell a locked run
+/// from an unlocked one. A failed lock is not fatal -- see
+/// `privilege::lock_key_memory`.
+///
+/// # Errors
+///
+/// Exit code 1 when core dumps cannot be disabled.
+fn protect_key_material(allow_coredump: bool) -> Result<(), PlanError> {
+    apply_core_dump_policy(allow_coredump)?;
+    lock_key_memory_and_report();
+    Ok(())
+}
+
+/// Disable core dumps unless `--allow-coredump` was given.
+///
+/// # Errors
+///
+/// Exit code 1 when core dumps cannot be disabled.
+fn apply_core_dump_policy(allow_coredump: bool) -> Result<(), PlanError> {
+    if !allow_coredump {
+        privilege::disable_core_dumps()
+            .map_err(|e| PlanError::new(1, format!("Failed to disable core dumps: {e}")))?;
+    }
+    Ok(())
+}
+
+/// The refusal for a capture-source flag whose feature is not compiled in,
+/// checked before any capture device is opened.
+fn uncompiled_source_flag(cli: &Cli) -> Option<&'static str> {
+    if !cfg!(feature = "mcp") && cli.mcp_args.mcp {
+        return Some("--mcp requires the 'mcp' feature (not compiled in)");
+    }
+    if !cfg!(feature = "hep") && cli.hep_args.hep_listen.is_some() {
+        return Some("--hep-listen requires the 'hep' feature (not compiled in)");
+    }
+    None
+}
+
+/// The refusal for a flag checked after the privilege drop: one whose feature
+/// is not compiled in, or an unknown `--pcap-export-mode`.
+///
+/// Checked in this order, and the first that applies is the one reported.
+/// `--dtls-keylog`'s extractor is constructed later (alongside the SRTP
+/// context); here only its feature gate is enforced.
+fn post_drop_flag_refusal(cli: &Cli, config: &Config) -> Option<String> {
+    let no_hep = !cfg!(feature = "hep");
+    let no_tls = !cfg!(feature = "tls");
+    let no_api = !cfg!(feature = "api");
+    let tls = &cli.tls_args;
+    let listener = &cli.listener_args;
+    let feature_gates: [(bool, &str); 10] = [
+        // 16c. --hep-send requires the hep feature.
+        (
+            no_hep && cli.hep_args.hep_send.is_some(),
+            "HEP support requires --features hep",
+        ),
+        // 16d. --hep-parse requires the hep feature.
+        (
+            no_hep && cli.hep_parse(config),
+            "HEP support requires --features hep",
+        ),
+        // 16d2. TLS flags require the tls feature.
+        (
+            no_tls && tls.tls_key.is_some(),
+            "--tls-key requires the 'tls' feature (not compiled in)",
+        ),
+        (
+            no_tls && tls.keylog.is_some(),
+            "--keylog requires the 'tls' feature (not compiled in)",
+        ),
+        (
+            no_tls && tls.keylog_watch,
+            "--keylog-watch requires the 'tls' feature (not compiled in)",
+        ),
+        (
+            no_tls && tls.srtp_keys.is_some(),
+            "--srtp-keys requires the 'tls' feature (not compiled in)",
+        ),
+        // 16d3. API flags require the api feature.
+        (
+            no_api && listener.api.is_some(),
+            "--api requires the 'api' feature (not compiled in)",
+        ),
+        (
+            no_api && listener.api_key.is_some(),
+            "--api-key requires the 'api' feature (not compiled in)",
+        ),
+        (
+            no_api && listener.api_tls_cert.is_some(),
+            "--api-tls-cert requires the 'api' feature (not compiled in)",
+        ),
+        (
+            no_api && listener.api_tls_key.is_some(),
+            "--api-tls-key requires the 'api' feature (not compiled in)",
+        ),
+    ];
+    if let Some((_, msg)) = feature_gates.iter().find(|(refused, _)| *refused) {
+        return Some((*msg).to_string());
+    }
+    // 16e. Validate --pcap-export-mode
+    match tls.pcap_export_mode.as_str() {
+        "decrypted" | "encrypted+dsb" | "raw" => {}
+        other => {
+            return Some(format!(
+                "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
+            ));
+        }
+    }
+    // 16f. --dtls-keylog requires the tls feature.
+    (no_tls && tls.dtls_keylog.is_some())
+        .then(|| "--dtls-keylog requires the 'tls' feature (not compiled in)".to_string())
+}
+
+/// Whether this run loads decryption keys into process memory.
+///
+/// `--keylog-fd` counts: the secrets arrive over a pipe instead of from a
+/// path, but they land in the same process memory, so a core file would
+/// expose exactly what core dumps are disabled to protect.
+fn has_decrypt_keys(cli: &Cli) -> bool {
+    cli.tls_args.tls_key.is_some()
+        || cli.tls_args.keylog.is_some()
+        || cli.tls_args.keylog_fd.is_some()
+        || cli.tls_args.srtp_keys.is_some()
+        || cli.tls_args.dtls_keylog.is_some()
+}
+
+/// Lock key material into RAM and say whether it worked.
+fn lock_key_memory_and_report() {
+    match privilege::lock_key_memory() {
+        privilege::MemoryLock::Locked => {
+            tracing::info!(
+                "Key material locked into RAM (decryption active); it cannot reach swap"
+            );
+        }
+        privilege::MemoryLock::Unlocked(reason) => {
+            tracing::warn!("Key material is NOT locked into RAM: {reason}");
+        }
+    }
+}
+
+/// The capture source when none was planned: the default network interface.
+///
+/// # Side effects
+///
+/// Exits the process (code 1) when no device can be found, naming the
+/// devices that exist.
+fn auto_detect_source() -> CaptureSource {
+    match capture::device::find_default_device() {
+        Ok(device) => {
+            tracing::info!("Auto-detected capture device: {}", device);
+            CaptureSource::Live { device }
+        }
+        Err(e) => {
+            let devices = capture::device::list_devices();
+            if devices.is_empty() {
+                tracing::error!(
+                    "No capture device found. Use -d <device> or -I <file>\n  \
+                     Try: sudo sipnab"
+                );
+            } else {
+                tracing::error!(
+                    "{}\n  Available devices: {}\n  Try: sipnab -d {}",
+                    e,
+                    devices.join(", "),
+                    devices[0]
+                );
+            }
+            crate::capture::archive::release_run_and_exit(1);
+        }
+    }
+}
+
+/// The running capture thread and its packet receiver, held together until
+/// `launch` hands them over, so every startup failure after the thread
+/// started stops it the same way.
+struct StartedCapture {
+    /// Capture-thread handle.
+    handle: capture::CaptureHandle,
+    /// Receiving side of the packet channel.
+    rx: capture::channel::PacketRx,
+}
+
+impl StartedCapture {
+    /// Report `failure`, stop and join the capture thread, then exit the
+    /// process with the failure's code.
+    fn abort(self, failure: PlanError) -> ! {
+        failure.exit_after(|| capture::stop_and_join(self.handle, self.rx))
+    }
+}
+
+/// Runtime BPF-filter re-apply, for the one kind of source that supports it.
+///
+/// Available on a single or fanout LIVE device only (not `--multi-device`, not
+/// a file/uprobe/HEP source). The shared control is built just for that case;
+/// elsewhere the TUI shows the editor as validate-only rather than pretending
+/// an apply that no loop would run.
+struct RuntimeReconfigure {
+    /// The control the TUI stamps a new filter on.
+    control: std::sync::Arc<crate::capture::reconfigure::FilterControl>,
+    /// The capture loop's end: the same control and the outcome sender.
+    handle: crate::capture::reconfigure::ReconfigureHandle,
+    /// Where the TUI reads install outcomes.
+    outcomes: crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>,
+}
+
+impl RuntimeReconfigure {
+    /// The reconfigure parts for `source`, or `None` where a runtime re-apply
+    /// is not wired.
+    fn for_source(cli: &Cli, source: &CaptureSource) -> Option<Self> {
+        if cli.capture_args.multi_device || !matches!(source, CaptureSource::Live { .. }) {
+            return None;
+        }
+        let control = std::sync::Arc::new(crate::capture::reconfigure::FilterControl::new());
+        let (otx, orx) = crossbeam_channel::unbounded();
+        let handle = crate::capture::reconfigure::ReconfigureHandle {
+            control: std::sync::Arc::clone(&control),
+            outcomes: otx,
+        };
+        Some(Self {
+            control,
+            handle,
+            outcomes: orx,
+        })
+    }
+}
+
+/// The TUI's ends of a [`RuntimeReconfigure`]: the control and the outcome
+/// receiver, both `Some` or both `None`.
+type ReconfigureEnds = (
+    Option<std::sync::Arc<crate::capture::reconfigure::FilterControl>>,
+    Option<crossbeam_channel::Receiver<crate::capture::reconfigure::FilterApplyOutcome>>,
+);
+
+/// Create the packet channel, start the capture thread, and wait for it to
+/// confirm its source is open.
+///
+/// # Returns
+///
+/// The started capture, and the TUI's ends of the runtime reconfigure.
+///
+/// # Side effects
+///
+/// Exits the process when the thread cannot start (code 1, or 2 for
+/// `--multi-device` without a live device) or its source does not open
+/// (code 1).
+fn start_capture_thread(
+    cli: &Cli,
+    source: CaptureSource,
+    capture_config: &CaptureConfig,
+    reconfigure: Option<RuntimeReconfigure>,
+) -> (StartedCapture, ReconfigureEnds) {
+    // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
+    //     grows under load up to the cap and the (unbounded) storage frees its
+    //     segments when idle. Capacity is derived from the memory budget.
+    //
+    //     A file source gets the batched shape: its reader sends whole batches
+    //     (one channel item per FILE_BATCH packets), so the slot pool is
+    //     divided to keep the in-flight PACKET bound the capacity names. A
+    //     live source keeps per-packet slots — its packets must be visible
+    //     the moment they arrive, so nothing batches them.
+    let capacity = capture_config.channel_capacity();
+    let (tx, rx) = match &source {
+        CaptureSource::File { .. } => capture::channel::packet_channel_batched(capacity),
+        _ => capture::channel::packet_channel(capacity),
+    };
+
+    // 15. Start the capture thread (multi-device aware).
+    //     Use a rendezvous channel so the capture thread can signal that the
+    //     device/file/socket is open before we drop privileges.
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+
+    let (ends, reconfigure_handle): (ReconfigureEnds, _) = match reconfigure {
+        Some(r) => ((Some(r.control), Some(r.outcomes)), Some(r.handle)),
+        None => ((None, None), None),
+    };
+
+    let handle = match spawn_capture_thread(
+        cli,
+        source,
+        capture_config,
+        CaptureChannels {
+            tx,
+            ready_tx,
+            reconfigure: reconfigure_handle,
+        },
+    ) {
+        Ok(h) => h,
+        Err(e) => e.exit(),
+    };
+    let capture = StartedCapture { handle, rx };
+
+    // 15a. Wait for the capture thread to confirm the device/file/socket is open.
+    //      This must happen BEFORE privilege drop so we don't lose CAP_NET_RAW.
+    match ready_rx.recv() {
+        Ok(Ok(())) => {
+            tracing::debug!("Capture source opened successfully");
+        }
+        Ok(Err(e)) => {
+            let message = capture_open_failure(&e, &capture.handle.source);
+            capture.abort(PlanError::new(1, message));
+        }
+        Err(_) => capture.abort(PlanError::new(
+            1,
+            "Capture thread exited before signaling ready".to_string(),
+        )),
+    }
+    (capture, ends)
+}
+
+/// The capture thread's ends of its channels.
+struct CaptureChannels {
+    /// Where the thread sends packets.
+    tx: capture::channel::PacketTx,
+    /// Where the thread reports that its source opened, or why not.
+    ready_tx: crossbeam_channel::Sender<Result<(), String>>,
+    /// The runtime reconfigure the thread's loop polls, when wired.
+    reconfigure: Option<crate::capture::reconfigure::ReconfigureHandle>,
+}
+
+/// Spawn the capture thread for `source` (multi-device aware).
+///
+/// # Errors
+///
+/// Exit code 2 for `--multi-device` without a live device; exit code 1 when
+/// the thread cannot start.
+fn spawn_capture_thread(
+    cli: &Cli,
+    source: CaptureSource,
+    capture_config: &CaptureConfig,
+    channels: CaptureChannels,
+) -> Result<capture::CaptureHandle, PlanError> {
+    if !cli.capture_args.multi_device {
+        return capture::start_capture(
+            source,
+            capture_config.clone(),
+            channels.tx,
+            Some(channels.ready_tx),
+            channels.reconfigure,
+        )
+        .map_err(|e| PlanError::new(1, format!("Failed to start capture: {e}")));
+    }
+    let CaptureSource::Live { device } = &source else {
+        return Err(PlanError::arg(
+            "--multi-device requires a live capture device (-d)".to_string(),
+        ));
+    };
+    capture::start_multi_capture(
+        device,
+        capture_config.clone(),
+        channels.tx,
+        Some(channels.ready_tx),
+    )
+    .map_err(|e| PlanError::new(1, format!("Failed to start multi-device capture: {e}")))
+}
+
+/// What to say when the capture source failed to open with `e`.
+///
+/// A permission error names what to grant capture rights on and how; any
+/// other failure is reported as it came.
+fn capture_open_failure(e: &str, source: &CaptureSource) -> String {
+    if !crate::capture::live::is_permission_error(e) {
+        return format!("Capture source failed to open: {e}");
+    }
+    format!(
+        "Permission denied on '{}'. Grant capture capabilities once \
+         (Linux), then re-run without sudo:\n  \
+         sipnab --setup-caps\n  \
+         # or run this invocation under sudo:\n  \
+         sudo sipnab\n  \
+         # equivalent manual step:\n  \
+         sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)",
+        permission_denied_target(source)
+    )
+}
+
+/// What a permission-denied message names as the thing to grant capture
+/// rights on.
+///
+/// A composite names its INTERFACE members only. The message tells the
+/// operator which device to grant capture rights on, and a HEP listener needs
+/// none — naming it would send them to run `setcap` for a UDP socket that
+/// opened fine.
+fn permission_denied_target(source: &CaptureSource) -> String {
+    match source {
+        CaptureSource::Live { device } => device.clone(),
+        CaptureSource::Composite(members) => {
+            let devices: Vec<&str> = members
+                .iter()
+                .filter_map(|m| match m {
+                    CaptureSource::Live { device } => Some(device.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if devices.is_empty() {
+                source.label()
+            } else {
+                devices.join(", ")
+            }
+        }
+        _ => "capture source".to_string(),
+    }
+}
+
+/// The permit to start the scanner-kill worker with, or `None` when this run
+/// starts none.
+///
+/// A worker runs in batch mode, when the defense is wanted, and only with a
+/// transmit permit. Reading a capture file grants no transmit permit, so no
+/// worker is started and no raw socket is opened -- which also keeps
+/// `--kill-spoof raw -I file.pcap` from failing the run over a socket it was
+/// never going to use. The operator has already been told (in `plan`) that the
+/// kill response is off for this run. Debug-level here: one warning per run,
+/// not one per decision point.
+fn kill_worker_permit(
+    cli: &Cli,
+    config: &Config,
+    mode: &RunMode,
+    transmit_permit: Option<TransmitPermit>,
+) -> Option<TransmitPermit> {
+    if !(matches!(mode, RunMode::Batch) && kill_worker_wanted(cli, config)) {
+        return None;
+    }
+    if transmit_permit.is_none() {
+        tracing::debug!("Scanner-kill: offline run, not starting a worker process");
+    }
+    transmit_permit
+}
+
+/// Open the scanner-kill raw socket when `--kill-spoof` permits one.
+///
+/// # Errors
+///
+/// Exit code 1 when `--kill-spoof raw` demands the socket and it cannot be
+/// opened. Under the default the failure is a warning and the worker falls
+/// back to an ephemeral source port.
+fn open_raw_kill_socket(
+    cli: &Cli,
+    permit: &TransmitPermit,
+) -> Result<Option<crate::process_isolation::RawKillSocket>, PlanError> {
+    if cli.security_args.kill_spoof == crate::cli::KillSpoof::Ephemeral {
+        return Ok(None);
+    }
+    match crate::process_isolation::RawKillSocket::open(permit) {
+        Ok(sock) => {
+            tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
+            Ok(Some(sock))
+        }
+        Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {
+            Err(PlanError::new(
+                1,
+                format!(
+                    "--kill-spoof raw requires a raw socket but it could not be opened: {e}. \
+                     Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
+                     --kill-spoof ephemeral."
+                ),
+            ))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral \
+                 source port. Kill responses will come from sipnab's own port."
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -2670,23 +3312,9 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
 
     // --print-yang-module: the module the RFC 7951 export validates against.
     // A fact about this binary, not about any capture, so it needs no config,
-    // capture or privileges. Written through a checked write rather than
-    // `print!`, which panics when stdout is a closed pipe.
+    // capture or privileges.
     if cli.output_args.print_yang_module {
-        use std::io::Write;
-        let mut out = std::io::stdout().lock();
-        return Some(
-            match out
-                .write_all(crate::analysis::yang::MODULE_TEXT.as_bytes())
-                .and_then(|()| out.flush())
-            {
-                Ok(()) => 0,
-                Err(e) => {
-                    tracing::error!("--print-yang-module: {e}");
-                    1
-                }
-            },
-        );
+        return Some(print_yang_module());
     }
 
     // --setup-caps: grant this binary the capabilities needed for live
@@ -2715,6 +3343,47 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     if let Some(ref out) = cli.name_args.write_annotated {
         return Some(write_annotated(cli, out));
     }
+    if let Some(code) = notes_refusal(cli) {
+        return Some(code);
+    }
+
+    // --strip-secrets: write a DSB-free copy of the input pcapng. The input
+    // is never modified; the output is written atomically.
+    if let Some(ref out) = cli.name_args.strip_secrets {
+        return Some(strip_secrets(cli, out));
+    }
+
+    None
+}
+
+/// `--print-yang-module`: write the YANG module to stdout.
+///
+/// Written through a checked write rather than `print!`, which panics when
+/// stdout is a closed pipe.
+///
+/// # Returns
+///
+/// `0` when the module was written, `1` when stdout refused it.
+fn print_yang_module() -> i32 {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    match out
+        .write_all(crate::analysis::yang::MODULE_TEXT.as_bytes())
+        .and_then(|()| out.flush())
+    {
+        Ok(()) => 0,
+        Err(e) => {
+            tracing::error!("--print-yang-module: {e}");
+            1
+        }
+    }
+}
+
+/// The exit code that refuses a `--notes` this run cannot use, or `None`.
+///
+/// Called after `--write-annotated` has been handled, so the run that reaches
+/// here is not one.
+fn notes_refusal(cli: &Cli) -> Option<i32> {
     // `--notes` names the notes `--write-annotated` writes, or the TUI's
     // notes file. In any other run nothing would read it, and a flag that is
     // accepted and ignored reads as a note that was written.
@@ -2734,107 +3403,160 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         tracing::error!("--notes {path}: {refusal}");
         return Some(2);
     }
-
-    // --strip-secrets: write a DSB-free copy of the input pcapng. The input
-    // is never modified; the output is written atomically.
-    if let Some(ref out) = cli.name_args.strip_secrets {
-        if !cli.has_input() {
-            tracing::error!("--strip-secrets requires an input file (-I <file>)");
-            return Some(1);
-        }
-        // This command runs BEFORE main()'s ordinary config load, and it is the
-        // one that reads a whole pcapng into memory — so it is the first place
-        // the in-memory ceiling bites. Loading here (for the side effect of
-        // applying `[limits]`) keeps `max_metadata_file_bytes` one setting:
-        // without it, a ring member over the default would be strippable when
-        // the ceiling was typed on the command line and refused when the same
-        // number was written in the config file.
-        if let Err(e) = load_config(cli) {
-            tracing::error!("{}", e.message);
-            return Some(e.exit_code);
-        }
-        // Resolve `-I` the way a normal run does instead of reading
-        // `cli.primary_input()`, the first `-I` *argument*. `-I` is repeatable
-        // and expands directories and globs, so the argument is often not a
-        // file at all — a directory reached the pcapng writer as a path and
-        // failed with a bare "Is a directory".
-        //
-        // Resolution opens each candidate through libpcap, so a file sipnab
-        // cannot read as a capture is now named in an error rather than handed
-        // to the stripper. That is the same standard every other `-I` path
-        // holds, and the operator learns which file rather than which errno.
-        let resolved = match crate::capture::input_set::resolve(
-            &cli.capture_args.input,
-            &cli.input_resolve_options(),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("--strip-secrets: {e:#}");
-                return Some(1);
-            }
-        };
-
-        // More than one resolved file is refused, not partly handled.
-        //
-        // `--strip-secrets <out>` names ONE output path, so a set of inputs has
-        // nowhere to go: stripping every file would mean inventing output names
-        // and writing files the operator never asked for. The alternative this
-        // replaces was worse — it sanitized the first file, exited 0, and said
-        // "Stripped N decryption secret(s)". This is a privacy control. Someone
-        // running it before sending captures to a vendor reads that success and
-        // ships the remaining files with live TLS keys inside them, and nothing
-        // in the output gives them a reason to doubt it. A partial job reported
-        // as a whole one is the failure being fixed here, so refusing is the
-        // fix: an error naming every resolved file loses nobody any keys, and
-        // re-running once per file is a loop the operator can write.
-        if resolved.len() != 1 {
-            let names = resolved
-                .iter()
-                .map(|r| format!("'{}'", r.path.display()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            tracing::error!(
-                "--strip-secrets writes one sanitized copy, but -I resolved to {} files: {names}. \
-                 Run it once per file — stripping only one of them would ship the rest with \
-                 their decryption secrets intact.",
-                resolved.len()
-            );
-            return Some(1);
-        }
-        // Same precondition as `-O`: the sanitized copy must not be written
-        // over the file it is sanitizing. `--strip-secrets` promises the input
-        // is never modified, and pointed at its own input it replaced it —
-        // taking the only copy of the decryption secrets with it, which is
-        // precisely the material this flag exists to preserve a copy without.
-        let protected = crate::capture::output_guard::ProtectedInputs::new(
-            &cli.capture_args.input,
-            &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
-            cli.capture_args.recursive,
-        );
-        if let Err(msg) = protected.check(std::path::Path::new(out), "--strip-secrets", false) {
-            tracing::error!("{msg}");
-            return Some(2);
-        }
-
-        let input = resolved[0].name().to_string();
-        return Some(
-            match crate::capture::pcapng_meta::strip_secrets(
-                &resolved[0].path,
-                std::path::Path::new(out),
-            ) {
-                Ok(n) => {
-                    tracing::info!("Stripped {n} decryption secret(s): {input} -> {out}");
-                    0
-                }
-                Err(e) => {
-                    tracing::error!("--strip-secrets failed: {e}");
-                    1
-                }
-            },
-        );
-    }
-
     None
+}
+
+/// How a single-output command describes itself when `-I` resolves to more
+/// than one capture.
+struct OneCopyCommand<'a> {
+    /// The flag, as the operator typed it (`--strip-secrets`).
+    flag: &'a str,
+    /// What the command writes (`one sanitized copy`).
+    writes: &'a str,
+    /// The sentence that tells the operator what to do instead.
+    advice: &'a str,
+}
+
+/// Resolve `-I` to the ONE capture a single-output command reads, and refuse
+/// an output that names an input.
+///
+/// Shared by `--strip-secrets` and `--write-annotated`, which name one output
+/// path each and so cannot take a set of inputs.
+///
+/// # Errors
+///
+/// Exit code `1` when `-I` does not resolve or resolves to other than one
+/// capture, `2` when `out` names an input.
+fn resolve_one_capture(
+    cli: &Cli,
+    command: &OneCopyCommand<'_>,
+    out: &str,
+) -> Result<crate::capture::input_set::ResolvedInput, PlanError> {
+    let flag = command.flag;
+    let mut resolved =
+        crate::capture::input_set::resolve(&cli.capture_args.input, &cli.input_resolve_options())
+            .map_err(|e| PlanError::new(1, format!("{flag}: {e:#}")))?;
+    if resolved.len() != 1 {
+        let names = resolved
+            .iter()
+            .map(|r| format!("'{}'", r.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(PlanError::new(
+            1,
+            format!(
+                "{flag} writes {}, but -I resolved to {} files: {names}. {}",
+                command.writes,
+                resolved.len(),
+                command.advice
+            ),
+        ));
+    }
+    // The copy must not be written over the file it is made from.
+    let protected = crate::capture::output_guard::ProtectedInputs::new(
+        &cli.capture_args.input,
+        &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+        cli.capture_args.recursive,
+    );
+    protected
+        .check(std::path::Path::new(out), flag, false)
+        .map_err(PlanError::arg)?;
+    Ok(resolved.swap_remove(0))
+}
+
+/// Report how a startup command ended and return its exit code: `0` and the
+/// success line, or the failure's message and code.
+fn finish_startup_command(result: Result<String, PlanError>) -> i32 {
+    match result {
+        Ok(done) => {
+            tracing::info!("{done}");
+            0
+        }
+        Err(e) => {
+            tracing::error!("{}", e.message);
+            e.exit_code
+        }
+    }
+}
+
+/// `--strip-secrets <out> -I CAPTURE`: write a DSB-free copy of one pcapng.
+///
+/// # Returns
+///
+/// `0` when the copy was written, `1` when there is no single input or the
+/// strip failed, `2` when the output names an input, or the config's own exit
+/// code when it does not load.
+fn strip_secrets(cli: &Cli, out: &str) -> i32 {
+    finish_startup_command(strip_secrets_copy(cli, out))
+}
+
+/// The work of [`strip_secrets`].
+///
+/// # Returns
+///
+/// The line that reports the copy.
+///
+/// # Errors
+///
+/// The refusal or failure, with its exit code.
+fn strip_secrets_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
+    if !cli.has_input() {
+        return Err(PlanError::new(
+            1,
+            "--strip-secrets requires an input file (-I <file>)".to_string(),
+        ));
+    }
+    // This command runs BEFORE main()'s ordinary config load, and it is the
+    // one that reads a whole pcapng into memory — so it is the first place
+    // the in-memory ceiling bites. Loading here (for the side effect of
+    // applying `[limits]`) keeps `max_metadata_file_bytes` one setting:
+    // without it, a ring member over the default would be strippable when
+    // the ceiling was typed on the command line and refused when the same
+    // number was written in the config file.
+    load_config(cli)?;
+    // Resolve `-I` the way a normal run does instead of reading
+    // `cli.primary_input()`, the first `-I` *argument*. `-I` is repeatable
+    // and expands directories and globs, so the argument is often not a
+    // file at all — a directory reached the pcapng writer as a path and
+    // failed with a bare "Is a directory".
+    //
+    // Resolution opens each candidate through libpcap, so a file sipnab
+    // cannot read as a capture is now named in an error rather than handed
+    // to the stripper. That is the same standard every other `-I` path
+    // holds, and the operator learns which file rather than which errno.
+    //
+    // More than one resolved file is refused, not partly handled.
+    //
+    // `--strip-secrets <out>` names ONE output path, so a set of inputs has
+    // nowhere to go: stripping every file would mean inventing output names
+    // and writing files the operator never asked for. The alternative this
+    // replaces was worse — it sanitized the first file, exited 0, and said
+    // "Stripped N decryption secret(s)". This is a privacy control. Someone
+    // running it before sending captures to a vendor reads that success and
+    // ships the remaining files with live TLS keys inside them, and nothing
+    // in the output gives them a reason to doubt it. A partial job reported
+    // as a whole one is the failure being fixed here, so refusing is the
+    // fix: an error naming every resolved file loses nobody any keys, and
+    // re-running once per file is a loop the operator can write.
+    //
+    // Same precondition as `-O`: the sanitized copy must not be written
+    // over the file it is sanitizing. `--strip-secrets` promises the input
+    // is never modified, and pointed at its own input it replaced it —
+    // taking the only copy of the decryption secrets with it, which is
+    // precisely the material this flag exists to preserve a copy without.
+    let command = OneCopyCommand {
+        flag: "--strip-secrets",
+        writes: "one sanitized copy",
+        advice: "Run it once per file — stripping only one of them would ship the rest with \
+                 their decryption secrets intact.",
+    };
+    let capture = resolve_one_capture(cli, &command, out)?;
+    let input = capture.name().to_string();
+    let n = crate::capture::pcapng_meta::strip_secrets(&capture.path, std::path::Path::new(out))
+        .map_err(|e| PlanError::new(1, format!("--strip-secrets failed: {e}")))?;
+    Ok(format!(
+        "Stripped {n} decryption secret(s): {input} -> {out}"
+    ))
 }
 
 /// `--notes FILE --write-annotated OUT -I CAPTURE`: write an annotated pcapng
@@ -2855,100 +3577,87 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
 ///
 /// Reads the notes file and the capture, and writes `out` atomically.
 fn write_annotated(cli: &Cli, out: &str) -> i32 {
+    finish_startup_command(annotated_copy(cli, out))
+}
+
+/// The work of [`write_annotated`].
+///
+/// # Returns
+///
+/// The line that reports the copy.
+///
+/// # Errors
+///
+/// The refusal or failure, with its exit code.
+fn annotated_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
     let Some(notes_path) = cli.name_args.notes.as_deref() else {
         // clap's `requires` already refuses this; kept so the command never
         // runs on an absent notes file whatever the parser is told.
-        tracing::error!("--write-annotated needs --notes <FILE>");
-        return 2;
+        return Err(PlanError::arg(
+            "--write-annotated needs --notes <FILE>".to_string(),
+        ));
     };
     if !cli.has_input() {
-        tracing::error!("--write-annotated requires an input capture (-I <file>)");
-        return 1;
+        return Err(PlanError::new(
+            1,
+            "--write-annotated requires an input capture (-I <file>)".to_string(),
+        ));
     }
-    let resolved = match crate::capture::input_set::resolve(
-        &cli.capture_args.input,
-        &cli.input_resolve_options(),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("--write-annotated: {e:#}");
-            return 1;
-        }
-    };
     // One output path, so one capture: annotating the first of a set would
     // report success and leave the operator believing the rest were handled.
-    if resolved.len() != 1 {
-        let names = resolved
-            .iter()
-            .map(|r| format!("'{}'", r.path.display()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        tracing::error!(
-            "--write-annotated writes one copy, but -I resolved to {} files: {names}. \
-             Run it once per capture.",
-            resolved.len()
-        );
-        return 1;
-    }
-    let protected = crate::capture::output_guard::ProtectedInputs::new(
-        &cli.capture_args.input,
-        &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
-        cli.capture_args.recursive,
-    );
-    if let Err(msg) = protected.check(std::path::Path::new(out), "--write-annotated", false) {
-        tracing::error!("{msg}");
-        return 2;
-    }
+    let command = OneCopyCommand {
+        flag: "--write-annotated",
+        writes: "one copy",
+        advice: "Run it once per capture.",
+    };
+    let capture = resolve_one_capture(cli, &command, out)?;
     let notes_file = std::path::Path::new(notes_path);
-    let same_as_notes = std::path::Path::new(out) == notes_file
-        || matches!(
-            (std::fs::canonicalize(out), std::fs::canonicalize(notes_file)),
-            (Ok(a), Ok(b)) if a == b
-        );
-    if same_as_notes {
-        tracing::error!(
+    if names_the_same_file(std::path::Path::new(out), notes_file) {
+        return Err(PlanError::arg(format!(
             "--write-annotated {out} would overwrite the notes file it reads; \
              name another output"
-        );
-        return 2;
+        )));
     }
 
-    let notes = match crate::annotate::Notes::load(notes_file) {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::error!("--notes {notes_path}: {e}");
-            return 1;
-        }
-    };
+    let notes = crate::annotate::Notes::load(notes_file)
+        .map_err(|e| PlanError::new(1, format!("--notes {notes_path}: {e}")))?;
     if notes.is_empty() {
-        tracing::error!("--notes {notes_path} holds no notes, so there is nothing to annotate");
-        return 1;
+        return Err(PlanError::new(
+            1,
+            format!("--notes {notes_path} holds no notes, so there is nothing to annotate"),
+        ));
     }
-    let input = &resolved[0].path;
     // As the operator spelled it, never made absolute: this string goes into
     // a file that leaves the box, and an absolute path carries the account
     // name. For a member of an archive it is `<archive>/<member>`, the name
     // the member's frame pointers carry, never the file it was extracted to.
-    let label = resolved[0].name().to_string();
-    match crate::annotate::copy::write_annotated_copy(
-        input,
+    let label = capture.name().to_string();
+    let report = crate::annotate::copy::write_annotated_copy(
+        &capture.path,
         &label,
         &notes,
         std::path::Path::new(out),
-    ) {
-        Ok(report) => {
-            tracing::info!(
-                "Wrote {} note(s) onto {} frame(s) copied from {label}: {out}",
-                report.notes,
-                report.frames
-            );
-            0
-        }
-        Err(e) => {
-            tracing::error!("--write-annotated refused: {e}. Nothing was written to {out}.");
-            1
-        }
-    }
+    )
+    .map_err(|e| {
+        PlanError::new(
+            1,
+            format!("--write-annotated refused: {e}. Nothing was written to {out}."),
+        )
+    })?;
+    Ok(format!(
+        "Wrote {} note(s) onto {} frame(s) copied from {label}: {out}",
+        report.notes, report.frames
+    ))
+}
+
+/// Whether two paths name one file: spelled the same, or resolving to the
+/// same canonical path when both exist.
+fn names_the_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
 }
 
 /// Follow one frame pointer and print the frame, or refuse and say why.
@@ -2965,7 +3674,7 @@ fn write_annotated(cli: &Cli, out: &str) -> i32 {
 /// such), `1` when the pointer could not be honored, `2` when it did not
 /// parse.
 fn show_frame(pointer: &str) -> i32 {
-    use crate::capture::resolve::{Resolution, ResolveError, parse_pointer, resolve};
+    use crate::capture::resolve::{Resolution, parse_pointer, resolve};
 
     let parsed = match parse_pointer(pointer) {
         Ok(p) => p,
@@ -2982,77 +3691,97 @@ fn show_frame(pointer: &str) -> i32 {
 
     match resolve(&parsed) {
         Ok(Resolution::Verified(bytes)) => {
-            println!("VERIFIED  {pointer}");
-            println!(
-                "{} bytes, frame {} of {}",
-                bytes.len(),
-                parsed.origin.ordinal,
-                parsed.source
-            );
-            println!();
-            print!("{}", crate::output::hexdump::hexdump(&bytes));
+            print_found_frame(pointer, &parsed, &bytes, true);
             0
         }
         Ok(Resolution::Unverified(bytes)) => {
-            // Printed, but never called "found": the pointer carried no digest,
-            // so these are the bytes at that position and nothing establishes
-            // they are the bytes the pointer was made against.
-            println!("UNVERIFIED  {pointer}");
-            println!(
-                "{} bytes, frame {} of {}",
-                bytes.len(),
-                parsed.origin.ordinal,
-                parsed.source
-            );
-            println!(
-                "The pointer carried no digest, so these bytes were not checked \
-                 against anything. If the capture changed since the pointer was \
-                 made, this is the wrong frame and nothing here can tell."
-            );
-            println!();
-            print!("{}", crate::output::hexdump::hexdump(&bytes));
+            print_found_frame(pointer, &parsed, &bytes, false);
             0
         }
-        Err(ResolveError::NeverOnTheWire { comm, pid, ordinal }) => {
-            // Not an error the operator can fix by finding the capture: there
-            // is no capture. Say what these bytes were so the pointer is still
-            // useful as provenance, then refuse.
-            tracing::error!(
+        Err(e) => {
+            let refusal = frame_refusal(e);
+            tracing::error!("{}", refusal.message);
+            refusal.exit_code
+        }
+    }
+}
+
+/// Print a frame `--show-frame` found, headed by whether its digest was
+/// checked.
+///
+/// `verified` is `false` when the pointer carried no digest: the bytes are
+/// printed, but never called "found", because nothing establishes they are
+/// the bytes the pointer was made against.
+fn print_found_frame(
+    pointer: &str,
+    parsed: &crate::capture::packet::FrameRef,
+    bytes: &[u8],
+    verified: bool,
+) {
+    if verified {
+        println!("VERIFIED  {pointer}");
+    } else {
+        println!("UNVERIFIED  {pointer}");
+    }
+    println!(
+        "{} bytes, frame {} of {}",
+        bytes.len(),
+        parsed.origin.ordinal,
+        parsed.source
+    );
+    if !verified {
+        println!(
+            "The pointer carried no digest, so these bytes were not checked \
+             against anything. If the capture changed since the pointer was \
+             made, this is the wrong frame and nothing here can tell."
+        );
+    }
+    println!();
+    print!("{}", crate::output::hexdump::hexdump(bytes));
+}
+
+/// Why `--show-frame` will not print a frame, with its exit code: `1` when
+/// the pointer could not be honored, `2` when it did not parse.
+fn frame_refusal(e: crate::capture::resolve::ResolveError) -> PlanError {
+    use crate::capture::resolve::ResolveError;
+
+    match e {
+        // Not an error the operator can fix by finding the capture: there
+        // is no capture. Say what these bytes were so the pointer is still
+        // useful as provenance, then refuse.
+        ResolveError::NeverOnTheWire { comm, pid, ordinal } => PlanError::new(
+            1,
+            format!(
                 "refusing: read {ordinal} came from the TLS library inside \
                  {comm} (pid {pid}). sipnab read it out of the process, so it \
                  was never a frame on any wire — there is no capture to seek \
                  into and nothing to verify these bytes against."
-            );
-            1
-        }
-        Err(ResolveError::Changed { source, ordinal }) => {
-            tracing::error!(
+            ),
+        ),
+        ResolveError::Changed { source, ordinal } => PlanError::new(
+            1,
+            format!(
                 "refusing: {source} frame {ordinal} is not the frame this \
                  pointer was made against. The capture was rotated, truncated \
                  or rewritten since then. Showing you what is there now would \
                  look like an answer and be the wrong one."
-            );
-            1
-        }
-        Err(ResolveError::NoSuchFrame {
+            ),
+        ),
+        ResolveError::NoSuchFrame {
             source,
             ordinal,
             frames_present,
-        }) => {
-            tracing::error!(
+        } => PlanError::new(
+            1,
+            format!(
                 "refusing: {source} holds {frames_present} frame(s), so there is \
                  no frame {ordinal}"
-            );
-            1
+            ),
+        ),
+        ResolveError::Unreadable { source, cause } => {
+            PlanError::new(1, format!("refusing: cannot read {source}: {cause}"))
         }
-        Err(ResolveError::Unreadable { source, cause }) => {
-            tracing::error!("refusing: cannot read {source}: {cause}");
-            1
-        }
-        Err(ResolveError::Malformed(t)) => {
-            tracing::error!("not a frame pointer: {t}");
-            2
-        }
+        ResolveError::Malformed(t) => PlanError::arg(format!("not a frame pointer: {t}")),
     }
 }
 
@@ -7115,7 +7844,7 @@ mod tests {
     // ── The composite source: -d with -L ───────────────────────────────
 
     /// A HEP source shaped as `plan_hep_source` builds one.
-    fn hep_src(bind: &str) -> CaptureSource {
+    pub(super) fn hep_src(bind: &str) -> CaptureSource {
         CaptureSource::Hep {
             bind_addr: bind.to_string(),
             #[cfg(feature = "hep")]
@@ -7917,5 +8646,324 @@ mod startup_refusal_tests {
             },
         ]);
         assert_eq!(two_clocks_warning(Some(&both)), None);
+    }
+}
+
+/// The decisions `plan`, `launch` and the startup commands were split into,
+/// each driven on its own.
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A CLI parsed from `args`, `sipnab` included as argv[0], headless.
+    fn cli_from(args: &[&str]) -> Cli {
+        let mut argv = vec!["sipnab", "-N"];
+        argv.extend_from_slice(args);
+        Cli::parse_from_args(argv)
+    }
+
+    /// A real capture, for the `-I` paths that resolve their input.
+    const FIXTURE_FILE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+    /// A second real capture.
+    const OTHER_FIXTURE: &str = "tests/fixtures/sip_call.pcap";
+
+    /// The plan's error, failing the test when the plan was accepted.
+    fn plan_error(cli: &Cli, config: &Config) -> Result<PlanError, TestError> {
+        Ok(plan(cli, config)
+            .err()
+            .ok_or("the plan was expected to be refused")?)
+    }
+
+    // ── plan ───────────────────────────────────────────────────────────
+
+    /// `--vcon-out` naming the capture it summarizes is refused before
+    /// anything is written.
+    #[test]
+    fn a_vcon_out_naming_the_input_is_refused() -> Result<(), TestError> {
+        let mut cli = cli_from(&["-I", FIXTURE_FILE]);
+        cli.output_args.vcon_out = Some(FIXTURE_FILE.into());
+        let e = plan_error(&cli, &Config::default())?;
+        assert_eq!(e.exit_code, 2);
+        assert!(e.message.contains("--vcon-out"), "{}", e.message);
+        Ok(())
+    }
+
+    /// The generated filter records that it was generated; an operator's
+    /// expression does not.
+    #[test]
+    fn only_the_generated_filter_is_marked_generated() -> Result<(), TestError> {
+        let generated = plan(&cli_from(&["-d", "eth0"]), &Config::default())
+            .map_err(|e| format!("plan: {e:?}"))?;
+        assert!(generated.capture_config.bpf_filter_generated);
+        let explicit = plan(
+            &cli_from(&["-d", "eth0", "udp port 5060"]),
+            &Config::default(),
+        )
+        .map_err(|e| format!("plan: {e:?}"))?;
+        assert!(!explicit.capture_config.bpf_filter_generated);
+        Ok(())
+    }
+
+    /// `[filter] from` arms the matcher when `--from` is not given.
+    #[test]
+    fn the_config_from_pattern_reaches_the_matcher() -> Result<(), TestError> {
+        let cli = cli_from(&["-I", FIXTURE_FILE]);
+        let plain = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
+        assert!(!plain.matcher.is_active(), "nothing asked for a match");
+        let mut config = Config::default();
+        config.filter.from = Some("alice".to_string());
+        let p = plan(&cli, &config).map_err(|e| format!("plan: {e:?}"))?;
+        assert!(
+            p.matcher.is_active(),
+            "the config's from pattern must apply"
+        );
+        Ok(())
+    }
+
+    /// The offline kill refusal names the flags the operator actually typed.
+    #[test]
+    fn the_kill_refusal_names_the_flags_given() {
+        assert_eq!(
+            kill_flags_named(&cli_from(&["--kill-scanner"])),
+            "--kill-scanner"
+        );
+        assert_eq!(
+            kill_flags_named(&cli_from(&["-K", "10.0.0.1"])),
+            "-K/--kill-target"
+        );
+        assert_eq!(
+            kill_flags_named(&cli_from(&["--kill-scanner", "-K", "10.0.0.1"])),
+            "--kill-scanner / -K"
+        );
+    }
+
+    /// `--capture-tunnels` beside an explicit filter is reported as ignored;
+    /// without tunnel ports there is nothing to report.
+    #[test]
+    fn tunnel_ports_beside_an_explicit_filter_are_reported_ignored() -> Result<(), TestError> {
+        assert_eq!(tunnel_ports_ignored_notice(&[]), None);
+        let msg = tunnel_ports_ignored_notice(&[4789]).ok_or("reported")?;
+        assert!(msg.contains("--capture-tunnels is ignored"), "{msg}");
+        Ok(())
+    }
+
+    /// Every degraded-run warning that applies reaches the list `plan` logs.
+    #[test]
+    fn the_degraded_run_warnings_include_each_that_applies() -> Result<(), TestError> {
+        let config = Config::default();
+        let mut cli = cli_from(&["-d", "eth0", "--snaplen", "262", "-O", "out.pcap"]);
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = true;
+        let warnings = degraded_run_warnings(&cli, &config);
+        let truncation = snaplen_truncation_warning(&cli, &config).ok_or("applies")?;
+        let retention = snaplen_audio_retention_warning(&cli, &config).ok_or("applies")?;
+        assert!(warnings.contains(&truncation), "{warnings:?}");
+        assert!(warnings.contains(&retention), "{warnings:?}");
+        assert!(degraded_run_warnings(&cli_from(&["-d", "eth0"]), &config).is_empty());
+        Ok(())
+    }
+
+    /// The `--cores` refusal lists every per-message output asked for.
+    #[test]
+    fn cores_lists_each_output_it_cannot_produce() {
+        let cli = cli_from(&[
+            "--cores",
+            "4",
+            "-I",
+            FIXTURE_FILE,
+            "--json",
+            "--text-dump",
+            "-O",
+            "o.pcap",
+        ]);
+        assert_eq!(
+            cores_unsupported_outputs(&cli),
+            vec!["--json", "--text-dump", "-O/--output"]
+        );
+        let single = cli_from(&["--cores", "1", "-I", FIXTURE_FILE, "--json"]);
+        assert!(cores_unsupported_outputs(&single).is_empty());
+    }
+
+    /// The capacity check accepts exactly enough slots and names HEP senders
+    /// only when there are any.
+    #[test]
+    fn capture_source_capacity_is_checked_at_the_boundary() -> Result<(), TestError> {
+        assert_eq!(capture_source_capacity_refusal(3, 1, 2), None);
+        let msg = capture_source_capacity_refusal(2, 1, 2).ok_or("one short")?;
+        assert!(msg.contains("can have 3"), "{msg}");
+        assert!(msg.contains("HEP senders"), "{msg}");
+        let msg = capture_source_capacity_refusal(1, 2, 0).ok_or("one short")?;
+        assert!(!msg.contains("HEP senders"), "{msg}");
+        Ok(())
+    }
+
+    // ── launch ─────────────────────────────────────────────────────────
+
+    /// Each source of key material counts, `--keylog-fd` included.
+    #[test]
+    fn every_key_source_counts_as_decryption_keys() {
+        assert!(!has_decrypt_keys(&cli_from(&[])));
+        let mut cli = cli_from(&[]);
+        cli.tls_args.keylog_fd = Some(3);
+        assert!(has_decrypt_keys(&cli), "--keylog-fd carries secrets too");
+        assert!(has_decrypt_keys(&cli_from(&["--keylog", "k.log"])));
+    }
+
+    /// `--allow-coredump` leaves the process dumpable; without it the process
+    /// is made undumpable.
+    ///
+    /// Drives the core-dump step alone. `protect_key_material` also calls
+    /// `mlockall(MCL_CURRENT | MCL_FUTURE)`, which in a test would pin every
+    /// page of the whole test process for the rest of the run and leave
+    /// `privilege::tests::locking_key_memory_pins_pages_the_kernel_reports`
+    /// measuring a process that was already locked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn core_dumps_are_disabled_unless_allowed() -> Result<(), TestError> {
+        // SAFETY: PR_GET_DUMPABLE and PR_SET_DUMPABLE take no pointers.
+        let dumpable = || unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
+        // SAFETY: as above.
+        unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1) };
+        apply_core_dump_policy(true).map_err(|e| format!("allowed: {e:?}"))?;
+        assert_eq!(dumpable(), 1, "--allow-coredump must leave core dumps on");
+        apply_core_dump_policy(false).map_err(|e| format!("disabled: {e:?}"))?;
+        assert_eq!(
+            dumpable(),
+            0,
+            "key material must make the process undumpable"
+        );
+        // SAFETY: as above.
+        unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1) };
+        Ok(())
+    }
+
+    /// `--kill-spoof raw` refuses the run when the raw socket cannot be
+    /// opened, and returns the socket when it can; it never falls back.
+    #[test]
+    fn kill_spoof_raw_never_falls_back_to_no_socket() -> Result<(), TestError> {
+        let cli = cli_from(&["--kill-spoof", "raw"]);
+        let permit = TransmitPermit::for_source(&CaptureSource::Live {
+            device: "lo".into(),
+        })
+        .ok_or("a live source holds a permit")?;
+        match open_raw_kill_socket(&cli, &permit) {
+            Ok(sock) => assert!(sock.is_some(), "raw mode must not run without its socket"),
+            Err(e) => {
+                assert_eq!(e.exit_code, 1);
+                assert!(e.message.contains("--kill-spoof raw"), "{}", e.message);
+            }
+        }
+        let ephemeral = cli_from(&["--kill-spoof", "ephemeral"]);
+        assert!(matches!(
+            open_raw_kill_socket(&ephemeral, &permit),
+            Ok(None)
+        ));
+        Ok(())
+    }
+
+    /// A permission error names the interfaces to grant rights on, never a
+    /// HEP listener; any other failure is reported as it came.
+    #[test]
+    fn a_capture_open_failure_names_what_to_grant() {
+        let composite = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            super::tests::hep_src("0.0.0.0:9060"),
+        ]);
+        assert_eq!(permission_denied_target(&composite), "eth0");
+        let msg = capture_open_failure("Operation not permitted", &composite);
+        assert!(msg.starts_with("Permission denied on 'eth0'"), "{msg}");
+        assert_eq!(
+            capture_open_failure("No such device", &composite),
+            "Capture source failed to open: No such device"
+        );
+    }
+
+    /// Runtime filter re-apply is wired for a single live device only.
+    #[test]
+    fn runtime_reconfigure_is_wired_for_a_single_live_device_only() {
+        let live = CaptureSource::Live {
+            device: "eth0".into(),
+        };
+        assert!(RuntimeReconfigure::for_source(&cli_from(&["-d", "eth0"]), &live).is_some());
+        let multi = cli_from(&["-d", "eth0,eth1", "--multi-device"]);
+        assert!(RuntimeReconfigure::for_source(&multi, &live).is_none());
+        let file = CaptureSource::File {
+            paths: vec![FIXTURE_FILE.into()],
+        };
+        assert!(RuntimeReconfigure::for_source(&cli_from(&[]), &file).is_none());
+    }
+
+    // ── startup commands ───────────────────────────────────────────────
+
+    /// A single-output command refuses a set of inputs, and an output that
+    /// names its input.
+    #[test]
+    fn a_single_output_command_takes_exactly_one_capture() {
+        let command = OneCopyCommand {
+            flag: "--write-annotated",
+            writes: "one copy",
+            advice: "Run it once per capture.",
+        };
+        let two = cli_from(&["-I", FIXTURE_FILE, "-I", OTHER_FIXTURE]);
+        let e = resolve_one_capture(&two, &command, "out.pcapng").expect_err("two inputs");
+        assert_eq!(e.exit_code, 1);
+        assert!(e.message.contains("resolved to 2 files"), "{}", e.message);
+        let one = cli_from(&["-I", FIXTURE_FILE]);
+        let e = resolve_one_capture(&one, &command, FIXTURE_FILE).expect_err("over its input");
+        assert_eq!(e.exit_code, 2);
+        assert!(resolve_one_capture(&one, &command, "out.pcapng").is_ok());
+    }
+
+    /// Two spellings of one file name the same file; two files do not.
+    #[test]
+    fn names_the_same_file_follows_the_file_not_the_spelling() {
+        let a = std::path::Path::new(FIXTURE_FILE);
+        let dotted = format!("./{FIXTURE_FILE}");
+        assert!(names_the_same_file(a, a));
+        assert!(names_the_same_file(a, std::path::Path::new(&dotted)));
+        assert!(!names_the_same_file(a, std::path::Path::new(OTHER_FIXTURE)));
+    }
+
+    /// `--write-annotated` refuses to write over the notes file it reads.
+    #[test]
+    fn write_annotated_refuses_to_overwrite_its_notes() {
+        let notes = "target/decision-tests-notes-that-do-not-exist.txt";
+        let cli = cli_from(&[
+            "-I",
+            FIXTURE_FILE,
+            "--notes",
+            notes,
+            "--write-annotated",
+            notes,
+        ]);
+        let e = annotated_copy(&cli, notes).expect_err("refused");
+        assert_eq!(e.exit_code, 2);
+        assert!(
+            e.message.contains("would overwrite the notes file"),
+            "{}",
+            e.message
+        );
+    }
+
+    /// A malformed pointer is an argument error (2); every other refusal is
+    /// one the pointer could not be honored for (1).
+    #[test]
+    fn frame_refusals_carry_their_exit_codes() {
+        use crate::capture::resolve::ResolveError;
+        assert_eq!(
+            frame_refusal(ResolveError::Malformed("x".into())).exit_code,
+            2
+        );
+        let e = frame_refusal(ResolveError::Unreadable {
+            source: "a.pcap".into(),
+            cause: "gone".into(),
+        });
+        assert_eq!(e.exit_code, 1);
+        assert_eq!(e.message, "refusing: cannot read a.pcap: gone");
     }
 }

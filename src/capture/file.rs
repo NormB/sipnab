@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
 use super::CaptureConfig;
+use super::live::ReadStep;
 use super::packet::Packet;
 use crate::signals;
 
@@ -260,50 +261,10 @@ fn read_merged(
         types.join(", ")
     );
 
-    let mut ordinal: u64 = 0;
     // Run-global, like every other reader: `--count` spans a whole set, and a
     // summary built from a per-file counter would disagree with the limit.
     let started_at = *count;
-    while let Some(frame) = merged.next_frame() {
-        if signals::shutdown_requested() {
-            tracing::debug!("Shutdown requested, stopping merged reader");
-            break;
-        }
-        if let Some(max_count) = config.count
-            && *count >= max_count
-        {
-            tracing::debug!("Reached packet count limit ({max_count})");
-            break;
-        }
-
-        let mut packet = Packet::with_source(
-            frame.ts,
-            frame.data,
-            frame.caplen as usize,
-            frame.origlen as usize,
-            Some(std::sync::Arc::clone(&source)),
-            // The whole reason this path exists.
-            frame.link_type,
-        );
-        packet.origin = Some(crate::capture::packet::FrameOrigin {
-            ordinal,
-            // Not hashed here. The digest verifies a pointer something KEPT,
-            // and ~93% of frames are never pointed at, so hashing on the reader
-            // spends the one serial stage on work nobody can use.
-            // `ParsedPacket::retained_frame_ref` computes it where the pointer
-            // is stored, over the same bytes, to the same FNV-1a value.
-            digest: None,
-            // A capture file can be reopened, so the question a digest answers
-            // is one this source can actually be asked.
-            verifiable: true,
-        });
-        ordinal += 1;
-        *count += 1;
-        if tx.send(packet).is_err() {
-            tracing::debug!("Receiver dropped, stopping merged reader");
-            break;
-        }
-    }
+    send_merged_frames(&mut merged, config, tx, &source, count);
 
     // Said out loud, because a frame dropped in silence is indistinguishable
     // from a capture that never held it.
@@ -321,6 +282,66 @@ fn read_merged(
         crate::capture::archive::source_name(path)
     );
     Ok(read)
+}
+
+/// Send every frame of a merged pcapng, until the frames run out, shutdown
+/// is requested, `--count` is reached, or the receiver is gone.
+fn send_merged_frames(
+    merged: &mut crate::capture::merged::MergedPcapNg,
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    source: &std::sync::Arc<str>,
+    count: &mut u64,
+) {
+    let mut ordinal: u64 = 0;
+    while let Some(frame) = merged.next_frame() {
+        if signals::shutdown_requested() {
+            tracing::debug!("Shutdown requested, stopping merged reader");
+            break;
+        }
+        if super::live::count_limit_reached(config.count, *count) {
+            break;
+        }
+
+        let packet = merged_packet(frame, ordinal, source);
+        ordinal += 1;
+        *count += 1;
+        if tx.send(packet).is_err() {
+            tracing::debug!("Receiver dropped, stopping merged reader");
+            break;
+        }
+    }
+}
+
+/// The packet for one merged-pcapng frame at position `ordinal` of `source`.
+#[inline]
+fn merged_packet(
+    frame: crate::capture::merged::MergedFrame,
+    ordinal: u64,
+    source: &std::sync::Arc<str>,
+) -> Packet {
+    let mut packet = Packet::with_source(
+        frame.ts,
+        frame.data,
+        frame.caplen as usize,
+        frame.origlen as usize,
+        Some(std::sync::Arc::clone(source)),
+        // The whole reason this path exists.
+        frame.link_type,
+    );
+    packet.origin = Some(crate::capture::packet::FrameOrigin {
+        ordinal,
+        // Not hashed here. The digest verifies a pointer something KEPT,
+        // and ~93% of frames are never pointed at, so hashing on the reader
+        // spends the one serial stage on work nobody can use.
+        // `ParsedPacket::retained_frame_ref` computes it where the pointer
+        // is stored, over the same bytes, to the same FNV-1a value.
+        digest: None,
+        // A capture file can be reopened, so the question a digest answers
+        // is one this source can actually be asked.
+        verifiable: true,
+    });
+    packet
 }
 
 /// Read a set of capture files, in order, into one packet stream.
@@ -622,42 +643,12 @@ fn read_member(
     // `_gz_guard` owns any decompressed temp file and must outlive the read.
     let (mut cap, _gz_guard) = match open_offline(path) {
         Ok(opened) => opened,
-        Err(e) => {
-            if let Some(ready) = ready_tx.take() {
-                let _ = ready.send(Err(format!("{e:#}")));
-                return Err(e);
-            }
-            state.tally.skipped += 1;
-            state.tally.lost = true;
-            tracing::error!(
-                "Skipping '{}': {e:#}",
-                crate::capture::archive::source_name(path)
-            );
-            return Ok(true);
-        }
+        Err(e) => return skip_unopened_member(path, e, state, ready_tx),
     };
 
     let link_type = cap.get_datalink().0;
-    if let Some(ref bpf) = config.bpf_filter
-        && let Err(e) = cap.filter(bpf, true)
-    {
-        // A member sipnab could not decode a frame of anyway loses nothing by
-        // being skipped, so a filter that will not compile against ITS link
-        // type is no reason to end the set. The rule below still holds for
-        // every link type sipnab decodes: skipping one of those would drop
-        // real traffic while the run reported success.
-        if let Some(line) = undecodable_filter_skip(path, link_type, bpf, &e) {
-            state.tally.skipped += 1;
-            tracing::warn!("{line}");
-            return Ok(true);
-        }
-        let err = filter_failure(bpf, path, e, config.bpf_filter_positional);
-        state.tally.skipped += 1;
-        state.tally.lost = true;
-        if let Some(ready) = ready_tx.take() {
-            let _ = ready.send(Err(format!("{err:#}")));
-        }
-        return Err(err);
+    if filter_member(&mut cap, path, link_type, config, state, ready_tx)? == MemberFilter::Skipped {
+        return Ok(true);
     }
     if !crate::capture::parse::link_type_is_decoded(link_type) {
         // Read anyway: every frame is then counted, by reason, in the
@@ -705,24 +696,101 @@ fn read_member(
         }
     };
 
-    if read.reached_eof {
-        state.tally.complete += 1;
-    } else {
-        // A limit or a shutdown landed inside this file. Requested, so not a
-        // loss — but the file was still not read to its end.
-        state.tally.stopped_early += 1;
-    }
-
-    if let Some((first_ts, last_ts)) = read.span {
-        if let Some((prev_path, prev_end)) = state.prev_end.as_ref()
-            && let Some(msg) = overlap_message(prev_path, *prev_end, path, first_ts)
-        {
-            tracing::warn!("{msg}");
-        }
-        state.prev_end = Some((path.to_path_buf(), last_ts));
-    }
-
+    state.record_read(path, read);
     Ok(read.reached_eof)
+}
+
+/// A member that would not open: the first file read fails the run with `e`,
+/// a later one is skipped, counted as lost, and the set continues.
+fn skip_unopened_member(
+    path: &Path,
+    e: anyhow::Error,
+    state: &mut SetState,
+    ready_tx: &mut Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<bool> {
+    if let Some(ready) = ready_tx.take() {
+        let _ = ready.send(Err(format!("{e:#}")));
+        return Err(e);
+    }
+    state.tally.skipped += 1;
+    state.tally.lost = true;
+    tracing::error!(
+        "Skipping '{}': {e:#}",
+        crate::capture::archive::source_name(path)
+    );
+    Ok(true)
+}
+
+/// Whether a member's BPF filter let it be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberFilter {
+    /// No filter, or the filter compiled and is installed: read the member.
+    Installed,
+    /// The filter does not compile against a link type sipnab does not
+    /// decode: the member is skipped and the set continues.
+    Skipped,
+}
+
+/// Install the BPF filter on one member of a set.
+///
+/// # Errors
+///
+/// The filter does not compile against a link type sipnab decodes. That ends
+/// the set; see [`filter_failure`].
+fn filter_member(
+    cap: &mut pcap::Capture<pcap::Offline>,
+    path: &Path,
+    link_type: i32,
+    config: &CaptureConfig,
+    state: &mut SetState,
+    ready_tx: &mut Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<MemberFilter> {
+    let Some(ref bpf) = config.bpf_filter else {
+        return Ok(MemberFilter::Installed);
+    };
+    let Err(e) = cap.filter(bpf, true) else {
+        return Ok(MemberFilter::Installed);
+    };
+    // A member sipnab could not decode a frame of anyway loses nothing by
+    // being skipped, so a filter that will not compile against ITS link
+    // type is no reason to end the set. The rule below still holds for
+    // every link type sipnab decodes: skipping one of those would drop
+    // real traffic while the run reported success.
+    if let Some(line) = undecodable_filter_skip(path, link_type, bpf, &e) {
+        state.tally.skipped += 1;
+        tracing::warn!("{line}");
+        return Ok(MemberFilter::Skipped);
+    }
+    let err = filter_failure(bpf, path, e, config.bpf_filter_positional);
+    state.tally.skipped += 1;
+    state.tally.lost = true;
+    if let Some(ready) = ready_tx.take() {
+        let _ = ready.send(Err(format!("{err:#}")));
+    }
+    Err(err)
+}
+
+impl SetState<'_> {
+    /// Tally a member read without error, and warn when it starts before the
+    /// previous member that held packets ended.
+    fn record_read(&mut self, path: &Path, read: FileRead) {
+        if read.reached_eof {
+            self.tally.complete += 1;
+        } else {
+            // A limit or a shutdown landed inside this file. Requested, so not a
+            // loss — but the file was still not read to its end.
+            self.tally.stopped_early += 1;
+        }
+
+        if let Some((first_ts, last_ts)) = read.span {
+            if let Some((prev_path, prev_end)) = self.prev_end.as_ref()
+                && let Some(msg) = overlap_message(prev_path, *prev_end, path, first_ts)
+            {
+                tracing::warn!("{msg}");
+            }
+            self.prev_end = Some((path.to_path_buf(), last_ts));
+        }
+    }
 }
 
 /// The warning to log when a BPF filter that will not compile against `path`
@@ -918,7 +986,6 @@ impl<'a> SendBatcher<'a> {
 ///
 /// Separate from [`read_opened`] only so its [`FileRead`] is available to
 /// [`capture_files`], which needs both halves of it.
-#[allow(clippy::too_many_lines)]
 fn read_opened_inner(
     cap: &mut pcap::Capture<pcap::Offline>,
     path: &Path,
@@ -931,29 +998,52 @@ fn read_opened_inner(
         count,
         prev_ts,
     } = timeline;
-    let link_type = cap.get_datalink().0;
     let replay = config.replay;
-    // The source stamped on every packet this file yields. Interned ONCE per
-    // file: the value is the same string for all of them, so each packet
-    // clones an `Arc` (a refcount increment) instead of allocating the path
-    // again — a 14M-packet corpus would otherwise pay 14M allocations for one
-    // constant. Cheap enough that no packet is left unstamped, which matters:
-    // an unstamped packet is one the pcapng writer cannot tell apart from the
-    // previous file's, and it then names the wrong file as its origin.
-    let source: std::sync::Arc<str> = crate::capture::archive::source_arc(path);
-    // Position within THIS file, which is not the same question as `count`.
-    // `count` is run-global: it drives `--count` and the "N packets total"
-    // summary, and it keeps rising across a set. This one restarts at zero for
-    // every file, because a frame is identified by the file it lives in plus
-    // where it sits in that file. Counting across the run would give the same
-    // bytes a different name depending on how the run was invoked, and a
-    // pointer that moves with the command line cannot be compared between two
-    // runs.
-    let mut ordinal: u64 = 0;
-    // First and last packet of THIS file, tracked unconditionally: `prev_ts`
-    // above is the replay pacing state and is only written in replay mode.
-    let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
 
+    announce_read(path, replay);
+
+    let reader = FileReader {
+        tx,
+        config,
+        start,
+        count,
+        prev_ts,
+        link_type: cap.get_datalink().0,
+        // The source stamped on every packet this file yields. Interned ONCE per
+        // file: the value is the same string for all of them, so each packet
+        // clones an `Arc` (a refcount increment) instead of allocating the path
+        // again — a 14M-packet corpus would otherwise pay 14M allocations for one
+        // constant. Cheap enough that no packet is left unstamped, which matters:
+        // an unstamped packet is one the pcapng writer cannot tell apart from the
+        // previous file's, and it then names the wrong file as its origin.
+        source: crate::capture::archive::source_arc(path),
+        // Position within THIS file, which is not the same question as `count`.
+        // `count` is run-global: it drives `--count` and the "N packets total"
+        // summary, and it keeps rising across a set. This one restarts at zero for
+        // every file, because a frame is identified by the file it lives in plus
+        // where it sits in that file. Counting across the run would give the same
+        // bytes a different name depending on how the run was invoked, and a
+        // pointer that moves with the command line cannot be compared between two
+        // runs.
+        ordinal: 0,
+        // First and last packet of THIS file, tracked unconditionally: `prev_ts`
+        // above is the replay pacing state and is only written in replay mode.
+        span: None,
+        batcher: batches_sends(path, replay).then(|| SendBatcher::new(tx)),
+    };
+
+    reader.run(cap, path)
+}
+
+/// Whether the read of `path` batches its sends: only the plain read of a
+/// regular file does. See [`SendBatcher`] for why replay and non-regular paths
+/// keep the per-packet send.
+fn batches_sends(path: &Path, replay: bool) -> bool {
+    !replay && path.metadata().is_ok_and(|m| m.is_file())
+}
+
+/// Log which file is being read, and whether with its original timing.
+fn announce_read(path: &Path, replay: bool) {
     if replay {
         tracing::info!(
             "Replaying from '{}' with original timing",
@@ -965,165 +1055,215 @@ fn read_opened_inner(
             crate::capture::archive::source_name(path)
         );
     }
+}
 
-    // Batch sends for the plain read of a regular file; see [`SendBatcher`]
-    // for why replay and non-regular paths keep the per-packet send.
-    let is_regular = path.metadata().map(|m| m.is_file()).unwrap_or(false);
-    let mut batcher = (!replay && is_regular).then(|| SendBatcher::new(tx));
+/// One file's read in progress: where its packets go, what stamps them, and
+/// the run's timeline it advances.
+struct FileReader<'a> {
+    /// The channel each packet is sent on when it is not batched.
+    tx: &'a PacketTx,
+    /// Count and duration limits, and the replay flag.
+    config: &'a CaptureConfig,
+    /// When the run started reading, for `--duration`.
+    start: std::time::Instant,
+    /// Packets sent so far, across every file read on this timeline.
+    count: &'a mut u64,
+    /// Previous packet's timestamp, so replay reproduces the gaps.
+    prev_ts: &'a mut Option<DateTime<Utc>>,
+    /// The file's link type, stamped on every packet.
+    link_type: i32,
+    /// The source name stamped on every packet.
+    source: std::sync::Arc<str>,
+    /// Position of the next packet within this file.
+    ordinal: u64,
+    /// First and last packet of this file.
+    span: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// The send batcher, for the plain read of a regular file.
+    batcher: Option<SendBatcher<'a>>,
+}
 
-    // The read stopped short of this file's end. The span it did cover is
-    // still reported: it is real, and it is what the overlap check must use.
-    // Buffered packets go out first — they were read, so they are owed to the
-    // consumer — and a flush the dead channel refuses is subtracted from the
-    // delivered count it was optimistically added to.
-    macro_rules! stopped {
-        () => {{
-            if let Some(b) = batcher.as_mut()
-                && let Err(lost) = b.flush()
-            {
-                *count = count.saturating_sub(lost);
+impl FileReader<'_> {
+    /// Read packets until the file ends, a limit or shutdown stops the read,
+    /// the receiver is gone, or libpcap reports an error.
+    fn run(mut self, cap: &mut pcap::Capture<pcap::Offline>, path: &Path) -> Result<FileRead> {
+        loop {
+            if self.limit_reached() {
+                return Ok(self.stopped());
             }
-            return Ok(FileRead {
-                reached_eof: false,
-                span,
-            });
-        }};
+
+            match cap.next_packet() {
+                Ok(pkt) => {
+                    if self.take(&pkt) == ReadStep::Stop {
+                        return Ok(self.stopped());
+                    }
+                }
+                Err(pcap::Error::NoMorePackets) => {
+                    tracing::debug!("End of file reached");
+                    break;
+                }
+                Err(e) => {
+                    // The packets read before the error are real and already
+                    // counted; they go out before the error does.
+                    self.flush();
+                    tracing::error!(
+                        "Error reading pcap file '{}': {e}",
+                        crate::capture::archive::source_name(path)
+                    );
+                    return Err(e).context("Error reading pcap file");
+                }
+            }
+        }
+
+        // EOF: the last partial batch goes out before this file is declared done.
+        self.flush();
+
+        tracing::info!(
+            "File reader finished: {} packets total, through '{}'",
+            self.count,
+            crate::capture::archive::source_name(path)
+        );
+        Ok(FileRead {
+            reached_eof: true,
+            span: self.span,
+        })
     }
 
-    loop {
+    /// Whether shutdown, `--count` or `--duration` ends the read before the
+    /// next packet.
+    #[inline]
+    fn limit_reached(&self) -> bool {
         if signals::shutdown_requested() {
             tracing::debug!("Shutdown requested, stopping file reader");
-            stopped!();
+            return true;
         }
 
-        if let Some(max_count) = config.count
-            && *count >= max_count
-        {
-            tracing::debug!("Reached packet count limit ({max_count})");
-            stopped!();
+        if super::live::count_limit_reached(self.config.count, *self.count) {
+            return true;
         }
 
-        if let Some(duration) = config.duration
-            && start.elapsed() >= duration
+        if let Some(duration) = self.config.duration
+            && self.start.elapsed() >= duration
         {
             tracing::debug!("Reached duration limit ({duration:?})");
-            stopped!();
+            return true;
         }
+        false
+    }
 
-        match cap.next_packet() {
-            Ok(pkt) => {
-                let ts = pcap_ts_to_chrono(pkt.header.ts);
-                span = Some(match span {
-                    Some((first, _)) => (first, ts),
-                    None => (ts, ts),
-                });
-
-                // Replay mode: reproduce the inter-packet gap, but sleep in
-                // bounded slices that poll the shutdown flag between them, so a
-                // large delta cannot delay shutdown by more than one slice.
-                if replay {
-                    if let Some(prev) = *prev_ts {
-                        let delta = ts.signed_duration_since(prev);
-                        if let Ok(dur) = delta.to_std()
-                            && !dur.is_zero()
-                            && sleep_interruptible(dur, signals::shutdown_requested)
-                        {
-                            tracing::debug!(
-                                "Shutdown requested during replay delay, stopping file reader"
-                            );
-                            stopped!();
-                        }
-                        // Negative deltas (out-of-order timestamps) are skipped
-                    }
-                    *prev_ts = Some(ts);
-                }
-
-                let mut packet = Packet::with_source(
-                    ts,
-                    pkt.data.to_vec(),
-                    pkt.header.caplen as usize,
-                    pkt.header.len as usize,
-                    // The file IS this packet's source. Without it a
-                    // multi-file set is indistinguishable downstream and the
-                    // pcapng export attributes every frame to the first
-                    // input — including the ones read out of the others.
-                    Some(std::sync::Arc::clone(&source)),
-                    link_type,
-                );
-                // Stamped here, beside the source, because these two together
-                // are what makes the frame nameable. Set before the send: once
-                // the packet is on the channel this thread cannot amend it, and
-                // a consumer that inferred the ordinal from arrival order would
-                // be wrong the moment anything reorders or drops.
-                packet.origin = Some(crate::capture::packet::FrameOrigin {
-                    ordinal,
-                    // See the note in `read_merged`: hashed at retention, not
-                    // here. The ordinal still must be stamped before the send,
-                    // for the reason above; the digest has no such constraint,
-                    // because the bytes travel with the packet.
-                    digest: None,
-                    verifiable: true,
-                });
-                ordinal += 1;
-
-                match batcher.as_mut() {
-                    Some(b) => {
-                        // Counted at read time, so the `--count` check at the
-                        // loop top sees packets still sitting in the batch and
-                        // the limit stays exact. A flush the dead channel
-                        // refuses subtracts what it dropped.
-                        *count += 1;
-                        if let Err(lost) = b.push(packet) {
-                            *count = count.saturating_sub(lost);
-                            tracing::debug!("Receiver dropped, stopping file reader");
-                            stopped!();
-                        }
-                    }
-                    None => {
-                        if tx.send(packet).is_err() {
-                            tracing::debug!("Receiver dropped, stopping file reader");
-                            stopped!();
-                        }
-                        *count += 1;
-                    }
-                }
-            }
-            Err(pcap::Error::NoMorePackets) => {
-                tracing::debug!("End of file reached");
-                break;
-            }
-            Err(e) => {
-                // The packets read before the error are real and already
-                // counted; they go out before the error does.
-                if let Some(b) = batcher.as_mut()
-                    && let Err(lost) = b.flush()
-                {
-                    *count = count.saturating_sub(lost);
-                }
-                tracing::error!(
-                    "Error reading pcap file '{}': {e}",
-                    crate::capture::archive::source_name(path)
-                );
-                return Err(e).context("Error reading pcap file");
-            }
+    /// The read stopped short of this file's end. The span it did cover is
+    /// still reported: it is real, and it is what the overlap check must use.
+    /// Buffered packets go out first — they were read, so they are owed to the
+    /// consumer — and a flush the dead channel refuses is subtracted from the
+    /// delivered count it was optimistically added to.
+    fn stopped(&mut self) -> FileRead {
+        self.flush();
+        FileRead {
+            reached_eof: false,
+            span: self.span,
         }
     }
 
-    // EOF: the last partial batch goes out before this file is declared done.
-    if let Some(b) = batcher.as_mut()
-        && let Err(lost) = b.flush()
-    {
-        *count = count.saturating_sub(lost);
+    /// Send whatever the batcher holds, taking back from the delivered count
+    /// what a dead channel refused.
+    fn flush(&mut self) {
+        if let Some(b) = self.batcher.as_mut()
+            && let Err(lost) = b.flush()
+        {
+            *self.count = self.count.saturating_sub(lost);
+        }
     }
 
-    tracing::info!(
-        "File reader finished: {count} packets total, through '{}'",
-        crate::capture::archive::source_name(path)
-    );
-    Ok(FileRead {
-        reached_eof: true,
-        span,
-    })
+    /// Stamp one packet read from the file, pace it in replay, and send it.
+    #[inline]
+    fn take(&mut self, pkt: &pcap::Packet<'_>) -> ReadStep {
+        let ts = pcap_ts_to_chrono(pkt.header.ts);
+        self.span = Some(match self.span {
+            Some((first, _)) => (first, ts),
+            None => (ts, ts),
+        });
+
+        if self.config.replay && self.replay_delay_interrupted(ts) {
+            tracing::debug!("Shutdown requested during replay delay, stopping file reader");
+            return ReadStep::Stop;
+        }
+
+        let mut packet = Packet::with_source(
+            ts,
+            pkt.data.to_vec(),
+            pkt.header.caplen as usize,
+            pkt.header.len as usize,
+            // The file IS this packet's source. Without it a
+            // multi-file set is indistinguishable downstream and the
+            // pcapng export attributes every frame to the first
+            // input — including the ones read out of the others.
+            Some(std::sync::Arc::clone(&self.source)),
+            self.link_type,
+        );
+        // Stamped here, beside the source, because these two together
+        // are what makes the frame nameable. Set before the send: once
+        // the packet is on the channel this thread cannot amend it, and
+        // a consumer that inferred the ordinal from arrival order would
+        // be wrong the moment anything reorders or drops.
+        packet.origin = Some(crate::capture::packet::FrameOrigin {
+            ordinal: self.ordinal,
+            // See the note in `merged_packet`: hashed at retention, not
+            // here. The ordinal still must be stamped before the send,
+            // for the reason above; the digest has no such constraint,
+            // because the bytes travel with the packet.
+            digest: None,
+            verifiable: true,
+        });
+        self.ordinal += 1;
+        self.send(packet)
+    }
+
+    /// Replay mode: reproduce the inter-packet gap before the packet at `ts`,
+    /// but sleep in bounded slices that poll the shutdown flag between them,
+    /// so a large delta cannot delay shutdown by more than one slice.
+    ///
+    /// Returns whether shutdown interrupted the wait.
+    fn replay_delay_interrupted(&mut self, ts: DateTime<Utc>) -> bool {
+        if let Some(prev) = *self.prev_ts {
+            let delta = ts.signed_duration_since(prev);
+            if let Ok(dur) = delta.to_std()
+                && !dur.is_zero()
+                && sleep_interruptible(dur, signals::shutdown_requested)
+            {
+                return true;
+            }
+            // Negative deltas (out-of-order timestamps) are skipped
+        }
+        *self.prev_ts = Some(ts);
+        false
+    }
+
+    /// Send one packet, batched or on its own. `Stop` when the receiver is
+    /// gone.
+    #[inline]
+    fn send(&mut self, packet: Packet) -> ReadStep {
+        match self.batcher.as_mut() {
+            Some(b) => {
+                // Counted at read time, so the `--count` check at the
+                // loop top sees packets still sitting in the batch and
+                // the limit stays exact. A flush the dead channel
+                // refuses subtracts what it dropped.
+                *self.count += 1;
+                if let Err(lost) = b.push(packet) {
+                    *self.count = self.count.saturating_sub(lost);
+                    tracing::debug!("Receiver dropped, stopping file reader");
+                    return ReadStep::Stop;
+                }
+            }
+            None => {
+                if self.tx.send(packet).is_err() {
+                    tracing::debug!("Receiver dropped, stopping file reader");
+                    return ReadStep::Stop;
+                }
+                *self.count += 1;
+            }
+        }
+        ReadStep::Continue
+    }
 }
 
 /// Sleep for `total`, waking at least every 200 ms to poll `should_stop`.
@@ -1173,6 +1313,9 @@ pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 mod tests {
     use super::super::channel::packet_channel;
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A capacity large enough that `capture_file` (which sends every packet
     /// before the test drains) never blocks on the cap.
@@ -1830,5 +1973,229 @@ mod tests {
             packets.len(),
             "every packet names one of the two files it could have come from"
         );
+    }
+
+    /// A classic Ethernet pcap of `n` one-byte records, all stamped `secs`.
+    fn pcap_of(n: usize, secs: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        for v in [0u32, 0, 65535, 1] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for _ in 0..n {
+            for v in [secs, 0, 1, 1] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out.push(0xAB);
+        }
+        out
+    }
+
+    /// Read `path` alone with `config`, returning what the read reported and
+    /// the packet count it left.
+    fn read_alone(
+        path: &Path,
+        config: &CaptureConfig,
+        tx: &PacketTx,
+    ) -> Result<(FileRead, u64), TestError> {
+        let (mut cap, _guard) = open_offline(path).map_err(|e| format!("open: {e:?}"))?;
+        let mut count = 0u64;
+        let mut prev_ts = None;
+        let read = read_opened_inner(
+            &mut cap,
+            path,
+            config,
+            tx,
+            ReadTimeline {
+                start: std::time::Instant::now(),
+                count: &mut count,
+                prev_ts: &mut prev_ts,
+            },
+        )
+        .map_err(|e| format!("read: {e:?}"))?;
+        Ok((read, count))
+    }
+
+    /// A merged pcapng numbers its frames from zero in file order, and
+    /// `--count` stops it at the limit.
+    #[test]
+    fn a_merged_capture_numbers_its_frames_and_stops_at_the_count() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = dir.path().join("merged.pcapng");
+        crate::capture::merged::testutil::merged_fixture(&path);
+
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_file(&path, &CaptureConfig::default(), tx, None)
+            .map_err(|e| format!("read: {e:?}"))?;
+        let ordinals: Vec<Option<u64>> =
+            rx.try_iter().map(|p| p.origin.map(|o| o.ordinal)).collect();
+        assert_eq!(ordinals, vec![Some(0), Some(1)]);
+
+        let (tx, rx) = packet_channel(TEST_CAP);
+        let config = CaptureConfig {
+            count: Some(1),
+            ..CaptureConfig::default()
+        };
+        capture_file(&path, &config, tx, None).map_err(|e| format!("read: {e:?}"))?;
+        assert_eq!(rx.try_iter().count(), 1, "--count 1 sends one frame");
+        Ok(())
+    }
+
+    /// The frames of one file are numbered from zero in file order.
+    #[test]
+    fn a_file_numbers_its_frames_from_zero() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = dir.path().join("three.pcap");
+        std::fs::write(&path, pcap_of(3, 1_700_000_000)).map_err(|e| format!("write: {e:?}"))?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        let (read, count) = read_alone(&path, &CaptureConfig::default(), &tx)?;
+        assert!(read.reached_eof);
+        assert_eq!(count, 3);
+        let ordinals: Vec<Option<u64>> =
+            rx.try_iter().map(|p| p.origin.map(|o| o.ordinal)).collect();
+        assert_eq!(ordinals, vec![Some(0), Some(1), Some(2)]);
+        Ok(())
+    }
+
+    /// A first file that will not open fails the set, and readiness carries
+    /// its reason: the consumer has not started, so nothing was read.
+    #[test]
+    fn a_first_file_that_will_not_open_fails_the_set() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let missing = dir.path().join("gone.pcap");
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let result = capture_files(
+            &[missing, sample_pcap()],
+            &CaptureConfig::default(),
+            tx,
+            Some(ready_tx),
+        );
+        assert!(result.is_err(), "the first file failing fails the set");
+        let answer = ready_rx
+            .try_recv()
+            .map_err(|e| format!("readiness was answered: {e:?}"))?;
+        let msg = answer.expect_err("readiness says the open failed");
+        assert!(msg.contains("gone.pcap"), "{msg}");
+        Ok(())
+    }
+
+    /// A BPF filter that does not compile against the first file answers
+    /// readiness with the filter error, so the consumer is told why.
+    #[test]
+    fn a_filter_failure_on_the_first_file_answers_readiness() -> Result<(), TestError> {
+        let config = CaptureConfig {
+            bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
+            ..CaptureConfig::default()
+        };
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let result = capture_files(
+            &[non_ethernet_pcap(), sample_pcap()],
+            &config,
+            tx,
+            Some(ready_tx),
+        );
+        assert!(result.is_err());
+        let msg = ready_rx
+            .try_recv()
+            .map_err(|e| format!("readiness was answered: {e:?}"))?
+            .expect_err("readiness carries the failure");
+        assert!(msg.contains("BPF filter"), "{msg}");
+        Ok(())
+    }
+
+    /// A filter that fails on a later file marks the set as having lost
+    /// data: the files after it are never read.
+    #[test]
+    fn a_filter_failure_on_a_later_file_is_a_loss() {
+        let config = CaptureConfig {
+            bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
+            ..CaptureConfig::default()
+        };
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let paths = [sample_pcap(), non_ethernet_pcap()];
+        let mut tally = ReadTally {
+            given: paths.len(),
+            ..ReadTally::default()
+        };
+        let mut count = 0u64;
+        let result = read_set(&paths, &config, &tx, None, &mut tally, &mut count);
+        assert!(result.is_err());
+        assert!(tally.lossy(), "{tally:?}");
+        assert_eq!(tally.skipped, 1, "{tally:?}");
+    }
+
+    /// `--duration` that has already run out stops the read before the first
+    /// packet, as a stop and not as the end of the file.
+    #[test]
+    fn an_exhausted_duration_stops_the_read_before_the_first_packet() -> Result<(), TestError> {
+        let config = CaptureConfig {
+            duration: Some(std::time::Duration::ZERO),
+            ..CaptureConfig::default()
+        };
+        let (tx, rx) = packet_channel(TEST_CAP);
+        let (read, count) = read_alone(&sample_pcap(), &config, &tx)?;
+        assert!(!read.reached_eof);
+        assert_eq!(count, 0);
+        assert_eq!(rx.try_iter().count(), 0);
+        Ok(())
+    }
+
+    /// Packets a dead receiver refused are not counted as delivered, whether
+    /// the batch was refused when full, at the end of the file, or one
+    /// packet at a time in replay. A refused full batch stops the read.
+    #[test]
+    fn packets_a_dead_receiver_refused_are_not_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let few = dir.path().join("few.pcap");
+        std::fs::write(&few, pcap_of(3, 1_700_000_000)).map_err(|e| format!("write: {e:?}"))?;
+        let many = dir.path().join("many.pcap");
+        let batch = super::super::channel::FILE_BATCH;
+        std::fs::write(&many, pcap_of(batch + 1, 1_700_000_000))
+            .map_err(|e| format!("write: {e:?}"))?;
+
+        let dead = || {
+            let (tx, rx) = packet_channel(TEST_CAP);
+            drop(rx);
+            tx
+        };
+        let plain = CaptureConfig::default();
+        let replay = CaptureConfig {
+            replay: true,
+            ..CaptureConfig::default()
+        };
+
+        let (read, count) = read_alone(&few, &plain, &dead())?;
+        assert_eq!(count, 0, "the final partial batch was refused");
+        assert!(read.reached_eof, "the refusal came at the end of the file");
+
+        let (read, count) = read_alone(&many, &plain, &dead())?;
+        assert_eq!(count, 0, "the first full batch was refused");
+        assert!(!read.reached_eof, "a refused batch stops the read");
+
+        let (read, count) = read_alone(&few, &replay, &dead())?;
+        assert_eq!(count, 0, "the first replayed packet was refused");
+        assert!(!read.reached_eof, "a refused packet stops the read");
+        Ok(())
+    }
+
+    /// Only the plain read of a regular file batches its sends: replay must
+    /// deliver each packet when its time comes, and a path that is not a
+    /// regular file may trickle.
+    #[test]
+    fn only_the_plain_read_of_a_regular_file_batches() -> Result<(), TestError> {
+        let regular = sample_pcap();
+        assert!(batches_sends(&regular, false));
+        assert!(!batches_sends(&regular, true), "replay");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        assert!(!batches_sends(dir.path(), false), "not a regular file");
+        assert!(
+            !batches_sends(&dir.path().join("missing"), false),
+            "nothing there"
+        );
+        Ok(())
     }
 }

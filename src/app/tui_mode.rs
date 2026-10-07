@@ -550,40 +550,7 @@ pub fn run_tui_mode(
     let reconfigure_outcomes = launched.reconfigure_outcomes;
     let no_rtp = cli.no_rtp(&config);
 
-    // The operator's action trail, opened before any thread this function
-    // spawns and before the terminal is taken. A path that cannot be opened
-    // stops the run HERE, which is the fail-closed half of AUDIT2: refusing
-    // costs nothing at this point, and an operator who asked for a trail and
-    // silently got a run that recorded nothing would find out when they went
-    // looking for it -- the one moment it cannot be recreated. What a write
-    // that fails LATER does is the opposite call, and
-    // `crate::tui::action_trail` states why.
-    let action_trail = match cli.security_args.tui_audit_file.as_deref() {
-        Some(path) => {
-            let trail = crate::tui::action_trail::ActionTrail::open(std::path::Path::new(path))
-                .unwrap_or_else(|e| {
-                    tracing::error!(
-                        "--tui-audit-file {path}: {e}. sipnab refuses to run the TUI \
-                         without the action trail it was asked for"
-                    );
-                    crate::capture::archive::release_run_and_exit(2);
-                });
-            // The first action of the session, and the one every later record
-            // is relative to: a filter or an export means nothing without the
-            // capture it was applied to. Named from the same flags the capture
-            // path uses -- see `capture_opened_target`.
-            let opened = capture_opened_target(&cli);
-            trail.record(&crate::tui::action_trail::ActionRecord {
-                action: "capture_opened",
-                target: &opened,
-                format: "",
-                outcome: "ok",
-                error: "",
-            });
-            Some(Arc::new(trail))
-        }
-        None => None,
-    };
+    let action_trail = open_action_trail(&cli);
 
     // The operator's notes file (`--notes`), read before the terminal is
     // taken so a file sipnab cannot accept stops the run where the refusal can
@@ -603,59 +570,10 @@ pub fn run_tui_mode(
 
     let (dialog_store, stream_store) = build_stores(&cli, &config, &launched.relay.snapshot);
 
-    // RE4's second trigger. The store starts recording the sockets of streams
-    // nothing explains only when there is a reconciler to offer them to, and
-    // the reconciler runs on its own thread so the capture path never waits
-    // on a relay. Both ends of the arrangement are set up here, or neither.
-    // The relay-statistics view (ST8) transmits too, and a live source grants
-    // exactly one permit for the run. The permit is `Copy` -- it is proof the
-    // source is live, not a single-use ticket -- so the view holds a copy of the
-    // same one the reconciler took. `None` when the source is a file: the view
-    // then reports `not_permitted` rather than asking.
-    let mut relay_query_permit: Option<crate::security::transmit_guard::TransmitPermit> = None;
-    let (relay_orphans, relay_thread) = match launched.relay.ready.take() {
-        Some(ready) => {
-            relay_query_permit = Some(ready.permit);
-            let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
-            stream_store.write().record_new_orphans(true);
-            match crate::app::relay_reconciler::spawn(
-                ready.reconciler,
-                ready.permit,
-                orphan_rx,
-                Arc::clone(&stream_store),
-            ) {
-                Ok(join) => (Some(sink), Some(join)),
-                Err(e) => {
-                    // A capture is still worth taking when the enrichment
-                    // cannot start. Stop recording, so the store does not
-                    // accumulate sockets nothing will ever drain.
-                    tracing::warn!(
-                        "could not start the rtpengine reconciler ({e}); streams the \
-                         signaling does not explain will stay unattributed"
-                    );
-                    stream_store.write().record_new_orphans(false);
-                    (None, None)
-                }
-            }
-        }
-        None => (None, None),
-    };
+    let relay = start_relay_reconciler(launched.relay.ready.take(), &stream_store);
 
     // Shared pause flag between TUI and processing thread
     let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Clone references for the processing thread
-    let ds = Arc::clone(&dialog_store);
-    let ss = Arc::clone(&stream_store);
-    let paused_for_thread = Arc::clone(&paused_flag);
-    let cli_clone = cli.clone();
-    // Resolved before the move: the thread owns a Cli clone but not the
-    // Config, and the cap needs both.
-    let reassembly_cap = cli.max_reassembly_limit(&config);
-    // The same for the pipeline options: `[capture] hep_parse` lives in the
-    // Config. Built once, from the function a capture opened inside the
-    // session uses too, so the two classify alike.
-    let pipeline_opts = tui_pipeline_options(&cli, &config, no_rtp);
 
     // Taken BEFORE `rx` moves into the thread below. The meter is a cheap
     // shared handle; `PacketRx` is not `Clone`, so reading it afterwards would
@@ -671,7 +589,7 @@ pub fn run_tui_mode(
 
     // Live security detectors: see `LiveDetectors`. The TUI never acts on a
     // detection; it only fills the findings ring the security view reads.
-    let mut live_detectors = LiveDetectors::from_cli(&cli, &config);
+    let live_detectors = LiveDetectors::from_cli(&cli, &config);
     let sec_armed = live_detectors.armed();
     // A plain accumulating engine: the TUI does not want the syslog/json/exec
     // alert channels (those are batch OUTPUT), only the findings ring the view
@@ -683,109 +601,27 @@ pub fn run_tui_mode(
                 None,
             )))
         });
-    let sec_engine_for_thread = security_engine.clone();
 
-    // Spawn packet processing thread
-    let processing_thread = std::thread::Builder::new()
-        .name("tui-processor".to_string())
-        .spawn(move || {
-            // Media keys, and `-O` (with the decrypted export when asked for).
-            let mut thread = TuiPacketThread {
-                output: TuiOutput::new(
-                    &cli_clone,
-                    (policy.split_bytes, policy.split_duration, policy.split_keep),
-                ),
-                processor: capture::PacketProcessor::with_max_sessions(reassembly_cap)
-                    .with_reassembly(!cli_clone.capture_args.no_reassembly)
-                    .with_parse_limit(cli_clone.capture_args.limitlen),
-                rtp_heuristic: rtp::heuristic::RtpHeuristic::new(),
-                media: TuiMedia::from_cli(&cli_clone),
-                opts: pipeline_opts,
-                relay_orphans,
-                dialogs: Arc::clone(&ds),
-                streams: Arc::clone(&ss),
-            };
-            // Wall time for a live device, the capture's own timeline for
-            // `-I`: the TUI reads files too, and there the packet clock and
-            // `Utc::now()` are unrelated. See `batch::SweepClock`.
-            let mut sweep_clock = crate::app::batch::SweepClock::new(cli_clone.has_input());
-            let sweep_interval = std::time::Duration::from_secs(5);
-            let start = std::time::Instant::now();
-            let mut total_count: u64 = 0;
-
-            loop {
-                if signals::shutdown_requested() {
-                    break;
-                }
-
-                if let Some(now) = sweep_clock.take_due(sweep_interval) {
-                    thread.processor.sweep();
-                    // No orphan sweep: orphan status is derived from
-                    // `associated_dialog` at every read, so there is no flag to
-                    // set — see [`crate::rtp::stream::RtpStream::orphaned`].
-                    let compacted = ds.write().compact_idle(now.get());
-                    if compacted.messages_evicted > 0 {
-                        tracing::debug!(
-                            "idle-dialog compaction: dropped {} messages from {} dialogs",
-                            compacted.messages_evicted,
-                            compacted.dialogs_compacted
-                        );
-                    }
-                }
-
-                let packet = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(pkt) => pkt,
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-                };
-
-                // Offline, this packet's timestamp is what "now" means to the
-                // next sweep. Recorded before parsing so undecoded traffic
-                // still advances the clock.
-                sweep_clock.observe(packet.timestamp);
-
-                // Load the pause state once per packet. A paused capture keeps
-                // writing to the pcap and advancing reassembly (to prevent
-                // buffer overflow and keep TCP reassembly consistent), but its
-                // packets are neither analyzed nor counted toward --count.
-                let is_paused = paused_for_thread.load(std::sync::atomic::Ordering::Relaxed);
-
-                // Live security detection: see `LiveDetectors::observe`.
-                // Findings go into the shared engine the security-findings
-                // view reads; nothing a detection could do is acted on.
-                if let Err(e) = thread.process(&packet, is_paused, |pp| {
-                    if let Some(engine) = &sec_engine_for_thread {
-                        live_detectors.observe(pp, &ds, engine);
-                    }
-                }) {
-                    tracing::error!("{e}");
-                    break;
-                }
-
-                if count_and_check_limit(is_paused, &mut total_count, capture_config.count) {
-                    break;
-                }
-
-                if let Some(duration) = capture_config.duration
-                    && start.elapsed() >= duration
-                {
-                    break;
-                }
-            }
-
-            // A stop (quitting the TUI, a signal) discards what the decrypted
-            // export still holds; the end of an input writes it.
-            if let Some(line) = thread.output.close(signals::shutdown_requested()) {
-                tracing::info!("sipnab: {line}");
-            }
-        });
-    let processing_thread = match processing_thread {
-        Ok(handle) => handle,
-        Err(e) => {
-            tracing::error!("Failed to spawn processing thread: {e}");
-            crate::capture::archive::release_run_and_exit(1);
-        }
-    };
+    let processing_thread = spawn_tui_processor(TuiProcessorInputs {
+        cli: cli.clone(),
+        split: (policy.split_bytes, policy.split_duration, policy.split_keep),
+        // Resolved before the move: the thread owns a Cli clone but not the
+        // Config, and the cap needs both.
+        reassembly_cap: cli.max_reassembly_limit(&config),
+        // The same for the pipeline options: `[capture] hep_parse` lives in the
+        // Config. Built once, from the function a capture opened inside the
+        // session uses too, so the two classify alike.
+        pipeline_opts: tui_pipeline_options(&cli, &config, no_rtp),
+        relay_orphans: relay.orphans,
+        dialogs: Arc::clone(&dialog_store),
+        streams: Arc::clone(&stream_store),
+        rx,
+        paused: Arc::clone(&paused_flag),
+        live_detectors,
+        security_engine: security_engine.clone(),
+        max_count: capture_config.count,
+        duration: capture_config.duration,
+    });
 
     // Actions, with their journal, before any server listens: a journal that
     // cannot be used refuses the run here.
@@ -794,57 +630,13 @@ pub fn run_tui_mode(
         crate::capture::archive::release_run_and_exit(2);
     });
 
-    // Start the REST API server if --api is specified. The TUI owns stdio,
-    // so MCP stdio is never selected here.
-    let _servers_thread = crate::app::servers::start_servers(
+    let _servers_thread = start_tui_servers(
         &cli,
-        &dialog_store,
-        &stream_store,
-        None,
-        crate::app::servers::Selection {
-            // The TUI does not fill a ring today: its capture loop is a
-            // different path, and handing the server an empty ring would make
-            // every live pointer answer "nothing retained" where "no ring" is
-            // the truth.
-            evidence_ring: None,
-            mcp_tools: cli.mcp_tool_selection(&config).unwrap_or_default(),
-            mcp_output_schemas: cli.mcp_output_schemas(&config),
-            api_allowed_hosts: cli.api_allowed_hosts(&config),
-            api_tls: cli.api_tls_files(&config),
-            mcp_tls: cli.mcp_tls_files(&config),
-            metrics_tls: cli.metrics_tls_files(&config),
-            mcp_row_cap: cli.mcp_row_cap(&config),
-            mcp_body_cap: cli.mcp_body_cap(&config),
-            mcp_wait_seconds: cli.mcp_wait_cap(&config),
-            api_row_cap: cli.api_row_cap(&config),
-            api_rate_limit_per_peer: cli.api_peer_rate_limit(&config),
-            max_tracked_peers: cli.tracked_peer_capacity(&config),
-            metrics_max_conn: cli.metrics_conn_cap(&config),
-            actions: actions.clone(),
-            mcp_max_findings: cli.mcp_findings_cap(&config),
-            tfps: cli.tfps_locator(&config),
-            api: true,
-            mcp: false,
-            metrics: true,
-            // MCP is never selected here, and `security_findings` is the only
-            // consumer, so there is nothing to declare.
-            armed_detections: Vec::new(),
-        },
-        // `mcp: false` above: this door serves no MCP tools, so there is no
-        // `query_relay` here to hold a permit for. The reconciler's own permit
-        // stays with the reconciler. The REST relay routes (ST5) likewise get
-        // no permit in the TUI: this arm's reconciler already took it, so a TUI
-        // run's `GET /v1/relay/...` answers `not_permitted` -- an operator who
-        // wants relay statistics over REST runs the headless API (`-N --api`),
-        // where the permit is threaded to the door.
-        #[cfg(any(feature = "api", feature = "mcp"))]
-        None,
+        &config,
+        (&dialog_store, &stream_store),
+        &actions,
         capture_meter,
-    )
-    .unwrap_or_else(|e| {
-        tracing::error!("{e}");
-        crate::capture::archive::release_run_and_exit(2);
-    });
+    );
 
     // Build resolved theme and keymap from config
     let theme = crate::tui::Theme::from_config(&config.theme);
@@ -901,7 +693,7 @@ pub fn run_tui_mode(
             action_trail: action_trail.clone(),
             // The relay-statistics view's ask state (ST8): a relay + permit when
             // this run can transmit, or which invocation refusal applies.
-            relay_query: build_tui_relay_query(&cli, relay_query_permit),
+            relay_query: build_tui_relay_query(&cli, relay.query_permit),
             // The TFPS-observe view's locator: the same `tfps_ctl` resolution the
             // server door uses, so the view asks the peer this run was pointed at.
             tfps_access: cli.tfps_locator(&config),
@@ -929,41 +721,88 @@ pub fn run_tui_mode(
         },
     )
     .err();
-    if let Some(e) = tui_failure.as_ref() {
-        tracing::error!("TUI error: {e}");
+    TuiRunEnd {
+        tui_failure,
+        actions,
+        action_trail,
+        processing_thread,
+        relay_thread: relay.thread,
+        handle,
     }
-    // A clean stop, journaled if no action is in flight; one that is stays
-    // in doubt for the next start, and is not waited for.
-    actions.stop(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs()),
-    );
+    .finish();
+}
 
-    // AFTER the TUI returns, so the terminal has left the alternate screen and
-    // this line survives on the operator's scrollback. Point 4 of the decision
-    // in `crate::tui::action_trail`: a status line inside a full-screen UI that
-    // the operator was not looking at is not a notification, and an incomplete
-    // trail is exactly the thing they must not learn about from the file weeks
-    // later.
-    if let Some(trail) = action_trail.as_ref() {
-        // The closing record FIRST, so `exit_notice` below reports the state
-        // after it: a closing write that itself failed is part of what the
-        // operator has to be told.
-        if let Some(problem) = trail.close_session() {
-            stderr_line!("{problem}");
-            tracing::error!("{problem}");
+/// What is left to stop once the TUI returns, in the order it is stopped.
+struct TuiRunEnd {
+    /// Why the TUI could not start, when it could not.
+    tui_failure: Option<anyhow::Error>,
+    /// The actions service, stopped first.
+    actions: crate::security::actions::Actions,
+    /// The action trail, closed after the actions stop.
+    action_trail: Option<Arc<crate::tui::action_trail::ActionTrail>>,
+    /// The packet processing thread.
+    processing_thread: std::thread::JoinHandle<()>,
+    /// The rtpengine reconciler thread, when one runs.
+    relay_thread: Option<std::thread::JoinHandle<()>>,
+    /// The capture handle, dropped last.
+    handle: capture::CaptureHandle,
+}
+
+impl TuiRunEnd {
+    /// Stop everything the TUI run started, then decide the exit status.
+    ///
+    /// # Side effects
+    ///
+    /// Requests process-wide shutdown and joins the threads; exits the
+    /// process (code 1) when the TUI could not start.
+    fn finish(self) {
+        if let Some(e) = self.tui_failure.as_ref() {
+            tracing::error!("TUI error: {e}");
         }
-        if let Some(notice) = trail.exit_notice() {
-            stderr_line!("{notice}");
-            tracing::error!("{notice}");
+        // A clean stop, journaled if no action is in flight; one that is stays
+        // in doubt for the next start, and is not waited for.
+        self.actions.stop(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        );
+
+        // AFTER the TUI returns, so the terminal has left the alternate screen and
+        // this line survives on the operator's scrollback. Point 4 of the decision
+        // in `crate::tui::action_trail`: a status line inside a full-screen UI that
+        // the operator was not looking at is not a notification, and an incomplete
+        // trail is exactly the thing they must not learn about from the file weeks
+        // later.
+        if let Some(trail) = self.action_trail.as_ref() {
+            report_trail_close(trail);
+        }
+
+        // Signal shutdown and wait for threads
+        // The TUI has exited; signal shutdown so processing thread stops
+        signals::request_shutdown();
+        join_tui_threads(self.processing_thread, self.relay_thread);
+
+        drop(self.handle);
+
+        // eprintln (not only tracing) so the reason survives logging being off:
+        // it decides the exit status, and a status with no reason is the defect
+        // this replaces.
+        if let Some(e) = self.tui_failure {
+            stderr_line!(
+                "sipnab: the terminal UI could not start: {e}. It needs a terminal; \
+                 add -N for a run without one."
+            );
+            crate::capture::archive::release_run_and_exit(1);
         }
     }
+}
 
-    // Signal shutdown and wait for threads
-    // The TUI has exited; signal shutdown so processing thread stops
-    signals::request_shutdown();
-
+/// Join the processing thread, then the reconciler thread, reporting a
+/// panic in either.
+fn join_tui_threads(
+    processing_thread: std::thread::JoinHandle<()>,
+    relay_thread: Option<std::thread::JoinHandle<()>>,
+) {
     if let Err(e) = processing_thread.join() {
         tracing::error!("Processing thread panicked: {:?}", e);
     }
@@ -977,18 +816,388 @@ pub fn run_tui_mode(
     {
         tracing::warn!("the rtpengine reconciler thread panicked");
     }
+}
 
-    drop(handle);
+/// The operator's action trail (`--tui-audit-file`), opened with its first
+/// record, or `None` when none was asked for.
+///
+/// Opened before any thread `run_tui_mode` spawns and before the terminal is
+/// taken. A path that cannot be opened stops the run HERE, which is the
+/// fail-closed half of AUDIT2: refusing costs nothing at this point, and an
+/// operator who asked for a trail and silently got a run that recorded
+/// nothing would find out when they went looking for it -- the one moment it
+/// cannot be recreated. What a write that fails LATER does is the opposite
+/// call, and `crate::tui::action_trail` states why.
+///
+/// # Side effects
+///
+/// Exits the process (code 2) when the file cannot be opened.
+fn open_action_trail(cli: &Cli) -> Option<Arc<crate::tui::action_trail::ActionTrail>> {
+    let path = cli.security_args.tui_audit_file.as_deref()?;
+    let trail = crate::tui::action_trail::ActionTrail::open(std::path::Path::new(path))
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                "--tui-audit-file {path}: {e}. sipnab refuses to run the TUI \
+                 without the action trail it was asked for"
+            );
+            crate::capture::archive::release_run_and_exit(2);
+        });
+    // The first action of the session, and the one every later record
+    // is relative to: a filter or an export means nothing without the
+    // capture it was applied to. Named from the same flags the capture
+    // path uses -- see `capture_opened_target`.
+    let opened = capture_opened_target(cli);
+    trail.record(&crate::tui::action_trail::ActionRecord {
+        action: "capture_opened",
+        target: &opened,
+        format: "",
+        outcome: "ok",
+        error: "",
+    });
+    Some(Arc::new(trail))
+}
 
-    // eprintln (not only tracing) so the reason survives logging being off:
-    // it decides the exit status, and a status with no reason is the defect
-    // this replaces.
-    if let Some(e) = tui_failure {
-        stderr_line!(
-            "sipnab: the terminal UI could not start: {e}. It needs a terminal; \
-             add -N for a run without one."
-        );
-        crate::capture::archive::release_run_and_exit(1);
+/// Close the action trail and tell the operator, on stderr and in the log,
+/// anything they must know about it.
+fn report_trail_close(trail: &crate::tui::action_trail::ActionTrail) {
+    for problem in trail_close_problems(trail) {
+        stderr_line!("{problem}");
+        tracing::error!("{problem}");
+    }
+}
+
+/// Close the action trail and return what the operator must be told: a
+/// closing record that could not be written, then whether the trail is
+/// incomplete.
+fn trail_close_problems(trail: &crate::tui::action_trail::ActionTrail) -> Vec<String> {
+    // The closing record FIRST, so `exit_notice` below reports the state
+    // after it: a closing write that itself failed is part of what the
+    // operator has to be told.
+    let closing = trail.close_session();
+    [closing, trail.exit_notice()]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// What starting RE4's reconciler produced for the TUI.
+#[derive(Default)]
+struct TuiRelay {
+    /// Where the processing thread hands orphaned streams, when a reconciler
+    /// runs.
+    orphans: Option<crate::relay::reconcile::OrphanSink>,
+    /// The reconciler's thread, joined after the processing thread.
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// The run's transmit permit, for the relay-statistics view.
+    query_permit: Option<crate::security::transmit_guard::TransmitPermit>,
+}
+
+/// Start RE4's second trigger, when launch left a reconciler ready.
+///
+/// The store starts recording the sockets of streams nothing explains only
+/// when there is a reconciler to offer them to, and the reconciler runs on its
+/// own thread so the capture path never waits on a relay. Both ends of the
+/// arrangement are set up here, or neither. The relay-statistics view (ST8)
+/// transmits too, and a live source grants exactly one permit for the run.
+/// The permit is `Copy` -- it is proof the source is live, not a single-use
+/// ticket -- so the view holds a copy of the same one the reconciler took.
+/// `None` when the source is a file: the view then reports `not_permitted`
+/// rather than asking.
+fn start_relay_reconciler(
+    ready: Option<crate::app::bootstrap::ReadyReconciler>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+) -> TuiRelay {
+    let Some(ready) = ready else {
+        return TuiRelay::default();
+    };
+    let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
+    stream_store.write().record_new_orphans(true);
+    match crate::app::relay_reconciler::spawn(
+        ready.reconciler,
+        ready.permit,
+        orphan_rx,
+        Arc::clone(stream_store),
+    ) {
+        Ok(join) => TuiRelay {
+            orphans: Some(sink),
+            thread: Some(join),
+            query_permit: Some(ready.permit),
+        },
+        Err(e) => {
+            // A capture is still worth taking when the enrichment
+            // cannot start. Stop recording, so the store does not
+            // accumulate sockets nothing will ever drain.
+            tracing::warn!(
+                "could not start the rtpengine reconciler ({e}); streams the \
+                 signaling does not explain will stay unattributed"
+            );
+            stream_store.write().record_new_orphans(false);
+            TuiRelay {
+                query_permit: Some(ready.permit),
+                ..TuiRelay::default()
+            }
+        }
+    }
+}
+
+/// Start the REST API server if --api is specified. The TUI owns stdio, so
+/// MCP stdio is never selected here.
+///
+/// # Side effects
+///
+/// Exits the process (code 2) when a server cannot start.
+fn start_tui_servers(
+    cli: &Cli,
+    config: &Config,
+    (dialog_store, stream_store): (&Arc<RwLock<DialogStore>>, &Arc<RwLock<StreamStore>>),
+    actions: &crate::security::actions::Actions,
+    capture_meter: Option<crate::capture::channel::CaptureMeter>,
+) -> Option<crate::app::servers::ServerHandles> {
+    crate::app::servers::start_servers(
+        cli,
+        dialog_store,
+        stream_store,
+        None,
+        crate::app::servers::Selection {
+            // The TUI does not fill a ring today: its capture loop is a
+            // different path, and handing the server an empty ring would make
+            // every live pointer answer "nothing retained" where "no ring" is
+            // the truth.
+            evidence_ring: None,
+            mcp_tools: cli.mcp_tool_selection(config).unwrap_or_default(),
+            mcp_output_schemas: cli.mcp_output_schemas(config),
+            api_allowed_hosts: cli.api_allowed_hosts(config),
+            api_tls: cli.api_tls_files(config),
+            mcp_tls: cli.mcp_tls_files(config),
+            metrics_tls: cli.metrics_tls_files(config),
+            mcp_row_cap: cli.mcp_row_cap(config),
+            mcp_body_cap: cli.mcp_body_cap(config),
+            mcp_wait_seconds: cli.mcp_wait_cap(config),
+            api_row_cap: cli.api_row_cap(config),
+            api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
+            max_tracked_peers: cli.tracked_peer_capacity(config),
+            metrics_max_conn: cli.metrics_conn_cap(config),
+            actions: actions.clone(),
+            mcp_max_findings: cli.mcp_findings_cap(config),
+            tfps: cli.tfps_locator(config),
+            api: true,
+            mcp: false,
+            metrics: true,
+            // MCP is never selected here, and `security_findings` is the only
+            // consumer, so there is nothing to declare.
+            armed_detections: Vec::new(),
+        },
+        // `mcp: false` above: this door serves no MCP tools, so there is no
+        // `query_relay` here to hold a permit for. The reconciler's own permit
+        // stays with the reconciler. The REST relay routes (ST5) likewise get
+        // no permit in the TUI: this arm's reconciler already took it, so a TUI
+        // run's `GET /v1/relay/...` answers `not_permitted` -- an operator who
+        // wants relay statistics over REST runs the headless API (`-N --api`),
+        // where the permit is threaded to the door.
+        #[cfg(any(feature = "api", feature = "mcp"))]
+        None,
+        capture_meter,
+    )
+    .unwrap_or_else(|e| {
+        tracing::error!("{e}");
+        crate::capture::archive::release_run_and_exit(2);
+    })
+}
+
+/// Everything the "tui-processor" thread takes ownership of.
+struct TuiProcessorInputs {
+    /// The run's flags (a clone: the TUI keeps its own).
+    cli: Cli,
+    /// `-O` rotation: bytes, duration, files kept.
+    split: (Option<u64>, Option<std::time::Duration>, Option<u32>),
+    /// Reassembly session cap.
+    reassembly_cap: usize,
+    /// How the pipeline classifies.
+    pipeline_opts: crate::pipeline::PipelineOptions,
+    /// Where orphaned streams go for the relay to explain.
+    relay_orphans: Option<crate::relay::reconcile::OrphanSink>,
+    /// The dialogs the TUI shows.
+    dialogs: Arc<RwLock<DialogStore>>,
+    /// The streams the TUI shows.
+    streams: Arc<RwLock<StreamStore>>,
+    /// The packet channel.
+    rx: capture::channel::PacketRx,
+    /// The TUI's pause flag.
+    paused: Arc<std::sync::atomic::AtomicBool>,
+    /// The armed live detectors.
+    live_detectors: LiveDetectors,
+    /// The engine the detectors fire into; `None` when none is armed.
+    security_engine: Option<Arc<RwLock<crate::security::AlertEngine>>>,
+    /// `--count`.
+    max_count: Option<u64>,
+    /// `--duration`.
+    duration: Option<std::time::Duration>,
+}
+
+/// Spawn the packet processing thread.
+///
+/// # Side effects
+///
+/// Exits the process (code 1) when the thread cannot be spawned.
+fn spawn_tui_processor(inputs: TuiProcessorInputs) -> std::thread::JoinHandle<()> {
+    let spawned = std::thread::Builder::new()
+        .name("tui-processor".to_string())
+        .spawn(move || TuiProcessor::new(inputs).run());
+    match spawned {
+        Ok(handle) => handle,
+        Err(e) => {
+            tracing::error!("Failed to spawn processing thread: {e}");
+            crate::capture::archive::release_run_and_exit(1);
+        }
+    }
+}
+
+/// The "tui-processor" thread: drains the packet channel into the stores
+/// until the channel closes, a limit is reached, or shutdown is requested.
+struct TuiProcessor {
+    /// Media keys, and `-O` (with the decrypted export when asked for).
+    thread: TuiPacketThread,
+    /// The packet channel.
+    rx: capture::channel::PacketRx,
+    /// Wall time for a live device, the capture's own timeline for `-I`: the
+    /// TUI reads files too, and there the packet clock and `Utc::now()` are
+    /// unrelated. See `batch::SweepClock`.
+    sweep_clock: crate::app::batch::SweepClock,
+    /// The TUI's pause flag.
+    paused: Arc<std::sync::atomic::AtomicBool>,
+    /// The armed live detectors.
+    live_detectors: LiveDetectors,
+    /// The engine the detectors fire into.
+    security_engine: Option<Arc<RwLock<crate::security::AlertEngine>>>,
+    /// The dialogs, for the idle sweep and the detectors.
+    dialogs: Arc<RwLock<DialogStore>>,
+    /// `--count`.
+    max_count: Option<u64>,
+    /// `--duration`.
+    duration: Option<std::time::Duration>,
+    /// Whether the run has been asked to stop: the process-wide flag, read
+    /// through a function so a test can drive the loop without it.
+    shutdown: fn() -> bool,
+}
+
+impl TuiProcessor {
+    /// Build the thread's state on the thread that runs it.
+    fn new(inputs: TuiProcessorInputs) -> Self {
+        let cli = &inputs.cli;
+        Self {
+            thread: TuiPacketThread {
+                output: TuiOutput::new(cli, inputs.split),
+                processor: capture::PacketProcessor::with_max_sessions(inputs.reassembly_cap)
+                    .with_reassembly(!cli.capture_args.no_reassembly)
+                    .with_parse_limit(cli.capture_args.limitlen),
+                rtp_heuristic: rtp::heuristic::RtpHeuristic::new(),
+                media: TuiMedia::from_cli(cli),
+                opts: inputs.pipeline_opts,
+                relay_orphans: inputs.relay_orphans,
+                dialogs: Arc::clone(&inputs.dialogs),
+                streams: inputs.streams,
+            },
+            rx: inputs.rx,
+            sweep_clock: crate::app::batch::SweepClock::new(cli.has_input()),
+            paused: inputs.paused,
+            live_detectors: inputs.live_detectors,
+            security_engine: inputs.security_engine,
+            dialogs: inputs.dialogs,
+            max_count: inputs.max_count,
+            duration: inputs.duration,
+            shutdown: signals::shutdown_requested,
+        }
+    }
+
+    /// Process packets until a stop condition, then close the output.
+    fn run(mut self) {
+        let sweep_interval = std::time::Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        let mut total_count: u64 = 0;
+
+        loop {
+            if (self.shutdown)() {
+                break;
+            }
+
+            self.sweep_if_due(sweep_interval);
+
+            let packet = match self.rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(pkt) => pkt,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            };
+
+            // Offline, this packet's timestamp is what "now" means to the
+            // next sweep. Recorded before parsing so undecoded traffic
+            // still advances the clock.
+            self.sweep_clock.observe(packet.timestamp);
+
+            // Load the pause state once per packet. A paused capture keeps
+            // writing to the pcap and advancing reassembly (to prevent
+            // buffer overflow and keep TCP reassembly consistent), but its
+            // packets are neither analyzed nor counted toward --count.
+            let is_paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
+
+            if let Err(e) = self.process(&packet, is_paused) {
+                tracing::error!("{e}");
+                break;
+            }
+
+            if count_and_check_limit(is_paused, &mut total_count, self.max_count) {
+                break;
+            }
+
+            if self.duration.is_some_and(|d| start.elapsed() >= d) {
+                break;
+            }
+        }
+
+        // A stop (quitting the TUI, a signal) discards what the decrypted
+        // export still holds; the end of an input writes it.
+        if let Some(line) = self.thread.output.close((self.shutdown)()) {
+            tracing::info!("sipnab: {line}");
+        }
+    }
+
+    /// Sweep reassembly and compact idle dialogs when the sweep is due.
+    #[inline]
+    fn sweep_if_due(&mut self, interval: std::time::Duration) {
+        let Some(now) = self.sweep_clock.take_due(interval) else {
+            return;
+        };
+        self.thread.processor.sweep();
+        // No orphan sweep: orphan status is derived from
+        // `associated_dialog` at every read, so there is no flag to
+        // set — see [`crate::rtp::stream::RtpStream::orphaned`].
+        let compacted = self.dialogs.write().compact_idle(now.get());
+        if compacted.messages_evicted > 0 {
+            tracing::debug!(
+                "idle-dialog compaction: dropped {} messages from {} dialogs",
+                compacted.messages_evicted,
+                compacted.dialogs_compacted
+            );
+        }
+    }
+
+    /// One packet through the pipeline, with live security detection.
+    ///
+    /// Findings go into the shared engine the security-findings view reads;
+    /// nothing a detection could do is acted on. See `LiveDetectors::observe`.
+    #[inline]
+    fn process(&mut self, packet: &capture::Packet, is_paused: bool) -> anyhow::Result<()> {
+        let Self {
+            thread,
+            live_detectors,
+            security_engine,
+            dialogs,
+            ..
+        } = self;
+        thread.process(packet, is_paused, |pp| {
+            if let Some(engine) = security_engine {
+                live_detectors.observe(pp, dialogs, engine);
+            }
+        })
     }
 }
 
@@ -2147,5 +2356,287 @@ mod tests {
         let engine = engine();
         detectors.observe(&sip_packet(vec![0u8; 64]), &ds, &engine);
         assert!(engine.read().iter_findings(&[], None, 16).is_empty());
+    }
+}
+
+/// The TUI processing thread and the startup pieces around it, driven
+/// without a terminal.
+#[cfg(test)]
+mod processor_tests {
+    use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A CLI parsed from `args`, `sipnab` included as argv[0].
+    fn cli_from(args: &[&str]) -> Cli {
+        let mut argv = vec!["sipnab"];
+        argv.extend_from_slice(args);
+        Cli::parse_from_args(argv)
+    }
+
+    /// An Ethernet/IPv4/UDP frame from 192.0.2.10:5060 to 192.0.2.20:5060
+    /// carrying `payload`, as a captured packet.
+    fn udp_packet(payload: &[u8]) -> Result<capture::Packet, TestError> {
+        let udp_len = 8 + payload.len();
+        let total = u16::try_from(20 + udp_len)?;
+        let mut f = vec![0u8; 12];
+        f.extend_from_slice(&[0x08, 0x00]);
+        let mut ip = vec![
+            0x45, 0, 0, 0, 0, 1, 0x40, 0, 64, 17, 0, 0, 192, 0, 2, 10, 192, 0, 2, 20,
+        ];
+        ip[2..4].copy_from_slice(&total.to_be_bytes());
+        let sum = ip
+            .chunks(2)
+            .map(|w| u32::from(u16::from_be_bytes([w[0], w[1]])))
+            .sum::<u32>();
+        let folded = (sum & 0xffff) + (sum >> 16);
+        let checksum = !u16::try_from((folded & 0xffff) + (folded >> 16))?;
+        ip[10..12].copy_from_slice(&checksum.to_be_bytes());
+        f.extend_from_slice(&ip);
+        f.extend_from_slice(&5060u16.to_be_bytes());
+        f.extend_from_slice(&5060u16.to_be_bytes());
+        f.extend_from_slice(&u16::try_from(udp_len)?.to_be_bytes());
+        f.extend_from_slice(&[0, 0]);
+        f.extend_from_slice(payload);
+        Ok(capture::Packet {
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .ok_or("a valid timestamp")?,
+            caplen: f.len(),
+            origlen: f.len(),
+            data: f.into(),
+            interface: None,
+            link_type: 1,
+            pre_parsed: None,
+            origin: None,
+        })
+    }
+
+    /// An INVITE opening the dialog `call_id`.
+    fn invite(call_id: &str) -> Result<capture::Packet, TestError> {
+        let call = format!("Call-ID: {call_id}");
+        udp_packet(&crate::test_utils::build_sip_message(
+            "INVITE sip:b@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bK-1",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                &call,
+                "CSeq: 1 INVITE",
+            ],
+            b"",
+        ))
+    }
+
+    /// A processor over a channel already holding `packets` and then closed,
+    /// with the process-wide shutdown flag replaced by `false`.
+    fn processor(
+        cli: &Cli,
+        packets: Vec<capture::Packet>,
+        limits: (Option<u64>, Option<std::time::Duration>),
+        security_engine: Option<Arc<RwLock<crate::security::AlertEngine>>>,
+    ) -> Result<(TuiProcessor, Arc<RwLock<DialogStore>>), TestError> {
+        let config = Config::default();
+        let (tx, rx) = capture::channel::packet_channel(64);
+        for p in packets {
+            tx.send(p).map_err(|e| format!("queue a packet: {e:?}"))?;
+        }
+        drop(tx);
+        let (dialogs, streams) = build_stores(cli, &config, &Default::default());
+        let mut p = TuiProcessor::new(TuiProcessorInputs {
+            cli: cli.clone(),
+            split: (None, None, None),
+            reassembly_cap: 64,
+            pipeline_opts: tui_pipeline_options(cli, &config, false),
+            relay_orphans: None,
+            dialogs: Arc::clone(&dialogs),
+            streams,
+            rx,
+            paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            live_detectors: LiveDetectors::from_cli(cli, &config),
+            security_engine,
+            max_count: limits.0,
+            duration: limits.1,
+        });
+        p.shutdown = || false;
+        Ok((p, dialogs))
+    }
+
+    /// Three INVITEs, three dialogs.
+    fn three_invites() -> Result<Vec<capture::Packet>, TestError> {
+        Ok(vec![invite("one@x")?, invite("two@x")?, invite("three@x")?])
+    }
+
+    #[test]
+    fn every_packet_reaches_the_store_without_a_limit() -> Result<(), TestError> {
+        let (p, dialogs) = processor(&cli_from(&[]), three_invites()?, (None, None), None)?;
+        p.run();
+        assert_eq!(dialogs.read().len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn count_stops_the_thread_after_that_many_packets() -> Result<(), TestError> {
+        let (p, dialogs) = processor(&cli_from(&[]), three_invites()?, (Some(1), None), None)?;
+        p.run();
+        assert_eq!(
+            dialogs.read().len(),
+            1,
+            "--count 1 must stop after one packet"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_elapsed_duration_stops_the_thread() -> Result<(), TestError> {
+        let limits = (None, Some(std::time::Duration::ZERO));
+        let (p, dialogs) = processor(&cli_from(&[]), three_invites()?, limits, None)?;
+        p.run();
+        assert_eq!(
+            dialogs.read().len(),
+            1,
+            "a spent --duration must stop the loop"
+        );
+        Ok(())
+    }
+
+    /// An armed detector sees the packets the thread processes and files its
+    /// findings into the engine the security view reads.
+    #[test]
+    fn the_thread_runs_the_armed_detectors_into_the_engine() -> Result<(), TestError> {
+        let engine = Arc::new(RwLock::new(crate::security::AlertEngine::new(
+            Vec::new(),
+            None,
+        )));
+        let challenge = udp_packet(&crate::test_utils::build_sip_message(
+            "SIP/2.0 401 Unauthorized",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-weak",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:a@example.com>;tag=2",
+                "Call-ID: weak-digest@example.com",
+                "CSeq: 1 REGISTER",
+                "WWW-Authenticate: Digest realm=\"example.com\", nonce=\"n1\", algorithm=MD5",
+            ],
+            b"",
+        ))?;
+        let (p, _) = processor(
+            &cli_from(&["--digest-leak"]),
+            vec![challenge],
+            (None, None),
+            Some(Arc::clone(&engine)),
+        )?;
+        p.run();
+        assert!(
+            !engine.read().iter_findings(&[], None, 16).is_empty(),
+            "the weak challenge must be filed as a finding"
+        );
+        Ok(())
+    }
+
+    /// The trail's first record names the capture the session opened.
+    #[test]
+    fn the_action_trail_opens_with_the_capture_it_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = dir.path().join("trail.jsonl");
+        let p = path.display().to_string();
+        let cli = cli_from(&["-I", "a.pcap", "--tui-audit-file", &p]);
+        let trail = open_action_trail(&cli).ok_or("asked for, so opened")?;
+        drop(trail);
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("trail written: {e:?}"))?;
+        assert!(text.contains("\"capture_opened\""), "{text}");
+        assert!(open_action_trail(&cli_from(&[])).is_none());
+        Ok(())
+    }
+
+    /// A trail whose writes failed reports itself incomplete on close.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_incomplete_trail_is_reported_on_close() -> Result<(), TestError> {
+        let trail = crate::tui::action_trail::ActionTrail::open(std::path::Path::new("/dev/full"))
+            .map_err(|e| format!("/dev/full opens: {e:?}"))?;
+        trail.record(&crate::tui::action_trail::ActionRecord {
+            action: "capture_opened",
+            target: "x",
+            format: "",
+            outcome: "ok",
+            error: "",
+        });
+        let problems = trail_close_problems(&trail);
+        assert!(
+            problems.iter().any(|p| p.contains("INCOMPLETE")),
+            "{problems:?}"
+        );
+        Ok(())
+    }
+
+    /// Starting the reconciler turns on orphan recording in the store, so a
+    /// stream nothing explains is offered to it.
+    #[test]
+    fn a_started_reconciler_makes_the_store_record_orphans() -> Result<(), TestError> {
+        let (_dialogs, streams) =
+            build_stores(&cli_from(&[]), &Config::default(), &Default::default());
+        let permit = crate::security::transmit_guard::TransmitPermit::for_source(
+            &capture::CaptureSource::Live {
+                device: "test0".into(),
+            },
+        )
+        .ok_or("live permit")?;
+        let client = crate::rtpengine::control::ControlClient::new(
+            "127.0.0.1:9".parse().map_err(|e| format!("addr: {e:?}"))?,
+            std::time::Duration::from_millis(10),
+        );
+        let ready = crate::app::bootstrap::ReadyReconciler {
+            reconciler: crate::relay::reconcile::Reconciler::new(client),
+            permit,
+        };
+        let relay = start_relay_reconciler(Some(ready), &streams);
+        assert!(relay.orphans.is_some() && relay.query_permit.is_some());
+        streams.write().process_rtp(
+            &crate::capture::ParsedPacket {
+                frame_bytes: None,
+                frame: None,
+                timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("epoch")?,
+                src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 2)),
+                src_port: 20000,
+                dst_port: 30000,
+                transport: crate::net::TransportProto::Udp,
+                payload: vec![0u8; 12 + 160].into(),
+                ip_id: None,
+                tcp_seq: None,
+                tcp_flags: None,
+                fragment_offset: None,
+                more_fragments: false,
+                ip_protocol: 17,
+                dscp: None,
+                input_origin: crate::capture::parse::InputOrigin::Wire,
+                hep: None,
+            },
+            &crate::rtp::parser::RtpHeader {
+                version: 2,
+                padding: false,
+                extension: false,
+                csrc_count: 0,
+                marker: false,
+                payload_type: 0,
+                sequence: 1,
+                timestamp: 160,
+                ssrc: 0x5150_0001,
+                payload_offset: 12,
+            },
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("epoch")?,
+        );
+        let orphans = streams.write().drain_new_orphan_sockets();
+        drop(relay.orphans);
+        if let Some(join) = relay.thread {
+            join.join()
+                .map_err(|e| format!("reconciler thread: {e:?}"))?;
+        }
+        assert!(
+            !orphans.is_empty(),
+            "the stream nothing explains is offered"
+        );
+        Ok(())
     }
 }

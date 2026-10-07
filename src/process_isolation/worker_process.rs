@@ -738,37 +738,43 @@ fn worker_main(args: &[String]) -> i32 {
         }
     };
     init_tracing(&args.log_level);
-    let sockets = match adopt(&args.send_fds) {
+    let sockets = match start(&args) {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("scanner-kill worker refused to start: {e}");
-            return 3;
-        }
+        Err(code) => return code,
     };
+    report_ready(&args);
+    exit_code(run_worker(sockets, args.rate_limit))
+}
+
+/// Adopt the send descriptors the plan names, then stop being root.
+///
+/// # Errors
+///
+/// The worker's exit code: 3 when a promised descriptor cannot be adopted,
+/// 4 when the worker cannot stop being root.
+fn start(args: &WorkerArgs) -> Result<SendSockets, i32> {
+    let sockets = adopt(&args.send_fds).map_err(|e| {
+        tracing::error!("scanner-kill worker refused to start: {e}");
+        3
+    })?;
     if let Err(e) = harden(&args.run_as) {
         tracing::error!("scanner-kill worker refused to start: {e}");
-        return 4;
+        return Err(4);
     }
+    Ok(sockets)
+}
+
+/// Log the ready line: the worker's pid, its rate limit, the send
+/// descriptors it holds, every descriptor it has open, and the names of its
+/// environment variables.
+fn report_ready(args: &WorkerArgs) {
     let held: Vec<String> = SendFd::ALL
         .into_iter()
         .filter(|k| args.send_fds.contains(*k))
         .map(|k| format!("{}={}", k.name(), describe(k.slot())))
         .collect();
-    let open = open_descriptors().map_or_else(
-        || "unknown".to_string(),
-        |fds| {
-            fds.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        },
-    );
-    // Names only: a value could be a secret, and the point of listing them is
-    // to show there are none worth hiding.
-    let mut environment: Vec<String> = std::env::vars_os()
-        .map(|(name, _)| name.to_string_lossy().into_owned())
-        .collect();
-    environment.sort();
+    let open = open_descriptor_list();
+    let environment = environment_names();
     tracing::info!(
         "scanner-kill worker process {} ready: {} responses/s, send descriptors [{}], \
          open descriptors [{open}], environment [{}]",
@@ -777,15 +783,45 @@ fn worker_main(args: &[String]) -> i32 {
         held.join(", "),
         environment.join(", ")
     );
-    let result = match refusal(&sockets) {
+}
+
+/// This process's open descriptors, comma separated, or `unknown` where the
+/// platform cannot list them.
+fn open_descriptor_list() -> String {
+    open_descriptors().map_or_else(
+        || "unknown".to_string(),
+        |fds| {
+            fds.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    )
+}
+
+/// The names of this process's environment variables, sorted.
+fn environment_names() -> Vec<String> {
+    // Names only: a value could be a secret, and the point of listing them is
+    // to show there are none worth hiding.
+    let mut environment: Vec<String> = std::env::vars_os()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    environment.sort();
+    environment
+}
+
+/// Answer requests over stdin and stdout: refuse every one when the worker
+/// holds no send descriptor, otherwise serve them.
+fn run_worker(sockets: SendSockets, rate_limit: u32) -> std::io::Result<()> {
+    match refusal(&sockets) {
         Some(reason) => refuse_all(std::io::stdin(), std::io::stdout(), reason),
-        None => serve(
-            std::io::stdin(),
-            std::io::stdout(),
-            args.rate_limit,
-            sockets,
-        ),
-    };
+        None => serve(std::io::stdin(), std::io::stdout(), rate_limit, sockets),
+    }
+}
+
+/// The exit code for how serving ended: 0 for an orderly end, 5 for an
+/// error.
+fn exit_code(result: std::io::Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {

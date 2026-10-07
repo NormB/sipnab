@@ -60,6 +60,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, UdpSocket};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -1242,6 +1243,20 @@ struct ScannerKillWorker {
     raw_sock: Option<RawKillSocket>,
 }
 
+/// Where one scanner-kill response goes, and the source it claims when it is
+/// sent spoofed.
+#[derive(Debug, Clone, Copy)]
+struct ResponseAddrs {
+    /// The scanner's address: the response's destination.
+    dst_addr: IpAddr,
+    /// The scanner's port: the response's destination port.
+    dst_port: u16,
+    /// The victim address the scanner targeted: the forged source.
+    src_addr: IpAddr,
+    /// The victim port the scanner targeted: the forged source port.
+    src_port: u16,
+}
+
 impl ScannerKillWorker {
     /// Run the worker loop until a `Shutdown` request is received or the
     /// channel disconnects.
@@ -1252,44 +1267,49 @@ impl ScannerKillWorker {
         );
 
         loop {
-            let request = match self.rx.recv() {
-                Ok(req) => req,
-                Err(_) => {
-                    tracing::debug!("Scanner-kill channel disconnected, worker exiting");
-                    break;
-                }
+            let Ok(request) = self.rx.recv() else {
+                tracing::debug!("Scanner-kill channel disconnected, worker exiting");
+                break;
             };
+            if self.handle_request(request).is_break() {
+                break;
+            }
+        }
+    }
 
-            match request {
-                KillRequest::Shutdown => {
-                    tracing::info!("Scanner-kill worker shutting down");
-                    break;
+    /// Act on one request. `Break` ends the worker loop: a `Shutdown`
+    /// request, or an outcome channel the parent has closed.
+    fn handle_request(&mut self, request: KillRequest) -> ControlFlow<()> {
+        match request {
+            KillRequest::Shutdown => {
+                tracing::info!("Scanner-kill worker shutting down");
+                ControlFlow::Break(())
+            }
+            KillRequest::SendResponse {
+                dst_addr,
+                dst_port,
+                src_addr,
+                src_port,
+                response_bytes,
+            } => {
+                let response =
+                    self.process_send(dst_addr, dst_port, src_addr, src_port, &response_bytes);
+                // Waited on, deliberately, and safely. The parent books
+                // an outcome only when it arrives, so an outcome dropped
+                // here would be a request the parent's ledger carries as
+                // in flight for ever. Waiting cannot reach the capture
+                // thread: the pump draining this channel feeds a pipe the
+                // parent's reader thread always drains, and the parent's
+                // capture thread only ever OFFERS requests (see
+                // `ScannerKillHandle::send_kill`). When this thread was
+                // the parent's own, the same wait was the wedge that froze
+                // capture after ~512 detections; across a process
+                // boundary and a forwarding thread it is backpressure.
+                if self.resp_tx.send(response).is_err() {
+                    tracing::debug!("Scanner-kill outcome channel closed, worker exiting");
+                    return ControlFlow::Break(());
                 }
-                KillRequest::SendResponse {
-                    dst_addr,
-                    dst_port,
-                    src_addr,
-                    src_port,
-                    response_bytes,
-                } => {
-                    let response =
-                        self.process_send(dst_addr, dst_port, src_addr, src_port, &response_bytes);
-                    // Waited on, deliberately, and safely. The parent books
-                    // an outcome only when it arrives, so an outcome dropped
-                    // here would be a request the parent's ledger carries as
-                    // in flight for ever. Waiting cannot reach the capture
-                    // thread: the pump draining this channel feeds a pipe the
-                    // parent's reader thread always drains, and the parent's
-                    // capture thread only ever OFFERS requests (see
-                    // `ScannerKillHandle::send_kill`). When this thread was
-                    // the parent's own, the same wait was the wedge that froze
-                    // capture after ~512 detections; across a process
-                    // boundary and a forwarding thread it is backpressure.
-                    if self.resp_tx.send(response).is_err() {
-                        tracing::debug!("Scanner-kill outcome channel closed, worker exiting");
-                        break;
-                    }
-                }
+                ControlFlow::Continue(())
             }
         }
     }
@@ -1303,30 +1323,14 @@ impl ScannerKillWorker {
         src_port: u16,
         response_bytes: &[u8],
     ) -> KillResponse {
-        // Reject broadcast addresses
-        if is_broadcast_or_multicast(dst_addr) {
-            let reason = format!("rejected broadcast/multicast destination: {dst_addr}");
-            tracing::warn!("Scanner-kill: {reason}");
-            return KillResponse::Rejected { reason };
-        }
-
-        // Reject empty responses
-        if response_bytes.is_empty() {
-            return KillResponse::Rejected {
-                reason: "empty response bytes".to_string(),
-            };
-        }
-
-        // Apply global rate limit
-        if !self.rate_limiter.allow() {
-            tracing::debug!("Scanner-kill: rate limited response to {dst_addr}:{dst_port}");
-            return KillResponse::RateLimited;
-        }
-
-        // Apply per-destination-IP rate limit (M6: amplification mitigation)
-        if !self.per_dst_limiter.allow(dst_addr) {
-            tracing::debug!("Scanner-kill: per-destination rate limited for {dst_addr}:{dst_port}");
-            return KillResponse::RateLimited;
+        let addrs = ResponseAddrs {
+            dst_addr,
+            dst_port,
+            src_addr,
+            src_port,
+        };
+        if let Some(refused) = self.refusal(addrs, response_bytes) {
+            return refused;
         }
 
         // Periodic cleanup of per-dst limiter (amortized to once per second so
@@ -1336,47 +1340,93 @@ impl ScannerKillWorker {
         // Prefer a source-spoofed raw send when a raw socket is available. The
         // forged source is the victim ip:port the scanner targeted, so the
         // reply appears to come from the SIP listener rather than sipnab's
-        // ephemeral port. Build the datagram for the matching address family
-        // (mixed families never occur — src and dst come from one packet) and
-        // fall back to the plain UDP send on any failure.
-        if let Some(raw) = self.raw_sock.as_ref() {
-            let spoofed: Option<std::io::Result<usize>> = match (dst_addr, src_addr) {
-                (IpAddr::V4(dst_v4), IpAddr::V4(src_v4)) => {
-                    let dst = SocketAddrV4::new(dst_v4, dst_port);
-                    let src = SocketAddrV4::new(src_v4, src_port);
-                    crate::security::kill_packet::build_ipv4_udp(src, dst, response_bytes)
-                        .map(|pkt| raw.send_to_v4(&pkt, dst))
-                }
-                (IpAddr::V6(dst_v6), IpAddr::V6(src_v6)) => {
-                    let dst = std::net::SocketAddrV6::new(dst_v6, dst_port, 0, 0);
-                    let src = std::net::SocketAddrV6::new(src_v6, src_port, 0, 0);
-                    crate::security::kill_packet::build_ipv6_udp(src, dst, response_bytes)
-                        .map(|pkt| raw.send_to_v6(&pkt, dst))
-                }
-                _ => None,
-            };
-            match spoofed {
-                Some(Ok(_)) => {
-                    tracing::info!(
-                        "Scanner-kill: sent {} byte spoofed response to {dst_addr}:{dst_port} (source {src_addr}:{src_port})",
-                        response_bytes.len(),
-                    );
-                    return KillResponse::Sent {
-                        path: SendPath::Raw,
-                    };
-                }
-                Some(Err(e)) => {
-                    // Raw send failed at runtime; fall through to the ephemeral
-                    // path rather than dropping the response.
-                    tracing::warn!(
-                        "Scanner-kill: spoofed send to {dst_addr}:{dst_port} failed ({e}); falling back to ephemeral source"
-                    );
-                }
-                None => {}
-            }
+        // ephemeral port. Fall back to the plain UDP send on any failure.
+        if let Some(sent) = self.try_spoofed_send(addrs, response_bytes) {
+            return sent;
         }
 
-        // Ephemeral fallback: plain UDP send from our own source port.
+        self.ephemeral_send(addrs, response_bytes)
+    }
+
+    /// The response a request gets when it must not be sent: a refused
+    /// destination or body, or a rate limit reached. `None` means the
+    /// request may be sent; it has then been counted by both rate limiters.
+    fn refusal(&mut self, addrs: ResponseAddrs, response_bytes: &[u8]) -> Option<KillResponse> {
+        let ResponseAddrs {
+            dst_addr, dst_port, ..
+        } = addrs;
+
+        // Reject broadcast addresses
+        if is_broadcast_or_multicast(dst_addr) {
+            let reason = format!("rejected broadcast/multicast destination: {dst_addr}");
+            tracing::warn!("Scanner-kill: {reason}");
+            return Some(KillResponse::Rejected { reason });
+        }
+
+        // Reject empty responses
+        if response_bytes.is_empty() {
+            return Some(KillResponse::Rejected {
+                reason: "empty response bytes".to_string(),
+            });
+        }
+
+        // Apply global rate limit
+        if !self.rate_limiter.allow() {
+            tracing::debug!("Scanner-kill: rate limited response to {dst_addr}:{dst_port}");
+            return Some(KillResponse::RateLimited);
+        }
+
+        // Apply per-destination-IP rate limit (M6: amplification mitigation)
+        if !self.per_dst_limiter.allow(dst_addr) {
+            tracing::debug!("Scanner-kill: per-destination rate limited for {dst_addr}:{dst_port}");
+            return Some(KillResponse::RateLimited);
+        }
+
+        None
+    }
+
+    /// Send the response from the forged victim source over the raw socket.
+    /// `None` means no spoofed datagram was sent (no raw socket, mixed
+    /// address families, a payload too large to build, or a failed send),
+    /// and the caller falls back to the ephemeral send.
+    fn try_spoofed_send(
+        &self,
+        addrs: ResponseAddrs,
+        response_bytes: &[u8],
+    ) -> Option<KillResponse> {
+        let raw = self.raw_sock.as_ref()?;
+        let ResponseAddrs {
+            dst_addr,
+            dst_port,
+            src_addr,
+            src_port,
+        } = addrs;
+        match send_spoofed(raw, addrs, response_bytes)? {
+            Ok(_) => {
+                tracing::info!(
+                    "Scanner-kill: sent {} byte spoofed response to {dst_addr}:{dst_port} (source {src_addr}:{src_port})",
+                    response_bytes.len(),
+                );
+                Some(KillResponse::Sent {
+                    path: SendPath::Raw,
+                })
+            }
+            Err(e) => {
+                // Raw send failed at runtime; fall through to the ephemeral
+                // path rather than dropping the response.
+                tracing::warn!(
+                    "Scanner-kill: spoofed send to {dst_addr}:{dst_port} failed ({e}); falling back to ephemeral source"
+                );
+                None
+            }
+        }
+    }
+
+    /// Ephemeral fallback: plain UDP send from our own source port.
+    fn ephemeral_send(&self, addrs: ResponseAddrs, response_bytes: &[u8]) -> KillResponse {
+        let ResponseAddrs {
+            dst_addr, dst_port, ..
+        } = addrs;
         let sock = match dst_addr {
             IpAddr::V4(_) => self.sock_v4.as_ref(),
             IpAddr::V6(_) => self.sock_v6.as_ref(),
@@ -1399,6 +1449,34 @@ impl ScannerKillWorker {
                 KillResponse::Error { message }
             }
         }
+    }
+}
+
+/// Build the source-spoofed datagram for the address family of `addrs` and
+/// send it over `raw`.
+///
+/// `None` when the destination and source families differ (mixed families
+/// never occur: src and dst come from one packet) or the datagram cannot be
+/// built (a payload too large for one datagram).
+fn send_spoofed(
+    raw: &RawKillSocket,
+    addrs: ResponseAddrs,
+    response_bytes: &[u8],
+) -> Option<std::io::Result<usize>> {
+    match (addrs.dst_addr, addrs.src_addr) {
+        (IpAddr::V4(dst_v4), IpAddr::V4(src_v4)) => {
+            let dst = SocketAddrV4::new(dst_v4, addrs.dst_port);
+            let src = SocketAddrV4::new(src_v4, addrs.src_port);
+            crate::security::kill_packet::build_ipv4_udp(src, dst, response_bytes)
+                .map(|pkt| raw.send_to_v4(&pkt, dst))
+        }
+        (IpAddr::V6(dst_v6), IpAddr::V6(src_v6)) => {
+            let dst = std::net::SocketAddrV6::new(dst_v6, addrs.dst_port, 0, 0);
+            let src = std::net::SocketAddrV6::new(src_v6, addrs.src_port, 0, 0);
+            crate::security::kill_packet::build_ipv6_udp(src, dst, response_bytes)
+                .map(|pkt| raw.send_to_v6(&pkt, dst))
+        }
+        _ => None,
     }
 }
 
@@ -2078,9 +2156,13 @@ mod tests {
     //! `tests/scanner_kill_process_test.rs`, which can name the `sipnab`
     //! binary cargo built. This file's executable is a test harness, so it
     //! cannot be re-executed as the worker.
+
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use worker_process::{SendSockets, refuse_all, serve};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A transmit permit standing for a live capture.
     ///
@@ -2588,6 +2670,88 @@ mod tests {
         );
     }
 
+    /// An IPv6 destination is sent from the IPv6 socket: a worker holding
+    /// only that socket reaches a `::1` listener.
+    #[test]
+    fn process_send_uses_the_ipv6_socket_for_an_ipv6_destination() -> Result<(), TestError> {
+        let listener = std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+            .map_err(|e| format!("bind a ::1 listener: {e:?}"))?;
+        listener
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("local addr: {e:?}"))?
+            .port();
+        let (mut worker, _tx, _rx) = socketless_worker(None, 10);
+        worker.sock_v6 = Some(
+            KillUdpSocket::bind(&live_permit(), (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+                .ok_or("an IPv6 socket binds")?,
+        );
+        let loopback = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let payload = b"SIP/2.0 403 Forbidden\r\n\r\n".to_vec();
+        let outcome = worker.process_send(loopback, port, loopback, 5060, &payload);
+        assert_eq!(
+            outcome,
+            KillResponse::Sent {
+                path: SendPath::Ephemeral
+            }
+        );
+        let mut buf = [0u8; 256];
+        let (n, _from) = retrying(|| listener.recv_from(&mut buf))
+            .map_err(|e| format!("the ::1 listener must receive the response: {e:?}"))?;
+        assert_eq!(&buf[..n], &payload[..]);
+        Ok(())
+    }
+
+    /// A send that passes the rate limits sweeps stale per-destination
+    /// buckets, so the limiter's memory is bounded by the sends themselves.
+    #[test]
+    fn a_permitted_send_sweeps_stale_per_destination_buckets() {
+        use std::time::Duration;
+        let (mut worker, _tx, _rx) = socketless_worker(None, 10);
+        let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(300)) else {
+            stderr_line!("skipping: the monotonic clock is younger than 300s");
+            return;
+        };
+        let stale: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 77));
+        worker.per_dst_limiter.buckets.insert(stale, (long_ago, 1));
+        let _ = worker.process_send(
+            localhost_v4(),
+            5060,
+            localhost_v4(),
+            5060,
+            &sample_response(),
+        );
+        assert!(
+            !worker.per_dst_limiter.buckets.contains_key(&stale),
+            "the first permitted send must sweep a bucket older than two minutes"
+        );
+    }
+
+    /// A worker whose outcome channel is closed stops, rather than taking
+    /// requests whose outcomes nobody can receive.
+    #[test]
+    fn a_worker_whose_outcome_channel_closed_stops() -> Result<(), TestError> {
+        let (worker, tx, rx) = socketless_worker(None, 10);
+        drop(rx);
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+        std::thread::spawn(move || {
+            worker.run();
+            let _ = done_tx.send(());
+        });
+        tx.send(request_to(localhost_v4(), 5060, sample_response()))
+            .map_err(|e| format!("the worker takes the request: {e:?}"))?;
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_ok(),
+            "the worker must exit when its outcome cannot be delivered, while \
+             the request channel is still open"
+        );
+        Ok(())
+    }
+
     /// Response bytes with embedded NUL and high bytes are delivered verbatim.
     #[test]
     fn transmits_response_bytes_verbatim_including_nul() {
@@ -2807,12 +2971,19 @@ mod tests {
 
         let (mut worker, _tx, _rx) = socketless_worker(Some(raw), 10);
         let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
-        let _ = worker.process_send(
+        let outcome = worker.process_send(
             IpAddr::V6(Ipv6Addr::LOCALHOST),
             port,
             IpAddr::V6(Ipv6Addr::LOCALHOST),
             victim_port,
             &payload,
+        );
+        assert_eq!(
+            outcome,
+            KillResponse::Sent {
+                path: SendPath::Raw
+            },
+            "an IPv6 destination with a raw socket must be answered spoofed"
         );
 
         let mut buf = [0u8; 2048];

@@ -291,58 +291,24 @@ pub fn layout(
 ) -> (Vec<Participant>, Vec<LayoutRow>) {
     #[cfg(test)]
     LAYOUT_CALLS.with(|c| c.set(c.get() + 1));
-    let sdp_mode = opts.sdp_mode;
-    let ts_mode = opts.ts_mode;
-    let show_rtp = opts.show_rtp;
-    let rtp_segments = opts.rtp_segments;
     if messages.is_empty() {
         return (Vec::new(), Vec::new());
     }
 
-    // Discover all unique endpoints, keyed by (ip, port). The raw `ip:port`
-    // string remains the matching key; the displayed label may be a resolved
-    // name when name resolution is active.
-    let mut endpoints: Vec<(std::net::IpAddr, u16)> = Vec::new();
-    for msg in messages {
-        for ep in [(msg.src_addr, msg.src_port), (msg.dst_addr, msg.dst_port)] {
-            if !endpoints.contains(&ep) {
-                endpoints.push(ep);
-            }
-        }
-    }
-    let participants: Vec<Participant> = endpoints
-        .iter()
-        .map(|&(ip, port)| {
-            // Bracketed for IPv6: `2001:db8::1:5060` cannot be read back
-            // into an address and a port, and this string is the participant
-            // IDENTITY in an exported diagram.
-            let addr = crate::net::endpoint_label(ip, port);
-            let display = opts.resolver.label(ip, port, opts.name_mode);
-            Participant {
-                addr,
-                label: truncate(&display, 20),
-            }
-        })
-        .collect();
+    let (endpoints, participants) = discover_participants(messages, opts);
 
-    let ts_width = TS_COL_WIDTH;
-
-    let mut pdd_done = false;
-    let mut in_call = false;
-    // Negotiated codec from the most recent INVITE 200 OK answer (single,
-    // preferred), pending display on the ACK bar. `last_bar_cseq` is the CSeq
-    // number of the INVITE transaction whose media bar we last drew, so each
-    // distinct (re-)INVITE draws its own bar but a single transaction (e.g. early
-    // media then its confirming ACK) does not draw two.
-    let mut pending_answer_codec: Option<String> = None;
-    let mut last_bar_cseq: Option<u32> = None;
-    let mut deferred_rtp_bar: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+    let mut clock = LadderClock {
+        mode: opts.ts_mode,
+        first_ts,
+        prev_ts: first_ts,
+    };
+    let mut pending_pdd = pdd_ms;
+    let mut media = MediaBars::default();
     let mut result = Vec::with_capacity(messages.len());
     // Each message's parsed SDP, indexed by message position, retained so the
     // SDP-delta-badge pass below reuses this parse instead of re-parsing every
     // body a second time.
     let mut msg_sdps: Vec<Option<sdp::SdpSession>> = Vec::with_capacity(messages.len());
-    let mut prev_ts = first_ts;
 
     for (mi, msg) in messages.iter().enumerate() {
         // Parse this message's SDP once per iteration — the SDP-info line, the
@@ -350,230 +316,30 @@ pub fn layout(
         // `SipMessage::sdp()` re-parses the body on every call. The parse is
         // also stashed in `msg_sdps` for the delta-badge pass.
         let msg_sdp = msg.sdp();
-        let (timestamp, ts_class) = match ts_mode {
-            TimestampMode::Absolute => {
-                let ts_str = format!(
-                    "{:<width$}",
-                    msg.timestamp.format("%H:%M:%S%.3f"),
-                    width = ts_width
-                );
-                (ts_str, TsClass::Muted)
-            }
-            TimestampMode::DeltaPrev => {
-                let d = msg
-                    .timestamp
-                    .signed_duration_since(prev_ts)
-                    .num_milliseconds();
-                let ts_str = format!(
-                    "{:>width$}",
-                    format!("+{:.3}s", d as f64 / 1000.0),
-                    width = ts_width - 1
-                ) + " ";
-                prev_ts = msg.timestamp;
-                (ts_str, TsClass::Delta(d))
-            }
-            TimestampMode::DeltaFirst => {
-                let d = msg
-                    .timestamp
-                    .signed_duration_since(first_ts)
-                    .num_milliseconds();
-                let ts_str = format!(
-                    "{:>width$}",
-                    format!("+{:.3}s", d as f64 / 1000.0),
-                    width = ts_width - 1
-                ) + " ";
-                (ts_str, TsClass::Delta(d))
-            }
-            TimestampMode::Scaled => {
-                let d = msg
-                    .timestamp
-                    .signed_duration_since(prev_ts)
-                    .num_milliseconds();
-                let ts_str = format!(
-                    "{:>width$}",
-                    format!("+{:.3}s", d as f64 / 1000.0),
-                    width = ts_width - 1
-                ) + " ";
-                prev_ts = msg.timestamp;
-                (ts_str, TsClass::Delta(d))
-            }
-        };
-
-        let label = format_message_label(msg);
-
-        // Arrow coloring is applied in style(); here only its theme-free
-        // inputs are derived (class + palette indices). Selection is
-        // assigned there too, after folding, over visible rows.
-        let kind = RowKind::Message {
-            class: classify_message(msg),
-            cid_idx: msg
-                .call_id()
-                .unwrap_or("")
-                .bytes()
-                .fold(0usize, |a, b| a.wrapping_add(b as usize))
-                % CID_COLORS.len(),
-            cseq_idx: msg.cseq().map(|(n, _)| n).unwrap_or(0) as usize % CID_COLORS.len(),
-        };
-
-        let src_addr = format!("{}:{}", msg.src_addr, msg.src_port);
-        let dst_addr = format!("{}:{}", msg.dst_addr, msg.dst_port);
-        let src_col = participants
-            .iter()
-            .position(|p| p.addr == src_addr)
-            .unwrap_or(0);
-        let dst_col = participants
-            .iter()
-            .position(|p| p.addr == dst_addr)
-            .unwrap_or(1.min(participants.len().saturating_sub(1)));
-
-        let mut pdd_note = None;
-        if !pdd_done
-            && let Some(p) = pdd_ms
-            && !msg.is_request
-            && msg.status_code == Some(180)
-        {
-            pdd_note = Some(format!("  PDD: {p}ms"));
-            pdd_done = true;
-        }
+        let (timestamp, ts_class) = clock.stamp(msg.timestamp, TsClass::Muted);
 
         let mut extra_lines = Vec::new();
+        push_sdp_info_lines(&mut extra_lines, msg, msg_sdp.as_ref(), opts.sdp_mode);
+        push_siprec_lines(&mut extra_lines, msg);
 
-        // SDP info lines (text only; style() renders them muted+italic)
-        if sdp_mode != SdpDisplayMode::None
-            && let Some(ss) = msg_sdp.as_ref()
-        {
-            let ind = " ".repeat(ts_width + 1);
-            match sdp_mode {
-                SdpDisplayMode::Summary => {
-                    let c = format_sdp_codecs(ss);
-                    if !c.is_empty() {
-                        extra_lines.push(format!("{ind} Codecs: {c}"));
-                    }
-                }
-                SdpDisplayMode::Full => {
-                    let bt = String::from_utf8_lossy(&msg.body);
-                    for sl in bt.lines() {
-                        extra_lines.push(format!("{ind}  {sl}"));
-                    }
-                }
-                SdpDisplayMode::None => {}
-            }
-        }
-
-        // SIPREC: say who is being recorded, and which m= line each recorded
-        // stream was cut from.
-        //
-        // Unconditional rather than behind `sdp_mode`, because this is not SDP
-        // and an operator who has turned SDP off has not asked to stop being
-        // told a call is being recorded. Rare enough to cost nothing on an
-        // ordinary ladder: the lines appear only on a message that carries an
-        // `application/rs-metadata+xml` part.
-        if let Some(ct) = msg.content_type()
-            && ct.contains("multipart/mixed")
-            && let Ok(md) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
-        {
-            let ind = " ".repeat(ts_width + 1);
-            let session = md.session_id.as_deref().unwrap_or("?");
-            let mode = md.mode.as_deref().unwrap_or("mode not stated");
-            extra_lines.push(format!("{ind} SIPREC: session {session}, {mode}"));
-            for p in &md.participants {
-                let aor = p.aor.as_deref().unwrap_or("aor not stated");
-                match p.name.as_deref() {
-                    Some(n) => extra_lines.push(format!("{ind}   {aor} ({n})")),
-                    None => extra_lines.push(format!("{ind}   {aor}")),
-                }
-            }
-            for st in &md.streams {
-                // The owner is the participant that SENDS the stream. An
-                // unowned one is shown as such rather than silently blank:
-                // the association is what the metadata is carried for.
-                let owner = st.participant_id.as_deref().map_or_else(
-                    || "no participant claims it".to_string(),
-                    |o| {
-                        md.participants
-                            .iter()
-                            .find(|p| p.participant_id.as_deref() == Some(o))
-                            .and_then(|p| p.aor.clone())
-                            .unwrap_or_else(|| o.to_string())
-                    },
-                );
-                let label = st.label.as_deref().unwrap_or("?");
-                extra_lines.push(format!("{ind}   label {label} -> {owner}"));
-            }
-        }
-
-        // RTP-in-flow bar. One bar per INVITE transaction that carries media —
-        // the initial call AND each re-INVITE that (re)establishes the stream —
-        // so RTP is shown flowing in every media segment, not just the first.
-        // The codec is the one ACTUALLY USED (observed RTP segment, falling back
-        // to the single negotiated SDP answer codec), so a re-INVITE that
-        // switches PCMU → G722 shows the new codec while one that keeps it still
-        // shows the continuing stream.
-        if show_rtp {
-            let cseq_num = msg.cseq().map(|(n, _)| n);
-
-            // Early media: a provisional (1xx) response to the INVITE that
-            // carries SDP means media (ringback / IVR / announcement) flows
-            // BEFORE the 200 OK and ACK. The channel opens here, at the
-            // provisional, and this transaction's confirming ACK won't redraw it.
-            let is_invite_early_media = !msg.is_request
-                && msg.status_code.is_some_and(|s| (100..200).contains(&s))
-                && msg.cseq().is_some_and(|(_, method)| method == "INVITE")
-                && msg_sdp.is_some()
-                && last_bar_cseq != cseq_num;
-            if is_invite_early_media {
-                in_call = true;
-                let codec = segment_codec_at(rtp_segments, msg.timestamp)
-                    .or_else(|| msg_sdp.as_ref().and_then(first_sdp_codec));
-                last_bar_cseq = cseq_num;
-                deferred_rtp_bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
-            }
-
-            // Remember the negotiated (single, preferred) codec from a 200 OK to
-            // an INVITE — initial OR re-INVITE — to label the following ACK bar.
-            let is_invite_200 = !msg.is_request
-                && msg.status_code == Some(200)
-                && msg.cseq().is_some_and(|(_, method)| method == "INVITE");
-            if is_invite_200 {
-                pending_answer_codec = msg_sdp.as_ref().and_then(first_sdp_codec);
-            }
-
-            // The ACK completes an INVITE transaction and (re)opens the media
-            // channel. The label is bare text — the renderer owns the `═` rails
-            // and centers it (render::rtp_channel_bar). Emitted as a separate
-            // deferred FormattedMessage after the ACK so it's independently
-            // selectable. Drawn once per transaction (keyed on CSeq): the first
-            // call always shows a bar; each re-INVITE that carries media shows
-            // another; early media already drew this transaction's bar so its ACK
-            // does not duplicate it.
-            let is_invite_ack =
-                msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Ack);
-            if is_invite_ack {
-                let codec = segment_codec_at(rtp_segments, msg.timestamp)
-                    .or_else(|| pending_answer_codec.clone());
-                let already_drawn = last_bar_cseq.is_some() && last_bar_cseq == cseq_num;
-                if !already_drawn && (!in_call || codec.is_some()) {
-                    in_call = true;
-                    last_bar_cseq = cseq_num;
-                    deferred_rtp_bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
-                }
-                pending_answer_codec = None;
-            }
-            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call
-            {
-                in_call = false;
-                last_bar_cseq = None;
-            }
-        }
+        let deferred_rtp_bar = if opts.show_rtp {
+            media.observe(msg, msg_sdp.as_ref(), opts.rtp_segments)
+        } else {
+            None
+        };
 
         result.push(LayoutRow {
             timestamp,
             ts_class,
-            label,
-            kind,
-            src_col,
-            dst_col,
-            pdd_note,
+            label: format_message_label(msg),
+            kind: message_kind(msg),
+            src_col: column_of(&endpoints, (msg.src_addr, msg.src_port), 0),
+            dst_col: column_of(
+                &endpoints,
+                (msg.dst_addr, msg.dst_port),
+                1.min(participants.len().saturating_sub(1)),
+            ),
+            pdd_note: take_pdd_note(&mut pending_pdd, msg),
             extra_lines,
             call_id: msg.call_id().unwrap_or("").to_string(),
             is_response: !msg.is_request,
@@ -587,47 +353,9 @@ pub fn layout(
         });
 
         // Push the deferred RTP bar as a separate selectable entry
-        if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar.take() {
+        if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar {
             // Format timestamp using the same mode as all other messages
-            let (rtp_timestamp, rtp_ts_class) = match ts_mode {
-                TimestampMode::Absolute => {
-                    let s = format!(
-                        "{:<width$}",
-                        rtp_ts.format("%H:%M:%S%.3f"),
-                        width = ts_width
-                    );
-                    (s, TsClass::Accent)
-                }
-                TimestampMode::DeltaPrev => {
-                    let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
-                    let s = format!(
-                        "{:>width$}",
-                        format!("+{:.3}s", d as f64 / 1000.0),
-                        width = ts_width - 1
-                    ) + " ";
-                    prev_ts = rtp_ts;
-                    (s, TsClass::Delta(d))
-                }
-                TimestampMode::DeltaFirst => {
-                    let d = rtp_ts.signed_duration_since(first_ts).num_milliseconds();
-                    let s = format!(
-                        "{:>width$}",
-                        format!("+{:.3}s", d as f64 / 1000.0),
-                        width = ts_width - 1
-                    ) + " ";
-                    (s, TsClass::Delta(d))
-                }
-                TimestampMode::Scaled => {
-                    let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
-                    let s = format!(
-                        "{:>width$}",
-                        format!("+{:.3}s", d as f64 / 1000.0),
-                        width = ts_width - 1
-                    ) + " ";
-                    prev_ts = rtp_ts;
-                    (s, TsClass::Delta(d))
-                }
-            };
+            let (rtp_timestamp, rtp_ts_class) = clock.stamp(rtp_ts, TsClass::Accent);
             result.push(LayoutRow {
                 timestamp: rtp_timestamp,
                 ts_class: rtp_ts_class,
@@ -653,163 +381,504 @@ pub fn layout(
         msg_sdps.push(msg_sdp);
     }
 
-    // ── SDP delta badges (Feature 4) ──────────────────────────────
-    // Track previous SDP state per call_id to compute change badges.
-    {
-        let mut last_codecs: HashMap<String, Vec<String>> = HashMap::new();
-        let mut last_direction: HashMap<String, SdpDirection> = HashMap::new();
-        for (ri, msg) in messages.iter().enumerate() {
-            let cid = msg.call_id().unwrap_or("").to_string();
-            // Reuse the parse from the main loop instead of re-parsing.
-            if let Some(ss) = msg_sdps[ri].as_ref() {
-                let codecs = crate::mermaid::codec_list(ss);
-                let dir = ss
-                    .media
-                    .first()
-                    .map(|m| m.direction)
-                    .unwrap_or(SdpDirection::SendRecv);
-                if let Some(prev_codecs) = last_codecs.get(&cid)
-                    && let Some(prev_dir) = last_direction.get(&cid)
-                    && let Some(badge) =
-                        crate::mermaid::sdp_badge((prev_codecs, *prev_dir), (&codecs, dir))
-                    && let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(ri))
-                {
-                    fm.sdp_badge = Some(badge);
-                }
-                last_codecs.insert(cid.clone(), codecs);
-                last_direction.insert(cid, dir);
-            }
-        }
-    }
-
-    // ── Signaling-diagnosis evidence annotation ──────────────────
-    //
-    // Marks the exact messages a detection was drawn from. This is the surface
-    // where the spec's "evidence, not verdicts" rule stops being a data-model
-    // decision and becomes something a reader sees: the JSON carries indices, the
-    // report names the messages, and here the ladder points at them in place.
-    //
-    // Computed from `messages` — the same slice being annotated — rather than
-    // from a dialog passed in alongside. The evidence indices are then
-    // definitionally consistent with the rows they land on, so a caller that
-    // hands in a filtered view gets an annotation of that view instead of
-    // indices silently pointing at the wrong rows. `raw_index` is the join, the
-    // same one the SDP badge above uses; synthetic rows carry `None` and are
-    // skipped by construction.
-    {
-        let diag = crate::sip::diagnosis::diagnose_signaling(messages);
-        let mut notes: Vec<(usize, &'static str)> = Vec::new();
-        if let Some(f) = &diag.final_failure {
-            notes.extend(f.evidence.iter().map(|&i| (i, "FAILURE")));
-        }
-        if let Some(a) = &diag.auth_loop {
-            notes.extend(a.evidence.iter().map(|&i| (i, "AUTH")));
-        }
-        if let Some(r) = &diag.retransmissions {
-            notes.extend(r.evidence.iter().map(|&i| (i, "NO-RSP")));
-        }
-        if let Some(a) = &diag.ack_missing {
-            notes.extend(a.evidence.iter().map(|&i| (i, "NO-ACK")));
-        }
-        if let Some(a) = &diag.abandoned {
-            // The two shapes get different tags: `CANCELED` is a thing that
-            // happened, `NO-FINAL` is a thing that was not recorded. A shared
-            // tag would put a verdict on the ladder that the capture cannot
-            // support.
-            let tag = match a.kind {
-                crate::sip::diagnosis::AbandonedKind::Canceled => "CANCELED",
-                crate::sip::diagnosis::AbandonedKind::NoFinalResponse => "NO-FINAL",
-            };
-            notes.extend(a.evidence.iter().map(|&i| (i, tag)));
-        }
-        if let Some(p) = &diag.post_dial_delay {
-            notes.extend(p.evidence.iter().map(|&i| (i, "SLOW-PDD")));
-        }
-        if let Some(r) = &diag.registration_failure {
-            notes.extend(r.evidence.iter().map(|&i| (i, "REG")));
-        }
-        for (idx, tag) in notes {
-            if let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(idx)) {
-                // One message can be evidence for more than one detection — a
-                // retransmitted INVITE that also ends in failure. Join rather
-                // than overwrite, so the last detection to run does not erase
-                // what the earlier ones found.
-                match &mut fm.diagnosis_note {
-                    Some(existing) => {
-                        if !existing.split(' ').any(|t| t == tag) {
-                            existing.push(' ');
-                            existing.push_str(tag);
-                        }
-                    }
-                    None => fm.diagnosis_note = Some(tag.to_string()),
-                }
-            }
-        }
-    }
+    apply_sdp_badges(messages, &msg_sdps, &mut result);
+    annotate_diagnosis_evidence(messages, &mut result);
 
     // ── Retransmit folding + Auth collapse (Feature 3) ────────────
     // Folding runs BEFORE spacer insertion so that which rows exist is
     // identical in every timestamp mode; synthetic rows (raw_index == None)
     // are never folded.
-    let mut result = fold_messages(messages, result, fold_expanded);
+    let result = fold_messages(messages, result, fold_expanded);
 
     // ── Time-proportional spacer insertion (Feature 6) ─────────────
-    if ts_mode == TimestampMode::Scaled && result.len() >= 2 {
-        let mut scaled = Vec::with_capacity(result.len() * 2);
-        let mut drain = result.into_iter();
-        if let Some(first) = drain.next() {
-            let mut prev_ts_raw = first.raw_timestamp;
-            scaled.push(first);
-            for msg in drain {
-                let delta_ms = msg
-                    .raw_timestamp
-                    .signed_duration_since(prev_ts_raw)
-                    .num_milliseconds()
-                    .unsigned_abs();
-                // log2 scale, capped at 8 spacer rows
-                let gap = if delta_ms > 0 {
-                    ((delta_ms as f64 / 50.0).ln().max(0.0) / 0.693).min(8.0) as usize
-                } else {
-                    0
-                };
-                for si in 0..gap {
-                    let spacer_ts = if si == 0 {
-                        format!(
-                            "{:>width$}",
-                            format!("({:.0}ms)", delta_ms as f64),
-                            width = ts_width - 1,
-                        ) + " "
-                    } else {
-                        " ".repeat(ts_width)
-                    };
-                    scaled.push(LayoutRow {
-                        timestamp: spacer_ts,
-                        ts_class: TsClass::SpacerDim,
-                        label: String::new(),
-                        kind: RowKind::Spacer,
-                        src_col: 0,
-                        dst_col: 0,
-                        pdd_note: None,
-                        extra_lines: Vec::new(),
-                        call_id: String::new(),
-                        is_response: false,
-                        raw_timestamp: prev_ts_raw,
-                        folded_count: 0,
-                        fold_label: None,
-                        sdp_badge: None,
-                        is_retransmission: false,
-                        raw_index: None,
-                        diagnosis_note: None,
-                    });
-                }
-                prev_ts_raw = msg.raw_timestamp;
-                scaled.push(msg);
-            }
-        }
-        result = scaled;
-    }
+    let result = if opts.ts_mode == TimestampMode::Scaled && result.len() >= 2 {
+        insert_scaled_spacers(result)
+    } else {
+        result
+    };
 
     (participants, result)
+}
+
+/// Discover all unique endpoints, keyed by (ip, port), in first-appearance
+/// order, and the participant (column) each one becomes.
+///
+/// The raw `(ip, port)` pair remains the matching key; the displayed label
+/// may be a resolved name when name resolution is active.
+fn discover_participants(
+    messages: &[SipMessage],
+    opts: &LayoutOptions<'_>,
+) -> (Vec<(std::net::IpAddr, u16)>, Vec<Participant>) {
+    let mut endpoints: Vec<(std::net::IpAddr, u16)> = Vec::new();
+    for msg in messages {
+        for ep in [(msg.src_addr, msg.src_port), (msg.dst_addr, msg.dst_port)] {
+            if !endpoints.contains(&ep) {
+                endpoints.push(ep);
+            }
+        }
+    }
+    let participants: Vec<Participant> = endpoints
+        .iter()
+        .map(|&(ip, port)| {
+            // Bracketed for IPv6: `2001:db8::1:5060` cannot be read back
+            // into an address and a port, and this string is the participant
+            // IDENTITY in an exported diagram.
+            let addr = crate::net::endpoint_label(ip, port);
+            let display = opts.resolver.label(ip, port, opts.name_mode);
+            Participant {
+                addr,
+                label: truncate(&display, 20),
+            }
+        })
+        .collect();
+    (endpoints, participants)
+}
+
+/// The column of endpoint `ep`, or `fallback` when it is not one of
+/// `endpoints`.
+///
+/// Matched on the address and port themselves, never on a rendered string:
+/// the participant label brackets an IPv6 address, so comparing it with an
+/// unbracketed `ip:port` found no IPv6 endpoint and drew every IPv6 message
+/// from column 0 to column 1, whichever way it went.
+fn column_of(
+    endpoints: &[(std::net::IpAddr, u16)],
+    ep: (std::net::IpAddr, u16),
+    fallback: usize,
+) -> usize {
+    endpoints.iter().position(|e| *e == ep).unwrap_or(fallback)
+}
+
+/// Arrow coloring is applied in style(); here only its theme-free inputs
+/// are derived (class + palette indices). Selection is assigned there too,
+/// after folding, over visible rows.
+fn message_kind(msg: &SipMessage) -> RowKind {
+    RowKind::Message {
+        class: classify_message(msg),
+        cid_idx: msg
+            .call_id()
+            .unwrap_or("")
+            .bytes()
+            .fold(0usize, |a, b| a.wrapping_add(b as usize))
+            % CID_COLORS.len(),
+        cseq_idx: msg.cseq().map(|(n, _)| n).unwrap_or(0) as usize % CID_COLORS.len(),
+    }
+}
+
+/// The post-dial-delay note for the first 180 response, taken once: later
+/// 180s, and every other message, get none.
+fn take_pdd_note(pending: &mut Option<i64>, msg: &SipMessage) -> Option<String> {
+    if msg.is_request || msg.status_code != Some(180) {
+        return None;
+    }
+    pending.take().map(|p| format!("  PDD: {p}ms"))
+}
+
+/// The timestamp column's text for each row, in the ladder's timestamp mode.
+struct LadderClock {
+    /// The timestamp mode.
+    mode: TimestampMode,
+    /// The reference for `DeltaFirst`.
+    first_ts: chrono::DateTime<chrono::Utc>,
+    /// The previous row's time, for `DeltaPrev` and `Scaled`.
+    prev_ts: chrono::DateTime<chrono::Utc>,
+}
+
+impl LadderClock {
+    /// The timestamp text and class for a row at `ts`. `absolute_class` is
+    /// the class an absolute time gets; a delta is classed by its size.
+    /// `DeltaPrev` and `Scaled` advance the previous-row time to `ts`.
+    fn stamp(
+        &mut self,
+        ts: chrono::DateTime<chrono::Utc>,
+        absolute_class: TsClass,
+    ) -> (String, TsClass) {
+        let since = match self.mode {
+            TimestampMode::Absolute => {
+                let s = format!(
+                    "{:<width$}",
+                    ts.format("%H:%M:%S%.3f"),
+                    width = TS_COL_WIDTH
+                );
+                return (s, absolute_class);
+            }
+            TimestampMode::DeltaFirst => self.first_ts,
+            TimestampMode::DeltaPrev | TimestampMode::Scaled => {
+                std::mem::replace(&mut self.prev_ts, ts)
+            }
+        };
+        let d = ts.signed_duration_since(since).num_milliseconds();
+        let s = format!(
+            "{:>width$}",
+            format!("+{:.3}s", d as f64 / 1000.0),
+            width = TS_COL_WIDTH - 1
+        ) + " ";
+        (s, TsClass::Delta(d))
+    }
+}
+
+/// SDP info lines (text only; style() renders them muted+italic)
+fn push_sdp_info_lines(
+    extra_lines: &mut Vec<String>,
+    msg: &SipMessage,
+    msg_sdp: Option<&sdp::SdpSession>,
+    sdp_mode: SdpDisplayMode,
+) {
+    let Some(ss) = msg_sdp else {
+        return;
+    };
+    let ind = " ".repeat(TS_COL_WIDTH + 1);
+    match sdp_mode {
+        SdpDisplayMode::Summary => {
+            let c = format_sdp_codecs(ss);
+            if !c.is_empty() {
+                extra_lines.push(format!("{ind} Codecs: {c}"));
+            }
+        }
+        SdpDisplayMode::Full => {
+            let bt = String::from_utf8_lossy(&msg.body);
+            for sl in bt.lines() {
+                extra_lines.push(format!("{ind}  {sl}"));
+            }
+        }
+        SdpDisplayMode::None => {}
+    }
+}
+
+/// SIPREC: say who is being recorded, and which m= line each recorded
+/// stream was cut from.
+///
+/// Unconditional rather than behind `sdp_mode`, because this is not SDP
+/// and an operator who has turned SDP off has not asked to stop being
+/// told a call is being recorded. Rare enough to cost nothing on an
+/// ordinary ladder: the lines appear only on a message that carries an
+/// `application/rs-metadata+xml` part.
+fn push_siprec_lines(extra_lines: &mut Vec<String>, msg: &SipMessage) {
+    let Some(ct) = msg.content_type() else {
+        return;
+    };
+    if !ct.contains("multipart/mixed") {
+        return;
+    }
+    let Ok(md) = crate::sip::siprec::parse_siprec_body(ct, &msg.body) else {
+        return;
+    };
+    let ind = " ".repeat(TS_COL_WIDTH + 1);
+    let session = md.session_id.as_deref().unwrap_or("?");
+    let mode = md.mode.as_deref().unwrap_or("mode not stated");
+    extra_lines.push(format!("{ind} SIPREC: session {session}, {mode}"));
+    for p in &md.participants {
+        let aor = p.aor.as_deref().unwrap_or("aor not stated");
+        match p.name.as_deref() {
+            Some(n) => extra_lines.push(format!("{ind}   {aor} ({n})")),
+            None => extra_lines.push(format!("{ind}   {aor}")),
+        }
+    }
+    for st in &md.streams {
+        // The owner is the participant that SENDS the stream. An
+        // unowned one is shown as such rather than silently blank:
+        // the association is what the metadata is carried for.
+        let owner = st.participant_id.as_deref().map_or_else(
+            || "no participant claims it".to_string(),
+            |o| {
+                md.participants
+                    .iter()
+                    .find(|p| p.participant_id.as_deref() == Some(o))
+                    .and_then(|p| p.aor.clone())
+                    .unwrap_or_else(|| o.to_string())
+            },
+        );
+        let label = st.label.as_deref().unwrap_or("?");
+        extra_lines.push(format!("{ind}   label {label} -> {owner}"));
+    }
+}
+
+/// RTP-in-flow bar state. One bar per INVITE transaction that carries media —
+/// the initial call AND each re-INVITE that (re)establishes the stream —
+/// so RTP is shown flowing in every media segment, not just the first.
+/// The codec is the one ACTUALLY USED (observed RTP segment, falling back
+/// to the single negotiated SDP answer codec), so a re-INVITE that
+/// switches PCMU → G722 shows the new codec while one that keeps it still
+/// shows the continuing stream.
+#[derive(Default)]
+struct MediaBars {
+    /// Whether media is flowing: set by a bar, cleared by a BYE.
+    in_call: bool,
+    /// Negotiated codec from the most recent INVITE 200 OK answer (single,
+    /// preferred), pending display on the ACK bar.
+    pending_answer_codec: Option<String>,
+    /// The CSeq number of the INVITE transaction whose media bar we last
+    /// drew, so each distinct (re-)INVITE draws its own bar but a single
+    /// transaction (e.g. early media then its confirming ACK) does not draw
+    /// two.
+    last_bar_cseq: Option<u32>,
+}
+
+impl MediaBars {
+    /// Advance over one message; the bar it opens, as its time and label,
+    /// when it opens one.
+    fn observe(
+        &mut self,
+        msg: &SipMessage,
+        msg_sdp: Option<&sdp::SdpSession>,
+        rtp_segments: &[RtpCodecSegment],
+    ) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
+        let cseq_num = msg.cseq().map(|(n, _)| n);
+        let early = self.early_media_bar(msg, msg_sdp, rtp_segments, cseq_num);
+
+        // Remember the negotiated (single, preferred) codec from a 200 OK to
+        // an INVITE — initial OR re-INVITE — to label the following ACK bar.
+        let is_invite_200 = !msg.is_request
+            && msg.status_code == Some(200)
+            && msg.cseq().is_some_and(|(_, method)| method == "INVITE");
+        if is_invite_200 {
+            self.pending_answer_codec = msg_sdp.and_then(first_sdp_codec);
+        }
+
+        let bar = early.or_else(|| self.ack_bar(msg, rtp_segments, cseq_num));
+        if msg.is_request
+            && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye)
+            && self.in_call
+        {
+            self.in_call = false;
+            self.last_bar_cseq = None;
+        }
+        bar
+    }
+
+    /// Early media: a provisional (1xx) response to the INVITE that
+    /// carries SDP means media (ringback / IVR / announcement) flows
+    /// BEFORE the 200 OK and ACK. The channel opens here, at the
+    /// provisional, and this transaction's confirming ACK won't redraw it.
+    fn early_media_bar(
+        &mut self,
+        msg: &SipMessage,
+        msg_sdp: Option<&sdp::SdpSession>,
+        rtp_segments: &[RtpCodecSegment],
+        cseq_num: Option<u32>,
+    ) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
+        let is_invite_early_media = !msg.is_request
+            && msg.status_code.is_some_and(|s| (100..200).contains(&s))
+            && msg.cseq().is_some_and(|(_, method)| method == "INVITE")
+            && msg_sdp.is_some()
+            && self.last_bar_cseq != cseq_num;
+        if !is_invite_early_media {
+            return None;
+        }
+        self.in_call = true;
+        let codec = segment_codec_at(rtp_segments, msg.timestamp)
+            .or_else(|| msg_sdp.and_then(first_sdp_codec));
+        self.last_bar_cseq = cseq_num;
+        Some((msg.timestamp, rtp_flow_label(codec.as_deref())))
+    }
+
+    /// The ACK completes an INVITE transaction and (re)opens the media
+    /// channel. The label is bare text — the renderer owns the `═` rails
+    /// and centers it (render::rtp_channel_bar). Emitted as a separate
+    /// deferred FormattedMessage after the ACK so it's independently
+    /// selectable. Drawn once per transaction (keyed on CSeq): the first
+    /// call always shows a bar; each re-INVITE that carries media shows
+    /// another; early media already drew this transaction's bar so its ACK
+    /// does not duplicate it.
+    fn ack_bar(
+        &mut self,
+        msg: &SipMessage,
+        rtp_segments: &[RtpCodecSegment],
+        cseq_num: Option<u32>,
+    ) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
+        let is_invite_ack =
+            msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Ack);
+        if !is_invite_ack {
+            return None;
+        }
+        let codec = segment_codec_at(rtp_segments, msg.timestamp)
+            .or_else(|| self.pending_answer_codec.clone());
+        let already_drawn = self.last_bar_cseq.is_some() && self.last_bar_cseq == cseq_num;
+        let mut bar = None;
+        if !already_drawn && (!self.in_call || codec.is_some()) {
+            self.in_call = true;
+            self.last_bar_cseq = cseq_num;
+            bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
+        }
+        self.pending_answer_codec = None;
+        bar
+    }
+}
+
+/// SDP delta badges (Feature 4): mark each message whose SDP changed the
+/// codecs or direction of its call's previous SDP. Tracks the previous SDP
+/// state per call_id to compute the change badges.
+fn apply_sdp_badges(
+    messages: &[SipMessage],
+    msg_sdps: &[Option<sdp::SdpSession>],
+    result: &mut [LayoutRow],
+) {
+    let mut last_codecs: HashMap<String, Vec<String>> = HashMap::new();
+    let mut last_direction: HashMap<String, SdpDirection> = HashMap::new();
+    for (ri, msg) in messages.iter().enumerate() {
+        let cid = msg.call_id().unwrap_or("").to_string();
+        // Reuse the parse from the main loop instead of re-parsing.
+        let Some(ss) = msg_sdps[ri].as_ref() else {
+            continue;
+        };
+        let codecs = crate::mermaid::codec_list(ss);
+        let dir = ss
+            .media
+            .first()
+            .map(|m| m.direction)
+            .unwrap_or(SdpDirection::SendRecv);
+        if let Some(prev_codecs) = last_codecs.get(&cid)
+            && let Some(prev_dir) = last_direction.get(&cid)
+            && let Some(badge) = crate::mermaid::sdp_badge((prev_codecs, *prev_dir), (&codecs, dir))
+            && let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(ri))
+        {
+            fm.sdp_badge = Some(badge);
+        }
+        last_codecs.insert(cid.clone(), codecs);
+        last_direction.insert(cid, dir);
+    }
+}
+
+/// Signaling-diagnosis evidence annotation.
+///
+/// Marks the exact messages a detection was drawn from. This is the surface
+/// where the spec's "evidence, not verdicts" rule stops being a data-model
+/// decision and becomes something a reader sees: the JSON carries indices, the
+/// report names the messages, and here the ladder points at them in place.
+///
+/// Computed from `messages` — the same slice being annotated — rather than
+/// from a dialog passed in alongside. The evidence indices are then
+/// definitionally consistent with the rows they land on, so a caller that
+/// hands in a filtered view gets an annotation of that view instead of
+/// indices silently pointing at the wrong rows. `raw_index` is the join, the
+/// same one the SDP badge uses; synthetic rows carry `None` and are
+/// skipped by construction.
+fn annotate_diagnosis_evidence(messages: &[SipMessage], result: &mut [LayoutRow]) {
+    let diag = crate::sip::diagnosis::diagnose_signaling(messages);
+    for (idx, tag) in diagnosis_tags(&diag) {
+        if let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(idx)) {
+            add_diagnosis_tag(&mut fm.diagnosis_note, tag);
+        }
+    }
+}
+
+/// Add `tag` to a row's diagnosis note.
+///
+/// One message can be evidence for more than one detection — a
+/// retransmitted INVITE that also ends in failure. Join rather
+/// than overwrite, so the last detection to run does not erase
+/// what the earlier ones found; a tag already present is not repeated.
+fn add_diagnosis_tag(note: &mut Option<String>, tag: &str) {
+    match note {
+        Some(existing) => {
+            if !existing.split(' ').any(|t| t == tag) {
+                existing.push(' ');
+                existing.push_str(tag);
+            }
+        }
+        None => *note = Some(tag.to_string()),
+    }
+}
+
+/// Every `(message index, tag)` pair the signaling diagnosis cites as
+/// evidence, in detection order.
+fn diagnosis_tags(diag: &crate::sip::diagnosis::SignalingDiagnosis) -> Vec<(usize, &'static str)> {
+    let mut notes: Vec<(usize, &'static str)> = Vec::new();
+    if let Some(f) = &diag.final_failure {
+        notes.extend(f.evidence.iter().map(|&i| (i, "FAILURE")));
+    }
+    if let Some(a) = &diag.auth_loop {
+        notes.extend(a.evidence.iter().map(|&i| (i, "AUTH")));
+    }
+    if let Some(r) = &diag.retransmissions {
+        notes.extend(r.evidence.iter().map(|&i| (i, "NO-RSP")));
+    }
+    if let Some(a) = &diag.ack_missing {
+        notes.extend(a.evidence.iter().map(|&i| (i, "NO-ACK")));
+    }
+    if let Some(a) = &diag.abandoned {
+        // The two shapes get different tags: `CANCELED` is a thing that
+        // happened, `NO-FINAL` is a thing that was not recorded. A shared
+        // tag would put a verdict on the ladder that the capture cannot
+        // support.
+        let tag = match a.kind {
+            crate::sip::diagnosis::AbandonedKind::Canceled => "CANCELED",
+            crate::sip::diagnosis::AbandonedKind::NoFinalResponse => "NO-FINAL",
+        };
+        notes.extend(a.evidence.iter().map(|&i| (i, tag)));
+    }
+    if let Some(p) = &diag.post_dial_delay {
+        notes.extend(p.evidence.iter().map(|&i| (i, "SLOW-PDD")));
+    }
+    if let Some(r) = &diag.registration_failure {
+        notes.extend(r.evidence.iter().map(|&i| (i, "REG")));
+    }
+    notes
+}
+
+/// Insert dim spacer rows between rows in proportion to the time between
+/// them (log2 scale, capped at 8 per gap), the first spacer of a gap
+/// labeled with the gap.
+fn insert_scaled_spacers(result: Vec<LayoutRow>) -> Vec<LayoutRow> {
+    let mut scaled = Vec::with_capacity(result.len() * 2);
+    let mut drain = result.into_iter();
+    let Some(first) = drain.next() else {
+        return scaled;
+    };
+    let mut prev_ts_raw = first.raw_timestamp;
+    scaled.push(first);
+    for msg in drain {
+        let delta_ms = msg
+            .raw_timestamp
+            .signed_duration_since(prev_ts_raw)
+            .num_milliseconds()
+            .unsigned_abs();
+        // log2 scale, capped at 8 spacer rows
+        let gap = if delta_ms > 0 {
+            ((delta_ms as f64 / 50.0).ln().max(0.0) / 0.693).min(8.0) as usize
+        } else {
+            0
+        };
+        for si in 0..gap {
+            scaled.push(spacer_row(si, delta_ms, prev_ts_raw));
+        }
+        prev_ts_raw = msg.raw_timestamp;
+        scaled.push(msg);
+    }
+    scaled
+}
+
+/// Spacer row `si` of a gap of `delta_ms` after a row at `prev_ts_raw`: the
+/// first one carries the gap's length, the rest are blank.
+fn spacer_row(si: usize, delta_ms: u64, prev_ts_raw: chrono::DateTime<chrono::Utc>) -> LayoutRow {
+    let spacer_ts = if si == 0 {
+        format!(
+            "{:>width$}",
+            format!("({:.0}ms)", delta_ms as f64),
+            width = TS_COL_WIDTH - 1,
+        ) + " "
+    } else {
+        " ".repeat(TS_COL_WIDTH)
+    };
+    LayoutRow {
+        timestamp: spacer_ts,
+        ts_class: TsClass::SpacerDim,
+        label: String::new(),
+        kind: RowKind::Spacer,
+        src_col: 0,
+        dst_col: 0,
+        pdd_note: None,
+        extra_lines: Vec::new(),
+        call_id: String::new(),
+        is_response: false,
+        raw_timestamp: prev_ts_raw,
+        folded_count: 0,
+        fold_label: None,
+        sdp_badge: None,
+        is_retransmission: false,
+        raw_index: None,
+        diagnosis_note: None,
+    }
 }
 
 /// Style a laid-out ladder: map each `LayoutRow` to a `FormattedMessage`
@@ -1313,6 +1382,9 @@ mod tests {
 
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     // ── Construction helpers ─────────────────────────────────────────
 
     /// Fixture endpoint A (10.0.0.1), the request originator.
@@ -1492,21 +1564,49 @@ mod tests {
         )
     }
 
+    /// A response's status line and the request it answers, for
+    /// `response_with_sdp`.
+    #[derive(Clone, Copy)]
+    struct StatusLine<'a> {
+        /// Call-ID.
+        cid: &'a str,
+        /// Status code.
+        status: u16,
+        /// Reason phrase.
+        reason: &'a str,
+        /// CSeq number.
+        cseq: u32,
+        /// CSeq method.
+        method: &'a str,
+    }
+
+    /// The media lines of an SDP body, for `response_with_sdp`.
+    #[derive(Clone, Copy)]
+    struct SdpLines<'a> {
+        /// The `m=` line.
+        codecs_line: &'a str,
+        /// The `a=rtpmap` attribute lines.
+        rtpmaps: &'a [&'a str],
+    }
+
     /// A response carrying an SDP answer (e.g. a 183 Session Progress that
     /// signals early media).
-    // A test fixture builder: each field maps to a distinct SIP/SDP element, so
-    // the argument count is inherent rather than a design smell.
-    #[expect(clippy::too_many_arguments)]
     fn response_with_sdp(
-        cid: &str,
-        status: u16,
-        reason: &str,
-        cseq: u32,
-        method: &str,
-        codecs_line: &str,
-        rtpmaps: &[&str],
+        line: &StatusLine<'_>,
+        body: &SdpLines<'_>,
         ts: DateTime<Utc>,
     ) -> SipMessage {
+        let StatusLine {
+            cid,
+            status,
+            reason,
+            cseq,
+            method,
+        } = *line;
+        let SdpLines {
+            codecs_line,
+            rtpmaps,
+        } = *body;
         let mut sdp = String::from(
             "v=0\r\n\
              o=- 1 1 IN IP4 10.0.0.2\r\n\
@@ -1594,6 +1694,197 @@ mod tests {
         assert!(slow.add_modifier.contains(Modifier::BOLD));
         // negative deltas count as fast/good
         assert_eq!(delta_style(-10, &theme).fg, Some(theme.good));
+    }
+
+    // ── Columns ──────────────────────────────────────────────────────
+
+    /// An IPv6 response is drawn from the endpoint that sent it to the one
+    /// that receives it, exactly as an IPv4 one is: the arrow's columns are
+    /// the participants' columns, whatever the address family.
+    #[test]
+    fn ipv6_messages_are_drawn_between_their_own_columns() -> Result<(), TestError> {
+        let a: IpAddr = "2001:db8::1".parse().map_err(|e| format!("v6: {e:?}"))?;
+        let b: IpAddr = "2001:db8::2".parse().map_err(|e| format!("v6: {e:?}"))?;
+        let raw = |first: &str, cseq: &str| {
+            build_raw(
+                first,
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    "Call-ID: v6-columns",
+                    cseq,
+                    "Content-Length: 0",
+                ],
+                "",
+            )
+        };
+        let invite = parse_sip(
+            &raw("INVITE sip:bob@example.com SIP/2.0", "CSeq: 1 INVITE"),
+            t0(),
+            a,
+            b,
+            5060,
+            5062,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse invite: {e:?}"))?;
+        let ok = parse_sip(
+            &raw("SIP/2.0 200 OK", "CSeq: 1 INVITE"),
+            t0() + TimeDelta::milliseconds(20),
+            b,
+            a,
+            5062,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse 200: {e:?}"))?;
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let lopts = LayoutOptions::from(&o);
+        let (participants, rows) = layout(&[invite, ok], t0(), None, &lopts, &HashSet::new());
+        assert_eq!(
+            participants
+                .iter()
+                .map(|p| p.addr.as_str())
+                .collect::<Vec<_>>(),
+            vec!["[2001:db8::1]:5060", "[2001:db8::2]:5062"]
+        );
+        assert_eq!((rows[0].src_col, rows[0].dst_col), (0, 1), "INVITE A -> B");
+        assert_eq!(
+            (rows[1].src_col, rows[1].dst_col),
+            (1, 0),
+            "the 200 OK goes B -> A, so it must be drawn from column 1 to column 0"
+        );
+        Ok(())
+    }
+
+    /// Two endpoints on one address are two participants: messages between
+    /// ports of the same host are drawn between their own columns.
+    #[test]
+    fn endpoints_sharing_an_address_are_told_apart_by_port() -> Result<(), TestError> {
+        let host = addr_a();
+        let raw = |first: &str| {
+            build_raw(
+                first,
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    "Call-ID: same-host",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                "",
+            )
+        };
+        let invite = parse_sip(
+            &raw("INVITE sip:bob@example.com SIP/2.0"),
+            t0(),
+            host,
+            host,
+            5060,
+            5080,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse invite: {e:?}"))?;
+        let ok = parse_sip(
+            &raw("SIP/2.0 200 OK"),
+            t0() + TimeDelta::milliseconds(20),
+            host,
+            host,
+            5080,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse 200: {e:?}"))?;
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let lopts = LayoutOptions::from(&o);
+        let (participants, rows) = layout(&[invite, ok], t0(), None, &lopts, &HashSet::new());
+        assert_eq!(participants.len(), 2);
+        assert_eq!((rows[0].src_col, rows[0].dst_col), (0, 1));
+        assert_eq!((rows[1].src_col, rows[1].dst_col), (1, 0));
+        Ok(())
+    }
+
+    /// The post-dial delay is annotated on the first 180 and on no later one.
+    #[test]
+    fn the_pdd_note_rides_on_the_first_180_only() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let lopts = LayoutOptions::from(&o);
+        let msgs = vec![
+            invite("pdd", 1, t0()),
+            response(
+                "pdd",
+                180,
+                "Ringing",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(50),
+            ),
+            response(
+                "pdd",
+                180,
+                "Ringing",
+                2,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(90),
+            ),
+        ];
+        let (_p, rows) = layout(&msgs, t0(), Some(50), &lopts, &HashSet::new());
+        let notes: Vec<Option<&str>> = rows.iter().map(|r| r.pdd_note.as_deref()).collect();
+        assert_eq!(notes, vec![None, Some("  PDD: 50ms"), None]);
+    }
+
+    /// An ACK takes the codec of the 200 OK it acknowledges and no later
+    /// one: once an ACK has used the pending answer codec it is spent, so the
+    /// ACK of a re-INVITE that was refused draws no second media bar.
+    #[test]
+    fn an_ack_does_not_reuse_an_earlier_answers_codec() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let msgs = vec![
+            invite("spent", 1, t0()),
+            response_with_sdp(
+                &StatusLine {
+                    cid: "spent",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 20002 RTP/AVP 0",
+                    rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                },
+                t0() + TimeDelta::seconds(1),
+            ),
+            ack("spent", 1, t0() + TimeDelta::seconds(1)),
+            invite("spent", 2, t0() + TimeDelta::seconds(5)),
+            response(
+                "spent",
+                491,
+                "Request Pending",
+                2,
+                "INVITE",
+                t0() + TimeDelta::seconds(6),
+            ),
+            ack("spent", 2, t0() + TimeDelta::seconds(6)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bars = prepared.iter().filter(|m| m.is_rtp_bar).count();
+        assert_eq!(bars, 1, "only the answered INVITE opens media");
+    }
+
+    /// A diagnosis tag joins the tags already on a row, once.
+    #[test]
+    fn a_diagnosis_tag_is_joined_once() {
+        let mut note = None;
+        add_diagnosis_tag(&mut note, "FAILURE");
+        add_diagnosis_tag(&mut note, "NO-RSP");
+        add_diagnosis_tag(&mut note, "FAILURE");
+        assert_eq!(note.as_deref(), Some("FAILURE NO-RSP"));
     }
 
     // ── format_message_label ─────────────────────────────────────────
@@ -2223,13 +2514,17 @@ mod tests {
         let msgs = vec![
             invite("cem", 1, t0()),
             response_with_sdp(
-                "cem",
-                183,
-                "Session Progress",
-                1,
-                "INVITE",
-                "m=audio 20000 RTP/AVP 0",
-                &["a=rtpmap:0 PCMU/8000"],
+                &StatusLine {
+                    cid: "cem",
+                    status: 183,
+                    reason: "Session Progress",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 20000 RTP/AVP 0",
+                    rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                },
                 t0() + TimeDelta::milliseconds(200),
             ),
             response("cem", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
@@ -2285,13 +2580,17 @@ mod tests {
                 t0(),
             ),
             response_with_sdp(
-                "cneg",
-                200,
-                "OK",
-                1,
-                "INVITE",
-                "m=audio 20002 RTP/AVP 0",
-                &["a=rtpmap:0 PCMU/8000"],
+                &StatusLine {
+                    cid: "cneg",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 20002 RTP/AVP 0",
+                    rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                },
                 t0() + TimeDelta::seconds(1),
             ),
             ack("cneg", 1, t0() + TimeDelta::seconds(1)),
@@ -2327,13 +2626,17 @@ mod tests {
                 t0(),
             ),
             response_with_sdp(
-                "crei",
-                200,
-                "OK",
-                1,
-                "INVITE",
-                "m=audio 20002 RTP/AVP 0",
-                &["a=rtpmap:0 PCMU/8000"],
+                &StatusLine {
+                    cid: "crei",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 20002 RTP/AVP 0",
+                    rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                },
                 t0() + TimeDelta::seconds(1),
             ),
             ack("crei", 1, t0() + TimeDelta::seconds(1)),
@@ -2346,13 +2649,17 @@ mod tests {
                 t0() + TimeDelta::seconds(5),
             ),
             response_with_sdp(
-                "crei",
-                200,
-                "OK",
-                2,
-                "INVITE",
-                "m=audio 20002 RTP/AVP 9",
-                &["a=rtpmap:9 G722/8000"],
+                &StatusLine {
+                    cid: "crei",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 2,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 20002 RTP/AVP 9",
+                    rtpmaps: &["a=rtpmap:9 G722/8000"],
+                },
                 t0() + TimeDelta::seconds(6),
             ),
             ack("crei", 2, t0() + TimeDelta::seconds(6)),
@@ -2386,25 +2693,33 @@ mod tests {
         let msgs = vec![
             invite_with_sdp("crf", 1, sdp.0, &sdp.1, t0()),
             response_with_sdp(
-                "crf",
-                200,
-                "OK",
-                1,
-                "INVITE",
-                sdp.0,
-                &sdp.1,
+                &StatusLine {
+                    cid: "crf",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: sdp.0,
+                    rtpmaps: &sdp.1,
+                },
                 t0() + TimeDelta::seconds(1),
             ),
             ack("crf", 1, t0() + TimeDelta::seconds(1)),
             invite_with_sdp("crf", 2, sdp.0, &sdp.1, t0() + TimeDelta::seconds(5)),
             response_with_sdp(
-                "crf",
-                200,
-                "OK",
-                2,
-                "INVITE",
-                sdp.0,
-                &sdp.1,
+                &StatusLine {
+                    cid: "crf",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 2,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: sdp.0,
+                    rtpmaps: &sdp.1,
+                },
                 t0() + TimeDelta::seconds(6),
             ),
             ack("crf", 2, t0() + TimeDelta::seconds(6)),
@@ -2454,13 +2769,17 @@ mod tests {
             ),
             // Answer lists PCMA first (would be the SDP-derived pick) then PCMU.
             response_with_sdp(
-                "crtpwin",
-                200,
-                "OK",
-                1,
-                "INVITE",
-                "m=audio 20002 RTP/AVP 8 0",
-                &["a=rtpmap:8 PCMA/8000", "a=rtpmap:0 PCMU/8000"],
+                &StatusLine {
+                    cid: "crtpwin",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 20002 RTP/AVP 8 0",
+                    rtpmaps: &["a=rtpmap:8 PCMA/8000", "a=rtpmap:0 PCMU/8000"],
+                },
                 t0() + TimeDelta::seconds(1),
             ),
             ack("crtpwin", 1, t0() + TimeDelta::seconds(1)),
@@ -3117,13 +3436,17 @@ mod tests {
                 t0(),
             ),
             response_with_sdp(
-                "sty6",
-                200,
-                "OK",
-                1,
-                "INVITE",
-                "m=audio 5006 RTP/AVP 0",
-                &["a=rtpmap:0 PCMU/8000"],
+                &StatusLine {
+                    cid: "sty6",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 5006 RTP/AVP 0",
+                    rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                },
                 t0() + TimeDelta::seconds(1),
             ),
             ack("sty6", 1, t0() + TimeDelta::seconds(2)),
@@ -3192,13 +3515,17 @@ mod tests {
                 t0() + TimeDelta::milliseconds(80),
             ),
             response_with_sdp(
-                "split@t",
-                200,
-                "OK",
-                1,
-                "INVITE",
-                "m=audio 5006 RTP/AVP 0",
-                &["a=rtpmap:0 PCMU/8000"],
+                &StatusLine {
+                    cid: "split@t",
+                    status: 200,
+                    reason: "OK",
+                    cseq: 1,
+                    method: "INVITE",
+                },
+                &SdpLines {
+                    codecs_line: "m=audio 5006 RTP/AVP 0",
+                    rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                },
                 t0() + TimeDelta::milliseconds(650),
             ),
             ack("split@t", 1, t0() + TimeDelta::milliseconds(700)),

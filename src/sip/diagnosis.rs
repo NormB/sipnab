@@ -2366,13 +2366,13 @@ mod tests {
     /// The hint for a rejected `REGISTER`, or a panic naming what was found
     /// instead — a test that silently passed on an absent hint would prove
     /// nothing about its wording.
-    fn rejection_hint(messages: &[SipMessage]) -> String {
+    fn rejection_hint(messages: &[SipMessage]) -> Result<String, String> {
         let d = diagnose_signaling(messages);
         d.hints
             .iter()
             .find(|h| h.starts_with("Registration"))
-            .unwrap_or_else(|| panic!("no registration hint among {:?}", d.hints))
-            .clone()
+            .cloned()
+            .ok_or_else(|| format!("no registration hint among {:?}", d.hints))
     }
 
     /// The defect this group exists for. Every non-`2xx` final response to a
@@ -2385,7 +2385,7 @@ mod tests {
     /// problem is a live possibility — see
     /// [`request_timeout_is_the_only_code_that_may_mention_reachability`].
     #[test]
-    fn no_rejection_code_claims_the_endpoint_is_offline() {
+    fn no_rejection_code_claims_the_endpoint_is_offline() -> Result<(), String> {
         for (code, phrase) in [
             (400, "Bad Request"),
             (403, "Forbidden"),
@@ -2399,7 +2399,7 @@ mod tests {
             let hint = rejection_hint(&[
                 msg(&register("Expires: 3600\n")),
                 msg(&register_response(code, phrase, "")),
-            ]);
+            ])?;
             let lower = hint.to_lowercase();
             for claim in ["offline", "unreachable", "not reachable"] {
                 assert!(
@@ -2412,19 +2412,20 @@ mod tests {
                 "{code} hint must name the code it read: {hint}"
             );
         }
+        Ok(())
     }
 
     /// `401` challenge, credentials offered, `403` back. The endpoint is
     /// demonstrably online — it answered the challenge — and the fault is in
     /// the credentials or the account, not in the network.
     #[test]
-    fn forbidden_after_a_challenge_points_at_the_credentials() {
+    fn forbidden_after_a_challenge_points_at_the_credentials() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(401, "Unauthorized", "")),
             msg(&register_with_credentials()),
             msg(&register_response(403, "Forbidden", "")),
-        ]);
+        ])?;
         let lower = hint.to_lowercase();
         assert!(
             lower.contains("credential"),
@@ -2435,61 +2436,65 @@ mod tests {
             "the challenge is the evidence that the endpoint is reachable: {hint}"
         );
         assert!(!lower.contains("offline"), "{hint}");
+        Ok(())
     }
 
     /// The same `403` with no challenge in front of it is a different fact.
     /// Nothing was offered and nothing was rejected, so naming credentials
     /// would be inventing a cause exactly as the old wording did.
     #[test]
-    fn forbidden_without_a_challenge_does_not_invent_credentials() {
+    fn forbidden_without_a_challenge_does_not_invent_credentials() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(403, "Forbidden", "")),
-        ]);
+        ])?;
         assert!(
             !hint.to_lowercase().contains("credential"),
             "no credentials were offered, so none were rejected: {hint}"
         );
         assert!(hint.contains("403"), "{hint}");
+        Ok(())
     }
 
     /// [RFC 3261 section 21.4.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.5): the server has definitive information that the user
     /// does not exist. The endpoint is online; the address-of-record is not
     /// provisioned.
     #[test]
-    fn not_found_names_the_address_of_record() {
+    fn not_found_names_the_address_of_record() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(404, "Not Found", "")),
-        ]);
+        ])?;
         let lower = hint.to_lowercase();
         assert!(
             lower.contains("address-of-record") || lower.contains("aor"),
             "404 is an unknown AOR: {hint}"
         );
+        Ok(())
     }
 
     /// [RFC 3261 section 21.5.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.4): the SERVER is unable to process the request. Sending
     /// an operator to check the phone points them at the wrong end of the
     /// call.
     #[test]
-    fn service_unavailable_points_at_the_registrar() {
+    fn service_unavailable_points_at_the_registrar() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(503, "Service Unavailable", "")),
-        ]);
+        ])?;
         let lower = hint.to_lowercase();
         assert!(
             lower.contains("registrar") || lower.contains("server"),
             "503 is the server's problem, not the endpoint's: {hint}"
         );
+        Ok(())
     }
 
     /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261#section-10.3) step 7 / [section 21.4.17](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.17): the registrar rejects an expiry
     /// shorter than its minimum and MUST say what that minimum is. Nothing is
     /// offline; the two numbers are the whole diagnosis.
     #[test]
-    fn interval_too_brief_reports_both_intervals() {
+    fn interval_too_brief_reports_both_intervals() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 60\n")),
             msg(&register_response(
@@ -2497,55 +2502,59 @@ mod tests {
                 "Interval Too Brief",
                 "Min-Expires: 3600\n",
             )),
-        ]);
+        ])?;
         assert!(hint.contains("60"), "the requested interval: {hint}");
         assert!(hint.contains("3600"), "the registrar's minimum: {hint}");
         assert!(!hint.to_lowercase().contains("offline"), "{hint}");
+        Ok(())
     }
 
     /// A `423` whose `Min-Expires` is missing is a registrar breaking
     /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261#section-10.3) step 7. Saying so beats inventing the minimum it did not send.
     #[test]
-    fn interval_too_brief_without_min_expires_says_so() {
+    fn interval_too_brief_without_min_expires_says_so() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 60\n")),
             msg(&register_response(423, "Interval Too Brief", "")),
-        ]);
+        ])?;
         assert!(
             hint.contains("Min-Expires"),
             "the absent header is the finding: {hint}"
         );
+        Ok(())
     }
 
     /// The one code where a reachability problem is a live possibility. It is
     /// still phrased as a possibility, because the `408` reaching the endpoint
     /// proves something answered it.
     #[test]
-    fn request_timeout_is_the_only_code_that_may_mention_reachability() {
+    fn request_timeout_is_the_only_code_that_may_mention_reachability() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(408, "Request Timeout", "")),
-        ]);
+        ])?;
         let lower = hint.to_lowercase();
         assert!(hint.contains("408"), "{hint}");
         assert!(
             lower.contains("timed out") || lower.contains("timeout"),
             "408 is a timeout: {hint}"
         );
+        Ok(())
     }
 
     /// `483` turned up in the corpus and is a routing fault between the two
     /// ends ([RFC 3261 section 21.4.16](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.16)) — the request never reached a registrar that
     /// would answer it. Neither end is offline.
     #[test]
-    fn too_many_hops_is_a_routing_fault() {
+    fn too_many_hops_is_a_routing_fault() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(483, "Too Many Hops", "")),
-        ]);
+        ])?;
         let lower = hint.to_lowercase();
         assert!(hint.contains("Max-Forwards"), "{hint}");
         assert!(!lower.contains("offline"), "{hint}");
+        Ok(())
     }
 
     /// A code with no registration-specific meaning gets the reason phrase
@@ -2553,22 +2562,23 @@ mod tests {
     /// case: `480 No DNS results` in the corpus is a proxy that could not
     /// resolve, and any invented cause would have been wrong.
     #[test]
-    fn an_unmapped_code_reports_the_observation_and_stops() {
+    fn an_unmapped_code_reports_the_observation_and_stops() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(480, "No DNS results", "")),
-        ]);
+        ])?;
         assert!(hint.contains("480"), "{hint}");
         assert!(
             hint.contains("No DNS results"),
             "the reason phrase is the only cause evidence there is: {hint}"
         );
+        Ok(())
     }
 
     /// `Retry-After` is the registrar saying when to come back; dropping it
     /// leaves the reader guessing at the one number the server supplied.
     #[test]
-    fn retry_after_is_carried_into_the_hint() {
+    fn retry_after_is_carried_into_the_hint() -> Result<(), String> {
         let hint = rejection_hint(&[
             msg(&register("Expires: 3600\n")),
             msg(&register_response(
@@ -2576,8 +2586,9 @@ mod tests {
                 "Service Unavailable",
                 "Retry-After: 120\n",
             )),
-        ]);
+        ])?;
         assert!(hint.contains("120"), "Retry-After must survive: {hint}");
+        Ok(())
     }
 
     /// The diagnosis hint and the call report are rendered by ONE function,

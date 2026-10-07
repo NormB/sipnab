@@ -251,6 +251,26 @@ impl DetectionEngines {
         armed.sort_unstable();
         armed
     }
+
+    /// Age out detector state older than `max_age`, and refresh what the
+    /// registration-flood detector says it cannot see.
+    fn sweep(&mut self, max_age: std::time::Duration) {
+        if let Some(det) = self.scanner.as_mut() {
+            det.sweep(max_age);
+        }
+        if let Some(det) = self.fraud.as_mut() {
+            det.sweep(max_age);
+        }
+        if let Some(det) = self.reg_flood.as_mut() {
+            det.sweep(max_age);
+            // Refresh what the detector says it cannot see, so the
+            // MCP and REST findings pages carry it on a live run too.
+            // Filed rather than logged: it is a standing condition,
+            // not an event, and a log line every five seconds is noise.
+            let gap = det.observation_gap(false);
+            self.alerts.write().set_observation_gap("reg_flood", gap);
+        }
+    }
 }
 
 /// Packet processing counters and state.
@@ -706,17 +726,44 @@ fn spawn_relay_stats_poller(
     Option<std::sync::mpsc::Sender<()>>,
     Option<std::thread::JoinHandle<()>>,
 ) {
-    use crate::output::relay_statistics::{
-        FetchOrigin, format_relay_statistics, format_relay_statistics_json, maybe_pretty,
+    let Some(target) = relay_poll_target(cli, permit) else {
+        return (None, None);
     };
-    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-    use crate::stats_vocab::{counter_stepped_backwards, relay_reported, resolve_for_wire};
+    let interval = std::time::Duration::from_secs(target.secs);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let mut poll = RelayStatsPoll::new(target, cli);
 
-    // Captured before the closure moves: each polled reading honors --json the
-    // same way the one-shot forms do.
-    let json = cli.output_args.json;
-    let json_pretty = cli.output_args.json_pretty;
+    match crate::app::relay_poller::spawn(interval, rx, move || poll.poll_once()) {
+        Ok(join) => (Some(tx), Some(join)),
+        Err(e) => {
+            tracing::warn!("could not start the relay statistics poller ({e}); nothing polled");
+            (None, None)
+        }
+    }
+}
 
+/// What a relay-statistics poll is aimed at: the interval, the relay's parsed
+/// socket and the address as the operator typed it, and the permit that lets
+/// the poll transmit.
+struct RelayPollTarget {
+    /// The interval in seconds, as the operator configured it.
+    secs: u64,
+    /// The relay address the operator named, carried verbatim for messages.
+    addr: String,
+    /// `addr`, parsed.
+    socket: std::net::SocketAddr,
+    /// Proof this run may transmit.
+    permit: crate::security::transmit_guard::TransmitPermit,
+}
+
+/// Decide whether this run polls a relay, and at what.
+///
+/// `None` when nothing polls, either because no interval was given or
+/// because the poll is refused; a refusal is logged with the operator's fix.
+fn relay_poll_target(
+    cli: &Cli,
+    permit: Option<crate::security::transmit_guard::TransmitPermit>,
+) -> Option<RelayPollTarget> {
     use crate::app::bootstrap::{RelayPollPlan, relay_poll_plan};
 
     // The precondition is ONE rule, shared with the one-shot ask
@@ -728,27 +775,26 @@ fn spawn_relay_stats_poller(
         cli.rtp_args.rtpengine_control.as_deref(),
         permit.is_some(),
     ) {
-        RelayPollPlan::Idle => return (None, None), // Nothing polls by default.
+        RelayPollPlan::Idle => return None, // Nothing polls by default.
         RelayPollPlan::NotConfigured => {
             tracing::error!(
                 "--relay-stats-interval needs a relay to poll. Name one with \
                  --rtpengine-control <addr>."
             );
-            return (None, None);
+            return None;
         }
         RelayPollPlan::NotPermitted => {
             tracing::error!(
                 "--relay-stats-interval will not poll a relay on a run that reads a \
                  file: polling transmits. Poll from a live capture (-d <device>)."
             );
-            return (None, None);
+            return None;
         }
         RelayPollPlan::Poll { secs, addr } => (secs, addr),
     };
-    let Some(permit) = permit else {
-        // Unreachable: a `Poll` plan is produced only when `permit.is_some()`.
-        return (None, None);
-    };
+    // Unreachable when `None`: a `Poll` plan is produced only when
+    // `permit.is_some()`.
+    let permit = permit?;
     let socket = match addr.parse::<std::net::SocketAddr>() {
         Ok(s) => s,
         Err(e) => {
@@ -756,82 +802,131 @@ fn spawn_relay_stats_poller(
                 "--rtpengine-control {addr} is not an address and port ({e}); \
                  nothing is polled."
             );
-            return (None, None);
+            return None;
         }
     };
+    Some(RelayPollTarget {
+        secs,
+        addr,
+        socket,
+        permit,
+    })
+}
 
-    let client = ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT);
-    let label = format!("rtpengine at {addr}");
-    let err_label = label.clone();
-    let interval = std::time::Duration::from_secs(secs);
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
+/// One relay-statistics poller's state, moved onto the poll thread.
+struct RelayStatsPoll {
+    /// Control client for the relay being polled.
+    client: crate::rtpengine::control::ControlClient,
+    /// Proof this run may transmit.
+    permit: crate::security::transmit_guard::TransmitPermit,
+    /// `rtpengine at <addr>`, the name every line about this relay uses.
+    label: String,
+    /// The poll interval, in seconds as configured.
+    secs: u64,
+    /// The poll interval.
+    interval: std::time::Duration,
+    /// Captured before the closure moves: each polled reading honors --json the
+    /// same way the one-shot forms do.
+    json: bool,
+    /// `--json-pretty`, captured the same way.
+    json_pretty: bool,
+    /// Holds the previous poll's raw pairs so a counter that steps backwards --
+    /// which a cumulative counter cannot do without a reset -- is caught between
+    /// polls (ST-S4 condition 6). rtpproxy publishes no uptime, so a decrease is
+    /// the only in-band signal it restarted.
+    previous: Option<Vec<(String, String)>>,
+}
 
-    // Holds the previous poll's raw pairs so a counter that steps backwards --
-    // which a cumulative counter cannot do without a reset -- is caught between
-    // polls (ST-S4 condition 6). rtpproxy publishes no uptime, so a decrease is
-    // the only in-band signal it restarted.
-    let mut previous: Option<Vec<(String, String)>> = None;
-    let poll = move || {
+impl RelayStatsPoll {
+    /// A poller for `target`, printing in the output form `cli` asked for.
+    fn new(target: RelayPollTarget, cli: &Cli) -> Self {
+        use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+        Self {
+            client: ControlClient::new(target.socket, DEFAULT_CONTROL_TIMEOUT),
+            permit: target.permit,
+            label: format!("rtpengine at {}", target.addr),
+            secs: target.secs,
+            interval: std::time::Duration::from_secs(target.secs),
+            json: cli.output_args.json,
+            json_pretty: cli.output_args.json_pretty,
+            previous: None,
+        }
+    }
+
+    /// Ask the relay once and print what it answered.
+    fn poll_once(&mut self) {
         // Time the round trip. The serial loop never overlaps polls, so a relay
         // slower than the interval slows the cadence rather than stacking
         // requests; a poll whose own round trip overran the interval is where
         // that slip happens, and it is said plainly rather than left silent
         // (ST-S4 condition 13, the visibility half).
         let started = std::time::Instant::now();
-        let result = client.statistics(&permit);
+        let result = self.client.statistics(&self.permit);
         let elapsed = started.elapsed();
-        if crate::app::relay_poller::cadence_slipped(elapsed, interval) {
+        if crate::app::relay_poller::cadence_slipped(elapsed, self.interval) {
             tracing::warn!(
-                "{label}: this poll's round trip took {elapsed:.1?}, longer than the {secs}s \
-                 interval; the polling cadence has slipped and is slower than requested."
+                "{}: this poll's round trip took {elapsed:.1?}, longer than the {}s \
+                 interval; the polling cadence has slipped and is slower than requested.",
+                self.label,
+                self.secs
             );
         }
         match result {
-            Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
-                if let Some(prev) = &previous
-                    && let Some(step) = counter_stepped_backwards(prev, &pairs)
-                {
-                    // Suspect, not a drop in traffic: never smoothed, and the
-                    // counters below are since an unknown start after the reset.
-                    tracing::warn!(
-                        "{label}: {} stepped backwards {} -> {} between polls; a cumulative \
-                     counter cannot decrease, so the relay probably restarted (suspect). The \
-                     counters below are since an unknown start.",
-                        step.name,
-                        step.previous,
-                        step.current
-                    );
-                }
-                previous = Some(pairs.clone());
-                let wire = resolve_for_wire(&relay_reported(&pairs));
-                let origin = FetchOrigin::Polled { every_secs: secs };
-                if json || json_pretty {
-                    println!(
-                        "{}",
-                        maybe_pretty(
-                            format_relay_statistics_json(&wire, &label, chrono::Utc::now(), origin),
-                            json_pretty
-                        )
-                    );
-                } else {
-                    print!(
-                        "{}",
-                        format_relay_statistics(&wire, &label, chrono::Utc::now(), origin)
-                    );
-                }
-            }
-            Ok(other) => tracing::error!("{err_label} answered {other:?}, not statistics"),
+            Ok(crate::relay::types::ControlReply::Statistics(pairs)) => self.on_statistics(pairs),
+            Ok(other) => tracing::error!("{} answered {other:?}, not statistics", self.label),
             Err(e) => {
-                tracing::error!("{err_label} did not answer the polled statistics request ({e})");
+                tracing::error!(
+                    "{} did not answer the polled statistics request ({e})",
+                    self.label
+                );
             }
         }
-    };
+    }
 
-    match crate::app::relay_poller::spawn(interval, rx, poll) {
-        Ok(join) => (Some(tx), Some(join)),
-        Err(e) => {
-            tracing::warn!("could not start the relay statistics poller ({e}); nothing polled");
-            (None, None)
+    /// Check one reading against the previous one, then print it.
+    fn on_statistics(&mut self, pairs: Vec<(String, String)>) {
+        use crate::stats_vocab::{counter_stepped_backwards, relay_reported, resolve_for_wire};
+        if let Some(prev) = &self.previous
+            && let Some(step) = counter_stepped_backwards(prev, &pairs)
+        {
+            // Suspect, not a drop in traffic: never smoothed, and the
+            // counters below are since an unknown start after the reset.
+            tracing::warn!(
+                "{}: {} stepped backwards {} -> {} between polls; a cumulative \
+             counter cannot decrease, so the relay probably restarted (suspect). The \
+             counters below are since an unknown start.",
+                self.label,
+                step.name,
+                step.previous,
+                step.current
+            );
+        }
+        let wire = resolve_for_wire(&relay_reported(&pairs));
+        self.previous = Some(pairs);
+        self.print_reading(&wire);
+    }
+
+    /// Print one reading in the form `--json` / `--json-pretty` chose.
+    fn print_reading(&self, wire: &crate::stats_vocab::WireStatistics) {
+        use crate::output::relay_statistics::{
+            FetchOrigin, format_relay_statistics, format_relay_statistics_json, maybe_pretty,
+        };
+        let origin = FetchOrigin::Polled {
+            every_secs: self.secs,
+        };
+        if self.json || self.json_pretty {
+            println!(
+                "{}",
+                maybe_pretty(
+                    format_relay_statistics_json(wire, &self.label, chrono::Utc::now(), origin),
+                    self.json_pretty
+                )
+            );
+        } else {
+            print!(
+                "{}",
+                format_relay_statistics(wire, &self.label, chrono::Utc::now(), origin)
+            );
         }
     }
 }
@@ -1439,59 +1534,85 @@ fn report_relay_retries(store: &crate::rtp::stream_store::StreamStore) {
 /// discovery used to read as "no SIP traffic found", which is true and useless.
 fn report_stun_failures() {
     let (unanswered, answered) = crate::stun::unanswered_requests();
+    for line in stun_failure_lines(&unanswered, answered, crate::stun::auth_challenges()) {
+        tracing::warn!("{line}");
+    }
+}
+
+/// How many entries an end-of-run NAT finding lists before it counts the rest.
+const NAT_FINDING_LIST_CAP: usize = 5;
+
+/// The lines [`report_stun_failures`] logs, in order; empty when nothing went
+/// unanswered.
+///
+/// # Arguments
+///
+/// * `unanswered` — every request that drew no reply.
+/// * `answered` — how many transactions did draw one, for the total.
+/// * `challenges` — transactions answered with an authentication challenge.
+///   Reported only beside unanswered requests, never on its own.
+fn stun_failure_lines(
+    unanswered: &[crate::stun::UnansweredRequest],
+    answered: u64,
+    challenges: u64,
+) -> Vec<String> {
     if unanswered.is_empty() {
-        return;
+        return Vec::new();
     }
     let total = unanswered.len() as u64 + answered;
-    for req in unanswered.iter().take(5) {
-        let who = req
-            .software
-            .as_deref()
-            .map(|s| format!(" ({s})"))
-            .unwrap_or_default();
-        tracing::warn!(
-            "STUN/TURN: {} sent {} to {} {} time(s) and got no reply{who}. \
-             An endpoint that cannot learn its reflexive address falls back to \
-             advertising its PRIVATE address in SDP, which the far end cannot route \
-             back to — the usual cause of a call that signals cleanly and carries \
-             audio one way. Note WHAT is missing: no reply at all, rather than a \
-             refusal. Silence points at something dropping the packets in the path \
-             rather than at the server refusing them, and on school, campus and \
-             corporate networks the usual culprit is a security appliance — web \
-             filter, secure web gateway, firewall or IPS — discarding UDP it does \
-             not recognize. Check whether such a device sits in this path and \
-             whether it permits UDP to the STUN/TURN port before suspecting the \
-             server.",
-            req.from,
-            req.method,
-            req.to,
-            req.attempts,
-        );
-    }
-    if unanswered.len() > 5 {
-        tracing::warn!(
+    let mut lines: Vec<String> = unanswered
+        .iter()
+        .take(NAT_FINDING_LIST_CAP)
+        .map(unanswered_request_line)
+        .collect();
+    if unanswered.len() > NAT_FINDING_LIST_CAP {
+        lines.push(format!(
             "STUN: {} further unanswered binding request(s) not listed.",
-            unanswered.len() - 5
-        );
+            unanswered.len() - NAT_FINDING_LIST_CAP
+        ));
     }
-    tracing::warn!(
+    lines.push(format!(
         "STUN/TURN: {} of {total} transaction(s) went unanswered.",
         unanswered.len()
-    );
-    let challenges = crate::stun::auth_challenges();
+    ));
     if challenges > 0 {
         // Said separately because it points somewhere else entirely: the path
         // works and the server answered, so nothing here is a firewall
         // problem. An operator who reads only the line above goes hunting a
         // dropped packet that was never dropped.
-        tracing::warn!(
+        lines.push(format!(
             "STUN/TURN: {challenges} transaction(s) were answered with an \
              AUTHENTICATION challenge (a realm was offered). Those are not a \
              blocked path -- the server was reachable and asked for \
              credentials. Check the endpoint's STUN/TURN username and password \
              rather than the network."
-        );
+        ));
     }
+    lines
+}
+
+/// One unanswered request as the sentence [`report_stun_failures`] logs.
+fn unanswered_request_line(req: &crate::stun::UnansweredRequest) -> String {
+    let who = req
+        .software
+        .as_deref()
+        .map(|s| format!(" ({s})"))
+        .unwrap_or_default();
+    format!(
+        "STUN/TURN: {} sent {} to {} {} time(s) and got no reply{who}. \
+         An endpoint that cannot learn its reflexive address falls back to \
+         advertising its PRIVATE address in SDP, which the far end cannot route \
+         back to — the usual cause of a call that signals cleanly and carries \
+         audio one way. Note WHAT is missing: no reply at all, rather than a \
+         refusal. Silence points at something dropping the packets in the path \
+         rather than at the server refusing them, and on school, campus and \
+         corporate networks the usual culprit is a security appliance — web \
+         filter, secure web gateway, firewall or IPS — discarding UDP it does \
+         not recognize. Check whether such a device sits in this path and \
+         whether it permits UDP to the STUN/TURN port before suspecting the \
+         server.",
+        req.from, req.method, req.to, req.attempts,
+    )
 }
 
 /// Print the capture-quality line and the STUN/TURN failures beside it.
@@ -1535,18 +1656,26 @@ fn report_capture_quality() {
 fn report_lapsed_allocations() {
     let report = crate::stun::report();
     let lapsed: Vec<&crate::stun::TurnAllocation> = report.lapsed_allocations().collect();
-    if lapsed.is_empty() {
-        return;
+    for line in lapsed_allocation_lines(&lapsed) {
+        tracing::warn!("{line}");
     }
-    tracing::warn!(
+}
+
+/// The lines [`report_lapsed_allocations`] logs, in order; empty when nothing
+/// lapsed.
+fn lapsed_allocation_lines(lapsed: &[&crate::stun::TurnAllocation]) -> Vec<String> {
+    if lapsed.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
         "TURN: {} allocation(s) were still carrying traffic after the lifetime they were \
          last granted had run out, with no Refresh seen in between. A relay tears an \
          allocation down when its lifetime lapses and the media stops with it, mid-call, \
          with no SIP message to say why.",
         lapsed.len()
-    );
-    for alloc in lapsed.iter().take(5) {
-        tracing::warn!(
+    )];
+    for alloc in lapsed.iter().take(NAT_FINDING_LIST_CAP) {
+        lines.push(format!(
             "TURN:   {} -> {}: {} lifetime, {} refresh(es) seen, traffic continued {}s past \
              expiry",
             alloc.client,
@@ -1557,22 +1686,23 @@ fn report_lapsed_allocations() {
                 .unwrap_or_else(|| "unknown".to_string()),
             alloc.refreshes,
             alloc.seconds_past_expiry().unwrap_or_default(),
-        );
+        ));
         // The media that was on the relay when it was torn down. Without it
         // the warning names an allocation and an operator has no way to reach
         // the call that went quiet, which is the only reason they are reading
         // it. Silent when no relayed frame was seen on the allocation — that
         // is a real and different answer, not a zero worth printing.
         if let Some(label) = alloc.relayed_media_label() {
-            tracing::warn!("TURN:     media on it: {label}");
+            lines.push(format!("TURN:     media on it: {label}"));
         }
     }
-    if lapsed.len() > 5 {
-        tracing::warn!(
+    if lapsed.len() > NAT_FINDING_LIST_CAP {
+        lines.push(format!(
             "TURN:   ... and {} further lapsed allocation(s) not listed.",
-            lapsed.len() - 5
-        );
+            lapsed.len() - NAT_FINDING_LIST_CAP
+        ));
     }
+    lines
 }
 
 /// Report candidate pairs where the two ICE agents disagreed about which of
@@ -1589,19 +1719,26 @@ fn report_lapsed_allocations() {
 ///
 /// Writes warnings to the tracing log; silent when no conflict was seen.
 fn report_ice_role_conflicts(report: &crate::stun::StunReport) {
-    let ice = report.ice_summary();
-    if ice.role_conflicts_total == 0 {
-        return;
+    for line in ice_role_conflict_lines(&report.ice_summary()) {
+        tracing::warn!("{line}");
     }
-    tracing::warn!(
+}
+
+/// The lines [`report_ice_role_conflicts`] logs, in order; empty when no
+/// conflict was seen.
+fn ice_role_conflict_lines(ice: &crate::stun::IceSummary) -> Vec<String> {
+    if ice.role_conflicts_total == 0 {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
         "ICE: {} candidate pair(s) show a role conflict -- both agents claimed the same \
          role, or one answered 487 Role Conflict (RFC 8445 section 7.3.1.1). The usual \
          source is two endpoints configured with the same role, or a B2BUA relaying one \
          side's role attribute to the other.",
         ice.role_conflicts_total
-    );
-    for conflict in ice.role_conflicts.iter().take(5) {
-        tracing::warn!(
+    )];
+    for conflict in ice.role_conflicts.iter().take(NAT_FINDING_LIST_CAP) {
+        lines.push(format!(
             "ICE:   {} <-> {}: {} 487 response(s){}",
             conflict.a,
             conflict.b,
@@ -1613,14 +1750,15 @@ fn report_ice_role_conflicts(report: &crate::stun::StunReport) {
                 ", UNRESOLVED -- no pair between them was ever nominated, so this is a \
                  candidate cause of media that never started"
             }
-        );
+        ));
     }
-    if ice.role_conflicts.len() > 5 {
-        tracing::warn!(
+    if ice.role_conflicts.len() > NAT_FINDING_LIST_CAP {
+        lines.push(format!(
             "ICE:   ... and {} further conflicted pair(s) not listed.",
-            ice.role_conflicts.len() - 5
-        );
+            ice.role_conflicts.len() - NAT_FINDING_LIST_CAP
+        ));
     }
+    lines
 }
 
 /// The capture-quality sentence, or `None` when nothing was lost.
@@ -2542,6 +2680,726 @@ pub struct BatchRunner {
     evidence: Option<sec::evidence::EvidenceSink>,
 }
 
+/// The `--hep-send` forwarder, when one was asked for.
+///
+/// # Errors
+///
+/// An unusable HEP auth secret, or a sender that could not be created (exit
+/// code 2).
+#[cfg(feature = "hep")]
+fn build_hep_sender(
+    cli: &Cli,
+    config: &Config,
+    capture_meter: &crate::capture::channel::CaptureMeter,
+) -> Result<Option<crate::capture::hep::HepSender>, crate::app::bootstrap::PlanError> {
+    let Some(ref addr) = cli.hep_args.hep_send else {
+        return Ok(None);
+    };
+    let capture_id = cli.hep_args.hep_id.unwrap_or(1);
+    // Fatal, as `-L` makes the same refusal: logging it and sending
+    // anyway forwarded the capture's signaling unauthenticated,
+    // which is the silent disabling the resolver exists to prevent.
+    let hep_auth = cli
+        .resolve_hep_auth()
+        .map_err(|e| crate::app::bootstrap::PlanError {
+            exit_code: 2,
+            message: format!("HEP auth: {e}"),
+        })?;
+    let authenticated = hep_auth.is_some();
+    // Mint the destination here rather than inside the constructor, so
+    // the type is proven at the call site. While the constructor took a
+    // &str, any future caller could mint a destination from an arbitrary
+    // string -- which is the hole the permit type exists to close.
+    let destination = crate::capture::hep::OperatorDestination::from_cli_flag(
+        crate::capture::hep::HEP_SEND_FLAG,
+        addr,
+    );
+    let transport = cli.hep_send_transport();
+    let (tls_ca, tls_extra_ca) = cli.hep_tls_trust(config);
+    let sender = crate::capture::hep::HepSender::for_destination(
+        &destination,
+        crate::capture::hep::HepSenderOpts {
+            capture_id,
+            auth_key: hep_auth,
+            auth_mode: cli.hep_args.hep_auth_mode,
+            transport,
+            tls_ca: tls_ca.as_deref(),
+            tls_extra_ca: tls_extra_ca.as_deref(),
+        },
+    )
+    // Fatal, as `--metrics` and `--api` are: `--hep-send` asks
+    // for forwarding, and a run that cannot forward has not
+    // done what it was asked. Logging this and carrying on
+    // exited 0, so `sipnab ... --hep-send x && echo forwarded`
+    // printed `forwarded` with nothing sent.
+    .map_err(|e| crate::app::bootstrap::PlanError {
+        exit_code: 2,
+        message: format!("Failed to create HEP sender: {e:#}"),
+    })?;
+    tracing::info!(
+        "HEP sender targeting {addr} over {transport} (capture id \
+         {capture_id}{})",
+        if authenticated { ", authenticated" } else { "" }
+    );
+    // On the meter every surface already holds, so
+    // `runtime_stats`, `GET /v1/runtime`, the metrics
+    // exposition and the end-of-run line read one set of
+    // counters.
+    capture_meter.attach_hep_export(sender.counters());
+    Ok(Some(sender))
+}
+
+/// The dialog store a batch run writes, with the operator's limit, rotation,
+/// tracking, correlation headers and leg-correlation window applied.
+fn build_live_dialog_store(cli: &Cli, config: &Config) -> DialogStore {
+    let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
+    // The wiring whose absence made the old --dialog-track a dead
+    // flag: declared, parsed, and never handed to anything.
+    ds.set_tracking(cli.dialog_args.dialog_track.unwrap_or_default());
+    ds.with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default())
+        .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config))
+}
+
+/// Start the rtpengine reconciler (RE4) on its own thread, when this run has
+/// one ready, and switch the store to recording the sockets it is offered.
+///
+/// Returns the sink the receive loop offers orphan sockets to and the
+/// thread's handle; both `None` when there is no reconciler or it could not
+/// start, in which case the store records nothing for it.
+fn spawn_relay_reconciler(
+    ready: Option<crate::app::bootstrap::ReadyReconciler>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+) -> (
+    Option<crate::relay::reconcile::OrphanSink>,
+    Option<std::thread::JoinHandle<()>>,
+) {
+    let Some(ready) = ready else {
+        return (None, None);
+    };
+    let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
+    stream_store.write().record_new_orphans(true);
+    match crate::app::relay_reconciler::spawn(
+        ready.reconciler,
+        ready.permit,
+        orphan_rx,
+        Arc::clone(stream_store),
+    ) {
+        Ok(join) => (Some(sink), Some(join)),
+        Err(e) => {
+            tracing::warn!(
+                "could not start the rtpengine reconciler ({e}); streams the \
+                 signaling does not explain will stay unattributed"
+            );
+            stream_store.write().record_new_orphans(false);
+            (None, None)
+        }
+    }
+}
+
+/// Build every security detector this run arms, keep the scanner-kill worker
+/// only when it will be used, and build the alert engine (steps 17a-17b).
+fn build_detection_engines(
+    cli: &Cli,
+    config: &Config,
+    kill_worker: Option<ScannerKillHandle>,
+    transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
+) -> DetectionEngines {
+    // 17a. Initialize security detectors
+    let kill_scanner_active = cli.kill_scanner(config);
+    let kill_targets = parse_kill_targets(cli);
+    // The kill worker is needed whenever we may emit a kill response —
+    // detection-driven (--kill-scanner) OR targeted (-K) — and permitted
+    // only when this run watches a live source. `transmit_permit` is None
+    // for a capture file, and the worker's constructor takes one by value,
+    // so an offline run cannot start a transmitting worker at all. The
+    // operator was told why in `bootstrap::plan`; detection, alerting,
+    // `--fail2ban` output and reporting all continue below.
+    let kill_worker_active =
+        (kill_scanner_active || !kill_targets.is_empty()) && transmit_permit.is_some();
+
+    let scanner_detector = build_scanner_detector(cli, config, kill_scanner_active);
+
+    // Built here, ahead of the warning below, because it is one of the
+    // three producers that warning has to consult.
+    let reg_flood_detector = cli
+        .security_args
+        .reg_flood
+        .then(|| RegFloodDetector::with_policy(cli.reg_flood_policy(config)));
+
+    warn_about_fail2ban_gaps(
+        cli,
+        config,
+        fail2ban_would_emit_nothing(
+            scanner_detector.is_some(),
+            !kill_targets.is_empty(),
+            reg_flood_detector.is_some(),
+        ),
+    );
+
+    // 17a-2. The scanner-kill worker process (D16: process isolation).
+    // Started by `bootstrap::launch` in the privileged window -- before
+    // the chroot and the sandboxes, each of which can stop the exec it
+    // needs -- from `bootstrap::kill_worker_wanted` and the same permit. The filter is the backstop for the two rules ever
+    // disagreeing: a worker this run would not use is shut down here
+    // rather than left holding send descriptors.
+    let scanner_kill_handle: Option<ScannerKillHandle> = kill_worker.filter(|_| kill_worker_active);
+
+    DetectionEngines {
+        scanner: scanner_detector,
+        fraud: build_fraud_detector(cli, config),
+        digest: cli.security_args.digest_leak.then(DigestLeakDetector::new),
+        reg_flood: reg_flood_detector,
+        alerts: Arc::new(RwLock::new(build_configured_alert_engine(cli, config))),
+        kill_handle: scanner_kill_handle,
+        kill_response_code: cli.kill_response_code(config),
+        kill_targets,
+    }
+}
+
+/// Targeted-kill directives (-K). Already validated in Cli::validate();
+/// reparse here and skip (loudly) any that somehow fail so a bad entry
+/// can't take the whole run down mid-capture.
+fn parse_kill_targets(cli: &Cli) -> Vec<sec::scanner_kill::KillTarget> {
+    cli.security_args
+        .kill_target
+        .iter()
+        .filter_map(|spec| match sec::scanner_kill::KillTarget::parse(spec) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::error!("Ignoring invalid --kill-target '{spec}': {e}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// The scanner detector, when `--kill-scanner` (or its config key) arms it.
+///
+/// Deliberately NOT armed by `--fail2ban` alone. The obvious wiring —
+/// "the flag feeds a banning tool, so give it a detector" — was measured
+/// on a real carrier trunk and produces 7008 detections naming 180
+/// peers, because the behavioral signature counts OPTIONS and the
+/// busiest "scanners" are the carrier's own PBXes sending keepalives
+/// (2713 from one peer in 11 seconds). That is the same mass-ban as the
+/// blanket emission this replaced, only wearing the authority of a real
+/// detection. Arm it once the signature can tell a keepalive from an
+/// enumeration; until then `--fail2ban` warns rather than lying.
+fn build_scanner_detector(
+    cli: &Cli,
+    config: &Config,
+    kill_scanner_active: bool,
+) -> Option<ScannerDetector> {
+    if !kill_scanner_active {
+        return None;
+    }
+    let custom = cli
+        .security_args
+        .kill_ua
+        .as_deref()
+        .map(|s| vec![s.to_string()])
+        .unwrap_or_default();
+    // `with_thresholds`, not `new`: the trigger points reach the run
+    // from here or they reach nothing. `ScannerDetector::new` keeps its
+    // compiled-in numbers, which is the shape #68 found six detectors
+    // in — a resolver that passes its own unit test and changes nothing
+    // an operator sees. See the comment on `SipnabMcp::row_cap`.
+    Some(ScannerDetector::with_thresholds(
+        &custom,
+        cli.scanner_thresholds(config),
+    ))
+}
+
+/// Say at startup when `--fail2ban` will write less than an operator expects.
+///
+/// `emits_nothing` is [`fail2ban_would_emit_nothing`] for the detectors this
+/// run armed.
+fn warn_about_fail2ban_gaps(cli: &Cli, config: &Config, emits_nothing: bool) {
+    // An operator who asked for fail2ban output and gets an empty file will
+    // read it as "nothing attacked me", which is the most dangerous way for
+    // a security tool to be silent. Say so once, at the start -- and only
+    // when it is true: every producer of a jail line is consulted, not the
+    // scanner detector alone, so `--reg-flood --fail2ban` is not told its
+    // log will stay empty and then handed lines for it.
+    if cli.output_args.fail2ban && emits_nothing {
+        tracing::warn!(
+            "--fail2ban writes scanner and registration-flood detections, but no \
+             detector is running, so this run will emit nothing. An empty jail log \
+             means 'nothing was detected', not 'nothing happened'. Add --kill-scanner \
+             to detect scanners (offline it only reports; it never transmits), \
+             --kill-ua <substring> to match a specific agent, -K/--kill-target <addr> \
+             to name one, or --reg-flood to detect registration floods."
+        );
+    }
+
+    // The jail line passes the same origin gate as the kill response: a
+    // HEP sender asserts the inner addresses, so a detection carried by
+    // HEP names whatever source the sender chose, and a ban on that name
+    // is a ban the sender picked. Nothing HEP-origin reaches the log
+    // without the opt-in -- and an operator watching a HEP feed with
+    // --fail2ban would otherwise read the empty file as an all-clear.
+    if cli.output_args.fail2ban
+        && !cli.security_args.hep_allow_kill
+        && (cli.hep_args.hep_listen.is_some() || cli.hep_parse(config))
+    {
+        tracing::warn!(
+            "--fail2ban writes nothing for detections carried by HEP: the inner \
+             addresses are the sender's claim, and a jail line would ban whatever \
+             address it chose. Pass --hep-allow-kill to admit them once the feed is \
+             authenticated (--hep-auth) and trusted."
+        );
+    }
+}
+
+/// What the `--alert` values asked for.
+#[derive(Debug, Default)]
+struct AlertSources {
+    /// Every value that parsed as a rule.
+    rules: Vec<AlertRule>,
+    /// `syslog` was named as a channel.
+    syslog: bool,
+    /// `json` was named as a channel.
+    json: bool,
+    /// One sentence per value that could not be used, in the order given.
+    warnings: Vec<String>,
+}
+
+/// Read the `--alert` values.
+///
+/// `--alert` is declared as a CHANNEL flag — "syslog", "json", "exec" —
+/// and every documented example passes a channel name. It used to be fed
+/// straight to `AlertRule::parse`, whose grammar is
+/// `<name>:<threshold>/<window>`, so `--alert syslog` failed to parse,
+/// warned, and enabled nothing. The docs taught it anyway, including a
+/// line claiming it wrote to LOCAL0. For a security path that is the
+/// worst shape of bug: the operator believes alerting is on.
+///
+/// A bare word is now a channel, as advertised. A value containing ':'
+/// is still parsed as a rule, so anyone who discovered the old grammar
+/// from the source keeps working.
+///
+/// # Arguments
+///
+/// * `specs` — the `--alert` values, or the configured ones.
+/// * `exec_configured` — whether an `--alert-exec` command exists.
+fn parse_alert_sources(specs: &[String], exec_configured: bool) -> AlertSources {
+    let mut sources = AlertSources::default();
+    for spec in specs {
+        let value = spec.trim();
+        if value.contains(':') {
+            match AlertRule::parse(value) {
+                Ok(r) => sources.rules.push(r),
+                Err(e) => sources
+                    .warnings
+                    .push(format!("Skipping invalid alert rule '{value}': {e}")),
+            }
+            continue;
+        }
+        match value.to_ascii_lowercase().as_str() {
+            "syslog" => sources.syslog = true,
+            "json" => sources.json = true,
+            // The exec channel is the presence of --alert-exec; naming it
+            // here is accepted so the documented triple all work, but it
+            // cannot invent a command.
+            "exec" => {
+                if !exec_configured {
+                    sources.warnings.push(
+                        "--alert exec given without --alert-exec <CMD>; no command to run"
+                            .to_owned(),
+                    );
+                }
+            }
+            other => sources.warnings.push(format!(
+                "Unknown alert channel '{other}'. Valid channels: syslog, json, exec. \
+                 (A value containing ':' is treated as an alert rule.)"
+            )),
+        }
+    }
+    sources
+}
+
+/// 17b. Initialize alert engine from --alert rules and --alert-exec,
+///      falling back to config.security.alert and config.security.alert_exec
+fn build_configured_alert_engine(cli: &Cli, config: &Config) -> AlertEngine {
+    let effective_alert_sources: &[String] = if cli.security_args.alert.is_empty() {
+        config.security.alert.as_deref().unwrap_or(&[])
+    } else {
+        &cli.security_args.alert
+    };
+    let effective_alert_exec = cli
+        .security_args
+        .alert_exec
+        .clone()
+        .or(config.security.alert_exec.clone());
+    let sources = parse_alert_sources(effective_alert_sources, effective_alert_exec.is_some());
+    for warning in &sources.warnings {
+        tracing::warn!("{warning}");
+    }
+    let mut alert_engine = build_alert_engine(cli, config, sources.rules, effective_alert_exec);
+    if cli.security_args.syslog || sources.syslog {
+        alert_engine.set_syslog(true);
+    }
+    if cli.security_args.alert_json || sources.json {
+        alert_engine.set_json_output(true);
+    }
+    alert_engine
+}
+
+/// The selection of tools, budgets and surfaces the companion servers start
+/// with, resolved from the CLI and the configuration.
+fn server_selection(
+    cli: &Cli,
+    config: &Config,
+    evidence_ring: Option<Arc<RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
+    actions: &crate::security::actions::Actions,
+    engines: &DetectionEngines,
+) -> crate::app::servers::Selection {
+    crate::app::servers::Selection {
+        evidence_ring,
+        mcp_tools: cli.mcp_tool_selection(config).unwrap_or_default(),
+        mcp_output_schemas: cli.mcp_output_schemas(config),
+        api_allowed_hosts: cli.api_allowed_hosts(config),
+        api_tls: cli.api_tls_files(config),
+        mcp_tls: cli.mcp_tls_files(config),
+        metrics_tls: cli.metrics_tls_files(config),
+        mcp_row_cap: cli.mcp_row_cap(config),
+        mcp_body_cap: cli.mcp_body_cap(config),
+        mcp_wait_seconds: cli.mcp_wait_cap(config),
+        api_row_cap: cli.api_row_cap(config),
+        api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
+        max_tracked_peers: cli.tracked_peer_capacity(config),
+        metrics_max_conn: cli.metrics_conn_cap(config),
+        actions: actions.clone(),
+        mcp_max_findings: cli.mcp_findings_cap(config),
+        tfps: cli.tfps_locator(config),
+        api: true,
+        mcp: true,
+        // The whole point of #159: headless is where --metrics is
+        // actually used, and it was the one path that never started it.
+        metrics: true,
+        // What `security_findings` reports as `armed_kinds`. Taken from
+        // the detectors this run built, so an agent reading an empty
+        // findings list can tell "nothing was watching" from "the
+        // traffic was clean".
+        armed_detections: engines.armed_kinds(),
+    }
+}
+
+/// Open the `--evidence-out` sink, when one was asked for.
+///
+/// Fail before the first packet: an operator who mistyped the path
+/// should learn now, not after an hour of capture and a lost finding.
+///
+/// # Errors
+///
+/// A target that cannot be opened (exit code 2).
+fn open_evidence_sink(
+    cli: &Cli,
+) -> Result<Option<sec::evidence::EvidenceSink>, crate::app::bootstrap::PlanError> {
+    let Some(target) = cli.security_args.evidence_out.as_deref() else {
+        return Ok(None);
+    };
+    sec::evidence::EvidenceSink::open(target)
+        .map(Some)
+        .map_err(|e| crate::app::bootstrap::PlanError {
+            exit_code: 2,
+            message: format!("--evidence-out {target}: {e}"),
+        })
+}
+
+/// TLS, SRTP and DTLS-SRTP decryption state for one run (steps 17c-17f).
+#[cfg(feature = "tls")]
+struct MediaDecryption {
+    /// SIP-over-TLS decryptor (`--keylog` / `--tls-key` / embedded secrets).
+    tls_decryptor: Option<TlsDecryptor>,
+    /// Holds a TLS record split across TCP segments until it completes.
+    tls_reassembler: crate::capture::tls::TlsRecordReassembler,
+    /// SRTP media decryption context (`--srtp-keys` + learned SDES keys).
+    srtp_context: Option<crate::rtp::srtp::SrtpContext>,
+    /// DTLS-SRTP key extractor (`--dtls-keylog`).
+    dtls_extractor: Option<crate::capture::dtls::DtlsSrtpExtractor>,
+}
+
+#[cfg(feature = "tls")]
+impl MediaDecryption {
+    /// Load every key source this run names.
+    ///
+    /// # Errors
+    ///
+    /// An unloadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` file (exit
+    /// code 1).
+    fn load(
+        cli: &Cli,
+        config: &Config,
+        preopened_keylog: Option<crate::capture::keylog_source::KeylogSource>,
+        input_files: &[PathBuf],
+    ) -> Result<Self, crate::app::bootstrap::PlanError> {
+        let mut tls_decryptor = build_tls_decryptor(cli, preopened_keylog)?;
+
+        // Same bound as the packet-level TCP/SIP reassembler
+        // (`PacketProcessor::with_max_sessions`) — one held-partial entry
+        // per concurrent TLS stream direction, same eviction policy.
+        let tls_reassembler =
+            crate::capture::tls::TlsRecordReassembler::new(cli.max_reassembly_limit(config));
+
+        // 17d. Feed TLS secrets embedded in a pcapng (Decryption Secrets Block) into
+        // the decryptor, so a self-contained capture decrypts without an external
+        // --keylog. Creates a decryptor on demand when the file carries secrets.
+        //
+        // EVERY file in the set, not `cli.primary_input()`. That returned the
+        // first `-I` ARGUMENT, so with `-I plain.pcapng -I withdsb.pcapng` the
+        // secrets in the SECOND file were never loaded: zero "TLS decryption"
+        // lines, and the run read exactly like a capture that carried no keys.
+        // A directory holding both did the same. Chronological reordering makes
+        // the first argument often not even the first file read (#48).
+        for path in input_files {
+            feed_embedded_tls_secrets(path, &mut tls_decryptor);
+        }
+
+        Ok(Self {
+            tls_decryptor,
+            tls_reassembler,
+            srtp_context: load_srtp_context(cli)?,
+            dtls_extractor: load_dtls_extractor(cli)?,
+        })
+    }
+}
+
+/// 17c. Initialize TLS decryptor if --keylog and/or --tls-key is provided
+///
+/// # Errors
+///
+/// An unloadable `--tls-key` file (exit code 1). A keylog that cannot be
+/// read is logged and leaves the run without a decryptor.
+#[cfg(feature = "tls")]
+fn build_tls_decryptor(
+    cli: &Cli,
+    preopened: Option<crate::capture::keylog_source::KeylogSource>,
+) -> Result<Option<TlsDecryptor>, crate::app::bootstrap::PlanError> {
+    if !(cli.tls_args.keylog.is_some()
+        || cli.tls_args.tls_key.is_some()
+        || cli.tls_args.keylog_fd.is_some())
+    {
+        return Ok(None);
+    }
+    // A source opened in the privileged window supersedes the path:
+    // it is already open, and for a FIFO the path must not be
+    // opened a second time. `--keylog-fd` has no path at all.
+    let keylog_path = if preopened.is_some() {
+        None
+    } else {
+        cli.tls_args.keylog.as_deref().map(std::path::Path::new)
+    };
+    let crypto = crate::crypto::default_backend();
+    let mut d = match TlsDecryptor::new(keylog_path, crypto) {
+        Ok(d) => d,
+        Err(e) => {
+            // `{:#}`: the whole chain. `{}` printed only the outermost
+            // context, "Loading keylog from <path>", which reads the
+            // same for a typo, a permission problem and a file the
+            // producer has not written yet.
+            tracing::error!("Failed to initialize TLS decryptor: {e:#}");
+            return Ok(None);
+        }
+    };
+    if let Some(records) = cli.tls_args.tls_lockon_window {
+        d.set_lockon_window(records);
+    }
+    d.set_keys_may_still_arrive(keylog_may_grow(cli));
+    if let Some(source) = preopened {
+        adopt_keylog_stream(&mut d, source);
+    }
+    if d.keylog_entry_count() > 0 {
+        tracing::info!(
+            "sipnab: TLS decryption active (keylog loaded). \
+                         Decrypted traffic visible in output."
+        );
+    }
+    // Load the RSA private key for TLS 1.2 RSA-key-exchange decryption.
+    if let Some(ref keyfile) = cli.tls_args.tls_key {
+        load_tls_rsa_key(&mut d, keyfile)?;
+    }
+    // Published so a server can tell "no keys were supplied"
+    // from "keys were supplied and opened nothing". Both render
+    // as `decrypted_records: 0`, and they are opposite findings
+    // with opposite remedies.
+    crate::capture::note_tls_decryptor_installed(
+        d.keylog_entry_count(),
+        d.report().sessions_with_keys,
+    );
+    Ok(Some(d))
+}
+
+/// Whether this run's keylog source can grow while it runs.
+///
+/// Only a source that can GROW mid-run makes the
+/// late-decrypt hold worth paying for: a plain `--keylog`
+/// file is read once and a record that fails against it now
+/// fails against it forever.
+#[cfg(feature = "tls")]
+fn keylog_may_grow(cli: &Cli) -> bool {
+    cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some()
+}
+
+/// Hand the decryptor a keylog stream opened in the privileged window, and
+/// read what it already holds.
+#[cfg(feature = "tls")]
+fn adopt_keylog_stream(d: &mut TlsDecryptor, source: crate::capture::keylog_source::KeylogSource) {
+    d.set_keylog_source(source);
+    // Drain once, HERE, before a single packet is
+    // processed. The sweep loop below also polls, but
+    // an offline replay (`-I`) can read the whole file
+    // and finish before the first sweep ever runs — so
+    // relying on the sweep alone made `--keylog-fd`
+    // load zero keys and decrypt nothing, while
+    // reporting only that the descriptor was adopted.
+    match d.poll_keylog_file() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            "sipnab: TLS decryption active ({n} key(s) from the keylog \
+                                     stream). Decrypted traffic visible in output."
+        ),
+        Err(e) => tracing::warn!("Keylog stream read failed: {e}"),
+    }
+}
+
+/// Load `--tls-key` into the decryptor.
+///
+/// # Errors
+///
+/// A key file that cannot be loaded (exit code 1).
+#[cfg(feature = "tls")]
+fn load_tls_rsa_key(
+    d: &mut TlsDecryptor,
+    keyfile: &str,
+) -> Result<(), crate::app::bootstrap::PlanError> {
+    let k = crate::capture::rsa_key::RsaKey::from_pem_file(std::path::Path::new(keyfile)).map_err(
+        |e| crate::app::bootstrap::PlanError {
+            exit_code: 1,
+            message: format!("Failed to load --tls-key {keyfile}: {e}"),
+        },
+    )?;
+    d.set_rsa_key(k);
+    tracing::info!(
+        "sipnab: TLS decryption active (--tls-key loaded; \
+                                 decrypts TLS 1.2 RSA-key-exchange handshakes only)."
+    );
+    Ok(())
+}
+
+/// Feed the TLS secrets embedded in one capture file into `decryptor`,
+/// creating a decryptor when there was none and the file carries secrets.
+#[cfg(feature = "tls")]
+fn feed_embedded_tls_secrets(path: &std::path::Path, decryptor: &mut Option<TlsDecryptor>) {
+    let shown = path.display();
+    if let Some(dec) = decryptor.as_mut() {
+        let added = crate::capture::decrypt::feed_embedded_secrets(path, dec);
+        if added > 0 {
+            tracing::info!("TLS decryption: +{added} embedded DSB secret(s) from {shown}");
+        }
+        return;
+    }
+    if let Some(d) = decryptor_from_embedded_secrets(path) {
+        *decryptor = Some(d);
+    }
+}
+
+/// A decryptor holding the secrets embedded in `path`, or `None` when the
+/// file is not a pcapng, carries no secrets, or none of them loaded.
+#[cfg(feature = "tls")]
+fn decryptor_from_embedded_secrets(path: &std::path::Path) -> Option<TlsDecryptor> {
+    let meta = crate::capture::pcapng_meta::read_pcapng_metadata(path).ok()?;
+    if meta.tls_secrets.is_empty() {
+        return None;
+    }
+    let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).ok()?;
+    let added: usize = meta.tls_secrets.iter().map(|s| d.add_keylog_text(s)).sum();
+    if added == 0 {
+        return None;
+    }
+    tracing::info!(
+        "TLS decryption active: {added} secret(s) from embedded DSB in {}",
+        path.display()
+    );
+    // Same publication as the keylog path above. Reached only
+    // when the embedded DSB block actually yielded secrets --
+    // a probe decryptor that found none is dropped without
+    // being announced, because it decrypted nothing and
+    // announcing it would read as a failed attempt.
+    crate::capture::note_tls_decryptor_installed(
+        d.keylog_entry_count(),
+        d.report().sessions_with_keys,
+    );
+    Some(d)
+}
+
+/// 17e. Initialize the SRTP decryption context from --srtp-keys (and, later,
+/// SDES `a=crypto` lines fed in as SDP is parsed). Authenticated RTP payloads
+/// are decrypted in place before stream/audio analysis.
+///
+/// # Errors
+///
+/// A key file that cannot be loaded (exit code 1).
+#[cfg(feature = "tls")]
+fn load_srtp_context(
+    cli: &Cli,
+) -> Result<Option<crate::rtp::srtp::SrtpContext>, crate::app::bootstrap::PlanError> {
+    let Some(ref keyfile) = cli.tls_args.srtp_keys else {
+        // No key file, but SDES keys may still arrive via SDP — start empty
+        // and let `add_sdes` populate it as `a=crypto` lines are seen.
+        return Ok(Some(crate::rtp::srtp::SrtpContext::new(
+            Vec::new(),
+            crate::crypto::default_backend(),
+        )));
+    };
+    let ctx = crate::rtp::srtp::SrtpContext::from_key_file(
+        std::path::Path::new(keyfile),
+        crate::crypto::default_backend(),
+    )
+    .map_err(|e| crate::app::bootstrap::PlanError {
+        exit_code: 1,
+        message: format!("Failed to load --srtp-keys {keyfile}: {e}"),
+    })?;
+    tracing::info!(
+        "SRTP decryption active: {} key(s) from {keyfile}",
+        ctx.key_count()
+    );
+    // A WARNING, not only the info line above: a manual key
+    // file is a testing and debugging aid, and a run at the
+    // warn level (`-q`) must still say that hand-supplied
+    // key material is in use.
+    tracing::warn!("manual SRTP keys loaded from {keyfile} — use only in test environments");
+    Ok(Some(ctx))
+}
+
+/// 17f. Initialize the DTLS-SRTP extractor from --dtls-keylog. It recovers
+/// SRTP master keys from the DTLS handshake (RFC 5764 exporter) and feeds
+/// them into the SRTP context as handshakes are observed.
+///
+/// # Errors
+///
+/// A keylog that cannot be loaded (exit code 1).
+#[cfg(feature = "tls")]
+fn load_dtls_extractor(
+    cli: &Cli,
+) -> Result<Option<crate::capture::dtls::DtlsSrtpExtractor>, crate::app::bootstrap::PlanError> {
+    let Some(ref keylog) = cli.tls_args.dtls_keylog else {
+        return Ok(None);
+    };
+    let ex = crate::capture::dtls::DtlsSrtpExtractor::from_keylog_file(
+        std::path::Path::new(keylog),
+        crate::crypto::default_backend(),
+    )
+    .map_err(|e| crate::app::bootstrap::PlanError {
+        exit_code: 1,
+        message: format!("Failed to load --dtls-keylog {keylog}: {e}"),
+    })?;
+    tracing::info!(
+        "DTLS-SRTP active: {} keylog entr(ies) from {keylog}",
+        ex.keylog_len()
+    );
+    Ok(Some(ex))
+}
+
 impl BatchRunner {
     /// Build every piece of batch state (bootstrap steps 16-17): output
     /// writer policy, HEP sender, stores, security detectors + alert engine,
@@ -2611,68 +3469,7 @@ impl BatchRunner {
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]
-        let hep_sender: Option<crate::capture::hep::HepSender> =
-            if let Some(ref addr) = cli.hep_args.hep_send {
-                let capture_id = cli.hep_args.hep_id.unwrap_or(1);
-                // Fatal, as `-L` makes the same refusal: logging it and sending
-                // anyway forwarded the capture's signaling unauthenticated,
-                // which is the silent disabling the resolver exists to prevent.
-                let hep_auth =
-                    cli.resolve_hep_auth()
-                        .map_err(|e| crate::app::bootstrap::PlanError {
-                            exit_code: 2,
-                            message: format!("HEP auth: {e}"),
-                        })?;
-                let authenticated = hep_auth.is_some();
-                // Mint the destination here rather than inside the constructor, so
-                // the type is proven at the call site. While the constructor took a
-                // &str, any future caller could mint a destination from an arbitrary
-                // string -- which is the hole the permit type exists to close.
-                let destination = crate::capture::hep::OperatorDestination::from_cli_flag(
-                    crate::capture::hep::HEP_SEND_FLAG,
-                    addr,
-                );
-                let transport = cli.hep_send_transport();
-                let (tls_ca, tls_extra_ca) = cli.hep_tls_trust(config);
-                match crate::capture::hep::HepSender::for_destination(
-                    &destination,
-                    crate::capture::hep::HepSenderOpts {
-                        capture_id,
-                        auth_key: hep_auth,
-                        auth_mode: cli.hep_args.hep_auth_mode,
-                        transport,
-                        tls_ca: tls_ca.as_deref(),
-                        tls_extra_ca: tls_extra_ca.as_deref(),
-                    },
-                ) {
-                    Ok(sender) => {
-                        tracing::info!(
-                            "HEP sender targeting {addr} over {transport} (capture id \
-                             {capture_id}{})",
-                            if authenticated { ", authenticated" } else { "" }
-                        );
-                        // On the meter every surface already holds, so
-                        // `runtime_stats`, `GET /v1/runtime`, the metrics
-                        // exposition and the end-of-run line read one set of
-                        // counters.
-                        capture_meter.attach_hep_export(sender.counters());
-                        Some(sender)
-                    }
-                    // Fatal, as `--metrics` and `--api` are: `--hep-send` asks
-                    // for forwarding, and a run that cannot forward has not
-                    // done what it was asked. Logging this and carrying on
-                    // exited 0, so `sipnab ... --hep-send x && echo forwarded`
-                    // printed `forwarded` with nothing sent.
-                    Err(e) => {
-                        return Err(crate::app::bootstrap::PlanError {
-                            exit_code: 2,
-                            message: format!("Failed to create HEP sender: {e:#}"),
-                        });
-                    }
-                }
-            } else {
-                None
-            };
+        let hep_sender = build_hep_sender(&cli, config, &capture_meter)?;
 
         // 17. Initialize processing state
         //
@@ -2699,17 +3496,8 @@ impl BatchRunner {
             ))
         });
 
-        let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
-            {
-                let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
-                // The wiring whose absence made the old --dialog-track a dead
-                // flag: declared, parsed, and never handed to anything.
-                ds.set_tracking(cli.dialog_args.dialog_track.unwrap_or_default());
-                ds
-            }
-            .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default())
-            .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config)),
-        ));
+        let dialog_store: Arc<RwLock<DialogStore>> =
+            Arc::new(RwLock::new(build_live_dialog_store(&cli, config)));
         let no_rtp = cli.no_rtp(config);
         let stream_store: Arc<RwLock<StreamStore>> = Arc::new(RwLock::new(
             build_live_stream_store(&cli, config, &batch.relay.snapshot),
@@ -2734,29 +3522,8 @@ impl BatchRunner {
         // exists only when the address parsed, so a live run with a malformed
         // address was refused as one that "reads a file".
         let relay_poll_permit = transmit_permit;
-        let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
-            Some(ready) => {
-                let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
-                stream_store.write().record_new_orphans(true);
-                match crate::app::relay_reconciler::spawn(
-                    ready.reconciler,
-                    ready.permit,
-                    orphan_rx,
-                    Arc::clone(&stream_store),
-                ) {
-                    Ok(join) => (Some(sink), Some(join)),
-                    Err(e) => {
-                        tracing::warn!(
-                            "could not start the rtpengine reconciler ({e}); streams the \
-                             signaling does not explain will stay unattributed"
-                        );
-                        stream_store.write().record_new_orphans(false);
-                        (None, None)
-                    }
-                }
-            }
-            None => (None, None),
-        };
+        let (relay_orphans, relay_thread) =
+            spawn_relay_reconciler(batch.relay.ready.take(), &stream_store);
 
         // C5: poll the relay's statistics on the operator's interval, if one
         // was given. Its own thread, its own client, gated like every other
@@ -2767,416 +3534,17 @@ impl BatchRunner {
 
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
-        // 17a. Initialize security detectors
-        let kill_scanner_active = cli.kill_scanner(config);
+        // 17a-17b. Security detectors, the kill worker and the alert engine.
+        let engines = build_detection_engines(&cli, config, kill_worker, transmit_permit);
 
-        // Targeted-kill directives (-K). Already validated in Cli::validate();
-        // reparse here and skip (loudly) any that somehow fail so a bad entry
-        // can't take the whole run down mid-capture.
-        let kill_targets: Vec<sec::scanner_kill::KillTarget> = cli
-            .security_args
-            .kill_target
-            .iter()
-            .filter_map(|spec| match sec::scanner_kill::KillTarget::parse(spec) {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    tracing::error!("Ignoring invalid --kill-target '{spec}': {e}");
-                    None
-                }
-            })
-            .collect();
-        // The kill worker is needed whenever we may emit a kill response —
-        // detection-driven (--kill-scanner) OR targeted (-K) — and permitted
-        // only when this run watches a live source. `transmit_permit` is None
-        // for a capture file, and the worker's constructor takes one by value,
-        // so an offline run cannot start a transmitting worker at all. The
-        // operator was told why in `bootstrap::plan`; detection, alerting,
-        // `--fail2ban` output and reporting all continue below.
-        let kill_worker_active =
-            (kill_scanner_active || !kill_targets.is_empty()) && transmit_permit.is_some();
-
-        // Deliberately NOT armed by `--fail2ban` alone. The obvious wiring —
-        // "the flag feeds a banning tool, so give it a detector" — was measured
-        // on a real carrier trunk and produces 7008 detections naming 180
-        // peers, because the behavioral signature counts OPTIONS and the
-        // busiest "scanners" are the carrier's own PBXes sending keepalives
-        // (2713 from one peer in 11 seconds). That is the same mass-ban as the
-        // blanket emission this replaced, only wearing the authority of a real
-        // detection. Arm it once the signature can tell a keepalive from an
-        // enumeration; until then `--fail2ban` warns rather than lying.
-        let scanner_detector = if kill_scanner_active {
-            let custom = cli
-                .security_args
-                .kill_ua
-                .as_deref()
-                .map(|s| vec![s.to_string()])
-                .unwrap_or_default();
-            // `with_thresholds`, not `new`: the trigger points reach the run
-            // from here or they reach nothing. `ScannerDetector::new` keeps its
-            // compiled-in numbers, which is the shape #68 found six detectors
-            // in — a resolver that passes its own unit test and changes nothing
-            // an operator sees. See the comment on `SipnabMcp::row_cap`.
-            Some(ScannerDetector::with_thresholds(
-                &custom,
-                cli.scanner_thresholds(config),
-            ))
-        } else {
-            None
-        };
-
-        // Built here, ahead of the warning below, because it is one of the
-        // three producers that warning has to consult.
-        let reg_flood_detector = if cli.security_args.reg_flood {
-            Some(RegFloodDetector::with_policy(cli.reg_flood_policy(config)))
-        } else {
-            None
-        };
-
-        // An operator who asked for fail2ban output and gets an empty file will
-        // read it as "nothing attacked me", which is the most dangerous way for
-        // a security tool to be silent. Say so once, at the start -- and only
-        // when it is true: every producer of a jail line is consulted, not the
-        // scanner detector alone, so `--reg-flood --fail2ban` is not told its
-        // log will stay empty and then handed lines for it.
-        if cli.output_args.fail2ban
-            && fail2ban_would_emit_nothing(
-                scanner_detector.is_some(),
-                !kill_targets.is_empty(),
-                reg_flood_detector.is_some(),
-            )
-        {
-            tracing::warn!(
-                "--fail2ban writes scanner and registration-flood detections, but no \
-                 detector is running, so this run will emit nothing. An empty jail log \
-                 means 'nothing was detected', not 'nothing happened'. Add --kill-scanner \
-                 to detect scanners (offline it only reports; it never transmits), \
-                 --kill-ua <substring> to match a specific agent, -K/--kill-target <addr> \
-                 to name one, or --reg-flood to detect registration floods."
-            );
-        }
-
-        // The jail line passes the same origin gate as the kill response: a
-        // HEP sender asserts the inner addresses, so a detection carried by
-        // HEP names whatever source the sender chose, and a ban on that name
-        // is a ban the sender picked. Nothing HEP-origin reaches the log
-        // without the opt-in -- and an operator watching a HEP feed with
-        // --fail2ban would otherwise read the empty file as an all-clear.
-        if cli.output_args.fail2ban
-            && !cli.security_args.hep_allow_kill
-            && (cli.hep_args.hep_listen.is_some() || cli.hep_parse(config))
-        {
-            tracing::warn!(
-                "--fail2ban writes nothing for detections carried by HEP: the inner \
-                 addresses are the sender's claim, and a jail line would ban whatever \
-                 address it chose. Pass --hep-allow-kill to admit them once the feed is \
-                 authenticated (--hep-auth) and trusted."
-            );
-        }
-
-        // 17a-2. The scanner-kill worker process (D16: process isolation).
-        // Started by `bootstrap::launch` in the privileged window -- before
-        // the chroot and the sandboxes, each of which can stop the exec it
-        // needs -- from `bootstrap::kill_worker_wanted` and the same permit. The filter is the backstop for the two rules ever
-        // disagreeing: a worker this run would not use is shut down here
-        // rather than left holding send descriptors.
-        let scanner_kill_handle: Option<ScannerKillHandle> =
-            kill_worker.filter(|_| kill_worker_active);
-        let kill_response_code = cli.kill_response_code(config);
-
-        let fraud_detector = build_fraud_detector(&cli, config);
-
-        let digest_detector = if cli.security_args.digest_leak {
-            Some(DigestLeakDetector::new())
-        } else {
-            None
-        };
-
-        // 17b. Initialize alert engine from --alert rules and --alert-exec,
-        //      falling back to config.security.alert and config.security.alert_exec
-        let effective_alert_sources: &[String] = if cli.security_args.alert.is_empty() {
-            config.security.alert.as_deref().unwrap_or(&[])
-        } else {
-            &cli.security_args.alert
-        };
-        // `--alert` is declared as a CHANNEL flag — "syslog", "json", "exec" —
-        // and every documented example passes a channel name. It used to be fed
-        // straight to `AlertRule::parse`, whose grammar is
-        // `<name>:<threshold>/<window>`, so `--alert syslog` failed to parse,
-        // warned, and enabled nothing. The docs taught it anyway, including a
-        // line claiming it wrote to LOCAL0. For a security path that is the
-        // worst shape of bug: the operator believes alerting is on.
-        //
-        // A bare word is now a channel, as advertised. A value containing ':'
-        // is still parsed as a rule, so anyone who discovered the old grammar
-        // from the source keeps working.
-        let mut alert_channel_syslog = false;
-        let mut alert_channel_json = false;
-        let mut alert_rules: Vec<AlertRule> = Vec::new();
-        for spec in effective_alert_sources.iter() {
-            let value = spec.trim();
-            if value.contains(':') {
-                match AlertRule::parse(value) {
-                    Ok(r) => alert_rules.push(r),
-                    Err(e) => tracing::warn!("Skipping invalid alert rule '{}': {}", value, e),
-                }
-                continue;
-            }
-            match value.to_ascii_lowercase().as_str() {
-                "syslog" => alert_channel_syslog = true,
-                "json" => alert_channel_json = true,
-                // The exec channel is the presence of --alert-exec; naming it
-                // here is accepted so the documented triple all work, but it
-                // cannot invent a command.
-                "exec" => {
-                    if cli.security_args.alert_exec.is_none()
-                        && config.security.alert_exec.is_none()
-                    {
-                        tracing::warn!(
-                            "--alert exec given without --alert-exec <CMD>; no command to run"
-                        );
-                    }
-                }
-                other => tracing::warn!(
-                    "Unknown alert channel '{other}'. Valid channels: syslog, json, exec. \
-                     (A value containing ':' is treated as an alert rule.)"
-                ),
-            }
-        }
-        let effective_alert_exec = cli
-            .security_args
-            .alert_exec
-            .clone()
-            .or(config.security.alert_exec.clone());
-        let mut alert_engine = build_alert_engine(&cli, config, alert_rules, effective_alert_exec);
-        if cli.security_args.syslog || alert_channel_syslog {
-            alert_engine.set_syslog(true);
-        }
-        if cli.security_args.alert_json || alert_channel_json {
-            alert_engine.set_json_output(true);
-        }
-        let alert_engine = Arc::new(RwLock::new(alert_engine));
-
-        let engines = DetectionEngines {
-            scanner: scanner_detector,
-            fraud: fraud_detector,
-            digest: digest_detector,
-            reg_flood: reg_flood_detector,
-            alerts: alert_engine,
-            kill_handle: scanner_kill_handle,
-            kill_response_code,
-            kill_targets,
-        };
-
-        // 17c. Initialize TLS decryptor if --keylog and/or --tls-key is provided
+        // 17c-17f. TLS, SRTP and DTLS-SRTP decryption state.
         #[cfg(feature = "tls")]
-        let mut tls_decryptor: Option<TlsDecryptor> = if cli.tls_args.keylog.is_some()
-            || cli.tls_args.tls_key.is_some()
-            || cli.tls_args.keylog_fd.is_some()
-        {
-            // A source opened in the privileged window supersedes the path:
-            // it is already open, and for a FIFO the path must not be
-            // opened a second time. `--keylog-fd` has no path at all.
-            let preopened = preopened_keylog;
-            let keylog_path = if preopened.is_some() {
-                None
-            } else {
-                cli.tls_args.keylog.as_deref().map(std::path::Path::new)
-            };
-            let crypto = crate::crypto::default_backend();
-            match TlsDecryptor::new(keylog_path, crypto) {
-                Ok(mut d) => {
-                    if let Some(records) = cli.tls_args.tls_lockon_window {
-                        d.set_lockon_window(records);
-                    }
-                    // Only a source that can GROW mid-run makes the
-                    // late-decrypt hold worth paying for: a plain `--keylog`
-                    // file is read once and a record that fails against it now
-                    // fails against it forever.
-                    d.set_keys_may_still_arrive(
-                        cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some(),
-                    );
-                    if let Some(source) = preopened {
-                        d.set_keylog_source(source);
-                        // Drain once, HERE, before a single packet is
-                        // processed. The sweep loop below also polls, but
-                        // an offline replay (`-I`) can read the whole file
-                        // and finish before the first sweep ever runs — so
-                        // relying on the sweep alone made `--keylog-fd`
-                        // load zero keys and decrypt nothing, while
-                        // reporting only that the descriptor was adopted.
-                        match d.poll_keylog_file() {
-                            Ok(0) => {}
-                            Ok(n) => tracing::info!(
-                                "sipnab: TLS decryption active ({n} key(s) from the keylog \
-                                     stream). Decrypted traffic visible in output."
-                            ),
-                            Err(e) => tracing::warn!("Keylog stream read failed: {e}"),
-                        }
-                    }
-                    if d.keylog_entry_count() > 0 {
-                        tracing::info!(
-                            "sipnab: TLS decryption active (keylog loaded). \
-                         Decrypted traffic visible in output."
-                        );
-                    }
-                    // Load the RSA private key for TLS 1.2 RSA-key-exchange decryption.
-                    if let Some(ref keyfile) = cli.tls_args.tls_key {
-                        match crate::capture::rsa_key::RsaKey::from_pem_file(std::path::Path::new(
-                            keyfile,
-                        )) {
-                            Ok(k) => {
-                                d.set_rsa_key(k);
-                                tracing::info!(
-                                    "sipnab: TLS decryption active (--tls-key loaded; \
-                                 decrypts TLS 1.2 RSA-key-exchange handshakes only)."
-                                );
-                            }
-                            Err(e) => {
-                                return Err(crate::app::bootstrap::PlanError {
-                                    exit_code: 1,
-                                    message: format!("Failed to load --tls-key {keyfile}: {e}"),
-                                });
-                            }
-                        }
-                    }
-                    // Published so a server can tell "no keys were supplied"
-                    // from "keys were supplied and opened nothing". Both render
-                    // as `decrypted_records: 0`, and they are opposite findings
-                    // with opposite remedies.
-                    crate::capture::note_tls_decryptor_installed(
-                        d.keylog_entry_count(),
-                        d.report().sessions_with_keys,
-                    );
-                    Some(d)
-                }
-                Err(e) => {
-                    // `{:#}`: the whole chain. `{}` printed only the outermost
-                    // context, "Loading keylog from <path>", which reads the
-                    // same for a typo, a permission problem and a file the
-                    // producer has not written yet.
-                    tracing::error!("Failed to initialize TLS decryptor: {e:#}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Same bound as the packet-level TCP/SIP reassembler
-        // (`PacketProcessor::with_max_sessions`) — one held-partial entry
-        // per concurrent TLS stream direction, same eviction policy.
-        #[cfg(feature = "tls")]
-        let tls_reassembler =
-            crate::capture::tls::TlsRecordReassembler::new(cli.max_reassembly_limit(config));
-
-        // 17d. Feed TLS secrets embedded in a pcapng (Decryption Secrets Block) into
-        // the decryptor, so a self-contained capture decrypts without an external
-        // --keylog. Creates a decryptor on demand when the file carries secrets.
-        //
-        // EVERY file in the set, not `cli.primary_input()`. That returned the
-        // first `-I` ARGUMENT, so with `-I plain.pcapng -I withdsb.pcapng` the
-        // secrets in the SECOND file were never loaded: zero "TLS decryption"
-        // lines, and the run read exactly like a capture that carried no keys.
-        // A directory holding both did the same. Chronological reordering makes
-        // the first argument often not even the first file read (#48).
-        #[cfg(feature = "tls")]
-        for path in &input_files {
-            let shown = path.display();
-            if let Some(ref mut dec) = tls_decryptor {
-                let added = crate::capture::decrypt::feed_embedded_secrets(path, dec);
-                if added > 0 {
-                    tracing::info!("TLS decryption: +{added} embedded DSB secret(s) from {shown}");
-                }
-            } else if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path)
-                && !meta.tls_secrets.is_empty()
-                && let Ok(mut d) = TlsDecryptor::new(None, crate::crypto::default_backend())
-            {
-                let added: usize = meta.tls_secrets.iter().map(|s| d.add_keylog_text(s)).sum();
-                if added > 0 {
-                    tracing::info!(
-                        "TLS decryption active: {added} secret(s) from embedded DSB in {shown}"
-                    );
-                    // Same publication as the keylog path above. Reached only
-                    // when the embedded DSB block actually yielded secrets --
-                    // a probe decryptor that found none is dropped without
-                    // being announced, because it decrypted nothing and
-                    // announcing it would read as a failed attempt.
-                    crate::capture::note_tls_decryptor_installed(
-                        d.keylog_entry_count(),
-                        d.report().sessions_with_keys,
-                    );
-                    tls_decryptor = Some(d);
-                }
-            }
-        }
-
-        // 17e. Initialize the SRTP decryption context from --srtp-keys (and, later,
-        // SDES `a=crypto` lines fed in as SDP is parsed). Authenticated RTP payloads
-        // are decrypted in place before stream/audio analysis.
-        #[cfg(feature = "tls")]
-        let srtp_context: Option<crate::rtp::srtp::SrtpContext> =
-            if let Some(ref keyfile) = cli.tls_args.srtp_keys {
-                match crate::rtp::srtp::SrtpContext::from_key_file(
-                    std::path::Path::new(keyfile),
-                    crate::crypto::default_backend(),
-                ) {
-                    Ok(ctx) => {
-                        tracing::info!(
-                            "SRTP decryption active: {} key(s) from {keyfile}",
-                            ctx.key_count()
-                        );
-                        // A WARNING, not only the info line above: a manual key
-                        // file is a testing and debugging aid, and a run at the
-                        // warn level (`-q`) must still say that hand-supplied
-                        // key material is in use.
-                        tracing::warn!(
-                            "manual SRTP keys loaded from {keyfile} — use only in test environments"
-                        );
-                        Some(ctx)
-                    }
-                    Err(e) => {
-                        return Err(crate::app::bootstrap::PlanError {
-                            exit_code: 1,
-                            message: format!("Failed to load --srtp-keys {keyfile}: {e}"),
-                        });
-                    }
-                }
-            } else {
-                // No key file, but SDES keys may still arrive via SDP — start empty
-                // and let `add_sdes` populate it as `a=crypto` lines are seen.
-                Some(crate::rtp::srtp::SrtpContext::new(
-                    Vec::new(),
-                    crate::crypto::default_backend(),
-                ))
-            };
-
-        // 17f. Initialize the DTLS-SRTP extractor from --dtls-keylog. It recovers
-        // SRTP master keys from the DTLS handshake (RFC 5764 exporter) and feeds
-        // them into the SRTP context as handshakes are observed.
-        #[cfg(feature = "tls")]
-        let dtls_extractor: Option<crate::capture::dtls::DtlsSrtpExtractor> =
-            if let Some(ref keylog) = cli.tls_args.dtls_keylog {
-                match crate::capture::dtls::DtlsSrtpExtractor::from_keylog_file(
-                    std::path::Path::new(keylog),
-                    crate::crypto::default_backend(),
-                ) {
-                    Ok(ex) => {
-                        tracing::info!(
-                            "DTLS-SRTP active: {} keylog entr(ies) from {keylog}",
-                            ex.keylog_len()
-                        );
-                        Some(ex)
-                    }
-                    Err(e) => {
-                        return Err(crate::app::bootstrap::PlanError {
-                            exit_code: 1,
-                            message: format!("Failed to load --dtls-keylog {keylog}: {e}"),
-                        });
-                    }
-                }
-            } else {
-                None
-            };
+        let MediaDecryption {
+            tls_decryptor,
+            tls_reassembler,
+            srtp_context,
+            dtls_extractor,
+        } = MediaDecryption::load(&cli, config, preopened_keylog, &input_files)?;
 
         // Actions, with their journal, before any server listens: a journal
         // that cannot be used refuses the run here.
@@ -3196,35 +3564,7 @@ impl BatchRunner {
             &dialog_store,
             &stream_store,
             Some(&engines.alerts),
-            crate::app::servers::Selection {
-                evidence_ring: evidence_ring.clone(),
-                mcp_tools: cli.mcp_tool_selection(config).unwrap_or_default(),
-                mcp_output_schemas: cli.mcp_output_schemas(config),
-                api_allowed_hosts: cli.api_allowed_hosts(config),
-                api_tls: cli.api_tls_files(config),
-                mcp_tls: cli.mcp_tls_files(config),
-                metrics_tls: cli.metrics_tls_files(config),
-                mcp_row_cap: cli.mcp_row_cap(config),
-                mcp_body_cap: cli.mcp_body_cap(config),
-                mcp_wait_seconds: cli.mcp_wait_cap(config),
-                api_row_cap: cli.api_row_cap(config),
-                api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
-                max_tracked_peers: cli.tracked_peer_capacity(config),
-                metrics_max_conn: cli.metrics_conn_cap(config),
-                actions: actions.clone(),
-                mcp_max_findings: cli.mcp_findings_cap(config),
-                tfps: cli.tfps_locator(config),
-                api: true,
-                mcp: true,
-                // The whole point of #159: headless is where --metrics is
-                // actually used, and it was the one path that never started it.
-                metrics: true,
-                // What `security_findings` reports as `armed_kinds`. Taken from
-                // the detectors this run built, so an agent reading an empty
-                // findings list can tell "nothing was watching" from "the
-                // traffic was clean".
-                armed_detections: engines.armed_kinds(),
-            },
+            server_selection(&cli, config, evidence_ring.clone(), &actions, &engines),
             // Captured above, before the reconciler moved to its own thread.
             // `None` here is what makes `query_relay` (and GET /v1/relay/...)
             // refuse: on a file-backed run no permit exists to capture.
@@ -3242,17 +3582,7 @@ impl BatchRunner {
             message: e.to_string(),
         })?;
 
-        // Fail before the first packet: an operator who mistyped the path
-        // should learn now, not after an hour of capture and a lost finding.
-        let evidence = match cli.security_args.evidence_out.as_deref() {
-            None => None,
-            Some(target) => Some(sec::evidence::EvidenceSink::open(target).map_err(|e| {
-                crate::app::bootstrap::PlanError {
-                    exit_code: 2,
-                    message: format!("--evidence-out {target}: {e}"),
-                }
-            })?),
-        };
+        let evidence = open_evidence_sink(&cli)?;
         Ok(Self {
             cli,
             config: config.clone(),
@@ -3320,826 +3650,71 @@ impl BatchRunner {
     /// final flush (code 1) — the last of which previously logged and exited
     /// 0, so a capture truncated by ENOSPC reported success.
     fn run_loop(
-        self,
+        mut self,
         capture_config: CaptureConfig,
         handle: capture::CaptureHandle,
         rx: capture::channel::PacketRx,
     ) {
-        let BatchRunner {
-            cli,
-            config,
-            matcher,
-            filter_expr,
-            vcon_filter_expr,
-            output_opts,
-            mut event_exec,
-            mut writer,
-            input_files,
-            use_pcapng,
-            export_mode,
-            #[cfg(feature = "hep")]
-            hep_sender,
-            mut processor,
-            evidence_ring,
-            dialog_store,
-            stream_store,
-            mut rtp_heuristic,
-            no_rtp,
-            mut engines,
-            #[cfg(feature = "tls")]
-            mut tls_decryptor,
-            #[cfg(feature = "tls")]
-            mut tls_reassembler,
-            #[cfg(feature = "tls")]
-            mut srtp_context,
-            #[cfg(feature = "tls")]
-            mut dtls_extractor,
-            servers,
-            actions,
-            policy,
-            relay_orphans,
-            relay_thread,
-            relay_poll_shutdown,
-            relay_poll_thread,
-            evidence,
-        } = self;
-        // Reused across packets so the hand-off costs no allocation per packet.
-        let mut new_orphans: Vec<(std::net::IpAddr, u16)> = Vec::new();
-
-        // Set when writing the -O output fails. The open path a few hundred
-        // lines below exits 1; the write and final-flush paths only logged,
-        // so a capture truncated by ENOSPC reported success and any
-        // `sipnab -O out.pcap && next-step` pipeline ran on partial data.
-        let mut output_failed = false;
-        // `--pcap-export-mode decrypted` (PCAPX-DEC): `-O` goes through a short
-        // reorder buffer that rewrites what sipnab decrypted as plaintext.
-        #[cfg(feature = "tls")]
-        let mut decrypted_export = (export_mode == PcapExportMode::Decrypted
-            && cli.capture_args.output.is_some())
-        .then(|| {
-            capture::decrypted_export::DecryptedExport::new(
-                capture::decrypted_export::reorder_window(),
-                capture::decrypted_export::REORDER_BYTE_CAP,
-            )
-        });
-        // Set when the capture thread ends in an error or a panic, i.e. the
-        // input was not read to the end. Separate from `output_failed` so the
-        // two causes stay distinguishable in the code even though both land on
-        // the same exit status: one means "what we read was not written", the
-        // other "what we wrote was not all there was to read".
-        let mut capture_failed = false;
-        let split_bytes = policy.split_bytes;
-        let split_duration = policy.split_duration;
-        let split_keep = policy.split_keep;
-        let portrange = policy.portrange;
-        let autostop_duration = policy.autostop_duration;
-        let autostop_filesize_bytes = policy.autostop_filesize_bytes;
-
-        // --after / -A trailing context counter
-        let after_count = cli.output_args.after.unwrap_or(0);
+        let mut lp = ReceiveLoop::new(&mut self);
 
         // Taken before `rx` is dropped at the end of the loop: the meter is
         // where a HEP listener hangs its sender roster, and `--hep-senders`
         // reads it once the capture has drained.
         let capture_meter = rx.meter();
 
-        let batch_ctx = BatchContext {
-            matcher: &matcher,
-            filter_expr: &filter_expr,
-            output_opts: &output_opts,
-            cli: &cli,
-            no_rtp,
-            after_count,
-            portrange,
-        };
-
-        // --group-by buffers per-message output and replays it grouped once the
-        // capture ends (see output::group for why it cannot stream, and for the
-        // caps that keep an attacker-keyed map bounded). None = stream as usual.
-        let mut group_buf = cli
-            .output_args
-            .group_by
-            .as_deref()
-            .and_then(|f| output::group::GroupField::parse(f).ok())
-            .map(|f| output::group::GroupBuffer::new(f, cli.group_caps(&config)));
-
-        // Wall time for a live device, the capture's own timeline for `-I`.
-        // See `SweepClock` for why the two cannot share one rule.
-        let mut sweep_clock = SweepClock::new(cli.has_input());
-        let sweep_interval = SWEEP_INTERVAL;
-        // What the live vCon export has written so far. `None` unless this is
-        // a live run with `--export-vcon-when` or `--export-vcon`; see
-        // `Cli::exports_vcon_live`.
-        #[cfg(feature = "vcon")]
-        let mut live_vcon = cli.exports_vcon_live().then(LiveVconTracker::default);
-        // --keylog-watch's own cadence — real wall time via Instant, not
-        // sweep_clock. sweep_clock advances from packet timestamps, so on a
-        // quiet link it never advances at all; the packet that matters is an
-        // INVITE arriving after silence, and it needs the key already loaded
-        // before it arrives, not in response to it. 100ms bounds the miss
-        // window to a tenth of the old 5s sweep tie-in while keeping keylog
-        // reads off the per-packet hot path (unbounded there, this is one
-        // syscall per ~100ms wall time regardless of packet rate, not one
-        // per packet against a stated >=100K pps target).
-        #[cfg(feature = "tls")]
-        let mut keylog_poll_clock = std::time::Instant::now();
-        #[cfg(feature = "tls")]
-        let keylog_poll_interval = std::time::Duration::from_millis(100);
-        // How much detector state each sweep keeps. Derived from the widest
-        // window this run's detectors were given rather than fixed, because
-        // the sweep is what ages that state out: a constant here caps every
-        // detector window at the constant, so declaring a fifteen-minute
-        // wangiri window would buy a two-minute one.
-        let security_max_age = cli.security_sweep_max_age(&config);
-
-        // Shared buffered stdout sink for every per-message emitter (JSON,
-        // text, fail2ban, hexdump). Flushed whenever the packet
-        // channel goes idle — live output stays real-time — and at end of
-        // capture; `--line-buffer` flushes after every message.
-        let mut sink = output::BatchSink::stdout(cli.output_args.line_buffer);
-
-        // Carries a packet's output, alerts and hook commands OUT of the
-        // section that holds both store write locks, so the syscalls they
-        // imply — `fork`/`exec` above all — happen with no lock held. Built
-        // once and reused, so its buffers are allocated once for the run.
-        // See `DeferredEffects`.
-        let mut effects = DeferredEffects::new();
-        effects.evidence = evidence;
-
         // 18. Main receive loop
-        let start = std::time::Instant::now();
-        let mut total_count: u64 = 0;
-        // Set once the capture channel closes, so the end-of-input release
-        // runs exactly once.
-        let mut input_ended = false;
-        let mut counters = PacketCounters {
-            sip_count: 0,
-            rtp_count: 0,
-            prev_timestamp: None,
-            trailing_remaining: 0,
-            followed_dialogs: std::collections::HashSet::new(),
-            dtmf_count: 0,
-            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
-        };
-
-        loop {
-            if signals::shutdown_requested() {
-                break;
-            }
-
-            // The stdio MCP client owns this process's lifetime, and a LIVE
-            // capture has to check that here rather than after the loop.
-            //
-            // A file capture drains and the channel disconnects, so the loop
-            // breaks on its own and reaches the keep-alive loop below, which
-            // polls the same flag. A live capture never disconnects: the only
-            // other exit is a signal. So a client that closed stdin -- which is
-            // exactly how an MCP client shuts a stdio server down -- left the
-            // process running, still capturing, until someone killed it by
-            // hand. Every connect leaked another one.
-            //
-            // Checked before the recv rather than after, so a silent link
-            // (no packets, recv timing out) still notices the client is gone.
-            //
-            // `request_shutdown` rather than a bare `break`: the live capture
-            // thread is still blocked in libpcap and only stops when it sees
-            // this flag (capture/live.rs). Breaking alone left the loop and
-            // then blocked forever joining that thread -- the process still
-            // did not exit, it just stopped reading. Routing through the
-            // shutdown flag makes a vanished client take the identical path
-            // SIGTERM already takes, which is the path that is known to work.
-            if mcp_stdio_client_gone(servers.as_ref().and_then(|s| s.mcp_stdio_done.as_ref())) {
-                tracing::info!("MCP client disconnected — shutting down");
-                signals::request_shutdown();
-                break;
-            }
-
-            // Periodic sweep of reassembly state and idle-dialog compaction
-            // (every 5 seconds of capture time, which is wall time only when
-            // live). Orphan status is not swept: it is derived from
-            // `associated_dialog` at every read — see
-            // [`crate::rtp::stream::RtpStream::orphaned`].
-            if let Some(now) = sweep_clock.take_due(sweep_interval) {
-                processor.sweep();
-                let compacted = sweep_dialog_store(&dialog_store, now.get(), |ds| {
-                    #[cfg(feature = "vcon")]
-                    if let Some(tracker) = live_vcon.as_mut() {
-                        let ss = stream_store.read();
-                        let gate = servers.as_ref().map(|s| s.persistence_gate.as_ref());
-                        live_vcon_sweep(
-                            &cli,
-                            vcon_filter_expr.as_ref(),
-                            CaptureRead {
-                                dialogs: ds,
-                                streams: &ss,
-                                frames_read: total_count,
-                            },
-                            gate,
-                            tracker,
-                            now.get(),
-                        );
-                    }
-                    #[cfg(not(feature = "vcon"))]
-                    let _ = ds;
-                });
-                if compacted.messages_evicted > 0 {
-                    tracing::debug!(
-                        "idle-dialog compaction: dropped {} messages from {} dialogs",
-                        compacted.messages_evicted,
-                        compacted.dialogs_compacted
-                    );
-                }
-                if let Some(det) = engines.scanner.as_mut() {
-                    det.sweep(security_max_age);
-                }
-                if let Some(det) = engines.fraud.as_mut() {
-                    det.sweep(security_max_age);
-                }
-                if let Some(det) = engines.reg_flood.as_mut() {
-                    det.sweep(security_max_age);
-                    // Refresh what the detector says it cannot see, so the
-                    // MCP and REST findings pages carry it on a live run too.
-                    // Filed rather than logged: it is a standing condition,
-                    // not an event, and a log line every five seconds is noise.
-                    let gap = det.observation_gap(false);
-                    engines.alerts.write().set_observation_gap("reg_flood", gap);
-                }
-            }
-
-            // --keylog-watch: poll for new keys in the keylog source, on its
-            // own ~100ms wall-clock cadence (keylog_poll_clock above) rather
-            // than tied to the 5-second reassembly/dialog sweep. A fast SIP
-            // call (INVITE..ACK in well under 5s) can complete before that
-            // sweep ever runs again, so a key that arrived mid-call was not
-            // read until the call was already over — sipnab would log the
-            // session as "ready" and never decrypt a single message from it.
-            //
-            // `--keylog-fd` implies the watch. A descriptor handed over by a
-            // live producer has nothing to read at startup and everything
-            // to read later, so requiring a second flag to look at it would
-            // make the obvious invocation load no keys at all and say
-            // nothing — the failure this area has already been bitten by.
-            #[cfg(feature = "tls")]
-            if keylog_poll_clock.elapsed() >= keylog_poll_interval
-                && (cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some())
-                && let Some(ref mut decryptor) = tls_decryptor
-            {
-                keylog_poll_clock = std::time::Instant::now();
-                if let Err(e) = decryptor.poll_keylog_file() {
-                    tracing::debug!("Keylog poll error: {e}");
-                }
-            }
-
-            // Use recv_timeout so we can check shutdown periodically. Flush
-            // pending output first whenever the channel has gone idle, so a
-            // quiet live capture never sits on buffered messages.
-            if rx.is_empty() {
-                sink.flush();
-            }
-            let received = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(pkt) => Some(pkt),
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                // The input ended. One more pass carries what only its end
-                // could release -- a TCP message held behind a hole the capture
-                // never filled -- through the same per-packet body below; the
-                // pass after that leaves.
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) if !input_ended => {
-                    input_ended = true;
-                    None
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            };
-            let parsed_packets = match received {
-                None => {
-                    // A WebSocket frame begun in a decrypted record and never
-                    // finished is counted, never dropped in silence.
-                    #[cfg(feature = "tls")]
-                    for e in tls_reassembler.finish_websocket() {
-                        crate::capture::record_undecodable(
-                            &e,
-                            crate::capture::FrameFacts::UNRECORDED,
-                        );
-                    }
-                    processor.finish()
-                }
-                Some(packet) => {
-                    // Offline, this packet's timestamp is what "now" means to the next
-                    // sweep. Recorded before any parse/filter step so that a capture of
-                    // traffic sipnab does not decode still advances the clock — the
-                    // alternative would stall compaction on exactly the captures whose
-                    // memory growth it exists to bound.
-                    sweep_clock.observe(packet.timestamp);
-
-                    // Lazily initialize the writer on first packet (we need link_type)
-                    if writer.is_none()
-                        && let Some(ref output_path) = cli.capture_args.output
-                    {
-                        // Record the capture source as the pcapng interface name (SNB-0001):
-                        // the capture device for live, the input file for replay.
-                        let capture_source =
-                            cli.capture_args.device.as_deref().or(cli.primary_input());
-                        // A decrypted export says so in its section comment.
-                        #[cfg(feature = "tls")]
-                        let section_note = (export_mode == PcapExportMode::Decrypted)
-                            .then(|| capture::decrypted_export::SECTION_NOTE.to_string());
-                        #[cfg(not(feature = "tls"))]
-                        let section_note: Option<String> = None;
-                        match PcapWriter::with_provenance(
-                            &PathBuf::from(output_path),
-                            packet.link_type,
-                            crate::capture::PcapWriterOptions {
-                                max_file_bytes: split_bytes,
-                                max_file_duration: split_duration,
-                                pcapng: use_pcapng,
-                                export_mode,
-                                interface: capture_source,
-                                provenance: section_note,
-                            },
-                        )
-                        .map(|w| w.keep_last_splits(split_keep))
-                        {
-                            Ok(mut w) => {
-                                // Write DSB with keylog content if mode requires it
-                                if let Some(ref keylog_path) = cli.tls_args.keylog
-                                    && let Err(e) =
-                                        w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
-                                {
-                                    tracing::warn!("Failed to write DSB: {e:#}");
-                                }
-                                // Embed a Name Resolution Block when name resolution is active
-                                // (SNB-0001): headless `--names`/`--resolve` should travel with
-                                // the capture, mirroring the TUI save path. Before packets.
-                                if use_pcapng {
-                                    let (resolver, mode) =
-                                        crate::app::build_resolver(&cli, &config);
-                                    if mode != crate::names::NameMode::Off {
-                                        let include_dns = mode == crate::names::NameMode::Dns;
-                                        let entries = resolver.nrb_entries(include_dns);
-                                        if let Err(e) = w.write_name_resolution_block(&entries) {
-                                            tracing::warn!(
-                                                "Failed to write name resolution block: {e:#}"
-                                            );
-                                        }
-                                    }
-                                }
-                                writer = Some(w);
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "{}",
-                                    crate::capture::writer::describe_output_error(
-                                        &e,
-                                        crate::privilege::dropped_to()
-                                    )
-                                );
-                                crate::capture::archive::release_run_and_exit(1);
-                            }
-                        }
-                    }
-
-                    // Write to output pcap if configured. A decrypted export holds
-                    // the packet instead, and writes it once its wait is over.
-                    #[cfg(feature = "tls")]
-                    let held = match decrypted_export.as_mut() {
-                        Some(x) if writer.is_some() => {
-                            x.captured(&packet);
-                            true
-                        }
-                        _ => false,
-                    };
-                    #[cfg(not(feature = "tls"))]
-                    let held = false;
-                    if !held
-                        && let Some(ref mut w) = writer
-                        && let Err(e) = w.write(&packet)
-                    {
-                        tracing::error!(
-                            "Failed to write packet: {}",
-                            crate::capture::writer::describe_output_error(
-                                &e,
-                                crate::privilege::dropped_to()
-                            )
-                        );
-                        // Failing to OPEN the output exits 1 a few lines above; failing
-                        // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
-                        // out.pcap` proceeded on a truncated capture.
-                        output_failed = true;
-                        break;
-                    }
-
-                    total_count += 1;
-
-                    // Retain the raw frame when an operator asked for a window into
-                    // live capture. Only for sources that cannot be re-read: a capture
-                    // file can be seeked, so spending memory to hold its bytes buys
-                    // nothing a second read would not give for free.
-                    if let Some(ring) = evidence_ring.as_ref()
-                        && let Some(origin) = packet.origin
-                        && !origin.verifiable
-                        && let Some(source) = packet.interface.as_ref()
-                        && let Some(source) = crate::capture::packet::intern_source(source)
-                    {
-                        ring.write()
-                            .insert(source, origin.ordinal, packet.data.clone());
-                    }
-
-                    // Parse and reassemble the packet
-                    processor.process(&packet)
-                }
-            };
-            for pp in &parsed_packets {
-                // --hep-parse: unwrap HEP-encapsulated packets, by the rule
-                // every router applies. `None` is a HEP datagram whose
-                // transport no rule names, already counted.
-                let Some(hep_unwrapped) =
-                    crate::pipeline::apply_hep_parse(pp, cli.hep_parse(&config))
-                else {
-                    continue;
-                };
-                let pp: &ParsedPacket = &hep_unwrapped;
-
-                // Port range filtering only applies to SIP detection — RTP uses
-                // dynamic ports negotiated via SDP and must not be filtered here.
-                // The filter is applied inside process_parsed_packet for SIP only.
-
-                // Attempt TLS decryption for TCP payloads when --keylog is active.
-                // Zero, one, or more synthetic packets: a TLS record spans more
-                // than one captured packet often enough (large INVITE bodies
-                // among them — see `TlsRecordReassembler`) that this can yield
-                // more than one decrypted SIP message from a single incoming
-                // packet, and can just as easily yield none yet while a record
-                // is still incomplete.
-                #[cfg(feature = "tls")]
-                let effective_pps = {
-                    let tls_yield = try_tls_decrypt(pp, &mut tls_decryptor, &mut tls_reassembler);
-                    if let Some(x) = decrypted_export.as_mut() {
-                        for d in tls_yield.recovered.iter().chain(tls_yield.decrypted.iter()) {
-                            x.sip_decrypted(
-                                std::net::SocketAddr::new(d.src_addr, d.src_port),
-                                std::net::SocketAddr::new(d.dst_addr, d.dst_port),
-                                d.timestamp,
-                                &d.payload,
-                                if d.transport == TransportProto::Wss {
-                                    capture::decrypted_export::Source::Wss
-                                } else {
-                                    capture::decrypted_export::Source::Tls
-                                },
-                            );
-                        }
-                    }
-                    packets_after_tls(pp, tls_yield)
-                };
-
-                #[cfg(not(feature = "tls"))]
-                let effective_pps: SmallVec<
-                    [std::borrow::Cow<'_, ParsedPacket>; 1],
-                > = smallvec::smallvec![std::borrow::Cow::Borrowed(pp)];
-
-                for effective_pp in effective_pps.iter().map(|p| p.as_ref()) {
-                    // Acquire write locks once per packet. The locks are uncontested
-                    // in the no-API case; with --api, the API thread briefly waits
-                    // for in-flight per-packet processing to finish.
-                    //
-                    // Nothing that can block belongs in this scope. Everything that
-                    // used to — both `sh -c` spawn sites, the alert engine's own
-                    // lock, and the stdout writes — is queued into `effects` (and
-                    // into the event-exec engine's pending queue) and replayed
-                    // immediately below, with the guards gone.
-                    {
-                        let mut ds_guard = dialog_store.write();
-                        let mut ss_guard = stream_store.write();
-                        let mut proc_state = ProcessingState {
-                            dialog_store: &mut ds_guard,
-                            stream_store: &mut ss_guard,
-                            rtp_heuristic: &mut rtp_heuristic,
-                            event_exec: &mut event_exec,
-                            #[cfg(feature = "tls")]
-                            srtp: srtp_context.as_mut(),
-                            #[cfg(feature = "tls")]
-                            dtls: dtls_extractor.as_mut(),
-                            #[cfg(feature = "tls")]
-                            export: decrypted_export.as_mut(),
-                            group: group_buf.as_mut(),
-                        };
-                        process_parsed_packet(
-                            effective_pp,
-                            &batch_ctx,
-                            &mut proc_state,
-                            &mut engines,
-                            &mut counters,
-                            &mut effects,
-                        );
-                        // RE4's second trigger, drained under the guard this
-                        // scope already holds. Offering happens BELOW, with
-                        // the guards gone: the reconciler takes this same lock
-                        // to apply what it learns, and nothing that waits on
-                        // another thread belongs in here.
-                        if relay_orphans.is_some() {
-                            new_orphans = ss_guard.drain_new_orphan_sockets();
-                        }
-                    }
-
-                    // Hand off anything the packet just created that nothing
-                    // explains. `offer` never blocks -- a full queue drops and
-                    // counts rather than stalling the capture on a relay.
-                    if let Some(ref sink) = relay_orphans {
-                        for (address, port) in new_orphans.drain(..) {
-                            sink.offer(address, port);
-                        }
-                    }
-
-                    // Both store guards have dropped. Replay what the packet
-                    // queued, in the order it was raised: output, then alert
-                    // findings, then the hook commands. Draining per packet —
-                    // rather than per batch, or at end of capture — is what keeps
-                    // ordering identical to emitting inline.
-                    effects.drain(&mut sink, &engines.alerts, &mut event_exec);
-
-                    // --hep-send: SIP as protocol type 1, RTCP as type 5,
-                    // nothing else. What is stamped and what is skipped is
-                    // decided in `HepSender::forward_parsed`, where a test can
-                    // reach it.
-                    #[cfg(feature = "hep")]
-                    if let Some(ref sender) = hep_sender
-                        && let Err(e) = sender.forward_parsed(effective_pp)
-                    {
-                        tracing::debug!("HEP forward failed: {e:#}");
-                    }
-                }
-            }
-
-            // The decrypted export: write what has waited long enough.
-            #[cfg(feature = "tls")]
-            if let (Some(x), Some(w)) = (decrypted_export.as_mut(), writer.as_mut()) {
-                for frame in x.ready() {
-                    if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
-                        tracing::error!(
-                            "Failed to write packet: {}",
-                            crate::capture::writer::describe_output_error(
-                                &e,
-                                crate::privilege::dropped_to()
-                            )
-                        );
-                        output_failed = true;
-                        break;
-                    }
-                }
-            }
-
-            // Check --count limit
-            if let Some(max_count) = capture_config.count
-                && total_count >= max_count
-            {
-                break;
-            }
-
-            // Check --duration limit
-            if let Some(duration) = capture_config.duration
-                && start.elapsed() >= duration
-            {
-                break;
-            }
-
-            // Check --autostop duration
-            if let Some(autostop_dur) = autostop_duration
-                && start.elapsed() >= autostop_dur
-            {
-                tracing::info!("Autostop: duration limit reached ({autostop_dur:?})");
-                break;
-            }
-
-            // Check --autostop filesize
-            if let Some(max_bytes) = autostop_filesize_bytes
-                && let Some(ref w) = writer
-                && w.bytes_written() >= max_bytes
-            {
-                tracing::info!(
-                    "Autostop: filesize limit reached ({} MiB)",
-                    max_bytes / crate::capture::writer::BYTES_PER_MIB
-                );
-                break;
-            }
-        }
+        while self
+            .receive_step(&mut lp, &capture_config, &rx)
+            .is_continue()
+        {}
 
         // Read once, here, before anything below can ask for a shutdown of its
         // own: a live run stopped by a signal (or by its MCP client going
         // away) writes no vCon at its end. See `VconRunEnd::Stopped`.
         #[cfg(feature = "vcon")]
+        let live_vcon = lp.live_vcon.take();
+        #[cfg(feature = "vcon")]
         let vcon_end = vcon_run_end(live_vcon.as_ref(), signals::shutdown_requested());
         #[cfg(not(feature = "vcon"))]
         let vcon_end = VconRunEnd::Whole;
 
-        // A no-op today — every packet drains before the loop can break — and
-        // kept because the cost of being wrong is silent data loss. A future
-        // `break` added inside the per-packet body would otherwise discard that
-        // packet's output, its findings and its hook commands with no error
-        // anywhere, which is the failure this whole area exists to remove.
-        effects.drain(&mut sink, &engines.alerts, &mut event_exec);
-
-        // Replay any --group-by buffer before draining, so grouped output lands
-        // ahead of reports exactly where the streamed output would have.
-        if let Some(ref mut buf) = group_buf {
-            if buf.truncated() {
-                tracing::warn!("{}", buf.truncation_note());
-            }
-            let machine_readable =
-                cli.output_args.json || cli.output_args.json_pretty || cli.output_args.fail2ban;
-            for (header, chunks) in buf.drain() {
-                // Headers are for humans; machine formats stay parseable, where
-                // the grouping is the contiguity of the records themselves.
-                if let Some(h) = header
-                    && !machine_readable
-                {
-                    sink.write_str(&format!("\n── {h} ──\n"));
-                }
-                for chunk in chunks {
-                    sink.write_str(&chunk);
-                }
-            }
-        }
-
-        // Drain the per-message output sink before anything else writes to
-        // stdout (reports, wireshark/tshark lines), preserving output order.
-        sink.flush();
-
-        // A write that failed for any reason other than a closed pipe means the
-        // emitted output is incomplete — same class as a truncated -O file, and
-        // it must not exit 0 either.
-        if let Some(e) = sink.hard_error() {
-            tracing::error!("Failed to write output: {e}");
-            output_failed = true;
-        }
-
-        // The decrypted export's held frames: a stop discards them (stop means
-        // stop), the end of the input writes them. Then the counts, once.
-        #[cfg(feature = "tls")]
-        if let Some(mut x) = decrypted_export.take() {
-            if signals::shutdown_requested() {
-                x.discard();
-            } else if let Some(ref mut w) = writer {
-                for frame in x.finish() {
-                    if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
-                        tracing::error!(
-                            "Failed to write packet: {}",
-                            crate::capture::writer::describe_output_error(
-                                &e,
-                                crate::privilege::dropped_to()
-                            )
-                        );
-                        output_failed = true;
-                        break;
-                    }
-                }
-            }
-            stderr_line!("sipnab: {}", x.counts().summary_line());
-        }
-
-        // Flush the output writer explicitly: BufWriter's Drop discards
-        // flush errors, so without this an ENOSPC at end of capture would
-        // truncate the file silently with exit code 0.
-        if let Some(ref mut w) = writer
-            && let Err(e) = w.finish()
-        {
-            tracing::error!("Output file may be incomplete: {e:#}");
-            output_failed = true;
-        }
+        self.flush_run_output(&mut lp);
 
         // The capture is over, so nothing more can answer an open REGISTER:
         // settle what `--reg-flood` could not establish, file it for the
-        // findings pages, and say it once. A warning rather than a finding —
-        // it names no source and reaches no jail, because a REGISTER count
-        // with no outcome behind it is a volume, and the detector refuses to
-        // act on volume.
-        if let Some(det) = engines.reg_flood.as_mut() {
-            let gap = det.observation_gap(true);
-            if let Some(gap) = &gap {
-                tracing::warn!("{}", gap.detail);
-            }
-            engines.alerts.write().set_observation_gap("reg_flood", gap);
-        }
-
-        // 19. Shut down scanner-kill worker (D16)
-        if let Some(ref mut kill_handle) = engines.kill_handle {
-            kill_handle.shutdown();
-        }
-
-        // 19a. Stop the rtpengine reconciler (RE4). Dropping the sink closes
-        //      the hand-off queue, which is what ends its loop -- there is no
-        //      flag to set and no timeout to wait out. Joining lets its
-        //      summary line print, and it happens HERE rather than at the end
-        //      of the function because the reporting below can exit the
-        //      process outright.
-        drop(relay_orphans);
-        if let Some(join) = relay_thread
-            && join.join().is_err()
-        {
-            tracing::warn!("the rtpengine reconciler thread panicked");
-        }
-
-        // The stats poller (C5) stops the same way: dropping its shutdown sender
-        // closes the channel its loop waits on, so `recv_timeout` returns at
-        // once rather than sleeping out the interval. Joined here, beside the
-        // reconciler, because the reporting below can exit the process.
-        drop(relay_poll_shutdown);
-        if let Some(join) = relay_poll_thread
-            && join.join().is_err()
-        {
-            tracing::warn!("the relay statistics poll thread panicked");
-        }
+        // findings pages, and say it once.
+        self.settle_reg_flood_gap();
+        self.stop_workers();
 
         // 20. Wait for the capture thread to finish
         //     Drop rx first so the capture thread sees a disconnected channel
         drop(rx);
         // A capture thread that returned Err did NOT read its input to the end,
-        // so every report below is drawn from a partial view. Both failure arms
-        // used to log and fall through to exit 0, which made the run
-        // indistinguishable from a complete one to anything reading `$?`.
-        //
-        // The concrete case that found this: a BPF filter that compiles against
-        // the first file of a set and not against a later one. `capture_files`
-        // returns Err naming the file, the warn! below swallowed it, and the run
-        // printed a whole-looking summary and exited 0 — while `--cores` on the
-        // same input exited 1. Two answers to one question, and the reassuring
-        // one was the default path.
-        //
-        // A clean shutdown is not affected: `capture_live` returns Ok(()) when
-        // the stop signal ends the loop and reserves Err for a failed open, a
-        // rejected filter or a fatal read.
-        match handle.thread.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::error!("Capture did not complete: {e:#}");
-                capture_failed = true;
-            }
-            Err(_) => {
-                tracing::error!("Capture thread panicked; the input was not read to the end");
-                capture_failed = true;
-            }
+        // so every report below is drawn from a partial view. See
+        // `capture_read_to_end`.
+        if !capture_read_to_end(handle.thread.join()) {
+            lp.capture_failed = true;
         }
 
         // 20a. The source is fully drained: flip the flag MCP's tail_dialogs
         //      reports as source_exhausted, so a polling client knows no more
         //      dialog updates will arrive.
-        if let Some(ref servers) = servers
+        if let Some(ref servers) = self.servers
             && let Some(ref flag) = servers.source_exhausted
         {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         // 21. Post-capture output
-        {
-            let ds_guard = dialog_store.read();
-            let ss_guard = stream_store.read();
-            // The gate the REST door has been moving all run. `None` only
-            // when no companion server started, which is the same run in
-            // which nothing could have moved it.
-            let gate = servers.as_ref().map(|s| s.persistence_gate.as_ref());
-            if !generate_reports(
-                &cli,
-                CaptureRead {
-                    dialogs: &ds_guard,
-                    streams: &ss_guard,
-                    frames_read: total_count,
-                },
-                filter_expr.as_ref(),
-                vcon_filter_expr.as_ref(),
-                gate,
-                vcon_end,
-            ) {
-                crate::capture::archive::release_run_and_exit(1);
-            }
-            // A sweep that could not write a container it owed said so when
-            // it happened; the exit status says it again for a script.
-            #[cfg(feature = "vcon")]
-            if live_vcon.as_ref().is_some_and(LiveVconTracker::failed) {
-                crate::capture::archive::release_run_and_exit(1);
-            }
-        }
-
-        // 21-hep. --hep-senders: who fed the listener, who went silent, who
-        //      it refused. Here, after the capture drained, so the counts are
-        //      final.
-        if cli.hep_args.hep_senders
-            && !print_hep_senders(capture_meter.hep_roster(), cli.output_args.json)
-        {
+        self.write_end_reports(lp.total_count, vcon_end);
+        // A sweep that could not write a container it owed said so when
+        // it happened; the exit status says it again for a script.
+        #[cfg(feature = "vcon")]
+        if live_vcon.as_ref().is_some_and(LiveVconTracker::failed) {
             crate::capture::archive::release_run_and_exit(1);
         }
 
-        // 21-hep-send. What the exporter delivered and what failed, said once
-        //      the capture has drained. At `warn` when anything failed, so a
-        //      collector that went away is visible at the default level where
-        //      the per-packet failure line is `debug`.
-        if let (Some(counters), Some(dest)) =
-            (capture_meter.hep_export(), cli.hep_args.hep_send.as_deref())
-        {
-            let snap = counters.snapshot();
-            let line = snap.summary_line(dest);
-            if snap.failed() > 0 {
-                tracing::warn!("{line}");
-            } else {
-                tracing::info!("{line}");
-            }
-        }
+        self.report_hep_exports(&capture_meter);
 
         // 21b. --relay-compare <CALL-ID>: the relay's own per-call RTP count
         //      beside what sipnab measured (ST7 / C4). Here, not at startup,
@@ -4148,10 +3723,10 @@ impl BatchRunner {
         //      still readable after the thread join above (a partial move of
         //      `handle.thread`), and it, not `cli`, is what the transmit permit
         //      derives from -- the same source the capture actually opened.
-        if let Some(call_id) = cli.rtp_args.relay_compare.as_deref() {
-            let ss_guard = stream_store.read();
+        if let Some(call_id) = self.cli.rtp_args.relay_compare.as_deref() {
+            let ss_guard = self.stream_store.read();
             crate::app::bootstrap::report_relay_comparison(
-                &cli,
+                &self.cli,
                 &handle.source,
                 call_id,
                 &ss_guard,
@@ -4163,339 +3738,1368 @@ impl BatchRunner {
         // The linter shipped reachable only over MCP, which put the project's
         // most distinctive capability out of reach of the place it matters
         // most: a pipeline gating a proxy config change.
-        let lint_gate_tripped = run_lint_stage(&cli, &config, &dialog_store.read());
+        let lint_gate_tripped = run_lint_stage(&self.cli, &self.config, &self.dialog_store.read());
 
-        // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
-        if cli.output_args.wireshark {
-            let ds_guard = dialog_store.read();
-            let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
-            if call_ids.is_empty() {
-                stderr_line!("No SIP dialogs to generate Wireshark filter for.");
-            } else {
-                // Escape each Call-ID before it lands inside the display
-                // filter's quoted string — a raw Call-ID could close the string
-                // and OR in a catch-all that silently matches almost everything.
-                println!(
-                    "{}",
-                    crate::output::wireshark::call_id_display_filter(&call_ids)
-                );
-            }
-        }
+        self.print_wireshark_filter();
+        self.print_tshark_command();
 
-        // 21b. --tshark-filter: print full tshark command for matched dialogs.
-        // The emitted `tshark -r <file>` must name a pcap that actually
-        // exists: the input file (`-I`), or the file the live capture was
-        // saved to (`-O`). A live capture with neither has no pcap for tshark
-        // to read, so emit a clear error instead of a bogus `capture.pcap`.
-        if cli.output_args.tshark_filter.is_some() || (cli.output_args.wireshark && cli.has_input())
-        {
-            let input_file = tshark_input_file(&input_files, cli.capture_args.output.as_deref());
-            if let Some(ref tshark_expr) = cli.output_args.tshark_filter {
-                // User provided a custom tshark filter expression.
-                match &input_file {
-                    // Shell-quote the file name and the filter: an operator
-                    // pastes this command, so a name or expression carrying a
-                    // single quote must not break out of the `-Y '…'` word.
-                    Ok(file) => println!(
-                        "{}",
-                        crate::output::wireshark::generate_tshark_command(
-                            None,
-                            Some(file.as_str()),
-                            None,
-                            Some(tshark_expr.as_str()),
-                        )
-                    ),
-                    Err(e) => tracing::error!("Cannot emit --tshark-filter command: {e}"),
-                }
-            } else if let Ok(file) = &input_file {
-                // Generate tshark command from tracked dialogs (only when
-                // --wireshark + -I; the outer guard ensures the input exists).
-                let ds_guard = dialog_store.read();
-                let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
-                if !call_ids.is_empty() {
-                    // Escape the Call-IDs into the display filter, then
-                    // shell-quote the whole command so a crafted Call-ID neither
-                    // breaks the filter nor injects a shell command a copy-paste
-                    // would run.
-                    let filter = crate::output::wireshark::call_id_display_filter(&call_ids);
-                    println!(
-                        "{}",
-                        crate::output::wireshark::generate_tshark_command(
-                            None,
-                            Some(file.as_str()),
-                            None,
-                            Some(&filter),
-                        )
-                    );
-                }
-            }
-        }
-
-        // Who the detectors accused, grouped. Every detector answers per
-        // MESSAGE, which is right for `--kill-scanner` acting on one packet
-        // and wrong for the question asked after a capture: which addresses
-        // were probing me, and how do I know. Nothing here re-detects -- it
-        // groups findings the detectors already produced, so there is one
-        // detector and one set of thresholds.
-        //
-        // `established` is carried with the accusation rather than left in the
-        // detector that already acts on it. A source that also completed a
-        // registration or a call is one a block would disconnect, and learning
-        // that after the block is too late.
-        //
-        // Computed ABOVE the `--quiet` gate, and read by two consumers below:
-        // the summary, which `--quiet` silences, and `--recommend-block`,
-        // which it must not. An operator who asked for a firewall rule and got
-        // nothing because an unrelated flag suppressed the summary would have
-        // no way to tell that from a capture with nothing in it.
-        let accused_sources = {
-            let findings = engines
-                .alerts
-                .read()
-                .iter_findings(&[], None, ACCUSED_FINDING_SCAN_CAP)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>();
-            let refs: Vec<&crate::security::alerting::Finding> = findings.iter().collect();
-            let mut accused = crate::security::sources::accused(&refs);
-            for a in &mut accused {
-                a.established = engines.scanner.as_ref().map(|d| d.established(&a.src_ip));
-            }
-            accused
-        };
+        // Who the detectors accused, grouped. Computed ABOVE the `--quiet`
+        // gate, and read by two consumers below: the summary, which `--quiet`
+        // silences, and `--recommend-block`, which it must not. See
+        // `accused_sources`.
+        let accused = accused_sources(&self.engines);
 
         // 21c. `--recommend-block`: the accusation as a rule the operator can
         // run. sipnab RECOMMENDS -- this prints text and reaches no firewall.
-        if let Some(dialect) = cli.security_args.recommend_block {
-            if accused_sources.is_empty() {
-                print!("{}", crate::security::recommend::nothing_to_recommend());
-            } else {
-                for a in &accused_sources {
-                    print!("{}", crate::security::recommend::recommend(a, dialect));
-                }
-            }
+        if let Some(dialect) = self.cli.security_args.recommend_block {
+            print_block_recommendations(&accused, dialect);
         }
 
         // 22. Summary
-        if !cli.mode_args.quiet {
-            let stream_count = stream_store.read().len();
-            tracing::info!(
-                "sipnab: {total_count} packets captured, {} SIP messages, {} RTP packets across {stream_count} streams",
-                counters.sip_count,
-                counters.rtp_count,
-            );
-
-            // The accusation summary, over the grouping computed above.
-            if !accused_sources.is_empty() {
-                tracing::info!(
-                    "sipnab: {} source(s) named by security detections",
-                    accused_sources.len()
-                );
-                for a in &accused_sources {
-                    let rules = a.rules.iter().cloned().collect::<Vec<_>>().join(", ");
-                    let counter = match a.established {
-                        Some(true) => {
-                            "  -- also completed a registration or call, so a block disconnects it"
-                        }
-                        _ => "",
-                    };
-                    tracing::info!(
-                        "sipnab:   {} {} finding(s) [{rules}]{counter}",
-                        a.src_ip,
-                        a.findings
-                    );
-                }
-            }
-
-            // What `--split-keep` removed, counted beside what the run kept.
-            // A run that deleted capture files says so in its closing line,
-            // not only in the per-file log an operator may have scrolled past.
-            let deleted = writer.as_ref().map_or(0, PcapWriter::splits_deleted);
-            if deleted > 0 {
-                tracing::info!(
-                    "sipnab: {deleted} older split file(s) deleted by --split-keep \
-                     (each one written by this run)"
-                );
-            }
-
-            // What `--portrange` discarded, beside the totals it reduced.
-            // Without this the counts above read as complete.
-            let skipped = crate::pipeline::portrange_skip_report();
-            if skipped.messages > 0 {
-                let top: Vec<String> = skipped
-                    .ports
-                    .iter()
-                    .take(5)
-                    .map(|p| format!("{} ({})", p.port, p.messages))
-                    .collect();
-                stderr_line!(
-                    "NOT ANALYZED: {} further SIP message(s) were seen on ports outside \
-                     --portrange and are in none of the totals above. Busiest: {}. \
-                     Re-run with --portrange 1-65535 to include them.",
-                    skipped.messages,
-                    top.join(", ")
-                );
-            }
-
-            // And what the WebSocket port set discarded. Reported separately
-            // because it is a different loss with a different fix: the SIP
-            // above was recognized and gated, this was wrapped in a WebSocket
-            // frame on a port sipnab never tried to unwrap. Before this there
-            // was no report at all — a deployment terminating WSS on 8081 was
-            // told nothing whatsoever about its entire WebRTC signaling leg.
-            let ws_skipped = crate::pipeline::ws_port_skip_report();
-            if ws_skipped.messages > 0 {
-                let top: Vec<String> = ws_skipped
-                    .ports
-                    .iter()
-                    .take(5)
-                    .map(|p| format!("{} ({})", p.port, p.messages))
-                    .collect();
-                stderr_line!(
-                    "NOT ANALYZED: {} SIP-over-WebSocket message(s) arrived on ports \
-                     outside the WebSocket port set ({}) and are in none of the \
-                     totals above. Busiest: {}. Re-run with --ws-portrange covering \
-                     them (e.g. --ws-portrange 1-65535) to include them.",
-                    ws_skipped.messages,
-                    crate::capture::websocket::ws_ports_description(),
-                    top.join(", ")
-                );
-            }
-
-            // What sipnab could not decode, beside the totals that hide it.
-            // Read once so the notice and the no-SIP guidance below cannot
-            // disagree about the same run.
-            let undecodable = crate::capture::undecodable_report();
-            if let Some(msg) = undecodable_summary(&undecodable, total_count) {
-                stderr_line!("{msg}");
-            }
-
-            report_icmp_summary(&stream_store.read());
-            report_relay_retries(&stream_store.read());
-            report_impossible_rates(&stream_store.read());
-            report_retention_losses(&dialog_store.read());
-            report_capture_quality();
-            report_llmnr_summary();
-
-            // What TLS decryption achieved. Reported whether or not any SIP
-            // was found, because a run that read nine records of ten and
-            // printed the nine has said nothing about the tenth.
-            // One last replay before the counters are read. A capture that
-            // ends moments after its keys arrive -- a test call, a Ctrl-C --
-            // would otherwise discard the held INVITE with nothing said: the
-            // only other trigger is the next TLS packet, and there is not
-            // going to be one. The recovered messages are too late to enter
-            // the pipeline here, but they are NOT too late to be counted, and
-            // a run that silently dropped what it was holding is exactly the
-            // missing measurement this feature exists to remove.
-            #[cfg(feature = "tls")]
-            if let Some(ref mut d) = tls_decryptor {
-                let late = d.rewind();
-                if !late.is_empty() {
-                    tracing::warn!(
-                        "TLS late decrypt: {} record(s) opened only after the capture ended \
-                         -- their keys arrived too late to place the messages in this run. \
-                         Re-read the saved capture with the same keylog to see them.",
-                        late.len()
-                    );
-                }
-            }
-
-            #[cfg(feature = "tls")]
-            let tls_report = tls_decryptor
-                .as_ref()
-                .map(crate::capture::decrypt::TlsDecryptor::report)
-                .unwrap_or_default();
-            #[cfg(not(feature = "tls"))]
-            let tls_report = crate::capture::TlsDecryptReport::default();
-            for line in tls_decrypt_guidance(&tls_report, &mapped_tls_libraries()) {
-                stderr_line!("{line}");
-            }
-
-            // Guidance when no SIP signaling was found — and, when the
-            // capture did not decode, a refusal to state that absence as a
-            // finding. See `no_sip_guidance` for why the choice of sentence
-            // is the whole point.
-            if counters.sip_count == 0 {
-                for line in no_sip_guidance(
-                    counters.rtp_count,
-                    stream_count,
-                    &undecodable,
-                    total_count,
-                    &tls_report,
-                ) {
-                    stderr_line!("{line}");
-                }
-            }
+        if !self.cli.mode_args.quiet {
+            self.print_run_summary(&lp, &accused);
         }
 
         // If any companion server is running, keep the process alive so clients
-        // can query the captured data. Poll the shutdown flag so SIGINT/SIGTERM
-        // exits cleanly instead of blocking on a thread that never returns.
-        if let Some(servers) = servers {
-            #[cfg(feature = "api")]
-            if cli.listener_args.api.is_some() {
-                tracing::info!("API server active — press Ctrl-C to stop");
-            }
-            #[cfg(feature = "mcp")]
-            if cli.mcp_args.mcp {
-                tracing::info!("MCP server active — press Ctrl-C to stop");
-            }
-            while !signals::shutdown_requested() {
-                // A stdio MCP client owns the lifetime: when it closes stdin the
-                // serve task finishes, and there is no client left to serve — so
-                // exit instead of spinning forever (otherwise the process leaks
-                // until SIGINT). HTTP/API tasks only finish on a signal, so the
-                // flag stays unset there.
-                if mcp_stdio_client_gone(servers.mcp_stdio_done.as_ref()) {
-                    tracing::info!("MCP client disconnected — shutting down");
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+        // can query the captured data.
+        if let Some(servers) = self.servers.take() {
+            serve_until_shutdown(&self.cli, &servers);
         }
 
         // A clean stop, journaled if no action is in flight; one that is
         // stays in doubt for the next start, and is not waited for.
-        actions.stop(
+        self.actions.stop(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
         );
 
-        // Report a truncated output as a failure. This runs after the sink
-        // flush, the writer's finish(), the kill-worker shutdown and the
-        // capture-thread join, so nothing is skipped to get here — the exit
-        // code is the only thing that changes.
+        if let Some(code) = run_exit_code(RunOutcome {
+            output_failed: lp.output_failed,
+            capture_failed: lp.capture_failed,
+            run_failed: crate::output::run_integrity::run_failed(),
+            lint_gate_tripped,
+        }) {
+            crate::capture::archive::release_run_and_exit(code);
+        }
+    }
+
+    /// One pass of the receive loop: the stop checks, the periodic work, one
+    /// receive, the packets it produced, and the limits. `Break` ends the
+    /// loop.
+    fn receive_step(
+        &mut self,
+        lp: &mut ReceiveLoop,
+        capture_config: &CaptureConfig,
+        rx: &capture::channel::PacketRx,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow;
+        if signals::shutdown_requested() {
+            return ControlFlow::Break(());
+        }
+
+        // The stdio MCP client owns this process's lifetime, and a LIVE
+        // capture has to check that here rather than after the loop.
         //
-        // Reports still print above: a partial capture is worth looking at,
-        // it just must not be mistaken for a whole one by a script reading $?.
+        // A file capture drains and the channel disconnects, so the loop
+        // breaks on its own and reaches the keep-alive loop below, which
+        // polls the same flag. A live capture never disconnects: the only
+        // other exit is a signal. So a client that closed stdin -- which is
+        // exactly how an MCP client shuts a stdio server down -- left the
+        // process running, still capturing, until someone killed it by
+        // hand. Every connect leaked another one.
         //
-        // `run_integrity::run_failed()` is the FILE path's half of the same
-        // rule the two flags above implement for the live path. Reading a set
-        // of files deliberately continues past a truncated member and returns
-        // Ok, so `capture_failed` never sees it — and a truncated pcap or a
-        // `--plugin` that would not load exited 0 with a whole-looking report.
-        // 1, not a new code: docs/cli-reference.md already assigns 1 to
-        // "capture error, I/O error", and both of these are exactly that. 3 is
-        // reserved for the opposite situation — the tool worked and the
-        // CAPTURE is non-conformant — so spending it here would erase the
-        // distinction it exists to make.
-        if output_failed || capture_failed || crate::output::run_integrity::run_failed() {
+        // Checked before the recv rather than after, so a silent link
+        // (no packets, recv timing out) still notices the client is gone.
+        //
+        // `request_shutdown` rather than a bare `break`: the live capture
+        // thread is still blocked in libpcap and only stops when it sees
+        // this flag (capture/live.rs). Breaking alone left the loop and
+        // then blocked forever joining that thread -- the process still
+        // did not exit, it just stopped reading. Routing through the
+        // shutdown flag makes a vanished client take the identical path
+        // SIGTERM already takes, which is the path that is known to work.
+        if mcp_stdio_client_gone(
+            self.servers
+                .as_ref()
+                .and_then(|s| s.mcp_stdio_done.as_ref()),
+        ) {
+            tracing::info!("MCP client disconnected — shutting down");
+            signals::request_shutdown();
+            return ControlFlow::Break(());
+        }
+
+        self.sweep_if_due(lp);
+        #[cfg(feature = "tls")]
+        self.poll_keylog_if_due(lp);
+
+        let Some(parsed_packets) = self.receive(lp, rx)? else {
+            return ControlFlow::Continue(());
+        };
+        self.process_packets(lp, &parsed_packets);
+
+        // The decrypted export: write what has waited long enough.
+        #[cfg(feature = "tls")]
+        if let (Some(x), Some(w)) = (lp.decrypted_export.as_mut(), self.writer.as_mut())
+            && !write_decrypted_frames(w, x.ready())
+        {
+            lp.output_failed = true;
+        }
+
+        if self.limit_reached(lp, capture_config) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    /// Periodic sweep of reassembly state and idle-dialog compaction
+    /// (every 5 seconds of capture time, which is wall time only when
+    /// live). Orphan status is not swept: it is derived from
+    /// `associated_dialog` at every read — see
+    /// [`crate::rtp::stream::RtpStream::orphaned`].
+    fn sweep_if_due(&mut self, lp: &mut ReceiveLoop) {
+        let Some(now) = lp.sweep_clock.take_due(SWEEP_INTERVAL) else {
+            return;
+        };
+        self.processor.sweep();
+        #[cfg(feature = "vcon")]
+        let live_vcon = &mut lp.live_vcon;
+        let compacted = sweep_dialog_store(&self.dialog_store, now.get(), |ds| {
+            #[cfg(feature = "vcon")]
+            if let Some(tracker) = live_vcon.as_mut() {
+                let ss = self.stream_store.read();
+                let gate = self.servers.as_ref().map(|s| s.persistence_gate.as_ref());
+                live_vcon_sweep(
+                    &self.cli,
+                    self.vcon_filter_expr.as_ref(),
+                    CaptureRead {
+                        dialogs: ds,
+                        streams: &ss,
+                        frames_read: lp.total_count,
+                    },
+                    gate,
+                    tracker,
+                    now.get(),
+                );
+            }
+            #[cfg(not(feature = "vcon"))]
+            let _ = ds;
+        });
+        if compacted.messages_evicted > 0 {
+            tracing::debug!(
+                "idle-dialog compaction: dropped {} messages from {} dialogs",
+                compacted.messages_evicted,
+                compacted.dialogs_compacted
+            );
+        }
+        self.engines.sweep(lp.security_max_age);
+    }
+
+    /// --keylog-watch: poll for new keys in the keylog source, on its
+    /// own ~100ms wall-clock cadence (keylog_poll_clock above) rather
+    /// than tied to the 5-second reassembly/dialog sweep. A fast SIP
+    /// call (INVITE..ACK in well under 5s) can complete before that
+    /// sweep ever runs again, so a key that arrived mid-call was not
+    /// read until the call was already over — sipnab would log the
+    /// session as "ready" and never decrypt a single message from it.
+    ///
+    /// `--keylog-fd` implies the watch. A descriptor handed over by a
+    /// live producer has nothing to read at startup and everything
+    /// to read later, so requiring a second flag to look at it would
+    /// make the obvious invocation load no keys at all and say
+    /// nothing — the failure this area has already been bitten by.
+    #[cfg(feature = "tls")]
+    fn poll_keylog_if_due(&mut self, lp: &mut ReceiveLoop) {
+        if lp.keylog_poll_clock.elapsed() >= KEYLOG_POLL_INTERVAL
+            && (self.cli.tls_args.keylog_watch || self.cli.tls_args.keylog_fd.is_some())
+            && let Some(ref mut decryptor) = self.tls_decryptor
+        {
+            lp.keylog_poll_clock = std::time::Instant::now();
+            if let Err(e) = decryptor.poll_keylog_file() {
+                tracing::debug!("Keylog poll error: {e}");
+            }
+        }
+    }
+
+    /// Wait up to 100 ms for the next packet and turn it into parsed packets.
+    ///
+    /// `Continue(None)` when nothing arrived in time, `Continue(Some(..))`
+    /// with the packet's parsed packets, and `Break` when the input has ended
+    /// and its end has been processed, or the `-O` output could not be
+    /// written.
+    fn receive(
+        &mut self,
+        lp: &mut ReceiveLoop,
+        rx: &capture::channel::PacketRx,
+    ) -> std::ops::ControlFlow<(), Option<capture::ParsedPackets>> {
+        use std::ops::ControlFlow;
+        // Use recv_timeout so we can check shutdown periodically. Flush
+        // pending output first whenever the channel has gone idle, so a
+        // quiet live capture never sits on buffered messages.
+        if rx.is_empty() {
+            lp.sink.flush();
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(packet) => match self.ingest(lp, &packet) {
+                ControlFlow::Continue(parsed) => ControlFlow::Continue(Some(parsed)),
+                ControlFlow::Break(()) => ControlFlow::Break(()),
+            },
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => ControlFlow::Continue(None),
+            // The input ended. One more pass carries what only its end
+            // could release -- a TCP message held behind a hole the capture
+            // never filled -- through the same per-packet body below; the
+            // pass after that leaves.
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) if !lp.input_ended => {
+                lp.input_ended = true;
+                ControlFlow::Continue(Some(self.finish_input()))
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(()),
+        }
+    }
+
+    /// What only the end of the input can release.
+    fn finish_input(&mut self) -> capture::ParsedPackets {
+        // A WebSocket frame begun in a decrypted record and never
+        // finished is counted, never dropped in silence.
+        #[cfg(feature = "tls")]
+        for e in self.tls_reassembler.finish_websocket() {
+            crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+        }
+        self.processor.finish()
+    }
+
+    /// Record one captured packet: advance the clock, write it to `-O`, keep
+    /// it in the evidence ring, and parse it.
+    ///
+    /// `Break` when the `-O` output could not be written.
+    fn ingest(
+        &mut self,
+        lp: &mut ReceiveLoop,
+        packet: &capture::Packet,
+    ) -> std::ops::ControlFlow<(), capture::ParsedPackets> {
+        // Offline, this packet's timestamp is what "now" means to the next
+        // sweep. Recorded before any parse/filter step so that a capture of
+        // traffic sipnab does not decode still advances the clock — the
+        // alternative would stall compaction on exactly the captures whose
+        // memory growth it exists to bound.
+        lp.sweep_clock.observe(packet.timestamp);
+
+        // Lazily initialize the writer on first packet (we need link_type)
+        if self.writer.is_none()
+            && let Some(ref output_path) = self.cli.capture_args.output
+        {
+            self.writer = Some(self.open_output_writer(&PathBuf::from(output_path), packet));
+        }
+
+        self.write_to_output(lp, packet)?;
+
+        lp.total_count += 1;
+
+        self.retain_evidence(packet);
+
+        // Parse and reassemble the packet
+        std::ops::ControlFlow::Continue(self.processor.process(packet))
+    }
+
+    /// Open the `-O` output file for a capture whose first packet is
+    /// `packet`, with its preamble written. Exits the process (code 1) when
+    /// the file cannot be opened.
+    fn open_output_writer(
+        &self,
+        output_path: &std::path::Path,
+        packet: &capture::Packet,
+    ) -> PcapWriter {
+        // Record the capture source as the pcapng interface name (SNB-0001):
+        // the capture device for live, the input file for replay.
+        let capture_source = self
+            .cli
+            .capture_args
+            .device
+            .as_deref()
+            .or(self.cli.primary_input());
+        // A decrypted export says so in its section comment.
+        #[cfg(feature = "tls")]
+        let section_note = (self.export_mode == PcapExportMode::Decrypted)
+            .then(|| capture::decrypted_export::SECTION_NOTE.to_string());
+        #[cfg(not(feature = "tls"))]
+        let section_note: Option<String> = None;
+        match PcapWriter::with_provenance(
+            output_path,
+            packet.link_type,
+            crate::capture::PcapWriterOptions {
+                max_file_bytes: self.policy.split_bytes,
+                max_file_duration: self.policy.split_duration,
+                pcapng: self.use_pcapng,
+                export_mode: self.export_mode,
+                interface: capture_source,
+                provenance: section_note,
+            },
+        )
+        .map(|w| w.keep_last_splits(self.policy.split_keep))
+        {
+            Ok(mut w) => {
+                self.write_output_preamble(&mut w);
+                w
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{}",
+                    crate::capture::writer::describe_output_error(
+                        &e,
+                        crate::privilege::dropped_to()
+                    )
+                );
+                crate::capture::archive::release_run_and_exit(1);
+            }
+        }
+    }
+
+    /// The blocks a new `-O` file carries before its first packet.
+    fn write_output_preamble(&self, w: &mut PcapWriter) {
+        // Write DSB with keylog content if mode requires it
+        if let Some(ref keylog_path) = self.cli.tls_args.keylog
+            && let Err(e) = w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
+        {
+            tracing::warn!("Failed to write DSB: {e:#}");
+        }
+        // Embed a Name Resolution Block when name resolution is active
+        // (SNB-0001): headless `--names`/`--resolve` should travel with
+        // the capture, mirroring the TUI save path. Before packets.
+        if !self.use_pcapng {
+            return;
+        }
+        let (resolver, mode) = crate::app::build_resolver(&self.cli, &self.config);
+        if mode != crate::names::NameMode::Off {
+            let include_dns = mode == crate::names::NameMode::Dns;
+            let entries = resolver.nrb_entries(include_dns);
+            if let Err(e) = w.write_name_resolution_block(&entries) {
+                tracing::warn!("Failed to write name resolution block: {e:#}");
+            }
+        }
+    }
+
+    /// Write to output pcap if configured. A decrypted export holds
+    /// the packet instead, and writes it once its wait is over.
+    ///
+    /// `Break` when the write failed.
+    fn write_to_output(
+        &mut self,
+        lp: &mut ReceiveLoop,
+        packet: &capture::Packet,
+    ) -> std::ops::ControlFlow<()> {
+        #[cfg(feature = "tls")]
+        let held = match lp.decrypted_export.as_mut() {
+            Some(x) if self.writer.is_some() => {
+                x.captured(packet);
+                true
+            }
+            _ => false,
+        };
+        #[cfg(not(feature = "tls"))]
+        let held = false;
+        if !held
+            && let Some(ref mut w) = self.writer
+            && let Err(e) = w.write(packet)
+        {
+            log_packet_write_error(&e);
+            // Failing to OPEN the output exits 1 a few lines above; failing
+            // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
+            // out.pcap` proceeded on a truncated capture.
+            lp.output_failed = true;
+            return std::ops::ControlFlow::Break(());
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    /// Retain the raw frame when an operator asked for a window into
+    /// live capture. Only for sources that cannot be re-read: a capture
+    /// file can be seeked, so spending memory to hold its bytes buys
+    /// nothing a second read would not give for free.
+    fn retain_evidence(&self, packet: &capture::Packet) {
+        if let Some(ring) = self.evidence_ring.as_ref()
+            && let Some(origin) = packet.origin
+            && !origin.verifiable
+            && let Some(source) = packet.interface.as_ref()
+            && let Some(source) = crate::capture::packet::intern_source(source)
+        {
+            ring.write()
+                .insert(source, origin.ordinal, packet.data.clone());
+        }
+    }
+
+    /// Run every parsed packet one capture produced through the pipeline.
+    fn process_packets(&mut self, lp: &mut ReceiveLoop, parsed_packets: &capture::ParsedPackets) {
+        for pp in parsed_packets {
+            // --hep-parse: unwrap HEP-encapsulated packets, by the rule
+            // every router applies. `None` is a HEP datagram whose
+            // transport no rule names, already counted.
+            let Some(hep_unwrapped) =
+                crate::pipeline::apply_hep_parse(pp, self.cli.hep_parse(&self.config))
+            else {
+                continue;
+            };
+            let pp: &ParsedPacket = &hep_unwrapped;
+
+            // Port range filtering only applies to SIP detection — RTP uses
+            // dynamic ports negotiated via SDP and must not be filtered here.
+            // The filter is applied inside process_parsed_packet for SIP only.
+
+            // Attempt TLS decryption for TCP payloads when --keylog is active.
+            // Zero, one, or more synthetic packets: a TLS record spans more
+            // than one captured packet often enough (large INVITE bodies
+            // among them — see `TlsRecordReassembler`) that this can yield
+            // more than one decrypted SIP message from a single incoming
+            // packet, and can just as easily yield none yet while a record
+            // is still incomplete.
+            #[cfg(feature = "tls")]
+            let effective_pps = self.decrypt_tls(lp, pp);
+
+            #[cfg(not(feature = "tls"))]
+            let effective_pps: SmallVec<[std::borrow::Cow<'_, ParsedPacket>; 1]> =
+                smallvec::smallvec![std::borrow::Cow::Borrowed(pp)];
+
+            for effective_pp in effective_pps.iter().map(|p| p.as_ref()) {
+                self.process_effective_packet(lp, effective_pp);
+            }
+        }
+    }
+
+    /// The packets one parsed packet becomes once TLS decryption has seen
+    /// it, with what was decrypted told to the decrypted export.
+    #[cfg(feature = "tls")]
+    fn decrypt_tls<'p>(
+        &mut self,
+        lp: &mut ReceiveLoop,
+        pp: &'p ParsedPacket,
+    ) -> SmallVec<[std::borrow::Cow<'p, ParsedPacket>; 1]> {
+        let tls_yield = try_tls_decrypt(pp, &mut self.tls_decryptor, &mut self.tls_reassembler);
+        if let Some(x) = lp.decrypted_export.as_mut() {
+            for d in tls_yield.recovered.iter().chain(tls_yield.decrypted.iter()) {
+                x.sip_decrypted(
+                    std::net::SocketAddr::new(d.src_addr, d.src_port),
+                    std::net::SocketAddr::new(d.dst_addr, d.dst_port),
+                    d.timestamp,
+                    &d.payload,
+                    if d.transport == TransportProto::Wss {
+                        capture::decrypted_export::Source::Wss
+                    } else {
+                        capture::decrypted_export::Source::Tls
+                    },
+                );
+            }
+        }
+        packets_after_tls(pp, tls_yield)
+    }
+
+    /// Classify one packet under both store locks, then perform what it
+    /// queued with the locks released.
+    fn process_effective_packet(&mut self, lp: &mut ReceiveLoop, effective_pp: &ParsedPacket) {
+        // Acquire write locks once per packet. The locks are uncontested
+        // in the no-API case; with --api, the API thread briefly waits
+        // for in-flight per-packet processing to finish.
+        //
+        // Nothing that can block belongs in this scope. Everything that
+        // used to — both `sh -c` spawn sites, the alert engine's own
+        // lock, and the stdout writes — is queued into `effects` (and
+        // into the event-exec engine's pending queue) and replayed
+        // immediately below, with the guards gone.
+        {
+            let batch_ctx = BatchContext {
+                matcher: &self.matcher,
+                filter_expr: &self.filter_expr,
+                output_opts: &self.output_opts,
+                cli: &self.cli,
+                no_rtp: self.no_rtp,
+                // --after / -A trailing context counter
+                after_count: self.cli.output_args.after.unwrap_or(0),
+                portrange: self.policy.portrange,
+            };
+            let mut ds_guard = self.dialog_store.write();
+            let mut ss_guard = self.stream_store.write();
+            let mut proc_state = ProcessingState {
+                dialog_store: &mut ds_guard,
+                stream_store: &mut ss_guard,
+                rtp_heuristic: &mut self.rtp_heuristic,
+                event_exec: &mut self.event_exec,
+                #[cfg(feature = "tls")]
+                srtp: self.srtp_context.as_mut(),
+                #[cfg(feature = "tls")]
+                dtls: self.dtls_extractor.as_mut(),
+                #[cfg(feature = "tls")]
+                export: lp.decrypted_export.as_mut(),
+                group: lp.group_buf.as_mut(),
+            };
+            process_parsed_packet(
+                effective_pp,
+                &batch_ctx,
+                &mut proc_state,
+                &mut self.engines,
+                &mut lp.counters,
+                &mut lp.effects,
+            );
+            // RE4's second trigger, drained under the guard this
+            // scope already holds. Offering happens BELOW, with
+            // the guards gone: the reconciler takes this same lock
+            // to apply what it learns, and nothing that waits on
+            // another thread belongs in here.
+            if self.relay_orphans.is_some() {
+                lp.new_orphans = ss_guard.drain_new_orphan_sockets();
+            }
+        }
+
+        // Hand off anything the packet just created that nothing
+        // explains. `offer` never blocks -- a full queue drops and
+        // counts rather than stalling the capture on a relay.
+        if let Some(ref sink) = self.relay_orphans {
+            for (address, port) in lp.new_orphans.drain(..) {
+                sink.offer(address, port);
+            }
+        }
+
+        // Both store guards have dropped. Replay what the packet
+        // queued, in the order it was raised: output, then alert
+        // findings, then the hook commands. Draining per packet —
+        // rather than per batch, or at end of capture — is what keeps
+        // ordering identical to emitting inline.
+        lp.effects
+            .drain(&mut lp.sink, &self.engines.alerts, &mut self.event_exec);
+
+        // --hep-send: SIP as protocol type 1, RTCP as type 5,
+        // nothing else. What is stamped and what is skipped is
+        // decided in `HepSender::forward_parsed`, where a test can
+        // reach it.
+        #[cfg(feature = "hep")]
+        if let Some(ref sender) = self.hep_sender
+            && let Err(e) = sender.forward_parsed(effective_pp)
+        {
+            tracing::debug!("HEP forward failed: {e:#}");
+        }
+    }
+
+    /// Whether a `--count`, `--duration` or `--autostop` limit has been
+    /// reached.
+    fn limit_reached(&self, lp: &ReceiveLoop, capture_config: &CaptureConfig) -> bool {
+        // Check --count limit
+        if let Some(max_count) = capture_config.count
+            && lp.total_count >= max_count
+        {
+            return true;
+        }
+
+        // Check --duration limit
+        if let Some(duration) = capture_config.duration
+            && lp.start.elapsed() >= duration
+        {
+            return true;
+        }
+        self.autostop_reached(lp)
+    }
+
+    /// Whether an `--autostop` duration or file-size limit has been reached,
+    /// saying which when one has.
+    fn autostop_reached(&self, lp: &ReceiveLoop) -> bool {
+        // Check --autostop duration
+        if let Some(autostop_dur) = self.policy.autostop_duration
+            && lp.start.elapsed() >= autostop_dur
+        {
+            tracing::info!("Autostop: duration limit reached ({autostop_dur:?})");
+            return true;
+        }
+
+        // Check --autostop filesize
+        if let Some(max_bytes) = self.policy.autostop_filesize_bytes
+            && let Some(ref w) = self.writer
+            && w.bytes_written() >= max_bytes
+        {
+            tracing::info!(
+                "Autostop: filesize limit reached ({} MiB)",
+                max_bytes / crate::capture::writer::BYTES_PER_MIB
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Everything the run still holds for stdout and `-O`, written out once
+    /// the loop has ended.
+    fn flush_run_output(&mut self, lp: &mut ReceiveLoop) {
+        // A no-op today — every packet drains before the loop can break — and
+        // kept because the cost of being wrong is silent data loss. A future
+        // `break` added inside the per-packet body would otherwise discard that
+        // packet's output, its findings and its hook commands with no error
+        // anywhere, which is the failure this whole area exists to remove.
+        lp.effects
+            .drain(&mut lp.sink, &self.engines.alerts, &mut self.event_exec);
+
+        // Replay any --group-by buffer before draining, so grouped output lands
+        // ahead of reports exactly where the streamed output would have.
+        if let Some(ref mut buf) = lp.group_buf {
+            let machine_readable = self.cli.output_args.json
+                || self.cli.output_args.json_pretty
+                || self.cli.output_args.fail2ban;
+            replay_group_buffer(buf, &mut lp.sink, machine_readable);
+        }
+
+        // Drain the per-message output sink before anything else writes to
+        // stdout (reports, wireshark/tshark lines), preserving output order.
+        lp.sink.flush();
+
+        // A write that failed for any reason other than a closed pipe means the
+        // emitted output is incomplete — same class as a truncated -O file, and
+        // it must not exit 0 either.
+        if let Some(e) = lp.sink.hard_error() {
+            tracing::error!("Failed to write output: {e}");
+            lp.output_failed = true;
+        }
+
+        // The decrypted export's held frames: a stop discards them (stop means
+        // stop), the end of the input writes them. Then the counts, once.
+        #[cfg(feature = "tls")]
+        if let Some(x) = lp.decrypted_export.take()
+            && !finish_decrypted_export(x, self.writer.as_mut())
+        {
+            lp.output_failed = true;
+        }
+
+        // Flush the output writer explicitly: BufWriter's Drop discards
+        // flush errors, so without this an ENOSPC at end of capture would
+        // truncate the file silently with exit code 0.
+        if let Some(ref mut w) = self.writer
+            && let Err(e) = w.finish()
+        {
+            tracing::error!("Output file may be incomplete: {e:#}");
+            lp.output_failed = true;
+        }
+    }
+
+    /// File and say what `--reg-flood` could not establish.
+    ///
+    /// A warning rather than a finding — it names no source and reaches no
+    /// jail, because a REGISTER count with no outcome behind it is a volume,
+    /// and the detector refuses to act on volume.
+    fn settle_reg_flood_gap(&mut self) {
+        if let Some(det) = self.engines.reg_flood.as_mut() {
+            let gap = det.observation_gap(true);
+            if let Some(gap) = &gap {
+                tracing::warn!("{}", gap.detail);
+            }
+            self.engines
+                .alerts
+                .write()
+                .set_observation_gap("reg_flood", gap);
+        }
+    }
+
+    /// Stop the scanner-kill worker and the relay threads.
+    fn stop_workers(&mut self) {
+        // 19. Shut down scanner-kill worker (D16)
+        if let Some(ref mut kill_handle) = self.engines.kill_handle {
+            kill_handle.shutdown();
+        }
+
+        // 19a. Stop the rtpengine reconciler (RE4). Dropping the sink closes
+        //      the hand-off queue, which is what ends its loop -- there is no
+        //      flag to set and no timeout to wait out. Joining lets its
+        //      summary line print, and it happens HERE rather than at the end
+        //      of the function because the reporting below can exit the
+        //      process outright.
+        drop(self.relay_orphans.take());
+        join_reporting_panic(
+            self.relay_thread.take(),
+            "the rtpengine reconciler thread panicked",
+        );
+
+        // The stats poller (C5) stops the same way: dropping its shutdown sender
+        // closes the channel its loop waits on, so `recv_timeout` returns at
+        // once rather than sleeping out the interval. Joined here, beside the
+        // reconciler, because the reporting below can exit the process.
+        drop(self.relay_poll_shutdown.take());
+        join_reporting_panic(
+            self.relay_poll_thread.take(),
+            "the relay statistics poll thread panicked",
+        );
+    }
+
+    /// `--report`, `--call-report`, `--export-vcon` and the other reports
+    /// drawn from the final stores. Exits the process (code 1) when one that
+    /// was asked for could not be produced.
+    fn write_end_reports(&self, frames_read: u64, vcon_end: VconRunEnd<'_>) {
+        let ds_guard = self.dialog_store.read();
+        let ss_guard = self.stream_store.read();
+        // The gate the REST door has been moving all run. `None` only
+        // when no companion server started, which is the same run in
+        // which nothing could have moved it.
+        let gate = self.servers.as_ref().map(|s| s.persistence_gate.as_ref());
+        if !generate_reports(
+            &self.cli,
+            CaptureRead {
+                dialogs: &ds_guard,
+                streams: &ss_guard,
+                frames_read,
+            },
+            self.filter_expr.as_ref(),
+            self.vcon_filter_expr.as_ref(),
+            gate,
+            vcon_end,
+        ) {
             crate::capture::archive::release_run_and_exit(1);
         }
-        // 3, not 1. A pipeline has to tell "sipnab broke" from "the capture is
-        // non-conformant": the first means investigate the tool, the second
-        // means fix the config that produced the traffic. Collapsing them
-        // would make a working gate indistinguishable from a broken one, and
-        // 1 and 2 already mean something else (#147).
-        //
-        // Checked AFTER the failure codes above, so a run that both failed to
-        // write its output and found lint errors reports the failure — the
-        // findings came from a partial read and are not trustworthy anyway.
-        if lint_gate_tripped {
-            crate::capture::archive::release_run_and_exit(3);
+    }
+
+    /// What the HEP listener and the HEP exporter did, once the capture has
+    /// drained so the counts are final.
+    fn report_hep_exports(&self, capture_meter: &crate::capture::channel::CaptureMeter) {
+        // 21-hep. --hep-senders: who fed the listener, who went silent, who
+        //      it refused.
+        if self.cli.hep_args.hep_senders
+            && !print_hep_senders(capture_meter.hep_roster(), self.cli.output_args.json)
+        {
+            crate::capture::archive::release_run_and_exit(1);
         }
+
+        // 21-hep-send. What the exporter delivered and what failed, said once
+        //      the capture has drained. At `warn` when anything failed, so a
+        //      collector that went away is visible at the default level where
+        //      the per-packet failure line is `debug`.
+        if let (Some(counters), Some(dest)) = (
+            capture_meter.hep_export(),
+            self.cli.hep_args.hep_send.as_deref(),
+        ) {
+            let snap = counters.snapshot();
+            let line = snap.summary_line(dest);
+            if snap.failed() > 0 {
+                tracing::warn!("{line}");
+            } else {
+                tracing::info!("{line}");
+            }
+        }
+    }
+
+    /// The Call-IDs of every tracked dialog, in store order.
+    fn tracked_call_ids(&self) -> Vec<String> {
+        self.dialog_store
+            .read()
+            .iter()
+            .map(|d| d.call_id.clone())
+            .collect()
+    }
+
+    /// 21a. --wireshark: print Wireshark display filter for all tracked dialogs
+    fn print_wireshark_filter(&self) {
+        if !self.cli.output_args.wireshark {
+            return;
+        }
+        let call_ids = self.tracked_call_ids();
+        if call_ids.is_empty() {
+            stderr_line!("No SIP dialogs to generate Wireshark filter for.");
+        } else {
+            // Escape each Call-ID before it lands inside the display
+            // filter's quoted string — a raw Call-ID could close the string
+            // and OR in a catch-all that silently matches almost everything.
+            println!(
+                "{}",
+                crate::output::wireshark::call_id_display_filter(&call_ids)
+            );
+        }
+    }
+
+    /// 21b. --tshark-filter: print full tshark command for matched dialogs.
+    /// The emitted `tshark -r <file>` must name a pcap that actually
+    /// exists: the input file (`-I`), or the file the live capture was
+    /// saved to (`-O`). A live capture with neither has no pcap for tshark
+    /// to read, so emit a clear error instead of a bogus `capture.pcap`.
+    fn print_tshark_command(&self) {
+        let args = &self.cli.output_args;
+        if !(args.tshark_filter.is_some() || (args.wireshark && self.cli.has_input())) {
+            return;
+        }
+        let input_file =
+            tshark_input_file(&self.input_files, self.cli.capture_args.output.as_deref());
+        if let Some(ref tshark_expr) = args.tshark_filter {
+            // User provided a custom tshark filter expression.
+            match &input_file {
+                // Shell-quote the file name and the filter: an operator
+                // pastes this command, so a name or expression carrying a
+                // single quote must not break out of the `-Y '…'` word.
+                Ok(file) => println!(
+                    "{}",
+                    crate::output::wireshark::generate_tshark_command(
+                        None,
+                        Some(file.as_str()),
+                        None,
+                        Some(tshark_expr.as_str()),
+                    )
+                ),
+                Err(e) => tracing::error!("Cannot emit --tshark-filter command: {e}"),
+            }
+        } else if let Ok(file) = &input_file {
+            // Generate tshark command from tracked dialogs (only when
+            // --wireshark + -I; the outer guard ensures the input exists).
+            let call_ids = self.tracked_call_ids();
+            if !call_ids.is_empty() {
+                // Escape the Call-IDs into the display filter, then
+                // shell-quote the whole command so a crafted Call-ID neither
+                // breaks the filter nor injects a shell command a copy-paste
+                // would run.
+                let filter = crate::output::wireshark::call_id_display_filter(&call_ids);
+                println!(
+                    "{}",
+                    crate::output::wireshark::generate_tshark_command(
+                        None,
+                        Some(file.as_str()),
+                        None,
+                        Some(&filter),
+                    )
+                );
+            }
+        }
+    }
+
+    /// The end-of-run summary on stderr (step 22): totals, accused sources,
+    /// what was deleted, skipped and not decoded, and the decryption and
+    /// no-SIP guidance.
+    fn print_run_summary(
+        &mut self,
+        lp: &ReceiveLoop,
+        accused: &[crate::security::sources::AccusedSource],
+    ) {
+        let total_count = lp.total_count;
+        let stream_count = self.stream_store.read().len();
+        tracing::info!(
+            "sipnab: {total_count} packets captured, {} SIP messages, {} RTP packets across {stream_count} streams",
+            lp.counters.sip_count,
+            lp.counters.rtp_count,
+        );
+
+        // The accusation summary, over the grouping computed above.
+        log_accused_sources(accused);
+
+        // What `--split-keep` removed, counted beside what the run kept.
+        // A run that deleted capture files says so in its closing line,
+        // not only in the per-file log an operator may have scrolled past.
+        let deleted = self.writer.as_ref().map_or(0, PcapWriter::splits_deleted);
+        if deleted > 0 {
+            tracing::info!(
+                "sipnab: {deleted} older split file(s) deleted by --split-keep \
+                 (each one written by this run)"
+            );
+        }
+
+        report_port_skips();
+
+        // What sipnab could not decode, beside the totals that hide it.
+        // Read once so the notice and the no-SIP guidance below cannot
+        // disagree about the same run.
+        let undecodable = crate::capture::undecodable_report();
+        if let Some(msg) = undecodable_summary(&undecodable, total_count) {
+            stderr_line!("{msg}");
+        }
+
+        report_icmp_summary(&self.stream_store.read());
+        report_relay_retries(&self.stream_store.read());
+        report_impossible_rates(&self.stream_store.read());
+        report_retention_losses(&self.dialog_store.read());
+        report_capture_quality();
+        report_llmnr_summary();
+
+        // What TLS decryption achieved. Reported whether or not any SIP
+        // was found, because a run that read nine records of ten and
+        // printed the nine has said nothing about the tenth.
+        #[cfg(feature = "tls")]
+        if let Some(ref mut d) = self.tls_decryptor {
+            report_late_tls_decrypts(d);
+        }
+
+        #[cfg(feature = "tls")]
+        let tls_report = self
+            .tls_decryptor
+            .as_ref()
+            .map(crate::capture::decrypt::TlsDecryptor::report)
+            .unwrap_or_default();
+        #[cfg(not(feature = "tls"))]
+        let tls_report = crate::capture::TlsDecryptReport::default();
+        for line in tls_decrypt_guidance(&tls_report, &mapped_tls_libraries()) {
+            stderr_line!("{line}");
+        }
+
+        // Guidance when no SIP signaling was found — and, when the
+        // capture did not decode, a refusal to state that absence as a
+        // finding. See `no_sip_guidance` for why the choice of sentence
+        // is the whole point.
+        if lp.counters.sip_count == 0 {
+            for line in no_sip_guidance(
+                lp.counters.rtp_count,
+                stream_count,
+                &undecodable,
+                total_count,
+                &tls_report,
+            ) {
+                stderr_line!("{line}");
+            }
+        }
+    }
+}
+
+/// How often `--keylog-watch` reads the keylog source: real wall time via
+/// `Instant`, not the sweep clock.
+///
+/// The sweep clock advances from packet timestamps, so on a quiet link it
+/// never advances at all; the packet that matters is an INVITE arriving after
+/// silence, and it needs the key already loaded before it arrives, not in
+/// response to it. 100ms bounds the miss window to a tenth of the old 5s
+/// sweep tie-in while keeping keylog reads off the per-packet hot path
+/// (unbounded there, this is one syscall per ~100ms wall time regardless of
+/// packet rate, not one per packet against a stated >=100K pps target).
+#[cfg(feature = "tls")]
+const KEYLOG_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What the receive loop carries from one packet to the next, and what the
+/// steps after it read.
+struct ReceiveLoop {
+    /// Reused across packets so the hand-off costs no allocation per packet.
+    new_orphans: Vec<(std::net::IpAddr, u16)>,
+    /// Set when writing the -O output fails. The open path exits 1; the
+    /// write and final-flush paths only logged, so a capture truncated by
+    /// ENOSPC reported success and any `sipnab -O out.pcap && next-step`
+    /// pipeline ran on partial data.
+    output_failed: bool,
+    /// `--pcap-export-mode decrypted` (PCAPX-DEC): `-O` goes through a short
+    /// reorder buffer that rewrites what sipnab decrypted as plaintext.
+    #[cfg(feature = "tls")]
+    decrypted_export: Option<capture::decrypted_export::DecryptedExport>,
+    /// Set when the capture thread ends in an error or a panic, i.e. the
+    /// input was not read to the end. Separate from `output_failed` so the
+    /// two causes stay distinguishable in the code even though both land on
+    /// the same exit status: one means "what we read was not written", the
+    /// other "what we wrote was not all there was to read".
+    capture_failed: bool,
+    /// --group-by buffers per-message output and replays it grouped once the
+    /// capture ends (see output::group for why it cannot stream, and for the
+    /// caps that keep an attacker-keyed map bounded). None = stream as usual.
+    group_buf: Option<output::group::GroupBuffer>,
+    /// Wall time for a live device, the capture's own timeline for `-I`.
+    /// See `SweepClock` for why the two cannot share one rule.
+    sweep_clock: SweepClock,
+    /// What the live vCon export has written so far. `None` unless this is
+    /// a live run with `--export-vcon-when` or `--export-vcon`; see
+    /// `Cli::exports_vcon_live`.
+    #[cfg(feature = "vcon")]
+    live_vcon: Option<LiveVconTracker>,
+    /// When `--keylog-watch` last read the keylog source; see
+    /// [`KEYLOG_POLL_INTERVAL`].
+    #[cfg(feature = "tls")]
+    keylog_poll_clock: std::time::Instant,
+    /// How much detector state each sweep keeps. Derived from the widest
+    /// window this run's detectors were given rather than fixed, because
+    /// the sweep is what ages that state out: a constant here caps every
+    /// detector window at the constant, so declaring a fifteen-minute
+    /// wangiri window would buy a two-minute one.
+    security_max_age: std::time::Duration,
+    /// Shared buffered stdout sink for every per-message emitter (JSON,
+    /// text, fail2ban, hexdump). Flushed whenever the packet
+    /// channel goes idle — live output stays real-time — and at end of
+    /// capture; `--line-buffer` flushes after every message.
+    sink: output::BatchSink<std::io::BufWriter<std::io::Stdout>>,
+    /// Carries a packet's output, alerts and hook commands OUT of the
+    /// section that holds both store write locks, so the syscalls they
+    /// imply — `fork`/`exec` above all — happen with no lock held. Built
+    /// once and reused, so its buffers are allocated once for the run.
+    /// See `DeferredEffects`.
+    effects: DeferredEffects,
+    /// When the receive loop started, for `--duration` and `--autostop`.
+    start: std::time::Instant,
+    /// Frames read from the capture source.
+    total_count: u64,
+    /// Set once the capture channel closes, so the end-of-input release
+    /// runs exactly once.
+    input_ended: bool,
+    /// SIP/RTP counts and emit-selection state.
+    counters: PacketCounters,
+}
+
+impl ReceiveLoop {
+    /// The loop's starting state for `runner`, taking its `--evidence-out`
+    /// sink into the deferred effects.
+    fn new(runner: &mut BatchRunner) -> Self {
+        let mut effects = DeferredEffects::new();
+        effects.evidence = runner.evidence.take();
+        let cli = &runner.cli;
+        Self {
+            new_orphans: Vec::new(),
+            output_failed: false,
+            #[cfg(feature = "tls")]
+            decrypted_export: (runner.export_mode == PcapExportMode::Decrypted
+                && cli.capture_args.output.is_some())
+            .then(|| {
+                capture::decrypted_export::DecryptedExport::new(
+                    capture::decrypted_export::reorder_window(),
+                    capture::decrypted_export::REORDER_BYTE_CAP,
+                )
+            }),
+            capture_failed: false,
+            group_buf: cli
+                .output_args
+                .group_by
+                .as_deref()
+                .and_then(|f| output::group::GroupField::parse(f).ok())
+                .map(|f| output::group::GroupBuffer::new(f, cli.group_caps(&runner.config))),
+            sweep_clock: SweepClock::new(cli.has_input()),
+            #[cfg(feature = "vcon")]
+            live_vcon: cli.exports_vcon_live().then(LiveVconTracker::default),
+            #[cfg(feature = "tls")]
+            keylog_poll_clock: std::time::Instant::now(),
+            security_max_age: cli.security_sweep_max_age(&runner.config),
+            sink: output::BatchSink::stdout(cli.output_args.line_buffer),
+            effects,
+            start: std::time::Instant::now(),
+            total_count: 0,
+            input_ended: false,
+            counters: PacketCounters {
+                sip_count: 0,
+                rtp_count: 0,
+                prev_timestamp: None,
+                trailing_remaining: 0,
+                followed_dialogs: std::collections::HashSet::new(),
+                dtmf_count: 0,
+                dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
+            },
+        }
+    }
+}
+
+/// Log a failed `-O` packet write, with the reason the output could not be
+/// written.
+fn log_packet_write_error(e: &anyhow::Error) {
+    tracing::error!(
+        "Failed to write packet: {}",
+        crate::capture::writer::describe_output_error(e, crate::privilege::dropped_to())
+    );
+}
+
+/// Write decrypted-export frames to `-O`, oldest first, stopping at the
+/// first that fails. Returns `false` when one failed.
+#[cfg(feature = "tls")]
+fn write_decrypted_frames(
+    w: &mut PcapWriter,
+    frames: Vec<capture::decrypted_export::ExportFrame>,
+) -> bool {
+    for frame in frames {
+        if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
+            log_packet_write_error(&e);
+            return false;
+        }
+    }
+    true
+}
+
+/// The decrypted export's held frames at the end of the run: a stop discards
+/// them (stop means stop), the end of the input writes them. Then the
+/// counts, once. Returns `false` when a held frame could not be written.
+#[cfg(feature = "tls")]
+fn finish_decrypted_export(
+    mut x: capture::decrypted_export::DecryptedExport,
+    writer: Option<&mut PcapWriter>,
+) -> bool {
+    let mut written = true;
+    if signals::shutdown_requested() {
+        x.discard();
+    } else if let Some(w) = writer {
+        written = write_decrypted_frames(w, x.finish());
+    }
+    stderr_line!("sipnab: {}", x.counts().summary_line());
+    written
+}
+
+/// Write a `--group-by` buffer to the sink, one group at a time.
+///
+/// Headers are for humans; machine formats stay parseable, where the
+/// grouping is the contiguity of the records themselves.
+fn replay_group_buffer<W: std::io::Write>(
+    buf: &mut output::group::GroupBuffer,
+    sink: &mut output::BatchSink<W>,
+    machine_readable: bool,
+) {
+    if buf.truncated() {
+        tracing::warn!("{}", buf.truncation_note());
+    }
+    for (header, chunks) in buf.drain() {
+        if let Some(h) = header
+            && !machine_readable
+        {
+            sink.write_str(&format!("\n── {h} ──\n"));
+        }
+        for chunk in chunks {
+            sink.write_str(&chunk);
+        }
+    }
+}
+
+/// Join a helper thread, warning with `panicked` if it panicked.
+fn join_reporting_panic(thread: Option<std::thread::JoinHandle<()>>, panicked: &str) {
+    if let Some(join) = thread
+        && join.join().is_err()
+    {
+        tracing::warn!("{panicked}");
+    }
+}
+
+/// Whether the capture thread read its input to the end, from what joining
+/// it returned; a thread that did not is logged.
+///
+/// A capture thread that returned Err did NOT read its input to the end,
+/// so every report is drawn from a partial view. Both failure arms
+/// used to log and fall through to exit 0, which made the run
+/// indistinguishable from a complete one to anything reading `$?`.
+///
+/// The concrete case that found this: a BPF filter that compiles against
+/// the first file of a set and not against a later one. `capture_files`
+/// returns Err naming the file, the warn! swallowed it, and the run
+/// printed a whole-looking summary and exited 0 — while `--cores` on the
+/// same input exited 1. Two answers to one question, and the reassuring
+/// one was the default path.
+///
+/// A clean shutdown is not affected: `capture_live` returns Ok(()) when
+/// the stop signal ends the loop and reserves Err for a failed open, a
+/// rejected filter or a fatal read.
+fn capture_read_to_end(joined: std::thread::Result<anyhow::Result<()>>) -> bool {
+    match joined {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::error!("Capture did not complete: {e:#}");
+            false
+        }
+        Err(_) => {
+            tracing::error!("Capture thread panicked; the input was not read to the end");
+            false
+        }
+    }
+}
+
+/// Who the detectors accused, grouped.
+///
+/// Every detector answers per MESSAGE, which is right for `--kill-scanner`
+/// acting on one packet and wrong for the question asked after a capture:
+/// which addresses were probing me, and how do I know. Nothing here
+/// re-detects -- it groups findings the detectors already produced, so
+/// there is one detector and one set of thresholds.
+///
+/// `established` is carried with the accusation rather than left in the
+/// detector that already acts on it. A source that also completed a
+/// registration or a call is one a block would disconnect, and learning
+/// that after the block is too late.
+///
+/// Computed ABOVE the `--quiet` gate, and read by two consumers: the
+/// summary, which `--quiet` silences, and `--recommend-block`, which it
+/// must not. An operator who asked for a firewall rule and got nothing
+/// because an unrelated flag suppressed the summary would have no way to
+/// tell that from a capture with nothing in it.
+fn accused_sources(engines: &DetectionEngines) -> Vec<crate::security::sources::AccusedSource> {
+    let findings = engines
+        .alerts
+        .read()
+        .iter_findings(&[], None, ACCUSED_FINDING_SCAN_CAP)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let refs: Vec<&crate::security::alerting::Finding> = findings.iter().collect();
+    let mut accused = crate::security::sources::accused(&refs);
+    for a in &mut accused {
+        a.established = engines.scanner.as_ref().map(|d| d.established(&a.src_ip));
+    }
+    accused
+}
+
+/// `--recommend-block`: one rule per accused source in `dialect`, or the
+/// sentence saying there is nothing to block.
+fn print_block_recommendations(
+    accused: &[crate::security::sources::AccusedSource],
+    dialect: crate::security::recommend::BlockDialect,
+) {
+    if accused.is_empty() {
+        print!("{}", crate::security::recommend::nothing_to_recommend());
+    } else {
+        for a in accused {
+            print!("{}", crate::security::recommend::recommend(a, dialect));
+        }
+    }
+}
+
+/// The accusation summary: how many sources the detections named, and each
+/// one with its findings, its rules, and whether a block would disconnect it.
+fn log_accused_sources(accused: &[crate::security::sources::AccusedSource]) {
+    if accused.is_empty() {
+        return;
+    }
+    tracing::info!(
+        "sipnab: {} source(s) named by security detections",
+        accused.len()
+    );
+    for a in accused {
+        let rules = a.rules.iter().cloned().collect::<Vec<_>>().join(", ");
+        let counter = match a.established {
+            Some(true) => "  -- also completed a registration or call, so a block disconnects it",
+            _ => "",
+        };
+        tracing::info!(
+            "sipnab:   {} {} finding(s) [{rules}]{counter}",
+            a.src_ip,
+            a.findings
+        );
+    }
+}
+
+/// The busiest ports in a skip report, as `port (messages)`, at most five.
+fn busiest_skipped_ports(ports: &[crate::pipeline::SkippedPort]) -> String {
+    let top: Vec<String> = ports
+        .iter()
+        .take(5)
+        .map(|p| format!("{} ({})", p.port, p.messages))
+        .collect();
+    top.join(", ")
+}
+
+/// What `--portrange` and the WebSocket port set discarded, beside the totals
+/// they reduced.
+fn report_port_skips() {
+    // What `--portrange` discarded, beside the totals it reduced.
+    // Without this the counts above read as complete.
+    let skipped = crate::pipeline::portrange_skip_report();
+    if skipped.messages > 0 {
+        stderr_line!(
+            "NOT ANALYZED: {} further SIP message(s) were seen on ports outside \
+             --portrange and are in none of the totals above. Busiest: {}. \
+             Re-run with --portrange 1-65535 to include them.",
+            skipped.messages,
+            busiest_skipped_ports(&skipped.ports)
+        );
+    }
+
+    // And what the WebSocket port set discarded. Reported separately
+    // because it is a different loss with a different fix: the SIP
+    // above was recognized and gated, this was wrapped in a WebSocket
+    // frame on a port sipnab never tried to unwrap. Before this there
+    // was no report at all — a deployment terminating WSS on 8081 was
+    // told nothing whatsoever about its entire WebRTC signaling leg.
+    let ws_skipped = crate::pipeline::ws_port_skip_report();
+    if ws_skipped.messages > 0 {
+        stderr_line!(
+            "NOT ANALYZED: {} SIP-over-WebSocket message(s) arrived on ports \
+             outside the WebSocket port set ({}) and are in none of the \
+             totals above. Busiest: {}. Re-run with --ws-portrange covering \
+             them (e.g. --ws-portrange 1-65535) to include them.",
+            ws_skipped.messages,
+            crate::capture::websocket::ws_ports_description(),
+            busiest_skipped_ports(&ws_skipped.ports)
+        );
+    }
+}
+
+/// One last replay before the counters are read. A capture that
+/// ends moments after its keys arrive -- a test call, a Ctrl-C --
+/// would otherwise discard the held INVITE with nothing said: the
+/// only other trigger is the next TLS packet, and there is not
+/// going to be one. The recovered messages are too late to enter
+/// the pipeline here, but they are NOT too late to be counted, and
+/// a run that silently dropped what it was holding is exactly the
+/// missing measurement this feature exists to remove.
+#[cfg(feature = "tls")]
+fn report_late_tls_decrypts(d: &mut TlsDecryptor) {
+    let late = d.rewind();
+    if !late.is_empty() {
+        tracing::warn!(
+            "TLS late decrypt: {} record(s) opened only after the capture ended \
+             -- their keys arrived too late to place the messages in this run. \
+             Re-read the saved capture with the same keylog to see them.",
+            late.len()
+        );
+    }
+}
+
+/// Keep the process alive while a companion server is running, so clients
+/// can query the captured data. Poll the shutdown flag so SIGINT/SIGTERM
+/// exits cleanly instead of blocking on a thread that never returns.
+fn serve_until_shutdown(cli: &Cli, servers: &crate::app::servers::ServerHandles) {
+    announce_servers(cli);
+    while !signals::shutdown_requested() {
+        // A stdio MCP client owns the lifetime: when it closes stdin the
+        // serve task finishes, and there is no client left to serve — so
+        // exit instead of spinning forever (otherwise the process leaks
+        // until SIGINT). HTTP/API tasks only finish on a signal, so the
+        // flag stays unset there.
+        if mcp_stdio_client_gone(servers.mcp_stdio_done.as_ref()) {
+            tracing::info!("MCP client disconnected — shutting down");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Say which companion servers are keeping the process alive.
+fn announce_servers(cli: &Cli) {
+    #[cfg(feature = "api")]
+    if cli.listener_args.api.is_some() {
+        tracing::info!("API server active — press Ctrl-C to stop");
+    }
+    #[cfg(feature = "mcp")]
+    if cli.mcp_args.mcp {
+        tracing::info!("MCP server active — press Ctrl-C to stop");
+    }
+    #[cfg(not(any(feature = "api", feature = "mcp")))]
+    let _ = cli;
+}
+
+/// How a batch run went, as far as its exit status is concerned.
+#[derive(Debug, Clone, Copy, Default)]
+struct RunOutcome {
+    /// Writing `-O` or the per-message output failed.
+    output_failed: bool,
+    /// The capture thread did not read its input to the end.
+    capture_failed: bool,
+    /// A file in the set was truncated or a `--plugin` would not load
+    /// (`run_integrity::run_failed`).
+    run_failed: bool,
+    /// `--lint` found what its gate fails on.
+    lint_gate_tripped: bool,
+}
+
+/// The exit code a batch run ends with, or `None` to exit 0.
+///
+/// Report a truncated output as a failure. This runs after the sink
+/// flush, the writer's finish(), the kill-worker shutdown and the
+/// capture-thread join, so nothing is skipped to get here — the exit
+/// code is the only thing that changes.
+///
+/// Reports still print first: a partial capture is worth looking at,
+/// it just must not be mistaken for a whole one by a script reading $?.
+///
+/// `run_integrity::run_failed()` is the FILE path's half of the same
+/// rule the two flags implement for the live path. Reading a set
+/// of files deliberately continues past a truncated member and returns
+/// Ok, so `capture_failed` never sees it — and a truncated pcap or a
+/// `--plugin` that would not load exited 0 with a whole-looking report.
+/// 1, not a new code: docs/cli-reference.md already assigns 1 to
+/// "capture error, I/O error", and both of these are exactly that. 3 is
+/// reserved for the opposite situation — the tool worked and the
+/// CAPTURE is non-conformant — so spending it here would erase the
+/// distinction it exists to make.
+///
+/// 3, not 1, for the lint gate. A pipeline has to tell "sipnab broke" from
+/// "the capture is non-conformant": the first means investigate the tool,
+/// the second means fix the config that produced the traffic. Collapsing
+/// them would make a working gate indistinguishable from a broken one, and
+/// 1 and 2 already mean something else (#147).
+///
+/// The failure codes win over the lint gate, so a run that both failed to
+/// write its output and found lint errors reports the failure — the
+/// findings came from a partial read and are not trustworthy anyway.
+fn run_exit_code(outcome: RunOutcome) -> Option<i32> {
+    if outcome.output_failed || outcome.capture_failed || outcome.run_failed {
+        Some(1)
+    } else if outcome.lint_gate_tripped {
+        Some(3)
+    } else {
+        None
     }
 }
 
@@ -4611,53 +5215,10 @@ fn process_parsed_packet(
     counters: &mut PacketCounters,
     effects: &mut DeferredEffects,
 ) {
-    let matcher = ctx.matcher;
-    let filter_expr = ctx.filter_expr;
-    let output_opts = ctx.output_opts;
     let cli = ctx.cli;
-    let no_rtp = ctx.no_rtp;
-    let after_count = ctx.after_count;
-    let portrange = ctx.portrange;
-    let dialog_store = &mut *state.dialog_store;
-    let stream_store = &mut *state.stream_store;
-    let event_exec = &mut *state.event_exec;
-    let group = &mut state.group;
-    #[cfg(feature = "tls")]
-    let export = &mut state.export;
-    let scanner_detector = &mut engines.scanner;
-    let fraud_detector = &mut engines.fraud;
-    let digest_detector = &mut engines.digest;
-    let reg_flood_detector = &mut engines.reg_flood;
-    let scanner_kill_handle = &engines.kill_handle;
-    let kill_response_code = engines.kill_response_code;
-    let kill_targets = &engines.kill_targets;
-    let sip_count = &mut counters.sip_count;
-    let rtp_count = &mut counters.rtp_count;
-    let dtmf_count = &mut counters.dtmf_count;
-    let prev_timestamp = &mut counters.prev_timestamp;
-    let trailing_remaining = &mut counters.trailing_remaining;
-    let followed_dialogs = &mut counters.followed_dialogs;
-    // Split the borrow: the output buffer and the alert queue are disjoint
-    // fields, and the emitters below interleave with the detectors.
-    let DeferredEffects {
-        out,
-        alerts: pending_alerts,
-        evidence: evidence_sink,
-    } = effects;
     // Hexdump output (applies to all packets)
     if cli.output_args.hexdump && cli.mode_args.no_tui {
-        let dump = output::hexdump(&pp.payload);
-        write!(
-            out,
-            "{} {}:{} -> {}:{} {}\n{}",
-            pp.timestamp.format("%H:%M:%S%.3f"),
-            pp.src_addr,
-            pp.src_port,
-            pp.dst_addr,
-            pp.dst_port,
-            pp.transport,
-            dump,
-        );
+        write_hexdump(&mut effects.out, pp);
     }
 
     // Classify via the shared pipeline core (WS unwrap, SIP parse + SDP link
@@ -4666,8 +5227,8 @@ fn process_parsed_packet(
     // output dispatch, security detectors, events, DTMF.
     let opts = crate::pipeline::PipelineOptions {
         no_dialog: cli.dialog_args.no_dialog,
-        no_rtp,
-        sip_portrange: Some(portrange),
+        no_rtp: ctx.no_rtp,
+        sip_portrange: Some(ctx.portrange),
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
         // The packet loop already applied `--hep-parse` before this packet
@@ -4683,193 +5244,18 @@ fn process_parsed_packet(
     #[cfg(not(feature = "tls"))]
     let mut decrypt = crate::pipeline::MediaDecrypt::default();
 
-    match crate::pipeline::classify_packet(pp, state.rtp_heuristic, &opts, &mut decrypt) {
+    let action = crate::pipeline::classify_packet(pp, state.rtp_heuristic, &opts, &mut decrypt);
+    let mut packet = PacketPass {
+        ctx,
+        state,
+        engines,
+        counters,
+        effects,
+    };
+    match action {
         crate::pipeline::PacketAction::None => {}
         crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-            let sip_msg = msg;
-            *sip_count += 1;
-
-            // Apply matcher (header-level filters)
-            let matcher_pass = matcher.matches(&sip_msg);
-
-            // Track dialog regardless of filter (needed for filter DSL evaluation)
-            if !cli.dialog_args.no_dialog {
-                // Fire event exec before updating state (captures state change)
-                let prev_state = sip_msg
-                    .call_id()
-                    .and_then(|id| dialog_store.get(id))
-                    .map(|d| d.state().clone());
-
-                dialog_store.process_message((*sip_msg).clone());
-
-                // Apply --tag to the dialog
-                if let Some(ref tag_label) = cli.dialog_args.tag
-                    && let Some(call_id) = sip_msg.call_id()
-                    && let Some(dialog) = dialog_store.get_mut(call_id)
-                    && !dialog.tags.contains(tag_label)
-                {
-                    dialog.tags.push(tag_label.clone());
-                }
-
-                // Check if state changed, fire event
-                if let Some(call_id) = sip_msg.call_id()
-                    && let Some(dialog) = dialog_store.get(call_id)
-                    && prev_state.as_ref() != Some(dialog.state())
-                {
-                    // Queued, not fired: the command is decided here (it reads
-                    // the dialog, which needs this lock) and spawned by the
-                    // caller once the guards drop.
-                    event_exec.queue_dialog_event(dialog);
-                }
-
-                // Link SDP media endpoints to RTP streams, carrying WHERE the
-                // offer came from and WHEN it was seen. Both decide what a
-                // stream created later may claim from it: a binding across
-                // sources is a weaker tie and must say so, and an offer stale
-                // enough to belong to a previous call on the same socket must
-                // claim nothing (F3).
-                //
-                // This applier used the provenance-less call until 0.5.122,
-                // alone among the four, so `sdp_endpoint_expired` refused to
-                // age ANY endpoint on the `-N -I file` path -- it declines to
-                // guess an age it was never given. Nothing errored, which is
-                // why it survived.
-                let provenance = crate::rtp::stream_store::SdpProvenance::observed(
-                    pp.input_origin,
-                    pp.timestamp,
-                );
-                for (ip, port, call_id, media) in &sdp_links {
-                    stream_store
-                        .link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
-                }
-            }
-
-            // Apply DSL filter (evaluated after dialog update)
-            let filter_pass = if let Some(expr) = &filter_expr {
-                if let Some(call_id) = sip_msg.call_id() {
-                    if let Some(dialog) = dialog_store.get(call_id) {
-                        let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-                            stream_store.streams_for(call_id).collect();
-                        expr.matches_dialog(
-                            dialog,
-                            &dialog_streams,
-                            crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
-                            crate::rtp::quality::MosDelay::from_capture(stream_store),
-                        )
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                true
-            };
-
-            // Security detection: every armed detector runs here, under the
-            // guards, and returns what should follow rather than doing it;
-            // the effects are applied right below. The fraud detector reads
-            // the dialog this message belongs to, looked up only when it is
-            // armed, so an unarmed run pays no hash lookup for it.
-            let dialog = if fraud_detector.is_some() {
-                sip_msg.call_id().and_then(|id| dialog_store.get(id))
-            } else {
-                None
-            };
-            let mut detectors = sec::detectors::Detectors {
-                scanner: scanner_detector.as_mut(),
-                fraud: fraud_detector.as_mut(),
-                digest: digest_detector.as_mut(),
-                reg_flood: reg_flood_detector.as_mut(),
-                kill_targets,
-            };
-            let policy = sec::detectors::Policy {
-                fail2ban: cli.output_args.fail2ban,
-                hep_allow_kill: cli.security_args.hep_allow_kill,
-                origin: pp.input_origin,
-                kill_armed: scanner_kill_handle.is_some(),
-                kill_response_code,
-            };
-            for effect in sec::detectors::run_detectors(&mut detectors, &sip_msg, dialog, policy) {
-                apply_detector_effect(
-                    effect,
-                    sip_msg.timestamp,
-                    out,
-                    pending_alerts,
-                    scanner_kill_handle,
-                    evidence_sink,
-                    policy,
-                );
-            }
-
-            // STIR/SHAKEN extraction (I1)
-            #[cfg(feature = "tls")]
-            if cli.security_args.stir_shaken {
-                // EVERY Identity header. RFC 8224 §4 permits more than one,
-                // and a diverted call under RFC 8946 carries a `ppt=shaken`
-                // PASSporT plus a `ppt=div` one — reading only the first made
-                // the second invisible on every surface.
-                for result in sip_msg.stir_shaken_all() {
-                    match result {
-                        Ok(info) => {
-                            tracing::info!(
-                                "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
-                                info.attestation,
-                                info.orig_tn.as_deref().unwrap_or("-"),
-                                info.dest_display(),
-                                info.verified,
-                            );
-                        }
-                        // WARN, not debug. An Identity header that will not
-                        // parse is a forged or corrupted token, and at debug
-                        // it was indistinguishable from a message carrying
-                        // none — measured across four verbosity levels, and
-                        // none of them printed it.
-                        Err(e) => {
-                            tracing::warn!("STIR/SHAKEN: unparseable Identity header: {e}");
-                        }
-                    }
-                }
-            }
-
-            // I5: --calls-only keeps every message of an INVITE dialog and
-            // drops dialogs that are not calls. One rule, asked of the dialog.
-            let calls_only_pass = if cli.mode_args.calls_only {
-                let dialog = sip_msg.call_id().and_then(|id| dialog_store.get(id));
-                crate::sip::matcher::calls_only_admits(
-                    dialog.as_ref().map(|d| &d.method),
-                    sip_msg.method.as_ref(),
-                )
-            } else {
-                true
-            };
-
-            // Emit if the message directly matches, if it belongs to a dialog
-            // armed by a `-e` payload match (dialog-following), or if trailing
-            // context (`-A`) is still active.
-            let direct_match = matcher_pass && filter_pass && calls_only_pass;
-            let follow_dialogs = cli.matching_args.match_expr.is_some();
-            let emit = decide_emit(
-                direct_match,
-                sip_msg.call_id(),
-                follow_dialogs,
-                followed_dialogs,
-                trailing_remaining,
-                after_count,
-            );
-
-            if emit && cli.mode_args.no_tui {
-                dispatch_sip_output(
-                    &sip_msg,
-                    output_opts,
-                    cli,
-                    *prev_timestamp,
-                    out,
-                    group.as_deref_mut(),
-                );
-            }
-
-            *prev_timestamp = Some(sip_msg.timestamp);
+            packet.on_sip(pp, &msg, &sdp_links);
         }
         crate::pipeline::PacketAction::RelayControl(message) => {
             // A standalone media relay carries no SIP, so on that host this is
@@ -4877,7 +5263,7 @@ fn process_parsed_packet(
             // capture reports orphaned.
             if message.carries_anything() {
                 crate::pipeline::apply_relay_control(
-                    stream_store,
+                    packet.state.stream_store,
                     &message,
                     pp.input_origin,
                     pp.timestamp,
@@ -4886,127 +5272,456 @@ fn process_parsed_packet(
         }
         crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
             #[cfg(feature = "tls")]
-            if let Some(x) = export.as_deref_mut() {
+            if let Some(x) = packet.state.export.as_deref_mut() {
                 x.rtcp_seen(std::net::SocketAddr::new(pp.src_addr, pp.src_port));
             }
-            stream_store.process_rtcp(&rtcp_packets, pp.timestamp, pp.frame);
+            packet
+                .state
+                .stream_store
+                .process_rtcp(&rtcp_packets, pp.timestamp, pp.frame);
         }
         crate::pipeline::PacketAction::Rtp {
-            hdr: rtp_hdr,
+            hdr,
             decrypted_payload,
             via_heuristic,
-        } => {
-            // Heuristically-discovered streams keep the pre-existing batch
-            // contract: stream tracking only — no DTMF, no quality events.
-            if via_heuristic {
-                stream_store.process_rtp(pp, &rtp_hdr, pp.timestamp);
-                *rtp_count += 1;
-                return;
+        } => packet.on_rtp(pp, &hdr, decrypted_payload, via_heuristic),
+    }
+}
+
+/// `--hexdump`: the packet's addressing line and its payload as hex.
+#[inline]
+fn write_hexdump(out: &mut DeferredOutput, pp: &ParsedPacket) {
+    let dump = output::hexdump(&pp.payload);
+    write!(
+        out,
+        "{} {}:{} -> {}:{} {}\n{}",
+        pp.timestamp.format("%H:%M:%S%.3f"),
+        pp.src_addr,
+        pp.src_port,
+        pp.dst_addr,
+        pp.dst_port,
+        pp.transport,
+        dump,
+    );
+}
+
+/// Everything one classified packet is applied to: the run's configuration,
+/// the locked stores, the detectors, the counters and the deferred effects.
+///
+/// Built once per packet from the references [`process_parsed_packet`] was
+/// given, so the per-action methods share one set of borrows instead of each
+/// taking six parameters.
+struct PacketPass<'p, 'c, 's> {
+    /// Immutable per-run configuration (matcher, filter, CLI, ports).
+    ctx: &'p BatchContext<'c>,
+    /// The locked stores, heuristic, event engine and media-decrypt state.
+    state: &'p mut ProcessingState<'s>,
+    /// Security detectors, alert engine, and kill-worker handle.
+    engines: &'p mut DetectionEngines,
+    /// SIP/RTP counts and emit-selection state.
+    counters: &'p mut PacketCounters,
+    /// Where the side effects go instead of happening.
+    effects: &'p mut DeferredEffects,
+}
+
+impl PacketPass<'_, '_, '_> {
+    /// A SIP message: dialog tracking, the matcher and the DSL filter,
+    /// detectors, STIR/SHAKEN, `--calls-only`, and per-message output.
+    #[inline]
+    fn on_sip(
+        &mut self,
+        pp: &ParsedPacket,
+        sip_msg: &sip::SipMessage,
+        sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+    ) {
+        let cli = self.ctx.cli;
+        self.counters.sip_count += 1;
+
+        // Apply matcher (header-level filters)
+        let matcher_pass = self.ctx.matcher.matches(sip_msg);
+
+        // Track dialog regardless of filter (needed for filter DSL evaluation)
+        if !cli.dialog_args.no_dialog {
+            self.track_dialog(pp, sip_msg, sdp_links);
+        }
+
+        // Apply DSL filter (evaluated after dialog update)
+        let filter_pass = dsl_filter_passes(
+            self.ctx.filter_expr.as_ref(),
+            sip_msg,
+            self.state.dialog_store,
+            self.state.stream_store,
+        );
+
+        self.run_detectors(pp, sip_msg);
+
+        // STIR/SHAKEN extraction (I1)
+        #[cfg(feature = "tls")]
+        if cli.security_args.stir_shaken {
+            log_stir_shaken(sip_msg);
+        }
+
+        // I5: --calls-only keeps every message of an INVITE dialog and
+        // drops dialogs that are not calls. One rule, asked of the dialog.
+        let calls_only_pass = !cli.mode_args.calls_only || {
+            let dialog = sip_msg
+                .call_id()
+                .and_then(|id| self.state.dialog_store.get(id));
+            crate::sip::matcher::calls_only_admits(
+                dialog.as_ref().map(|d| &d.method),
+                sip_msg.method.as_ref(),
+            )
+        };
+
+        // Emit if the message directly matches, if it belongs to a dialog
+        // armed by a `-e` payload match (dialog-following), or if trailing
+        // context (`-A`) is still active.
+        let direct_match = matcher_pass && filter_pass && calls_only_pass;
+        let follow_dialogs = cli.matching_args.match_expr.is_some();
+        let emit = decide_emit(
+            direct_match,
+            sip_msg.call_id(),
+            follow_dialogs,
+            &mut self.counters.followed_dialogs,
+            &mut self.counters.trailing_remaining,
+            self.ctx.after_count,
+        );
+
+        if emit && cli.mode_args.no_tui {
+            dispatch_sip_output(
+                sip_msg,
+                self.ctx.output_opts,
+                cli,
+                self.counters.prev_timestamp,
+                &mut self.effects.out,
+                self.state.group.as_deref_mut(),
+            );
+        }
+
+        self.counters.prev_timestamp = Some(sip_msg.timestamp);
+    }
+
+    /// Fold a SIP message into its dialog, tag it, queue a dialog event when
+    /// its state changed, and link the SDP endpoints it carried.
+    #[inline]
+    fn track_dialog(
+        &mut self,
+        pp: &ParsedPacket,
+        sip_msg: &sip::SipMessage,
+        sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+    ) {
+        let cli = self.ctx.cli;
+        let dialog_store = &mut *self.state.dialog_store;
+        // Fire event exec before updating state (captures state change)
+        let prev_state = sip_msg
+            .call_id()
+            .and_then(|id| dialog_store.get(id))
+            .map(|d| d.state().clone());
+
+        dialog_store.process_message(sip_msg.clone());
+
+        // Apply --tag to the dialog
+        if let Some(ref tag_label) = cli.dialog_args.tag
+            && let Some(call_id) = sip_msg.call_id()
+            && let Some(dialog) = dialog_store.get_mut(call_id)
+            && !dialog.tags.contains(tag_label)
+        {
+            dialog.tags.push(tag_label.clone());
+        }
+
+        // Check if state changed, fire event
+        if let Some(call_id) = sip_msg.call_id()
+            && let Some(dialog) = dialog_store.get(call_id)
+            && prev_state.as_ref() != Some(dialog.state())
+        {
+            // Queued, not fired: the command is decided here (it reads
+            // the dialog, which needs this lock) and spawned by the
+            // caller once the guards drop.
+            self.state.event_exec.queue_dialog_event(dialog);
+        }
+
+        // Link SDP media endpoints to RTP streams, carrying WHERE the
+        // offer came from and WHEN it was seen. Both decide what a
+        // stream created later may claim from it: a binding across
+        // sources is a weaker tie and must say so, and an offer stale
+        // enough to belong to a previous call on the same socket must
+        // claim nothing (F3).
+        //
+        // This applier used the provenance-less call until 0.5.122,
+        // alone among the four, so `sdp_endpoint_expired` refused to
+        // age ANY endpoint on the `-N -I file` path -- it declines to
+        // guess an age it was never given. Nothing errored, which is
+        // why it survived.
+        let provenance =
+            crate::rtp::stream_store::SdpProvenance::observed(pp.input_origin, pp.timestamp);
+        for (ip, port, call_id, media) in sdp_links {
+            self.state
+                .stream_store
+                .link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
+        }
+    }
+
+    /// Security detection: every armed detector runs here, under the
+    /// guards, and returns what should follow rather than doing it;
+    /// the effects are applied right below. The fraud detector reads
+    /// the dialog this message belongs to, looked up only when it is
+    /// armed, so an unarmed run pays no hash lookup for it.
+    #[inline]
+    fn run_detectors(&mut self, pp: &ParsedPacket, sip_msg: &sip::SipMessage) {
+        let cli = self.ctx.cli;
+        let engines = &mut *self.engines;
+        let dialog = if engines.fraud.is_some() {
+            sip_msg
+                .call_id()
+                .and_then(|id| self.state.dialog_store.get(id))
+        } else {
+            None
+        };
+        let mut detectors = sec::detectors::Detectors {
+            scanner: engines.scanner.as_mut(),
+            fraud: engines.fraud.as_mut(),
+            digest: engines.digest.as_mut(),
+            reg_flood: engines.reg_flood.as_mut(),
+            kill_targets: &engines.kill_targets,
+        };
+        let policy = sec::detectors::Policy {
+            fail2ban: cli.output_args.fail2ban,
+            hep_allow_kill: cli.security_args.hep_allow_kill,
+            origin: pp.input_origin,
+            kill_armed: engines.kill_handle.is_some(),
+            kill_response_code: engines.kill_response_code,
+        };
+        // Split the borrow: the output buffer and the alert queue are disjoint
+        // fields, and the emitters below interleave with the detectors.
+        let DeferredEffects {
+            out,
+            alerts: pending_alerts,
+            evidence: evidence_sink,
+        } = &mut *self.effects;
+        for effect in sec::detectors::run_detectors(&mut detectors, sip_msg, dialog, policy) {
+            apply_detector_effect(
+                effect,
+                sip_msg.timestamp,
+                out,
+                pending_alerts,
+                &engines.kill_handle,
+                evidence_sink,
+                policy,
+            );
+        }
+    }
+
+    /// An RTP packet: stream tracking, then DTMF and quality events for
+    /// streams the signaling explains.
+    #[inline]
+    fn on_rtp(
+        &mut self,
+        pp: &ParsedPacket,
+        rtp_hdr: &rtp::parser::RtpHeader,
+        decrypted_payload: Option<bytes::Bytes>,
+        via_heuristic: bool,
+    ) {
+        // Heuristically-discovered streams keep the pre-existing batch
+        // contract: stream tracking only — no DTMF, no quality events.
+        if via_heuristic {
+            self.state
+                .stream_store
+                .process_rtp(pp, rtp_hdr, pp.timestamp);
+            self.counters.rtp_count += 1;
+            return;
+        }
+
+        // SRTP: classification substituted a plaintext payload when a key
+        // authenticated the packet. The auth tag is the gate — a wrong
+        // key never produces plaintext.
+        let srtp_decrypted: Option<ParsedPacket> = decrypted_payload.map(|plain| {
+            let mut d = pp.clone();
+            d.payload = plain;
+            d
+        });
+        let rtp_pp: &ParsedPacket = srtp_decrypted.as_ref().unwrap_or(pp);
+        #[cfg(feature = "tls")]
+        if let (Some(x), Some(plain)) = (self.state.export.as_deref_mut(), srtp_decrypted.as_ref())
+        {
+            x.srtp_decrypted(&plain.payload);
+        }
+
+        self.state
+            .stream_store
+            .process_rtp(rtp_pp, rtp_hdr, rtp_pp.timestamp);
+        self.counters.rtp_count += 1;
+
+        // DTMF extraction (I2): if --telephone-event is set and we have
+        // the RTP payload after the header, attempt DTMF decode.
+        if self.ctx.cli.mode_args.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
+            self.extract_dtmf(pp, rtp_pp, rtp_hdr);
+        }
+
+        // Fire quality events on each RTP packet (rate-limited internally). Guard
+        // on a configured command so the common no-`--on-quality` path skips the
+        // StreamKey rebuild + second store lookup entirely (per-RTP-packet
+        // constant-factor cut; fire_quality_event no-ops otherwise).
+        if self.state.event_exec.quality_events_enabled() {
+            let key = stream_key_of(pp, rtp_hdr);
+            if let Some(stream) = self.state.stream_store.get(&key) {
+                // Queued, not fired — same reason as the dialog event: the
+                // MOS estimate reads the stream, the `fork`/`exec` does not.
+                self.state.event_exec.queue_quality_event(
+                    stream,
+                    crate::rtp::quality::MosDelay::from_capture(self.state.stream_store),
+                );
             }
+        }
+    }
 
-            // SRTP: classification substituted a plaintext payload when a key
-            // authenticated the packet. The auth tag is the gate — a wrong
-            // key never produces plaintext.
-            let srtp_decrypted: Option<ParsedPacket> = decrypted_payload.map(|plain| {
-                let mut d = pp.clone();
-                d.payload = plain;
-                d
-            });
-            let rtp_pp: &ParsedPacket = srtp_decrypted.as_ref().unwrap_or(pp);
-            #[cfg(feature = "tls")]
-            if let (Some(x), Some(plain)) = (export.as_deref_mut(), srtp_decrypted.as_ref()) {
-                x.srtp_decrypted(&plain.payload);
+    /// Decode one RFC 4733 telephone-event packet and log the digit, once per
+    /// event.
+    ///
+    /// The telephone-event payload type and clock rate are negotiated in
+    /// SDP (`a=rtpmap:<pt> telephone-event/<clock>`), not fixed at the
+    /// PT 101 / 8000 Hz conventions. `process_rtp` resolved this
+    /// stream's codec, payload_type, and clock_rate from that rtpmap,
+    /// so when the codec is telephone-event we use the stream's
+    /// negotiated PT and clock; otherwise fall back to the conventions
+    /// (e.g. a DTMF-only stream with no observed SDP).
+    #[inline]
+    fn extract_dtmf(
+        &mut self,
+        pp: &ParsedPacket,
+        rtp_pp: &ParsedPacket,
+        rtp_hdr: &rtp::parser::RtpHeader,
+    ) {
+        let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
+        let key = stream_key_of(pp, rtp_hdr);
+        let (expected_pt, clock_rate) = self
+            .state
+            .stream_store
+            .get(&key)
+            .filter(|s| {
+                s.codec
+                    .as_deref()
+                    .is_some_and(|c| c.eq_ignore_ascii_case("telephone-event"))
+            })
+            .map(|s| (s.payload_type, s.clock_rate))
+            .unwrap_or((101, 8000));
+        if let Some(dtmf) = rtp::dtmf::extract_dtmf_with_clock(
+            rtp_payload,
+            rtp_hdr.payload_type,
+            expected_pt,
+            clock_rate,
+            pp.timestamp,
+        ) && !self.counters.dtmf_seen.is_duplicate(
+            rtp_hdr.ssrc,
+            rtp_hdr.timestamp,
+            rtp_payload.first().copied().unwrap_or(0),
+        ) {
+            self.counters.dtmf_count += 1;
+            log_dtmf_digit(&dtmf, rtp_hdr.ssrc, self.ctx.cli.mode_args.dtmf_cleartext);
+        }
+    }
+}
+
+/// The stream an RTP packet belongs to: its SSRC and its socket pair.
+#[inline]
+fn stream_key_of(
+    pp: &ParsedPacket,
+    rtp_hdr: &rtp::parser::RtpHeader,
+) -> crate::rtp::stream::StreamKey {
+    crate::rtp::stream::StreamKey {
+        ssrc: rtp_hdr.ssrc,
+        src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+        dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+    }
+}
+
+/// Log one decoded DTMF digit.
+fn log_dtmf_digit(dtmf: &rtp::dtmf::DtmfEvent, ssrc: u32, cleartext: bool) {
+    // The always-on line is masked. A decoded digit is the
+    // caller's secret — after answer these are voicemail PINs,
+    // calling-card and card numbers — and the log is the widest
+    // surface sipnab has: terminal, redirected file, journald,
+    // and any aggregate that ships it onward. Everything an
+    // operator diagnoses with (a digit arrived, when, how long,
+    // on which SSRC) survives masking; only the value does not.
+    tracing::info!(
+        "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
+        rtp::dtmf::MASKED_DIGIT,
+        dtmf.duration_ms,
+        ssrc
+    );
+    // Cleartext is an additional line, not a substitution, and
+    // it sits at `debug` — one level below the masked line's
+    // `info`. Two independent acts are therefore required to
+    // put a PIN on disk: passing --dtmf-cleartext AND raising
+    // SIPNAB_LOG to debug. Emitting it as a separate line also
+    // means turning the flag on never *removes* the diagnostic
+    // the default level already gave you.
+    if cleartext {
+        tracing::debug!(
+            "DTMF cleartext digit='{}' duration={}ms ssrc=0x{:08x}",
+            dtmf.digit,
+            dtmf.duration_ms,
+            ssrc
+        );
+    }
+}
+
+/// Whether a SIP message passes the `--filter` DSL, evaluated against the
+/// dialog it belongs to after that dialog was updated. No filter passes
+/// everything; a message with no Call-ID, or whose dialog is not tracked,
+/// passes nothing.
+#[inline]
+fn dsl_filter_passes(
+    filter_expr: Option<&FilterExpr>,
+    sip_msg: &sip::SipMessage,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+) -> bool {
+    let Some(expr) = filter_expr else {
+        return true;
+    };
+    let Some(call_id) = sip_msg.call_id() else {
+        return false;
+    };
+    let Some(dialog) = dialog_store.get(call_id) else {
+        return false;
+    };
+    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+        stream_store.streams_for(call_id).collect();
+    expr.matches_dialog(
+        dialog,
+        &dialog_streams,
+        crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
+        crate::rtp::quality::MosDelay::from_capture(stream_store),
+    )
+}
+
+/// Log every STIR/SHAKEN Identity header a message carries.
+///
+/// EVERY Identity header. [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224#section-4) permits more than one,
+/// and a diverted call under RFC 8946 carries a `ppt=shaken`
+/// PASSporT plus a `ppt=div` one — reading only the first made
+/// the second invisible on every surface.
+#[cfg(feature = "tls")]
+fn log_stir_shaken(sip_msg: &sip::SipMessage) {
+    for result in sip_msg.stir_shaken_all() {
+        match result {
+            Ok(info) => {
+                tracing::info!(
+                    "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
+                    info.attestation,
+                    info.orig_tn.as_deref().unwrap_or("-"),
+                    info.dest_display(),
+                    info.verified,
+                );
             }
-
-            stream_store.process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
-            *rtp_count += 1;
-
-            // DTMF extraction (I2): if --telephone-event is set and we have
-            // the RTP payload after the header, attempt DTMF decode. The
-            // telephone-event payload type and clock rate are negotiated in
-            // SDP (`a=rtpmap:<pt> telephone-event/<clock>`), not fixed at the
-            // PT 101 / 8000 Hz conventions. `process_rtp` above resolved this
-            // stream's codec, payload_type, and clock_rate from that rtpmap,
-            // so when the codec is telephone-event we use the stream's
-            // negotiated PT and clock; otherwise fall back to the conventions
-            // (e.g. a DTMF-only stream with no observed SDP).
-            if cli.mode_args.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
-                let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
-                let key = crate::rtp::stream::StreamKey {
-                    ssrc: rtp_hdr.ssrc,
-                    src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
-                    dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
-                };
-                let (expected_pt, clock_rate) = stream_store
-                    .get(&key)
-                    .filter(|s| {
-                        s.codec
-                            .as_deref()
-                            .is_some_and(|c| c.eq_ignore_ascii_case("telephone-event"))
-                    })
-                    .map(|s| (s.payload_type, s.clock_rate))
-                    .unwrap_or((101, 8000));
-                if let Some(dtmf) = rtp::dtmf::extract_dtmf_with_clock(
-                    rtp_payload,
-                    rtp_hdr.payload_type,
-                    expected_pt,
-                    clock_rate,
-                    pp.timestamp,
-                ) && !counters.dtmf_seen.is_duplicate(
-                    rtp_hdr.ssrc,
-                    rtp_hdr.timestamp,
-                    rtp_payload.first().copied().unwrap_or(0),
-                ) {
-                    *dtmf_count += 1;
-                    // The always-on line is masked. A decoded digit is the
-                    // caller's secret — after answer these are voicemail PINs,
-                    // calling-card and card numbers — and the log is the widest
-                    // surface sipnab has: terminal, redirected file, journald,
-                    // and any aggregate that ships it onward. Everything an
-                    // operator diagnoses with (a digit arrived, when, how long,
-                    // on which SSRC) survives masking; only the value does not.
-                    tracing::info!(
-                        "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
-                        rtp::dtmf::MASKED_DIGIT,
-                        dtmf.duration_ms,
-                        rtp_hdr.ssrc
-                    );
-                    // Cleartext is an additional line, not a substitution, and
-                    // it sits at `debug` — one level below the masked line's
-                    // `info`. Two independent acts are therefore required to
-                    // put a PIN on disk: passing --dtmf-cleartext AND raising
-                    // SIPNAB_LOG to debug. Emitting it as a separate line also
-                    // means turning the flag on never *removes* the diagnostic
-                    // the default level already gave you.
-                    if cli.mode_args.dtmf_cleartext {
-                        tracing::debug!(
-                            "DTMF cleartext digit='{}' duration={}ms ssrc=0x{:08x}",
-                            dtmf.digit,
-                            dtmf.duration_ms,
-                            rtp_hdr.ssrc
-                        );
-                    }
-                }
-            }
-
-            // Fire quality events on each RTP packet (rate-limited internally). Guard
-            // on a configured command so the common no-`--on-quality` path skips the
-            // StreamKey rebuild + second store lookup entirely (per-RTP-packet
-            // constant-factor cut; fire_quality_event no-ops otherwise).
-            if event_exec.quality_events_enabled() {
-                let key = crate::rtp::stream::StreamKey {
-                    ssrc: rtp_hdr.ssrc,
-                    src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
-                    dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
-                };
-                if let Some(stream) = stream_store.get(&key) {
-                    // Queued, not fired — same reason as the dialog event: the
-                    // MOS estimate reads the stream, the `fork`/`exec` does not.
-                    event_exec.queue_quality_event(
-                        stream,
-                        crate::rtp::quality::MosDelay::from_capture(stream_store),
-                    );
-                }
+            // WARN, not debug. An Identity header that will not
+            // parse is a forged or corrupted token, and at debug
+            // it was indistinguishable from a message carrying
+            // none — measured across four verbosity levels, and
+            // none of them printed it.
+            Err(e) => {
+                tracing::warn!("STIR/SHAKEN: unparseable Identity header: {e}");
             }
         }
     }
@@ -5609,19 +6324,7 @@ pub fn generate_reports(
         streams: stream_store,
         frames_read,
     } = read;
-    // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
-    // scales with call count. `endpoint_link_scan_visits` is the cost that was
-    // O(calls²) before the endpoint index; it now grows ~linearly with streams.
-    // A value near streams² means the quadratic regression is back.
-    if std::env::var_os("SIPNAB_PERF_STATS").is_some() {
-        stderr_line!(
-            "[perf-stats] dialogs={} streams={} endpoint_link_scan_visits={} evict_shift_work={}",
-            dialog_store.len(),
-            stream_store.len(),
-            stream_store.link_scan_iters(),
-            stream_store.evict_shift_work(),
-        );
-    }
+    report_perf_stats(dialog_store, stream_store);
 
     // Idle compaction throws away messages sipnab captured, which makes the
     // ladder for those calls short in every report below. Recorded, not
@@ -5642,6 +6345,55 @@ pub fn generate_reports(
     // marker. That marker has to name the plugin failure, so the load cannot
     // happen after `--report` has already been written to stdout.
     #[cfg(feature = "plugins")]
+    let plugins = load_report_plugins(cli);
+
+    let reports = EndOfRunReports {
+        cli,
+        read,
+        filter,
+        #[cfg(feature = "plugins")]
+        plugins: &plugins,
+    };
+    // In this order, and each one only if every one before it succeeded: a
+    // report that could not be written stops the rest, so the exit status
+    // speaks for the first failure.
+    reports.dialog_table()
+        && reports.json_dialogs()
+        && reports.stun_tables()
+        && reports.analysis()
+        && reports.call_report()
+        // --export-vcon <call-id>: one observed dialog as a vCon container.
+        && export_vcon(
+            cli,
+            vcon_filter,
+            dialog_store,
+            stream_store,
+            frames_read,
+            gate,
+            vcon_end,
+        )
+}
+
+/// SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
+/// scales with call count. `endpoint_link_scan_visits` is the cost that was
+/// O(calls²) before the endpoint index; it now grows ~linearly with streams.
+/// A value near streams² means the quadratic regression is back.
+fn report_perf_stats(dialog_store: &DialogStore, stream_store: &StreamStore) {
+    if std::env::var_os("SIPNAB_PERF_STATS").is_some() {
+        stderr_line!(
+            "[perf-stats] dialogs={} streams={} endpoint_link_scan_visits={} evict_shift_work={}",
+            dialog_store.len(),
+            stream_store.len(),
+            stream_store.link_scan_iters(),
+            stream_store.evict_shift_work(),
+        );
+    }
+}
+
+/// Load every `--plugin`, logging each one that loaded and each one that did
+/// not, and record how many of the requested plugins failed.
+#[cfg(feature = "plugins")]
+fn load_report_plugins(cli: &Cli) -> Vec<crate::plugin::Plugin> {
     let plugins: Vec<crate::plugin::Plugin> = cli
         .output_args
         .plugin
@@ -5659,18 +6411,62 @@ pub fn generate_reports(
         .collect();
     // Both numbers, from the one place that knows both: "one plugin failed"
     // and "the only plugin failed" are different reports.
-    #[cfg(feature = "plugins")]
     crate::output::run_integrity::record_plugins(crate::output::run_integrity::PluginLoadOutcome {
         requested: cli.output_args.plugin.len(),
         failed: cli.output_args.plugin.len().saturating_sub(plugins.len()),
     });
+    plugins
+}
 
-    // --report: dialog summary table
-    if cli.output_args.report && cli.mode_args.no_tui {
+/// The table format `--markdown` picks for the human-readable reports.
+fn table_report_format(cli: &Cli) -> output::ReportFormat {
+    if cli.output_args.markdown {
+        output::ReportFormat::Markdown
+    } else {
+        output::ReportFormat::Text
+    }
+}
+
+/// The format `--call-report` renders in: JSON under `--json` or
+/// `--json-pretty`, otherwise the table format.
+fn call_report_format(cli: &Cli) -> ReportFormat {
+    if cli.output_args.json || cli.output_args.json_pretty {
+        ReportFormat::Json
+    } else if cli.output_args.markdown {
+        ReportFormat::Markdown
+    } else {
+        ReportFormat::Text
+    }
+}
+
+/// Everything the end-of-run reports render from.
+///
+/// Each method writes one requested report and returns `false` only when that
+/// report was asked for and could not be produced; a report that was not asked
+/// for returns `true`.
+struct EndOfRunReports<'a> {
+    /// Which reports were asked for, and in what form.
+    cli: &'a Cli,
+    /// The final stores and the frame count behind them.
+    read: CaptureRead<'a>,
+    /// The compiled `--filter` expression, or `None` for no filter.
+    filter: Option<&'a FilterExpr>,
+    /// The `--plugin`s that loaded, applied to each `--json-dialogs` line.
+    #[cfg(feature = "plugins")]
+    plugins: &'a [crate::plugin::Plugin],
+}
+
+impl EndOfRunReports<'_> {
+    /// --report: dialog summary table
+    fn dialog_table(&self) -> bool {
+        if !(self.cli.output_args.report && self.cli.mode_args.no_tui) {
+            return true;
+        }
         // Filtered: the matching dialogs and the streams linked to them. With
         // no filter this is every dialog and every stream, orphans included —
         // an unfiltered report is unchanged.
-        let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
+        let selection =
+            crate::sip::dsl::select_dialogs(self.filter, self.read.dialogs, self.read.streams);
         let dialogs: Vec<&crate::sip::dialog::SipDialog> =
             selection.dialogs.iter().map(|(d, _)| *d).collect();
         // `--markdown` was read, documented and IGNORED here: the output was
@@ -5679,11 +6475,7 @@ pub fn generate_reports(
         let mut report = output::print_dialog_report_as(
             &dialogs,
             &selection.streams,
-            if cli.output_args.markdown {
-                output::ReportFormat::Markdown
-            } else {
-                output::ReportFormat::Text
-            },
+            table_report_format(self.cli),
         );
         // A report drawn from a partial read must say so IN the report. The
         // exit status carries the same fact, but a reader looking at this
@@ -5696,16 +6488,19 @@ pub fn generate_reports(
         // died with exit 101 and a Rust backtrace instead of an error. A closed
         // pipe stays fine — `sipnab --report | head` must not fail — but a real
         // write error makes the report incomplete, which is a failed report.
-        if !write_stdout(&report) {
-            return false;
-        }
+        write_stdout(&report)
     }
 
-    // --json-dialogs: one NDJSON object per dialog
-    if cli.output_args.json_dialogs && cli.mode_args.no_tui {
+    /// --json-dialogs: one NDJSON object per dialog
+    fn json_dialogs(&self) -> bool {
+        if !(self.cli.output_args.json_dialogs && self.cli.mode_args.no_tui) {
+            return true;
+        }
+        let stream_store = self.read.streams;
         // Groups the streams by Call-ID once, where the loop below used to
         // rescan the whole stream store per dialog.
-        let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
+        let selection =
+            crate::sip::dsl::select_dialogs(self.filter, self.read.dialogs, stream_store);
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(stream_store);
         // Resolved once for the whole run: every dialog's streams are scored on
         // the same evidence, and re-resolving per dialog would let two records
@@ -5728,7 +6523,7 @@ pub fn generate_reports(
             let line = output::dialog_to_ndjson(dialog, dialog_streams, &diagnosis, delay);
 
             #[cfg(feature = "plugins")]
-            let line = apply_plugins(&plugins, dialog, &line);
+            let line = apply_plugins(self.plugins, dialog, &line);
 
             out.push_str(&line);
         }
@@ -5748,150 +6543,136 @@ pub fn generate_reports(
         // Same write discipline as --report: a real write error means the
         // output is incomplete, which is a failed run, while a closed pipe
         // (`| head`) stays fine.
-        if !write_stdout(&out) {
-            return false;
-        }
+        write_stdout(&out)
     }
 
-    // --stun: the STUN/TURN transaction and allocation tables. Read from the
-    // process-global store rather than taken as an argument, for the reason the
-    // ICMP section of `print_dialog_report` is: a STUN transaction is neither a
-    // `SipDialog` nor an `RtpStream`, so it cannot arrive through either slice.
-    //
-    // Not narrowed by `--filter`: the DSL selects dialogs, and a NAT-discovery
-    // probe belongs to no dialog. Filtering it by a dialog filter would drop
-    // exactly the evidence that explains why those dialogs have no media.
-    if cli.output_args.stun && cli.mode_args.no_tui {
-        let report = output::print_stun_report_as(
-            &crate::stun::report(),
-            if cli.output_args.markdown {
-                output::ReportFormat::Markdown
-            } else {
-                output::ReportFormat::Text
-            },
+    /// --stun: the STUN/TURN transaction and allocation tables. Read from the
+    /// process-global store rather than taken as an argument, for the reason
+    /// the ICMP section of `print_dialog_report` is: a STUN transaction is
+    /// neither a `SipDialog` nor an `RtpStream`, so it cannot arrive through
+    /// either slice.
+    ///
+    /// Not narrowed by `--filter`: the DSL selects dialogs, and a NAT-discovery
+    /// probe belongs to no dialog. Filtering it by a dialog filter would drop
+    /// exactly the evidence that explains why those dialogs have no media.
+    ///
+    /// --json-stun: one NDJSON object per transaction, then one per allocation.
+    fn stun_tables(&self) -> bool {
+        let cli = self.cli;
+        if cli.output_args.stun
+            && cli.mode_args.no_tui
+            && !write_stdout(&output::print_stun_report_as(
+                &crate::stun::report(),
+                table_report_format(cli),
+            ))
+        {
+            return false;
+        }
+        if cli.output_args.json_stun && cli.mode_args.no_tui {
+            return write_stdout(&output::stun_report_ndjson(&crate::stun::report()));
+        }
+        true
+    }
+
+    /// --analyze / --json-analyze / --yang-analyze: every problem in the
+    /// capture, worst first.
+    ///
+    /// Computed once and rendered up to three times: asking for several forms
+    /// must not be able to produce different answers, and `analyze` reads
+    /// process-global stores whose contents a second call has no reason to
+    /// change but no guarantee not to.
+    ///
+    /// `--filter` narrows the DIALOG selection, exactly as `--report` does, and
+    /// narrows nothing else. See `crate::analysis::analyze` for why the
+    /// capture-level findings are deliberately not filtered.
+    fn analysis(&self) -> bool {
+        let args = &self.cli.output_args;
+        if !((args.analyze || args.json_analyze || args.yang_analyze) && self.cli.mode_args.no_tui)
+        {
+            return true;
+        }
+        let analysis = crate::analysis::analyze(
+            self.read.dialogs,
+            self.read.streams,
+            self.filter,
+            self.read.frames_read,
         );
-        if !write_stdout(&report) {
-            return false;
-        }
-    }
-
-    // --json-stun: one NDJSON object per transaction, then one per allocation.
-    if cli.output_args.json_stun && cli.mode_args.no_tui {
-        let out = output::stun_report_ndjson(&crate::stun::report());
-        if !write_stdout(&out) {
-            return false;
-        }
-    }
-
-    // --analyze / --json-analyze / --yang-analyze: every problem in the
-    // capture, worst first.
-    //
-    // Computed once and rendered up to three times: asking for several forms
-    // must not be able to produce different answers, and `analyze` reads
-    // process-global stores whose contents a second call has no reason to
-    // change but no guarantee not to.
-    //
-    // `--filter` narrows the DIALOG selection, exactly as `--report` does, and
-    // narrows nothing else. See `crate::analysis::analyze` for why the
-    // capture-level findings are deliberately not filtered.
-    if (cli.output_args.analyze || cli.output_args.json_analyze || cli.output_args.yang_analyze)
-        && cli.mode_args.no_tui
-    {
-        let analysis = crate::analysis::analyze(dialog_store, stream_store, filter, frames_read);
-        if cli.output_args.analyze {
-            let report = output::print_analysis_report_as(
+        (!args.analyze
+            || write_stdout(&output::print_analysis_report_as(
                 &analysis,
-                if cli.output_args.markdown {
-                    output::ReportFormat::Markdown
-                } else {
-                    output::ReportFormat::Text
-                },
-            );
-            if !write_stdout(&report) {
-                return false;
-            }
-        }
-        if cli.output_args.json_analyze {
-            match serde_json::to_string(&analysis) {
-                Ok(mut line) => {
-                    line.push('\n');
-                    if !write_stdout(&line) {
-                        return false;
-                    }
-                }
-                // An analysis that will not serialize is a bug in the type, not
-                // a reason to fail the whole run silently.
-                Err(e) => tracing::error!("analysis serialization failed: {e}"),
-            }
-        }
-        // The same analysis, RFC 7951-encoded against `sipnab-diagnosis`: a
-        // transform of the serialization just written, never a second reading.
-        if cli.output_args.yang_analyze {
-            match crate::analysis::yang::to_rfc7951(&analysis)
-                .and_then(|doc| crate::analysis::yang::to_line(&doc))
-            {
-                Ok(line) => {
-                    if !write_stdout(&line) {
-                        return false;
-                    }
-                }
-                Err(e) => tracing::error!("RFC 7951 encoding failed: {e}"),
-            }
-        }
+                table_report_format(self.cli),
+            )))
+            && (!args.json_analyze || write_json_analysis(&analysis))
+            && (!args.yang_analyze || write_yang_analysis(&analysis))
     }
 
-    // --call-report <call-id>: detailed single-call report
-    if let Some(ref call_id) = cli.output_args.call_report {
-        if let Some(dialog) = dialog_store.get(call_id) {
-            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-                stream_store.streams_for(call_id).collect();
-            let media = crate::rtp::diagnosis::MediaContext::for_dialog(
-                dialog,
-                crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
-            );
-            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(&dialog_streams, &media);
-            crate::rtp::diagnosis::diagnose_asymmetry(
-                &mut diagnosis,
-                Some(dialog),
-                &dialog_streams,
-                &crate::rtp::diagnosis::AsymmetryThresholds::default(),
-            );
-            let format = if cli.output_args.json || cli.output_args.json_pretty {
-                ReportFormat::Json
-            } else if cli.output_args.markdown {
-                ReportFormat::Markdown
-            } else {
-                ReportFormat::Text
-            };
-            let report = output::generate_call_report(
-                dialog,
-                &dialog_streams,
-                &diagnosis,
-                format,
-                crate::rtp::quality::MosDelay::from_capture(stream_store),
-            );
-            print!("{report}");
-        } else {
+    /// --call-report <call-id>: detailed single-call report
+    fn call_report(&self) -> bool {
+        let Some(ref call_id) = self.cli.output_args.call_report else {
+            return true;
+        };
+        let stream_store = self.read.streams;
+        let Some(dialog) = self.read.dialogs.get(call_id) else {
             // eprintln (not tracing) so the failure is visible even with
             // logging off — it decides the process exit code.
             stderr_line!("Call-ID '{call_id}' not found in tracked dialogs");
             return false;
+        };
+        let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+            stream_store.streams_for(call_id).collect();
+        let media = crate::rtp::diagnosis::MediaContext::for_dialog(
+            dialog,
+            crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
+        );
+        let mut diagnosis = crate::rtp::diagnosis::diagnose_media(&dialog_streams, &media);
+        crate::rtp::diagnosis::diagnose_asymmetry(
+            &mut diagnosis,
+            Some(dialog),
+            &dialog_streams,
+            &crate::rtp::diagnosis::AsymmetryThresholds::default(),
+        );
+        let report = output::generate_call_report(
+            dialog,
+            &dialog_streams,
+            &diagnosis,
+            call_report_format(self.cli),
+            crate::rtp::quality::MosDelay::from_capture(stream_store),
+        );
+        print!("{report}");
+        true
+    }
+}
+
+/// `--json-analyze`: the analysis as one JSON line. `false` only when the
+/// line could not be written.
+fn write_json_analysis(analysis: &crate::analysis::CaptureAnalysis) -> bool {
+    match serde_json::to_string(analysis) {
+        Ok(mut line) => {
+            line.push('\n');
+            write_stdout(&line)
+        }
+        // An analysis that will not serialize is a bug in the type, not
+        // a reason to fail the whole run silently.
+        Err(e) => {
+            tracing::error!("analysis serialization failed: {e}");
+            true
         }
     }
+}
 
-    // --export-vcon <call-id>: one observed dialog as a vCon container.
-    if !export_vcon(
-        cli,
-        vcon_filter,
-        dialog_store,
-        stream_store,
-        frames_read,
-        gate,
-        vcon_end,
-    ) {
-        return false;
+/// `--yang-analyze`: the same analysis, RFC 7951-encoded against
+/// `sipnab-diagnosis`: a transform of the serialization just written, never a
+/// second reading. `false` only when the line could not be written.
+fn write_yang_analysis(analysis: &crate::analysis::CaptureAnalysis) -> bool {
+    match crate::analysis::yang::to_rfc7951(analysis)
+        .and_then(|doc| crate::analysis::yang::to_line(&doc))
+    {
+        Ok(line) => write_stdout(&line),
+        Err(e) => {
+            tracing::error!("RFC 7951 encoding failed: {e}");
+            true
+        }
     }
-    true
 }
 
 /// The export directory, created if absent.
@@ -6077,6 +6858,14 @@ impl LiveVconTracker {
     pub fn failed(&self) -> bool {
         self.failed
     }
+
+    /// Log why a sweep could not write a container it owed, and remember
+    /// that it failed so the run ends non-zero.
+    #[cfg(feature = "vcon")]
+    fn fail(&mut self, message: &str) {
+        tracing::error!("{message}");
+        self.failed = true;
+    }
 }
 
 /// What the end-of-run vCon export owes, given how the run went.
@@ -6204,38 +6993,26 @@ fn live_vcon_sweep(
         match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!("{e:#}");
-                tracker.failed = true;
+                tracker.fail(&format!("{e:#}"));
                 return 0;
             }
         };
-    let settle = live_settle();
-    let due: Vec<&crate::sip::dialog::SipDialog> = selection
-        .dialogs
-        .iter()
-        .map(|(dialog, _)| *dialog)
-        .filter(|dialog| {
-            live_vcon_due(
-                dialog.state(),
-                dialog.updated_at,
-                now,
-                settle,
-                tracker.written_at(&dialog.call_id),
-            )
-        })
-        .collect();
+    let due = live_due_dialogs(
+        selection.dialogs.iter().map(|(dialog, _)| *dialog),
+        tracker,
+        now,
+    );
     if due.is_empty() {
         return 0;
     }
     let dir = match prepare_export_dir(cli) {
         Ok(dir) => dir,
         Err(message) => {
-            tracing::error!("{message}");
-            tracker.failed = true;
+            tracker.fail(&message);
             return 0;
         }
     };
-    let (written, failure) = match write_vcon_containers(
+    let outcome = write_vcon_containers(
         cli,
         dir,
         &VconBatch {
@@ -6248,7 +7025,45 @@ fn live_vcon_sweep(
         &due,
         &[],
         None,
-    ) {
+    );
+    settle_live_writes(tracker, &due, dir, outcome)
+}
+
+/// The dialogs among `selected` that a live sweep at `now` writes, by
+/// [`live_vcon_due`] against what `tracker` says was already written.
+#[cfg(feature = "vcon")]
+fn live_due_dialogs<'a>(
+    selected: impl Iterator<Item = &'a crate::sip::dialog::SipDialog>,
+    tracker: &LiveVconTracker,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    let settle = live_settle();
+    selected
+        .filter(|dialog| {
+            live_vcon_due(
+                dialog.state(),
+                dialog.updated_at,
+                now,
+                settle,
+                tracker.written_at(&dialog.call_id),
+            )
+        })
+        .collect()
+}
+
+/// Record what one live sweep wrote and say what happened.
+///
+/// The first `written` of `due` are recorded on the tracker, the count is
+/// logged, and a failure is logged and remembered so the run exits non-zero.
+/// Returns how many containers the sweep wrote.
+#[cfg(feature = "vcon")]
+fn settle_live_writes(
+    tracker: &mut LiveVconTracker,
+    due: &[&crate::sip::dialog::SipDialog],
+    dir: &std::path::Path,
+    outcome: Result<usize, (usize, String)>,
+) -> usize {
+    let (written, failure) = match outcome {
         Ok(n) => (n, None),
         Err((n, message)) => (n, Some(message)),
     };
@@ -6262,8 +7077,7 @@ fn live_vcon_sweep(
         );
     }
     if let Some(message) = failure {
-        tracing::error!("{message}");
-        tracker.failed = true;
+        tracker.fail(&message);
     }
     written
 }
@@ -7156,6 +7970,9 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The `--cores` paths take their correlation headers from the same key,
     /// with the same default: none. Each worker builds its own store from
     /// `ParallelConfig`, and a parallel run serves no query surface that
@@ -7375,6 +8192,82 @@ mod tests {
             later,
         );
         assert_eq!(again, 0, "a written call is not written again unchanged");
+    }
+
+    /// A live sweep that owes a container and cannot create the directory
+    /// for it writes nothing and marks the run failed, so it ends non-zero.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_that_cannot_create_its_directory_fails_the_run() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let blocker = tmp.path().join("a-file");
+        std::fs::write(&blocker, b"not a directory").map_err(|e| format!("write: {e:?}"))?;
+        let cli = cli_exporting_to(&blocker.join("spool"), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut tracker = LiveVconTracker::default();
+        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
+        assert_eq!(n, 0);
+        assert!(
+            tracker.failed(),
+            "a container owed and not written fails the run"
+        );
+        assert!(
+            tracker.is_empty(),
+            "nothing was written, so nothing is recorded"
+        );
+        Ok(())
+    }
+
+    /// A gate closed at sweep time writes nothing, and that is not a failure:
+    /// the operator closed it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_behind_a_closed_gate_writes_nothing_and_fails_nothing() -> Result<(), TestError>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut tracker = LiveVconTracker::default();
+        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let gate = crate::output::persistence::PersistenceGate::new(false);
+
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            Some(&gate),
+            &mut tracker,
+            later,
+        );
+        assert_eq!(n, 0);
+        assert_eq!(
+            std::fs::read_dir(tmp.path())
+                .map_err(|e| format!("readable: {e:?}"))?
+                .count(),
+            0,
+            "a closed gate writes nothing"
+        );
+        assert!(!tracker.failed());
+        Ok(())
     }
 
     /// A live sweep inside the settle period writes nothing and creates no
@@ -11844,6 +12737,205 @@ mod tests {
         assert_eq!(dtmf, 1, "PT 101 fallback must decode when no SDP is seen");
     }
 
+    /// What [`drive_packets_kept`] leaves behind: the counters, the stream
+    /// store and the event engine, with nothing drained or spawned.
+    struct DrivenPackets {
+        counters: PacketCounters,
+        streams: StreamStore,
+        event_exec: EventExecEngine,
+    }
+
+    /// Drive packets through one shared set of stores, as
+    /// [`drive_packets_dtmf`] does, but keep the state for inspection and
+    /// never drain the deferred effects, so no queued hook is spawned.
+    fn drive_packets_kept(
+        cli: &Cli,
+        packets: &[ParsedPacket],
+        mut event_exec: EventExecEngine,
+    ) -> Result<DrivenPackets, TestError> {
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            kill_response_code: 0,
+            kill_targets: Vec::new(),
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange: (5060, 5061),
+        };
+        let mut effects = DeferredEffects::new();
+        for pp in packets {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                #[cfg(feature = "tls")]
+                srtp: None,
+                #[cfg(feature = "tls")]
+                dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
+                group: None,
+            };
+            process_parsed_packet(
+                pp,
+                &ctx,
+                &mut state,
+                &mut engines,
+                &mut counters,
+                &mut effects,
+            );
+        }
+        Ok(DrivenPackets {
+            counters,
+            streams: stream_store,
+            event_exec,
+        })
+    }
+
+    /// An RTP packet to `dst_port` with sequence number `seq`, built on the
+    /// telephone-event fixture so only the addressing and sequence differ.
+    fn rtp_packet_seq(dst_port: u16, seq: u16, ssrc: u32) -> ParsedPacket {
+        let mut pp = rtp_dtmf_packet(dst_port, 0, ssrc, 1, 160);
+        let mut payload = pp.payload.to_vec();
+        payload[2..4].copy_from_slice(&seq.to_be_bytes());
+        pp.payload = bytes::Bytes::from(payload);
+        pp
+    }
+
+    /// A stream found only by the heuristic is counted in the run's RTP total
+    /// like any other: the total and the packets the store recorded agree.
+    ///
+    /// Port 1000 is a system port, so the payload check alone cannot admit
+    /// these packets and only the heuristic's three-in-a-row rule does.
+    #[test]
+    fn a_heuristic_rtp_packet_is_counted_in_the_rtp_total() -> Result<(), TestError> {
+        let cli = base_cli();
+        let packets: Vec<ParsedPacket> = (1..=4)
+            .map(|seq| rtp_packet_seq(1000, seq, 0x0bad_cafe))
+            .collect();
+        let driven = drive_packets_kept(
+            &cli,
+            &packets,
+            EventExecEngine::new(
+                None,
+                None,
+                0,
+                0.0,
+                crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+            ),
+        )?;
+        let stored: u64 = driven.streams.iter().map(|s| s.packet_count).sum();
+        assert!(stored > 0, "the heuristic must have admitted the flow");
+        assert_eq!(driven.counters.rtp_count, stored);
+        Ok(())
+    }
+
+    /// An RTP packet on a stream the signaling explains queues a quality
+    /// event when `--on-quality` is configured and the estimate is below the
+    /// threshold. The command is queued, not spawned: the caller spawns it
+    /// once the store guards drop.
+    #[test]
+    fn an_rtp_packet_below_the_quality_threshold_queues_a_quality_event() -> Result<(), TestError> {
+        let cli = base_cli();
+        let packets = [
+            parsed_sip_packet(invite_with_te_sdp("quality@x", 40000, 96, 8000), 5060, 5060),
+            rtp_packet_seq(40000, 1, 0x1234_5678),
+        ];
+        let driven = drive_packets_kept(
+            &cli,
+            &packets,
+            EventExecEngine::new(
+                None,
+                Some("true".to_owned()),
+                10,
+                5.0,
+                crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+            ),
+        )?;
+        assert_eq!(driven.counters.rtp_count, 1);
+        assert_eq!(
+            driven.event_exec.pending_depth(),
+            1,
+            "a MOS estimate under a 5.0 threshold queues one event"
+        );
+        Ok(())
+    }
+
+    /// A reconciler that starts switches the store to recording the
+    /// sockets of streams nothing explains, so the receive loop has
+    /// something to offer it; with no reconciler nothing is recorded.
+    ///
+    /// Nothing is offered here, so the reconciler thread never asks its
+    /// relay: dropping the sink ends its loop.
+    #[test]
+    fn a_started_reconciler_makes_the_store_record_orphan_sockets() -> Result<(), TestError> {
+        let store = Arc::new(RwLock::new(StreamStore::new(16)));
+        let (none_sink, none_thread) = spawn_relay_reconciler(None, &store);
+        assert!(none_sink.is_none() && none_thread.is_none());
+
+        let ready = crate::app::bootstrap::ReadyReconciler {
+            reconciler: crate::relay::reconcile::Reconciler::new(
+                crate::rtpengine::control::ControlClient::new(
+                    "127.0.0.1:9"
+                        .parse()
+                        .map_err(|e| format!("address: {e:?}"))?,
+                    std::time::Duration::from_millis(50),
+                ),
+            ),
+            permit: crate::security::transmit_guard::TransmitPermit::for_source(
+                &crate::capture::CaptureSource::Live {
+                    device: "lo".to_owned(),
+                },
+            )
+            .ok_or("a live source grants a permit")?,
+        };
+        let (sink, thread) = spawn_relay_reconciler(Some(ready), &store);
+        assert!(sink.is_some() && thread.is_some());
+
+        let pp = rtp_packet_seq(40000, 1, 0x0a0b_0c0d);
+        let hdr =
+            rtp::parser::parse_rtp_header(&pp.payload).map_err(|e| format!("rtp header: {e:?}"))?;
+        store.write().process_rtp(&pp, &hdr, pp.timestamp);
+        let recorded = store.write().drain_new_orphan_sockets();
+        assert!(
+            !recorded.is_empty(),
+            "a stream nothing explains is recorded for the reconciler"
+        );
+
+        drop(sink);
+        thread
+            .ok_or("thread")?
+            .join()
+            .map_err(|e| format!("reconciler thread ends cleanly: {e:?}"))?;
+        Ok(())
+    }
+
     // ── tshark_input_file ──────────────────────────────────────────────
 
     /// The input file (`-I`) is preferred, and wins over any output file.
@@ -13793,5 +14885,577 @@ mod notice_helper_tests {
             "the snapped frame is reported as snapped, and as producing nothing: {msg}"
         );
         crate::capture::reset_undecodable_frames();
+    }
+}
+
+/// The end-of-run NAT findings, as the lines they log.
+///
+/// `report_stun_failures`, `report_lapsed_allocations` and
+/// `report_ice_role_conflicts` read process-global state and write to the
+/// tracing log, so neither side can be driven from a test. The sentences are
+/// the whole value of each finding, so they are built by pure functions and
+/// tested here, and the reporters only log what those return.
+#[cfg(test)]
+mod nat_finding_line_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn addr(s: &str) -> Result<SocketAddr, TestError> {
+        Ok(s.parse()?)
+    }
+
+    fn unanswered(
+        n: u16,
+        software: Option<&str>,
+    ) -> Result<crate::stun::UnansweredRequest, TestError> {
+        Ok(crate::stun::UnansweredRequest {
+            from: addr(&format!("192.0.2.10:{}", 5000 + n))?,
+            to: addr("198.51.100.20:3478")?,
+            attempts: 3,
+            software: software.map(str::to_string),
+            method: "Binding".to_string(),
+        })
+    }
+
+    /// Nothing unanswered says nothing, even when a challenge was seen: the
+    /// challenge sentence qualifies the unanswered one and never stands alone.
+    #[test]
+    fn no_unanswered_request_produces_no_stun_line() {
+        assert!(stun_failure_lines(&[], 4, 2).is_empty());
+    }
+
+    /// One unanswered request names who asked whom, how often, and the
+    /// software it announced; the total counts answered transactions too.
+    #[test]
+    fn an_unanswered_request_is_named_and_counted_against_the_total() -> Result<(), TestError> {
+        let lines = stun_failure_lines(&[unanswered(1, Some("probe/1.0"))?], 2, 0);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(
+            lines[0].starts_with(
+                "STUN/TURN: 192.0.2.10:5001 sent Binding to 198.51.100.20:3478 3 time(s) and \
+                 got no reply (probe/1.0)."
+            ),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].contains("security appliance"), "{}", lines[0]);
+        assert_eq!(
+            lines[1],
+            "STUN/TURN: 1 of 3 transaction(s) went unanswered."
+        );
+        Ok(())
+    }
+
+    /// A request with no SOFTWARE attribute names no software.
+    #[test]
+    fn an_unanswered_request_without_software_names_none() -> Result<(), TestError> {
+        let lines = stun_failure_lines(&[unanswered(1, None)?], 0, 0);
+        assert!(
+            lines[0].contains("3 time(s) and got no reply. An endpoint"),
+            "{}",
+            lines[0]
+        );
+        Ok(())
+    }
+
+    /// Five are listed and the rest counted, so a long list stays readable
+    /// and never reads as complete.
+    #[test]
+    fn past_five_unanswered_requests_the_rest_are_counted() -> Result<(), TestError> {
+        let many: Vec<_> = (0..7)
+            .map(|n| unanswered(n, None))
+            .collect::<Result<_, _>>()?;
+        let lines = stun_failure_lines(&many, 1, 0);
+        assert_eq!(lines.len(), 7, "{lines:#?}");
+        assert!(lines[4].contains("192.0.2.10:5004 sent"), "{}", lines[4]);
+        assert_eq!(
+            lines[5],
+            "STUN: 2 further unanswered binding request(s) not listed."
+        );
+        assert_eq!(
+            lines[6],
+            "STUN/TURN: 7 of 8 transaction(s) went unanswered."
+        );
+        Ok(())
+    }
+
+    /// Exactly five lists all five and adds no "further" line.
+    #[test]
+    fn exactly_five_unanswered_requests_need_no_further_line() -> Result<(), TestError> {
+        let five: Vec<_> = (0..5)
+            .map(|n| unanswered(n, None))
+            .collect::<Result<_, _>>()?;
+        let lines = stun_failure_lines(&five, 0, 0);
+        assert_eq!(lines.len(), 6, "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.contains("further")), "{lines:#?}");
+        Ok(())
+    }
+
+    /// An authentication challenge is said separately, after the total,
+    /// because it points at credentials rather than at the path.
+    #[test]
+    fn an_authentication_challenge_is_its_own_line() -> Result<(), TestError> {
+        let lines = stun_failure_lines(&[unanswered(1, None)?], 0, 2);
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(
+            lines[2].starts_with(
+                "STUN/TURN: 2 transaction(s) were answered with an AUTHENTICATION challenge"
+            ),
+            "{}",
+            lines[2]
+        );
+        Ok(())
+    }
+
+    fn allocation(
+        n: u16,
+        lifetime: Option<u32>,
+        channels: bool,
+    ) -> Result<crate::stun::TurnAllocation, TestError> {
+        let t0 = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0)
+            .ok_or("a valid timestamp")?;
+        Ok(crate::stun::TurnAllocation {
+            client: addr(&format!("192.0.2.20:{}", 6000 + n))?,
+            server: addr("198.51.100.30:3478")?,
+            relayed_address: None,
+            lifetime_secs: lifetime,
+            allocated_at: t0,
+            refreshed_at: None,
+            refreshes: 0,
+            last_activity: t0 + chrono::TimeDelta::seconds(700),
+            released: false,
+            channels: if channels {
+                vec![crate::stun::RelayChannel {
+                    channel: 0x4001,
+                    peer: None,
+                    bound: true,
+                    frames: 9,
+                    bytes: 900,
+                    first_seen: t0,
+                    last_seen: t0,
+                    ssrcs: vec![0x1122_3344],
+                    ssrcs_dropped: 0,
+                }]
+            } else {
+                Vec::new()
+            },
+            unattributed_frames: 0,
+        })
+    }
+
+    /// Nothing lapsed says nothing.
+    #[test]
+    fn no_lapsed_allocation_produces_no_turn_line() {
+        assert!(lapsed_allocation_lines(&[]).is_empty());
+    }
+
+    /// The count, then each allocation with its lifetime and how far past
+    /// expiry traffic ran, then the media that was on it.
+    #[test]
+    fn a_lapsed_allocation_is_described_with_the_media_on_it() -> Result<(), TestError> {
+        let a = allocation(1, Some(600), true)?;
+        let lines = lapsed_allocation_lines(&[&a]);
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(
+            lines[0].starts_with("TURN: 1 allocation(s) were still carrying traffic"),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(
+            lines[1],
+            "TURN:   192.0.2.20:6001 -> 198.51.100.30:3478: 600s lifetime, 0 refresh(es) \
+             seen, traffic continued 100s past expiry"
+        );
+        assert!(
+            lines[2].starts_with("TURN:     media on it: 9 frame(s) on channel 0x4001"),
+            "{}",
+            lines[2]
+        );
+        Ok(())
+    }
+
+    /// An allocation with no granted lifetime says "unknown", and one with no
+    /// relayed frame gets no media line: absence is a different answer.
+    #[test]
+    fn an_unknown_lifetime_and_no_media_are_said_plainly() -> Result<(), TestError> {
+        let a = allocation(1, None, false)?;
+        let lines = lapsed_allocation_lines(&[&a]);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(
+            lines[1].contains(": unknown lifetime, 0 refresh(es) seen, traffic continued 0s"),
+            "{}",
+            lines[1]
+        );
+        Ok(())
+    }
+
+    /// Five are listed and the rest counted.
+    #[test]
+    fn past_five_lapsed_allocations_the_rest_are_counted() -> Result<(), TestError> {
+        let all: Vec<_> = (0..6)
+            .map(|n| allocation(n, Some(600), false))
+            .collect::<Result<_, _>>()?;
+        let refs: Vec<&crate::stun::TurnAllocation> = all.iter().collect();
+        let lines = lapsed_allocation_lines(&refs);
+        assert_eq!(lines.len(), 7, "{lines:#?}");
+        assert!(lines[5].contains("192.0.2.20:6004 ->"), "{}", lines[5]);
+        assert_eq!(
+            lines[6],
+            "TURN:   ... and 1 further lapsed allocation(s) not listed."
+        );
+        Ok(())
+    }
+
+    fn conflict(n: u16, resolved: bool) -> Result<crate::stun::IceRoleConflict, TestError> {
+        Ok(crate::stun::IceRoleConflict {
+            a: addr(&format!("192.0.2.11:{}", 50000 + n))?,
+            b: addr("203.0.113.11:16002")?,
+            role: None,
+            role_conflict_responses: 2,
+            resolved,
+        })
+    }
+
+    fn ice(conflicts: Vec<crate::stun::IceRoleConflict>, total: u64) -> crate::stun::IceSummary {
+        crate::stun::IceSummary {
+            role_conflicts: conflicts,
+            role_conflicts_total: total,
+            ..Default::default()
+        }
+    }
+
+    /// No conflict says nothing.
+    #[test]
+    fn no_role_conflict_produces_no_ice_line() {
+        assert!(ice_role_conflict_lines(&ice(Vec::new(), 0)).is_empty());
+    }
+
+    /// Each conflict carries its verdict: resolved costs a round trip,
+    /// unresolved is a candidate cause of media that never started.
+    #[test]
+    fn each_role_conflict_says_whether_it_was_resolved() -> Result<(), TestError> {
+        let lines = ice_role_conflict_lines(&ice(vec![conflict(1, true)?, conflict(2, false)?], 2));
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(
+            lines[0].starts_with("ICE: 2 candidate pair(s) show a role conflict"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with(
+                "ICE:   192.0.2.11:50001 <-> 203.0.113.11:16002: 2 487 response(s), resolved --"
+            ),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[2].starts_with(
+                "ICE:   192.0.2.11:50002 <-> 203.0.113.11:16002: 2 487 response(s), UNRESOLVED --"
+            ),
+            "{}",
+            lines[2]
+        );
+        Ok(())
+    }
+
+    /// Five are listed and the rest counted from the retained list.
+    #[test]
+    fn past_five_role_conflicts_the_rest_are_counted() -> Result<(), TestError> {
+        let all: Vec<_> = (0..8)
+            .map(|n| conflict(n, false))
+            .collect::<Result<_, _>>()?;
+        let lines = ice_role_conflict_lines(&ice(all, 8));
+        assert_eq!(lines.len(), 7, "{lines:#?}");
+        assert_eq!(
+            lines[6],
+            "ICE:   ... and 3 further conflicted pair(s) not listed."
+        );
+        Ok(())
+    }
+}
+
+/// How `--alert` values are read: a bare word is a channel, a value holding
+/// ':' is a rule, and everything that cannot be used is reported.
+#[cfg(test)]
+mod alert_source_tests {
+    use super::*;
+
+    fn specs(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    /// The documented channels switch their output on, in any case and with
+    /// surrounding whitespace.
+    #[test]
+    fn channel_names_switch_their_channel_on() {
+        let parsed = parse_alert_sources(&specs(&[" Syslog ", "JSON"]), false);
+        assert!(parsed.syslog && parsed.json);
+        assert!(parsed.rules.is_empty());
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    /// Nothing named leaves both channels off.
+    #[test]
+    fn no_channel_named_leaves_both_off() {
+        let parsed = parse_alert_sources(&[], false);
+        assert!(!parsed.syslog && !parsed.json);
+        assert!(parsed.rules.is_empty() && parsed.warnings.is_empty());
+    }
+
+    /// A value containing ':' is parsed as a rule; an invalid one is skipped
+    /// with a warning naming it, and never read as a channel.
+    #[test]
+    fn a_value_with_a_colon_is_a_rule() {
+        let parsed = parse_alert_sources(&specs(&["scanner:5/60s", "syslog:bad"]), false);
+        assert_eq!(parsed.rules.len(), 1);
+        assert!(!parsed.syslog, "a rule-shaped value is never a channel");
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        assert!(
+            parsed.warnings[0].starts_with("Skipping invalid alert rule 'syslog:bad': "),
+            "{}",
+            parsed.warnings[0]
+        );
+    }
+
+    /// `exec` is accepted, and warns only when no command was configured.
+    #[test]
+    fn exec_warns_only_without_a_command() {
+        let without = parse_alert_sources(&specs(&["exec"]), false);
+        assert_eq!(
+            without.warnings,
+            vec!["--alert exec given without --alert-exec <CMD>; no command to run".to_owned()]
+        );
+        let with = parse_alert_sources(&specs(&["exec"]), true);
+        assert!(with.warnings.is_empty(), "{:?}", with.warnings);
+        assert!(!with.syslog && !with.json);
+    }
+
+    /// An unknown word is named back with the valid channels.
+    #[test]
+    fn an_unknown_channel_is_named_with_the_valid_ones() {
+        let parsed = parse_alert_sources(&specs(&["pager"]), false);
+        assert_eq!(
+            parsed.warnings,
+            vec![
+                "Unknown alert channel 'pager'. Valid channels: syslog, json, exec. \
+                 (A value containing ':' is treated as an alert rule.)"
+                    .to_owned()
+            ]
+        );
+    }
+}
+
+/// The run state `BatchRunner::new` builds from the command line: detectors,
+/// the `--evidence-out` sink and the TLS decryptor.
+#[cfg(test)]
+mod run_state_builder_tests {
+    use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn cli(args: &[&str]) -> Cli {
+        let mut all = vec!["sipnab"];
+        all.extend_from_slice(args);
+        Cli::parse_from_args(all)
+    }
+
+    /// `--digest-leak` arms the digest detector and nothing else, and
+    /// `--reg-flood` arms the flood detector and not the digest one.
+    #[test]
+    fn each_detector_flag_arms_its_own_detector() {
+        let config = Config::default();
+        let digest = build_detection_engines(&cli(&["--digest-leak"]), &config, None, None);
+        assert!(digest.digest.is_some());
+        assert!(digest.reg_flood.is_none() && digest.scanner.is_none());
+        assert_eq!(digest.armed_kinds(), vec!["digest"]);
+
+        let flood = build_detection_engines(&cli(&["--reg-flood"]), &config, None, None);
+        assert!(flood.reg_flood.is_some());
+        assert!(flood.digest.is_none());
+        assert_eq!(flood.armed_kinds(), vec!["reg_flood"]);
+
+        let none = build_detection_engines(&cli(&[]), &config, None, None);
+        assert!(none.armed_kinds().is_empty());
+    }
+
+    /// `--evidence-out` opens the sink it names before the first packet; no
+    /// flag opens nothing; an unopenable target refuses the run with exit 2.
+    #[test]
+    fn evidence_out_opens_its_sink_or_refuses_the_run() -> Result<(), TestError> {
+        assert!(
+            open_evidence_sink(&cli(&[]))
+                .map_err(|e| format!("no flag: {e:?}"))?
+                .is_none()
+        );
+
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let target = tmp.path().join("evidence.ndjson");
+        let target = target.to_str().ok_or("utf-8 path")?;
+        assert!(
+            open_evidence_sink(&cli(&["--evidence-out", target]))
+                .map_err(|e| format!("a writable target opens: {e:?}"))?
+                .is_some()
+        );
+
+        let blocked = tmp.path().join("missing-dir").join("evidence.ndjson");
+        let err = open_evidence_sink(&cli(&[
+            "--evidence-out",
+            blocked.to_str().ok_or("utf-8 path")?,
+        ]))
+        .err()
+        .ok_or("an unopenable target is refused")?;
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message.starts_with("--evidence-out "),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// `--tls-key` loads the RSA key into the decryptor; a key file that
+    /// cannot be read refuses the run with exit 1.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tls_key_is_loaded_into_the_decryptor_or_refuses_the_run() -> Result<(), TestError> {
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tls_rsa/key.pem"
+        );
+        let d = build_tls_decryptor(&cli(&["--tls-key", key]), None)
+            .map_err(|e| format!("a readable key loads: {e:?}"))?
+            .ok_or("a key asks for a decryptor")?;
+        assert!(d.has_rsa_key());
+
+        let err = build_tls_decryptor(&cli(&["--tls-key", "/nonexistent/key.pem"]), None)
+            .err()
+            .ok_or("an unreadable key is refused")?;
+        assert_eq!(err.exit_code, 1);
+        assert!(
+            err.message
+                .starts_with("Failed to load --tls-key /nonexistent/key.pem: "),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// No key source asks for no decryptor.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn no_key_source_builds_no_decryptor() -> Result<(), TestError> {
+        assert!(
+            build_tls_decryptor(&cli(&[]), None)
+                .map_err(|e| format!("ok: {e:?}"))?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    /// Only a keylog source that can grow mid-run is worth the late-decrypt
+    /// hold: `--keylog-watch` and `--keylog-fd` can, a plain `--keylog` file
+    /// cannot.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn only_a_watched_or_streamed_keylog_may_still_grow() {
+        assert!(!keylog_may_grow(&cli(&["--keylog", "/tmp/k.log"])));
+        assert!(keylog_may_grow(&cli(&[
+            "--keylog",
+            "/tmp/k.log",
+            "--keylog-watch"
+        ])));
+        assert!(keylog_may_grow(&cli(&["--keylog-fd", "3"])));
+    }
+}
+
+/// The decisions the end of a batch run takes: its exit status, whether the
+/// capture was read to the end, and how a skip report names its ports.
+#[cfg(test)]
+mod run_end_tests {
+    use super::*;
+
+    /// A clean run with nothing tripped exits 0.
+    #[test]
+    fn a_clean_run_exits_zero() {
+        assert_eq!(run_exit_code(RunOutcome::default()), None);
+    }
+
+    /// Each failure on its own exits 1.
+    #[test]
+    fn every_failure_exits_one() {
+        for outcome in [
+            RunOutcome {
+                output_failed: true,
+                ..RunOutcome::default()
+            },
+            RunOutcome {
+                capture_failed: true,
+                ..RunOutcome::default()
+            },
+            RunOutcome {
+                run_failed: true,
+                ..RunOutcome::default()
+            },
+        ] {
+            assert_eq!(run_exit_code(outcome), Some(1), "{outcome:?}");
+        }
+    }
+
+    /// A tripped lint gate alone exits 3, which means "the capture is
+    /// non-conformant" rather than "sipnab broke".
+    #[test]
+    fn a_tripped_lint_gate_exits_three() {
+        assert_eq!(
+            run_exit_code(RunOutcome {
+                lint_gate_tripped: true,
+                ..RunOutcome::default()
+            }),
+            Some(3)
+        );
+    }
+
+    /// A failure wins over the lint gate: findings drawn from a partial read
+    /// are not trustworthy.
+    #[test]
+    fn a_failure_wins_over_the_lint_gate() {
+        assert_eq!(
+            run_exit_code(RunOutcome {
+                capture_failed: true,
+                lint_gate_tripped: true,
+                ..RunOutcome::default()
+            }),
+            Some(1)
+        );
+    }
+
+    /// Only a thread that returned `Ok` read its input to the end; an error
+    /// and a panic both did not.
+    #[test]
+    fn only_an_ok_capture_thread_read_its_input_to_the_end() {
+        assert!(capture_read_to_end(Ok(Ok(()))));
+        assert!(!capture_read_to_end(Ok(Err(anyhow::anyhow!(
+            "filter rejected"
+        )))));
+        assert!(!capture_read_to_end(Err(Box::new("panicked"))));
+    }
+
+    /// At most five ports, busiest first as given, each with its count.
+    #[test]
+    fn a_skip_report_names_at_most_five_ports() {
+        let ports: Vec<crate::pipeline::SkippedPort> = (0..7)
+            .map(|n| crate::pipeline::SkippedPort {
+                port: 5070 + n,
+                messages: u64::from(10 - n),
+            })
+            .collect();
+        assert_eq!(
+            busiest_skipped_ports(&ports),
+            "5070 (10), 5071 (9), 5072 (8), 5073 (7), 5074 (6)"
+        );
+        assert_eq!(busiest_skipped_ports(&ports[..1]), "5070 (10)");
     }
 }
