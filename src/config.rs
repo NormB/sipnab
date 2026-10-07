@@ -693,6 +693,58 @@ pub struct DisplayConfig {
     pub from_to: Option<String>,
 }
 
+impl DisplayConfig {
+    /// Reject a `color` that `--color` would refuse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, when `color` is not one
+    /// of [`COLOR_MODES`]. Any other spelling used to run in `auto` with
+    /// nothing said.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(c) = &self.color
+            && !COLOR_MODES.contains(&c.as_str())
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[display] color must be one of {}, got {c:?}",
+                COLOR_MODES.join(", ")
+            )));
+        }
+        self.validate_tui_keys()
+    }
+
+    /// The `[display]` keys only the TUI reads: `from_to` and
+    /// `visible_columns`. An unknown value used to be dropped when the TUI
+    /// started, with only a log warning the TUI screen covers; an unknown
+    /// column label hid that column, and `["x"]` hid all of them.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key and the value.
+    fn validate_tui_keys(&self) -> Result<(), crate::Error> {
+        #[cfg(feature = "tui")]
+        {
+            if let Some(m) = &self.from_to
+                && crate::tui::FromToMode::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] from_to must be one of default, host-port, user, \
+                     user-host-port, got {m:?}"
+                )));
+            }
+            let labels = crate::tui::call_list::COLUMN_LABELS;
+            for col in self.visible_columns.iter().flatten() {
+                if !labels.iter().any(|l| l.eq_ignore_ascii_case(col)) {
+                    return Err(crate::Error::ConfigInvalid(format!(
+                        "[display] visible_columns names {col:?}, which is not a \
+                         column; the columns are {}",
+                        labels.join(", ")
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Filter presets.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -891,6 +943,15 @@ impl SecurityConfig {
     /// [`MAX_HEP_HMAC_WINDOW_SECS`], or when `business_hours` is not two whole
     /// hours in `0..=23`.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(raw) = self.fraud_destination.as_deref()
+            && let Some(bad) = crate::security::destination::unknown_destination(raw)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[security] fraud_destination {bad:?} is not a destination sipnab can \
+                 match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for \
+                 +1 numbers), comma-separated"
+            )));
+        }
         // Bounded at BOTH ends, and the two ends fail differently. At 0 only a
         // token stamped in the same second as the receiver's clock is accepted,
         // which is the outage the key exists to fix rather than a strict
@@ -1185,11 +1246,23 @@ pub fn expand_env_in_value(
 /// `crate::Error::ConfigInvalid`, naming the key, for anything that is not two
 /// integers in `0..=23` separated by `-`.
 pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
+    business_hours_window(spec).map_err(|reason| {
+        crate::Error::ConfigInvalid(format!("[security] business_hours {reason}"))
+    })
+}
+
+/// The rule behind [`parse_business_hours`], with the refusal returned as the
+/// reason alone, so `--business-hours` and `[security] business_hours` each
+/// name the setting the operator actually wrote.
+///
+/// # Errors
+/// The reason `spec` is not a business-hours window.
+pub fn business_hours_window(spec: &str) -> Result<(u8, u8), String> {
     let invalid = || {
-        crate::Error::ConfigInvalid(format!(
-            "[security] business_hours must be \"START-END\" in whole hours 0-23, \
+        format!(
+            "must be \"START-END\" in whole hours 0-23, \
              e.g. \"8-18\" (or \"22-6\" for an overnight window); got {spec:?}"
-        ))
+        )
     };
     let (start, end) = spec.trim().split_once('-').ok_or_else(invalid)?;
     let start: u8 = start.trim().parse().map_err(|_| invalid())?;
@@ -1198,13 +1271,31 @@ pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
         return Err(invalid());
     }
     if start == end {
-        return Err(crate::Error::ConfigInvalid(format!(
-            "[security] business_hours start and end must differ; \"{start}-{end}\" is a \
+        return Err(format!(
+            "start and end must differ; \"{start}-{end}\" is a \
              zero-width window that would treat every call as off-hours"
-        )));
+        ));
     }
     Ok((start, end))
 }
+
+/// Whether `v` is a usable duration or percentage threshold: finite and
+/// above zero. The one rule `[diagnosis]` and its flags share.
+#[must_use]
+pub fn positive_finite(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
+/// Whether `v` is a usable measurement boundary: finite and zero or more.
+/// The one rule `[quality]`, `[media] one_way_delay_ms` and their flags
+/// share.
+#[must_use]
+pub fn non_negative_finite(v: f64) -> bool {
+    v.is_finite() && v >= 0.0
+}
+
+/// The values `--color` and `[display] color` accept.
+pub const COLOR_MODES: [&str; 3] = ["auto", "always", "never"];
 
 /// Parse a `"START-END"` port range like `"5060-5061"` into an inclusive pair.
 ///
@@ -1299,7 +1390,7 @@ impl DiagnosisConfig {
             ("duration_asymmetry_secs", self.duration_asymmetry_secs),
         ] {
             if let Some(v) = value
-                && !(v.is_finite() && v > 0.0)
+                && !positive_finite(v)
             {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[diagnosis] {key} must be a finite number > 0, got {v}"
@@ -1398,6 +1489,17 @@ impl MediaConfig {
     /// `crate::Error::ConfigInvalid`, naming the codec, when a `codec_ie` value
     /// is not finite or is outside `0.0..95.0`.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Refused rather than ignored: the MOS resolver discards a negative
+        // or non-finite declared delay and falls back to a measured or an
+        // assumed one, so accepting it here scored every stream against a
+        // delay the operator had not declared.
+        if let Some(ms) = self.one_way_delay_ms
+            && !non_negative_finite(ms)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[media] one_way_delay_ms must be a finite number of 0 or more, got {ms}"
+            )));
+        }
         // Refused rather than ignored: a typo used to leave the default in
         // force with nothing said, so every wideband MOS quietly answered a
         // question the operator had not asked.
@@ -1697,6 +1799,17 @@ impl LimitsConfig {
                 "[limits] dialog_limit must be > 0".into(),
             ));
         }
+        // `--api-rate-limit-per-peer` is a u32 and clap refuses anything
+        // larger; the key used to be clamped to u32::MAX instead, a number
+        // the operator did not write.
+        if let Some(v) = self.api_rate_limit_per_peer
+            && u32::try_from(v).is_err()
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] api_rate_limit_per_peer must be at most {} (0 disables the cap), got {v}",
+                u32::MAX
+            )));
+        }
         // Rejected rather than read as "unlimited" or "default": both would
         // turn a typo into silent behavior the operator did not ask for.
         if let Some(0) = self.mcp_max_rows {
@@ -1764,7 +1877,9 @@ impl LimitsConfig {
         // fork bomb pointed at the box doing the capturing.
         if let Some(0) = self.exec_queue_depth {
             return Err(crate::Error::ConfigInvalid(
-                "[limits] exec_queue_depth must be > 0 (it bounds child processes,                  so there is no unlimited setting; to run no hooks, drop                  --on-dialog-exec and --on-quality-exec)"
+                "[limits] exec_queue_depth must be > 0 (it bounds child processes, \
+                 so there is no unlimited setting; to run no hooks, drop \
+                 --on-dialog-exec and --on-quality-exec)"
                     .into(),
             ));
         }
@@ -1973,6 +2088,18 @@ pub struct NamesConfig {
     pub dns_cache_entries: Option<u64>,
 }
 
+/// Whether `path` names something sipnab can open and read as a file.
+///
+/// # Errors
+/// The open fails, or `path` is a directory.
+pub fn readable_file(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::File::open(path)?.metadata()?;
+    if meta.is_dir() {
+        return Err(std::io::Error::other("is a directory"));
+    }
+    Ok(())
+}
+
 impl NamesConfig {
     /// Reject a `dns_cache_entries` of 0, matching the `--dns-cache-entries`
     /// flag's `range(1..)`. A cap of 0 evicts on every insert, so the
@@ -1987,6 +2114,28 @@ impl NamesConfig {
                  holding about one entry)"
                     .into(),
             ));
+        }
+        // A file that cannot be read used to be skipped without a word.
+        if let Some(hf) = &self.hosts_file
+            && let Err(e) = readable_file(Path::new(hf))
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[names] hosts_file {hf:?} cannot be read: {e}"
+            )));
+        }
+        // Each entry used to be warned about and skipped when names were
+        // loaded, after startup had already accepted the file.
+        for (ip, name) in self.manual.iter().flatten() {
+            if ip.parse::<std::net::IpAddr>().is_err() {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[names.manual] key {ip:?} is not an IP address"
+                )));
+            }
+            if !crate::names::is_valid_name(name) {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[names.manual] name {name:?} for {ip} is not a valid name"
+                )));
+            }
         }
         Ok(())
     }
@@ -2056,6 +2205,80 @@ pub struct KeybindingsConfig {
     pub clear_calls: Option<String>,
     /// Open column selector (default: `"F10"`).
     pub column_selector: Option<String>,
+}
+
+impl ThemeConfig {
+    /// Reject a color the TUI cannot parse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, for a value
+    /// [`parse_color`] refuses. Such a value used to be dropped when the TUI
+    /// started, with only a log warning the TUI screen covers, and the
+    /// default color kept.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        #[cfg(feature = "tui")]
+        for (key, value) in [
+            ("background", &self.background),
+            ("foreground", &self.foreground),
+            ("highlight", &self.highlight),
+            ("header", &self.header),
+            ("selected", &self.selected),
+            ("accent", &self.accent),
+            ("good", &self.good),
+            ("warning", &self.warning),
+            ("bad", &self.bad),
+            ("muted", &self.muted),
+            ("border", &self.border),
+            ("status_bg", &self.status_bg),
+        ] {
+            if let Some(v) = value
+                && parse_color(v).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[theme] {key} = {v:?} is not a color: give a name (red, \
+                     dark_gray, reset, ...) or #rrggbb"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl KeybindingsConfig {
+    /// Reject a key the TUI cannot parse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, for a value
+    /// [`parse_keycode`] refuses. Such a value used to be dropped when the TUI
+    /// started, with only a log warning the TUI screen covers, and the
+    /// default binding kept.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        #[cfg(feature = "tui")]
+        for (key, value) in [
+            ("quit", &self.quit),
+            ("help", &self.help),
+            ("filter", &self.filter),
+            ("save", &self.save),
+            ("search", &self.search),
+            ("settings", &self.settings),
+            ("pause", &self.pause),
+            ("autoscroll", &self.autoscroll),
+            ("extended_flow", &self.extended_flow),
+            ("clear_calls", &self.clear_calls),
+            ("column_selector", &self.column_selector),
+        ] {
+            if let Some(v) = value
+                && parse_keycode(v).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[keybindings] {key} = {v:?} is not a key: give one character, \
+                     a function key (F1-F12) or a named key (Enter, Esc, Tab, Space, \
+                     Backspace)"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2170,6 +2393,35 @@ pub struct ConfigOrigin {
 }
 
 impl Config {
+    /// Reject a path-valued key set to the empty string.
+    ///
+    /// Each flag paired with one of these keys refuses an empty path, and an
+    /// empty path names no file: an empty `[journal] dir` would journal into
+    /// whatever directory sipnab was started from.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the first such key.
+    pub fn validate_paths(&self) -> Result<(), crate::Error> {
+        let keys: [(&str, Option<&PathBuf>); 8] = [
+            ("[hep] tls_ca", self.hep.tls_ca.as_ref()),
+            ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_ref()),
+            ("[hep] tls_cert", self.hep.tls_cert.as_ref()),
+            ("[hep] tls_key", self.hep.tls_key.as_ref()),
+            ("[journal] dir", self.journal.dir.as_ref()),
+            ("[tfps] ctl", self.tfps.ctl.as_ref()),
+            ("[tfps] db", self.tfps.db.as_ref()),
+            ("[crash] report_dir", self.crash.report_dir.as_ref()),
+        ];
+        for (key, value) in keys {
+            if value.is_some_and(|p| p.as_os_str().is_empty()) {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "{key} is empty; give a path, or remove the key for the default"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Load configuration from the first available source.
     ///
     /// Search order:

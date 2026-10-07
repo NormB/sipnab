@@ -314,8 +314,10 @@ fn tui_capture_mode(cli: &Cli, config: &Config) -> String {
 }
 
 /// The From/To column's starting mode: the CLI flag wins, then the
-/// `[display] from_to` config value (warned about and ignored when it names
-/// no mode), else the built-in default.
+/// `[display] from_to` config value, else the built-in default. A value that
+/// names no mode is refused at startup by
+/// `crate::config::DisplayConfig::validate`; the warning below covers a
+/// `Config` built without loading a file.
 fn resolve_from_to_mode(cli: &Cli, config: &Config) -> crate::tui::FromToMode {
     cli.name_args
         .from_to_mode

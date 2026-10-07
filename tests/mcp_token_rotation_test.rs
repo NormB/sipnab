@@ -21,7 +21,10 @@ mod mcp;
 
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use mcp::{TestError, initialize_status, shutdown, spawn_http_loopback as spawn_http};
 
@@ -250,6 +253,67 @@ fn rotation_fails_loudly_without_clobbering_the_published_token() -> Result<(), 
     Ok(())
 }
 
+/// What one request with a freshly minted token shows.
+#[derive(Debug, PartialEq, Eq)]
+enum FreshCheck {
+    /// 200: the token was accepted.
+    Valid,
+    /// 401 at or after `exp`: the token was due to expire; no evidence.
+    Expired,
+    /// 401 before `exp`, or any other status: a fresh token was refused.
+    Defect,
+}
+
+/// Judges `status`, from a request that finished at `finished_unix`, against
+/// the token's `exp`. The server accepts while `exp > now`.
+fn fresh_check(status: u16, finished_unix: i64, exp: i64) -> FreshCheck {
+    match status {
+        200 => FreshCheck::Valid,
+        401 if finished_unix >= exp => FreshCheck::Expired,
+        _ => FreshCheck::Defect,
+    }
+}
+
+/// The `exp` claim of an `s2.<b64url(payload)>.<sig>` token.
+fn token_exp(token: &str) -> Result<i64, TestError> {
+    let payload = token.split('.').nth(1).ok_or("token has no payload part")?;
+    let json = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|e| format!("payload is not base64url: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&json)?;
+    v["exp"]
+        .as_i64()
+        .ok_or_else(|| "payload has no integer exp".into())
+}
+
+fn now_unix() -> Result<i64, TestError> {
+    Ok(i64::try_from(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+    )?)
+}
+
+/// The decision rules for a fresh short-TTL token's first request: 200 is
+/// valid; 401 is a defect only when the request finished before `exp`; a 401
+/// that finished at or after `exp` says nothing, because the token was due to
+/// expire. On 2026-10-07 the full suite at load average 70 spent more than the
+/// 3 s TTL between minting and that request, and the test read the expected 401
+/// as a defect.
+#[test]
+fn a_fresh_token_check_is_judged_against_its_own_expiry() -> Result<(), TestError> {
+    assert_eq!(fresh_check(200, 1_000, 1_003), FreshCheck::Valid);
+    assert_eq!(fresh_check(200, 1_005, 1_003), FreshCheck::Valid);
+    assert_eq!(fresh_check(401, 1_002, 1_003), FreshCheck::Defect);
+    assert_eq!(fresh_check(401, 1_003, 1_003), FreshCheck::Expired);
+    assert_eq!(fresh_check(401, 1_010, 1_003), FreshCheck::Expired);
+    assert_eq!(fresh_check(500, 1_010, 1_003), FreshCheck::Defect);
+
+    let payload = "{\"id\":\"t\",\"exp\":1791400000,\"aud\":\"mcp\"}";
+    let token = format!("s2.{}.c2ln", URL_SAFE_NO_PAD.encode(payload));
+    assert_eq!(token_exp(&token)?, 1_791_400_000);
+    assert!(token_exp("s2.not-base64!.sig").is_err());
+    Ok(())
+}
+
 /// A short-TTL (5s) rotated token is valid immediately (200), rejected after
 /// its TTL elapses (401), and a fresh rotation restores access without a
 /// server restart.
@@ -265,32 +329,44 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() -> Result<(
 
     // Rotate a short-TTL token: valid immediately…
     //
-    // TTL margins matter here. Minting runs through a subprocess
-    // (`rotate-token.sh` → the sipnab binary), so the window between the token's
-    // `exp` being stamped and the "valid now" check below covers a process
-    // teardown, a file read, and an HTTP round-trip. Under the full suite's load
-    // that window was occasionally exceeding a 1s TTL, expiring the token before
-    // the immediate check and flaking the 200. Use a TTL with ample headroom for
-    // the "valid" check.
-    const SHORT_TTL: i64 = 3;
-    let (ok, e) = rotate(&key, &token_path, SHORT_TTL)?;
-    assert!(ok, "short-TTL rotation should succeed; stderr: {e}");
-    let short = std::fs::read_to_string(&token_path)
-        .map_err(|e| format!("token: {e}"))?
-        .trim()
-        .to_string();
-    assert_eq!(
-        initialize_status(&addr, Some(&short))?,
-        200,
-        "freshly rotated short-TTL token → 200"
-    );
+    // Minting runs through a subprocess (`rotate-token.sh` → the sipnab
+    // binary), so the window between the token's `exp` being stamped and the
+    // "valid now" request covers a process teardown, a file read and an HTTP
+    // round-trip. No fixed TTL outlasts that window on a loaded host: 1 s
+    // failed under the full suite, and 3 s failed at load average 70. So the
+    // request is judged against the token's own `exp` (`fresh_check`): a 401
+    // that finished at or after `exp` is no evidence, and the token is minted
+    // again with double the TTL. A 401 before `exp` fails at once.
+    let mut ttl: i64 = 3;
+    let short = loop {
+        let (ok, e) = rotate(&key, &token_path, ttl)?;
+        assert!(ok, "short-TTL rotation should succeed; stderr: {e}");
+        let token = std::fs::read_to_string(&token_path)
+            .map_err(|e| format!("token: {e}"))?
+            .trim()
+            .to_string();
+        let exp = token_exp(&token)?;
+        let status = initialize_status(&addr, Some(&token))?;
+        match fresh_check(status, now_unix()?, exp) {
+            FreshCheck::Valid => break token,
+            FreshCheck::Defect => {
+                return Err(
+                    format!("freshly rotated {ttl}s token, exp {exp}: status {status}").into(),
+                );
+            }
+            FreshCheck::Expired if ttl < 48 => ttl *= 2,
+            FreshCheck::Expired => {
+                return Err(format!("no request finished inside a {ttl}s TTL").into());
+            }
+        }
+    };
 
     // …expires once its TTL elapses. Rather than sleeping a fixed span past the
     // TTL, poll for the rejection: the token's `exp` is fixed at mint time, so
     // once it passes the 401 is permanent. Polling flips to a pass as soon as
-    // the token expires (≈ SHORT_TTL), with a generous bound to absorb suite
-    // load, instead of always burning a worst-case fixed sleep.
-    let expired = poll_until(Duration::from_secs(SHORT_TTL as u64 + 15), || {
+    // the token expires (≈ ttl), with a generous bound to absorb suite load,
+    // instead of always burning a worst-case fixed sleep.
+    let expired = poll_until(Duration::from_secs(ttl.unsigned_abs() + 15), || {
         Ok(initialize_status(&addr, Some(&short))? == 401)
     })?;
     assert!(
