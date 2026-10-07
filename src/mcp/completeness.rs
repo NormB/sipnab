@@ -483,6 +483,7 @@ fn is_instance_document(map: &Map<String, Value>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// One text block holding `json`, the shape every tool returns.
     fn json_result(json: &str) -> CallToolResult {
@@ -490,82 +491,88 @@ mod tests {
     }
 
     /// The payload of a stamped result, parsed back.
-    fn payload(result: &CallToolResult) -> Value {
+    fn payload(result: &CallToolResult) -> Result<Value, TestError> {
         let ContentBlock::Text(block) = &result.content[0] else {
-            panic!("the fixture's first block is text");
+            return Err("the fixture's first block is text".into());
         };
-        serde_json::from_str(&block.text).expect("payload parses")
+        Ok(serde_json::from_str(&block.text).map_err(|e| format!("payload parses: {e:?}"))?)
     }
 
     /// A page answered mid-load says so in its own envelope.
     #[test]
-    fn an_undrained_page_carries_source_exhausted_false() {
+    fn an_undrained_page_carries_source_exhausted_false() -> Result<(), TestError> {
         let mut result = json_result(r#"{"total_matched":6,"truncated":false}"#);
         stamp("list_dialogs", false, false, &mut result);
 
-        assert_eq!(payload(&result)["source_exhausted"], Value::Bool(false));
+        assert_eq!(payload(&result)?["source_exhausted"], Value::Bool(false));
+        Ok(())
     }
 
     /// The affirmative claim VAL3 measured is not made while it is unearned.
     #[test]
-    fn truncated_false_is_removed_while_the_source_is_undrained() {
+    fn truncated_false_is_removed_while_the_source_is_undrained() -> Result<(), TestError> {
         let mut result = json_result(r#"{"total_matched":6,"truncated":false}"#);
         stamp("list_dialogs", false, false, &mut result);
 
-        let page = payload(&result);
+        let page = payload(&result)?;
         assert!(
             page.get("truncated").is_none(),
             "`truncated: false` claims nothing was withheld; mid-load it is \
              unearned and must be absent rather than false: {page}"
         );
+        Ok(())
     }
 
     /// A cap that bit is a fact whatever the load state, so it is still said.
     #[test]
-    fn truncated_true_survives_an_undrained_source() {
+    fn truncated_true_survives_an_undrained_source() -> Result<(), TestError> {
         let mut result = json_result(r#"{"total_matched":6000,"truncated":true}"#);
         stamp("list_dialogs", false, false, &mut result);
 
-        assert_eq!(payload(&result)["truncated"], Value::Bool(true));
+        assert_eq!(payload(&result)?["truncated"], Value::Bool(true));
+        Ok(())
     }
 
     /// A drained, intact source answers exactly as it did before this module.
     #[test]
-    fn a_whole_answer_keeps_truncated_false() {
+    fn a_whole_answer_keeps_truncated_false() -> Result<(), TestError> {
         let mut result = json_result(r#"{"total_matched":6,"truncated":false}"#);
         stamp("list_dialogs", true, false, &mut result);
 
-        let page = payload(&result);
+        let page = payload(&result)?;
         assert_eq!(page["truncated"], Value::Bool(false));
         assert_eq!(page["source_exhausted"], Value::Bool(true));
         assert_eq!(page["source_stopped_early"], Value::Bool(false));
+        Ok(())
     }
 
     /// `save_findings.truncated` is about the caller's own submitted text.
     #[test]
-    fn save_findings_keeps_its_own_truncated_flag() {
+    fn save_findings_keeps_its_own_truncated_flag() -> Result<(), TestError> {
         let mut result = json_result(r#"{"seq":1,"truncated":false}"#);
         stamp("save_findings", false, false, &mut result);
 
         assert_eq!(
-            payload(&result)["truncated"],
+            payload(&result)?["truncated"],
             Value::Bool(false),
             "this flag reports whether the SUMMARY was clipped, and its \
              outputSchema requires it"
         );
+        Ok(())
     }
 
     /// VAL4: `complete` cannot read `true` over a partial read.
     #[test]
-    fn complete_is_false_while_the_source_is_undrained() {
+    fn complete_is_false_while_the_source_is_undrained() -> Result<(), TestError> {
         let mut result = json_result(r#"{"frames_read":312,"complete":true}"#);
         stamp("get_capture_report", false, false, &mut result);
 
         assert_eq!(
-            payload(&result)["complete"],
+            payload(&result)?["complete"],
             Value::Bool(false),
             "`complete` says sipnab read all of its input"
         );
+        Ok(())
     }
 
     /// An RFC 7951 document keeps its top level qualified, carries the two
@@ -578,14 +585,15 @@ mod tests {
     /// top. And the forced `false` has to reach one level down, where the
     /// document keeps its `complete`.
     #[test]
-    fn an_instance_document_carries_the_facts_beside_it_and_cannot_claim_complete() {
+    fn an_instance_document_carries_the_facts_beside_it_and_cannot_claim_complete()
+    -> Result<(), TestError> {
         let mut result = json_result(
             r#"{"sipnab-diagnosis:capture-analysis":{"frames-read":"312","complete":true}}"#,
         );
         stamp("get_capture_report", false, false, &mut result);
 
-        let doc = payload(&result);
-        let top = doc.as_object().expect("an object");
+        let doc = payload(&result)?;
+        let top = doc.as_object().ok_or("an object")?;
         assert!(
             top.keys().all(|k| k.contains(':')),
             "an unqualified member reached the top of the document: {doc}"
@@ -596,43 +604,47 @@ mod tests {
             "`complete` read `true` over a partial read inside the document"
         );
         let ContentBlock::Text(envelope) = &result.content[1] else {
-            panic!("the facts must follow the document as a block of their own");
+            return Err("the facts must follow the document as a block of their own".into());
         };
-        let envelope: Value = serde_json::from_str(&envelope.text).expect("JSON");
+        let envelope: Value =
+            serde_json::from_str(&envelope.text).map_err(|e| format!("JSON: {e:?}"))?;
         assert_eq!(envelope["source_exhausted"], Value::Bool(false));
         assert_eq!(envelope["source_stopped_early"], Value::Bool(false));
+        Ok(())
     }
 
     /// Read in full, the document is left exactly as the tool wrote it.
     #[test]
-    fn a_whole_instance_document_is_untouched() {
+    fn a_whole_instance_document_is_untouched() -> Result<(), TestError> {
         let text = r#"{"sipnab-diagnosis:capture-analysis":{"complete":true}}"#;
         let mut result = json_result(text);
         stamp("get_capture_report", true, false, &mut result);
 
         assert_eq!(
-            payload(&result),
-            serde_json::from_str::<Value>(text).expect("JSON")
+            payload(&result)?,
+            serde_json::from_str::<Value>(text).map_err(|e| format!("JSON: {e:?}"))?
         );
         assert_eq!(result.content.len(), 2, "the facts still travel beside it");
+        Ok(())
     }
 
     /// And is left alone once the file really has been read.
     #[test]
-    fn complete_is_untouched_on_a_drained_source() {
+    fn complete_is_untouched_on_a_drained_source() -> Result<(), TestError> {
         let mut result = json_result(r#"{"frames_read":365747,"complete":true}"#);
         stamp("get_capture_report", true, false, &mut result);
 
-        assert_eq!(payload(&result)["complete"], Value::Bool(true));
+        assert_eq!(payload(&result)?["complete"], Value::Bool(true));
+        Ok(())
     }
 
     /// A truncated file is exhausted AND partial; both facts are reported.
     #[test]
-    fn a_stopped_early_source_is_disclosed_even_though_it_drained() {
+    fn a_stopped_early_source_is_disclosed_even_though_it_drained() -> Result<(), TestError> {
         let mut result = json_result(r#"{"packets_seen":10,"complete":true}"#);
         stamp("capture_health", true, true, &mut result);
 
-        let health = payload(&result);
+        let health = payload(&result)?;
         assert_eq!(health["source_exhausted"], Value::Bool(true));
         assert_eq!(health["source_stopped_early"], Value::Bool(true));
         assert_eq!(
@@ -640,16 +652,17 @@ mod tests {
             Value::Bool(false),
             "a capture read in part is not a capture read in full"
         );
+        Ok(())
     }
 
     /// The stamp carries no string, so `capture_health` stays string-free.
     #[test]
-    fn nothing_this_module_inserts_is_a_string() {
+    fn nothing_this_module_inserts_is_a_string() -> Result<(), TestError> {
         let mut result = json_result("{}");
         stamp("capture_health", false, true, &mut result);
 
-        let health = payload(&result);
-        let object = health.as_object().expect("object payload");
+        let health = payload(&result)?;
+        let object = health.as_object().ok_or("object payload")?;
         assert_eq!(object.len(), 2, "exactly the two facts: {health}");
         for (key, value) in object {
             assert!(
@@ -658,6 +671,7 @@ mod tests {
                  structurally string-free so it cannot leak packet content"
             );
         }
+        Ok(())
     }
 
     /// An array payload gets the envelope appended, not wrapped.
@@ -665,46 +679,49 @@ mod tests {
     /// Driven from a synthetic array rather than from a tool: no registered
     /// tool answers with one any more, and a gate refuses any that starts.
     #[test]
-    fn an_array_payload_gets_the_envelope_as_a_further_block() {
+    fn an_array_payload_gets_the_envelope_as_a_further_block() -> Result<(), TestError> {
         let mut result = json_result(r#"[{"start":"2026-01-01T00:00:00Z","dialogs":2}]"#);
         stamp("timeline", false, false, &mut result);
 
         assert!(
-            payload(&result).is_array(),
+            payload(&result)?.is_array(),
             "the first block keeps the published shape"
         );
         assert_eq!(result.content.len(), 2, "the envelope is a second block");
         let ContentBlock::Text(block) = &result.content[1] else {
-            panic!("the envelope block is text");
+            return Err("the envelope block is text".into());
         };
-        let envelope: Value = serde_json::from_str(&block.text).expect("envelope parses");
+        let envelope: Value =
+            serde_json::from_str(&block.text).map_err(|e| format!("envelope parses: {e:?}"))?;
         assert_eq!(envelope["source_exhausted"], Value::Bool(false));
         assert_eq!(envelope["source_stopped_early"], Value::Bool(false));
+        Ok(())
     }
 
     /// A tool that already reports the flag keeps its own, better-ordered read.
     #[test]
-    fn a_flag_the_tool_set_itself_is_not_overwritten() {
+    fn a_flag_the_tool_set_itself_is_not_overwritten() -> Result<(), TestError> {
         let mut result = json_result(r#"{"source_exhausted":true}"#);
         stamp("capture_status", false, false, &mut result);
 
         assert_eq!(
-            payload(&result)["source_exhausted"],
+            payload(&result)?["source_exhausted"],
             Value::Bool(true),
             "capture_status reads the flag under Acquire beside `done`; this \
              must not race it into a different answer"
         );
+        Ok(())
     }
 
     /// A drawn ladder, as `render_ladder` answers with one.
     const LADDER: &str = "alice -> bob  INVITE\nbob -> alice  200 OK\n";
 
     /// The literal text of a result's first block.
-    fn document(result: &CallToolResult) -> String {
+    fn document(result: &CallToolResult) -> Result<String, TestError> {
         let ContentBlock::Text(block) = &result.content[0] else {
-            panic!("the fixture's first block is text");
+            return Err("the fixture's first block is text".into());
         };
-        block.text.clone()
+        Ok(block.text.clone())
     }
 
     /// A whole answer's document is byte-identical to what the tool drew.
@@ -713,17 +730,18 @@ mod tests {
     /// ladder is a caveat nobody reads. `--report` made this call first --
     /// `report_notice` returns `None` on a clean run -- and this mirrors it.
     #[test]
-    fn a_whole_rendered_document_is_left_alone() {
+    fn a_whole_rendered_document_is_left_alone() -> Result<(), TestError> {
         let mut result = json_result(LADDER);
         stamp("render_ladder", true, false, &mut result);
 
         assert_eq!(result.content.len(), 1);
         assert_eq!(
-            document(&result),
+            document(&result)?,
             LADDER,
             "a capture read in full is not accused, and the drawing is \
              returned exactly as it was drawn"
         );
+        Ok(())
     }
 
     /// VAL17: a document has no envelope, so it says it in its own words.
@@ -731,12 +749,12 @@ mod tests {
     /// Never handed to a JSON parser either — the leading-character check in
     /// [`stamp`] decides this before any parse is attempted.
     #[test]
-    fn a_rendered_document_states_incompleteness_in_its_own_text() {
+    fn a_rendered_document_states_incompleteness_in_its_own_text() -> Result<(), TestError> {
         let mut result = json_result(LADDER);
         stamp("render_ladder", false, false, &mut result);
 
         assert_eq!(result.content.len(), 1, "no second block to overlook");
-        let doc = document(&result);
+        let doc = document(&result)?;
         assert!(
             doc.starts_with(LADDER),
             "the drawing keeps its first line and its alignment; the block is \
@@ -753,21 +771,23 @@ mod tests {
              to a premature end, and the reader has to act on one of them: \
              {doc}"
         );
+        Ok(())
     }
 
     /// Two facts, two sentences: neither hides the other.
     #[test]
-    fn a_rendered_document_names_every_reason_that_holds() {
+    fn a_rendered_document_names_every_reason_that_holds() -> Result<(), TestError> {
         let mut result = json_result(LADDER);
         stamp("get_capture_report", false, true, &mut result);
 
-        let doc = document(&result);
+        let doc = document(&result)?;
         assert!(doc.contains("still being read"), "{doc}");
         assert!(
             doc.contains("partial read"),
             "a load still running does not un-say a file that stopped early: \
              {doc}"
         );
+        Ok(())
     }
 
     /// A tool that opted out of the envelope opts out of the prose too.
@@ -776,55 +796,60 @@ mod tests {
     /// how much of the capture has been read, and one rule governs both forms
     /// of the same statement.
     #[test]
-    fn a_source_independent_tool_gets_no_prose_either() {
+    fn a_source_independent_tool_gets_no_prose_either() -> Result<(), TestError> {
         let mut result = json_result(LADDER);
         stamp("show_evidence", false, true, &mut result);
 
-        assert_eq!(document(&result), LADDER);
+        assert_eq!(document(&result)?, LADDER);
+        Ok(())
     }
 
     /// An error result's content is a message, not a payload.
     #[test]
-    fn an_error_result_is_left_alone() {
+    fn an_error_result_is_left_alone() -> Result<(), TestError> {
         let mut result = CallToolResult::error(vec![ContentBlock::text(r#"{"error":"nope"}"#)]);
         stamp("list_dialogs", false, false, &mut result);
 
-        assert_eq!(payload(&result), serde_json::json!({"error": "nope"}));
+        assert_eq!(payload(&result)?, serde_json::json!({"error": "nope"}));
+        Ok(())
     }
 
     /// A tool whose answer cannot move with the load is not annotated.
     #[test]
-    fn a_source_independent_tool_is_not_stamped() {
+    fn a_source_independent_tool_is_not_stamped() -> Result<(), TestError> {
         let mut result = json_result(r#"{"code":488}"#);
         stamp("explain_response_code", false, false, &mut result);
 
-        assert_eq!(payload(&result), serde_json::json!({"code": 488}));
+        assert_eq!(payload(&result)?, serde_json::json!({"code": 488}));
+        Ok(())
     }
 
     /// Half-written JSON must not become a half-parsed structure, or panic.
     #[test]
-    fn truncated_json_is_left_alone() {
+    fn truncated_json_is_left_alone() -> Result<(), TestError> {
         let mut result = json_result(r#"{"schema_version":1,"dialogs":"#);
         stamp("list_dialogs", false, false, &mut result);
 
         let ContentBlock::Text(block) = &result.content[0] else {
-            panic!("text block");
+            return Err("text block".into());
         };
         assert_eq!(block.text, r#"{"schema_version":1,"dialogs":"#);
+        Ok(())
     }
 
     /// A result with no content must not index past the end.
     #[test]
-    fn an_empty_result_is_left_alone() {
+    fn an_empty_result_is_left_alone() -> Result<(), TestError> {
         let mut result = CallToolResult::success(vec![]);
         stamp("list_dialogs", false, false, &mut result);
 
         assert!(result.content.is_empty());
+        Ok(())
     }
 
     /// The two halves of "is this whole" are independent.
     #[test]
-    fn an_answer_is_whole_only_when_drained_and_intact() {
+    fn an_answer_is_whole_only_when_drained_and_intact() -> Result<(), TestError> {
         assert!(answer_is_whole(true, false));
         assert!(!answer_is_whole(false, false), "still loading");
         assert!(
@@ -832,6 +857,7 @@ mod tests {
             "read what there was, of a part"
         );
         assert!(!answer_is_whole(false, true));
+        Ok(())
     }
 
     /// The run-wide record round-trips.
@@ -845,7 +871,7 @@ mod tests {
     /// into it, and `cargo test` runs this binary's tests concurrently, so
     /// "nothing has been lost yet" is a claim about another test's progress.
     #[test]
-    fn the_stopped_early_record_round_trips() {
+    fn the_stopped_early_record_round_trips() -> Result<(), TestError> {
         clear_source_stopped_early();
         assert!(
             !source_stopped_early(),
@@ -863,11 +889,12 @@ mod tests {
             !source_stopped_early(),
             "open_capture replaces the capture, and with it the record"
         );
+        Ok(())
     }
 
     /// The opt-out list names tools, not typos.
     #[test]
-    fn every_opt_out_is_spelled_as_a_tool_name() {
+    fn every_opt_out_is_spelled_as_a_tool_name() -> Result<(), TestError> {
         for name in SOURCE_INDEPENDENT_TOOLS
             .iter()
             .chain(TRUNCATED_IS_NOT_ABOUT_THE_POPULATION)
@@ -877,5 +904,6 @@ mod tests {
                 "{name} is not shaped like a registered tool name"
             );
         }
+        Ok(())
     }
 }

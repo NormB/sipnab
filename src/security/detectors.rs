@@ -337,6 +337,7 @@ mod tests {
     use crate::test_utils::build_sip_message as build_sip;
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::Ipv4Addr;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The registrar / callee side of every exchange.
     fn localhost() -> IpAddr {
@@ -350,8 +351,12 @@ mod tests {
 
     /// A fixed capture time inside default business hours, so the fraud
     /// detector's off-hours rule cannot fire on its own.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
+        )
     }
 
     /// Parse `raw` as a UDP message from `src`:`src_port` to `dst`:5060 at
@@ -362,13 +367,16 @@ mod tests {
         src_port: u16,
         dst: IpAddr,
         at: DateTime<Utc>,
-    ) -> SipMessage {
-        parse_sip(raw, at, src, dst, src_port, 5060, TransportProto::Udp).expect("parse")
+    ) -> Result<SipMessage, TestError> {
+        Ok(
+            parse_sip(raw, at, src, dst, src_port, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
+        )
     }
 
     /// An OPTIONS from the attacker announcing a scanner's `User-Agent`,
     /// which the signature rule matches on sight.
-    fn scanner_options() -> SipMessage {
+    fn scanner_options() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "OPTIONS sip:target@example.com SIP/2.0",
             &[
@@ -382,11 +390,11 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, attacker(), 5060, localhost(), ts())
+        Ok(parse_at(&raw, attacker(), 5060, localhost(), ts()?)?)
     }
 
     /// An ordinary INVITE from `src`:`src_port` with a PBX's `User-Agent`.
-    fn plain_invite(src: IpAddr, src_port: u16, call_id: &str) -> SipMessage {
+    fn plain_invite(src: IpAddr, src_port: u16, call_id: &str) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -400,11 +408,11 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, src, src_port, localhost(), ts())
+        Ok(parse_at(&raw, src, src_port, localhost(), ts()?)?)
     }
 
     /// A `200 OK` from the attacker's address: a response, not a request.
-    fn response_from_attacker() -> SipMessage {
+    fn response_from_attacker() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -417,12 +425,12 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, attacker(), 5075, localhost(), ts())
+        Ok(parse_at(&raw, attacker(), 5075, localhost(), ts()?)?)
     }
 
     /// A 401 whose challenge names MD5, the weak algorithm the digest
     /// detector reports.
-    fn md5_challenge() -> SipMessage {
+    fn md5_challenge() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -436,11 +444,11 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, localhost(), 5060, attacker(), ts())
+        Ok(parse_at(&raw, localhost(), 5060, attacker(), ts()?)?)
     }
 
     /// A credentialed REGISTER from the attacker on transaction `branch`.
-    fn register(branch: &str, at: DateTime<Utc>) -> SipMessage {
+    fn register(branch: &str, at: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "REGISTER sip:registrar@example.com SIP/2.0",
             &[
@@ -455,11 +463,11 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, attacker(), 5060, localhost(), at)
+        Ok(parse_at(&raw, attacker(), 5060, localhost(), at)?)
     }
 
     /// The registrar's 401 refusing the REGISTER on `branch`.
-    fn challenge(branch: &str, at: DateTime<Utc>) -> SipMessage {
+    fn challenge(branch: &str, at: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -472,23 +480,23 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, localhost(), 5060, attacker(), at)
+        Ok(parse_at(&raw, localhost(), 5060, attacker(), at)?)
     }
 
     /// Three credentialed REGISTERs, each refused: one more challenged
     /// failure than a threshold of 2 allows.
-    fn refused_registrations() -> Vec<SipMessage> {
-        (0..3)
-            .flat_map(|i| {
-                let branch = format!("z9hG4bK-flood-{i}");
-                let at = ts() + TimeDelta::milliseconds(i * 100);
-                [register(&branch, at), challenge(&branch, at)]
-            })
-            .collect()
+    fn refused_registrations() -> Result<Vec<SipMessage>, TestError> {
+        let mut out = Vec::new();
+        for i in 0..3 {
+            let branch = format!("z9hG4bK-flood-{i}");
+            let at = ts()? + TimeDelta::milliseconds(i * 100);
+            out.extend([register(&branch, at)?, challenge(&branch, at)?]);
+        }
+        Ok(out)
     }
 
     /// An INVITE from the attacker to `did`, opening `call_id`.
-    fn invite_to(did: &str, call_id: &str, at: DateTime<Utc>) -> SipMessage {
+    fn invite_to(did: &str, call_id: &str, at: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{did}@example.com SIP/2.0"),
             &[
@@ -501,11 +509,11 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, attacker(), 5060, localhost(), at)
+        Ok(parse_at(&raw, attacker(), 5060, localhost(), at)?)
     }
 
     /// The callee's `404` refusing `call_id`.
-    fn refused(did: &str, call_id: &str, at: DateTime<Utc>) -> SipMessage {
+    fn refused(did: &str, call_id: &str, at: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 404 Not Found",
             &[
@@ -518,7 +526,7 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, localhost(), 5060, attacker(), at)
+        Ok(parse_at(&raw, localhost(), 5060, attacker(), at)?)
     }
 
     /// The policy of a wire-origin `--fail2ban` run with a kill worker.
@@ -558,69 +566,76 @@ mod tests {
     }
 
     /// The detail of the first finding in `effects`.
-    fn first_detail(effects: &[Effect]) -> &str {
-        effects
+    fn first_detail(effects: &[Effect]) -> Result<&str, TestError> {
+        Ok(effects
             .iter()
             .find_map(|e| match e {
                 Effect::Alert { detail, .. } => Some(detail.as_str()),
                 _ => None,
             })
-            .expect("a finding")
+            .ok_or("a finding")?)
     }
 
     /// The effects of the scanner OPTIONS under `policy`, with the scanner
     /// detector armed.
-    fn scanner_effects(policy: Policy) -> Vec<Effect> {
+    fn scanner_effects(policy: Policy) -> Result<Vec<Effect>, TestError> {
         let mut scanner = ScannerDetector::new(&[]);
         let mut detectors = Detectors {
             scanner: Some(&mut scanner),
             ..unarmed()
         };
-        run_detectors(&mut detectors, &scanner_options(), None, policy)
+        Ok(run_detectors(
+            &mut detectors,
+            &scanner_options()?,
+            None,
+            policy,
+        ))
     }
 
     /// The effects of an INVITE from the attacker's port 5075 under
     /// `policy`, with a `--kill-target` covering that port.
-    fn kill_target_effects(policy: Policy) -> Vec<Effect> {
-        let targets = [KillTarget::parse("10.0.0.50:5060-5090").expect("target")];
+    fn kill_target_effects(policy: Policy) -> Result<Vec<Effect>, TestError> {
+        let targets =
+            [KillTarget::parse("10.0.0.50:5060-5090").map_err(|e| format!("target: {e:?}"))?];
         let mut detectors = Detectors {
             kill_targets: &targets,
             ..unarmed()
         };
-        run_detectors(
+        Ok(run_detectors(
             &mut detectors,
-            &plain_invite(attacker(), 5075, "kt@10.0.0.50"),
+            &plain_invite(attacker(), 5075, "kt@10.0.0.50")?,
             None,
             policy,
-        )
+        ))
     }
 
     /// The effects of the last refusal of a registration flood under
     /// `policy`, with the flood detector armed at a threshold of 2.
-    fn reg_flood_effects(policy: Policy) -> Vec<Effect> {
+    fn reg_flood_effects(policy: Policy) -> Result<Vec<Effect>, TestError> {
         let mut flood = RegFloodDetector::new(2);
         let mut detectors = Detectors {
             reg_flood: Some(&mut flood),
             ..unarmed()
         };
         let mut last = Vec::new();
-        for msg in refused_registrations() {
+        for msg in refused_registrations()? {
             last = run_detectors(&mut detectors, &msg, None, policy);
         }
-        last
+        Ok(last)
     }
 
     /// A scanner detection files a finding, writes the jail line and asks
     /// for a kill, in that order, each naming the scanner.
     #[test]
-    fn a_scanner_detection_files_a_finding_writes_the_jail_line_and_kills() {
-        let effects = scanner_effects(wire_policy());
+    fn a_scanner_detection_files_a_finding_writes_the_jail_line_and_kills() -> Result<(), TestError>
+    {
+        let effects = scanner_effects(wire_policy())?;
         assert_eq!(
             tags(&effects),
             ["alert:Scanner", "jail:scanner", "kill"],
             "{effects:?}"
         );
-        let detail = first_detail(&effects);
+        let detail = first_detail(&effects)?;
         assert!(
             detail.contains("ua=\"friendly-scanner\"") && detail.contains("detection=ua_pattern"),
             "the finding must say what matched and how: {detail}"
@@ -657,64 +672,70 @@ mod tests {
                     String::from_utf8_lossy(response_bytes)
                 );
             }
-            other => panic!("expected a kill, got {other:?}"),
+            other => return Err(format!("expected a kill, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A `--kill-target` match is the targeted form of the same defense: the
     /// same three effects, filed as a scanner finding, with no scanner
     /// detector present.
     #[test]
-    fn a_kill_target_match_files_a_finding_writes_the_jail_line_and_kills() {
-        let effects = kill_target_effects(wire_policy());
+    fn a_kill_target_match_files_a_finding_writes_the_jail_line_and_kills() -> Result<(), TestError>
+    {
+        let effects = kill_target_effects(wire_policy())?;
         assert_eq!(
             tags(&effects),
             ["alert:Scanner", "jail:scanner", "kill"],
             "{effects:?}"
         );
         assert!(
-            first_detail(&effects).contains("detection=kill-target"),
+            first_detail(&effects)?.contains("detection=kill-target"),
             "{effects:?}"
         );
         assert!(
             matches!(&effects[2], Effect::Kill { dst_port: 5075, .. }),
             "the kill goes back to the port that matched: {effects:?}"
         );
+        Ok(())
     }
 
     /// A source port outside the target's range is not a match.
     #[test]
-    fn a_kill_target_ignores_a_port_outside_its_range() {
-        let targets = [KillTarget::parse("10.0.0.50:5060-5090").expect("target")];
+    fn a_kill_target_ignores_a_port_outside_its_range() -> Result<(), TestError> {
+        let targets =
+            [KillTarget::parse("10.0.0.50:5060-5090").map_err(|e| format!("target: {e:?}"))?];
         let mut detectors = Detectors {
             kill_targets: &targets,
             ..unarmed()
         };
         let effects = run_detectors(
             &mut detectors,
-            &plain_invite(attacker(), 6000, "kt-miss@10.0.0.50"),
+            &plain_invite(attacker(), 6000, "kt-miss@10.0.0.50")?,
             None,
             wire_policy(),
         );
         assert!(effects.is_empty(), "{effects:?}");
+        Ok(())
     }
 
     /// A response from a targeted address is never killed: the kill answers
     /// a request, and a response has nothing to answer.
     #[test]
-    fn a_response_never_matches_a_kill_target() {
-        let targets = [KillTarget::parse("10.0.0.50").expect("target")];
+    fn a_response_never_matches_a_kill_target() -> Result<(), TestError> {
+        let targets = [KillTarget::parse("10.0.0.50").map_err(|e| format!("target: {e:?}"))?];
         let mut detectors = Detectors {
             kill_targets: &targets,
             ..unarmed()
         };
         let effects = run_detectors(
             &mut detectors,
-            &response_from_attacker(),
+            &response_from_attacker()?,
             None,
             wire_policy(),
         );
         assert!(effects.is_empty(), "{effects:?}");
+        Ok(())
     }
 
     /// A fraud pattern files a finding and nothing else: fraud has no jail
@@ -723,7 +744,7 @@ mod tests {
     /// Driven through a dialog store the way the batch loop drives it,
     /// because the detector reads the dialog the caller hands it.
     #[test]
-    fn a_fraud_pattern_files_a_finding_and_nothing_else() {
+    fn a_fraud_pattern_files_a_finding_and_nothing_else() -> Result<(), TestError> {
         let mut fraud = FraudDetector::new(None);
         let mut store = DialogStore::new(100, false);
         let mut detectors = Detectors {
@@ -742,10 +763,10 @@ mod tests {
         .enumerate()
         {
             let call_id = format!("refused-{i}@10.0.0.50");
-            let start = ts() + TimeDelta::seconds(i as i64 * 2);
+            let start = ts()? + TimeDelta::seconds(i as i64 * 2);
             for msg in [
-                invite_to(did, &call_id, start),
-                refused(did, &call_id, start + TimeDelta::milliseconds(80)),
+                invite_to(did, &call_id, start)?,
+                refused(did, &call_id, start + TimeDelta::milliseconds(80))?,
             ] {
                 store.process_message(msg.clone());
                 let dialog = store.get(&call_id);
@@ -764,20 +785,21 @@ mod tests {
             all.iter().all(|e| matches!(e, Effect::Alert { .. })),
             "fraud never writes a jail line or kills: {all:?}"
         );
+        Ok(())
     }
 
     /// A digest weakness files one finding per vulnerability the detector
     /// reports, under the packet's source, and nothing else.
     #[test]
-    fn a_digest_weakness_files_one_finding_per_vulnerability() {
+    fn a_digest_weakness_files_one_finding_per_vulnerability() -> Result<(), TestError> {
         let mut digest = DigestLeakDetector::new();
-        let expected = DigestLeakDetector::new().check(&md5_challenge()).len();
+        let expected = DigestLeakDetector::new().check(&md5_challenge()?).len();
         assert!(expected >= 1, "the fixture must trip the detector");
         let mut detectors = Detectors {
             digest: Some(&mut digest),
             ..unarmed()
         };
-        let effects = run_detectors(&mut detectors, &md5_challenge(), None, wire_policy());
+        let effects = run_detectors(&mut detectors, &md5_challenge()?, None, wire_policy());
         assert_eq!(effects.len(), expected, "{effects:?}");
         assert!(
             effects.iter().all(|e| matches!(
@@ -787,23 +809,24 @@ mod tests {
             "{effects:?}"
         );
         assert!(
-            first_detail(&effects).contains("WeakAlgorithm"),
+            first_detail(&effects)?.contains("WeakAlgorithm"),
             "{effects:?}"
         );
+        Ok(())
     }
 
     /// A registration flood files a finding and writes the jail line with
     /// the failure count that crossed the threshold; it never kills.
     #[test]
-    fn a_registration_flood_files_a_finding_and_writes_the_jail_line() {
-        let effects = reg_flood_effects(wire_policy());
+    fn a_registration_flood_files_a_finding_and_writes_the_jail_line() -> Result<(), TestError> {
+        let effects = reg_flood_effects(wire_policy())?;
         assert_eq!(
             tags(&effects),
             ["alert:RegFlood", "jail:reg_flood"],
             "{effects:?}"
         );
         assert_eq!(
-            first_detail(&effects),
+            first_detail(&effects)?,
             "auth_failures=3 registers=3 threshold=2"
         );
         assert_eq!(
@@ -813,16 +836,18 @@ mod tests {
                 count: 3,
             })
         );
+        Ok(())
     }
 
     /// An ordinary message through every armed detector produces nothing.
     #[test]
-    fn an_ordinary_message_through_every_armed_detector_produces_nothing() {
+    fn an_ordinary_message_through_every_armed_detector_produces_nothing() -> Result<(), TestError>
+    {
         let mut scanner = ScannerDetector::new(&[]);
         let mut fraud = FraudDetector::new(None);
         let mut digest = DigestLeakDetector::new();
         let mut flood = RegFloodDetector::new(2);
-        let targets = [KillTarget::parse("10.0.0.50").expect("target")];
+        let targets = [KillTarget::parse("10.0.0.50").map_err(|e| format!("target: {e:?}"))?];
         let mut detectors = Detectors {
             scanner: Some(&mut scanner),
             fraud: Some(&mut fraud),
@@ -831,18 +856,20 @@ mod tests {
             kill_targets: &targets,
         };
         let pbx = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
-        let msg = plain_invite(pbx, 5060, "plain@10.0.0.7");
-        let dialog = SipDialog::new(&msg).expect("dialog");
+        let msg = plain_invite(pbx, 5060, "plain@10.0.0.7")?;
+        let dialog = SipDialog::new(&msg).ok_or("dialog")?;
         let effects = run_detectors(&mut detectors, &msg, Some(&dialog), wire_policy());
         assert!(effects.is_empty(), "{effects:?}");
+        Ok(())
     }
 
     /// With nothing armed, a scanner's request is not a detection: no
     /// detector, no finding, whatever the policy allows.
     #[test]
-    fn nothing_armed_produces_nothing() {
-        let effects = run_detectors(&mut unarmed(), &scanner_options(), None, wire_policy());
+    fn nothing_armed_produces_nothing() -> Result<(), TestError> {
+        let effects = run_detectors(&mut unarmed(), &scanner_options()?, None, wire_policy());
         assert!(effects.is_empty(), "{effects:?}");
+        Ok(())
     }
 
     /// HEP-carried addressing is the sender's claim. Without the opt-in the
@@ -850,76 +877,84 @@ mod tests {
     /// the address to a firewall or a socket is produced, at all three
     /// sites that write one. With `--hep-allow-kill` they are.
     #[test]
-    fn hep_origin_without_the_opt_in_keeps_the_finding_and_drops_the_jail_line_and_the_kill() {
+    fn hep_origin_without_the_opt_in_keeps_the_finding_and_drops_the_jail_line_and_the_kill()
+    -> Result<(), TestError> {
         let hep = Policy {
             origin: InputOrigin::Hep,
             ..wire_policy()
         };
-        assert_eq!(tags(&scanner_effects(hep)), ["alert:Scanner"]);
-        assert_eq!(tags(&kill_target_effects(hep)), ["alert:Scanner"]);
-        assert_eq!(tags(&reg_flood_effects(hep)), ["alert:RegFlood"]);
+        assert_eq!(tags(&scanner_effects(hep)?), ["alert:Scanner"]);
+        assert_eq!(tags(&kill_target_effects(hep)?), ["alert:Scanner"]);
+        assert_eq!(tags(&reg_flood_effects(hep)?), ["alert:RegFlood"]);
 
         let admitted = Policy {
             hep_allow_kill: true,
             ..hep
         };
         assert_eq!(
-            tags(&scanner_effects(admitted)),
+            tags(&scanner_effects(admitted)?),
             ["alert:Scanner", "jail:scanner", "kill"],
             "control: the opt-in admits the HEP-carried detection"
         );
         assert_eq!(
-            tags(&kill_target_effects(admitted)),
+            tags(&kill_target_effects(admitted)?),
             ["alert:Scanner", "jail:scanner", "kill"]
         );
         assert_eq!(
-            tags(&reg_flood_effects(admitted)),
+            tags(&reg_flood_effects(admitted)?),
             ["alert:RegFlood", "jail:reg_flood"]
         );
+        Ok(())
     }
 
     /// Bytes lifted out of a process carry no socket, so a uprobe read is
     /// never written to the jail log or answered, opt-in or not.
     #[test]
-    fn a_uprobe_origin_never_writes_or_kills_even_with_the_opt_in() {
+    fn a_uprobe_origin_never_writes_or_kills_even_with_the_opt_in() -> Result<(), TestError> {
         let uprobe = Policy {
             origin: InputOrigin::Uprobe,
             hep_allow_kill: true,
             ..wire_policy()
         };
-        assert_eq!(tags(&scanner_effects(uprobe)), ["alert:Scanner"]);
-        assert_eq!(tags(&kill_target_effects(uprobe)), ["alert:Scanner"]);
-        assert_eq!(tags(&reg_flood_effects(uprobe)), ["alert:RegFlood"]);
+        assert_eq!(tags(&scanner_effects(uprobe)?), ["alert:Scanner"]);
+        assert_eq!(tags(&kill_target_effects(uprobe)?), ["alert:Scanner"]);
+        assert_eq!(tags(&reg_flood_effects(uprobe)?), ["alert:RegFlood"]);
+        Ok(())
     }
 
     /// Without `--fail2ban` no jail line is produced; the finding and the
     /// kill are unaffected.
     #[test]
-    fn without_fail2ban_no_jail_line_is_written() {
+    fn without_fail2ban_no_jail_line_is_written() -> Result<(), TestError> {
         let quiet = Policy {
             fail2ban: false,
             ..wire_policy()
         };
-        assert_eq!(tags(&scanner_effects(quiet)), ["alert:Scanner", "kill"]);
-        assert_eq!(tags(&kill_target_effects(quiet)), ["alert:Scanner", "kill"]);
-        assert_eq!(tags(&reg_flood_effects(quiet)), ["alert:RegFlood"]);
+        assert_eq!(tags(&scanner_effects(quiet)?), ["alert:Scanner", "kill"]);
+        assert_eq!(
+            tags(&kill_target_effects(quiet)?),
+            ["alert:Scanner", "kill"]
+        );
+        assert_eq!(tags(&reg_flood_effects(quiet)?), ["alert:RegFlood"]);
+        Ok(())
     }
 
     /// Without a kill worker no kill is asked for: an offline run detects
     /// and reports and never builds a response with nowhere to go.
     #[test]
-    fn without_a_kill_worker_no_kill_is_asked_for() {
+    fn without_a_kill_worker_no_kill_is_asked_for() -> Result<(), TestError> {
         let offline = Policy {
             kill_armed: false,
             ..wire_policy()
         };
         assert_eq!(
-            tags(&scanner_effects(offline)),
+            tags(&scanner_effects(offline)?),
             ["alert:Scanner", "jail:scanner"]
         );
         assert_eq!(
-            tags(&kill_target_effects(offline)),
+            tags(&kill_target_effects(offline)?),
             ["alert:Scanner", "jail:scanner"]
         );
+        Ok(())
     }
 }

@@ -202,6 +202,7 @@ pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader, ParseError> {
 /// extensions, marker bit, and truncation/version error handling.
 #[cfg(test)]
 mod tests {
+    type TestError = Box<dyn std::error::Error>;
     /// Padding octets are not payload.
     ///
     /// [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1): "If the padding bit is set, the packet contains one or
@@ -214,14 +215,14 @@ mod tests {
     /// a bitrate, and — worse — pushed into the audio buffer, becoming samples
     /// in every exported WAV and vCon.
     #[test]
-    fn padding_octets_are_excluded_from_the_payload() {
+    fn padding_octets_are_excluded_from_the_payload() -> Result<(), TestError> {
         // V=2, P=1, PT=0, 160 octets of G.711 then 4 octets of padding whose
         // last byte is the count, per §5.1.
         let mut pkt = vec![0xA0, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
         pkt.extend(std::iter::repeat_n(0xD5u8, 160));
         pkt.extend_from_slice(&[0, 0, 0, 4]);
 
-        let hdr = parse_rtp_header(&pkt).expect("parses");
+        let hdr = parse_rtp_header(&pkt).map_err(|e| format!("parses: {e:?}"))?;
         assert!(hdr.padding, "the P bit is set");
         assert_eq!(
             hdr.payload(&pkt).len(),
@@ -232,6 +233,7 @@ mod tests {
             hdr.payload(&pkt).iter().all(|b| *b == 0xD5),
             "no padding octet reaches the payload"
         );
+        Ok(())
     }
 
     /// With no padding bit the whole tail is payload.
@@ -239,12 +241,13 @@ mod tests {
     /// The regression guard: almost every RTP packet is this, and a stripper
     /// that ran unconditionally would eat a real audio octet from each one.
     #[test]
-    fn without_the_padding_bit_the_whole_tail_is_payload() {
+    fn without_the_padding_bit_the_whole_tail_is_payload() -> Result<(), TestError> {
         let mut pkt = vec![0x80, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
         pkt.extend(std::iter::repeat_n(0xD5u8, 160));
-        let hdr = parse_rtp_header(&pkt).expect("parses");
+        let hdr = parse_rtp_header(&pkt).map_err(|e| format!("parses: {e:?}"))?;
         assert!(!hdr.padding);
         assert_eq!(hdr.payload(&pkt).len(), 160);
+        Ok(())
     }
 
     /// A padding count larger than the packet cannot underflow.
@@ -253,11 +256,12 @@ mod tests {
     /// more padding than there is payload. That must yield an empty payload,
     /// never a panic and never a wrapped length.
     #[test]
-    fn an_impossible_padding_count_yields_an_empty_payload() {
+    fn an_impossible_padding_count_yields_an_empty_payload() -> Result<(), TestError> {
         let mut pkt = vec![0xA0, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
         pkt.extend_from_slice(&[0x00, 0xFF]); // claims 255 octets of padding
-        let hdr = parse_rtp_header(&pkt).expect("parses");
+        let hdr = parse_rtp_header(&pkt).map_err(|e| format!("parses: {e:?}"))?;
         assert!(hdr.payload(&pkt).is_empty());
+        Ok(())
     }
 
     /// A padding count of zero is impossible and is treated as no payload.
@@ -266,11 +270,12 @@ mod tests {
     /// minimum legal value is 1.
     /// Zero is malformed; refusing to trust it keeps the arithmetic total.
     #[test]
-    fn a_zero_padding_count_is_malformed_and_yields_nothing() {
+    fn a_zero_padding_count_is_malformed_and_yields_nothing() -> Result<(), TestError> {
         let mut pkt = vec![0xA0, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
         pkt.extend_from_slice(&[0xD5, 0x00]);
-        let hdr = parse_rtp_header(&pkt).expect("parses");
+        let hdr = parse_rtp_header(&pkt).map_err(|e| format!("parses: {e:?}"))?;
         assert!(hdr.payload(&pkt).is_empty());
+        Ok(())
     }
 
     use super::*;
@@ -292,9 +297,9 @@ mod tests {
     /// A plain 12-byte header parses with every field decoded and
     /// `payload_offset` at 12.
     #[test]
-    fn parse_valid_rtp_header() {
+    fn parse_valid_rtp_header() -> Result<(), TestError> {
         let data = build_rtp(0xDEADBEEF, 1234, 160000, 0, &[0xFF; 160]);
-        let hdr = parse_rtp_header(&data).expect("valid RTP");
+        let hdr = parse_rtp_header(&data).map_err(|e| format!("valid RTP: {e:?}"))?;
 
         assert_eq!(hdr.version, 2);
         assert!(!hdr.padding);
@@ -306,12 +311,13 @@ mod tests {
         assert_eq!(hdr.timestamp, 160000);
         assert_eq!(hdr.ssrc, 0xDEADBEEF);
         assert_eq!(hdr.payload_offset, 12);
+        Ok(())
     }
 
     /// Two CSRC entries advance `payload_offset` by 8 bytes past the
     /// fixed header.
     #[test]
-    fn parse_rtp_with_csrc() {
+    fn parse_rtp_with_csrc() -> Result<(), TestError> {
         let mut data = Vec::new();
         // byte 0: V=2, P=0, X=0, CC=2 → 0x82
         data.push(0x82);
@@ -325,15 +331,16 @@ mod tests {
         // Payload
         data.extend_from_slice(&[0x00; 40]);
 
-        let hdr = parse_rtp_header(&data).expect("RTP with CSRC");
+        let hdr = parse_rtp_header(&data).map_err(|e| format!("RTP with CSRC: {e:?}"))?;
         assert_eq!(hdr.csrc_count, 2);
         assert_eq!(hdr.payload_offset, 12 + 8); // 12 fixed + 2*4 CSRC
+        Ok(())
     }
 
     /// A header extension (2-word body) moves `payload_offset` past the
     /// 4-byte extension header plus its data.
     #[test]
-    fn parse_rtp_with_extension() {
+    fn parse_rtp_with_extension() -> Result<(), TestError> {
         let mut data = Vec::new();
         // byte 0: V=2, P=0, X=1, CC=0 → 0x90
         data.push(0x90);
@@ -349,42 +356,46 @@ mod tests {
         // Payload
         data.extend_from_slice(&[0xFF; 80]);
 
-        let hdr = parse_rtp_header(&data).expect("RTP with extension");
+        let hdr = parse_rtp_header(&data).map_err(|e| format!("RTP with extension: {e:?}"))?;
         assert!(hdr.extension);
         assert_eq!(hdr.payload_type, 8);
         // 12 fixed + 4 ext header + 8 ext data = 24
         assert_eq!(hdr.payload_offset, 24);
+        Ok(())
     }
 
     /// Setting the high bit of byte 1 yields `marker == true` without
     /// disturbing the payload type.
     #[test]
-    fn parse_rtp_with_marker() {
+    fn parse_rtp_with_marker() -> Result<(), TestError> {
         let mut data = build_rtp(0x12345678, 999, 80000, 0, &[0x00; 20]);
         // Set marker bit: byte1 high bit
         data[1] |= 0x80;
 
-        let hdr = parse_rtp_header(&data).expect("RTP with marker");
+        let hdr = parse_rtp_header(&data).map_err(|e| format!("RTP with marker: {e:?}"))?;
         assert!(hdr.marker);
         assert_eq!(hdr.payload_type, 0);
+        Ok(())
     }
 
     /// A 3-byte input (shorter than the fixed header) is rejected.
     #[test]
-    fn too_short_returns_error() {
+    fn too_short_returns_error() -> Result<(), TestError> {
         let data = [0x80, 0x00, 0x00]; // Only 3 bytes
         let result = parse_rtp_header(&data);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// Version 3 in the V bits is rejected with an error.
     #[test]
-    fn wrong_version_returns_error() {
+    fn wrong_version_returns_error() -> Result<(), TestError> {
         // Version 3 instead of 2
         let mut data = build_rtp(1, 1, 1, 0, &[0; 10]);
         data[0] = 0xC0; // V=3
         let result = parse_rtp_header(&data);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// Version 0 is rejected with an error.
@@ -395,17 +406,18 @@ mod tests {
     /// checks run. This test guards the parser's own contract against
     /// garbage traffic, not against a protocol sipnab now decodes.
     #[test]
-    fn version_0_returns_error() {
+    fn version_0_returns_error() -> Result<(), TestError> {
         let mut data = build_rtp(1, 1, 1, 0, &[0; 10]);
         data[0] = 0x00; // V=0
         let result = parse_rtp_header(&data);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// CC=15 with no CSRC data present errors instead of reading past the
     /// buffer.
     #[test]
-    fn csrc_count_exceeds_data_returns_error() {
+    fn csrc_count_exceeds_data_returns_error() -> Result<(), TestError> {
         let mut data = Vec::new();
         // CC=15 but no CSRC data
         data.push(0x8F); // V=2, CC=15
@@ -414,5 +426,6 @@ mod tests {
         // Only 12 bytes total, need 12 + 60 = 72
         let result = parse_rtp_header(&data);
         assert!(result.is_err());
+        Ok(())
     }
 }
