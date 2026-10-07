@@ -57,8 +57,8 @@ jobs:
     # feature matrix is: the repository requires approval before an external
     # contributor's workflow runs (fork-pr-contributor-approval =
     # all_external_contributors).
-    runs-on: [self-hosted, thor-02]
-    # Two full builds, each 10-23 minutes measured on thor-02 under load on
+    runs-on: [self-hosted, jetson]
+    # Two full builds, each 10-23 minutes measured on the aarch64 self-hosted runner under load on
     # 2026-09-30, plus a fresh CARGO_HOME's crate fetch for the second.
     timeout-minutes: 120
     permissions:

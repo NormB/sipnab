@@ -31,13 +31,13 @@
 //! gate: a rule that flags `Jetson AGX Thor` while trying to catch `thor-02`
 //! gets suppressed within a week, and then catches nothing at all.
 //!
-//! # The one exception, and it is functional
+//! # No exception, not even for a runner label
 //!
-//! `runs-on: [self-hosted, thor-02]` is a GitHub runner LABEL, not prose: it is
-//! how a workflow reaches the one machine that can run it, and renaming it here
-//! would not rename it on the box. It is allowlisted, confined to `.github/`,
-//! and class B fails if the allowlist stops matching anything -- an exception
-//! nobody uses is one that will be spent on something else.
+//! Workflows reached the self-hosted runner with `runs-on: [self-hosted,
+//! <host>]`, and that label was allowlisted as functional. The runner also
+//! carries a hardware label, `jetson`, so since 2026-10-07 the workflows use
+//! that and the host label is scanned like every other line. B6 holds the
+//! self-hosted jobs to the hardware label.
 
 use std::collections::BTreeSet;
 use std::net::Ipv6Addr;
@@ -159,7 +159,7 @@ fn scan(
             continue;
         }
         for (i, line) in text.lines().enumerate() {
-            if hit(line) && !is_runner_label(line) {
+            if hit(line) {
                 let excerpt: String = line.trim().chars().take(110).collect();
                 found.push(format!("{rel}:{}: {excerpt}", i + 1));
             }
@@ -373,11 +373,16 @@ mod guidance {
 
 // -- Class A: the aarch64 development host ---------------------------
 
-/// A1. No published page names the aarch64 development host.
+/// A1. No tracked file names the aarch64 development host.
+///
+/// Every tracked file, not only the pages: the repository is public, so a
+/// source comment, a test or a workflow comment is as published as `docs/`.
+/// Until 2026-10-07 this scanned `docs/`, `website/`, the benches, README and
+/// CHANGELOG, and 63 lines elsewhere named the host.
 #[test]
 fn a1_no_published_page_names_the_development_host() -> Result<(), TestError> {
     let files = tracked_text()?;
-    let found = scan(&files, is_published, rule::lab_host);
+    let found = scan(&files, |_| true, rule::lab_host);
     assert!(
         found.is_empty(),
         "a published page names the maintainer's aarch64 host. This repository \
@@ -456,11 +461,31 @@ fn a6_a_lowercase_bare_name_is_the_box_not_the_board() -> Result<(), TestError> 
     Ok(())
 }
 
-/// A7. No published page carries the bare lowercase form either.
+/// A1's scan reaches what was outside it before: source, tests, workflow
+/// comments and the contributing guide.
+#[test]
+fn a1_scan_reaches_source_tests_and_workflows() -> Result<(), TestError> {
+    let files = tracked_text()?;
+    for rel in [
+        "src/app/batch.rs",
+        "tests/vcon_forward_test.rs",
+        ".github/workflows/ci.yml",
+        "CONTRIBUTING.md",
+    ] {
+        assert!(reaches(&files, rel), "class A does not scan {rel}");
+    }
+    assert!(
+        rule::lab_host("    # thor-02 is ONE runner and runs one job at a time"),
+        "a workflow comment naming the host must be caught"
+    );
+    Ok(())
+}
+
+/// A7. No tracked file carries the bare lowercase form either.
 #[test]
 fn a7_no_published_page_carries_the_bare_lowercase_form() -> Result<(), TestError> {
     let files = tracked_text()?;
-    let found = scan(&files, is_published, rule::bare_host);
+    let found = scan(&files, |_| true, rule::bare_host);
     assert!(
         found.is_empty(),
         "a published page names the host rather than the hardware:\n{}\n\n{}",
@@ -602,48 +627,34 @@ fn b5_the_machine_rule_spares_the_software_it_names() -> Result<(), TestError> {
     Ok(())
 }
 
-/// B6. The runner-label exception still matches something.
-///
-/// An allowlist that matches nothing is either an exception somebody spent on
-/// something else, or a dead rule that will be read as permission the next time
-/// the string appears.
+/// B6. Every self-hosted job reaches the runner by its hardware label, and
+/// at least one does, so the check is not vacuous.
 #[test]
-fn b6_the_runner_label_exception_is_still_in_use() -> Result<(), TestError> {
+fn b6_self_hosted_jobs_reach_the_runner_by_hardware_label() -> Result<(), TestError> {
     let files = tracked_text()?;
     let mut labels = Vec::new();
+    let mut named = Vec::new();
     for (rel, text) in &files {
         if !rel.starts_with(".github/") {
             continue;
         }
         for (i, line) in text.lines().enumerate() {
-            if is_runner_label(line) && (rule::lab_host(line) || rule::lab_machine(line)) {
+            if is_runner_label(line) {
                 labels.push(format!("{rel}:{}", i + 1));
+                if !word(line, "jetson") || rule::lab_host(line) || rule::lab_machine(line) {
+                    named.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                }
             }
         }
     }
     assert!(
         !labels.is_empty(),
-        "no workflow reaches the self-hosted runner by label any more, so the \
-         hostname exception is permission nobody is using. Delete it, or find \
-         out what happened to the runner."
-    );
-    Ok(())
-}
-
-/// B7. The exception is confined to workflows.
-#[test]
-fn b7_the_runner_label_exception_is_confined_to_workflows() -> Result<(), TestError> {
-    let files = tracked_text()?;
-    let outside = scan(
-        &files,
-        |rel| !rel.starts_with(".github/"),
-        |line| is_runner_label(line) && (rule::lab_host(line) || rule::lab_machine(line)),
+        "no workflow reaches the self-hosted runner, so this checks nothing"
     );
     assert!(
-        outside.is_empty(),
-        "the runner-label exception is being used outside .github/, which is \
-         not what it is for:\n{}",
-        capped(&outside, 25)
+        named.is_empty(),
+        "a self-hosted job does not use the hardware label `jetson`, or names a machine:\n{}",
+        named.join("\n")
     );
     Ok(())
 }

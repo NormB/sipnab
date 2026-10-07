@@ -10918,7 +10918,7 @@ mod tests {
     /// No container emits an explicit null.
     ///
     /// "Absent, never null" is the module's standing contract, and the
-    /// container stored on thor-02 by an earlier release violates it -- with
+    /// container stored on the development host by an earlier release violates it -- with
     /// `url`, `mediatype` and `duration` all null. This asserts the property
     /// on the path this task added.
     #[cfg(feature = "vcon")]

@@ -496,7 +496,7 @@ pub struct KindFacts {
 /// it held. A `PUT` to `/v1/vcons/{uuid}` was not measured, so the kind sets
 /// no replace URL.
 ///
-/// conserver, measured against the self-hosted vCon server on thor-02 on
+/// conserver, measured against the self-hosted vCon server in the development lab on
 /// 2026-10-07: `POST /vcon/external-ingress?ingress_list=sipnab` with
 /// `x-conserver-api-token: <key>` answered `204` for a new container, and
 /// `GET /vcon/{uuid}` then returned it with an `amended` member added; `204`

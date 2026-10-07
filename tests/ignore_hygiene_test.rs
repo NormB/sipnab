@@ -38,7 +38,7 @@ const MANUAL_ONLY: &[(&str, &str, &str)] = &[(
     "src/capture/fanout.rs",
     "fanout_applies_to_an_open_pcap_handle",
     "opens a live AF_PACKET socket, which needs CAP_NET_RAW. The GitHub-hosted \
-     runners run cargo as an unprivileged user, and the self-hosted thor-02 \
+     runners run cargo as an unprivileged user, and the self-hosted aarch64 runner \
      runner in self-hosted-smoke.yml runs without sudo. Run by hand with \
      `sudo <test-binary> --ignored fanout_applies_to_an_open_pcap_handle`.",
 )];

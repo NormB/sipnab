@@ -1747,7 +1747,7 @@ fn the_vcon_store_kind_delivers_to_a_vcon_store_stand_in() -> Result<(), TestErr
     Ok(())
 }
 
-/// A stand-in for a self-hosted conserver, answering as the one on thor-02
+/// A stand-in for a self-hosted conserver, answering as the one in the development lab
 /// was measured to answer on 2026-10-07:
 /// `POST /vcon/external-ingress?ingress_list=sipnab` with
 /// `x-conserver-api-token: <key>`; `403` without the right key; `422` for a
