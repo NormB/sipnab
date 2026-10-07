@@ -206,9 +206,11 @@ mod tests {
     use super::*;
     use crate::sip::dialog_store::DialogStore;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A real capture reads into the stores and reports a clean, complete read.
     #[test]
-    fn a_clean_read_fills_the_stores_and_reports_complete() {
+    fn a_clean_read_fills_the_stores_and_reports_complete() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
         let progress = AtomicU64::new(0);
@@ -224,12 +226,13 @@ mod tests {
             "a file read to EOF did not stop early"
         );
         assert!(!ds.read().is_empty(), "the read produced dialogs");
+        Ok(())
     }
 
     /// A file that does not exist reports zero packets, an error, and — the bit
     /// a completeness tracker needs — that the read never covered the file.
     #[test]
-    fn a_missing_file_reports_stopped_early_with_zero_packets() {
+    fn a_missing_file_reports_stopped_early_with_zero_packets() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(16, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(16)));
         let progress = AtomicU64::new(0);
@@ -243,6 +246,7 @@ mod tests {
             outcome.stopped_early,
             "zero of the file was read — the most partial read there is"
         );
+        Ok(())
     }
 
     /// An archive is read as the set it is: every capture member lands in the
@@ -250,13 +254,15 @@ mod tests {
     /// there. This is what MCP `open_capture`, `compare_captures`,
     /// `find_in_captures` and the REST compare route all read through.
     #[test]
-    fn an_archive_reads_every_member_into_the_stores() {
+    fn an_archive_reads_every_member_into_the_stores() -> Result<(), TestError> {
         use crate::capture::archive::tar::testutil::{Spec, build};
         use std::io::Write;
         let samples =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
-        let a = std::fs::read(samples.join("sip-rtp-g711.pcap")).expect("a");
-        let b = std::fs::read(samples.join("sip-register.pcap")).expect("b");
+        let a =
+            std::fs::read(samples.join("sip-rtp-g711.pcap")).map_err(|e| format!("a: {e:?}"))?;
+        let b =
+            std::fs::read(samples.join("sip-register.pcap")).map_err(|e| format!("b: {e:?}"))?;
 
         let count = |path: &std::path::Path| {
             let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
@@ -265,19 +271,21 @@ mod tests {
             assert!(outcome.error.is_none(), "{:?}", outcome.error);
             (outcome.packets, ds.read().len(), ss.read().len())
         };
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("a.pcap"), &a).expect("a");
-        std::fs::write(dir.path().join("b.pcap"), &b).expect("b");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("a.pcap"), &a).map_err(|e| format!("a: {e:?}"))?;
+        std::fs::write(dir.path().join("b.pcap"), &b).map_err(|e| format!("b: {e:?}"))?;
         let (pa, da, sa) = count(&dir.path().join("a.pcap"));
         let (pb, db, sb) = count(&dir.path().join("b.pcap"));
 
         let tar = build(&[Spec::file("a.pcap", &a), Spec::file("b.pcap", &b)]);
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        enc.write_all(&tar).expect("gzip");
+        enc.write_all(&tar).map_err(|e| format!("gzip: {e:?}"))?;
         let tgz = dir.path().join("both.tgz");
-        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+        std::fs::write(&tgz, enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
+            .map_err(|e| format!("tgz: {e:?}"))?;
 
         assert_eq!(count(&tgz), (pa + pb, da + db, sa + sb));
+        Ok(())
     }
 
     /// A frame the capture cut short is counted as snapped on this reader too,
@@ -285,11 +293,12 @@ mod tests {
     /// the capture quality an `-I` run of the same file reports.
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn a_snapped_frame_is_counted_on_the_replay_reader() {
+    fn a_snapped_frame_is_counted_on_the_replay_reader() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("snapped.pcap");
-        std::fs::write(&path, crate::test_utils::one_record_pcap(64, 1500)).expect("write");
+        std::fs::write(&path, crate::test_utils::one_record_pcap(64, 1500))
+            .map_err(|e| format!("write: {e:?}"))?;
         let ds = Arc::new(RwLock::new(DialogStore::new(16, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(16)));
         let progress = AtomicU64::new(0);
@@ -303,5 +312,6 @@ mod tests {
             "64 of 1500 bytes is a snapped frame"
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 }

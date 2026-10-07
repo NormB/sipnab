@@ -1309,57 +1309,63 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A Name Resolution Block written into a PCAP-NG capture must survive a
     /// round trip: reading the file back recovers the IP → name mappings. This
     /// is the write half of the name-resolution feature (the read half powers
     /// loading names from a capture on open).
     #[test]
-    fn pcapng_name_resolution_block_round_trips() {
+    fn pcapng_name_resolution_block_round_trips() -> Result<(), TestError> {
         use std::collections::HashMap;
         use std::net::IpAddr;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("names.pcapng");
         let entries: Vec<(IpAddr, Vec<String>)> = vec![
-            ("10.0.0.1".parse().unwrap(), vec!["sbc-edge".to_string()]),
-            ("2001:db8::1".parse().unwrap(), vec!["core6".to_string()]),
+            ("10.0.0.1".parse()?, vec!["sbc-edge".to_string()]),
+            ("2001:db8::1".parse()?, vec!["core6".to_string()]),
         ];
         {
             let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
-                .expect("create pcapng writer");
-            w.write_name_resolution_block(&entries).expect("write NRB");
-            w.finish().expect("finish");
+                .map_err(|e| format!("create pcapng writer: {e:?}"))?;
+            w.write_name_resolution_block(&entries)
+                .map_err(|e| format!("write NRB: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
         }
 
-        let meta = crate::capture::pcapng_meta::read_pcapng_metadata(&path).expect("read metadata");
+        let meta = crate::capture::pcapng_meta::read_pcapng_metadata(&path)
+            .map_err(|e| format!("read metadata: {e:?}"))?;
         let names: HashMap<IpAddr, String> = meta.names.into_iter().collect();
         assert_eq!(
             names
-                .get(&"10.0.0.1".parse::<IpAddr>().unwrap())
+                .get(&"10.0.0.1".parse::<IpAddr>()?)
                 .map(String::as_str),
             Some("sbc-edge")
         );
         assert_eq!(
             names
-                .get(&"2001:db8::1".parse::<IpAddr>().unwrap())
+                .get(&"2001:db8::1".parse::<IpAddr>()?)
                 .map(String::as_str),
             Some("core6")
         );
+        Ok(())
     }
 
     /// Writing a Name Resolution Block to a plain (non-PCAP-NG) capture is a
     /// no-op, not an error — NRBs only exist in the -ng format.
     #[test]
-    fn name_resolution_block_skipped_for_plain_pcap() {
+    fn name_resolution_block_skipped_for_plain_pcap() -> Result<(), TestError> {
         use std::net::IpAddr;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("plain.pcap");
         let mut w = PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw)
-            .expect("create pcap writer");
+            .map_err(|e| format!("create pcap writer: {e:?}"))?;
         let entries: Vec<(IpAddr, Vec<String>)> =
-            vec![("10.0.0.1".parse().unwrap(), vec!["x".to_string()])];
+            vec![("10.0.0.1".parse()?, vec!["x".to_string()])];
         assert!(w.write_name_resolution_block(&entries).is_ok());
-        w.finish().expect("finish");
+        w.finish().map_err(|e| format!("finish: {e:?}"))?;
+        Ok(())
     }
 
     /// ENOSPC regression tests using /dev/full, which fails every write
@@ -1384,7 +1390,7 @@ mod tests {
         /// Sustained writes to a full disk must surface as an Err from
         /// write(), never a panic or silent success forever.
         #[test]
-        fn sustained_writes_to_full_disk_error_out() {
+        fn sustained_writes_to_full_disk_error_out() -> Result<(), TestError> {
             let mut w = PcapWriter::with_format(
                 Path::new("/dev/full"),
                 1,
@@ -1393,13 +1399,14 @@ mod tests {
                 true, // pcapng (buffered) — the interesting backend
                 PcapExportMode::Raw,
             )
-            .expect("open /dev/full (writes are buffered)");
+            .map_err(|e| format!("open /dev/full (writes are buffered): {e:?}"))?;
 
             let pkt = small_packet();
             // BufWriter defaults to 8 KiB; well under 4096 × 64B writes
             // the buffer must spill to the device and hit ENOSPC.
             let failed = (0..4096).any(|_| w.write(&pkt).is_err());
             assert!(failed, "writing 256 KiB to /dev/full must surface an error");
+            Ok(())
         }
 
         /// A small tail of packets can sit in the BufWriter when capture
@@ -1407,7 +1414,7 @@ mod tests {
         /// surface the deferred failure so the operator learns the file
         /// is incomplete.
         #[test]
-        fn finish_surfaces_deferred_flush_error() {
+        fn finish_surfaces_deferred_flush_error() -> Result<(), TestError> {
             let mut w = PcapWriter::with_format(
                 Path::new("/dev/full"),
                 1,
@@ -1416,7 +1423,7 @@ mod tests {
                 true,
                 PcapExportMode::Raw,
             )
-            .expect("open /dev/full");
+            .map_err(|e| format!("open /dev/full: {e:?}"))?;
 
             // One small packet: stays buffered, write() reports Ok.
             let _ = w.write(&small_packet());
@@ -1426,6 +1433,7 @@ mod tests {
                 result.is_err(),
                 "finish() must report the deferred ENOSPC, got Ok"
             );
+            Ok(())
         }
     }
 
@@ -1436,11 +1444,12 @@ mod tests {
     /// ~3-minute capture spanned "46 hours" (year 58484). A write→read
     /// round trip through sipnab's own reader must preserve timestamps.
     #[test]
-    fn pcapng_roundtrip_preserves_timestamps() {
-        let dir = tempfile::tempdir().unwrap();
+    fn pcapng_roundtrip_preserves_timestamps() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("roundtrip.pcapng");
         // The real capture's first packet time: 2026-07-07 12:42:46.117182 UTC
-        let ts0 = chrono::DateTime::from_timestamp(1_783_428_166, 117_182_000).unwrap();
+        let ts0 = chrono::DateTime::from_timestamp(1_783_428_166, 117_182_000)
+            .ok_or("the timestamp is in range")?;
         let ts1 = ts0 + chrono::TimeDelta::milliseconds(1_500); // +1.5 s
         {
             let mut w = PcapWriter::with_format(
@@ -1450,17 +1459,15 @@ mod tests {
                 None,
                 true, // pcapng
                 PcapExportMode::Raw,
-            )
-            .unwrap();
+            )?;
             for ts in [ts0, ts1] {
-                w.write(&Packet::new(ts, vec![0u8; 64], 64, 64, None, 1))
-                    .unwrap();
+                w.write(&Packet::new(ts, vec![0u8; 64], 64, 64, None, 1))?;
             }
-            w.finish().unwrap();
+            w.finish()?;
         }
 
-        let data = std::fs::read(&path).unwrap();
-        let reader = crate::capture::pcap_reader::PcapReader::new(&data).unwrap();
+        let data = std::fs::read(&path)?;
+        let reader = crate::capture::pcap_reader::PcapReader::new(&data)?;
         let pkts: Vec<_> = reader.collect();
         assert_eq!(pkts.len(), 2);
         for (pkt, want) in pkts.iter().zip([ts0, ts1]) {
@@ -1468,13 +1475,14 @@ mod tests {
                 pkt.timestamp_secs as i64,
                 pkt.timestamp_usecs * 1000,
             )
-            .unwrap();
+            .ok_or("the timestamp is in range")?;
             assert_eq!(
                 got, want,
                 "round-tripped timestamp must equal the written one \
                  (ns ticks require if_tsresol=9 in the IDB)"
             );
         }
+        Ok(())
     }
 
     /// The writer's own context over a raw OS error, the shape
@@ -1487,7 +1495,8 @@ mod tests {
     /// rtp03: root dropped to `nobody`, which may not write the directory. The
     /// report names the file, the OS error, the user, and all three remedies.
     #[test]
-    fn a_permission_refusal_after_a_drop_names_the_user_and_the_remedies() {
+    fn a_permission_refusal_after_a_drop_names_the_user_and_the_remedies() -> Result<(), TestError>
+    {
         let e = create_error("/var/tmp/e2e/rtp03.pcap", libc::EACCES);
         let m = describe_output_error(&e, Some("nobody"));
         assert!(
@@ -1507,67 +1516,73 @@ mod tests {
              output; make the directory writable by that user (e.g. install -d -o nobody \
              <dir>), pass --user <name> for a user that can write there, or --no-priv-drop."
         );
+        Ok(())
     }
 
     /// The user named is the one passed, not a hard-coded default.
     #[test]
-    fn the_hint_names_the_user_actually_dropped_to() {
+    fn the_hint_names_the_user_actually_dropped_to() -> Result<(), TestError> {
         let e = create_error("/srv/cap/a.pcap", libc::EACCES);
         let m = describe_output_error(&e, Some("sipcap"));
         assert!(m.contains("user 'sipcap'"), "{m}");
         assert!(m.contains("install -d -o sipcap"), "{m}");
         assert!(!m.contains("nobody"), "{m}");
+        Ok(())
     }
 
     /// A missing directory is not a privilege problem, even after a drop:
     /// the OS error, and no hint that would send the operator the wrong way.
     #[test]
-    fn a_missing_directory_gets_no_privilege_hint() {
+    fn a_missing_directory_gets_no_privilege_hint() -> Result<(), TestError> {
         let e = create_error("/nope/out.pcap", libc::ENOENT);
         let m = describe_output_error(&e, Some("nobody"));
         assert!(m.contains("'/nope/out.pcap'"), "{m}");
         assert!(m.contains("No such file or directory"), "{m}");
         assert!(!m.contains("dropped privileges"), "{m}");
+        Ok(())
     }
 
     /// A refusal with no drop (sipnab run unprivileged, or `--no-priv-drop`)
     /// is the operator's own account: the OS error, no user hint.
     #[test]
-    fn a_permission_refusal_without_a_drop_gets_no_user_hint() {
+    fn a_permission_refusal_without_a_drop_gets_no_user_hint() -> Result<(), TestError> {
         let e = create_error("/root/out.pcap", libc::EACCES);
         let m = describe_output_error(&e, None);
         assert!(m.contains("Permission denied (os error 13)"), "{m}");
         assert!(!m.contains("dropped privileges"), "{m}");
         assert!(!m.contains("--no-priv-drop"), "{m}");
+        Ok(())
     }
 
     /// The refusal is found anywhere in the chain, not only at its root
     /// position: a further context layered on top must not hide it.
     #[test]
-    fn a_refusal_under_another_context_still_gets_the_hint() {
+    fn a_refusal_under_another_context_still_gets_the_hint() -> Result<(), TestError> {
         let e = create_error("/srv/cap/a.pcap", libc::EACCES).context("rotating output");
         let m = describe_output_error(&e, Some("nobody"));
         assert!(m.contains("Permission denied (os error 13)"), "{m}");
         assert!(m.contains("dropped privileges to user 'nobody'"), "{m}");
+        Ok(())
     }
 
     /// The real writer, not a synthesized chain: creating a file in a missing
     /// directory yields a report naming the path and the OS error.
     #[test]
-    fn the_real_writer_error_reports_its_cause() {
-        let dir = tempfile::tempdir().unwrap();
+    fn the_real_writer_error_reports_its_cause() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("absent").join("x.pcap");
         let Err(e) = PcapWriter::new(&path, 1, None, None) else {
-            panic!("creating in a missing directory must fail");
+            return Err("creating in a missing directory must fail".into());
         };
         let m = describe_output_error(&e, None);
         assert!(m.contains(&path.display().to_string()), "{m}");
         assert!(m.contains("No such file or directory"), "{m}");
+        Ok(())
     }
 
     /// `output.pcap` + sequence N yields `output_0000N.pcap`.
     #[test]
-    fn rotated_path_with_extension() {
+    fn rotated_path_with_extension() -> Result<(), TestError> {
         let base = PathBuf::from("/tmp/output.pcap");
         assert_eq!(
             rotated_path(&base, 1),
@@ -1577,25 +1592,28 @@ mod tests {
             rotated_path(&base, 42),
             PathBuf::from("/tmp/output_00042.pcap")
         );
+        Ok(())
     }
 
     /// A base path without an extension gets the default `.pcap` appended.
     #[test]
-    fn rotated_path_no_extension() {
+    fn rotated_path_no_extension() -> Result<(), TestError> {
         let base = PathBuf::from("/tmp/capture");
         // When there's no extension, file_stem is "capture" and extension defaults to "pcap"
         assert_eq!(
             rotated_path(&base, 3),
             PathBuf::from("/tmp/capture_00003.pcap")
         );
+        Ok(())
     }
 
     /// `filesize:50` parses as a 50 MB size cap and no duration cap.
     #[test]
-    fn parse_split_filesize() {
-        let (bytes, dur) = parse_split("filesize:50").unwrap();
+    fn parse_split_filesize() -> Result<(), TestError> {
+        let (bytes, dur) = parse_split("filesize:50")?;
         assert_eq!(bytes, Some(52_428_800));
         assert!(dur.is_none());
+        Ok(())
     }
 
     /// The two `filesize:N` conditions read N in the same unit.
@@ -1608,52 +1626,57 @@ mod tests {
     /// rather than against a literal, so a third site cannot reintroduce a
     /// second unit without failing here.
     #[test]
-    fn split_and_autostop_filesize_agree_on_the_unit() {
-        let (bytes, _) = parse_split("filesize:7").expect("filesize:7 parses");
+    fn split_and_autostop_filesize_agree_on_the_unit() -> Result<(), TestError> {
+        let (bytes, _) =
+            parse_split("filesize:7").map_err(|e| format!("filesize:7 parses: {e:?}"))?;
         assert_eq!(
             bytes,
             Some(mib_to_bytes(7)),
             "--split filesize must measure MiB, as its help text and the docs say"
         );
-        let (_, threshold) =
-            crate::app::bootstrap::parse_autostop("filesize:7").expect("filesize:7 parses");
+        let (_, threshold) = crate::app::bootstrap::parse_autostop("filesize:7")
+            .map_err(|e| format!("filesize:7 parses: {e:?}"))?;
         assert_eq!(
             threshold,
             Some(mib_to_bytes(7)),
             "--autostop filesize must reach the same byte threshold as --split"
         );
+        Ok(())
     }
 
     /// `duration:300` parses as a 300-second cap and no size cap.
     #[test]
-    fn parse_split_duration() {
-        let (bytes, dur) = parse_split("duration:300").unwrap();
+    fn parse_split_duration() -> Result<(), TestError> {
+        let (bytes, dur) = parse_split("duration:300")?;
         assert!(bytes.is_none());
         assert_eq!(dur, Some(std::time::Duration::from_secs(300)));
+        Ok(())
     }
 
     /// Unknown keys, missing values, and non-numeric values are errors.
     #[test]
-    fn parse_split_invalid() {
+    fn parse_split_invalid() -> Result<(), TestError> {
         assert!(parse_split("bogus:5").is_err());
         assert!(parse_split("filesize").is_err());
         assert!(parse_split("filesize:abc").is_err());
+        Ok(())
     }
 
     /// A split threshold of 0 is rejected: `filesize:0` rotates on every byte
     /// and `duration:0` on every packet, filling a directory with empty files.
     #[test]
-    fn parse_split_rejects_zero() {
+    fn parse_split_rejects_zero() -> Result<(), TestError> {
         assert!(parse_split("filesize:0").is_err());
         assert!(parse_split("duration:0").is_err());
         // A positive threshold still parses.
         assert!(parse_split("filesize:10").is_ok());
         assert!(parse_split("duration:60").is_ok());
+        Ok(())
     }
 
     /// The DSB body layout is `TLSK` type, LE length, data, zero padding.
     #[test]
-    fn dsb_body_format() {
+    fn dsb_body_format() -> Result<(), TestError> {
         let keylog = b"CLIENT_RANDOM abcd1234 deadbeef\n";
         let mut body = Vec::new();
         body.extend_from_slice(&0x544c534bu32.to_le_bytes());
@@ -1668,12 +1691,13 @@ mod tests {
         assert_eq!(&body[4..8], &(keylog.len() as u32).to_le_bytes());
         // Verify data
         assert_eq!(&body[8..8 + keylog.len()], keylog);
+        Ok(())
     }
 
     /// The nanosecond conversion in the pcapng write path falls back to 0
     /// for far-future (i64 overflow) and pre-epoch timestamps, no panic.
     #[test]
-    fn pcapng_timestamp_nanos_overflow_no_panic() {
+    fn pcapng_timestamp_nanos_overflow_no_panic() -> Result<(), TestError> {
         // Verify the nanos conversion used in PcapNg write path handles
         // timestamps where timestamp_nanos_opt() returns None (i64 overflow)
         // or values that don't fit in u64 (negative). The fix uses
@@ -1683,7 +1707,7 @@ mod tests {
         // Year 2554+: timestamp_nanos_opt() returns None because nanoseconds
         // exceed i64::MAX (~292 years from epoch = ~year 2262).
         let far_future = DateTime::from_timestamp(20_000_000_000, 999_999_999)
-            .expect("valid far-future timestamp");
+            .ok_or("valid far-future timestamp")?;
 
         // Replicate the exact conversion from PcapWriter::write
         let nanos: u64 = far_future
@@ -1696,7 +1720,7 @@ mod tests {
 
         // Also verify a normal timestamp works correctly
         let normal =
-            DateTime::from_timestamp(1_700_000_000, 500_000_000).expect("valid normal timestamp");
+            DateTime::from_timestamp(1_700_000_000, 500_000_000).ok_or("valid normal timestamp")?;
         let normal_nanos: u64 = normal
             .timestamp_nanos_opt()
             .and_then(|n| u64::try_from(n).ok())
@@ -1707,7 +1731,7 @@ mod tests {
         );
 
         // Pre-epoch timestamp: nanos would be negative (fails u64::try_from)
-        let pre_epoch = DateTime::from_timestamp(-1, 0).expect("valid pre-epoch timestamp");
+        let pre_epoch = DateTime::from_timestamp(-1, 0).ok_or("valid pre-epoch timestamp")?;
         let pre_nanos: u64 = pre_epoch
             .timestamp_nanos_opt()
             .and_then(|n| u64::try_from(n).ok())
@@ -1716,11 +1740,12 @@ mod tests {
             pre_nanos, 0,
             "pre-epoch timestamp should fall back to 0 nanos"
         );
+        Ok(())
     }
 
     /// `parse_mode` maps the three CLI strings; anything else yields `None`.
     #[test]
-    fn pcap_export_mode_parse() {
+    fn pcap_export_mode_parse() -> Result<(), TestError> {
         assert_eq!(
             PcapExportMode::parse_mode("decrypted"),
             Some(PcapExportMode::Decrypted)
@@ -1740,11 +1765,12 @@ mod tests {
             None,
             "Empty string should return None"
         );
+        Ok(())
     }
 
     /// Only `Raw` mode excludes DSB blocks from the output.
     #[test]
-    fn pcap_export_mode_include_dsb() {
+    fn pcap_export_mode_include_dsb() -> Result<(), TestError> {
         assert!(
             !PcapExportMode::Decrypted.include_dsb(),
             "Decrypted mode must not authorize embedding secrets"
@@ -1757,6 +1783,7 @@ mod tests {
             !PcapExportMode::Raw.include_dsb(),
             "Raw mode should NOT include DSB"
         );
+        Ok(())
     }
 
     // ── End-to-end write / read-back / rotate / DSB ─────────────────────
@@ -1774,23 +1801,24 @@ mod tests {
         /// Three packets written as plain pcap read back via libpcap, and the
         /// byte counter matches.
         #[test]
-        fn pcap_write_and_read_back() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcap_write_and_read_back() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("out.pcap");
 
-            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
             assert_eq!(w.export_mode(), PcapExportMode::Raw);
             for i in 0..3u8 {
-                w.write(&pkt(i, 50)).unwrap();
+                w.write(&pkt(i, 50))?;
             }
             // Each classic-pcap record is a 16-byte header plus the 50-byte
             // payload, so --split accounting must see 3 * 66 = 198, not the
             // payload-only 150.
             assert_eq!(w.bytes_written(), 198);
-            w.finish().unwrap();
+            w.finish()?;
 
             // Re-open with libpcap and count the packets back.
-            let mut cap = pcap::Capture::from_file(&path).expect("reopen pcap");
+            let mut cap =
+                pcap::Capture::from_file(&path).map_err(|e| format!("reopen pcap: {e:?}"))?;
             let mut count = 0;
             while cap.next_packet().is_ok() {
                 count += 1;
@@ -1799,16 +1827,17 @@ mod tests {
                 }
             }
             assert_eq!(count, 3, "all three packets should round-trip");
+            Ok(())
         }
 
         /// Writing a DSB (once — the second call is a no-op) plus packets
         /// produces a file opening with the pcapng SHB magic.
         #[test]
-        fn pcapng_write_with_dsb_produces_valid_file() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_write_with_dsb_produces_valid_file() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("out.pcapng");
             let keylog = dir.path().join("keys.txt");
-            std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+            std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n")?;
 
             let mut w = PcapWriter::with_format(
                 &path,
@@ -1817,51 +1846,50 @@ mod tests {
                 None,
                 true, // pcapng
                 PcapExportMode::EncryptedWithDsb,
-            )
-            .unwrap();
+            )?;
 
             // First call writes the DSB; the second is a no-op (already written).
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
+            w.maybe_write_keylog_dsb(&keylog)?;
+            w.maybe_write_keylog_dsb(&keylog)?;
 
             for i in 0..2u8 {
-                w.write(&pkt(i, 40)).unwrap();
+                w.write(&pkt(i, 40))?;
             }
-            w.finish().unwrap();
+            w.finish()?;
 
             // The PCAP-NG Section Header Block opens with block type 0x0A0D0D0A.
-            let bytes = std::fs::read(&path).unwrap();
+            let bytes = std::fs::read(&path)?;
             assert!(bytes.len() > 28, "file should have content");
             assert_eq!(&bytes[0..4], &0x0A0D0D0Au32.to_le_bytes());
+            Ok(())
         }
 
         /// IPv4 and IPv6 NRB records (with multiple names) survive a write
         /// and read back through the `pcap-file` reader.
         #[test]
-        fn name_resolution_block_round_trips() {
+        fn name_resolution_block_round_trips() -> Result<(), TestError> {
             use pcap_file::pcapng::PcapNgReader;
             use pcap_file::pcapng::blocks::name_resolution::Record;
             use std::net::IpAddr;
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("names.pcapng");
-            let v6: IpAddr = "2001:db8::1".parse().unwrap();
+            let v6: IpAddr = "2001:db8::1".parse()?;
             {
                 let mut w =
-                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
-                        .unwrap();
+                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
                 let entries = vec![
                     (IpAddr::from([10, 0, 0, 2]), vec!["sbc-edge".to_string()]),
                     (v6, vec!["v6".to_string(), "v6.example.com".to_string()]),
                 ];
-                w.write_name_resolution_block(&entries).unwrap();
-                w.write(&pkt(0, 40)).unwrap();
-                w.finish().unwrap();
+                w.write_name_resolution_block(&entries)?;
+                w.write(&pkt(0, 40))?;
+                w.finish()?;
             }
 
             // Read the NRB back and confirm both records survive with names.
-            let bytes = std::fs::read(&path).unwrap();
-            let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+            let bytes = std::fs::read(&path)?;
+            let mut reader = PcapNgReader::new(&bytes[..])?;
             let mut v4_names: Vec<String> = Vec::new();
             let mut v6_count = 0;
             while let Some(Ok(block)) = reader.next_block() {
@@ -1879,27 +1907,32 @@ mod tests {
             }
             assert_eq!(v4_names, vec!["sbc-edge".to_string()]);
             assert_eq!(v6_count, 2, "IPv6 record should carry both names");
+            Ok(())
         }
 
         // ── Operator notes as packet comments ──────────────────────────
 
         /// A note comment for a writer test.
-        fn note_comment(text: &str) -> crate::annotate::pcapng::EpbComment {
-            crate::annotate::pcapng::EpbComment::on_original_frame(
-                &crate::annotate::NoteText::new(text).expect("a valid note"),
-            )
+        fn note_comment(text: &str) -> Result<crate::annotate::pcapng::EpbComment, TestError> {
+            Ok(crate::annotate::pcapng::EpbComment::on_original_frame(
+                &crate::annotate::NoteText::new(text)
+                    .map_err(|e| format!("a valid note: {e:?}"))?,
+            ))
         }
+
+        /// Each Enhanced Packet Block's `opt_comment`s beside its frame bytes.
+        type EpbComments = Vec<(Vec<String>, Vec<u8>)>;
 
         /// The `opt_comment`s on every Enhanced Packet Block, in frame order,
         /// plus each frame's bytes.
-        fn epb_comments(path: &Path) -> Vec<(Vec<String>, Vec<u8>)> {
+        fn epb_comments(path: &Path) -> Result<EpbComments, TestError> {
             use pcap_file::pcapng::PcapNgReader;
             use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
-            let bytes = std::fs::read(path).expect("read");
-            let mut reader = PcapNgReader::new(&bytes[..]).expect("pcapng");
+            let bytes = std::fs::read(path).map_err(|e| format!("read: {e:?}"))?;
+            let mut reader = PcapNgReader::new(&bytes[..]).map_err(|e| format!("pcapng: {e:?}"))?;
             let mut out = Vec::new();
             while let Some(block) = reader.next_block() {
-                let block = block.expect("every block parses");
+                let block = block.map_err(|e| format!("every block parses: {e:?}"))?;
                 if let Some(epb) = block.into_enhanced_packet() {
                     let comments = epb
                         .options
@@ -1912,7 +1945,7 @@ mod tests {
                     out.push((comments, epb.data.to_vec()));
                 }
             }
-            out
+            Ok(out)
         }
 
         /// A note written on a frame reads back as THAT frame's comment, a
@@ -1922,21 +1955,22 @@ mod tests {
         /// against, rather than through the writer's own state: the only
         /// version of a comment that matters is the one in the file.
         #[test]
-        fn a_note_reads_back_as_the_comment_on_its_own_frame() {
-            let dir = tempfile::tempdir().expect("tempdir");
+        fn a_note_reads_back_as_the_comment_on_its_own_frame() -> Result<(), TestError> {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
             let path = dir.path().join("notes.pcapng");
             {
                 let mut w =
                     PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
-                        .expect("writer");
-                w.write(&pkt(0, 40)).expect("plain frame");
-                w.write_annotated(&pkt(1, 41), &[note_comment("one")])
-                    .expect("one note");
-                w.write_annotated(&pkt(2, 42), &[note_comment("two"), note_comment("three")])
-                    .expect("two notes");
-                w.finish().expect("finish");
+                        .map_err(|e| format!("writer: {e:?}"))?;
+                w.write(&pkt(0, 40))
+                    .map_err(|e| format!("plain frame: {e:?}"))?;
+                w.write_annotated(&pkt(1, 41), &[note_comment("one")?])
+                    .map_err(|e| format!("one note: {e:?}"))?;
+                w.write_annotated(&pkt(2, 42), &[note_comment("two")?, note_comment("three")?])
+                    .map_err(|e| format!("two notes: {e:?}"))?;
+                w.finish().map_err(|e| format!("finish: {e:?}"))?;
             }
-            let frames = epb_comments(&path);
+            let frames = epb_comments(&path)?;
             assert_eq!(frames.len(), 3, "every frame is written");
             assert_eq!(frames[0].0, Vec::<String>::new(), "no note, no comment");
             assert_eq!(frames[1].0, vec!["[operator note] one".to_string()]);
@@ -1950,6 +1984,7 @@ mod tests {
             // The comment rides beside the bytes; it does not change them.
             assert_eq!(frames[1].1, vec![1u8; 41]);
             assert_eq!(frames[2].1, vec![2u8; 42]);
+            Ok(())
         }
 
         /// Wireshark shows the note as the frame's comment.
@@ -1960,17 +1995,18 @@ mod tests {
         /// nothing it cannot. Its configuration directory is pointed at the
         /// test's own temporary directory, so no profile of the user's is read.
         #[test]
-        fn tshark_shows_the_note_as_the_frame_comment() {
-            let dir = tempfile::tempdir().expect("tempdir");
+        fn tshark_shows_the_note_as_the_frame_comment() -> Result<(), TestError> {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
             let path = dir.path().join("notes.pcapng");
             {
                 let mut w =
                     PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
-                        .expect("writer");
-                w.write(&pkt(0, 40)).expect("plain frame");
-                w.write_annotated(&pkt(1, 40), &[note_comment("the 183 with the new SDP")])
-                    .expect("note");
-                w.finish().expect("finish");
+                        .map_err(|e| format!("writer: {e:?}"))?;
+                w.write(&pkt(0, 40))
+                    .map_err(|e| format!("plain frame: {e:?}"))?;
+                w.write_annotated(&pkt(1, 40), &[note_comment("the 183 with the new SDP")?])
+                    .map_err(|e| format!("note: {e:?}"))?;
+                w.finish().map_err(|e| format!("finish: {e:?}"))?;
             }
             let run = std::process::Command::new("tshark")
                 .args(["-n", "-r"])
@@ -1986,9 +2022,9 @@ mod tests {
                     stderr_line!(
                         "skipped: no tshark on this host; the pcap-file round trip above still ran"
                     );
-                    return;
+                    return Ok(());
                 }
-                Err(e) => panic!("tshark would not start: {e}"),
+                Err(e) => return Err(format!("tshark would not start: {e}").into()),
             };
             assert!(
                 out.status.success(),
@@ -2002,6 +2038,7 @@ mod tests {
                 ["", "[operator note] the 183 with the new SDP"],
                 "tshark must show no comment on the first frame and the note on the second"
             );
+            Ok(())
         }
 
         /// A note bound for classic pcap is refused, never dropped.
@@ -2011,23 +2048,25 @@ mod tests {
         /// to them and is not, so the frame is refused with the note, the
         /// error names pcapng, and the file holds only what was written whole.
         #[test]
-        fn a_note_bound_for_classic_pcap_is_refused_not_dropped() {
-            let dir = tempfile::tempdir().expect("tempdir");
+        fn a_note_bound_for_classic_pcap_is_refused_not_dropped() -> Result<(), TestError> {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
             let path = dir.path().join("classic.pcap");
-            let mut w = PcapWriter::new(&path, 1, None, None).expect("writer");
+            let mut w =
+                PcapWriter::new(&path, 1, None, None).map_err(|e| format!("writer: {e:?}"))?;
             let err = w
-                .write_annotated(&pkt(1, 40), &[note_comment("lost?")])
-                .expect_err("classic pcap cannot carry a note");
+                .write_annotated(&pkt(1, 40), &[note_comment("lost?")?])
+                .err()
+                .ok_or("classic pcap cannot carry a note")?;
             let msg = format!("{err:#}");
             assert!(
                 msg.contains("pcapng"),
                 "the error must name the remedy: {msg}"
             );
             w.write(&pkt(2, 40))
-                .expect("a frame with no note still writes");
-            w.finish().expect("finish");
+                .map_err(|e| format!("a frame with no note still writes: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
 
-            let mut cap = pcap::Capture::from_file(&path).expect("reopen");
+            let mut cap = pcap::Capture::from_file(&path).map_err(|e| format!("reopen: {e:?}"))?;
             let mut frames = Vec::new();
             while let Ok(p) = cap.next_packet() {
                 frames.push(p.data.to_vec());
@@ -2037,6 +2076,7 @@ mod tests {
                 vec![vec![2u8; 40]],
                 "the refused frame was not written without its note"
             );
+            Ok(())
         }
 
         /// A frame given no note is written exactly as `write` writes it.
@@ -2045,22 +2085,27 @@ mod tests {
         /// empty case adds no option block, so every existing export is
         /// byte-for-byte what it was.
         #[test]
-        fn an_empty_comment_list_writes_the_same_bytes_as_write() {
-            let dir = tempfile::tempdir().expect("tempdir");
+        fn an_empty_comment_list_writes_the_same_bytes_as_write() -> Result<(), TestError> {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
             let a = dir.path().join("a.pcapng");
             let b = dir.path().join("b.pcapng");
             let stamp = pkt(7, 60);
             {
                 let mut w = PcapWriter::with_format(&a, 1, None, None, true, PcapExportMode::Raw)
-                    .expect("writer");
-                w.write(&stamp).expect("write");
-                w.finish().expect("finish");
+                    .map_err(|e| format!("writer: {e:?}"))?;
+                w.write(&stamp).map_err(|e| format!("write: {e:?}"))?;
+                w.finish().map_err(|e| format!("finish: {e:?}"))?;
                 let mut w = PcapWriter::with_format(&b, 1, None, None, true, PcapExportMode::Raw)
-                    .expect("writer");
-                w.write_annotated(&stamp, &[]).expect("write");
-                w.finish().expect("finish");
+                    .map_err(|e| format!("writer: {e:?}"))?;
+                w.write_annotated(&stamp, &[])
+                    .map_err(|e| format!("write: {e:?}"))?;
+                w.finish().map_err(|e| format!("finish: {e:?}"))?;
             }
-            assert_eq!(std::fs::read(&a).expect("a"), std::fs::read(&b).expect("b"));
+            assert_eq!(
+                std::fs::read(&a).map_err(|e| format!("a: {e:?}"))?,
+                std::fs::read(&b).map_err(|e| format!("b: {e:?}"))?
+            );
+            Ok(())
         }
 
         /// The metadata options a pcapng export carries, read back owned.
@@ -2079,13 +2124,13 @@ mod tests {
 
         /// Read back the SHB UserApplication/OS and the first IDB's
         /// IfName/IfDescription/IfOs options (owned), for metadata assertions.
-        fn read_export_metadata(path: &Path) -> ExportMetadata {
+        fn read_export_metadata(path: &Path) -> Result<ExportMetadata, TestError> {
             use pcap_file::pcapng::PcapNgReader;
             use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
             use pcap_file::pcapng::blocks::section_header::SectionHeaderOption;
 
-            let bytes = std::fs::read(path).unwrap();
-            let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+            let bytes = std::fs::read(path)?;
+            let mut reader = PcapNgReader::new(&bytes[..])?;
             let (mut app, mut os) = (None, None);
             // The Section Header Block is parsed in `new()` and exposed here;
             // `next_block()` yields only the blocks that follow it.
@@ -2111,30 +2156,29 @@ mod tests {
                     }
                 }
             }
-            ExportMetadata {
+            Ok(ExportMetadata {
                 shb_user_app: app,
                 shb_os: os,
                 if_name,
                 if_desc,
                 if_os,
-            }
+            })
         }
 
         /// SNB-0001: the SHB carries app+OS and the IDB carries OS plus a
         /// description, so a headless export is self-describing.
         #[test]
-        fn pcapng_export_embeds_app_and_os_metadata() {
+        fn pcapng_export_embeds_app_and_os_metadata() -> Result<(), TestError> {
             // SNB-0001: a headless pcapng export must be self-describing — the SHB
             // carries the producing application + OS, and the IDB an OS + a
             // human description (so capinfos/tshark show real metadata).
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("meta.pcapng");
             {
                 let mut w =
-                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
-                        .unwrap();
-                w.write(&pkt(0, 40)).unwrap();
-                w.finish().unwrap();
+                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+                w.write(&pkt(0, 40))?;
+                w.finish()?;
             }
             let ExportMetadata {
                 shb_user_app: app,
@@ -2142,8 +2186,8 @@ mod tests {
                 if_desc,
                 if_os,
                 ..
-            } = read_export_metadata(&path);
-            let app = app.expect("SHB UserApplication must be set");
+            } = read_export_metadata(&path)?;
+            let app = app.ok_or("SHB UserApplication must be set")?;
             assert!(app.contains("sipnab"), "app = {app:?}");
             assert!(
                 app.contains(env!("CARGO_PKG_VERSION")),
@@ -2151,14 +2195,15 @@ mod tests {
             );
             assert_eq!(os.as_deref(), Some(std::env::consts::OS), "SHB OS");
             assert_eq!(if_os.as_deref(), Some(std::env::consts::OS), "IDB IfOs");
-            let desc = if_desc.expect("IDB IfDescription must be set");
+            let desc = if_desc.ok_or("IDB IfDescription must be set")?;
             assert!(desc.contains("sipnab"), "desc = {desc:?}");
+            Ok(())
         }
 
         /// `with_interface(..., Some("eth0"))` records IfName in the IDB.
         #[test]
-        fn pcapng_export_records_interface_name() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_export_records_interface_name() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("iface.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2169,22 +2214,22 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("eth0"),
-                )
-                .unwrap();
-                w.write(&pkt(0, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt(0, 40))?;
+                w.finish()?;
             }
-            let if_name = read_export_metadata(&path).if_name;
+            let if_name = read_export_metadata(&path)?.if_name;
             assert_eq!(if_name.as_deref(), Some("eth0"), "IDB IfName");
+            Ok(())
         }
 
         /// An interface name with unicode, spaces, backslash, and tab
         /// round-trips verbatim through the IDB IfName option.
         #[test]
-        fn pcapng_export_interface_name_special_chars_round_trip() {
+        fn pcapng_export_interface_name_special_chars_round_trip() -> Result<(), TestError> {
             // Adversarial: a device/source name with unicode, spaces, a
             // backslash, and a tab must round-trip verbatim, never truncate.
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("weird.pcapng");
             let weird = "réseau 0\\1\tπ";
             {
@@ -2196,22 +2241,22 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some(weird),
-                )
-                .unwrap();
-                w.write(&pkt(0, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt(0, 40))?;
+                w.finish()?;
             }
-            let if_name = read_export_metadata(&path).if_name;
+            let if_name = read_export_metadata(&path)?.if_name;
             assert_eq!(if_name.as_deref(), Some(weird));
+            Ok(())
         }
 
         /// An empty interface name records no IfName option while keeping the
         /// description and OS options.
         #[test]
-        fn pcapng_export_empty_interface_records_no_name() {
+        fn pcapng_export_empty_interface_records_no_name() -> Result<(), TestError> {
             // Boundary: an empty interface name records no IfName (avoids an
             // empty, misleading option) but still carries the description/OS.
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("emptyiface.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2222,106 +2267,113 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some(""),
-                )
-                .unwrap();
-                w.write(&pkt(0, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt(0, 40))?;
+                w.finish()?;
             }
             let ExportMetadata {
                 if_name, if_desc, ..
-            } = read_export_metadata(&path);
+            } = read_export_metadata(&path)?;
             assert!(
                 if_name.is_none(),
                 "empty interface → no IfName, got {if_name:?}"
             );
             assert!(if_desc.is_some(), "description still present");
+            Ok(())
         }
 
         /// An empty NRB entry list writes nothing and returns `Ok`.
         #[test]
-        fn name_resolution_block_empty_is_noop() {
-            let dir = tempfile::tempdir().unwrap();
+        fn name_resolution_block_empty_is_noop() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("empty.pcapng");
-            let mut w =
-                PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw).unwrap();
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
             // Empty entries must not error and must not write a block.
-            w.write_name_resolution_block(&[]).unwrap();
-            w.finish().unwrap();
+            w.write_name_resolution_block(&[])?;
+            w.finish()?;
             assert!(path.exists());
+            Ok(())
         }
 
         /// Exceeding a tiny size cap mid-run creates the `_00001` sequenced
         /// rotation file.
         #[test]
-        fn size_based_rotation_creates_sequenced_file() {
-            let dir = tempfile::tempdir().unwrap();
+        fn size_based_rotation_creates_sequenced_file() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("rot.pcap");
 
             // Tiny size cap so the third write triggers rotation.
-            let mut w = PcapWriter::new(&path, 1, Some(80), None).unwrap();
+            let mut w = PcapWriter::new(&path, 1, Some(80), None)?;
             for i in 0..5u8 {
-                w.write(&pkt(i, 50)).unwrap();
+                w.write(&pkt(i, 50))?;
             }
-            w.finish().unwrap();
+            w.finish()?;
 
             assert!(
                 dir.path().join("rot_00001.pcap").exists(),
                 "rotation should create a sequenced file"
             );
+            Ok(())
         }
 
         /// A manual `rotate()` zeroes the byte counter and opens the
         /// sequenced file.
         #[test]
-        fn explicit_rotate_resets_counters() {
-            let dir = tempfile::tempdir().unwrap();
+        fn explicit_rotate_resets_counters() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("man.pcap");
-            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
-            w.write(&pkt(0, 50)).unwrap();
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
+            w.write(&pkt(0, 50))?;
             // 16-byte pcap record header + 50-byte payload.
             assert_eq!(w.bytes_written(), 66);
-            w.rotate().unwrap();
+            w.rotate()?;
             assert_eq!(w.bytes_written(), 0, "rotate resets the byte counter");
             assert!(dir.path().join("man_00001.pcap").exists());
+            Ok(())
         }
 
         /// `write_dsb` on a plain-pcap backend is a benign no-op.
         #[test]
-        fn write_dsb_on_plain_pcap_is_skipped() {
-            let dir = tempfile::tempdir().unwrap();
+        fn write_dsb_on_plain_pcap_is_skipped() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("plain.pcap");
-            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
             // Plain pcap backend can't hold a DSB — must be a benign no-op.
             assert!(w.write_dsb(b"CLIENT_RANDOM a b\n").is_ok());
+            Ok(())
         }
 
         /// `maybe_write_keylog_dsb` no-ops cleanly for Raw mode, an empty
         /// keylog, and a missing keylog path.
         #[test]
-        fn maybe_write_dsb_handles_raw_empty_and_missing() {
-            let dir = tempfile::tempdir().unwrap();
+        fn maybe_write_dsb_handles_raw_empty_and_missing() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
 
             // Raw mode never embeds key material -> early return.
             let raw_path = dir.path().join("raw.pcapng");
             let mut w =
-                PcapWriter::with_format(&raw_path, 1, None, None, true, PcapExportMode::Raw)
-                    .unwrap();
+                PcapWriter::with_format(&raw_path, 1, None, None, true, PcapExportMode::Raw)?;
             let keylog = dir.path().join("k.txt");
-            std::fs::write(&keylog, b"CLIENT_RANDOM a b\n").unwrap();
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
+            std::fs::write(&keylog, b"CLIENT_RANDOM a b\n")?;
+            w.maybe_write_keylog_dsb(&keylog)?;
 
             // EncryptedWithDsb but an empty keylog -> the "Ok(empty)" arm.
             let p2 = dir.path().join("e.pcapng");
-            let mut w2 =
-                PcapWriter::with_format(&p2, 1, None, None, true, PcapExportMode::EncryptedWithDsb)
-                    .unwrap();
+            let mut w2 = PcapWriter::with_format(
+                &p2,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::EncryptedWithDsb,
+            )?;
             let empty = dir.path().join("empty.txt");
-            std::fs::write(&empty, b"").unwrap();
-            w2.maybe_write_keylog_dsb(&empty).unwrap();
+            std::fs::write(&empty, b"")?;
+            w2.maybe_write_keylog_dsb(&empty)?;
 
             // ...and a missing keylog path -> the Err arm (logged, still Ok).
-            w2.maybe_write_keylog_dsb(dir.path().join("nope.txt").as_path())
-                .unwrap();
+            w2.maybe_write_keylog_dsb(dir.path().join("nope.txt").as_path())?;
+            Ok(())
         }
 
         // ── Multi-interface pcapng (one IDB per source interface) ───────
@@ -2346,15 +2398,15 @@ mod tests {
 
         /// Parse a written pcapng file into the ordered IDB/EPB sequence
         /// (other block types are skipped).
-        fn read_ng_blocks(path: &Path) -> Vec<NgBlock> {
+        fn read_ng_blocks(path: &Path) -> Result<Vec<NgBlock>, TestError> {
             use pcap_file::pcapng::PcapNgReader;
             use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
 
-            let bytes = std::fs::read(path).unwrap();
-            let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+            let bytes = std::fs::read(path)?;
+            let mut reader = PcapNgReader::new(&bytes[..])?;
             let mut blocks = Vec::new();
             while let Some(block) = reader.next_block() {
-                let block = block.expect("valid pcapng block");
+                let block = block.map_err(|e| format!("valid pcapng block: {e:?}"))?;
                 if let Some(idb) = block.clone().into_interface_description() {
                     let name = idb.options.iter().find_map(|o| match o {
                         InterfaceDescriptionOption::IfName(s) => Some(s.to_string()),
@@ -2370,7 +2422,7 @@ mod tests {
                     });
                 }
             }
-            blocks
+            Ok(blocks)
         }
 
         /// Build a `len`-byte packet tagged with a source `interface` name
@@ -2391,8 +2443,9 @@ mod tests {
         /// and link type) and EPBs that reference the correct interface_id —
         /// not a single IDB with every EPB stamped 0.
         #[test]
-        fn pcapng_multi_interface_writes_idb_per_interface_with_correct_epb_ids() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_multi_interface_writes_idb_per_interface_with_correct_epb_ids()
+        -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("multi.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2403,19 +2456,18 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("eth0"),
-                )
-                .unwrap();
+                )?;
                 // eth1 uses LINKTYPE_LINUX_SLL (113) to prove the mid-stream
                 // IDB records the tagging packet's link type, not the
                 // writer-global one.
-                w.write(&pkt_on("eth0", 1, 40)).unwrap();
-                w.write(&pkt_on("eth1", 113, 40)).unwrap();
-                w.write(&pkt_on("eth0", 1, 40)).unwrap();
-                w.write(&pkt_on("eth1", 113, 40)).unwrap();
-                w.finish().unwrap();
+                w.write(&pkt_on("eth0", 1, 40))?;
+                w.write(&pkt_on("eth1", 113, 40))?;
+                w.write(&pkt_on("eth0", 1, 40))?;
+                w.write(&pkt_on("eth1", 113, 40))?;
+                w.finish()?;
             }
 
-            let blocks = read_ng_blocks(&path);
+            let blocks = read_ng_blocks(&path)?;
             let idbs: Vec<_> = blocks
                 .iter()
                 .filter_map(|b| match b {
@@ -2443,6 +2495,7 @@ mod tests {
                 vec![0, 1, 0, 1],
                 "each EPB references its own interface's id"
             );
+            Ok(())
         }
 
         /// pcapng allows IDBs interleaved with packet blocks: when a new
@@ -2450,8 +2503,8 @@ mod tests {
         /// before that packet's EPB — and the EPBs already written stay
         /// untouched on interface 0.
         #[test]
-        fn pcapng_new_interface_idb_written_before_its_first_epb() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_new_interface_idb_written_before_its_first_epb() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("midstream.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2462,16 +2515,15 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("eth0"),
-                )
-                .unwrap();
-                w.write(&pkt_on("eth0", 1, 40)).unwrap();
-                w.write(&pkt_on("eth0", 1, 40)).unwrap();
-                w.write(&pkt_on("eth1", 1, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt_on("eth0", 1, 40))?;
+                w.write(&pkt_on("eth0", 1, 40))?;
+                w.write(&pkt_on("eth1", 1, 40))?;
+                w.finish()?;
             }
 
             assert_eq!(
-                read_ng_blocks(&path),
+                read_ng_blocks(&path)?,
                 vec![
                     NgBlock::Idb {
                         name: Some("eth0".to_string()),
@@ -2487,6 +2539,7 @@ mod tests {
                 ],
                 "eth1's IDB appears mid-stream, before its first EPB"
             );
+            Ok(())
         }
 
         /// Build a `len`-byte packet with NO source interface name (file
@@ -2511,19 +2564,20 @@ mod tests {
         /// than no capture at all. The error has to name both link types and
         /// the format that can carry them.
         #[test]
-        fn plain_pcap_refuses_a_foreign_link_type() {
-            let dir = tempfile::tempdir().unwrap();
+        fn plain_pcap_refuses_a_foreign_link_type() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("mixed.pcap");
-            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
 
             // The declared link type is written without complaint.
-            w.write(&pkt_unnamed(1, 60)).unwrap();
+            w.write(&pkt_unnamed(1, 60))?;
             let after_first = w.bytes_written();
 
             // A Linux SLL2 frame is not an Ethernet frame.
             let err = w
                 .write(&pkt_unnamed(276, 60))
-                .expect_err("a foreign link type must be refused");
+                .err()
+                .ok_or("a foreign link type must be refused")?;
             let msg = err.to_string();
             assert!(
                 msg.contains("276") && msg.contains("Ethernet"),
@@ -2538,6 +2592,7 @@ mod tests {
                 after_first,
                 "the refused frame must not reach the file"
             );
+            Ok(())
         }
 
         /// A pcapng interface is identified by (name, link type), not name
@@ -2549,8 +2604,8 @@ mod tests {
         /// Keyed on name alone, every unnamed packet landed on interface 0 and
         /// was decoded as the FIRST file's link layer.
         #[test]
-        fn pcapng_unnamed_sources_get_an_interface_per_link_type() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_unnamed_sources_get_an_interface_per_link_type() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("unnamed.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2561,16 +2616,15 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("first.pcap"),
-                )
-                .unwrap();
-                w.write(&pkt_unnamed(113, 40)).unwrap();
-                w.write(&pkt_unnamed(1, 40)).unwrap();
-                w.write(&pkt_unnamed(113, 40)).unwrap();
-                w.write(&pkt_unnamed(1, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt_unnamed(113, 40))?;
+                w.write(&pkt_unnamed(1, 40))?;
+                w.write(&pkt_unnamed(113, 40))?;
+                w.write(&pkt_unnamed(1, 40))?;
+                w.finish()?;
             }
 
-            let blocks = read_ng_blocks(&path);
+            let blocks = read_ng_blocks(&path)?;
             let linktypes: Vec<_> = blocks
                 .iter()
                 .filter_map(|b| match b {
@@ -2595,14 +2649,15 @@ mod tests {
                 vec![0, 1, 0, 1],
                 "each frame references the interface whose link type decodes it"
             );
+            Ok(())
         }
 
         /// One named interface that changes link type mid-capture (a device
         /// re-opened as `any`, a bonded link) gets a second IDB under the same
         /// name rather than having its frames decoded as the old link layer.
         #[test]
-        fn pcapng_same_interface_new_link_type_gets_its_own_idb() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_same_interface_new_link_type_gets_its_own_idb() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("relink.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2613,15 +2668,14 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("eth0"),
-                )
-                .unwrap();
-                w.write(&pkt_on("eth0", 1, 40)).unwrap();
-                w.write(&pkt_on("eth0", 113, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt_on("eth0", 1, 40))?;
+                w.write(&pkt_on("eth0", 113, 40))?;
+                w.finish()?;
             }
 
             assert_eq!(
-                read_ng_blocks(&path),
+                read_ng_blocks(&path)?,
                 vec![
                     NgBlock::Idb {
                         name: Some("eth0".to_string()),
@@ -2636,6 +2690,7 @@ mod tests {
                 ],
                 "same name, new link type => its own interface"
             );
+            Ok(())
         }
 
         /// Two sources at the SAME link type get one IDB each, and every EPB
@@ -2647,8 +2702,8 @@ mod tests {
         /// origin of every frame read out of `b.pcap` — a claim the file
         /// makes with no hint that it is a guess.
         #[test]
-        fn pcapng_two_sources_same_link_type_get_their_own_idbs() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_two_sources_same_link_type_get_their_own_idbs() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("twofiles.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2659,17 +2714,16 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("a.pcap"),
-                )
-                .unwrap();
-                w.write(&pkt_on("a.pcap", 1, 40)).unwrap();
-                w.write(&pkt_on("b.pcap", 1, 40)).unwrap();
-                w.write(&pkt_on("a.pcap", 1, 40)).unwrap();
-                w.write(&pkt_on("b.pcap", 1, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt_on("a.pcap", 1, 40))?;
+                w.write(&pkt_on("b.pcap", 1, 40))?;
+                w.write(&pkt_on("a.pcap", 1, 40))?;
+                w.write(&pkt_on("b.pcap", 1, 40))?;
+                w.finish()?;
             }
 
             assert_eq!(
-                read_ng_blocks(&path),
+                read_ng_blocks(&path)?,
                 vec![
                     NgBlock::Idb {
                         name: Some("a.pcap".to_string()),
@@ -2686,6 +2740,7 @@ mod tests {
                 ],
                 "same link type, different source file => its own interface"
             );
+            Ok(())
         }
 
         /// The first packet's own source names interface 0, even when the
@@ -2696,8 +2751,8 @@ mod tests {
         /// as interface 0 up front left a phantom interface with no packets on
         /// it in every directory export.
         #[test]
-        fn pcapng_first_packet_source_names_interface_zero() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_first_packet_source_names_interface_zero() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("dirsource.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2708,14 +2763,13 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("/captures"),
-                )
-                .unwrap();
-                w.write(&pkt_on("/captures/a.pcap", 1, 40)).unwrap();
-                w.finish().unwrap();
+                )?;
+                w.write(&pkt_on("/captures/a.pcap", 1, 40))?;
+                w.finish()?;
             }
 
             assert_eq!(
-                read_ng_blocks(&path),
+                read_ng_blocks(&path)?,
                 vec![
                     NgBlock::Idb {
                         name: Some("/captures/a.pcap".to_string()),
@@ -2725,14 +2779,16 @@ mod tests {
                 ],
                 "the file the frame came from names interface 0, not the -I directory"
             );
+            Ok(())
         }
 
         /// The constructor's source names interface 0 only. A second entry
         /// exists because that packet's source or link type is genuinely
         /// different, so it must not borrow the constructor's name.
         #[test]
-        fn pcapng_later_interface_does_not_borrow_the_constructor_source() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_later_interface_does_not_borrow_the_constructor_source() -> Result<(), TestError>
+        {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("noborrow.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2743,17 +2799,16 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("first.pcap"),
-                )
-                .unwrap();
+                )?;
                 // Unnamed sources: the first takes the constructor's name,
                 // the second (a different link layer) has no established
                 // origin and must be recorded as having none.
-                w.write(&pkt_unnamed(113, 40)).unwrap();
-                w.write(&pkt_unnamed(1, 40)).unwrap();
-                w.finish().unwrap();
+                w.write(&pkt_unnamed(113, 40))?;
+                w.write(&pkt_unnamed(1, 40))?;
+                w.finish()?;
             }
 
-            let names: Vec<_> = read_ng_blocks(&path)
+            let names: Vec<_> = read_ng_blocks(&path)?
                 .into_iter()
                 .filter_map(|b| match b {
                     NgBlock::Idb { name, .. } => Some(name),
@@ -2765,6 +2820,7 @@ mod tests {
                 vec![Some("first.pcap".to_string()), None],
                 "only interface 0 may be named by the constructor's source"
             );
+            Ok(())
         }
 
         /// A capture that yielded no packets still records what it was a
@@ -2772,8 +2828,8 @@ mod tests {
         /// constructor's source rather than leaving a section that says
         /// nothing about its origin.
         #[test]
-        fn pcapng_empty_capture_still_declares_its_source() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_empty_capture_still_declares_its_source() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("nopackets.pcapng");
             {
                 let mut w = PcapWriter::with_interface(
@@ -2784,19 +2840,19 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("eth0"),
-                )
-                .unwrap();
-                w.finish().unwrap();
+                )?;
+                w.finish()?;
             }
 
             assert_eq!(
-                read_ng_blocks(&path),
+                read_ng_blocks(&path)?,
                 vec![NgBlock::Idb {
                     name: Some("eth0".to_string()),
                     linktype: 1,
                 }],
                 "an empty export still names its capture source"
             );
+            Ok(())
         }
 
         /// `--split filesize:N` with two interfaces: every rotated file must
@@ -2804,8 +2860,8 @@ mod tests {
         /// interfaces seen so far (same id order), and its EPBs reference
         /// the correct ids.
         #[test]
-        fn split_rotation_reemits_shb_and_all_interface_idbs() {
-            let dir = tempfile::tempdir().unwrap();
+        fn split_rotation_reemits_shb_and_all_interface_idbs() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("rot.pcapng");
             {
                 // ~800-byte cap: headers + first eth0 EPB stay well under it,
@@ -2818,18 +2874,17 @@ mod tests {
                     true,
                     PcapExportMode::Raw,
                     Some("eth0"),
-                )
-                .unwrap();
+                )?;
                 for _ in 0..20 {
-                    w.write(&pkt_on("eth0", 1, 200)).unwrap();
-                    w.write(&pkt_on("eth1", 1, 200)).unwrap();
+                    w.write(&pkt_on("eth0", 1, 200))?;
+                    w.write(&pkt_on("eth1", 1, 200))?;
                 }
-                w.finish().unwrap();
+                w.finish()?;
             }
 
             let rot = dir.path().join("rot_00001.pcapng");
             assert!(rot.exists(), "size cap must trigger rotation");
-            let blocks = read_ng_blocks(&rot);
+            let blocks = read_ng_blocks(&rot)?;
             assert_eq!(
                 &blocks[..2],
                 &[
@@ -2860,14 +2915,15 @@ mod tests {
                 epb_ids.iter().all(|&id| id <= 1),
                 "no EPB references an unknown interface: {epb_ids:?}"
             );
+            Ok(())
         }
 
         /// pcapng size accounting must count the SHB + IDB header bytes
         /// (extending the record-framing fix): `bytes_written` equals the
         /// real on-disk file size both before and after rotation.
         #[test]
-        fn pcapng_size_accounting_includes_shb_and_idb_bytes() {
-            let dir = tempfile::tempdir().unwrap();
+        fn pcapng_size_accounting_includes_shb_and_idb_bytes() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("acct.pcapng");
             let mut w = PcapWriter::with_interface(
                 &path,
@@ -2877,18 +2933,17 @@ mod tests {
                 true,
                 PcapExportMode::Raw,
                 Some("eth0"),
-            )
-            .unwrap();
+            )?;
             // Registers eth1 → a second IDB in the first file.
-            w.write(&pkt_on("eth1", 1, 40)).unwrap();
+            w.write(&pkt_on("eth1", 1, 40))?;
             let first_file_bytes = w.bytes_written();
 
             // rotate() drops (flushes) the first backend, so its on-disk
             // size is final and must equal the accounted bytes.
-            w.rotate().unwrap();
+            w.rotate()?;
             assert_eq!(
                 first_file_bytes,
-                std::fs::metadata(&path).unwrap().len(),
+                std::fs::metadata(&path)?.len(),
                 "first file: bytes_written == on-disk size (SHB+IDBs+EPB)"
             );
             assert!(
@@ -2896,15 +2951,16 @@ mod tests {
                 "after rotation the re-emitted SHB+IDB bytes count toward the cap"
             );
 
-            w.write(&pkt_on("eth1", 1, 40)).unwrap();
+            w.write(&pkt_on("eth1", 1, 40))?;
             let rot_bytes = w.bytes_written();
-            w.finish().unwrap();
+            w.finish()?;
             let rot = dir.path().join("acct_00001.pcapng");
             assert_eq!(
                 rot_bytes,
-                std::fs::metadata(&rot).unwrap().len(),
+                std::fs::metadata(&rot)?.len(),
                 "rotated file: bytes_written == on-disk size"
             );
+            Ok(())
         }
     }
 
@@ -2932,87 +2988,91 @@ mod tests {
         /// Survivors are identified by their CONTENT rather than their name:
         /// a bound that kept the right number of files but the wrong ones
         /// would pass a count-only assertion.
-        fn stamp_of(path: &Path) -> u8 {
-            let mut cap = pcap::Capture::from_file(path).expect("reopen split file");
-            let pkt = cap.next_packet().expect("split file holds a packet");
-            pkt.data[0]
+        fn stamp_of(path: &Path) -> Result<u8, TestError> {
+            let mut cap =
+                pcap::Capture::from_file(path).map_err(|e| format!("reopen split file: {e:?}"))?;
+            let pkt = cap
+                .next_packet()
+                .map_err(|e| format!("split file holds a packet: {e:?}"))?;
+            Ok(pkt.data[0])
         }
 
         /// Every file name in `dir`, sorted — so a test can state the whole
         /// directory rather than probe one path at a time.
-        fn on_disk(dir: &Path) -> Vec<String> {
+        fn on_disk(dir: &Path) -> Result<Vec<String>, TestError> {
             let mut names: Vec<String> = std::fs::read_dir(dir)
-                .expect("read temp dir")
-                .map(|e| {
-                    e.expect("dir entry")
+                .map_err(|e| format!("read temp dir: {e:?}"))?
+                .map(|e| -> Result<String, TestError> {
+                    Ok(e.map_err(|e| format!("dir entry: {e:?}"))?
                         .file_name()
                         .to_string_lossy()
-                        .into_owned()
+                        .into_owned())
                 })
-                .collect();
+                .collect::<Result<_, _>>()?;
             names.sort();
-            names
+            Ok(names)
         }
 
         /// Write one stamped packet into the file that is open, then rotate,
         /// so `stamp` identifies the file the rotation just closed.
-        fn write_then_rotate(w: &mut PcapWriter, stamp: u8) {
-            w.write(&stamped(stamp)).expect("write");
-            w.rotate().expect("rotate");
+        fn write_then_rotate(w: &mut PcapWriter, stamp: u8) -> Result<(), TestError> {
+            w.write(&stamped(stamp))
+                .map_err(|e| format!("write: {e:?}"))?;
+            w.rotate().map_err(|e| format!("rotate: {e:?}"))?;
+            Ok(())
         }
 
         /// A bound of 2 across four files leaves exactly the newest two, and
         /// the survivors are identified by the packets inside them.
         #[test]
-        fn keeping_the_last_two_leaves_the_two_newest_files() {
-            let dir = tempfile::tempdir().unwrap();
+        fn keeping_the_last_two_leaves_the_two_newest_files() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let base = dir.path().join("ring.pcap");
 
-            let mut w = PcapWriter::new(&base, 1, None, None)
-                .unwrap()
-                .keep_last_splits(Some(2));
+            let mut w = PcapWriter::new(&base, 1, None, None)?.keep_last_splits(Some(2));
             // Four files: ring.pcap(0), ring_00001(1), ring_00002(2), and the
             // open ring_00003(3) — two more than the bound.
             for stamp in 0..3u8 {
-                write_then_rotate(&mut w, stamp);
+                write_then_rotate(&mut w, stamp)?;
             }
-            w.write(&stamped(3)).expect("write");
-            w.finish().expect("finish");
+            w.write(&stamped(3)).map_err(|e| format!("write: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
 
             assert_eq!(
-                on_disk(dir.path()),
+                on_disk(dir.path())?,
                 vec!["ring_00002.pcap", "ring_00003.pcap"],
                 "a bound of 2 leaves the newest two files and nothing else"
             );
             assert_eq!(
-                stamp_of(&dir.path().join("ring_00002.pcap")),
+                stamp_of(&dir.path().join("ring_00002.pcap"))?,
                 2,
                 "the older survivor holds the third rotation's packet"
             );
             assert_eq!(
-                stamp_of(&dir.path().join("ring_00003.pcap")),
+                stamp_of(&dir.path().join("ring_00003.pcap"))?,
                 3,
                 "the newer survivor holds the packets written last"
             );
             assert_eq!(w.splits_deleted(), 2, "two files removed, and it says so");
+            Ok(())
         }
 
         /// No bound deletes nothing. This is the safety property: a run that
         /// never asked for a ring buffer keeps every file it wrote.
         #[test]
-        fn an_unset_bound_deletes_nothing() {
-            let dir = tempfile::tempdir().unwrap();
+        fn an_unset_bound_deletes_nothing() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let base = dir.path().join("all.pcap");
 
-            let mut w = PcapWriter::new(&base, 1, None, None).unwrap();
+            let mut w = PcapWriter::new(&base, 1, None, None)?;
             for stamp in 0..3u8 {
-                write_then_rotate(&mut w, stamp);
+                write_then_rotate(&mut w, stamp)?;
             }
-            w.write(&stamped(3)).expect("write");
-            w.finish().expect("finish");
+            w.write(&stamped(3)).map_err(|e| format!("write: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
 
             assert_eq!(
-                on_disk(dir.path()),
+                on_disk(dir.path())?,
                 vec![
                     "all.pcap",
                     "all_00001.pcap",
@@ -3022,6 +3082,7 @@ mod tests {
                 "with no --split-keep every split file survives"
             );
             assert_eq!(w.splits_deleted(), 0, "nothing was deleted");
+            Ok(())
         }
 
         /// A bound of zero disables the bound rather than deleting everything.
@@ -3030,25 +3091,24 @@ mod tests {
         /// the things it would name — so the only safe reading is the one the
         /// sibling capacity flags already use: 0 turns the cap off.
         #[test]
-        fn a_zero_bound_deletes_nothing() {
-            let dir = tempfile::tempdir().unwrap();
+        fn a_zero_bound_deletes_nothing() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let base = dir.path().join("zero.pcap");
 
-            let mut w = PcapWriter::new(&base, 1, None, None)
-                .unwrap()
-                .keep_last_splits(Some(0));
+            let mut w = PcapWriter::new(&base, 1, None, None)?.keep_last_splits(Some(0));
             for stamp in 0..2u8 {
-                write_then_rotate(&mut w, stamp);
+                write_then_rotate(&mut w, stamp)?;
             }
-            w.write(&stamped(2)).expect("write");
-            w.finish().expect("finish");
+            w.write(&stamped(2)).map_err(|e| format!("write: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
 
             assert_eq!(
-                on_disk(dir.path()),
+                on_disk(dir.path())?,
                 vec!["zero.pcap", "zero_00001.pcap", "zero_00002.pcap"],
                 "--split-keep 0 disables the bound; it does not delete the run"
             );
             assert_eq!(w.splits_deleted(), 0, "nothing was deleted");
+            Ok(())
         }
 
         /// Files this run did not create are never deleted, however exactly
@@ -3059,8 +3119,8 @@ mod tests {
         /// hold anything. The bound deletes from a list of paths this writer
         /// created; it never enumerates the directory.
         #[test]
-        fn files_this_run_did_not_create_are_never_deleted() {
-            let dir = tempfile::tempdir().unwrap();
+        fn files_this_run_did_not_create_are_never_deleted() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let base = dir.path().join("ring.pcap");
 
             // Left behind by an earlier run that was killed, plus a file that
@@ -3075,20 +3135,18 @@ mod tests {
                 "ring_00008.pcap",
                 "evidence.pcap",
             ] {
-                std::fs::write(dir.path().join(orphan), b"not ours").unwrap();
+                std::fs::write(dir.path().join(orphan), b"not ours")?;
             }
 
-            let mut w = PcapWriter::new(&base, 1, None, None)
-                .unwrap()
-                .keep_last_splits(Some(1));
+            let mut w = PcapWriter::new(&base, 1, None, None)?.keep_last_splits(Some(1));
             for stamp in 0..2u8 {
-                write_then_rotate(&mut w, stamp);
+                write_then_rotate(&mut w, stamp)?;
             }
-            w.write(&stamped(2)).expect("write");
-            w.finish().expect("finish");
+            w.write(&stamped(2)).map_err(|e| format!("write: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
 
             assert_eq!(
-                on_disk(dir.path()),
+                on_disk(dir.path())?,
                 vec![
                     "evidence.pcap",
                     "ring_00000.pcap",
@@ -3100,10 +3158,11 @@ mod tests {
                  operator's file stay"
             );
             assert_eq!(
-                std::fs::read(dir.path().join("ring_00007.pcap")).unwrap(),
+                std::fs::read(dir.path().join("ring_00007.pcap"))?,
                 b"not ours",
                 "an adopted file would have been rewritten as well as deleted"
             );
+            Ok(())
         }
 
         /// The tightest bound still never deletes the file being written: it
@@ -3114,35 +3173,34 @@ mod tests {
         /// buffered, so "the file exists" is not enough — the test reads the
         /// last packet back out of it.
         #[test]
-        fn the_open_file_survives_the_tightest_bound() {
-            let dir = tempfile::tempdir().unwrap();
+        fn the_open_file_survives_the_tightest_bound() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
             let base = dir.path().join("one.pcap");
 
-            let mut w = PcapWriter::new(&base, 1, None, None)
-                .unwrap()
-                .keep_last_splits(Some(1));
+            let mut w = PcapWriter::new(&base, 1, None, None)?.keep_last_splits(Some(1));
             for stamp in 0..3u8 {
-                write_then_rotate(&mut w, stamp);
+                write_then_rotate(&mut w, stamp)?;
                 let current = rotated_path(&base, u32::from(stamp) + 1);
                 assert!(
                     current.exists(),
                     "the file just opened must still be there after the bound ran"
                 );
             }
-            w.write(&stamped(9)).expect("write");
-            w.finish().expect("finish");
+            w.write(&stamped(9)).map_err(|e| format!("write: {e:?}"))?;
+            w.finish().map_err(|e| format!("finish: {e:?}"))?;
 
             let current = dir.path().join("one_00003.pcap");
             assert_eq!(
-                on_disk(dir.path()),
+                on_disk(dir.path())?,
                 vec!["one_00003.pcap"],
                 "a bound of 1 keeps exactly the open file"
             );
             assert_eq!(
-                stamp_of(&current),
+                stamp_of(&current)?,
                 9,
                 "the surviving file holds the packets written after the last rotation"
             );
+            Ok(())
         }
     }
 }
@@ -3155,12 +3213,15 @@ mod raw_pcap_writer_tests {
     use crate::capture::packet::Packet;
     use crate::capture::pcap_reader::PcapReader;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build an Ethernet packet with the given timestamp (`secs`/`usecs`),
     /// payload `data`, and original length `origlen`.
-    fn pkt_at(secs: i64, usecs: u32, data: Vec<u8>, origlen: usize) -> Packet {
+    fn pkt_at(secs: i64, usecs: u32, data: Vec<u8>, origlen: usize) -> Result<Packet, TestError> {
         let caplen = data.len();
-        let ts = chrono::DateTime::from_timestamp(secs, usecs * 1000).unwrap();
-        Packet::new(ts, data, caplen, origlen, None, 1)
+        let ts = chrono::DateTime::from_timestamp(secs, usecs * 1000)
+            .ok_or("the timestamp is in range")?;
+        Ok(Packet::new(ts, data, caplen, origlen, None, 1))
     }
 
     /// The hand-rolled writer must emit the canonical little-endian classic
@@ -3168,28 +3229,29 @@ mod raw_pcap_writer_tests {
     /// snaplen 0xFFFF (matching the pcapng backend's convention), then the
     /// link type.
     #[test]
-    fn raw_pcap_header_is_canonical_le() {
-        let dir = tempfile::tempdir().unwrap();
+    fn raw_pcap_header_is_canonical_le() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("hdr.pcap");
         {
-            let mut w = RawPcapWriter::create(&path, 1).unwrap();
-            w.flush().unwrap();
+            let mut w = RawPcapWriter::create(&path, 1)?;
+            w.flush()?;
         }
-        let bytes = std::fs::read(&path).unwrap();
+        let bytes = std::fs::read(&path)?;
         assert_eq!(bytes.len(), 24, "header only");
         assert_eq!(&bytes[0..4], &[0xd4, 0xc3, 0xb2, 0xa1], "LE usec magic");
         assert_eq!(&bytes[4..8], &[2, 0, 4, 0], "version 2.4");
         assert_eq!(&bytes[8..16], &[0u8; 8], "thiszone + sigfigs zero");
         assert_eq!(
-            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_le_bytes(bytes[16..20].try_into()?),
             0xFFFF,
             "snaplen"
         );
         assert_eq!(
-            u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+            u32::from_le_bytes(bytes[20..24].try_into()?),
             1,
             "linktype ethernet"
         );
+        Ok(())
     }
 
     /// Everything written through the plain-pcap PcapWriter (which the raw
@@ -3197,27 +3259,27 @@ mod raw_pcap_writer_tests {
     /// including the adversarial shapes: an empty-payload packet, a
     /// truncated packet (origlen > caplen), and sub-second timestamps.
     #[test]
-    fn plain_pcap_round_trips_edge_shapes() {
-        let dir = tempfile::tempdir().unwrap();
+    fn plain_pcap_round_trips_edge_shapes() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("rt.pcap");
 
         let packets = vec![
-            pkt_at(1_700_000_000, 0, vec![0xAA; 60], 60),
-            pkt_at(1_700_000_001, 999_999, vec![], 0),
-            pkt_at(1_700_000_002, 123_456, vec![0x55; 40], 1500), // truncated
-            pkt_at(0, 1, vec![0x01], 1),                          // epoch + 1µs
+            pkt_at(1_700_000_000, 0, vec![0xAA; 60], 60)?,
+            pkt_at(1_700_000_001, 999_999, vec![], 0)?,
+            pkt_at(1_700_000_002, 123_456, vec![0x55; 40], 1500)?, // truncated
+            pkt_at(0, 1, vec![0x01], 1)?,                          // epoch + 1µs
         ];
 
         {
-            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
             for p in &packets {
-                w.write(p).unwrap();
+                w.write(p)?;
             }
-            w.finish().unwrap();
+            w.finish()?;
         }
 
-        let bytes = std::fs::read(&path).unwrap();
-        let rd: Vec<_> = PcapReader::new(&bytes).unwrap().collect();
+        let bytes = std::fs::read(&path)?;
+        let rd: Vec<_> = PcapReader::new(&bytes)?.collect();
         assert_eq!(rd.len(), packets.len());
         for (got, want) in rd.iter().zip(&packets) {
             assert_eq!(&got.data[..], &want.data[..], "payload bytes");
@@ -3229,6 +3291,7 @@ mod raw_pcap_writer_tests {
                 "microsecond timestamp fidelity"
             );
         }
+        Ok(())
     }
 
     /// Writes to a full device must surface an Err from the raw writer
@@ -3236,8 +3299,8 @@ mod raw_pcap_writer_tests {
     /// may succeed until the buffer spills; at the latest, flush must fail.
     #[cfg(target_os = "linux")]
     #[test]
-    fn raw_writer_write_errors_are_not_silent() {
-        let mut w = RawPcapWriter::create(Path::new("/dev/full"), 1).unwrap();
+    fn raw_writer_write_errors_are_not_silent() -> Result<(), TestError> {
+        let mut w = RawPcapWriter::create(Path::new("/dev/full"), 1)?;
         let mut result = Ok(());
         for _ in 0..10_000 {
             if let Err(e) = w.write_record(1, 0, 0xFFFF_usize, &[0u8; 4096][..]) {
@@ -3249,5 +3312,6 @@ mod raw_pcap_writer_tests {
             result = w.flush();
         }
         assert!(result.is_err(), "write/flush to a full device must error");
+        Ok(())
     }
 }
