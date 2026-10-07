@@ -9770,7 +9770,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, ts)?)
+        parse_at(&raw, ts)
     }
 
     fn invite(
@@ -9790,7 +9790,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, ts)?)
+        parse_at(&raw, ts)
     }
 
     /// The matching 200 OK response for `call_id`, parsed at `ts`.
@@ -9814,7 +9814,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_at(&raw, ts)?)
+        parse_at(&raw, ts)
     }
 
     /// A bare filename that is a symlink out of the root is refused.

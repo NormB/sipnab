@@ -413,10 +413,10 @@ mod tests {
         ];
         headers.extend(extra.iter().map(|h| (*h).to_string()));
         let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
-        Ok(parse_at(
+        parse_at(
             &build_sip("INVITE sip:bob@example.com SIP/2.0", &refs, b""),
             ts,
-        )?)
+        )
     }
 
     /// A server over a store holding the given messages.

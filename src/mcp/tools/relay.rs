@@ -2831,12 +2831,12 @@ mod relay_handler_tests {
     }
 
     async fn orphans(ss: StreamStore, limit: Option<u32>) -> Result<serde_json::Value, TestError> {
-        Ok(payload(
+        payload(
             &server(DialogStore::new(16, false), ss)
                 .reconcile_orphans(Parameters(ReconcileOrphansParams { limit }))
                 .await
                 .map_err(|e| format!("reconciliation does not fail: {e:?}"))?,
-        )?)
+        )
     }
 
     /// The orphan row for one SSRC.

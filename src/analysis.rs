@@ -2677,11 +2677,11 @@ mod tests {
 
     /// The findings a dialog raises for one STUN/SDP mismatch.
     fn stun_findings(m: crate::rtp::diagnosis::StunSdpMismatch) -> Result<Vec<Finding>, TestError> {
-        Ok(media_findings(crate::rtp::diagnosis::MediaDiagnosis {
+        media_findings(crate::rtp::diagnosis::MediaDiagnosis {
             private_media_address: true,
             stun_sdp_mismatch: Some(m),
             ..Default::default()
-        })?)
+        })
     }
 
     /// Each of the three ways STUN contradicts an SDP is explained in its own
@@ -2857,14 +2857,14 @@ mod tests {
     fn an_auth_loop_names_which_of_the_two_loops_it_is() -> Result<(), TestError> {
         use crate::sip::diagnosis::{AuthLoop, AuthLoopKind, SignalingDiagnosis};
         let loop_of = |kind| -> Result<_, TestError> {
-            Ok(signaling_findings(SignalingDiagnosis {
+            signaling_findings(SignalingDiagnosis {
                 auth_loop: Some(AuthLoop {
                     kind,
                     challenges: 4,
                     evidence: Vec::new(),
                 }),
                 ..Default::default()
-            })?)
+            })
         };
 
         let found = loop_of(AuthLoopKind::CredentialFailure)?;
@@ -2888,7 +2888,7 @@ mod tests {
     fn retransmissions_report_the_method_count_span_and_any_icmp_cause() -> Result<(), TestError> {
         use crate::sip::diagnosis::{Retransmissions, SignalingDiagnosis};
         let retx = |icmp_cause: Option<&str>| -> Result<_, TestError> {
-            Ok(signaling_findings(SignalingDiagnosis {
+            signaling_findings(SignalingDiagnosis {
                 retransmissions: Some(Retransmissions {
                     method: "INVITE".to_string(),
                     count: 7,
@@ -2897,7 +2897,7 @@ mod tests {
                     icmp_cause: icmp_cause.map(str::to_string),
                 }),
                 ..Default::default()
-            })?)
+            })
         };
 
         let found = retx(None)?;
@@ -2943,14 +2943,14 @@ mod tests {
     -> Result<(), TestError> {
         use crate::sip::diagnosis::{Abandoned, AbandonedKind, SignalingDiagnosis};
         let abandoned = |kind| -> Result<_, TestError> {
-            Ok(signaling_findings(SignalingDiagnosis {
+            signaling_findings(SignalingDiagnosis {
                 abandoned: Some(Abandoned {
                     kind,
                     elapsed_sec: 4.0,
                     evidence: Vec::new(),
                 }),
                 ..Default::default()
-            })?)
+            })
         };
         let found = abandoned(AbandonedKind::Canceled)?;
         assert_eq!(
@@ -2993,7 +2993,7 @@ mod tests {
             RegistrationFailure, RegistrationFailureKind, SignalingDiagnosis,
         };
         let registration = |kind, code, asked, granted| -> Result<_, TestError> {
-            Ok(signaling_findings(SignalingDiagnosis {
+            signaling_findings(SignalingDiagnosis {
                 registration_failure: Some(RegistrationFailure {
                     kind,
                     code,
@@ -3002,7 +3002,7 @@ mod tests {
                     evidence: Vec::new(),
                 }),
                 ..Default::default()
-            })?)
+            })
         };
 
         let found = registration(RegistrationFailureKind::Rejected, 403, None, None)?;
@@ -3045,7 +3045,7 @@ mod tests {
     -> Result<(), TestError> {
         use crate::sip::diagnosis::{IcmpUnreachable, SignalingDiagnosis};
         let icmp = |method: Option<&str>| -> Result<_, TestError> {
-            Ok(signaling_findings(SignalingDiagnosis {
+            signaling_findings(SignalingDiagnosis {
                 icmp_unreachable: Some(IcmpUnreachable {
                     description: "port unreachable".to_string(),
                     icmp_type: 3,
@@ -3058,7 +3058,7 @@ mod tests {
                     evidence: Vec::new(),
                 }),
                 ..Default::default()
-            })?)
+            })
         };
 
         let found = icmp(Some("INVITE"))?;

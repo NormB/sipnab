@@ -1814,7 +1814,7 @@ mod tests {
     }
 
     fn msg(raw: &str) -> Result<SipMessage, TestError> {
-        Ok(msg_at(raw, 0)?)
+        msg_at(raw, 0)
     }
 
     fn invite(branch: &str, cseq: u32) -> String {

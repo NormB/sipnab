@@ -1433,7 +1433,7 @@ mod tests {
 
     /// A→B INVITE with Call-ID `cid` and CSeq `cseq`, no body.
     fn invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "INVITE sip:bob@10.0.0.2 SIP/2.0",
                 &[
@@ -1446,7 +1446,7 @@ mod tests {
                 "",
             ),
             ts,
-        )?)
+        )
     }
 
     /// A→B INVITE carrying an SDP offer built from `codecs_line` (the `m=`
@@ -1471,7 +1471,7 @@ mod tests {
             sdp.push_str(rm);
             sdp.push_str("\r\n");
         }
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "INVITE sip:bob@10.0.0.2 SIP/2.0",
                 &[
@@ -1485,7 +1485,7 @@ mod tests {
                 &sdp,
             ),
             ts,
-        )?)
+        )
     }
 
     /// A→B REGISTER; `auth` adds an `Authorization` header (the retry leg of
@@ -1507,15 +1507,15 @@ mod tests {
             headers.push(format!("Authorization: {a}"));
         }
         let hdr_refs: Vec<&str> = headers.iter().map(|s| s.as_str()).collect();
-        Ok(parse_req(
+        parse_req(
             &build_raw("REGISTER sip:10.0.0.2 SIP/2.0", &hdr_refs, ""),
             ts,
-        )?)
+        )
     }
 
     /// A→B ACK completing an INVITE transaction.
     fn ack(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "ACK sip:bob@10.0.0.2 SIP/2.0",
                 &[
@@ -1528,13 +1528,13 @@ mod tests {
                 "",
             ),
             ts,
-        )?)
+        )
     }
 
     /// A→B ACK aimed at the registrar (the ACK leg of a REGISTER auth
     /// sequence).
     fn ack_register(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "ACK sip:10.0.0.2 SIP/2.0",
                 &[
@@ -1547,7 +1547,7 @@ mod tests {
                 "",
             ),
             ts,
-        )?)
+        )
     }
 
     /// B→A response with the given status/reason for CSeq `cseq method`.
@@ -1559,7 +1559,7 @@ mod tests {
         method: &str,
         ts: DateTime<Utc>,
     ) -> Result<SipMessage, TestError> {
-        Ok(parse_resp(
+        parse_resp(
             &build_raw(
                 &format!("SIP/2.0 {status} {reason}"),
                 &[
@@ -1572,7 +1572,7 @@ mod tests {
                 "",
             ),
             ts,
-        )?)
+        )
     }
 
     /// A response's status line and the request it answers, for
@@ -1631,7 +1631,7 @@ mod tests {
             sdp.push_str(rm);
             sdp.push_str("\r\n");
         }
-        Ok(parse_resp(
+        parse_resp(
             &build_raw(
                 &format!("SIP/2.0 {status} {reason}"),
                 &[
@@ -1645,12 +1645,12 @@ mod tests {
                 &sdp,
             ),
             ts,
-        )?)
+        )
     }
 
     /// A→B BYE ending the dialog.
     fn bye(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "BYE sip:bob@10.0.0.2 SIP/2.0",
                 &[
@@ -1663,7 +1663,7 @@ mod tests {
                 "",
             ),
             ts,
-        )?)
+        )
     }
 
     /// Baseline `FlowDisplayOptions`: SDP off, absolute timestamps, method
@@ -2203,7 +2203,7 @@ mod tests {
             "--B\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\r\n\
              --B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--B--\r\n"
         );
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "INVITE sip:srs@10.0.0.9 SIP/2.0",
                 &[
@@ -2217,7 +2217,7 @@ mod tests {
                 &body,
             ),
             ts,
-        )?)
+        )
     }
 
     /// A SIPREC INVITE carrying the multipart body an SRC sends.
@@ -2240,7 +2240,7 @@ mod tests {
             "--B\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\r\n\
              --B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--B--\r\n"
         );
-        Ok(parse_req(
+        parse_req(
             &build_raw(
                 "INVITE sip:srs@10.0.0.9 SIP/2.0",
                 &[
@@ -2254,7 +2254,7 @@ mod tests {
                 &body,
             ),
             ts,
-        )?)
+        )
     }
 
     /// Full SDP mode emits the raw SDP body as indented extra lines.
@@ -2419,7 +2419,7 @@ mod tests {
         // messages are skipped, which is correct and made this test fail first
         // time round.
         let retx = |ts: DateTime<Utc>| -> Result<_, TestError> {
-            Ok(parse_req(
+            parse_req(
                 &build_raw(
                     "INVITE sip:bob@10.0.0.2 SIP/2.0",
                     &[
@@ -2433,7 +2433,7 @@ mod tests {
                     "",
                 ),
                 ts,
-            )?)
+            )
         };
         let mut msgs = vec![
             retx(t0())?,

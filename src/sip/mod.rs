@@ -145,12 +145,12 @@ mod tests {
 
     /// A REGISTER carrying `contact` and no `Expires` header.
     fn contact_msg(contact: &str) -> Result<SipMessage, TestError> {
-        Ok(build(contact, None)?)
+        build(contact, None)
     }
 
     /// A REGISTER carrying `contact` and an `Expires` header.
     fn contact_msg_with_expires(contact: &str, expires: &str) -> Result<SipMessage, TestError> {
-        Ok(build(contact, Some(expires))?)
+        build(contact, Some(expires))
     }
 
     /// Parse a minimal REGISTER so the tests exercise the real accessors
