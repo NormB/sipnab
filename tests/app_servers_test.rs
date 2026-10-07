@@ -218,7 +218,10 @@ fn api_on_ephemeral_port_starts_servers_thread() {
         None,
     )
     .expect("valid --api must start");
-    assert!(handle.is_some(), "an enabled server must spawn the thread");
+    let handle = handle.expect("an enabled server must spawn the thread");
+    // Only an MCP stdio client owns the process lifetime; an API-only run
+    // must not hand the caller a flag to wait on.
+    assert!(handle.mcp_stdio_done.is_none());
     // The thread runs the servers for the life of the process; it is
     // intentionally detached here (the test process exits and reaps it).
 }

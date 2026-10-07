@@ -683,6 +683,30 @@ struct IcmpMessage<'a> {
     v6: bool,
 }
 
+impl<'a> IcmpMessage<'a> {
+    /// The ICMP message in `transport`, or `None` for any other protocol.
+    ///
+    /// The one place the two slice types are read, for both the capture path
+    /// and [`parse_icmp_error`].
+    fn from_transport(transport: &TransportSlice<'a>) -> Option<Self> {
+        match transport {
+            TransportSlice::Icmpv4(icmp) => Some(IcmpMessage {
+                icmp_type: icmp.type_u8(),
+                icmp_code: icmp.code_u8(),
+                payload: icmp.payload(),
+                v6: false,
+            }),
+            TransportSlice::Icmpv6(icmp) => Some(IcmpMessage {
+                icmp_type: icmp.type_u8(),
+                icmp_code: icmp.code_u8(),
+                payload: icmp.payload(),
+                v6: true,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// Build an [`IcmpQuote`] from an ICMP message's own addresses and payload.
 ///
 /// The single decoder behind both the public [`parse_icmp_error`] and the
@@ -824,21 +848,7 @@ fn icmp_from_sliced(
     }
 
     let (reporter, reported_to) = net_addresses(net)?;
-    let msg = match sliced.transport.as_ref()? {
-        TransportSlice::Icmpv4(icmp) => IcmpMessage {
-            icmp_type: icmp.type_u8(),
-            icmp_code: icmp.code_u8(),
-            payload: icmp.payload(),
-            v6: false,
-        },
-        TransportSlice::Icmpv6(icmp) => IcmpMessage {
-            icmp_type: icmp.type_u8(),
-            icmp_code: icmp.code_u8(),
-            payload: icmp.payload(),
-            v6: true,
-        },
-        _ => return None,
-    };
+    let msg = IcmpMessage::from_transport(sliced.transport.as_ref()?)?;
     icmp_quote(timestamp, data, reporter, reported_to, &msg)
 }
 
@@ -3580,32 +3590,16 @@ fn extract_parsed_packet(
         // The cost is confined to ICMP: the arm is only reached for IP
         // protocol 1 and 58, so the UDP/TCP hot paths never touch the lock.
         TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => {
-            // Only the recording below consumes this, and wasm does not build
-            // the store it records into — so on wasm the binding is genuinely
-            // unused rather than accidentally so.
-            #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
-            let msg = match transport_slice {
-                TransportSlice::Icmpv4(icmp) => IcmpMessage {
-                    icmp_type: icmp.type_u8(),
-                    icmp_code: icmp.code_u8(),
-                    payload: icmp.payload(),
-                    v6: false,
-                },
-                TransportSlice::Icmpv6(icmp) => IcmpMessage {
-                    icmp_type: icmp.type_u8(),
-                    icmp_code: icmp.code_u8(),
-                    payload: icmp.payload(),
-                    v6: true,
-                },
-                // Unreachable: the outer arm already matched only ICMP.
-                _ => return Err(CaptureError::Icmp),
-            };
             // The evidence store lives in `pipeline`, which wasm does not
-            // build. Parsing the quote is not native-only: a wasm build still
-            // decodes it correctly, it just has nowhere to file it.
+            // build. Decoding the quote is not native-only (`parse_icmp_error`
+            // runs on wasm); a wasm capture has nowhere to file it.
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(q) = icmp_quote(timestamp, data, src_addr, dst_addr, &msg) {
-                crate::pipeline::record_icmp_error(&q);
+            {
+                let quote = IcmpMessage::from_transport(transport_slice)
+                    .and_then(|msg| icmp_quote(timestamp, data, src_addr, dst_addr, &msg));
+                if let Some(q) = quote {
+                    crate::pipeline::record_icmp_error(&q);
+                }
             }
             Err(CaptureError::Icmp)
         }

@@ -393,6 +393,67 @@ fn mint_with_mcp_signing_key_file_produces_token() {
     );
 }
 
+/// With signing keys on both surfaces, `--mint-token` signs with the REST
+/// API's key, for the API audience, with the API's TTL: the API is preferred,
+/// and MCP is used only when the API supplies no key.
+#[cfg(all(feature = "api", feature = "mcp"))]
+#[test]
+fn with_keys_on_both_surfaces_the_api_key_signs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let api_path = dir.path().join("api.key");
+    let mcp_path = dir.path().join("mcp.key");
+    let api_key = b"both-surfaces-api-key-0123456789";
+    let mcp_key = b"both-surfaces-mcp-key-9876543210";
+    std::fs::write(&api_path, api_key).expect("write");
+    std::fs::write(&mcp_path, mcp_key).expect("write");
+
+    let token = run(&[
+        "--mint-token",
+        "--api-signing-key-file",
+        api_path.to_str().unwrap(),
+        "--api-token-ttl",
+        "60",
+        "--mcp-signing-key-file",
+        mcp_path.to_str().unwrap(),
+        "--mcp-token-ttl",
+        "7200",
+        "--token-id",
+        "both-surfaces",
+    ])
+    .trim()
+    .to_string();
+
+    let verifier = |key: &[u8], audience: &str| {
+        TokenVerifier::new(VerifierConfig {
+            signing_keys: vec![key.to_vec()],
+            static_keys: vec![],
+            revoked_file: None,
+            audience: audience.to_string(),
+        })
+    };
+    let now = chrono::Utc::now().timestamp();
+    assert!(
+        verifier(api_key, sipnab::auth::AUDIENCE_API).verify(&token, now, sipnab::auth::SCOPE_FULL),
+        "the API key, for the API audience, must sign it"
+    );
+    assert!(
+        !verifier(api_key, sipnab::auth::AUDIENCE_API).verify(
+            &token,
+            now + 61,
+            sipnab::auth::SCOPE_FULL
+        ),
+        "the API's 60 s TTL, not MCP's 7200 s, must apply"
+    );
+    assert!(
+        !verifier(mcp_key, sipnab::auth::AUDIENCE_MCP).verify(
+            &token,
+            now,
+            sipnab::auth::SCOPE_FULL
+        ),
+        "the MCP key must not have signed it"
+    );
+}
+
 /// `--limit 1` on a two-dialog fixture leaves exactly one dialog in the report.
 #[test]
 fn limit_caps_tracked_dialogs() {

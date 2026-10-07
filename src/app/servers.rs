@@ -195,6 +195,22 @@ enum Prepared {
 
 #[cfg(any(feature = "api", feature = "mcp"))]
 impl Prepared {
+    /// The flag an MCP stdio server flips when its client closes stdin, or
+    /// `None` for a server that does not own the process lifetime.
+    ///
+    /// Every variant is named, with no wildcard, so a new kind of server
+    /// has to say whether its client decides when the run ends.
+    fn stdio_done(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        match self {
+            #[cfg(feature = "api")]
+            Prepared::Api { .. } => None,
+            #[cfg(feature = "mcp")]
+            Prepared::McpStdio { done, .. } => Some(Arc::clone(done)),
+            #[cfg(feature = "mcp-http")]
+            Prepared::McpHttp { .. } => None,
+        }
+    }
+
     /// Run this server to completion, logging (not propagating) runtime
     /// errors — one failed server must not tear down the others.
     ///
@@ -447,13 +463,6 @@ pub fn start_servers(
         .map_err(|e| anyhow::anyhow!("Failed to start metrics server: {e}"))?;
     }
 
-    // `Prepared` is empty (uninstantiable) when neither server feature is
-    // compiled; the bindings go unused then.
-    #[allow(unused_mut)]
-    let mut prepared: Vec<Prepared> = Vec::new();
-    #[cfg(any(feature = "api", feature = "mcp"))]
-    #[allow(unused_mut)]
-    let mut mcp_stdio_done: Option<Arc<std::sync::atomic::AtomicBool>> = None;
     // Every parameter below is consumed only inside the `api`/`mcp` cfg arms.
     // With neither feature compiled those arms vanish and the arguments would
     // read as dead; bind them to `_` so the build stays warning-free without a
@@ -534,8 +543,9 @@ pub fn start_servers(
         cli.persists_content(),
     ));
 
+    // Each door is `Some` when it is compiled, selected and configured.
     #[cfg(feature = "api")]
-    if selection.api
+    let api_door = if selection.api
         && let Some(addr_str) = cli.listener_args.api.as_ref()
     {
         use crate::output::api::{self, ApiServerConfig, ApiState};
@@ -635,15 +645,17 @@ pub fn start_servers(
         // (port already in use) logged from the detached servers thread is
         // invisible once the TUI owns the terminal.
         let listener = api::prepare_listener(bind, &state.verifier, &config)?;
-        prepared.push(Prepared::Api {
+        Some(Prepared::Api {
             listener,
             state: Box::new(state),
             config,
-        });
-    }
+        })
+    } else {
+        None
+    };
 
     #[cfg(feature = "mcp")]
-    if selection.mcp && cli.mcp_args.mcp {
+    let mcp_door = if selection.mcp && cli.mcp_args.mcp {
         // What this run is reading, so the file tools cannot write over it.
         // Built from the `-I` specs rather than the resolved set: resolution
         // opens every candidate through libpcap and has already run once in
@@ -776,14 +788,10 @@ pub fn start_servers(
             }
         };
         match cli.mcp_args.mcp_transport.as_str() {
-            "stdio" => {
-                let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                mcp_stdio_done = Some(Arc::clone(&done));
-                prepared.push(Prepared::McpStdio {
-                    server: Box::new(new_server()),
-                    done,
-                });
-            }
+            "stdio" => Some(Prepared::McpStdio {
+                server: Box::new(new_server()),
+                done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }),
             #[cfg(feature = "mcp-http")]
             "http" => {
                 let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
@@ -808,14 +816,14 @@ pub fn start_servers(
                     selection.mcp_tls.0.as_deref(),
                     selection.mcp_tls.1.as_deref(),
                 )?;
-                prepared.push(Prepared::McpHttp {
+                Some(Prepared::McpHttp {
                     server: Box::new(new_server()),
                     bind,
                     auth: resolve_mcp_verifier_config(cli),
                     extra_allowed_hosts: cli.mcp_args.mcp_allowed_host.clone(),
                     resource,
                     tls,
-                });
+                })
             }
             #[cfg(not(feature = "mcp-http"))]
             "http" => {
@@ -830,7 +838,19 @@ pub fn start_servers(
                 ));
             }
         }
-    }
+    } else {
+        None
+    };
+
+    // `Prepared` has no variants when neither server feature is compiled,
+    // and the array is then empty.
+    let doors: [Option<Prepared>; _] = [
+        #[cfg(feature = "api")]
+        api_door,
+        #[cfg(feature = "mcp")]
+        mcp_door,
+    ];
+    let prepared: Vec<Prepared> = doors.into_iter().flatten().collect();
 
     if prepared.is_empty() {
         return Ok(None);
@@ -839,6 +859,8 @@ pub fn start_servers(
     // One thread, one runtime, every async server as a task on it.
     #[cfg(any(feature = "api", feature = "mcp"))]
     {
+        // Read before the servers move onto their thread.
+        let mcp_stdio_done = prepared.iter().find_map(Prepared::stdio_done);
         let handle = std::thread::Builder::new()
             .name("servers".to_string())
             .spawn(move || {
