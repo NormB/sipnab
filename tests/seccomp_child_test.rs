@@ -899,19 +899,21 @@ fn child_a_locally_derived_list_survives_the_work_it_covers() -> Result<(), Test
         println!("{CHILD_COMPLETE}");
         return Ok(());
     };
-    let text = std::fs::read_to_string(&path).ok_or("the supplied allowlist reads")?;
-    let list = seccomp::parse_allowlist(&text).ok_or("the supplied allowlist parses")?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("the supplied allowlist reads: {e:?}"))?;
+    let list = seccomp::parse_allowlist(&text)
+        .map_err(|e| format!("the supplied allowlist parses: {e:?}"))?;
     let arch = seccomp::audit_arch().ok_or("an architecture token")?;
     let prog = seccomp::build_program(arch, &list, seccomp::SECCOMP_RET_KILL_PROCESS)
-        .ok_or("the supplied list builds a filter")?;
+        .map_err(|e| format!("the supplied list builds a filter: {e:?}"))?;
     seccomp::load(&prog, seccomp::SECCOMP_FILTER_FLAG_TSYNC)
-        .ok_or("the kernel accepts the supplied filter")?;
+        .map_err(|e| format!("the kernel accepts the supplied filter: {e:?}"))?;
 
-    let dir = tempfile::tempdir().ok_or("tempdir under the filter")?;
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir under the filter: {e:?}"))?;
     let path = dir.path().join("marker");
-    std::fs::write(&path, b"survived").ok_or("write under the filter")?;
+    std::fs::write(&path, b"survived").map_err(|e| format!("write under the filter: {e:?}"))?;
     assert_eq!(
-        std::fs::read(&path).ok_or("read under the filter")?,
+        std::fs::read(&path).map_err(|e| format!("read under the filter: {e:?}"))?,
         b"survived"
     );
 
@@ -931,13 +933,13 @@ fn a_locally_derived_list_survives_the_work_it_covers() -> Result<(), TestError>
         );
         return Ok(());
     }
-    let exe = std::env::current_exe().ok_or("this test binary")?;
+    let exe = std::env::current_exe().map_err(|e| format!("this test binary: {e:?}"))?;
     let role = "child_a_locally_derived_list_survives_the_work_it_covers";
     let out = Command::new(exe)
         .args(["--exact", role, "--ignored", "--nocapture"])
         .env(CHILD_ENV, role)
         .output()
-        .ok_or("spawn the child")?;
+        .map_err(|e| format!("spawn the child: {e:?}"))?;
     let text =
         String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
     assert!(
