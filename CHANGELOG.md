@@ -8,6 +8,55 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Values that did nothing, or did the wrong thing, are refused at startup.**
+  A program that tries every flag and every `sipnab.toml` key with accepted,
+  boundary and refused values (`tests/config_cli_flag_values_test.rs`,
+  `tests/config_cli_key_values_test.rs`) found each of these; each has a test in
+  `tests/config_cli_defects_test.rs`. A command line or config file that used
+  one of them now stops with an error naming the flag or key.
+  - `--kill-ua ""` matched every User-Agent, so every caller counted as a
+    scanner, and on a live capture that armed the kill response. An empty or
+    invalid pattern is refused; the flag and the detector share one compile rule.
+  - `--pdd-threshold`, `--ack-timeout`, `--no-final-response-timeout`,
+    `--duration-asymmetry-pct`, `--duration-asymmetry-secs` and
+    `--late-media-ms` accepted 0, negative, NaN and infinite values, and
+    percentages over 100, which their keys refuse.
+  - `--mcp-max-rows`, `--max-streams` and `--max-reassembly` accepted 0.
+  - `--count 0` read no packet and `--limitlen 0` parsed no byte, each exiting
+    0; `--duration 0` (also `0s`, `0m`, `0h`) stopped a live capture before its
+    first packet and exited 0; `--cores 0` ran as `--cores 1`.
+  - `--alert` with an unknown channel was a warning; it is refused.
+  - A fraud destination the dial plan never labels (`US`, which the plan labels
+    `NANP`, `USA`, `XX`) was accepted and matched nothing, on both surfaces.
+  - A negative or non-finite declared one-way delay was dropped from the MOS
+    calculation without a message.
+  - MOS boundaries above 5 and loss boundaries above 100 were accepted.
+  - `[display] color` accepted any value and ran as `auto`.
+  - `[limits] api_rate_limit_per_peer` above 4,294,967,295 was clamped; the
+    `--api-rate-limit-per-peer` flag refuses it.
+  - An empty `[journal] dir`, `[tfps] ctl`, `[tfps] db`, `[hep] tls_*` or
+    `[crash] report_dir` was accepted.
+  - Invalid `[theme]` and `[keybindings]` values, `[display] from_to`,
+    `[display] visible_columns` and `[names.manual]` entries were dropped with a
+    warning the TUI screen hid. An unreadable `--names` file was a warning and an
+    unreadable `[names] hosts_file` was skipped without one.
+
+### Fixed
+
+- **Refusals name the setting the user wrote.** Quality band flags were refused
+  naming `[quality]` keys; `--business-hours` naming `[security]
+  business_hours`; an empty `--hep-auth` or `--metrics-auth` naming the
+  `--*-file` flag; `--uprobe-tls` naming a flag that was not given; and
+  `[capture] portrange` naming `--portrange`. Refusals for `-I`,
+  `--input-name`, `--bpf-file`, `--alert`, `--uprobe-library` and `[filter]
+  expression` did not name the setting at all.
+- A malformed `--ws-portrange` exits 2, as `--portrange` does, instead of 1.
+- The `exec_queue_depth` refusal message no longer contains runs of spaces.
+
 ## [0.5.205] - 2026-10-07
 
 ### Added
