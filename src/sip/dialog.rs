@@ -1271,16 +1271,20 @@ mod tests {
 
         // Parsed once and cloned: 14 x 3 x 6 x 75 coordinates would otherwise
         // re-parse the same few hundred messages tens of thousands of times.
-        let mut responses: Vec<(u16, &str, SipMessage)> = Vec::new();
-        for code in CODES {
-            for m in CSEQ_METHODS {
-                responses.push((code, m, make_response(code, "x", m)?));
-            }
-        }
-        let mut warm_responses: Vec<(u16, SipMessage)> = Vec::new();
-        for code in [180u16, 200] {
-            warm_responses.push((code, make_response(code, "x", "INVITE")?));
-        }
+        let responses: Vec<(u16, &str, SipMessage)> = CODES
+            .iter()
+            .flat_map(|&code| {
+                CSEQ_METHODS.iter().map(move |&m| -> Result<_, TestError> {
+                    Ok((code, m, make_response(code, "x", m)?))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let warm_responses: Vec<(u16, SipMessage)> = [180u16, 200]
+            .iter()
+            .map(|&code| -> Result<_, TestError> {
+                Ok((code, make_response(code, "x", "INVITE")?))
+            })
+            .collect::<Result<_, _>>()?;
         let warm = |code: u16| -> Result<&SipMessage, TestError> {
             Ok(&warm_responses
                 .iter()

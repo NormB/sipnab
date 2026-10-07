@@ -2271,7 +2271,7 @@ mod tests {
             selection_state: state,
             is_response: false,
             raw_timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
-                .ok_or("::from_timestamp() returned None")?,
+                .ok_or("from_timestamp() returned None")?,
             folded_count: 0,
             fold_label: None,
             is_spacer: false,
@@ -2476,10 +2476,10 @@ mod tests {
         ];
         let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?;
         m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000)
-            .ok_or("::from_timestamp_millis() returned None")?;
+            .ok_or("from_timestamp_millis() returned None")?;
         let mut m1 = fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0)?;
         m1.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_100)
-            .ok_or("::from_timestamp_millis() returned None")?;
+            .ok_or("from_timestamp_millis() returned None")?;
         let msgs = vec![m0, m1];
         let nav = FlowNavigation {
             scroll_offset: 0,
@@ -2533,7 +2533,7 @@ mod tests {
         ];
         let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?;
         m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000)
-            .ok_or("::from_timestamp_millis() returned None")?;
+            .ok_or("from_timestamp_millis() returned None")?;
         m0.sdp_badge = None;
         m0.diagnosis_note = Some("FAILURE".to_string());
         let msgs = vec![m0];

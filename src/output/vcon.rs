@@ -3076,7 +3076,7 @@ mod tests {
 
     /// An INVITE opening a dialog, with display names, Contact and User-Agent.
     fn invite() -> Result<crate::sip::SipMessage, TestError> {
-        Ok(message(
+        message(
             "INVITE sip:bob@example.net SIP/2.0",
             &[
                 "From: \"Alice\" <sip:alice@example.com>;tag=t1",
@@ -3087,12 +3087,12 @@ mod tests {
                 "User-Agent: AliceUA/1.0",
                 "Content-Length: 0",
             ],
-        )?)
+        )
     }
 
     /// A response to the [`invite`] transaction.
     fn response(code: u16, reason: &str) -> Result<crate::sip::SipMessage, TestError> {
-        Ok(message(
+        message(
             &format!("SIP/2.0 {code} {reason}"),
             &[
                 "From: \"Alice\" <sip:alice@example.com>;tag=t1",
@@ -3103,7 +3103,7 @@ mod tests {
                 "Server: BobUA/2.0",
                 "Content-Length: 0",
             ],
-        )?)
+        )
     }
 
     /// A dialog carrying the opening INVITE and every supplied response.
@@ -4143,7 +4143,7 @@ mod tests {
 
     /// An INVITE carrying the headers PV5-PV7 read.
     fn invite_with_provenance() -> Result<crate::sip::SipMessage, TestError> {
-        Ok(message(
+        message(
             "INVITE sip:bob@example.net SIP/2.0",
             &[
                 "From: \"Alice\" <sip:alice@example.com>;tag=t1",
@@ -4158,7 +4158,7 @@ mod tests {
                  remote=47755a9de7794ba387653f2099600ef2",
                 "Content-Length: 0",
             ],
-        )?)
+        )
     }
 
     /// A dialog opened by [`invite_with_provenance`].

@@ -974,7 +974,7 @@ mod tests {
 
     /// A conforming GTP-U G-PDU with no optional fields, carrying `inner`.
     fn gtpu_ok(inner: &[u8]) -> Result<Vec<u8>, TestError> {
-        Ok(gtpu_pdu(0x30, 255, 0x1234_5678, &[], inner)?)
+        gtpu_pdu(0x30, 255, 0x1234_5678, &[], inner)
     }
 
     /// Assemble a VXLAN PDU ([RFC 7348 section 5](https://www.rfc-editor.org/rfc/rfc7348#section-5)).
@@ -1089,7 +1089,7 @@ mod tests {
     /// A plain L2TPv2 data message: no Length, no sequence numbers, no
     /// offset.
     fn l2tp_data(body: &[u8]) -> Result<Vec<u8>, TestError> {
-        Ok(l2tpv2(L2tpShape::default(), 7, 9, body)?)
+        l2tpv2(L2tpShape::default(), 7, 9, body)
     }
 
     /// A PPP frame carrying an IPv4 packet: Address 0xFF, Control 0x03, the

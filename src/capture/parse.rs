@@ -3980,7 +3980,7 @@ mod tests {
         let mut sctp = sctp_common_header(5060, 5062);
         sctp.extend_from_slice(&sctp_data_chunk_full(flags, tsn, sid, ssn, payload));
         let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
-        Ok(make_packet(data, DLT_EN10MB)?)
+        make_packet(data, DLT_EN10MB)
     }
 
     /// The association endpoints used by [`sctp_frag_packet`].
@@ -6467,7 +6467,7 @@ mod tests {
 
     fn esp_frame_v4(esp: &[u8]) -> Result<Packet, TestError> {
         let ip = wrap_in_ipv4(esp, 50, ESP_SRC, ESP_DST);
-        Ok(make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)?)
+        make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)
     }
 
     /// SIP over TCP inside NULL-encrypted ESP, the shape IMS Gm takes: the

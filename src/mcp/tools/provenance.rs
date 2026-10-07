@@ -748,7 +748,7 @@ mod tests {
                 field: field.map(str::to_string),
             }))
             .await?;
-        Ok(payload(&result)?)
+        payload(&result)
     }
 
     /// THE test: the byte range must land on the header's bytes in the capture.
