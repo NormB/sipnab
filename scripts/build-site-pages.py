@@ -470,8 +470,9 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Send sipnab's vCons to vcon.store",
         "Send sipnab's vCons to vcon.store",
         58,
-        "Forward sipnab's redacted vCons to the hosted vcon.store with "
-        "sipnab --vcon-forward, through the compat mode its validator needs, "
+        "Forward sipnab's vCons to the hosted vcon.store with "
+        "sipnab --vcon-forward: the choice of whether to --redact them first, "
+        "which the store refuses today, the compat mode its validator needs, "
         "and what the store's signature and consent fields do and do not mean.",
     ),
     (
