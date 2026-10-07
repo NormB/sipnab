@@ -74,6 +74,12 @@ entry that carries them.
 
 ### Changed
 
+- **The README links every guide the home page's voice-stack tiles do.** A new
+  "Add it to your voice stack" section mirrors the six tiles (SIP proxy, Call
+  records, Attack blocking, Media relay, Call history, Metrics) and their 19
+  guides, and the vCon bullet says which builds carry `--vcon-forward`.
+  `readme_homepage_parity_test` now reads the tiles from the page and fails
+  when one links a guide the README does not.
 - **No `#[allow(clippy::too_many_arguments)]` remains; each was a design
   fix instead.** Values that travel together are now named types: the
   library's `PcapWriter::with_provenance(path, link_type, PcapWriterOptions)`

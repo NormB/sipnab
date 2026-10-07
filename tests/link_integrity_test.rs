@@ -1295,7 +1295,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 114 -> 115: README.md's Security bullet links docs/tfps-sipnab.md for
     // `--allow-action` (the only relative link the README sync adds).
     // 115 -> 116: README.md's vCon bullet links docs/vcon-store.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 116;
+    // 116 -> 135: README.md's "Add it to your voice stack" section links
+    // the 19 guides the home page's voice-stack tiles link (4 + 3 + 4 + 4 + 2 + 2).
+    const EXPECTED_COMMUNITY_LINKS: usize = 135;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
