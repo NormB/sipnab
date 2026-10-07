@@ -2271,9 +2271,27 @@ fn names_setting(message: &str, long: &str, value: &str) -> bool {
 }
 
 /// A mismatch when `o` is not an accepted run with `needle` in the field.
+/// Flags that ask for a facility this build does not have, and the words the
+/// refusal must carry. Off Linux, or without the `native` feature, a uprobe
+/// source is refused at planning, naming the flag that asked for it (macOS
+/// CI, 2026-10-07: the rows expected acceptance everywhere).
+fn platform_refusal(long: &str) -> Option<&'static str> {
+    let uprobes = cfg!(all(target_os = "linux", feature = "native"));
+    (!uprobes && matches!(long, "uprobe-tls" | "uprobe-library")).then_some("Linux kernel uprobes")
+}
+
 fn check_accepted(long: &str, value: &str, o: &Outcome, needle: Option<&str>) -> Option<String> {
     if let Some(p) = &o.panic {
         return Some(format!("--{long}={value}: panicked: {p}"));
+    }
+    if let Some(words) = platform_refusal(long) {
+        let named = o.message.contains(&format!("--{long}")) && o.message.contains(words);
+        return (o.accepted() || o.stage != Stage::Plan || !named).then(|| {
+            format!(
+                "--{long}={value}: want the platform refusal naming --{long} ({words}), got {:?}/{}: {}",
+                o.stage, o.code, o.message
+            )
+        });
     }
     if !o.accepted() {
         return Some(format!(

@@ -2775,7 +2775,8 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "KEY",
-        env = "SIPNAB_API_KEY"
+        env = "SIPNAB_API_KEY",
+        hide_env_values = true
     )]
     pub api_key: Option<String>,
 
@@ -2787,7 +2788,8 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long = "api-signing-key",
         value_name = "KEY",
-        env = "SIPNAB_API_SIGNING_KEY"
+        env = "SIPNAB_API_SIGNING_KEY",
+        hide_env_values = true
     )]
     pub api_signing_key: Vec<String>,
 
@@ -3022,7 +3024,8 @@ pub struct McpArgs {
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-signing-key",
         value_name = "KEY",
-        env = "SIPNAB_MCP_SIGNING_KEY"
+        env = "SIPNAB_MCP_SIGNING_KEY",
+        hide_env_values = true
     )]
     pub mcp_signing_key: Vec<String>,
 
@@ -3783,7 +3786,8 @@ pub struct HepArgs {
         help_heading = "HEP",
         long = "hep-auth",
         value_name = "KEY",
-        env = "SIPNAB_HEP_AUTH"
+        env = "SIPNAB_HEP_AUTH",
+        hide_env_values = true
     )]
     pub hep_auth: Option<String>,
 

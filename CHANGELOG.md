@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Security
+
+- **`--help` no longer prints secrets from the environment.** With
+  `SIPNAB_API_KEY`, `SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_SIGNING_KEY` or
+  `SIPNAB_HEP_AUTH` exported, `sipnab --help` printed the value beside the flag
+  (`[env: SIPNAB_HEP_AUTH=<value>]`). Help now names the variable only.
+  `tests/help_env_values_test.rs` reads every environment-backed flag from the
+  parser, so a flag added later is held to the same rule.
+
 ### Changed
 
 - **Values that did nothing, or did the wrong thing, are refused at startup.**
