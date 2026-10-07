@@ -1413,11 +1413,11 @@ mod tests {
         ];
         headers.extend(extra.iter().map(|h| (*h).to_string()));
         let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
-        Ok(parse_at(&crate::test_utils::build_sip_message(
+        parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com;user=phone SIP/2.0",
             &refs,
             PINNED_SDP.as_bytes(),
-        ))?)
+        ))
     }
 
     /// The matching final response.
@@ -1426,7 +1426,7 @@ mod tests {
         code: u16,
         reason: &str,
     ) -> Result<crate::sip::SipMessage, TestError> {
-        Ok(parse_at(&crate::test_utils::build_sip_message(
+        parse_at(&crate::test_utils::build_sip_message(
             &format!("SIP/2.0 {code} {reason}"),
             &[
                 "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bKcaptured",
@@ -1438,7 +1438,7 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        ))?)
+        ))
     }
 
     /// A server over empty stores.
@@ -1601,12 +1601,12 @@ mod tests {
         server: &SipnabMcp,
         params: GenerateReproParams,
     ) -> Result<serde_json::Value, TestError> {
-        Ok(payload(
+        payload(
             &server
                 .generate_repro(Parameters(params))
                 .await
                 .map_err(|e| format!("scenario builds: {e:?}"))?,
-        )?)
+        )
     }
 
     /// Nothing pinned means nothing of the capture's own detail is carried, and
@@ -2104,7 +2104,7 @@ mod tests {
 
     /// A bare INVITE: no User-Agent, no body, and a To URI with no user part.
     fn bare_invite(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
-        Ok(parse_at(&crate::test_utils::build_sip_message(
+        parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:example.com SIP/2.0",
             &[
                 "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bKbare",
@@ -2115,7 +2115,7 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        ))?)
+        ))
     }
 
     fn caveats_of(v: &serde_json::Value) -> Vec<String> {

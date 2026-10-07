@@ -1620,7 +1620,7 @@ mod tests {
         port: u16,
     ) -> Result<SipDialog, TestError> {
         let body = sdp_text(direction, addr, port);
-        Ok(answered_dialog_with_bodies(&body, &body)?)
+        answered_dialog_with_bodies(&body, &body)
     }
 
     /// An answered INVITE whose offer advertises one receive endpoint and
@@ -1633,10 +1633,10 @@ mod tests {
         callee: &str,
         callee_port: u16,
     ) -> Result<SipDialog, TestError> {
-        Ok(answered_dialog_with_bodies(
+        answered_dialog_with_bodies(
             &sdp_text("sendrecv", caller, caller_port),
             &sdp_text("sendrecv", callee, callee_port),
-        )?)
+        )
     }
 
     /// An answered INVITE carrying `offer` in the request and `answer` in the
@@ -2667,25 +2667,25 @@ mod stun_sdp_mismatch_tests {
     }
 
     fn stun_request() -> Result<crate::stun::StunMessage, TestError> {
-        Ok(wire(0x0001, &[(0x8022, b"traversal-2.1.0 45".to_vec())])?)
+        wire(0x0001, &[(0x8022, b"traversal-2.1.0 45".to_vec())])
     }
 
     fn stun_success(ip: [u8; 4], port: u16) -> Result<crate::stun::StunMessage, TestError> {
-        Ok(wire(0x0101, &[(0x0020, xor_v4(ip, port))])?)
+        wire(0x0101, &[(0x0020, xor_v4(ip, port))])
     }
 
     fn allocate_request() -> Result<crate::stun::StunMessage, TestError> {
-        Ok(wire(0x0003, &[(0x0019, vec![17, 0, 0, 0])])?)
+        wire(0x0003, &[(0x0019, vec![17, 0, 0, 0])])
     }
 
     fn allocate_success(ip: [u8; 4], port: u16) -> Result<crate::stun::StunMessage, TestError> {
-        Ok(wire(
+        wire(
             0x0103,
             &[
                 (0x0016, xor_v4(ip, port)),
                 (0x000D, 600u32.to_be_bytes().to_vec()),
             ],
-        )?)
+        )
     }
 
     /// Record one STUN packet against the global store.

@@ -734,7 +734,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// An INVITE dialing `number` rather than a name, for the `prefix`
@@ -759,7 +759,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// A final response to `call_id`, sent `src` -> `dst`.
@@ -786,7 +786,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// A REGISTER from `user`, sent `src` -> `dst`.
@@ -810,7 +810,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// A server over a store holding the given messages.
@@ -883,7 +883,7 @@ mod tests {
 
     /// Call the tool with an `ip` selector.
     async fn by_ip(srv: &SipnabMcp, addr: &str) -> Result<serde_json::Value, TestError> {
-        Ok(json_of(
+        json_of(
             &srv.describe_endpoint(Parameters(DescribeEndpointParams {
                 ip: Some(addr.to_string()),
                 user: None,
@@ -891,7 +891,7 @@ mod tests {
             }))
             .await
             .map_err(|e| format!("the call succeeds: {e:?}"))?,
-        )?)
+        )
     }
 
     /// An INVITE whose syntax carries a chosen stack's shapes.
@@ -918,7 +918,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// An INVITE addressed TO `to_user` — an inbound call to a registered AoR.
@@ -946,7 +946,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// A public address for the endpoint, so a NAT rewrite is really required.
@@ -981,7 +981,7 @@ mod tests {
             ],
             b"",
         );
-        Ok(parse_between(&raw, src, dst, ts)?)
+        parse_between(&raw, src, dst, ts)
     }
 
     /// A private `Contact` alone is not a fault, and the corroboration says so.
@@ -1469,7 +1469,7 @@ mod tests {
 
     /// Call `top_talkers` and hand back its JSON payload.
     async fn talkers(srv: &SipnabMcp, by: &str) -> Result<serde_json::Value, TestError> {
-        Ok(json_of(
+        json_of(
             &srv.top_talkers(Parameters(TopTalkersParams {
                 by: by.to_string(),
                 limit: None,
@@ -1478,7 +1478,7 @@ mod tests {
             }))
             .await
             .map_err(|e| format!("the call succeeds: {e:?}"))?,
-        )?)
+        )
     }
 
     /// The rows, as `(key, dialogs)` pairs in the order they came back.

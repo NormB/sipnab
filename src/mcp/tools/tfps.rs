@@ -533,17 +533,15 @@ mod tests {
 
         /// A `tfps_ctl` that prints `text`.
         fn echoing(text: &str) -> Result<Self, TestError> {
-            Ok(Self::with_body(&format!(
-                "cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"
-            ))?)
+            Self::with_body(&format!("cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"))
         }
 
         /// A `tfps_ctl` that prints `text`, records its argv, and exits 0.
         fn recording(text: &str) -> Result<Self, TestError> {
-            Ok(Self::with_body(&format!(
+            Self::with_body(&format!(
                 "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\n\
                  cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"
-            ))?)
+            ))
         }
 
         /// The argv the recording fake was last handed, one per line.
@@ -612,7 +610,7 @@ mod tests {
     /// The JSON body of an error result: sipnab's refusal of an action.
     fn refusal(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         assert_eq!(result.is_error, Some(true), "{result:?}");
-        Ok(payload(result)?)
+        payload(result)
     }
 
     /// The policy one `--allow-action` value enables.

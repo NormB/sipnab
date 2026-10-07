@@ -3260,7 +3260,7 @@ mod tests {
         seq: u64,
         plaintext: &[u8],
     ) -> Result<TlsRecord, TestError> {
-        Ok(seal_tls13_inner(key, iv, seq, plaintext, 23)?)
+        seal_tls13_inner(key, iv, seq, plaintext, 23)
     }
 
     /// Seal with an explicit INNER content type. A post-handshake KeyUpdate is
