@@ -1966,6 +1966,8 @@ mod wire_tests {
     use super::wire::{MAX_FRAME_BYTES, read_frame, write_frame};
     use super::{KillRequest, KillResponse};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A request with every field populated, so a round trip proves the whole
     /// message rather than the discriminant.
     fn a_request(payload: Vec<u8>) -> KillRequest {
@@ -1980,30 +1982,31 @@ mod wire_tests {
 
     /// Both directions of the protocol survive the wire.
     #[test]
-    fn a_request_and_a_response_round_trip() {
+    fn a_request_and_a_response_round_trip() -> Result<(), TestError> {
         let mut pipe = Vec::new();
         let sent = a_request(b"SIP/2.0 403 Forbidden\r\n\r\n".to_vec());
-        write_frame(&mut pipe, &sent).expect("write");
+        write_frame(&mut pipe, &sent).map_err(|e| format!("write: {e:?}"))?;
         let back: KillRequest = read_frame(&mut Cursor::new(&pipe))
-            .expect("read")
-            .expect("a frame was written");
+            .map_err(|e| format!("read: {e:?}"))?
+            .ok_or("a frame was written")?;
         assert_eq!(format!("{back:?}"), format!("{sent:?}"));
 
         let mut pipe = Vec::new();
         let sent = KillResponse::Rejected {
             reason: "broadcast destination".to_string(),
         };
-        write_frame(&mut pipe, &sent).expect("write");
+        write_frame(&mut pipe, &sent).map_err(|e| format!("write: {e:?}"))?;
         let back: KillResponse = read_frame(&mut Cursor::new(&pipe))
-            .expect("read")
-            .expect("a frame was written");
+            .map_err(|e| format!("read: {e:?}"))?
+            .ok_or("a frame was written")?;
         assert_eq!(back, sent);
+        Ok(())
     }
 
     /// Frames are read in order, one call each. A reader that consumed the
     /// whole pipe would lose every message after the first.
     #[test]
-    fn frames_are_read_one_at_a_time_and_in_order() {
+    fn frames_are_read_one_at_a_time_and_in_order() -> Result<(), TestError> {
         let mut pipe = Vec::new();
         for reason in ["first", "second", "third"] {
             write_frame(
@@ -2012,26 +2015,30 @@ mod wire_tests {
                     reason: reason.to_string(),
                 },
             )
-            .expect("write");
+            .map_err(|e| format!("write: {e:?}"))?;
         }
         let mut cursor = Cursor::new(&pipe);
         let mut seen = Vec::new();
-        while let Some(msg) = read_frame::<_, KillResponse>(&mut cursor).expect("read") {
+        while let Some(msg) =
+            read_frame::<_, KillResponse>(&mut cursor).map_err(|e| format!("read: {e:?}"))?
+        {
             match msg {
                 KillResponse::Rejected { reason } => seen.push(reason),
-                other => panic!("unexpected {other:?}"),
+                other => return Err(format!("unexpected {other:?}").into()),
             }
         }
         assert_eq!(seen, vec!["first", "second", "third"]);
+        Ok(())
     }
 
     /// A peer that closed BETWEEN frames is a shutdown, not a fault.
     #[test]
-    fn a_clean_close_reads_as_no_message() {
+    fn a_clean_close_reads_as_no_message() -> Result<(), TestError> {
         let empty: Vec<u8> = Vec::new();
-        let got: Option<KillResponse> =
-            read_frame(&mut Cursor::new(&empty)).expect("a clean close is not an error");
+        let got: Option<KillResponse> = read_frame(&mut Cursor::new(&empty))
+            .map_err(|e| format!("a clean close is not an error: {e:?}"))?;
         assert!(got.is_none());
+        Ok(())
     }
 
     /// A peer that died mid-frame is a fault, and must not read as a shutdown.
@@ -2040,19 +2047,21 @@ mod wire_tests {
     /// body end in different code paths and only one of them was written
     /// first.
     #[test]
-    fn a_truncated_frame_is_an_error_and_not_a_close() {
+    fn a_truncated_frame_is_an_error_and_not_a_close() -> Result<(), TestError> {
         let mut whole = Vec::new();
-        write_frame(&mut whole, &a_request(vec![0u8; 64])).expect("write");
+        write_frame(&mut whole, &a_request(vec![0u8; 64])).map_err(|e| format!("write: {e:?}"))?;
 
         for cut in [1usize, 2, 3, 5, whole.len() - 1] {
             let err = read_frame::<_, KillRequest>(&mut Cursor::new(&whole[..cut]))
-                .expect_err("a partial frame must not read as a clean close");
+                .err()
+                .ok_or("a partial frame must not read as a clean close")?;
             assert_eq!(
                 err.kind(),
                 std::io::ErrorKind::UnexpectedEof,
                 "cut at {cut}: {err}"
             );
         }
+        Ok(())
     }
 
     /// An absurd length prefix is refused before anything is allocated.
@@ -2060,12 +2069,13 @@ mod wire_tests {
     /// THE reason the bound exists. A reader that trusts the field allocates
     /// whatever the writer says: four bytes of `0xFF` are four gibibytes.
     #[test]
-    fn an_oversized_length_is_refused_without_allocating() {
+    fn an_oversized_length_is_refused_without_allocating() -> Result<(), TestError> {
         // Length prefix only. If the reader allocated first and then read, it
         // would ask for 4 GiB before discovering there is no body at all.
         let hostile = u32::MAX.to_be_bytes().to_vec();
         let err = read_frame::<_, KillRequest>(&mut Cursor::new(&hostile))
-            .expect_err("4 GiB must be refused");
+            .err()
+            .ok_or("4 GiB must be refused")?;
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(
             err.to_string().contains(&MAX_FRAME_BYTES.to_string()),
@@ -2074,24 +2084,28 @@ mod wire_tests {
 
         // And one byte over the limit, which is the boundary rather than the
         // absurdity.
-        let over = u32::try_from(MAX_FRAME_BYTES + 1).expect("fits");
+        let over = u32::try_from(MAX_FRAME_BYTES + 1).map_err(|e| format!("fits: {e:?}"))?;
         let err = read_frame::<_, KillRequest>(&mut Cursor::new(&over.to_be_bytes().to_vec()))
-            .expect_err("one byte over the limit must be refused");
+            .err()
+            .ok_or("one byte over the limit must be refused")?;
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        Ok(())
     }
 
     /// A well-framed body that is not the expected message is a fault.
     #[test]
-    fn a_well_framed_body_that_is_not_the_message_is_refused() {
+    fn a_well_framed_body_that_is_not_the_message_is_refused() -> Result<(), TestError> {
         let body = b"{\"not\":\"a kill request\"}";
         let mut pipe = u32::try_from(body.len())
-            .expect("fits")
+            .map_err(|e| format!("fits: {e:?}"))?
             .to_be_bytes()
             .to_vec();
         pipe.extend_from_slice(body);
         let err = read_frame::<_, KillRequest>(&mut Cursor::new(&pipe))
-            .expect_err("the frame is well formed and its contents are not");
+            .err()
+            .ok_or("the frame is well formed and its contents are not")?;
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        Ok(())
     }
 
     /// The largest message the sender can legitimately produce fits.
@@ -2101,25 +2115,26 @@ mod wire_tests {
     /// decimal numbers, so this is the case the frame limit was sized for --
     /// and the one a limit chosen by eye would have cut in half.
     #[test]
-    fn the_largest_legitimate_payload_still_fits_a_frame() {
+    fn the_largest_legitimate_payload_still_fits_a_frame() -> Result<(), TestError> {
         let widest = u16::MAX as usize - 20 - 8;
         let mut pipe = Vec::new();
         write_frame(&mut pipe, &a_request(vec![0xFFu8; widest]))
-            .expect("the widest legal SIP payload must fit one frame");
+            .map_err(|e| format!("the widest legal SIP payload must fit one frame: {e:?}"))?;
         assert!(
             pipe.len() > widest,
             "the encoding cannot be smaller than the bytes it carries"
         );
         let back: KillRequest = read_frame(&mut Cursor::new(&pipe))
-            .expect("read")
-            .expect("a frame was written");
+            .map_err(|e| format!("read: {e:?}"))?
+            .ok_or("a frame was written")?;
         match back {
             KillRequest::SendResponse { response_bytes, .. } => {
                 assert_eq!(response_bytes.len(), widest);
                 assert!(response_bytes.iter().all(|b| *b == 0xFF));
             }
-            other => panic!("unexpected {other:?}"),
+            other => return Err(format!("unexpected {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A message too large to frame is refused by the WRITER.
@@ -2128,15 +2143,17 @@ mod wire_tests {
     /// frame the reader is required to reject -- a message that leaves one
     /// process and can never enter the other, discovered at the far end.
     #[test]
-    fn a_message_over_the_limit_is_refused_before_it_is_written() {
+    fn a_message_over_the_limit_is_refused_before_it_is_written() -> Result<(), TestError> {
         let mut pipe = Vec::new();
         let err = write_frame(&mut pipe, &a_request(vec![0u8; MAX_FRAME_BYTES]))
-            .expect_err("a byte vector this wide cannot encode inside one frame");
+            .err()
+            .ok_or("a byte vector this wide cannot encode inside one frame")?;
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(
             pipe.is_empty(),
             "the refusal must write nothing, or the reader meets half a frame"
         );
+        Ok(())
     }
 }
 
@@ -2169,11 +2186,13 @@ mod tests {
     /// These tests create send sockets, so they must declare a live source
     /// exactly as a real run does — there is no back door, which is the point
     /// of the guard. Every send below goes to loopback only.
-    fn live_permit() -> TransmitPermit {
-        TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
-            device: "lo".to_string(),
-        })
-        .expect("a live source must grant a transmit permit")
+    fn live_permit() -> Result<TransmitPermit, TestError> {
+        Ok(
+            TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+                device: "lo".to_string(),
+            })
+            .ok_or("a live source must grant a transmit permit")?,
+        )
     }
 
     /// A worker reading a capture file cannot be spawned: the permit its
@@ -2182,7 +2201,7 @@ mod tests {
     /// the offline-transmit guard, asserted here as the runtime fact it
     /// derives from.
     #[test]
-    fn a_file_source_yields_no_permit_so_no_worker_can_be_spawned() {
+    fn a_file_source_yields_no_permit_so_no_worker_can_be_spawned() -> Result<(), TestError> {
         let file = crate::capture::CaptureSource::File {
             paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
         };
@@ -2192,6 +2211,7 @@ mod tests {
              KillUdpSocket::bind all take a TransmitPermit, so a None here \
              means no send descriptor can exist on a file run"
         );
+        Ok(())
     }
 
     /// The IPv4 loopback address (test destination/source shorthand).
@@ -2234,7 +2254,7 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_call_interrupted_by_a_signal_is_retried() {
+    fn a_socket_call_interrupted_by_a_signal_is_retried() -> Result<(), TestError> {
         let mut calls = 0;
         let got = retrying(|| {
             calls += 1;
@@ -2244,12 +2264,12 @@ mod tests {
                 Ok(7)
             }
         });
-        assert_eq!(got.expect("retried"), 7);
+        assert_eq!(got.map_err(|e| format!("retried: {e:?}"))?, 7);
         assert_eq!(calls, 2);
 
         let other = retrying::<()>(|| Err(std::io::ErrorKind::WouldBlock.into()));
         assert_eq!(
-            other.expect_err("returned").kind(),
+            other.err().ok_or("returned")?.kind(),
             std::io::ErrorKind::WouldBlock,
             "any other error is returned as it is"
         );
@@ -2260,27 +2280,34 @@ mod tests {
             Err(std::io::ErrorKind::Interrupted.into())
         });
         assert_eq!(
-            gave_up.expect_err("bounded").kind(),
+            gave_up.err().ok_or("bounded")?.kind(),
             std::io::ErrorKind::Interrupted
         );
         assert!(storm > 1 && storm <= 1000, "bounded retries: {storm}");
+        Ok(())
     }
 
     /// A UDP listener on 127.0.0.1 — the only thing any test here sends to.
-    fn loopback_listener() -> (std::net::UdpSocket, u16) {
-        let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
+    fn loopback_listener() -> Result<(std::net::UdpSocket, u16), TestError> {
+        let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|e| format!("bind listener: {e:?}"))?;
         listener
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .expect("set read timeout");
-        let port = listener.local_addr().expect("local addr").port();
-        (listener, port)
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("local addr: {e:?}"))?
+            .port();
+        Ok((listener, port))
     }
 
     /// An ephemeral IPv4 send socket, bound under a live permit as the parent
     /// binds the ones it hands to the worker.
-    fn udp_v4_sender() -> KillUdpSocket {
-        KillUdpSocket::bind(&live_permit(), (IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
-            .expect("an IPv4 socket binds")
+    fn udp_v4_sender() -> Result<KillUdpSocket, TestError> {
+        Ok(
+            KillUdpSocket::bind(&live_permit()?, (IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+                .ok_or("an IPv4 socket binds")?,
+        )
     }
 
     /// Poll until `f` yields a value or `deadline` expires — replaces fixed
@@ -2306,15 +2333,22 @@ mod tests {
     /// The same `attach` the spawn uses, minus the process: what the handle
     /// does with a worker's pipes does not depend on what is at the far end.
     fn handle_over_pipes(
-        peer: impl FnOnce(std::io::PipeReader, std::io::PipeWriter) + Send + 'static,
-    ) -> ScannerKillHandle {
-        let (req_r, req_w) = std::io::pipe().expect("request pipe");
-        let (resp_r, resp_w) = std::io::pipe().expect("response pipe");
+        peer: impl FnOnce(std::io::PipeReader, std::io::PipeWriter) -> Result<(), String>
+        + Send
+        + 'static,
+    ) -> Result<ScannerKillHandle, TestError> {
+        let (req_r, req_w) = std::io::pipe().map_err(|e| format!("request pipe: {e:?}"))?;
+        let (resp_r, resp_w) = std::io::pipe().map_err(|e| format!("response pipe: {e:?}"))?;
         std::thread::Builder::new()
             .name("kill-peer-test".to_string())
-            .spawn(move || peer(req_r, resp_w))
-            .expect("spawn peer");
-        ScannerKillHandle::attach(req_w, resp_r, None, Vec::new()).expect("attach")
+            .spawn(move || {
+                if let Err(e) = peer(req_r, resp_w) {
+                    stderr_line!("kill peer failed: {e}");
+                }
+            })
+            .map_err(|e| format!("spawn peer: {e:?}"))?;
+        Ok(ScannerKillHandle::attach(req_w, resp_r, None, Vec::new())
+            .map_err(|e| format!("attach: {e:?}"))?)
     }
 
     /// A peer that reads nothing until released, then hangs up — a worker
@@ -2325,13 +2359,14 @@ mod tests {
     /// the handle's own drop joins a forwarder that is blocked writing to it.
     /// A failing assertion therefore fails the test instead of hanging it.
     fn stalled_peer() -> (
-        impl FnOnce(std::io::PipeReader, std::io::PipeWriter) + Send + 'static,
+        impl FnOnce(std::io::PipeReader, std::io::PipeWriter) -> Result<(), String> + Send + 'static,
         Release,
     ) {
         let (tx, rx) = crossbeam_channel::bounded::<()>(1);
         let peer = move |req: std::io::PipeReader, resp: std::io::PipeWriter| {
             let _ = rx.recv();
             drop((req, resp));
+            Ok(())
         };
         (peer, Release(tx))
     }
@@ -2348,23 +2383,25 @@ mod tests {
     /// A request goes out through the parent's pipe, the worker loop sends
     /// it, and the outcome comes back booked with the path it took.
     #[test]
-    fn handle_send_and_receive() {
-        let (listener, port) = loopback_listener();
+    fn handle_send_and_receive() -> Result<(), TestError> {
+        let (listener, port) = loopback_listener()?;
         let sockets = SendSockets {
             raw: None,
-            udp_v4: Some(udp_v4_sender()),
+            udp_v4: Some(udp_v4_sender()?),
             udp_v6: None,
         };
         let mut handle = handle_over_pipes(move |req, resp| {
-            serve(req, resp, 10, sockets).expect("serve");
-        });
+            serve(req, resp, 10, sockets).map_err(|e| format!("serve: {e:?}"))?;
+            Ok(())
+        })?;
 
         handle
             .send_kill(request_to(localhost_v4(), port, sample_response()))
-            .expect("send should succeed");
+            .map_err(|e| format!("send should succeed: {e:?}"))?;
 
         let mut buf = [0u8; 2048];
-        let (n, _) = retrying(|| listener.recv_from(&mut buf)).expect("the datagram arrives");
+        let (n, _) = retrying(|| listener.recv_from(&mut buf))
+            .map_err(|e| format!("the datagram arrives: {e:?}"))?;
         assert_eq!(&buf[..n], &sample_response()[..]);
         let resp = within(std::time::Duration::from_secs(5), || {
             handle.try_recv_response()
@@ -2379,6 +2416,7 @@ mod tests {
         assert_eq!((counts.accepted, counts.sent), (1, 1), "{counts:?}");
 
         handle.shutdown();
+        Ok(())
     }
 
     /// With a 10/sec limit, 15 requests (to distinct dst IPs) yield exactly 10
@@ -2389,12 +2427,12 @@ mod tests {
     /// on. That is the observation — the limiter is consulted before any
     /// socket is.
     #[test]
-    fn rate_limiter_enforces_limit() {
+    fn rate_limiter_enforces_limit() -> Result<(), TestError> {
         let (worker, tx, resp_rx) = socketless_worker(None, 10);
         for i in 0..15u8 {
             let dst = IpAddr::V4(Ipv4Addr::new(192, 0, 2, i.wrapping_add(1)));
             tx.send(request_to(dst, 5060, sample_response()))
-                .expect("queue has room");
+                .map_err(|e| format!("queue has room: {e:?}"))?;
         }
         drop(tx);
         worker.run();
@@ -2410,6 +2448,7 @@ mod tests {
             .count();
         assert_eq!(admitted, 10, "should admit exactly 10 in one window");
         assert_eq!(limited, 5, "should rate-limit the remaining 5");
+        Ok(())
     }
 
     /// What the decision loop answers for one request, holding no socket.
@@ -2423,28 +2462,30 @@ mod tests {
 
     /// A broadcast destination is rejected.
     #[test]
-    fn broadcast_address_rejected() {
+    fn broadcast_address_rejected() -> Result<(), TestError> {
         let outcome = decide(IpAddr::V4(Ipv4Addr::BROADCAST), &sample_response());
         assert!(
             matches!(outcome, KillResponse::Rejected { .. }),
             "broadcast should be rejected, got {outcome:?}"
         );
+        Ok(())
     }
 
     /// An IPv4 multicast destination is rejected.
     #[test]
-    fn multicast_v4_rejected() {
+    fn multicast_v4_rejected() -> Result<(), TestError> {
         // 224.0.0.1 is multicast
         let outcome = decide(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)), &sample_response());
         assert!(
             matches!(outcome, KillResponse::Rejected { .. }),
             "multicast should be rejected, got {outcome:?}"
         );
+        Ok(())
     }
 
     /// An IPv6 multicast destination is rejected.
     #[test]
-    fn multicast_v6_rejected() {
+    fn multicast_v6_rejected() -> Result<(), TestError> {
         // ff02::1 is IPv6 multicast
         let multicast_v6 = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
         let outcome = decide(multicast_v6, &sample_response());
@@ -2452,16 +2493,18 @@ mod tests {
             matches!(outcome, KillResponse::Rejected { .. }),
             "IPv6 multicast should be rejected, got {outcome:?}"
         );
+        Ok(())
     }
 
     /// An empty response body is rejected.
     #[test]
-    fn empty_response_rejected() {
+    fn empty_response_rejected() -> Result<(), TestError> {
         let outcome = decide(localhost_v4(), &[]);
         assert!(
             matches!(outcome, KillResponse::Rejected { .. }),
             "empty response should be rejected, got {outcome:?}"
         );
+        Ok(())
     }
 
     /// A request pipe the worker never drains: the forwarder's first write
@@ -2503,25 +2546,25 @@ mod tests {
     /// than when the scheduler happens to cooperate.
     #[cfg(unix)]
     #[test]
-    fn a_worker_whose_pipe_closed_is_not_alive_while_it_still_runs() {
-        let (req_r, req_w) = std::io::pipe().expect("request pipe");
-        let (resp_r, resp_w) = std::io::pipe().expect("response pipe");
+    fn a_worker_whose_pipe_closed_is_not_alive_while_it_still_runs() -> Result<(), TestError> {
+        let (req_r, req_w) = std::io::pipe().map_err(|e| format!("request pipe: {e:?}"))?;
+        let (resp_r, resp_w) = std::io::pipe().map_err(|e| format!("response pipe: {e:?}"))?;
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
-            .expect("spawn a stand-in worker process");
+            .map_err(|e| format!("spawn a stand-in worker process: {e:?}"))?;
         let pid = child.id();
         // The stand-in is still running: this is the window being tested.
         assert!(matches!(child.try_wait(), Ok(None)), "sleep exited early");
-        let mut handle =
-            ScannerKillHandle::attach(req_w, resp_r, Some(child), Vec::new()).expect("attach");
+        let mut handle = ScannerKillHandle::attach(req_w, resp_r, Some(child), Vec::new())
+            .map_err(|e| format!("attach: {e:?}"))?;
         // The worker's end of the response pipe closes, as a killed worker's does.
         drop((req_r, resp_w));
 
         within(std::time::Duration::from_secs(10), || {
             handle.defense_disabled().then_some(())
         })
-        .expect("end of stream must disable the defense");
+        .ok_or("end of stream must disable the defense")?;
         assert!(
             std::path::Path::new(&format!("/proc/{pid}")).exists()
                 || cfg!(not(target_os = "linux")),
@@ -2532,6 +2575,7 @@ mod tests {
             "the pipe is closed and the defense is disabled, so the worker is not alive"
         );
         handle.shutdown();
+        Ok(())
     }
 
     /// A request the worker has no room for is counted, not silently dropped.
@@ -2543,16 +2587,18 @@ mod tests {
     /// fills and stays full, and the two offers that follow are refused and
     /// counted -- as backpressure, not as a death.
     #[test]
-    fn a_refused_request_is_counted_not_silently_dropped() {
+    fn a_refused_request_is_counted_not_silently_dropped() -> Result<(), TestError> {
         let (parked_tx, parked_rx) = crossbeam_channel::bounded::<()>(1);
         let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
-        let (resp_r, resp_w) = std::io::pipe().expect("response pipe");
+        let (resp_r, resp_w) = std::io::pipe().map_err(|e| format!("response pipe: {e:?}"))?;
         let writer = ParkedWriter {
             parked: parked_tx,
             release: release_rx,
         };
-        let handle =
-            Arc::new(ScannerKillHandle::attach(writer, resp_r, None, Vec::new()).expect("attach"));
+        let handle = Arc::new(
+            ScannerKillHandle::attach(writer, resp_r, None, Vec::new())
+                .map_err(|e| format!("attach: {e:?}"))?,
+        );
         // Dropped before the handle (reverse declaration order), so the parked
         // forwarder and the response reader both let go before its drop joins
         // them, and a failing assertion fails instead of hanging.
@@ -2561,10 +2607,12 @@ mod tests {
 
         handle
             .send_kill(request_to(localhost_v4(), 59_996, sample_response()))
-            .expect("an empty queue has room");
+            .map_err(|e| format!("an empty queue has room: {e:?}"))?;
         parked_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the forwarder must take the first request and park writing it");
+            .map_err(|e| {
+                format!("the forwarder must take the first request and park writing it: {e:?}")
+            })?;
 
         // Offered from another thread behind a timeout: if `send_kill` ever
         // waits for a slot again, that wait is the capture thread's, so this
@@ -2596,15 +2644,18 @@ mod tests {
                 }
                 let _ = done_tx.send((before, refused));
             })
-            .expect("spawn offer thread");
+            .map_err(|e| format!("spawn offer thread: {e:?}"))?;
 
         let (before, refused) = done_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect(
-                "send_kill waited for a slot on a full queue instead of \
+            .map_err(|e| {
+                format!(
+                    "{}: {e:?}",
+                    "send_kill waited for a slot on a full queue instead of \
                  refusing — in production that wait is the capture thread's, \
                  taken while it holds the dialog and stream write locks",
-            );
+                )
+            })?;
         assert_eq!(before, 1, "the first refusal is counted");
         assert_eq!(
             refused, 2,
@@ -2626,31 +2677,36 @@ mod tests {
             "a full queue is backpressure, not a dead worker — the defense is \
              still armed"
         );
+        Ok(())
     }
 
     /// `shutdown` closes the pipe, the peer sees end of stream and exits, and
     /// shutdown returns.
     #[test]
-    fn shutdown_exits_cleanly() {
+    fn shutdown_exits_cleanly() -> Result<(), TestError> {
         let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
         let mut handle = handle_over_pipes(move |req, resp| {
-            refuse_all(req, resp, "test").expect("clean end of stream");
+            refuse_all(req, resp, "test").map_err(|e| format!("clean end of stream: {e:?}"))?;
             let _ = done_tx.send(());
-        });
+            Ok(())
+        })?;
         handle.shutdown();
         done_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the peer must see end of stream when the handle shuts down");
+            .map_err(|e| {
+                format!("the peer must see end of stream when the handle shuts down: {e:?}")
+            })?;
+        Ok(())
     }
 
     /// The worker actually puts the response bytes on the wire (a real UDP
     /// listener receives them), not merely logs them, and says it used the
     /// ephemeral path.
     #[test]
-    fn process_send_actually_transmits_over_udp() {
-        let (listener, port) = loopback_listener();
+    fn process_send_actually_transmits_over_udp() -> Result<(), TestError> {
+        let (listener, port) = loopback_listener()?;
         let (mut worker, _tx, _rx) = socketless_worker(None, 10);
-        worker.sock_v4 = Some(udp_v4_sender());
+        worker.sock_v4 = Some(udp_v4_sender()?);
         let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
         let outcome = worker.process_send(localhost_v4(), port, localhost_v4(), 5060, &payload);
         assert_eq!(
@@ -2662,12 +2718,13 @@ mod tests {
 
         let mut buf = [0u8; 2048];
         let (n, _from) = retrying(|| listener.recv_from(&mut buf))
-            .expect("listener must receive the kill packet");
+            .map_err(|e| format!("listener must receive the kill packet: {e:?}"))?;
         assert_eq!(
             &buf[..n],
             &payload[..],
             "listener must receive the exact response bytes"
         );
+        Ok(())
     }
 
     /// An IPv6 destination is sent from the IPv6 socket: a worker holding
@@ -2685,7 +2742,7 @@ mod tests {
             .port();
         let (mut worker, _tx, _rx) = socketless_worker(None, 10);
         worker.sock_v6 = Some(
-            KillUdpSocket::bind(&live_permit(), (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+            KillUdpSocket::bind(&live_permit()?, (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
                 .ok_or("an IPv6 socket binds")?,
         );
         let loopback = IpAddr::V6(Ipv6Addr::LOCALHOST);
@@ -2707,12 +2764,12 @@ mod tests {
     /// A send that passes the rate limits sweeps stale per-destination
     /// buckets, so the limiter's memory is bounded by the sends themselves.
     #[test]
-    fn a_permitted_send_sweeps_stale_per_destination_buckets() {
+    fn a_permitted_send_sweeps_stale_per_destination_buckets() -> Result<(), TestError> {
         use std::time::Duration;
         let (mut worker, _tx, _rx) = socketless_worker(None, 10);
         let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(300)) else {
             stderr_line!("skipping: the monotonic clock is younger than 300s");
-            return;
+            return Ok(());
         };
         let stale: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 77));
         worker.per_dst_limiter.buckets.insert(stale, (long_ago, 1));
@@ -2727,6 +2784,7 @@ mod tests {
             !worker.per_dst_limiter.buckets.contains_key(&stale),
             "the first permitted send must sweep a bucket older than two minutes"
         );
+        Ok(())
     }
 
     /// A worker whose outcome channel is closed stops, rather than taking
@@ -2754,10 +2812,10 @@ mod tests {
 
     /// Response bytes with embedded NUL and high bytes are delivered verbatim.
     #[test]
-    fn transmits_response_bytes_verbatim_including_nul() {
-        let (listener, port) = loopback_listener();
+    fn transmits_response_bytes_verbatim_including_nul() -> Result<(), TestError> {
+        let (listener, port) = loopback_listener()?;
         let (mut worker, _tx, _rx) = socketless_worker(None, 10);
-        worker.sock_v4 = Some(udp_v4_sender());
+        worker.sock_v4 = Some(udp_v4_sender()?);
         let payload = vec![
             0x00u8, 0xff, b'S', b'I', b'P', b'\\', 0x0d, 0x0a, 0x00, 0x80, 0x7f,
         ];
@@ -2765,12 +2823,13 @@ mod tests {
 
         let mut buf = [0u8; 2048];
         let (n, _from) = retrying(|| listener.recv_from(&mut buf))
-            .expect("listener must receive the kill packet");
+            .map_err(|e| format!("listener must receive the kill packet: {e:?}"))?;
         assert_eq!(
             &buf[..n],
             &payload[..],
             "binary response bytes must be delivered byte-for-byte"
         );
+        Ok(())
     }
 
     /// The per-destination limiter's O(n) sweep is amortized to at most once
@@ -2778,7 +2837,7 @@ mod tests {
     /// no-op (it does not sweep), while a call ≥1s later sweeps again. Uses an
     /// injected monotonic `now` so no wall-clock sleeping is needed.
     #[test]
-    fn per_dst_cleanup_is_amortized_to_once_per_second() {
+    fn per_dst_cleanup_is_amortized_to_once_per_second() -> Result<(), TestError> {
         use std::time::Duration;
         let t0 = Instant::now();
         let mut lim = PerDstRateLimiter::new();
@@ -2808,6 +2867,7 @@ mod tests {
             !lim.buckets.contains_key(&stale_b),
             "cleanup must run again once ≥1s has elapsed"
         );
+        Ok(())
     }
 
     /// The per-destination cap answers one destination three times a minute
@@ -2820,7 +2880,8 @@ mod tests {
     /// attacker's pick; `--kill-rate-limit` caps responses per second across
     /// ALL destinations and cannot bound how they concentrate on one.
     #[test]
-    fn the_per_destination_cap_answers_three_times_and_refuses_the_fourth() {
+    fn the_per_destination_cap_answers_three_times_and_refuses_the_fourth() -> Result<(), TestError>
+    {
         let mut lim = PerDstRateLimiter::new();
         let victim: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
 
@@ -2846,6 +2907,7 @@ mod tests {
             "the cap is per destination, so a different destination must keep \
              its own budget"
         );
+        Ok(())
     }
 
     /// The raw sockets are close-on-exec from the moment they exist.
@@ -2858,13 +2920,13 @@ mod tests {
     /// `CAP_NET_RAW`; skipped when unprivileged. Run under sudo to exercise it.
     #[cfg(target_os = "linux")]
     #[test]
-    fn raw_sockets_are_opened_close_on_exec() {
+    fn raw_sockets_are_opened_close_on_exec() -> Result<(), TestError> {
         use std::os::fd::AsRawFd;
-        let raw = match RawKillSocket::open(&live_permit()) {
+        let raw = match RawKillSocket::open(&live_permit()?) {
             Ok(s) => s,
             Err(e) => {
                 stderr_line!("skipping close-on-exec test: raw socket unavailable ({e})");
-                return;
+                return Ok(());
             }
         };
         let (v4, v6) = raw.into_fds();
@@ -2873,12 +2935,12 @@ mod tests {
         for fd in &opened {
             // The kernel's own report of the descriptor's flags, in octal.
             let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd()))
-                .expect("fdinfo of an open descriptor");
+                .map_err(|e| format!("fdinfo of an open descriptor: {e:?}"))?;
             let flags = info
                 .lines()
                 .find_map(|l| l.strip_prefix("flags:"))
                 .and_then(|f| i64::from_str_radix(f.trim(), 8).ok())
-                .unwrap_or_else(|| panic!("no flags in fdinfo: {info}"));
+                .ok_or_else(|| format!("no flags in fdinfo: {info}"))?;
             assert_ne!(
                 flags & i64::from(libc::O_CLOEXEC),
                 0,
@@ -2886,6 +2948,7 @@ mod tests {
                 fd.as_raw_fd()
             );
         }
+        Ok(())
     }
 
     /// Source-spoofed raw send: the datagram must arrive at the listener with
@@ -2893,15 +2956,15 @@ mod tests {
     /// `CAP_NET_RAW`; skipped (not failed) when the raw socket can't be opened,
     /// so unprivileged CI stays green. Run under sudo to exercise it.
     #[test]
-    fn spoofed_send_forges_source_ip_and_port() {
-        let raw = match RawKillSocket::open(&live_permit()) {
+    fn spoofed_send_forges_source_ip_and_port() -> Result<(), TestError> {
+        let raw = match RawKillSocket::open(&live_permit()?) {
             Ok(s) => s,
             Err(e) => {
                 stderr_line!("skipping spoof test: raw socket unavailable ({e})");
-                return;
+                return Ok(());
             }
         };
-        let (listener, port) = loopback_listener();
+        let (listener, port) = loopback_listener()?;
 
         // Forge the source as a distinctive loopback "victim" the scanner
         // would have targeted.
@@ -2926,7 +2989,7 @@ mod tests {
 
         let mut buf = [0u8; 2048];
         let (n, from) = retrying(|| listener.recv_from(&mut buf))
-            .expect("listener must receive the spoofed packet");
+            .map_err(|e| format!("listener must receive the spoofed packet: {e:?}"))?;
         assert_eq!(&buf[..n], &payload[..], "payload delivered verbatim");
         assert_eq!(
             from.ip(),
@@ -2938,18 +3001,19 @@ mod tests {
             victim_port,
             "source port must be the forged victim port"
         );
+        Ok(())
     }
 
     /// IPv6 source-spoofed raw send: the datagram must arrive at a `::1`
     /// listener with the **forged** source port (an ephemeral send would show a
     /// random port). Requires `CAP_NET_RAW`; skipped when unprivileged.
     #[test]
-    fn spoofed_send_forges_source_over_ipv6() {
-        let raw = match RawKillSocket::open(&live_permit()) {
+    fn spoofed_send_forges_source_over_ipv6() -> Result<(), TestError> {
+        let raw = match RawKillSocket::open(&live_permit()?) {
             Ok(s) => s,
             Err(e) => {
                 stderr_line!("skipping v6 spoof test: raw socket unavailable ({e})");
-                return;
+                return Ok(());
             }
         };
 
@@ -2957,13 +3021,16 @@ mod tests {
             Ok(s) => s,
             Err(e) => {
                 stderr_line!("skipping v6 spoof test: no IPv6 loopback ({e})");
-                return;
+                return Ok(());
             }
         };
         listener
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .expect("set read timeout");
-        let port = listener.local_addr().expect("local addr").port();
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("local addr: {e:?}"))?
+            .port();
 
         // Forge a distinctive source port; the address is ::1 (the only v6
         // loopback that delivers), so the port is the discriminating field.
@@ -2993,7 +3060,7 @@ mod tests {
                 // Some environments block raw v6 loopback injection; treat as a
                 // skip rather than a hard failure (the builder is unit-tested).
                 stderr_line!("skipping v6 spoof test: no packet received ({e})");
-                return;
+                return Ok(());
             }
         };
         assert_eq!(&buf[..n], &payload[..], "payload delivered verbatim");
@@ -3003,42 +3070,46 @@ mod tests {
             victim_port,
             "source port must be the forged victim port, not an ephemeral one"
         );
+        Ok(())
     }
 
     /// The `RateLimiter` allows exactly `max_per_second` then denies.
     #[test]
-    fn rate_limiter_unit_allows_within_limit() {
+    fn rate_limiter_unit_allows_within_limit() -> Result<(), TestError> {
         let mut limiter = RateLimiter::new(5);
         for _ in 0..5 {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow(), "6th request should be rejected");
+        Ok(())
     }
 
     /// A handle whose peer is serving reports alive and not disabled; after
     /// shutdown it is gone.
     #[test]
-    fn is_alive_true_for_running_worker() {
+    fn is_alive_true_for_running_worker() -> Result<(), TestError> {
         let mut handle = handle_over_pipes(|req, resp| {
             let _ = refuse_all(req, resp, "test");
-        });
+            Ok(())
+        })?;
         assert!(handle.is_alive(), "a serving worker must be alive");
         assert!(!handle.defense_disabled());
         handle.shutdown();
         assert!(!handle.is_alive(), "after shutdown the worker is gone");
+        Ok(())
     }
 
     /// A worker that goes away is detected from its end of the pipe: the
     /// defense is marked disabled, a later send fails rather than vanishing,
     /// and what was in flight is counted as lost.
     #[test]
-    fn a_dead_worker_disables_the_defense_and_counts_what_was_in_flight() {
+    fn a_dead_worker_disables_the_defense_and_counts_what_was_in_flight() -> Result<(), TestError> {
         let (peer, release) = stalled_peer();
-        let handle = handle_over_pipes(peer);
+        let handle = handle_over_pipes(peer)?;
         for _ in 0..3 {
             handle
                 .send_kill(request_to(localhost_v4(), 9, sample_response()))
-                .expect("a live worker's queue has room");
+                .map_err(|e| format!("a live worker's queue has room: {e:?}"))?;
         }
         // The peer dies holding three unanswered requests.
         drop(release);
@@ -3046,10 +3117,10 @@ mod tests {
         let dead = within(std::time::Duration::from_secs(10), || {
             handle.defense_disabled().then(|| handle.counts())
         })
-        .expect(
+        .ok_or(
             "the worker's end of stream must disable the defense on its own, \
              without waiting for a send to fail",
-        );
+        )?;
         assert_eq!(dead.accepted, 3);
         assert_eq!(
             dead.lost_to_worker_exit, 3,
@@ -3067,6 +3138,7 @@ mod tests {
             after.accepted, 3,
             "a refused send is not accepted, so the ledger still closes: {after:?}"
         );
+        Ok(())
     }
 
     /// A kill flood must never block the thread that reports the kill, even
@@ -3083,9 +3155,9 @@ mod tests {
     /// own thread and reports back, so the assertion is a timeout and a
     /// regression fails instead of hanging CI.
     #[test]
-    fn a_kill_flood_never_blocks_the_sender() {
+    fn a_kill_flood_never_blocks_the_sender() -> Result<(), TestError> {
         let (peer, release) = stalled_peer();
-        let handle = Arc::new(handle_over_pipes(peer));
+        let handle = Arc::new(handle_over_pipes(peer)?);
         let _release = release;
         // A request frame is ~200 bytes, so a 64 KiB pipe holds a few hundred
         // of them; the queue holds KILL_REQUEST_CAPACITY more.
@@ -3106,18 +3178,18 @@ mod tests {
                 }
                 let _ = done_tx.send((accepted, refused));
             })
-            .expect("spawn flood producer");
+            .map_err(|e| format!("spawn flood producer: {e:?}"))?;
 
         let (accepted, refused) = done_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap_or_else(|_| {
-                panic!(
+            .map_err(|_| {
+                format!(
                     "send_kill blocked: {flood} kill requests to a stopped worker did \
                      not return in 10s. In production that producer is the capture \
                      loop, holding the dialog and stream write locks, so the capture \
                      and every MCP tool stop with it."
                 )
-            });
+            })?;
         assert!(accepted > 0, "the flood must actually reach the queue");
         assert!(refused > 0, "a stopped worker must fill the queue");
         let counts = handle.counts();
@@ -3136,6 +3208,7 @@ mod tests {
             "a full queue is backpressure, not a dead worker — the defense is \
              still armed"
         );
+        Ok(())
     }
 
     /// Outcomes stay reachable when the observation channel overflows.
@@ -3145,11 +3218,12 @@ mod tests {
     /// must leave every outcome counted, with the exact shortfall attributed
     /// to the stream rather than lost.
     #[test]
-    fn outcomes_are_counted_even_when_nothing_reads_the_stream() {
+    fn outcomes_are_counted_even_when_nothing_reads_the_stream() -> Result<(), TestError> {
         let total = 2 * KILL_OUTCOME_CAPACITY;
         let mut handle = handle_over_pipes(|req, resp| {
             let _ = refuse_all(req, resp, "test");
-        });
+            Ok(())
+        })?;
         let deadline = Instant::now() + std::time::Duration::from_secs(20);
         // Retry a full queue rather than giving up, so all `total` requests
         // reach the worker and the arithmetic below is exact.
@@ -3165,7 +3239,7 @@ mod tests {
                         std::thread::yield_now();
                     }
                     Err(TrySendError::Disconnected(_)) => {
-                        panic!("worker died after {i} of {total} requests")
+                        return Err(format!("worker died after {i} of {total} requests").into());
                     }
                 }
             }
@@ -3179,19 +3253,20 @@ mod tests {
             (c.outcomes() == total as u64 && c.unobserved_outcomes == unobserved_expected)
                 .then_some(c)
         })
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "the ledger never reconciled: expected {total} outcomes with \
                  {unobserved_expected} unobserved, got {:?}",
                 handle.counts()
             )
-        });
+        })?;
         assert!(
             counts.any_dropped(),
             "an overflowing stream must be visible, not silent: {counts:?}"
         );
         assert_eq!(counts.rejected, total as u64);
         handle.shutdown();
+        Ok(())
     }
 
     /// `shutdown` returns even when the request queue is full.
@@ -3201,12 +3276,13 @@ mod tests {
     /// the blocking this type exists to avoid), so it drops the sender: the
     /// forwarder drains what is queued, closes the pipe, and the worker exits.
     #[test]
-    fn shutdown_returns_even_when_the_request_queue_is_full() {
+    fn shutdown_returns_even_when_the_request_queue_is_full() -> Result<(), TestError> {
         let mut handle = handle_over_pipes(|req, resp| {
             // Not draining yet, so the queue is still full when shutdown asks.
             std::thread::sleep(std::time::Duration::from_millis(200));
             let _ = refuse_all(req, resp, "test");
-        });
+            Ok(())
+        })?;
         while handle
             .send_kill(request_to(localhost_v4(), 59_997, sample_response()))
             .is_ok()
@@ -3219,24 +3295,28 @@ mod tests {
                 handle.shutdown();
                 let _ = done_tx.send(handle.counts());
             })
-            .expect("spawn shutdown thread");
+            .map_err(|e| format!("spawn shutdown thread: {e:?}"))?;
 
         let counts = done_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect(
-                "shutdown blocked with a full request queue: the forwarder never \
+            .map_err(|e| {
+                format!(
+                    "{}: {e:?}",
+                    "shutdown blocked with a full request queue: the forwarder never \
                  saw a disconnect",
-            );
+                )
+            })?;
         assert_eq!(
             counts.accepted,
             counts.outcomes() + counts.lost_to_worker_exit,
             "every accepted request is accounted for once the worker is gone: {counts:?}"
         );
+        Ok(())
     }
 
     /// `is_broadcast_or_multicast` classifies broadcast/multicast vs unicast.
     #[test]
-    fn broadcast_multicast_detection() {
+    fn broadcast_multicast_detection() -> Result<(), TestError> {
         assert!(is_broadcast_or_multicast(IpAddr::V4(Ipv4Addr::BROADCAST)));
         assert!(is_broadcast_or_multicast(IpAddr::V4(Ipv4Addr::new(
             224, 0, 0, 1
@@ -3248,6 +3328,7 @@ mod tests {
             10, 0, 0, 1
         ))));
         assert!(!is_broadcast_or_multicast(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        Ok(())
     }
 
     // ── Routing and bookkeeping, with nothing able to transmit ───────────
@@ -3302,14 +3383,15 @@ mod tests {
     /// request down the fallback path.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_raw_socket_without_the_family_refuses_rather_than_sending() {
+    fn a_raw_socket_without_the_family_refuses_rather_than_sending() -> Result<(), TestError> {
         let raw = RawKillSocket {
             fd_v4: None,
             fd_v6: None,
         };
         let v4 = raw
             .send_to_v4(b"x", SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 5060))
-            .expect_err("no IPv4 raw socket");
+            .err()
+            .ok_or("no IPv4 raw socket")?;
         assert_eq!(v4.kind(), std::io::ErrorKind::Unsupported);
         assert!(v4.to_string().contains("no IPv4 raw socket"), "{v4}");
         let v6 = raw
@@ -3322,8 +3404,10 @@ mod tests {
                     0,
                 ),
             )
-            .expect_err("no IPv6 raw socket");
+            .err()
+            .ok_or("no IPv6 raw socket")?;
         assert!(v6.to_string().contains("no IPv6 raw socket"), "{v6}");
+        Ok(())
     }
 
     /// A spoofed send that fails falls through to the ephemeral path rather
@@ -3332,7 +3416,7 @@ mod tests {
     /// that the fallback was taken.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_failed_spoofed_send_falls_back_to_the_ephemeral_path() {
+    fn a_failed_spoofed_send_falls_back_to_the_ephemeral_path() -> Result<(), TestError> {
         for (dst, src) in [
             (test_net_v4(10), test_net_v4(20)),
             (test_net_v6(10), test_net_v6(20)),
@@ -3351,6 +3435,7 @@ mod tests {
                 "the raw failure must reach the ephemeral path for {dst}"
             );
         }
+        Ok(())
     }
 
     /// Mixed families never occur from one packet, but if they did there is
@@ -3358,7 +3443,7 @@ mod tests {
     /// the request.
     #[cfg(target_os = "linux")]
     #[test]
-    fn mixed_address_families_skip_spoofing_and_take_the_ephemeral_path() {
+    fn mixed_address_families_skip_spoofing_and_take_the_ephemeral_path() -> Result<(), TestError> {
         let raw = RawKillSocket {
             fd_v4: None,
             fd_v6: None,
@@ -3372,25 +3457,27 @@ mod tests {
                 message: format!("no UDP socket available for {dst}")
             }
         );
+        Ok(())
     }
 
     /// A request the worker could not send on any socket is published as an
     /// error -- an outcome the parent books, not a silent drop.
     #[test]
-    fn an_unsendable_request_is_published_as_an_error() {
+    fn an_unsendable_request_is_published_as_an_error() -> Result<(), TestError> {
         let (worker, tx, resp_rx) = socketless_worker(None, 100);
         tx.send(request_to(test_net_v4(12), 5060, sample_response()))
-            .expect("queue has room");
+            .map_err(|e| format!("queue has room: {e:?}"))?;
         drop(tx);
         worker.run();
         assert!(matches!(resp_rx.try_recv(), Ok(KillResponse::Error { .. })));
         assert!(resp_rx.try_recv().is_err(), "exactly one outcome");
+        Ok(())
     }
 
     /// The worker returns once nothing can reach it: a disconnected request
     /// channel is an exit, not a spin and not a hang.
     #[test]
-    fn the_worker_exits_when_no_sender_can_reach_it() {
+    fn the_worker_exits_when_no_sender_can_reach_it() -> Result<(), TestError> {
         let (worker, tx, _rx) = socketless_worker(None, 100);
         drop(tx);
         let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
@@ -3400,15 +3487,16 @@ mod tests {
                 worker.run();
                 let _ = done_tx.send(());
             })
-            .expect("spawn");
+            .map_err(|e| format!("spawn: {e:?}"))?;
         done_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the worker must return when its channel disconnects");
+            .map_err(|e| format!("the worker must return when its channel disconnects: {e:?}"))?;
+        Ok(())
     }
 
     /// Each outcome class has its own counter, and the derived totals agree.
     #[test]
-    fn every_outcome_class_is_booked_in_its_own_counter() {
+    fn every_outcome_class_is_booked_in_its_own_counter() -> Result<(), TestError> {
         let tally = KillTally::default();
         tally.record(&KillResponse::Sent {
             path: SendPath::Ephemeral,
@@ -3441,6 +3529,7 @@ mod tests {
             7,
             "an outcome nobody watched is still one outcome, not two"
         );
+        Ok(())
     }
 
     /// A `Sent` outcome moves the counter for the path it reports, and only
@@ -3450,7 +3539,7 @@ mod tests {
     /// parent only learns the path from the outcome. Booked into counters of
     /// the test's own, so the counts are exact rather than "at least".
     #[test]
-    fn a_sent_outcome_moves_the_counter_for_its_own_path() {
+    fn a_sent_outcome_moves_the_counter_for_its_own_path() -> Result<(), TestError> {
         let tally = KillTally::default();
         let counters = SendCounters::new();
         book_outcome(
@@ -3481,6 +3570,7 @@ mod tests {
             (2, 1),
             "and the class is booked too"
         );
+        Ok(())
     }
 
     /// Every accepted request ends in exactly one class, or is lost with the
@@ -3491,7 +3581,8 @@ mod tests {
     /// gone it can never have an outcome, and reporting it as nothing at all
     /// would be the silent loss this ledger exists to rule out.
     #[test]
-    fn every_accepted_request_ends_in_one_class_or_is_lost_with_the_worker() {
+    fn every_accepted_request_ends_in_one_class_or_is_lost_with_the_worker() -> Result<(), TestError>
+    {
         let tally = KillTally::default();
         for _ in 0..6 {
             tally.note_accepted();
@@ -3536,16 +3627,19 @@ mod tests {
             dead.any_dropped(),
             "requests lost with the worker must be visible: {dead:?}"
         );
+        Ok(())
     }
 
     /// Once shut down, the handle refuses further requests and reports the
     /// defense as disabled from then on -- a kill after shutdown must not
     /// vanish as though it had been queued.
     #[test]
-    fn a_kill_offered_after_shutdown_is_refused_and_disables_the_defense() {
+    fn a_kill_offered_after_shutdown_is_refused_and_disables_the_defense() -> Result<(), TestError>
+    {
         let mut handle = handle_over_pipes(|req, resp| {
             let _ = refuse_all(req, resp, "test");
-        });
+            Ok(())
+        })?;
         handle.shutdown();
         assert!(
             !handle.defense_disabled(),
@@ -3554,7 +3648,8 @@ mod tests {
 
         let err = handle
             .send_kill(KillRequest::Shutdown)
-            .expect_err("no worker is left to take it");
+            .err()
+            .ok_or("no worker is left to take it")?;
         assert!(matches!(
             err,
             TrySendError::Disconnected(KillRequest::Shutdown)
@@ -3562,25 +3657,27 @@ mod tests {
         assert!(handle.defense_disabled());
         assert!(handle.send_kill(KillRequest::Shutdown).is_err());
         assert!(handle.defense_disabled(), "and it stays disabled");
+        Ok(())
     }
 
     /// The global limit is per one-second window: once the window rolls over
     /// the count starts again, and the new window is itself limited.
     #[test]
-    fn the_global_limit_resets_when_its_window_rolls_over() {
+    fn the_global_limit_resets_when_its_window_rolls_over() -> Result<(), TestError> {
         let mut lim = RateLimiter::new(1);
         assert!(lim.allow());
         assert!(!lim.allow(), "one per window");
         lim.window_start = Instant::now()
             .checked_sub(std::time::Duration::from_secs(2))
-            .expect("the clock has run for two seconds");
+            .ok_or("the clock has run for two seconds")?;
         assert!(lim.allow(), "a new window admits again");
         assert!(!lim.allow(), "and is limited in turn");
+        Ok(())
     }
 
     /// A destination's allowance returns after its minute, counting from one.
     #[test]
-    fn a_destinations_allowance_returns_after_its_minute() {
+    fn a_destinations_allowance_returns_after_its_minute() -> Result<(), TestError> {
         let mut lim = PerDstRateLimiter::new();
         let dst = test_net_v4(30);
         for _ in 0..MAX_PER_DST_PER_MINUTE {
@@ -3590,17 +3687,18 @@ mod tests {
 
         let a_minute_ago = Instant::now()
             .checked_sub(std::time::Duration::from_secs(61))
-            .expect("the clock has run for a minute");
+            .ok_or("the clock has run for a minute")?;
         lim.buckets
             .insert(dst, (a_minute_ago, MAX_PER_DST_PER_MINUTE));
         assert!(lim.allow(dst), "a new minute admits again");
         assert_eq!(lim.buckets[&dst].1, 1, "counting from one");
+        Ok(())
     }
 
     /// A read interrupted by a signal is retried, never reported as a failure
     /// or mistaken for the end of the stream.
     #[test]
-    fn an_interrupted_read_is_retried_rather_than_reported() {
+    fn an_interrupted_read_is_retried_rather_than_reported() -> Result<(), TestError> {
         use std::io::Read;
         struct InterruptedOnce {
             interrupted: bool,
@@ -3616,30 +3714,36 @@ mod tests {
             }
         }
         let mut pipe = Vec::new();
-        wire::write_frame(&mut pipe, &KillResponse::RateLimited).expect("encode");
+        wire::write_frame(&mut pipe, &KillResponse::RateLimited)
+            .map_err(|e| format!("encode: {e:?}"))?;
         let mut from = InterruptedOnce {
             interrupted: false,
             inner: std::io::Cursor::new(pipe),
         };
         assert_eq!(
-            wire::read_frame::<_, KillResponse>(&mut from).expect("retried"),
+            wire::read_frame::<_, KillResponse>(&mut from)
+                .map_err(|e| format!("retried: {e:?}"))?,
             Some(KillResponse::RateLimited)
         );
         assert!(from.interrupted, "the interruption really happened");
+        Ok(())
     }
 
     /// Any other read error is the pipe failing, and is returned as it is --
     /// not read as the clean close a `None` would mean.
     #[test]
-    fn a_failing_read_is_an_error_not_a_clean_close() {
+    fn a_failing_read_is_an_error_not_a_clean_close() -> Result<(), TestError> {
         struct Broken;
         impl std::io::Read for Broken {
             fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
                 Err(std::io::ErrorKind::BrokenPipe.into())
             }
         }
-        let err = wire::read_frame::<_, KillResponse>(&mut Broken).expect_err("a dead pipe");
+        let err = wire::read_frame::<_, KillResponse>(&mut Broken)
+            .err()
+            .ok_or("a dead pipe")?;
         assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+        Ok(())
     }
 
     /// A request too large to frame is booked as an error, so the ledger
@@ -3649,32 +3753,34 @@ mod tests {
     /// but no outcome will ever come back for it. Without the booking it would
     /// sit in the ledger as "in flight" for the rest of the run.
     #[test]
-    fn a_request_too_large_to_frame_is_booked_as_an_error() {
+    fn a_request_too_large_to_frame_is_booked_as_an_error() -> Result<(), TestError> {
         let mut handle = handle_over_pipes(|req, resp| {
             let _ = refuse_all(req, resp, "test");
-        });
+            Ok(())
+        })?;
         handle
             .send_kill(request_to(
                 localhost_v4(),
                 9,
                 vec![0u8; wire::MAX_FRAME_BYTES],
             ))
-            .expect("accepted: the size is only found when it is framed");
+            .map_err(|e| format!("accepted: the size is only found when it is framed: {e:?}"))?;
         handle
             .send_kill(request_to(localhost_v4(), 9, sample_response()))
-            .expect("the pipe is still usable after the refusal");
+            .map_err(|e| format!("the pipe is still usable after the refusal: {e:?}"))?;
 
         let counts = within(std::time::Duration::from_secs(10), || {
             let c = handle.counts();
             (c.outcomes() == 2).then_some(c)
         })
-        .unwrap_or_else(|| panic!("the ledger never closed: {:?}", handle.counts()));
+        .ok_or_else(|| format!("the ledger never closed: {:?}", handle.counts()))?;
         assert_eq!(
             (counts.accepted, counts.errored, counts.rejected),
             (2, 1, 1),
             "{counts:?}"
         );
         handle.shutdown();
+        Ok(())
     }
 
     /// Only the worker's own few variables cross to it; the parent's bearer
@@ -3684,7 +3790,7 @@ mod tests {
     /// the MCP token can all arrive through the environment. The worker needs
     /// none of them, and a process holding no secret cannot leak one.
     #[test]
-    fn the_worker_inherits_only_its_own_environment_variables() {
+    fn the_worker_inherits_only_its_own_environment_variables() -> Result<(), TestError> {
         let parent: Vec<(std::ffi::OsString, std::ffi::OsString)> = [
             "SIPNAB_API_KEY",
             "SIPNAB_API_SIGNING_KEY",
@@ -3724,5 +3830,6 @@ mod tests {
             "what starting and logging the same binary needs, and no credential; \
              LD_PRELOAD stays behind too, since nothing the worker runs needs it"
         );
+        Ok(())
     }
 }

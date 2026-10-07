@@ -2761,30 +2761,32 @@ mod tests {
 
     /// Well-formed ranges parse, whitespace is trimmed, start==end allowed.
     #[test]
-    fn parse_portrange_valid_and_trimmed() {
-        assert_eq!(parse_portrange("5060-5061").unwrap(), (5060, 5061));
+    fn parse_portrange_valid_and_trimmed() -> Result<(), TestError> {
+        assert_eq!(parse_portrange("5060-5061")?, (5060, 5061));
         // surrounding whitespace is trimmed on each side
-        assert_eq!(parse_portrange(" 100 - 200 ").unwrap(), (100, 200));
+        assert_eq!(parse_portrange(" 100 - 200 ")?, (100, 200));
         // single-port range (start == end) is allowed
-        assert_eq!(parse_portrange("5060-5060").unwrap(), (5060, 5060));
+        assert_eq!(parse_portrange("5060-5060")?, (5060, 5060));
+        Ok(())
     }
 
     /// A zero-width business-hours window (`start == end`) is rejected: with
     /// `start <= end` the off-hours test is `hour < start || hour >= end`,
     /// always true when they are equal, so every call would read as off-hours.
     #[test]
-    fn parse_business_hours_rejects_a_zero_width_window() {
+    fn parse_business_hours_rejects_a_zero_width_window() -> Result<(), TestError> {
         assert!(parse_business_hours("8-8").is_err());
         assert!(parse_business_hours("0-0").is_err());
         // Ordinary and overnight windows still parse.
         assert!(parse_business_hours("8-18").is_ok());
         assert!(parse_business_hours("22-6").is_ok());
+        Ok(())
     }
 
     /// Malformed shapes, non-numeric or out-of-range ports, and start > end
     /// all produce errors.
     #[test]
-    fn parse_portrange_errors() {
+    fn parse_portrange_errors() -> Result<(), TestError> {
         // wrong number of '-' separated parts
         assert!(parse_portrange("5060").is_err());
         assert!(parse_portrange("5060-5061-5062").is_err());
@@ -2794,8 +2796,11 @@ mod tests {
         // out of u16 range
         assert!(parse_portrange("0-70000").is_err());
         // start > end
-        let err = parse_portrange("6000-5000").unwrap_err();
+        let err = parse_portrange("6000-5000")
+            .err()
+            .ok_or("expected an Err, got Ok")?;
         assert!(err.contains("start"), "got: {err}");
+        Ok(())
     }
 
     // ── Atomic, symlink-safe sipnabrc writes (P2 item 3) ────────────────
@@ -2804,24 +2809,24 @@ mod tests {
     /// `.sipnab-tmp-*` temp litter behind (the atomic helper's temp file is
     /// renamed into place, not left in the directory).
     #[test]
-    fn write_display_columns_file_is_atomic_no_temp_left() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_display_columns_file_is_atomic_no_temp_left() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("sipnabrc");
-        write_display_columns_file(&path, &["method".into(), "from".into()]).unwrap();
+        write_display_columns_file(&path, &["method".into(), "from".into()])?;
 
-        let written = std::fs::read_to_string(&path).unwrap();
-        let cfg: Config = toml::from_str(&written).unwrap();
+        let written = std::fs::read_to_string(&path)?;
+        let cfg: Config = toml::from_str(&written)?;
         assert_eq!(
             cfg.display.visible_columns,
             Some(vec!["method".to_string(), "from".to_string()])
         );
 
-        let litter: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
+        let litter: Vec<_> = std::fs::read_dir(dir.path())?
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(".sipnab-tmp-"))
             .collect();
         assert!(litter.is_empty(), "temp file left behind: {litter:?}");
+        Ok(())
     }
 
     /// A symlink at the target path must NOT be followed: the write replaces the
@@ -2830,81 +2835,85 @@ mod tests {
     /// is a plain `fs::write`, which has no atomic helper.
     #[test]
     #[cfg(all(unix, feature = "native"))]
-    fn write_display_columns_file_does_not_follow_symlink() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_display_columns_file_does_not_follow_symlink() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let victim = dir.path().join("victim.toml");
-        std::fs::write(&victim, "# do not touch\n").unwrap();
+        std::fs::write(&victim, "# do not touch\n")?;
         let link = dir.path().join("sipnabrc");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        std::os::unix::fs::symlink(&victim, &link)?;
 
-        write_display_columns_file(&link, &["method".into()]).unwrap();
+        write_display_columns_file(&link, &["method".into()])?;
 
         // The victim behind the link is untouched.
         assert_eq!(
-            std::fs::read_to_string(&victim).unwrap(),
+            std::fs::read_to_string(&victim)?,
             "# do not touch\n",
             "the symlink target must not be written through"
         );
         // The path itself is now a regular file (the link was replaced).
-        let meta = std::fs::symlink_metadata(&link).unwrap();
+        let meta = std::fs::symlink_metadata(&link)?;
         assert!(
             meta.file_type().is_file(),
             "target should be a regular file, not a symlink"
         );
-        let cfg: Config = toml::from_str(&std::fs::read_to_string(&link).unwrap()).unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&link)?)?;
         assert_eq!(
             cfg.display.visible_columns,
             Some(vec!["method".to_string()])
         );
+        Ok(())
     }
 
     /// Same symlink-no-follow guarantee for the manual-mappings writer.
     #[test]
     #[cfg(all(unix, feature = "native"))]
-    fn write_manual_mappings_file_does_not_follow_symlink() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_manual_mappings_file_does_not_follow_symlink() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let victim = dir.path().join("victim.toml");
-        std::fs::write(&victim, "# do not touch\n").unwrap();
+        std::fs::write(&victim, "# do not touch\n")?;
         let link = dir.path().join("sipnabrc");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        std::os::unix::fs::symlink(&victim, &link)?;
 
-        write_manual_mappings_file(&link, &[("10.0.0.1".into(), "pbx".into())]).unwrap();
+        write_manual_mappings_file(&link, &[("10.0.0.1".into(), "pbx".into())])?;
 
         assert_eq!(
-            std::fs::read_to_string(&victim).unwrap(),
+            std::fs::read_to_string(&victim)?,
             "# do not touch\n",
             "the symlink target must not be written through"
         );
-        let meta = std::fs::symlink_metadata(&link).unwrap();
+        let meta = std::fs::symlink_metadata(&link)?;
         assert!(meta.file_type().is_file());
+        Ok(())
     }
 
     /// `Config::default()` leaves every optional field unset.
     #[test]
-    fn default_config_is_valid() {
+    fn default_config_is_valid() -> Result<(), TestError> {
         let config = Config::default();
         assert!(config.capture.device.is_none());
         assert!(config.display.color.is_none());
         assert!(config.security.kill_scanner.is_none());
+        Ok(())
     }
 
     /// A single-key TOML file parses; every other field stays default.
     #[test]
-    fn parse_minimal_toml() {
+    fn parse_minimal_toml() -> Result<(), TestError> {
         let toml_str = r#"
 [capture]
 device = "eth0"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.capture.device.as_deref(), Some("eth0"));
         assert!(config.display.color.is_none());
         assert!(config.display.from_to.is_none());
+        Ok(())
     }
 
     /// `upsert_manual_mappings` keeps comments and unrelated sections,
     /// quotes IP keys, and round-trips through the typed config.
     #[test]
-    fn upsert_manual_preserves_comments_and_other_sections() {
+    fn upsert_manual_preserves_comments_and_other_sections() -> Result<(), TestError> {
         let existing = r#"# my sipnab config
 [capture]
 device = "eth0"  # capture NIC
@@ -2916,7 +2925,8 @@ enabled = true
             ("10.0.0.1".to_string(), "sbc-edge".to_string()),
             ("2001:db8::1".to_string(), "core6".to_string()),
         ];
-        let out = upsert_manual_mappings(existing, &entries).expect("valid toml");
+        let out =
+            upsert_manual_mappings(existing, &entries).map_err(|e| format!("valid toml: {e:?}"))?;
         // Comments and the unrelated section survive.
         assert!(out.contains("# my sipnab config"));
         assert!(out.contains("device = \"eth0\"  # capture NIC"));
@@ -2926,37 +2936,38 @@ enabled = true
         assert!(out.contains(r#""10.0.0.1" = "sbc-edge""#), "got:\n{out}");
         assert!(out.contains(r#""2001:db8::1" = "core6""#), "got:\n{out}");
         // Re-parsing yields the same mappings (round-trip).
-        let cfg: Config = toml::from_str(&out).unwrap();
-        let manual = cfg.names.manual.unwrap();
+        let cfg: Config = toml::from_str(&out)?;
+        let manual = cfg.names.manual.ok_or("manual names are configured")?;
         assert_eq!(manual.get("10.0.0.1").map(String::as_str), Some("sbc-edge"));
         assert_eq!(manual.get("2001:db8::1").map(String::as_str), Some("core6"));
+        Ok(())
     }
 
     /// An empty document gains `[names.manual]`; existing entries are
     /// fully replaced so deletions propagate.
     #[test]
-    fn upsert_manual_into_empty_and_replaces_existing() {
+    fn upsert_manual_into_empty_and_replaces_existing() -> Result<(), TestError> {
         // Empty input → creates [names.manual] from scratch.
-        let out =
-            upsert_manual_mappings("", &[("1.2.3.4".to_string(), "host".to_string())]).unwrap();
+        let out = upsert_manual_mappings("", &[("1.2.3.4".to_string(), "host".to_string())])?;
         assert!(out.contains("[names.manual]"));
         assert!(out.contains(r#""1.2.3.4" = "host""#));
 
         // Existing manual entries are fully replaced by the new set.
         let existing = "[names.manual]\n\"9.9.9.9\" = \"old\"\n";
-        let out = upsert_manual_mappings(existing, &[("1.1.1.1".to_string(), "new".to_string())])
-            .unwrap();
+        let out = upsert_manual_mappings(existing, &[("1.1.1.1".to_string(), "new".to_string())])?;
         assert!(out.contains(r#""1.1.1.1" = "new""#));
         assert!(
             !out.contains("9.9.9.9"),
             "stale entries must be removed:\n{out}"
         );
+        Ok(())
     }
 
     /// Malformed existing TOML is rejected rather than clobbered.
     #[test]
-    fn upsert_manual_rejects_invalid_toml() {
+    fn upsert_manual_rejects_invalid_toml() -> Result<(), TestError> {
         assert!(upsert_manual_mappings("this is = = not toml", &[]).is_err());
+        Ok(())
     }
 
     // ── display column persistence (F10 save) ────────────────────────
@@ -2964,29 +2975,31 @@ enabled = true
     /// `upsert_display_columns` keeps comments and unrelated sections and
     /// round-trips through the typed config.
     #[test]
-    fn upsert_display_columns_preserves_other_sections() {
+    fn upsert_display_columns_preserves_other_sections() -> Result<(), TestError> {
         let existing = "# my config\n[capture]\nsnaplen = 1500\n";
         let cols = vec!["#".to_string(), "Method".to_string(), "From".to_string()];
-        let out = upsert_display_columns(existing, &cols).expect("valid toml");
+        let out =
+            upsert_display_columns(existing, &cols).map_err(|e| format!("valid toml: {e:?}"))?;
         // Unrelated section + comment survive.
         assert!(out.contains("# my config"));
         assert!(out.contains("snaplen = 1500"));
         // Round-trips into the typed config.
-        let cfg: Config = toml::from_str(&out).unwrap();
+        let cfg: Config = toml::from_str(&out)?;
         assert_eq!(
             cfg.display.visible_columns.as_deref(),
             Some(cols.as_slice())
         );
         assert_eq!(cfg.capture.snaplen, Some(1500));
+        Ok(())
     }
 
     /// An existing `visible_columns` value is fully replaced, not merged.
     #[test]
-    fn upsert_display_columns_replaces_existing() {
+    fn upsert_display_columns_replaces_existing() -> Result<(), TestError> {
         let existing = "[display]\nvisible_columns = [\"#\", \"State\"]\n";
         let cols = vec!["Method".to_string(), "Duration".to_string()];
-        let out = upsert_display_columns(existing, &cols).unwrap();
-        let cfg: Config = toml::from_str(&out).unwrap();
+        let out = upsert_display_columns(existing, &cols)?;
+        let cfg: Config = toml::from_str(&out)?;
         assert_eq!(
             cfg.display.visible_columns.as_deref(),
             Some(cols.as_slice())
@@ -2995,38 +3008,40 @@ enabled = true
             !out.contains("State"),
             "stale columns must be replaced:\n{out}"
         );
+        Ok(())
     }
 
     /// Malformed existing TOML is rejected rather than clobbered.
     #[test]
-    fn upsert_display_columns_rejects_invalid_toml() {
+    fn upsert_display_columns_rejects_invalid_toml() -> Result<(), TestError> {
         assert!(upsert_display_columns("this is = = not toml", &[]).is_err());
+        Ok(())
     }
 
     /// Hiding every column persists as an empty list, not a missing key.
     #[test]
-    fn upsert_display_columns_empty_writes_empty_array() {
+    fn upsert_display_columns_empty_writes_empty_array() -> Result<(), TestError> {
         // Hiding every column persists as an empty list, not a missing key.
-        let out = upsert_display_columns("", &[]).unwrap();
-        let cfg: Config = toml::from_str(&out).unwrap();
+        let out = upsert_display_columns("", &[])?;
+        let cfg: Config = toml::from_str(&out)?;
         assert_eq!(cfg.display.visible_columns.as_deref(), Some([].as_slice()));
+        Ok(())
     }
 
     /// `write_display_columns_file` creates nested parent dirs, persists
     /// the columns, and a second write replaces the set.
     #[test]
-    fn write_display_columns_file_creates_dirs_and_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_display_columns_file_creates_dirs_and_round_trips() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("nested/sipnab.toml");
         let cols = vec![
             "#".to_string(),
             "Method".to_string(),
             "Duration".to_string(),
         ];
-        write_display_columns_file(&path, &cols).unwrap();
-        let cfg = Config::load(Some(path.to_str().unwrap()), false)
-            .unwrap()
-            .config;
+        write_display_columns_file(&path, &cols)?;
+        let cfg =
+            Config::load(Some(path.to_str().ok_or("the path is valid UTF-8")?), false)?.config;
         assert_eq!(
             cfg.display.visible_columns.as_deref(),
             Some(cols.as_slice())
@@ -3034,86 +3049,88 @@ enabled = true
 
         // A second write replaces the set.
         let cols2 = vec!["From".to_string(), "To".to_string()];
-        write_display_columns_file(&path, &cols2).unwrap();
-        let cfg = Config::load(Some(path.to_str().unwrap()), false)
-            .unwrap()
-            .config;
+        write_display_columns_file(&path, &cols2)?;
+        let cfg =
+            Config::load(Some(path.to_str().ok_or("the path is valid UTF-8")?), false)?.config;
         assert_eq!(
             cfg.display.visible_columns.as_deref(),
             Some(cols2.as_slice())
         );
+        Ok(())
     }
 
     /// `write_manual_mappings_file` creates nested parent dirs, persists
     /// the mappings, and a second write replaces the set (deletions
     /// propagate).
     #[test]
-    fn write_manual_mappings_file_creates_dirs_and_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_manual_mappings_file_creates_dirs_and_round_trips() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         // Nested path exercises parent-dir creation.
         let path = dir.path().join("nested/sipnab.toml");
-        write_manual_mappings_file(&path, &[("10.0.0.1".to_string(), "sbc".to_string())]).unwrap();
-        let cfg = Config::load(Some(path.to_str().unwrap()), false)
-            .unwrap()
-            .config;
+        write_manual_mappings_file(&path, &[("10.0.0.1".to_string(), "sbc".to_string())])?;
+        let cfg =
+            Config::load(Some(path.to_str().ok_or("the path is valid UTF-8")?), false)?.config;
         assert_eq!(
             cfg.names
                 .manual
                 .as_ref()
-                .unwrap()
+                .ok_or("manual names are configured")?
                 .get("10.0.0.1")
                 .map(String::as_str),
             Some("sbc")
         );
 
         // A second write replaces the set (deletion propagates).
-        write_manual_mappings_file(&path, &[("10.0.0.2".to_string(), "core".to_string())]).unwrap();
-        let cfg = Config::load(Some(path.to_str().unwrap()), false)
-            .unwrap()
-            .config;
-        let m = cfg.names.manual.unwrap();
+        write_manual_mappings_file(&path, &[("10.0.0.2".to_string(), "core".to_string())])?;
+        let cfg =
+            Config::load(Some(path.to_str().ok_or("the path is valid UTF-8")?), false)?.config;
+        let m = cfg.names.manual.ok_or("manual names are configured")?;
         assert_eq!(m.get("10.0.0.2").map(String::as_str), Some("core"));
         assert!(!m.contains_key("10.0.0.1"));
+        Ok(())
     }
 
     /// A quoted-IP `[names.manual]` table deserializes into the map.
     #[test]
-    fn parse_names_manual_table() {
+    fn parse_names_manual_table() -> Result<(), TestError> {
         let toml_str = r#"
 [names.manual]
 "10.0.0.1" = "sbc"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let manual = config.names.manual.expect("manual table");
+        let config: Config = toml::from_str(toml_str)?;
+        let manual = config.names.manual.ok_or("manual table")?;
         assert_eq!(manual.get("10.0.0.1").map(String::as_str), Some("sbc"));
+        Ok(())
     }
 
     /// `[capture] buffer_budget_mb` deserializes.
     #[test]
-    fn parse_capture_buffer_budget() {
+    fn parse_capture_buffer_budget() -> Result<(), TestError> {
         let toml_str = r#"
 [capture]
 buffer_budget_mb = 128
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.capture.buffer_budget_mb, Some(128));
+        Ok(())
     }
 
     /// `[display] from_to` deserializes as the raw mode string.
     #[test]
-    fn parse_display_from_to() {
+    fn parse_display_from_to() -> Result<(), TestError> {
         let toml_str = r#"
 [display]
 from_to = "user-host-port"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
+        Ok(())
     }
 
     /// A config exercising every section deserializes with all values
     /// landing in the right fields.
     #[test]
-    fn parse_full_toml() {
+    fn parse_full_toml() -> Result<(), TestError> {
         let toml_str = r##"
 [capture]
 device = "eth0"
@@ -3160,7 +3177,7 @@ quit = "q"
 help = "?"
 filter = "/"
 "##;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.capture.device.as_deref(), Some("eth0"));
         assert_eq!(config.capture.portrange.as_deref(), Some("5060-5080"));
         assert_eq!(config.capture.snaplen, Some(65535));
@@ -3174,22 +3191,31 @@ filter = "/"
         assert_eq!(config.theme.highlight.as_deref(), Some("#ff0000"));
         assert_eq!(config.keybindings.quit.as_deref(), Some("q"));
         assert_eq!(config.keybindings.help.as_deref(), Some("?"));
+        Ok(())
     }
 
     /// `--no-config` (skip_default) returns pure defaults with no source.
     #[test]
-    fn skip_default_returns_empty() {
-        let loaded = Config::load(None, true).unwrap();
+    fn skip_default_returns_empty() -> Result<(), TestError> {
+        let loaded = Config::load(None, true)?;
         assert!(loaded.source.is_none());
         assert_eq!(loaded.config, Config::default());
+        Ok(())
     }
 
     /// An explicit `--config` path that does not exist is a hard error.
     #[test]
-    fn missing_explicit_file_errors() {
+    fn missing_explicit_file_errors() -> Result<(), TestError> {
         let result = Config::load(Some("/nonexistent/sipnab.toml"), false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(
+            result
+                .err()
+                .ok_or("expected an Err, got Ok")?
+                .to_string()
+                .contains("not found")
+        );
+        Ok(())
     }
 
     /// `--no-config` wins over `--config`: nothing is read, not even the
@@ -3246,81 +3272,91 @@ filter = "/"
 
     /// An explicit existing path loads and is reported as the source.
     #[test]
-    fn explicit_path_loads() {
-        let dir = tempfile::tempdir().unwrap();
+    fn explicit_path_loads() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.toml");
-        let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "[capture]\ndevice = \"lo\"").unwrap();
+        let mut f = std::fs::File::create(&path)?;
+        writeln!(f, "[capture]\ndevice = \"lo\"")?;
 
-        let loaded = Config::load(Some(path.to_str().unwrap()), false).unwrap();
+        let loaded = Config::load(Some(path.to_str().ok_or("the path is valid UTF-8")?), false)?;
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
-        assert_eq!(loaded.source.unwrap(), path);
+        assert_eq!(
+            loaded
+                .source
+                .ok_or("the loaded config records its source")?,
+            path
+        );
+        Ok(())
     }
 
     /// Every documented `[crash]` key must be known — a valid section
     /// producing a spurious "Unknown config key: crash" warning trains
     /// users to ignore the warning entirely.
     #[test]
-    fn crash_section_keys_are_known() {
+    fn crash_section_keys_are_known() -> Result<(), TestError> {
         let toml_str =
             "[crash]\nreports = true\nbacktrace = true\nreport_dir = \"/tmp/x\"\ncore = false\n";
-        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        let value: toml::Value = toml::from_str(toml_str)?;
         assert_eq!(
             collect_unknown_keys(&value),
             Vec::<String>::new(),
             "valid [crash] section must not be flagged"
         );
         // And it actually parses into the config.
-        let config = Config::parse_toml_with_env(toml_str, None, &real_env).unwrap();
+        let config = Config::parse_toml_with_env(toml_str, None, &real_env)?;
         assert_eq!(config.crash.reports, Some(true));
         assert_eq!(config.crash.core, Some(false));
+        Ok(())
     }
 
     /// A typo inside [crash] must still be flagged — with the section
     /// known, detection now reaches the individual keys.
     #[test]
-    fn crash_section_typo_is_flagged() {
-        let value: toml::Value = toml::from_str("[crash]\nbogus = 1\n").unwrap();
+    fn crash_section_typo_is_flagged() -> Result<(), TestError> {
+        let value: toml::Value = toml::from_str("[crash]\nbogus = 1\n")?;
         assert_eq!(
             collect_unknown_keys(&value),
             vec!["crash.bogus".to_string()]
         );
+        Ok(())
     }
 
     /// The `[sip]` section and the `[capture] promisc` key are valid config the
     /// code actually reads; neither may be flagged as unknown, or the warning
     /// trains users to ignore it.
     #[test]
-    fn sip_section_and_capture_promisc_are_known() {
+    fn sip_section_and_capture_promisc_are_known() -> Result<(), TestError> {
         let toml_str = "[sip]\nxcid_headers = [\"X-CID\"]\n[capture]\npromisc = false\n";
-        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        let value: toml::Value = toml::from_str(toml_str)?;
         assert_eq!(
             collect_unknown_keys(&value),
             Vec::<String>::new(),
             "valid [sip] section and [capture] promisc must not be flagged"
         );
         // And they actually parse into the config.
-        let config = Config::parse_toml_with_env(toml_str, None, &real_env).unwrap();
+        let config = Config::parse_toml_with_env(toml_str, None, &real_env)?;
         assert_eq!(
             config.sip.xcid_headers.as_deref(),
             Some(["X-CID".to_string()].as_slice())
         );
         assert_eq!(config.capture.promisc, Some(false));
+        Ok(())
     }
 
     /// The config key is READ, not merely accepted. A key that parses and is
     /// then ignored is the defect this tree has hunted repeatedly.
     #[test]
-    fn the_capture_node_name_key_is_parsed() {
+    fn the_capture_node_name_key_is_parsed() -> Result<(), TestError> {
         let toml_str = "[capture]\nnode_name = \"sbc-edge-1\"\n";
-        let config: Config = toml::from_str(toml_str).expect("parses");
+        let config: Config = toml::from_str(toml_str).map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(config.capture.node_name.as_deref(), Some("sbc-edge-1"));
+        Ok(())
     }
 
     /// An unknown key under [capture] is still rejected — adding node_name to
     /// the registry must not have opened the section up.
     #[test]
-    fn an_unknown_capture_key_is_still_refused() {
+    fn an_unknown_capture_key_is_still_refused() -> Result<(), TestError> {
         let toml_str = "[capture]\nnode_nam = \"typo\"\n";
         let parsed: Result<Config, _> = toml::from_str(toml_str);
         // Whether it errors or is caught by the key registry, a typo must not
@@ -3331,41 +3367,44 @@ filter = "/"
                 "a misspelled key must not set the node name"
             );
         }
+        Ok(())
     }
 
     /// With `[sip]` now a known section, a typo inside it must still be flagged
     /// (the fix must not turn the section into a wildcard).
     #[test]
-    fn sip_section_typo_is_flagged() {
-        let value: toml::Value = toml::from_str("[sip]\nbogus = 1\n").unwrap();
+    fn sip_section_typo_is_flagged() -> Result<(), TestError> {
+        let value: toml::Value = toml::from_str("[sip]\nbogus = 1\n")?;
         assert_eq!(collect_unknown_keys(&value), vec!["sip.bogus".to_string()]);
+        Ok(())
     }
 
     /// An unknown key still parses successfully (lenient loading), via
     /// both string and file-based paths.
     #[test]
-    fn unknown_keys_warn_but_succeed() {
+    fn unknown_keys_warn_but_succeed() -> Result<(), TestError> {
         // Unknown key within a section should parse successfully (lenient)
         // and the warn_unknown_keys function should detect it.
         let toml_str = "[capture]\ndevice = \"lo\"\nbogus = true\n";
-        let config = Config::parse_toml_with_env(toml_str, None, &real_env).unwrap();
+        let config = Config::parse_toml_with_env(toml_str, None, &real_env)?;
         assert_eq!(config.capture.device.as_deref(), Some("lo"));
 
         // Also verify via file-based loading
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.toml");
-        let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "[capture]\ndevice = \"lo\"\nbogus = true").unwrap();
+        let mut f = std::fs::File::create(&path)?;
+        writeln!(f, "[capture]\ndevice = \"lo\"\nbogus = true")?;
 
-        let loaded = Config::load(Some(path.to_str().unwrap()), false).unwrap();
+        let loaded = Config::load(Some(path.to_str().ok_or("the path is valid UTF-8")?), false)?;
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
+        Ok(())
     }
 
     /// `parse_color` maps names, gray/gray variants, reset, and hex RGB;
     /// unknown names yield `None`.
     #[cfg(feature = "tui")]
     #[test]
-    fn parse_color_names() {
+    fn parse_color_names() -> Result<(), TestError> {
         use ratatui::style::Color;
         assert_eq!(parse_color("red"), Some(Color::Red));
         assert_eq!(parse_color("cyan"), Some(Color::Cyan));
@@ -3374,6 +3413,7 @@ filter = "/"
         assert_eq!(parse_color("reset"), Some(Color::Reset));
         assert_eq!(parse_color("#ff8800"), Some(Color::Rgb(255, 136, 0)));
         assert_eq!(parse_color("bogus"), None);
+        Ok(())
     }
 
     /// A 7-BYTE `#`-string can be non-ASCII, and `hex.len() == 7` counts BYTES:
@@ -3385,7 +3425,7 @@ filter = "/"
     /// `&hex[3..5]` slice instead; the third confirms real hex still parses.
     #[cfg(feature = "tui")]
     #[test]
-    fn parse_color_multibyte_seven_bytes_rejects_without_panicking() {
+    fn parse_color_multibyte_seven_bytes_rejects_without_panicking() -> Result<(), TestError> {
         use ratatui::style::Color;
         assert_eq!(
             parse_color("#€uvw"),
@@ -3402,13 +3442,14 @@ filter = "/"
             Some(Color::Rgb(255, 136, 0)),
             "real ASCII hex is unaffected"
         );
+        Ok(())
     }
 
     /// `parse_keycode` maps chars, function keys, and special names;
     /// unknown names yield `None`.
     #[cfg(feature = "tui")]
     #[test]
-    fn parse_keycode_values() {
+    fn parse_keycode_values() -> Result<(), TestError> {
         use crossterm::event::KeyCode;
         assert_eq!(parse_keycode("q"), Some(KeyCode::Char('q')));
         assert_eq!(parse_keycode("/"), Some(KeyCode::Char('/')));
@@ -3417,52 +3458,61 @@ filter = "/"
         assert_eq!(parse_keycode("Esc"), Some(KeyCode::Esc));
         assert_eq!(parse_keycode("Space"), Some(KeyCode::Char(' ')));
         assert_eq!(parse_keycode("bogus_key"), None);
+        Ok(())
     }
 
     /// `[display] visible_columns` deserializes as an ordered list.
     #[test]
-    fn parse_visible_columns() {
+    fn parse_visible_columns() -> Result<(), TestError> {
         let toml_str = r##"
 [display]
 visible_columns = ["#", "Method", "From", "To", "State"]
 "##;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let cols = config.display.visible_columns.as_ref().unwrap();
+        let config: Config = toml::from_str(toml_str)?;
+        let cols = config
+            .display
+            .visible_columns
+            .as_ref()
+            .ok_or("visible columns are configured")?;
         assert_eq!(cols.len(), 5);
         assert_eq!(cols[0], "#");
         assert_eq!(cols[1], "Method");
         assert_eq!(cols[4], "State");
+        Ok(())
     }
 
     /// An absent `visible_columns` stays `None` (all columns visible).
     #[test]
-    fn visible_columns_absent_is_none() {
+    fn visible_columns_absent_is_none() -> Result<(), TestError> {
         let toml_str = "[display]\ncolor = \"auto\"\n";
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert!(config.display.visible_columns.is_none());
+        Ok(())
     }
 
     /// `[sip] xcid_headers` deserializes as an ordered list.
     #[test]
-    fn sip_xcid_headers_parse() {
+    fn sip_xcid_headers_parse() -> Result<(), TestError> {
         let toml_str = "[sip]\nxcid_headers = [\"X-Call-ID\", \"X-CID\"]\n";
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(
             config.sip.xcid_headers.as_deref(),
             Some(["X-Call-ID".to_string(), "X-CID".to_string()].as_slice())
         );
+        Ok(())
     }
 
     /// An absent `[sip] xcid_headers` stays `None` (built-in default).
     #[test]
-    fn sip_xcid_headers_absent_is_none() {
-        let config: Config = toml::from_str("[capture]\nsnaplen = 1500\n").unwrap();
+    fn sip_xcid_headers_absent_is_none() -> Result<(), TestError> {
+        let config: Config = toml::from_str("[capture]\nsnaplen = 1500\n")?;
         assert!(config.sip.xcid_headers.is_none());
+        Ok(())
     }
 
     /// The semantic theme slots (header/selected/accent/...) deserialize.
     #[test]
-    fn parse_theme_with_new_fields() {
+    fn parse_theme_with_new_fields() -> Result<(), TestError> {
         let toml_str = r##"
 [theme]
 header = "green"
@@ -3474,15 +3524,16 @@ bad = "red"
 muted = "dark_gray"
 border = "white"
 "##;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.theme.header.as_deref(), Some("green"));
         assert_eq!(config.theme.selected.as_deref(), Some("#ffaa00"));
         assert_eq!(config.theme.muted.as_deref(), Some("dark_gray"));
+        Ok(())
     }
 
     /// The full keybinding override set deserializes.
     #[test]
-    fn parse_keybindings_with_new_fields() {
+    fn parse_keybindings_with_new_fields() -> Result<(), TestError> {
         let toml_str = r#"
 [keybindings]
 quit = "x"
@@ -3495,19 +3546,21 @@ extended_flow = "F4"
 clear_calls = "F5"
 column_selector = "F10"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.keybindings.quit.as_deref(), Some("x"));
         assert_eq!(config.keybindings.save.as_deref(), Some("F2"));
         assert_eq!(config.keybindings.settings.as_deref(), Some("F8"));
+        Ok(())
     }
 
     // ── LimitsConfig validation tests ──────────────────────────────────
 
     /// All-unset limits (defaults) pass validation.
     #[test]
-    fn limits_default_validates() {
+    fn limits_default_validates() -> Result<(), TestError> {
         let limits = LimitsConfig::default();
         assert!(limits.validate().is_ok());
+        Ok(())
     }
 
     /// A fully populated set of sane limit values passes validation.
@@ -3518,44 +3571,48 @@ column_selector = "F10"
     /// tree's own note says a spurious warning on valid config "trains users
     /// to ignore the warning entirely".
     #[test]
-    fn mcp_max_rows_parses_is_registered_and_rejects_zero() {
-        let cfg: Config = toml::from_str("[limits]\nmcp_max_rows = 250\n").expect("valid");
+    fn mcp_max_rows_parses_is_registered_and_rejects_zero() -> Result<(), TestError> {
+        let cfg: Config = toml::from_str("[limits]\nmcp_max_rows = 250\n")
+            .map_err(|e| format!("valid: {e:?}"))?;
         assert_eq!(cfg.limits.mcp_max_rows, Some(250));
         assert!(
             Config::unknown_keys("[limits]\nmcp_max_rows = 250\n")
-                .expect("scan")
+                .map_err(|e| format!("scan: {e:?}"))?
                 .is_empty(),
             "mcp_max_rows must be registered, or every user of it is warned at"
         );
-        let zero: Config = toml::from_str("[limits]\nmcp_max_rows = 0\n").expect("parses");
-        let err = zero.limits.validate().expect_err("0 must be rejected");
+        let zero: Config =
+            toml::from_str("[limits]\nmcp_max_rows = 0\n").map_err(|e| format!("parses: {e:?}"))?;
+        let err = zero.limits.validate().err().ok_or("0 must be rejected")?;
         assert!(
             err.to_string().contains("mcp_max_rows"),
             "error must name the key"
         );
+        Ok(())
     }
 
     /// `[api] allowed_hosts` parses as a list and is a known key, so a file
     /// setting it is not warned at.
     #[test]
-    fn the_api_section_parses_and_its_key_is_known() {
+    fn the_api_section_parses_and_its_key_is_known() -> Result<(), TestError> {
         let text = "[api]\nallowed_hosts = [\"proxy.example\", \"*\"]\n";
         assert_eq!(
-            Config::unknown_keys(text).expect("parses"),
+            Config::unknown_keys(text).map_err(|e| format!("parses: {e:?}"))?,
             Vec::<String>::new()
         );
-        let c: Config = toml::from_str(text).expect("deserializes");
+        let c: Config = toml::from_str(text).map_err(|e| format!("deserializes: {e:?}"))?;
         assert_eq!(
             c.api.allowed_hosts,
             Some(vec!["proxy.example".to_string(), "*".to_string()])
         );
+        Ok(())
     }
 
     /// Every listener's TLS keys parse and are known: `[api]`, `[mcp]` and
     /// `[metrics]` take a certificate and key, `[hep]` the sender's trust
     /// (`tls_ca` or `tls_extra_ca`) and the listener's pair.
     #[test]
-    fn the_listener_tls_keys_parse_and_are_known() {
+    fn the_listener_tls_keys_parse_and_are_known() -> Result<(), TestError> {
         let text = "[api]\ntls_cert = \"/etc/sipnab/api.pem\"\ntls_key = \"/etc/sipnab/api.key\"\n\
                     [mcp]\ntls_cert = \"/etc/sipnab/mcp.pem\"\ntls_key = \"/etc/sipnab/mcp.key\"\n\
                     [metrics]\ntls_cert = \"/etc/sipnab/metrics.pem\"\n\
@@ -3564,10 +3621,10 @@ column_selector = "F10"
                     tls_extra_ca = \"/etc/sipnab/extra-ca.pem\"\n\
                     tls_cert = \"/etc/sipnab/hep.pem\"\ntls_key = \"/etc/sipnab/hep.key\"\n";
         assert_eq!(
-            Config::unknown_keys(text).expect("parses"),
+            Config::unknown_keys(text).map_err(|e| format!("parses: {e:?}"))?,
             Vec::<String>::new()
         );
-        let c: Config = toml::from_str(text).expect("deserializes");
+        let c: Config = toml::from_str(text).map_err(|e| format!("deserializes: {e:?}"))?;
         assert_eq!(c.api.tls_cert.as_deref(), Some("/etc/sipnab/api.pem"));
         assert_eq!(c.api.tls_key.as_deref(), Some("/etc/sipnab/api.key"));
         assert_eq!(c.mcp.tls_cert.as_deref(), Some("/etc/sipnab/mcp.pem"));
@@ -3596,30 +3653,32 @@ column_selector = "F10"
             c.hep.tls_key.as_deref(),
             Some(std::path::Path::new("/etc/sipnab/hep.key"))
         );
+        Ok(())
     }
 
     /// A misspelled TLS key is warned at, not silently dropped: the operator
     /// who wrote `tls_crt` must not believe the listener serves HTTPS.
     #[test]
-    fn a_misspelled_tls_key_is_reported() {
+    fn a_misspelled_tls_key_is_reported() -> Result<(), TestError> {
         let text = "[metrics]\ntls_crt = \"/etc/sipnab/metrics.pem\"\n[hep]\nca = \"x\"\n";
-        let unknown = Config::unknown_keys(text).expect("parses");
+        let unknown = Config::unknown_keys(text).map_err(|e| format!("parses: {e:?}"))?;
         assert!(
             unknown.iter().any(|k| k.contains("tls_crt"))
                 && unknown.iter().any(|k| k.contains("ca")),
             "both typos are reported: {unknown:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_mcp_section_parses_and_its_keys_are_known() {
+    fn the_mcp_section_parses_and_its_keys_are_known() -> Result<(), TestError> {
         let text = "[mcp]\ntools = [\"core\", \"voice\"]\noutput_schemas = true\n\n\
                     [mcp.bundles]\nvoice = [\"media\", \"rtp_stats\"]\n";
         assert_eq!(
-            Config::unknown_keys(text).expect("parses"),
+            Config::unknown_keys(text).map_err(|e| format!("parses: {e:?}"))?,
             Vec::<String>::new()
         );
-        let c: Config = toml::from_str(text).expect("deserializes");
+        let c: Config = toml::from_str(text).map_err(|e| format!("deserializes: {e:?}"))?;
         assert_eq!(
             c.mcp.tools,
             Some(vec!["core".to_string(), "voice".to_string()])
@@ -3630,28 +3689,32 @@ column_selector = "F10"
             Some(&vec!["media".to_string(), "rtp_stats".to_string()])
         );
         assert_eq!(
-            Config::unknown_keys("[mcp]\ntool = [\"core\"]\n").expect("parses"),
+            Config::unknown_keys("[mcp]\ntool = [\"core\"]\n")
+                .map_err(|e| format!("parses: {e:?}"))?,
             vec!["mcp.tool".to_string()],
             "a misspelled key is reported"
         );
+        Ok(())
     }
 
     #[test]
-    fn max_capture_sources_is_a_known_key_and_zero_is_refused() {
+    fn max_capture_sources_is_a_known_key_and_zero_is_refused() -> Result<(), TestError> {
         assert!(
             Config::unknown_keys("[limits]\nmax_capture_sources = 5000\n")
-                .expect("scan")
+                .map_err(|e| format!("scan: {e:?}"))?
                 .is_empty(),
             "max_capture_sources must be registered, or every user of it is warned"
         );
-        let ok: Config = toml::from_str("[limits]\nmax_capture_sources = 1\n").expect("parses");
+        let ok: Config = toml::from_str("[limits]\nmax_capture_sources = 1\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
         assert!(
             ok.limits.validate().is_ok(),
             "1 is the smallest valid value"
         );
         assert_eq!(ok.limits.max_capture_sources, Some(1));
-        let zero: Config = toml::from_str("[limits]\nmax_capture_sources = 0\n").expect("parses");
-        let err = zero.limits.validate().expect_err("0 must be rejected");
+        let zero: Config = toml::from_str("[limits]\nmax_capture_sources = 0\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
+        let err = zero.limits.validate().err().ok_or("0 must be rejected")?;
         assert!(
             err.to_string().contains("max_capture_sources"),
             "error must name the key: {err}"
@@ -3664,10 +3727,11 @@ column_selector = "F10"
             toml::from_str::<Config>("[limits]\nmax_capture_sources = \"many\"\n").is_err(),
             "a string is refused when the file is read"
         );
+        Ok(())
     }
 
     #[test]
-    fn limits_valid_values() {
+    fn limits_valid_values() -> Result<(), TestError> {
         let limits = LimitsConfig {
             dialog_limit: Some(50000),
             max_streams: Some(10000),
@@ -3700,6 +3764,7 @@ column_selector = "F10"
             max_capture_sources: None,
         };
         assert!(limits.validate().is_ok());
+        Ok(())
     }
 
     /// Every truncation/refusal cap added for #94 parses, is registered, and
@@ -3709,7 +3774,7 @@ column_selector = "F10"
     /// parses and still works, and warns "Unknown config key" on every start —
     /// which is how an operator learns to ignore the warning that matters.
     #[test]
-    fn truncation_caps_parse_are_registered_and_reject_zero() {
+    fn truncation_caps_parse_are_registered_and_reject_zero() -> Result<(), TestError> {
         for key in [
             "mcp_max_body_bytes",
             "mcp_max_wait_seconds",
@@ -3720,21 +3785,24 @@ column_selector = "F10"
             "max_gunzip_bytes",
         ] {
             let set = format!("[limits]\n{key} = 64\n");
-            let cfg: Config = toml::from_str(&set).expect("valid");
+            let cfg: Config = toml::from_str(&set).map_err(|e| format!("valid: {e:?}"))?;
             assert!(
-                Config::unknown_keys(&set).expect("scan").is_empty(),
+                Config::unknown_keys(&set)
+                    .map_err(|e| format!("scan: {e:?}"))?
+                    .is_empty(),
                 "{key} must be registered in KNOWN_KEYS, or a file that sets it \
                  warns on every start"
             );
             assert!(cfg.limits.validate().is_ok(), "{key} = 64 must validate");
             let zeroed = format!("[limits]\n{key} = 0\n");
-            let zero: Config = toml::from_str(&zeroed).expect("parses");
-            let err = zero.limits.validate().expect_err("0 must be rejected");
+            let zero: Config = toml::from_str(&zeroed).map_err(|e| format!("parses: {e:?}"))?;
+            let err = zero.limits.validate().err().ok_or("0 must be rejected")?;
             assert!(
                 err.to_string().contains(key),
                 "the refusal must name {key}, got: {err}"
             );
         }
+        Ok(())
     }
 
     /// `[security] fraud_destination` parses, is registered, and reaches the
@@ -3747,18 +3815,21 @@ column_selector = "F10"
     /// with a field nothing reads and parsing alone would pass with the warning
     /// still firing.
     #[test]
-    fn fraud_destination_parses_is_registered_and_reaches_the_field() {
+    fn fraud_destination_parses_is_registered_and_reaches_the_field() -> Result<(), TestError> {
         let set = "[security]\nfraud_destination = \"CU,KP\"\n";
-        let cfg: Config = toml::from_str(set).expect("valid");
+        let cfg: Config = toml::from_str(set).map_err(|e| format!("valid: {e:?}"))?;
         assert_eq!(
             cfg.security.fraud_destination.as_deref(),
             Some("CU,KP"),
             "the value must reach the field a consumer reads"
         );
         assert!(
-            Config::unknown_keys(set).expect("scan").is_empty(),
+            Config::unknown_keys(set)
+                .map_err(|e| format!("scan: {e:?}"))?
+                .is_empty(),
             "an unregistered key warns on every start"
         );
+        Ok(())
     }
 
     /// `[theme] status_bg` parses, is registered, and reaches the field.
@@ -3767,14 +3838,17 @@ column_selector = "F10"
     /// different consumer — `tui::theme::apply_color` rather than the CLI — so
     /// it is not the same test twice.
     #[test]
-    fn theme_status_bg_parses_is_registered_and_reaches_the_field() {
+    fn theme_status_bg_parses_is_registered_and_reaches_the_field() -> Result<(), TestError> {
         let set = "[theme]\nstatus_bg = \"blue\"\n";
-        let cfg: Config = toml::from_str(set).expect("valid");
+        let cfg: Config = toml::from_str(set).map_err(|e| format!("valid: {e:?}"))?;
         assert_eq!(cfg.theme.status_bg.as_deref(), Some("blue"));
         assert!(
-            Config::unknown_keys(set).expect("scan").is_empty(),
+            Config::unknown_keys(set)
+                .map_err(|e| format!("scan: {e:?}"))?
+                .is_empty(),
             "an unregistered key warns on every start"
         );
+        Ok(())
     }
 
     /// Every section named in `KNOWN_KEYS` is a real section of `Config`.
@@ -3791,9 +3865,10 @@ column_selector = "F10"
     /// test's first run reported `""` as a phantom, which was this test being
     /// wrong rather than the table.
     #[test]
-    fn every_registered_section_exists_on_the_config() {
-        let all = serde_json::to_value(Config::default()).expect("Config serializes");
-        let sections = all.as_object().expect("a table of sections");
+    fn every_registered_section_exists_on_the_config() -> Result<(), TestError> {
+        let all = serde_json::to_value(Config::default())
+            .map_err(|e| format!("Config serializes: {e:?}"))?;
+        let sections = all.as_object().ok_or("a table of sections")?;
         let phantom: Vec<&str> = KNOWN_KEYS
             .keys()
             .filter(|name| !name.is_empty())
@@ -3805,6 +3880,7 @@ column_selector = "F10"
             "KNOWN_KEYS names sections Config does not have, so a file setting \
              them parses to nothing with no warning: {phantom:?}"
         );
+        Ok(())
     }
 
     /// The root entry lists exactly the sections `Config` carries.
@@ -3816,11 +3892,12 @@ column_selector = "F10"
     /// entirely correct, and a name in the list with no section behind it
     /// accepts a whole block of settings and drops every one without a word.
     #[test]
-    fn the_root_section_list_matches_the_config() {
-        let all = serde_json::to_value(Config::default()).expect("Config serializes");
+    fn the_root_section_list_matches_the_config() -> Result<(), TestError> {
+        let all = serde_json::to_value(Config::default())
+            .map_err(|e| format!("Config serializes: {e:?}"))?;
         let mut actual: Vec<&str> = all
             .as_object()
-            .expect("a table of sections")
+            .ok_or("a table of sections")?
             .keys()
             .map(String::as_str)
             .collect();
@@ -3828,7 +3905,7 @@ column_selector = "F10"
 
         let listed = KNOWN_KEYS
             .get("")
-            .expect("the root entry names the legal section headers");
+            .ok_or("the root entry names the legal section headers")?;
         let mut listed: Vec<&str> = listed.to_vec();
         listed.sort_unstable();
 
@@ -3836,11 +3913,12 @@ column_selector = "F10"
             listed, actual,
             "the root section list and Config's sections must agree"
         );
+        Ok(())
     }
 
     /// The `[actions]` keys are exactly the action targets sipnab knows.
     #[test]
-    fn the_actions_keys_are_the_action_targets() {
+    fn the_actions_keys_are_the_action_targets() -> Result<(), TestError> {
         let mut registered: Vec<&str> = KNOWN_KEYS["actions"].to_vec();
         registered.sort_unstable();
         let mut targets: Vec<&str> = crate::security::actions::ActionTarget::ALL
@@ -3849,6 +3927,7 @@ column_selector = "F10"
             .collect();
         targets.sort_unstable();
         assert_eq!(registered, targets);
+        Ok(())
     }
 
     /// Every field of every config section is registered in `KNOWN_KEYS`.
@@ -3865,19 +3944,20 @@ column_selector = "F10"
     /// `skip_serializing_if`, so serializing the default value yields every
     /// field, `Option::None` included.
     #[test]
-    fn every_config_field_is_registered() {
-        let all = serde_json::to_value(Config::default()).expect("Config serializes");
-        let sections = all.as_object().expect("Config is a table of sections");
+    fn every_config_field_is_registered() -> Result<(), TestError> {
+        let all = serde_json::to_value(Config::default())
+            .map_err(|e| format!("Config serializes: {e:?}"))?;
+        let sections = all.as_object().ok_or("Config is a table of sections")?;
 
         let mut unregistered: Vec<String> = Vec::new();
         let mut phantom: Vec<String> = Vec::new();
         for (section, body) in sections {
             let fields = body
                 .as_object()
-                .unwrap_or_else(|| panic!("[{section}] must be a table"));
+                .ok_or_else(|| format!("[{section}] must be a table"))?;
             let registered = KNOWN_KEYS
                 .get(section.as_str())
-                .unwrap_or_else(|| panic!("[{section}] is a section with no KNOWN_KEYS entry"));
+                .ok_or_else(|| format!("[{section}] is a section with no KNOWN_KEYS entry"))?;
             for key in fields.keys() {
                 if !registered.contains(&key.as_str()) {
                     unregistered.push(format!("{section}.{key}"));
@@ -3898,6 +3978,7 @@ column_selector = "F10"
              fields with no registration (warn on every start): {unregistered:?}\n  \
              registrations with no field (silently ignored):    {phantom:?}"
         );
+        Ok(())
     }
 
     /// Every `[security] scanner_*` trigger point parses, is REGISTERED, and
@@ -3910,7 +3991,7 @@ column_selector = "F10"
     /// in `tests/threshold_wiring_test.rs` pass either way, so they cannot
     /// stand in for this: that is #81's defect class exactly.
     #[test]
-    fn scanner_thresholds_parse_are_registered_and_reject_zero() {
+    fn scanner_thresholds_parse_are_registered_and_reject_zero() -> Result<(), TestError> {
         for key in [
             "scanner_behavioral_probes",
             "scanner_enumeration_targets",
@@ -3921,21 +4002,24 @@ column_selector = "F10"
             "scanner_answer_grace_ms",
         ] {
             let set = format!("[security]\n{key} = 60\n");
-            let cfg: Config = toml::from_str(&set).expect("valid");
+            let cfg: Config = toml::from_str(&set).map_err(|e| format!("valid: {e:?}"))?;
             assert!(
-                Config::unknown_keys(&set).expect("scan").is_empty(),
+                Config::unknown_keys(&set)
+                    .map_err(|e| format!("scan: {e:?}"))?
+                    .is_empty(),
                 "{key} must be registered in KNOWN_KEYS, or a file that sets it \
                  warns on every start"
             );
             assert!(cfg.security.validate().is_ok(), "{key} = 60 must validate");
             let zeroed = format!("[security]\n{key} = 0\n");
-            let zero: Config = toml::from_str(&zeroed).expect("parses");
-            let err = zero.security.validate().expect_err("0 must be rejected");
+            let zero: Config = toml::from_str(&zeroed).map_err(|e| format!("parses: {e:?}"))?;
+            let err = zero.security.validate().err().ok_or("0 must be rejected")?;
             assert!(
                 err.to_string().contains(key),
                 "the refusal must name {key}, got: {err}"
             );
         }
+        Ok(())
     }
 
     /// The two `[security] reg_flood_*` policy keys parse, are REGISTERED, and
@@ -3945,7 +4029,8 @@ column_selector = "F10"
     /// flags use, so the file and the flag cannot disagree about what is
     /// absurd.
     #[test]
-    fn reg_flood_policy_keys_parse_are_registered_and_refuse_absurd_values() {
+    fn reg_flood_policy_keys_parse_are_registered_and_refuse_absurd_values() -> Result<(), TestError>
+    {
         use crate::security::reg_flood::{
             MAX_TRANSACTION_TIMEOUT_MS, MAX_WINDOW_SECS, MIN_TRANSACTION_TIMEOUT_MS,
         };
@@ -3963,9 +4048,11 @@ column_selector = "F10"
         ];
         for (key, good, bad) in cases {
             let set = format!("[security]\n{key} = {good}\n");
-            let cfg: Config = toml::from_str(&set).expect("valid");
+            let cfg: Config = toml::from_str(&set).map_err(|e| format!("valid: {e:?}"))?;
             assert!(
-                Config::unknown_keys(&set).expect("scan").is_empty(),
+                Config::unknown_keys(&set)
+                    .map_err(|e| format!("scan: {e:?}"))?
+                    .is_empty(),
                 "{key} must be registered in KNOWN_KEYS, or a file that sets it \
                  warns on every start"
             );
@@ -3975,11 +4062,12 @@ column_selector = "F10"
             );
             for &v in bad {
                 let text = format!("[security]\n{key} = {v}\n");
-                let cfg: Config = toml::from_str(&text).expect("parses");
+                let cfg: Config = toml::from_str(&text).map_err(|e| format!("parses: {e:?}"))?;
                 let err = cfg
                     .security
                     .validate()
-                    .expect_err("an absurd value must be refused");
+                    .err()
+                    .ok_or("an absurd value must be refused")?;
                 let msg = err.to_string();
                 assert!(
                     msg.contains(key) && msg.contains(&v.to_string()),
@@ -3987,6 +4075,7 @@ column_selector = "F10"
                 );
             }
         }
+        Ok(())
     }
 
     /// Both `[security]` fraud WINDOWS parse, are REGISTERED, and refuse 0 by
@@ -3997,24 +4086,27 @@ column_selector = "F10"
     /// deserializes, and still reaches the detector, warning only "Unknown
     /// config key" on every start.
     #[test]
-    fn fraud_windows_parse_are_registered_and_reject_zero() {
+    fn fraud_windows_parse_are_registered_and_reject_zero() -> Result<(), TestError> {
         for key in ["fraud_volume_window_secs", "fraud_wangiri_window_secs"] {
             let set = format!("[security]\n{key} = 900\n");
-            let cfg: Config = toml::from_str(&set).expect("valid");
+            let cfg: Config = toml::from_str(&set).map_err(|e| format!("valid: {e:?}"))?;
             assert!(
-                Config::unknown_keys(&set).expect("scan").is_empty(),
+                Config::unknown_keys(&set)
+                    .map_err(|e| format!("scan: {e:?}"))?
+                    .is_empty(),
                 "{key} must be registered in KNOWN_KEYS, or a file that sets it \
                  warns on every start"
             );
             assert!(cfg.security.validate().is_ok(), "{key} = 900 must validate");
             let zeroed = format!("[security]\n{key} = 0\n");
-            let zero: Config = toml::from_str(&zeroed).expect("parses");
-            let err = zero.security.validate().expect_err("0 must be rejected");
+            let zero: Config = toml::from_str(&zeroed).map_err(|e| format!("parses: {e:?}"))?;
+            let err = zero.security.validate().err().ok_or("0 must be rejected")?;
             assert!(
                 err.to_string().contains(key),
                 "the refusal must name {key}, got: {err}"
             );
         }
+        Ok(())
     }
 
     /// `[sip] leg_correlation_window_ms` parses, is REGISTERED, and refuses 0
@@ -4024,134 +4116,171 @@ column_selector = "F10"
     /// refuse it too or it becomes the lenient way in — the rule
     /// `kill_rate_limit` already follows.
     #[test]
-    fn leg_correlation_window_parses_is_registered_and_rejects_zero() {
+    fn leg_correlation_window_parses_is_registered_and_rejects_zero() -> Result<(), TestError> {
         let set = "[sip]\nleg_correlation_window_ms = 8000\n";
-        let cfg: Config = toml::from_str(set).expect("valid");
+        let cfg: Config = toml::from_str(set).map_err(|e| format!("valid: {e:?}"))?;
         assert_eq!(cfg.sip.leg_correlation_window_ms, Some(8000));
         assert!(
-            Config::unknown_keys(set).expect("scan").is_empty(),
+            Config::unknown_keys(set)
+                .map_err(|e| format!("scan: {e:?}"))?
+                .is_empty(),
             "leg_correlation_window_ms must be registered in KNOWN_KEYS, or a \
              file that sets it warns on every start"
         );
         assert!(cfg.sip.validate().is_ok(), "8000 must validate");
 
-        let zero: Config =
-            toml::from_str("[sip]\nleg_correlation_window_ms = 0\n").expect("parses");
-        let err = zero.sip.validate().expect_err("0 must be rejected");
+        let zero: Config = toml::from_str("[sip]\nleg_correlation_window_ms = 0\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
+        let err = zero.sip.validate().err().ok_or("0 must be rejected")?;
         assert!(
             err.to_string().contains("leg_correlation_window_ms"),
             "the refusal must name the key, got: {err}"
         );
+        Ok(())
     }
 
     /// `dialog_limit = 0` is rejected, naming the key.
     #[test]
-    fn limits_zero_dialog_limit_rejected() {
+    fn limits_zero_dialog_limit_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             dialog_limit: Some(0),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("dialog_limit"));
+        Ok(())
     }
 
     /// `[names] dns_cache_entries = 0` is rejected, naming the key: the flag
     /// `--dns-cache-entries` already refuses 0, so the file must too. `[names]`
     /// had no validator wired into startup at all.
     #[test]
-    fn names_zero_dns_cache_entries_rejected() {
+    fn names_zero_dns_cache_entries_rejected() -> Result<(), TestError> {
         let names = NamesConfig {
             dns_cache_entries: Some(0),
             ..Default::default()
         };
-        let err = names.validate().unwrap_err();
+        let err = names
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("dns_cache_entries"));
+        Ok(())
     }
 
     /// A positive `dns_cache_entries` validates.
     #[test]
-    fn names_positive_dns_cache_entries_ok() {
+    fn names_positive_dns_cache_entries_ok() -> Result<(), TestError> {
         let names = NamesConfig {
             dns_cache_entries: Some(4096),
             ..Default::default()
         };
         assert!(names.validate().is_ok());
+        Ok(())
     }
 
     /// `max_streams = 0` is rejected, naming the key.
     #[test]
-    fn limits_zero_max_streams_rejected() {
+    fn limits_zero_max_streams_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_streams: Some(0),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_streams"));
+        Ok(())
     }
 
     /// `max_reassembly = 0` is rejected, naming the key.
     #[test]
-    fn limits_zero_max_reassembly_rejected() {
+    fn limits_zero_max_reassembly_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_reassembly: Some(0),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_reassembly"));
+        Ok(())
     }
 
     /// `max_header_line` below the 256-byte floor is rejected.
     #[test]
-    fn limits_small_max_header_line_rejected() {
+    fn limits_small_max_header_line_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_header_line: Some(255),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_header_line"));
+        Ok(())
     }
 
     /// `max_header_line = 256` (the boundary) is accepted.
     #[test]
-    fn limits_min_max_header_line_accepted() {
+    fn limits_min_max_header_line_accepted() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_header_line: Some(256),
             ..Default::default()
         };
         assert!(limits.validate().is_ok());
+        Ok(())
     }
 
     /// `max_headers_per_message = 0` is rejected, naming the key.
     #[test]
-    fn limits_zero_max_headers_per_message_rejected() {
+    fn limits_zero_max_headers_per_message_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_headers_per_message: Some(0),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_headers_per_message"));
+        Ok(())
     }
 
     /// `max_messages_per_dialog = 0` is rejected, naming the key.
     #[test]
-    fn limits_zero_max_messages_per_dialog_rejected() {
+    fn limits_zero_max_messages_per_dialog_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_messages_per_dialog: Some(0),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_messages_per_dialog"));
+        Ok(())
     }
 
     /// `max_audio_frames = 0` is rejected, naming the key.
     #[test]
-    fn limits_zero_max_audio_frames_rejected() {
+    fn limits_zero_max_audio_frames_rejected() -> Result<(), TestError> {
         let limits = LimitsConfig {
             max_audio_frames: Some(0),
             ..Default::default()
         };
-        let err = limits.validate().unwrap_err();
+        let err = limits
+            .validate()
+            .err()
+            .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_audio_frames"));
+        Ok(())
     }
 
     /// The shipped starter config lists the paths sipnab actually searches.
@@ -4166,7 +4295,7 @@ column_selector = "F10"
     /// directions and in order, so neither a stale entry nor a missing one
     /// survives.
     #[test]
-    fn the_starter_config_lists_the_paths_that_are_searched() {
+    fn the_starter_config_lists_the_paths_that_are_searched() -> Result<(), TestError> {
         let example = include_str!("../contrib/sipnabrc.example");
         let listed: Vec<String> = example
             .lines()
@@ -4182,7 +4311,7 @@ column_selector = "F10"
         );
 
         // `~` in the comment against the real home in the path list.
-        let home = home_dir().expect("a home directory to compare against");
+        let home = home_dir().ok_or("a home directory to compare against")?;
         let real: Vec<String> = default_config_paths()
             .iter()
             .map(|p| {
@@ -4200,6 +4329,7 @@ column_selector = "F10"
              the comment says, and a lenient loader never tells them it was \
              not read."
         );
+        Ok(())
     }
 
     /// The working directory is not searched, and the example does not claim it.
@@ -4209,7 +4339,7 @@ column_selector = "F10"
     /// and the comment gained `./sipnab.toml` — this says the behavior itself
     /// is what it is.
     #[test]
-    fn there_is_no_working_directory_config_search() {
+    fn there_is_no_working_directory_config_search() -> Result<(), TestError> {
         assert!(
             !default_config_paths()
                 .iter()
@@ -4218,6 +4348,7 @@ column_selector = "F10"
             "a working-directory search would make a config's effect depend on \
              where the operator happened to be standing"
         );
+        Ok(())
     }
 
     /// A path in a config file can be written relative to whoever is running.
@@ -4226,13 +4357,13 @@ column_selector = "F10"
     /// invoking user's directory, not root's, and only `${SUDO_USER}` can say
     /// which one that is at the moment the file is read.
     #[test]
-    fn a_config_value_expands_a_set_variable() {
+    fn a_config_value_expands_a_set_variable() -> Result<(), TestError> {
         let env = |name: &str| match name {
             "SUDO_USER" => Some("norm".to_string()),
             _ => None,
         };
         assert_eq!(
-            expand_env_vars("/home/${SUDO_USER}/captures", &env).unwrap(),
+            expand_env_vars("/home/${SUDO_USER}/captures", &env)?,
             "/home/norm/captures"
         );
         // More than one, and adjacent to each other, with no separator to
@@ -4242,7 +4373,8 @@ column_selector = "F10"
             "B" => Some("y".to_string()),
             _ => None,
         };
-        assert_eq!(expand_env_vars("${A}${B}", &env2).unwrap(), "xy");
+        assert_eq!(expand_env_vars("${A}${B}", &env2)?, "xy");
+        Ok(())
     }
 
     /// An unset variable REFUSES rather than expanding to nothing.
@@ -4253,25 +4385,28 @@ column_selector = "F10"
     /// refusal names the variable and stops; an empty expansion writes the
     /// operator's capture somewhere they will not look for it.
     #[test]
-    fn an_unset_variable_is_refused_not_emptied() {
+    fn an_unset_variable_is_refused_not_emptied() -> Result<(), TestError> {
         let env = |_: &str| None;
         let err = expand_env_vars("/home/${SUDO_USER}/x", &env)
-            .expect_err("an unset variable must not expand");
+            .err()
+            .ok_or("an unset variable must not expand")?;
         assert!(
             err.contains("SUDO_USER"),
             "the refusal must name the variable, got {err:?}"
         );
+        Ok(())
     }
 
     /// `$$` is the escape, and it collapses everywhere rather than only in
     /// front of a brace. A rule with an exception is a rule nobody can apply
     /// from memory.
     #[test]
-    fn a_literal_dollar_is_written_twice() {
+    fn a_literal_dollar_is_written_twice() -> Result<(), TestError> {
         let env = |_: &str| Some("EXPANDED".to_string());
-        assert_eq!(expand_env_vars("$${HOME}", &env).unwrap(), "${HOME}");
-        assert_eq!(expand_env_vars("cost: $$5", &env).unwrap(), "cost: $5");
-        assert_eq!(expand_env_vars("$$$$", &env).unwrap(), "$$");
+        assert_eq!(expand_env_vars("$${HOME}", &env)?, "${HOME}");
+        assert_eq!(expand_env_vars("cost: $$5", &env)?, "cost: $5");
+        assert_eq!(expand_env_vars("$$$$", &env)?, "$$");
+        Ok(())
     }
 
     /// A lone `$` that opens nothing is data, not syntax. Shell-style bare
@@ -4279,16 +4414,17 @@ column_selector = "F10"
     /// there is no second form to remember and no ambiguity about where a
     /// name ends.
     #[test]
-    fn a_bare_dollar_name_is_left_alone() {
+    fn a_bare_dollar_name_is_left_alone() -> Result<(), TestError> {
         let env = |_: &str| Some("EXPANDED".to_string());
-        assert_eq!(expand_env_vars("$HOME/x", &env).unwrap(), "$HOME/x");
-        assert_eq!(expand_env_vars("100$", &env).unwrap(), "100$");
+        assert_eq!(expand_env_vars("$HOME/x", &env)?, "$HOME/x");
+        assert_eq!(expand_env_vars("100$", &env)?, "100$");
+        Ok(())
     }
 
     /// An unterminated `${` is a typo, and reading it as literal text would
     /// hide the typo in a path that then silently does not exist.
     #[test]
-    fn an_unterminated_expansion_is_refused() {
+    fn an_unterminated_expansion_is_refused() -> Result<(), TestError> {
         let env = |_: &str| Some("EXPANDED".to_string());
         for bad in ["${HOME", "${", "a${B"] {
             assert!(
@@ -4296,6 +4432,7 @@ column_selector = "F10"
                 "{bad:?} is unterminated and must be refused"
             );
         }
+        Ok(())
     }
 
     /// An empty or non-identifier name is refused rather than looked up. A
@@ -4304,7 +4441,7 @@ column_selector = "F10"
     /// deliberately not implementing — accepting it silently would be worse
     /// than saying so.
     #[test]
-    fn a_malformed_variable_name_is_refused() {
+    fn a_malformed_variable_name_is_refused() -> Result<(), TestError> {
         let env = |_: &str| Some("EXPANDED".to_string());
         for bad in ["${}", "${1ABC}", "${A-B}", "${A B}", "${A:-x}"] {
             assert!(
@@ -4312,6 +4449,7 @@ column_selector = "F10"
                 "{bad:?} is not an identifier and must be refused"
             );
         }
+        Ok(())
     }
 
     /// The expansion reaches every string in the document, at any depth, and
@@ -4321,7 +4459,7 @@ column_selector = "F10"
     /// test author thinks of and fail on the nested tables that make up most
     /// of this config.
     #[test]
-    fn expansion_reaches_nested_tables_and_arrays() {
+    fn expansion_reaches_nested_tables_and_arrays() -> Result<(), TestError> {
         let env = |name: &str| match name {
             "U" => Some("norm".to_string()),
             _ => None,
@@ -4340,8 +4478,9 @@ column_selector = "F10"
             deep = "x/${U}"
             "#,
         )
-        .expect("fixture parses");
-        expand_env_in_value(&mut value, &env).expect("all variables are set");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
+        expand_env_in_value(&mut value, &env)
+            .map_err(|e| format!("all variables are set: {e:?}"))?;
 
         assert_eq!(value["top"].as_str(), Some("/home/norm"));
         assert_eq!(value["list"][0].as_str(), Some("norm"));
@@ -4351,6 +4490,7 @@ column_selector = "F10"
         // Non-strings are untouched, and still the type they were.
         assert_eq!(value["port"].as_integer(), Some(5060));
         assert_eq!(value["enabled"].as_bool(), Some(true));
+        Ok(())
     }
 
     /// The refusal says WHICH setting refused, not merely which variable.
@@ -4362,7 +4502,7 @@ column_selector = "F10"
     /// expansion happens on the parsed document and not on fields that
     /// happen to deserialize as strings.
     #[test]
-    fn the_refusal_names_the_setting_it_came_from() {
+    fn the_refusal_names_the_setting_it_came_from() -> Result<(), TestError> {
         let env = |_: &str| None;
         let mut value: toml::Value = toml::from_str(
             r#"
@@ -4370,13 +4510,14 @@ column_selector = "F10"
             report_dir = "/home/${SUDO_USER}/x"
             "#,
         )
-        .expect("fixture parses");
-        let err = expand_env_in_value(&mut value, &env).expect_err("unset");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
+        let err = expand_env_in_value(&mut value, &env).err().ok_or("unset")?;
         assert!(
             err.contains("crash.report_dir"),
             "the refusal must name the key path, got {err:?}"
         );
         assert!(err.contains("SUDO_USER"), "and the variable, got {err:?}");
+        Ok(())
     }
 
     /// The expander is wired into the load path, not merely present.
@@ -4384,28 +4525,30 @@ column_selector = "F10"
     /// A pure function with its own tests proves the rule; only this proves
     /// that a config file on disk goes through it.
     #[test]
-    fn a_loaded_config_expands_a_variable_in_a_string_setting() {
+    fn a_loaded_config_expands_a_variable_in_a_string_setting() -> Result<(), TestError> {
         let env = |name: &str| match name {
             "IFACE" => Some("eth0".to_string()),
             _ => None,
         };
         let cfg = Config::parse_toml_with_env("[capture]\ndevice = \"${IFACE}\"\n", None, &env)
-            .expect("the variable is set");
+            .map_err(|e| format!("the variable is set: {e:?}"))?;
         assert_eq!(cfg.capture.device.as_deref(), Some("eth0"));
+        Ok(())
     }
 
     /// The refusal reaches the operator as a config error naming the file,
     /// the setting and the variable — not as a parse failure about TOML,
     /// which the file is.
     #[test]
-    fn a_loaded_config_refuses_an_unset_variable() {
+    fn a_loaded_config_refuses_an_unset_variable() -> Result<(), TestError> {
         let env = |_: &str| None;
         let err = Config::parse_toml_with_env(
             "[capture]\ndevice = \"${IFACE}\"\n",
             Some(std::path::Path::new("/etc/sipnab/sipnab.toml")),
             &env,
         )
-        .expect_err("an unset variable must not load");
+        .err()
+        .ok_or("an unset variable must not load")?;
         let msg = err.to_string();
         assert!(matches!(err, crate::Error::ConfigInvalid(_)), "got {err:?}");
         for expected in ["/etc/sipnab/sipnab.toml", "capture.device", "IFACE"] {
@@ -4414,6 +4557,7 @@ column_selector = "F10"
                 "the refusal must name {expected:?}, got {msg:?}"
             );
         }
+        Ok(())
     }
 
     /// A value the environment supplies is DATA, and cannot introduce syntax.
@@ -4422,19 +4566,22 @@ column_selector = "F10"
     /// operator's environment could reach a variable the config never named —
     /// and a self-referential pair would not terminate at all.
     #[test]
-    fn an_expansion_is_not_itself_expanded() {
+    fn an_expansion_is_not_itself_expanded() -> Result<(), TestError> {
         let env = |name: &str| match name {
             "A" => Some("${B}".to_string()),
             "B" => Some("should not appear".to_string()),
             _ => None,
         };
-        assert_eq!(expand_env_vars("${A}", &env).unwrap(), "${B}");
+        assert_eq!(expand_env_vars("${A}", &env)?, "${B}");
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod config_preservation_tests {
     use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// **A read failure must never become an empty configuration.**
     ///
@@ -4450,21 +4597,22 @@ mod config_preservation_tests {
     /// filesystem setup, and a real thing to find in a config someone edited
     /// with the wrong encoding.
     #[test]
-    fn a_config_that_cannot_be_read_is_not_replaced_by_an_empty_one() {
+    fn a_config_that_cannot_be_read_is_not_replaced_by_an_empty_one() -> Result<(), TestError> {
         for label in ["display columns", "manual mappings"] {
-            let dir = tempfile::tempdir().expect("temp dir");
+            let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
             let path = dir.path().join("sipnabrc");
             // Valid TOML in the file, but not valid UTF-8.
             let original: Vec<u8> =
                 b"[display]\nvisible_columns = [\"from\"]\n# \xff\xfe\n".to_vec();
-            std::fs::write(&path, &original).expect("write fixture");
+            std::fs::write(&path, &original).map_err(|e| format!("write fixture: {e:?}"))?;
 
             let result = if label == "display columns" {
                 write_display_columns_file(&path, &["from".to_string()])
             } else {
                 write_manual_mappings_file(&path, &[("a".to_string(), "b".to_string())])
             };
-            let after = std::fs::read(&path).expect("still readable as bytes");
+            let after =
+                std::fs::read(&path).map_err(|e| format!("still readable as bytes: {e:?}"))?;
 
             assert!(
                 result.is_err(),
@@ -4475,23 +4623,27 @@ mod config_preservation_tests {
                 "{label}: the original bytes must survive a failed save"
             );
         }
+        Ok(())
     }
 
     /// The ordinary case still works: no file yet means start from empty.
     #[test]
-    fn a_missing_config_is_still_created() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn a_missing_config_is_still_created() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let path = dir.path().join("nested/sipnabrc");
         write_display_columns_file(&path, &["from".to_string(), "to".to_string()])
-            .expect("a missing file is created, not an error");
-        let written = std::fs::read_to_string(&path).expect("created");
+            .map_err(|e| format!("a missing file is created, not an error: {e:?}"))?;
+        let written = std::fs::read_to_string(&path).map_err(|e| format!("created: {e:?}"))?;
         assert!(written.contains("visible_columns"), "wrote: {written}");
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod save_target_tests {
     use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
 
     fn home() -> PathBuf {
         PathBuf::from("/home/u")
@@ -4502,13 +4654,14 @@ mod save_target_tests {
     }
 
     #[test]
-    fn a_run_that_loaded_the_xdg_file_saves_into_it() {
+    fn a_run_that_loaded_the_xdg_file_saves_into_it() -> Result<(), TestError> {
         let f = home().join(".config/sipnab/sipnab.toml");
         assert_eq!(save_target(Some(&f), Some(&user())), Ok(f));
+        Ok(())
     }
 
     #[test]
-    fn a_run_that_loaded_sipnabrc_saves_into_sipnabrc() {
+    fn a_run_that_loaded_sipnabrc_saves_into_sipnabrc() -> Result<(), TestError> {
         let f = home().join(".sipnabrc");
         assert_eq!(
             save_target(Some(&f), Some(&user())),
@@ -4516,37 +4669,43 @@ mod save_target_tests {
             "writing ~/.config/sipnab/sipnab.toml instead creates a file that \
              shadows ~/.sipnabrc on every later run"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_run_given_an_explicit_file_saves_into_that_file() {
+    fn a_run_given_an_explicit_file_saves_into_that_file() -> Result<(), TestError> {
         let f = PathBuf::from("/srv/voip/sipnab.toml");
         assert_eq!(save_target(Some(&f), Some(&user())), Ok(f));
+        Ok(())
     }
 
     #[test]
-    fn a_run_that_loaded_the_system_file_refuses_to_save() {
+    fn a_run_that_loaded_the_system_file_refuses_to_save() -> Result<(), TestError> {
         let err = save_target(Some(Path::new(SYSTEM_CONFIG_PATH)), Some(&user()))
-            .expect_err("a user file would shadow every setting in /etc");
+            .err()
+            .ok_or("a user file would shadow every setting in /etc")?;
         assert!(err.contains(SYSTEM_CONFIG_PATH), "{err}");
         assert!(
             err.contains("~/.config/sipnab/sipnab.toml"),
             "names where to copy it: {err}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_run_with_no_file_saves_into_the_user_file() {
+    fn a_run_with_no_file_saves_into_the_user_file() -> Result<(), TestError> {
         assert_eq!(
             save_target(None, Some(&user())),
             Ok(home().join(".config/sipnab/sipnab.toml"))
         );
+        Ok(())
     }
 
     #[test]
-    fn a_run_with_no_file_and_no_home_refuses_to_save() {
-        let err = save_target(None, None).expect_err("nowhere to write");
+    fn a_run_with_no_file_and_no_home_refuses_to_save() -> Result<(), TestError> {
+        let err = save_target(None, None).err().ok_or("nowhere to write")?;
         assert!(err.contains("$HOME"), "{err}");
+        Ok(())
     }
 }
 
@@ -4555,6 +4714,8 @@ mod config_locations_tests {
     use super::*;
     use std::ffi::OsStr;
 
+    type TestError = Box<dyn std::error::Error>;
+
     fn home() -> PathBuf {
         PathBuf::from("/home/u")
     }
@@ -4562,7 +4723,7 @@ mod config_locations_tests {
     // ── $XDG_CONFIG_HOME ─────────────────────────────────────────────
 
     #[test]
-    fn xdg_config_home_moves_the_user_file() {
+    fn xdg_config_home_moves_the_user_file() -> Result<(), TestError> {
         let paths = config_search_paths(Some(&home()), Some(OsStr::new("/srv/xdg")));
         assert_eq!(
             paths,
@@ -4572,41 +4733,46 @@ mod config_locations_tests {
                 PathBuf::from(SYSTEM_CONFIG_PATH),
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn without_xdg_config_home_the_user_file_is_under_dot_config() {
+    fn without_xdg_config_home_the_user_file_is_under_dot_config() -> Result<(), TestError> {
         let paths = config_search_paths(Some(&home()), None);
         assert_eq!(paths[0], home().join(".config/sipnab/sipnab.toml"));
+        Ok(())
     }
 
     #[test]
-    fn an_empty_xdg_config_home_counts_as_unset() {
+    fn an_empty_xdg_config_home_counts_as_unset() -> Result<(), TestError> {
         // XDG Base Directory spec: "If $XDG_CONFIG_HOME is either not set or
         // empty, a default equal to $HOME/.config should be used."
         let paths = config_search_paths(Some(&home()), Some(OsStr::new("")));
         assert_eq!(paths[0], home().join(".config/sipnab/sipnab.toml"));
+        Ok(())
     }
 
     #[test]
-    fn a_relative_xdg_config_home_is_ignored() {
+    fn a_relative_xdg_config_home_is_ignored() -> Result<(), TestError> {
         // The spec: "All paths set in these environment variables must be
         // absolute. If an implementation encounters a relative path ... it
         // should consider the path invalid and ignore it."
         let paths = config_search_paths(Some(&home()), Some(OsStr::new("relative/dir")));
         assert_eq!(paths[0], home().join(".config/sipnab/sipnab.toml"));
+        Ok(())
     }
 
     #[test]
-    fn with_no_home_and_no_xdg_only_the_system_file_is_searched() {
+    fn with_no_home_and_no_xdg_only_the_system_file_is_searched() -> Result<(), TestError> {
         assert_eq!(
             config_search_paths(None, None),
             vec![PathBuf::from(SYSTEM_CONFIG_PATH)]
         );
+        Ok(())
     }
 
     #[test]
-    fn xdg_config_home_without_home_still_names_the_user_file() {
+    fn xdg_config_home_without_home_still_names_the_user_file() -> Result<(), TestError> {
         let paths = config_search_paths(None, Some(OsStr::new("/srv/xdg")));
         assert_eq!(
             paths,
@@ -4615,46 +4781,51 @@ mod config_locations_tests {
                 PathBuf::from(SYSTEM_CONFIG_PATH)
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn the_user_file_follows_xdg_config_home() {
+    fn the_user_file_follows_xdg_config_home() -> Result<(), TestError> {
         assert_eq!(
             user_config_file(Some(&home()), Some(OsStr::new("/srv/xdg"))),
             Some(PathBuf::from("/srv/xdg/sipnab/sipnab.toml"))
         );
         assert_eq!(user_config_file(None, None), None);
+        Ok(())
     }
 
     // ── first found, and what it shadows ─────────────────────────────
 
     #[test]
-    fn the_first_existing_candidate_is_used_and_the_rest_are_reported() {
+    fn the_first_existing_candidate_is_used_and_the_rest_are_reported() -> Result<(), TestError> {
         let c = config_search_paths(Some(&home()), None);
         let (used, shadowed) = pick_config(&c, |p| p != Path::new(SYSTEM_CONFIG_PATH) || true);
         assert_eq!(used, Some(c[0].clone()));
         assert_eq!(shadowed, vec![c[1].clone(), c[2].clone()]);
+        Ok(())
     }
 
     #[test]
-    fn a_lone_file_shadows_nothing() {
+    fn a_lone_file_shadows_nothing() -> Result<(), TestError> {
         let c = config_search_paths(Some(&home()), None);
         let rc = c[1].clone();
         let (used, shadowed) = pick_config(&c, |p| p == rc);
         assert_eq!(used, Some(rc));
         assert!(shadowed.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn no_file_uses_nothing_and_shadows_nothing() {
+    fn no_file_uses_nothing_and_shadows_nothing() -> Result<(), TestError> {
         let c = config_search_paths(Some(&home()), None);
         let (used, shadowed) = pick_config(&c, |_| false);
         assert_eq!(used, None);
         assert!(shadowed.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn the_shadowing_note_names_the_file_read_and_every_file_ignored() {
+    fn the_shadowing_note_names_the_file_read_and_every_file_ignored() -> Result<(), TestError> {
         let note = shadowing_note(
             Path::new("/home/u/.config/sipnab/sipnab.toml"),
             &[
@@ -4668,10 +4839,11 @@ mod config_locations_tests {
              /home/u/.sipnabrc, /etc/sipnab/sipnab.toml. sipnab reads only the first \
              config file it finds; merge them or remove the ones you do not want."
         );
+        Ok(())
     }
 
     #[test]
-    fn a_shadowed_load_has_a_notice_and_a_clean_one_has_none() {
+    fn a_shadowed_load_has_a_notice_and_a_clean_one_has_none() -> Result<(), TestError> {
         let used = PathBuf::from("/home/u/.config/sipnab/sipnab.toml");
         let rc = PathBuf::from("/home/u/.sipnabrc");
         assert_eq!(
@@ -4680,6 +4852,7 @@ mod config_locations_tests {
         );
         assert_eq!(config_notice(Some(&used), &[]), None);
         assert_eq!(config_notice(None, &[]), None);
+        Ok(())
     }
 
     // ── [media] listening_context ────────────────────────────────────
@@ -4692,17 +4865,19 @@ mod config_locations_tests {
     }
 
     #[test]
-    fn both_listening_contexts_are_accepted() {
+    fn both_listening_contexts_are_accepted() -> Result<(), TestError> {
         assert!(media("monotic").validate().is_ok());
         assert!(media("diotic").validate().is_ok());
         assert!(MediaConfig::default().validate().is_ok());
+        Ok(())
     }
 
     #[test]
-    fn a_misspelled_listening_context_is_refused_by_name() {
+    fn a_misspelled_listening_context_is_refused_by_name() -> Result<(), TestError> {
         let err = media("diotc")
             .validate()
-            .expect_err("a typo must not silently become monotic");
+            .err()
+            .ok_or("a typo must not silently become monotic")?;
         let msg = err.to_string();
         for want in [
             "[media] listening_context",
@@ -4712,15 +4887,17 @@ mod config_locations_tests {
         ] {
             assert!(msg.contains(want), "missing {want}: {msg}");
         }
+        Ok(())
     }
 
     /// Validation and use share one parser, `ListeningContext::parse`, which
     /// ignores case and surrounding spaces: what loads is what is applied.
     #[test]
-    fn validation_accepts_exactly_what_the_run_applies() {
+    fn validation_accepts_exactly_what_the_run_applies() -> Result<(), TestError> {
         for spelled in ["Diotic", " monotic ", "DIOTIC"] {
             assert!(media(spelled).validate().is_ok(), "{spelled:?}");
             assert!(crate::rtp::emodel_wb::ListeningContext::parse(spelled).is_some());
         }
+        Ok(())
     }
 }

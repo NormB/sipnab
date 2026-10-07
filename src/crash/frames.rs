@@ -438,6 +438,8 @@ pub fn frame_addresses() -> Vec<usize> {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build one ELF note in host byte order, padded to `align`.
     fn note(name: &[u8], ty: u32, desc: &[u8], align: usize) -> Vec<u8> {
         let pad = |n: usize| n.div_ceil(align) * align;
@@ -460,33 +462,37 @@ mod tests {
 
     /// The build ID is found after an unrelated GNU note, at 4-byte alignment.
     #[test]
-    fn build_id_is_found_after_another_note() {
+    fn build_id_is_found_after_another_note() -> Result<(), TestError> {
         let mut seg = note(b"GNU\0", 1, &[0, 0, 0, 0, 3, 2, 0, 0], 4);
         seg.extend(note(b"GNU\0", NT_GNU_BUILD_ID, &ID, 4));
         assert_eq!(parse_gnu_build_id(&seg, 4), Some(ID.to_vec()));
+        Ok(())
     }
 
     /// An 8-aligned note segment pads the name and descriptor to 8.
     #[test]
-    fn build_id_is_found_in_an_eight_aligned_segment() {
+    fn build_id_is_found_in_an_eight_aligned_segment() -> Result<(), TestError> {
         let mut seg = note(b"GNU\0", 5, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 8);
         seg.extend(note(b"GNU\0", NT_GNU_BUILD_ID, &ID, 8));
         assert_eq!(parse_gnu_build_id(&seg, 8), Some(ID.to_vec()));
+        Ok(())
     }
 
     /// A type-3 note under another owner's name is not a GNU build ID.
     #[test]
-    fn a_type_three_note_from_another_owner_is_ignored() {
+    fn a_type_three_note_from_another_owner_is_ignored() -> Result<(), TestError> {
         let seg = note(b"Go\0\0", NT_GNU_BUILD_ID, &ID, 4);
         assert_eq!(parse_gnu_build_id(&seg, 4), None);
+        Ok(())
     }
 
     /// A descriptor that runs past the segment is refused, not read past.
     #[test]
-    fn a_truncated_note_is_refused() {
+    fn a_truncated_note_is_refused() -> Result<(), TestError> {
         let seg = note(b"GNU\0", NT_GNU_BUILD_ID, &ID, 4);
         assert_eq!(parse_gnu_build_id(&seg[..seg.len() - 4], 4), None);
         assert_eq!(parse_gnu_build_id(&[], 4), None);
+        Ok(())
     }
 
     /// A 64-bit Mach-O header with `__PAGEZERO`, `__TEXT` and `LC_UUID`.
@@ -530,22 +536,24 @@ mod tests {
     /// The UUID and the mapped `__TEXT` segment are read; `__PAGEZERO`,
     /// which maps nothing accessible, is left out.
     #[test]
-    fn macho_uuid_and_segments_are_read() {
-        let info = parse_macho(&macho()).expect("valid Mach-O");
+    fn macho_uuid_and_segments_are_read() -> Result<(), TestError> {
+        let info = parse_macho(&macho()).ok_or("valid Mach-O")?;
         assert_eq!(info.uuid, Some(ID[..16].to_vec()));
         assert_eq!(info.segments, vec![(0x1_0000_0000, 0x4000)]);
+        Ok(())
     }
 
     /// A 32-bit or foreign magic, or a load command running off the end, is
     /// refused.
     #[test]
-    fn a_malformed_macho_is_refused() {
+    fn a_malformed_macho_is_refused() -> Result<(), TestError> {
         let mut bad = macho();
         bad[0] ^= 0xff;
         assert_eq!(parse_macho(&bad), None);
         let good = macho();
         assert_eq!(parse_macho(&good[..good.len() - 8]), None);
         assert_eq!(parse_macho(&good[..10]), None);
+        Ok(())
     }
 
     /// Two images: a PIE executable at 0x5555_0000_0000 and libc.
@@ -569,24 +577,26 @@ mod tests {
     /// An address resolves to its image and to `address - base`; the end of
     /// a range is exclusive; an unmapped address resolves to nothing.
     #[test]
-    fn locate_maps_an_address_to_its_image_and_file_address() {
+    fn locate_maps_an_address_to_its_image_and_file_address() -> Result<(), TestError> {
         let imgs = images();
         assert_eq!(locate(0x5555_0000_1234, &imgs), Some((0, 0x1234)));
         assert_eq!(locate(0x7f00_0002_0010, &imgs), Some((1, 0x2_0010)));
         assert_eq!(locate(0x5555_0010_0000, &imgs), None);
         assert_eq!(locate(0x10, &imgs), None);
+        Ok(())
     }
 
     /// Hex is lowercase and zero-padded per byte.
     #[test]
-    fn hex_is_lowercase_and_padded() {
+    fn hex_is_lowercase_and_padded() -> Result<(), TestError> {
         assert_eq!(hex(&[0x0a, 0xff, 0x00]), "0aff00");
+        Ok(())
     }
 
     /// (c) The report records the executable's identity, load base and
     /// target, and every frame as a raw address plus image-relative address.
     #[test]
-    fn the_render_records_identity_load_base_and_raw_frames() {
+    fn the_render_records_identity_load_base_and_raw_frames() -> Result<(), TestError> {
         let out = render(
             &images(),
             "x86_64-unknown-linux-gnu",
@@ -610,24 +620,27 @@ mod tests {
         assert!(out.contains("0x555500001234  sipnab+0x1233"), "{out}");
         assert!(out.contains("0x7f0000020010  libc.so.6+0x2000f"), "{out}");
         assert!(out.contains("0x42  ?"), "{out}");
+        Ok(())
     }
 
     /// With backtrace capture disabled the identity is still recorded, and
     /// no frame list is.
     #[test]
-    fn the_render_without_frames_still_names_the_image() {
+    fn the_render_without_frames_still_names_the_image() -> Result<(), TestError> {
         let out = render(&images(), "x86_64-unknown-linux-gnu", None);
         assert!(out.contains("deadbeef"), "{out}");
         assert!(!out.contains("sipnab+0x"), "{out}");
+        Ok(())
     }
 
     /// An image without an identity says so rather than printing nothing.
     #[test]
-    fn a_missing_identity_is_named() {
+    fn a_missing_identity_is_named() -> Result<(), TestError> {
         let mut imgs = images();
         imgs[0].id = None;
         let out = render(&imgs, "t", None);
         assert!(out.contains(&format!("{ID_LABEL}:  none")), "{out}");
+        Ok(())
     }
 
     /// Live, on the platforms with glue: this test binary is the first image,
@@ -638,25 +651,27 @@ mod tests {
         all(target_os = "linux", target_pointer_width = "64"),
         target_os = "macos"
     ))]
-    fn the_running_executable_is_the_first_image_and_carries_an_identity() {
+    fn the_running_executable_is_the_first_image_and_carries_an_identity() -> Result<(), TestError>
+    {
         let imgs = loaded_images();
         assert!(!imgs.is_empty(), "no images enumerated");
-        let here =
-            the_running_executable_is_the_first_image_and_carries_an_identity as fn() as usize;
-        let (idx, _) = locate(here, &imgs).expect("this function lies in a loaded image");
+        let here = the_running_executable_is_the_first_image_and_carries_an_identity
+            as fn() -> Result<(), TestError> as usize;
+        let (idx, _) = locate(here, &imgs).ok_or("this function lies in a loaded image")?;
         assert_eq!(idx, 0, "the executable must be the first image: {imgs:?}");
         let id = imgs[0]
             .id
             .as_ref()
-            .expect("the executable carries an identity");
+            .ok_or("the executable carries an identity")?;
         assert!(id.len() >= 16, "implausible identity {id:?}");
+        Ok(())
     }
 
     /// Live: the unwinder yields several frames, and the innermost ones lie in
     /// this executable.
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn the_unwinder_yields_frames_in_this_executable() {
+    fn the_unwinder_yields_frames_in_this_executable() -> Result<(), TestError> {
         let frames = frame_addresses();
         assert!(frames.len() >= 3, "only {} frames", frames.len());
         assert!(frames.len() <= MAX_FRAMES);
@@ -669,5 +684,6 @@ mod tests {
             in_exe >= 2,
             "only {in_exe} frames in the executable: {frames:x?}"
         );
+        Ok(())
     }
 }
