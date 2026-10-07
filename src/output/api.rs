@@ -7288,6 +7288,16 @@ impl utoipa::Modify for BearerAuth {
 )]
 pub struct ApiDoc;
 
+/// `doc` with `other`'s paths and components added.
+#[cfg(any(feature = "vcon", feature = "hep"))]
+fn merged(
+    mut doc: utoipa::openapi::OpenApi,
+    other: utoipa::openapi::OpenApi,
+) -> utoipa::openapi::OpenApi {
+    doc.merge(other);
+    doc
+}
+
 /// The OpenAPI 3.1 document for the routes THIS BUILD serves, as JSON.
 ///
 /// Feature-dependent by construction, and that is the point:
@@ -7312,18 +7322,13 @@ pub struct ApiDoc;
 pub fn openapi_json() -> String {
     use utoipa::OpenApi as _;
 
-    #[cfg_attr(
-        not(any(feature = "vcon", feature = "hep")),
-        expect(
-            unused_mut,
-            reason = "the vcon and hep routes are the only mutations, and both are cfg-gated"
-        )
-    )]
-    let mut doc = ApiDoc::openapi();
+    // The vcon and hep routes are cfg-gated, so each is merged in as a new
+    // value: no binding is mutable in a build that has neither.
+    let doc = ApiDoc::openapi();
     #[cfg(feature = "vcon")]
-    doc.merge(VconDoc::openapi());
+    let doc = merged(doc, VconDoc::openapi());
     #[cfg(feature = "hep")]
-    doc.merge(HepDoc::openapi());
+    let doc = merged(doc, HepDoc::openapi());
 
     #[expect(
         clippy::expect_used,

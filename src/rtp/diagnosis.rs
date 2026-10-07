@@ -2127,19 +2127,48 @@ mod tests {
 
     // ── Phase 8.7 — asymmetry tests ─────────────────────────────────
 
-    /// Build a stream with explicit codec / payload type / timestamp progression
-    /// so the asymmetry tests can assemble realistic-looking pairs.
-    #[expect(clippy::too_many_arguments)]
-    fn make_stream_with_pt(
+    /// One side of a call's media, for [`make_stream_with_pt`]. The default is
+    /// 100 packets of PCMU at 20 ms from 10.0.0.1 to 10.0.0.2, first seen at
+    /// the test timestamp; a test names only what it changes.
+    struct StreamSpec {
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         pt: u8,
-        codec: &str,
+        codec: &'static str,
         clock_rate: u32,
         ptime_ms: u32,
         first_seen_offset_secs: i64,
         packet_count: u64,
-    ) -> RtpStream {
+    }
+
+    impl Default for StreamSpec {
+        fn default() -> Self {
+            StreamSpec {
+                src_ip: [10, 0, 0, 1],
+                dst_ip: [10, 0, 0, 2],
+                pt: 0,
+                codec: "PCMU",
+                clock_rate: 8000,
+                ptime_ms: 20,
+                first_seen_offset_secs: 0,
+                packet_count: 100,
+            }
+        }
+    }
+
+    /// Build a stream with explicit codec / payload type / timestamp progression
+    /// so the asymmetry tests can assemble realistic-looking pairs.
+    fn make_stream_with_pt(spec: StreamSpec) -> RtpStream {
+        let StreamSpec {
+            src_ip,
+            dst_ip,
+            pt,
+            codec,
+            clock_rate,
+            ptime_ms,
+            first_seen_offset_secs,
+            packet_count,
+        } = spec;
         let key = StreamKey {
             ssrc: 0xABCDEF00 ^ pt as u32,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src_ip)), 20000),
@@ -2216,8 +2245,16 @@ mod tests {
     /// Legs using different codecs (PCMU vs G729) set `codec_asymmetry`.
     #[test]
     fn codec_asymmetry_detected_when_legs_differ() {
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 18, "G729", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            pt: 18,
+            codec: "G729",
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2230,8 +2267,14 @@ mod tests {
     /// Matching codecs on both legs leave `codec_asymmetry` unset.
     #[test]
     fn codec_asymmetry_negative_when_legs_match() {
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2243,8 +2286,18 @@ mod tests {
     #[test]
     fn payload_type_asymmetry_detected_when_codec_matches_pt_differs() {
         // Both legs use PCMA codec but different PTs (one static 8, one dyn 96)
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 8, "PCMA", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 96, "PCMA", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            pt: 8,
+            codec: "PCMA",
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            pt: 96,
+            codec: "PCMA",
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2261,8 +2314,16 @@ mod tests {
     fn payload_type_asymmetry_skipped_when_codec_differs() {
         // Codec already differs — payload-type field should NOT be set, since
         // the codec asymmetry message already covers it.
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 8, "PCMA", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            pt: 8,
+            codec: "PCMA",
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2274,8 +2335,15 @@ mod tests {
     /// Inferred ptimes of 20 ms vs 30 ms set `ptime_asymmetry`.
     #[test]
     fn ptime_asymmetry_detected_20_vs_30() {
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 30, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            ptime_ms: 30,
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2288,8 +2356,14 @@ mod tests {
     /// Equal ptimes on both legs leave `ptime_asymmetry` unset.
     #[test]
     fn ptime_asymmetry_negative_when_legs_match() {
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2302,9 +2376,17 @@ mod tests {
     #[test]
     fn duration_asymmetry_detected_when_above_thresholds() {
         // A leg: 30s, B leg: 25s → 5s delta, ~17% pct delta. Above 5%/2s default.
-        let mut a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 1500);
+        let mut a = make_stream_with_pt(StreamSpec {
+            packet_count: 1500,
+            ..StreamSpec::default()
+        });
         a.last_seen = a.first_seen + chrono::Duration::seconds(30);
-        let mut b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 1250);
+        let mut b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            packet_count: 1250,
+            ..StreamSpec::default()
+        });
         b.last_seen = b.first_seen + chrono::Duration::seconds(25);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
@@ -2323,9 +2405,17 @@ mod tests {
     #[test]
     fn duration_asymmetry_negative_below_minimum_delta() {
         // 30s vs 29.5s — delta 0.5s, below 2.0s minimum.
-        let mut a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 1500);
+        let mut a = make_stream_with_pt(StreamSpec {
+            packet_count: 1500,
+            ..StreamSpec::default()
+        });
         a.last_seen = a.first_seen + chrono::Duration::seconds(30);
-        let mut b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 1475);
+        let mut b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            packet_count: 1475,
+            ..StreamSpec::default()
+        });
         b.last_seen = b.first_seen + chrono::Duration::milliseconds(29_500);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
@@ -2339,8 +2429,16 @@ mod tests {
     fn late_media_detected_when_rtp_starts_after_threshold() {
         // 200 OK at +0s; RTP starts at +1.5s → 1500 ms delay > 500 ms default
         let dialog = make_dialog_with_answer(0);
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 2, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 2, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            first_seen_offset_secs: 2,
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            first_seen_offset_secs: 2,
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2359,8 +2457,14 @@ mod tests {
     fn late_media_negative_when_rtp_starts_quickly() {
         let dialog = make_dialog_with_answer(0);
         // RTP at 0s = same as 200 OK; well below 500ms threshold.
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
-        let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
+        let b = make_stream_with_pt(StreamSpec {
+            src_ip: [10, 0, 0, 2],
+            dst_ip: [10, 0, 0, 1],
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2428,7 +2532,10 @@ mod tests {
     fn inferred_ptime_not_inflated_by_loss() {
         // 100 frames of 20 ms were transmitted (99 intervals → 1980 ms span),
         // but half were lost in transit; only 50 packets arrived.
-        let mut s = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 50);
+        let mut s = make_stream_with_pt(StreamSpec {
+            packet_count: 50,
+            ..StreamSpec::default()
+        });
         s.last_seen = s.first_seen + chrono::Duration::milliseconds(99 * 20);
         s.lost_packets = 50;
         // Naive span/(received − 1) = 1980/49 ≈ 40 ms; loss-aware = 20 ms.
@@ -2438,7 +2545,9 @@ mod tests {
     /// With only one stream, no asymmetry fields are computed.
     #[test]
     fn asymmetry_skipped_with_single_stream() {
-        let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
+        let a = make_stream_with_pt(StreamSpec {
+            ..StreamSpec::default()
+        });
         let streams: Vec<&RtpStream> = vec![&a];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());

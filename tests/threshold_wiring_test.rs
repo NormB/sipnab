@@ -115,9 +115,11 @@ fn refused_register(i: usize) -> Vec<u8> {
     response(
         401,
         "Unauthorized",
-        &format!("reg-{i}@10.1.0.1"),
-        &format!("reg{i}"),
-        "alice",
+        &Dialog {
+            call_id: &format!("reg-{i}@10.1.0.1"),
+            branch: &format!("reg{i}"),
+            to_user: "alice",
+        },
         "1 REGISTER",
         None,
         true,
@@ -147,23 +149,28 @@ fn invite(call_id: &str, branch: &str, to_user: &str, sdp: Option<&str>) -> Vec<
     udp_frame(A, B, 5060, 5060, msg.as_bytes())
 }
 
+/// The three values that name one dialog in these fixtures: its Call-ID, the
+/// branch its tags and Via are built from, and the callee's user part.
+struct Dialog<'a> {
+    call_id: &'a str,
+    branch: &'a str,
+    to_user: &'a str,
+}
+
 /// A response from the callee. `to_tag` off is how a `100 Trying` arrives.
-///
-/// Eight parameters because a SIP response has eight independent parts a test
-/// needs to choose, and bundling them behind a struct would put the fixture
-/// one indirection away from the wire text it produces — which is the thing
-/// being read when one of these tests fails.
-#[expect(clippy::too_many_arguments)]
 fn response(
     code: u16,
     reason: &str,
-    call_id: &str,
-    branch: &str,
-    to_user: &str,
+    dialog: &Dialog<'_>,
     cseq: &str,
     sdp: Option<&str>,
     to_tag: bool,
 ) -> Vec<u8> {
+    let Dialog {
+        call_id,
+        branch,
+        to_user,
+    } = *dialog;
     let body = sdp.unwrap_or("");
     let ctype = if body.is_empty() {
         String::new()
@@ -218,7 +225,18 @@ fn answered_call(
     vec![
         (invite(call_id, branch, to_user, None), start_us),
         (
-            response(200, "OK", call_id, branch, to_user, "1 INVITE", None, true),
+            response(
+                200,
+                "OK",
+                &Dialog {
+                    call_id,
+                    branch,
+                    to_user,
+                },
+                "1 INVITE",
+                None,
+                true,
+            ),
             start_us + 50_000,
         ),
         (
@@ -230,7 +248,18 @@ fn answered_call(
             start_us + hangup_us,
         ),
         (
-            response(200, "OK", call_id, branch, to_user, "2 BYE", None, true),
+            response(
+                200,
+                "OK",
+                &Dialog {
+                    call_id,
+                    branch,
+                    to_user,
+                },
+                "2 BYE",
+                None,
+                true,
+            ),
             start_us + hangup_us + 50_000,
         ),
     ]
@@ -244,9 +273,11 @@ fn refused_call(call_id: &str, branch: &str, to_user: &str, start_us: u64) -> Ve
             response(
                 404,
                 "Not Found",
-                call_id,
-                branch,
-                to_user,
+                &Dialog {
+                    call_id,
+                    branch,
+                    to_user,
+                },
                 "1 INVITE",
                 None,
                 true,
@@ -1509,17 +1540,50 @@ fn diagnosis_post_dial_delay_threshold_decides_a_slow_ringback() -> Result<(), T
     let frames = vec![
         (invite("pdd-1", "p1", "bob", None), 0),
         (
-            response(180, "Ringing", "pdd-1", "p1", "bob", "1 INVITE", None, true),
+            response(
+                180,
+                "Ringing",
+                &Dialog {
+                    call_id: "pdd-1",
+                    branch: "p1",
+                    to_user: "bob",
+                },
+                "1 INVITE",
+                None,
+                true,
+            ),
             5_000_000,
         ),
         (
-            response(200, "OK", "pdd-1", "p1", "bob", "1 INVITE", None, true),
+            response(
+                200,
+                "OK",
+                &Dialog {
+                    call_id: "pdd-1",
+                    branch: "p1",
+                    to_user: "bob",
+                },
+                "1 INVITE",
+                None,
+                true,
+            ),
             5_500_000,
         ),
         (in_dialog("ACK", "pdd-1", "p1", "bob", "1 ACK"), 5_600_000),
         (in_dialog("BYE", "pdd-1", "p1", "bob", "2 BYE"), 8_000_000),
         (
-            response(200, "OK", "pdd-1", "p1", "bob", "2 BYE", None, true),
+            response(
+                200,
+                "OK",
+                &Dialog {
+                    call_id: "pdd-1",
+                    branch: "p1",
+                    to_user: "bob",
+                },
+                "2 BYE",
+                None,
+                true,
+            ),
             8_100_000,
         ),
     ];
@@ -1570,11 +1634,33 @@ fn diagnosis_ack_timeout_decides_when_a_missing_ack_is_a_fault() -> Result<(), T
     let frames = vec![
         (invite("ack-1", "a1", "bob", None), 0),
         (
-            response(200, "OK", "ack-1", "a1", "bob", "1 INVITE", None, true),
+            response(
+                200,
+                "OK",
+                &Dialog {
+                    call_id: "ack-1",
+                    branch: "a1",
+                    to_user: "bob",
+                },
+                "1 INVITE",
+                None,
+                true,
+            ),
             100_000,
         ),
         (
-            response(200, "OK", "ack-1", "a1", "bob", "1 INVITE", None, true),
+            response(
+                200,
+                "OK",
+                &Dialog {
+                    call_id: "ack-1",
+                    branch: "a1",
+                    to_user: "bob",
+                },
+                "1 INVITE",
+                None,
+                true,
+            ),
             10_100_000,
         ),
     ];
@@ -1621,11 +1707,33 @@ fn diagnosis_no_final_response_timeout_decides_when_silence_is_reported() -> Res
     let frames = vec![
         (invite("nf-1", "n1", "bob", None), 0),
         (
-            response(100, "Trying", "nf-1", "n1", "bob", "1 INVITE", None, false),
+            response(
+                100,
+                "Trying",
+                &Dialog {
+                    call_id: "nf-1",
+                    branch: "n1",
+                    to_user: "bob",
+                },
+                "1 INVITE",
+                None,
+                false,
+            ),
             100_000,
         ),
         (
-            response(180, "Ringing", "nf-1", "n1", "bob", "1 INVITE", None, true),
+            response(
+                180,
+                "Ringing",
+                &Dialog {
+                    call_id: "nf-1",
+                    branch: "n1",
+                    to_user: "bob",
+                },
+                "1 INVITE",
+                None,
+                true,
+            ),
             10_000_000,
         ),
     ];
@@ -1701,9 +1809,11 @@ fn asymmetric_media_capture(dir: &tempfile::TempDir) -> Result<String, TestError
             response(
                 200,
                 "OK",
-                "media-1",
-                "m1",
-                "bob",
+                &Dialog {
+                    call_id: "media-1",
+                    branch: "m1",
+                    to_user: "bob",
+                },
                 "1 INVITE",
                 Some(&answer),
                 true,
@@ -1738,7 +1848,18 @@ fn asymmetric_media_capture(dir: &tempfile::TempDir) -> Result<String, TestError
     }
     frames.push((in_dialog("BYE", "media-1", "m1", "bob", "2 BYE"), 6_000_000));
     frames.push((
-        response(200, "OK", "media-1", "m1", "bob", "2 BYE", None, true),
+        response(
+            200,
+            "OK",
+            &Dialog {
+                call_id: "media-1",
+                branch: "m1",
+                to_user: "bob",
+            },
+            "2 BYE",
+            None,
+            true,
+        ),
         6_100_000,
     ));
     frames.sort_by_key(|(_, t)| *t);
@@ -1878,9 +1999,11 @@ fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> Result<String, Te
             response(
                 200,
                 "OK",
-                "cn-1",
-                "c1",
-                "bob",
+                &Dialog {
+                    call_id: "cn-1",
+                    branch: "c1",
+                    to_user: "bob",
+                },
                 "1 INVITE",
                 Some(&answer),
                 true,
@@ -1907,7 +2030,18 @@ fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> Result<String, Te
     }
     frames.push((in_dialog("BYE", "cn-1", "c1", "bob", "2 BYE"), 3_000_000));
     frames.push((
-        response(200, "OK", "cn-1", "c1", "bob", "2 BYE", None, true),
+        response(
+            200,
+            "OK",
+            &Dialog {
+                call_id: "cn-1",
+                branch: "c1",
+                to_user: "bob",
+            },
+            "2 BYE",
+            None,
+            true,
+        ),
         3_100_000,
     ));
     frames.sort_by_key(|(_, t)| *t);

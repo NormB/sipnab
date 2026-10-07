@@ -88,6 +88,16 @@ entry that carries them.
   drawn from the first column to the second whichever way it went; columns
   are now matched on the address and port
   (`ipv6_messages_are_drawn_between_their_own_columns`).
+- **The lint gate reads `#[expect(...)]` as well as `#[allow(...)]`.** The
+  earlier entries above said no `too_many_arguments`, `type_complexity` or
+  `unused_mut` suppression remained; that was true of `allow` only. The gate
+  matched `allow(` on one line, so eight `#[expect(...)]` attributes for those
+  lints survived, one of them a `cfg_attr(..., expect(unused_mut))` spread
+  over several lines. `lint_suppression_test` now reads each attribute whole,
+  across lines, inside `cfg_attr` too, and ignores `//` inside a string. The
+  eight are gone: `batch::run` takes a `CaptureFeed`, the HEP listener takes
+  one start-up value, `openapi_json` merges each optional route set as a new
+  value, and the test helpers take named structs.
 
 ## [0.5.204] - 2026-10-06
 
