@@ -131,21 +131,23 @@ impl PersistenceGate {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The plain case the gate exists for: a run started with persistence
     /// flags, and an operator who wants it to stop.
     #[test]
-    fn the_gate_can_close_what_the_command_line_opened() {
+    fn the_gate_can_close_what_the_command_line_opened() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         assert!(gate.writes_permitted(), "authorized runs start open");
         assert!(!gate.set(false), "closing reports the gate as closed");
         assert!(!gate.writes_permitted(), "and it stays closed");
+        Ok(())
     }
 
     /// The property that makes this a gate rather than a switch. A REST caller
     /// is not a second command line.
     #[test]
-    fn the_gate_cannot_open_what_the_command_line_never_authorized() {
+    fn the_gate_cannot_open_what_the_command_line_never_authorized() -> Result<(), TestError> {
         let gate = PersistenceGate::new(false);
         assert!(!gate.writes_permitted());
         assert!(
@@ -154,6 +156,7 @@ mod tests {
              enabled nothing, not report success"
         );
         assert!(!gate.writes_permitted());
+        Ok(())
     }
 
     /// `set` returns the gate's state, not the caller's request.
@@ -162,7 +165,7 @@ mod tests {
     /// gate and fails only here, where the unauthorized gate is asked to open
     /// and the return value is read rather than a later `writes_permitted`.
     #[test]
-    fn set_reports_the_gate_not_the_request() {
+    fn set_reports_the_gate_not_the_request() -> Result<(), TestError> {
         for authorized in [true, false] {
             for want in [true, false] {
                 let gate = PersistenceGate::new(authorized);
@@ -180,6 +183,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// No sequence of API calls can widen an unauthorized run.
@@ -189,7 +193,7 @@ mod tests {
     /// trust it: a run started without persistence flags never writes content,
     /// whatever anyone does to the socket.
     #[test]
-    fn no_sequence_of_calls_can_open_an_unauthorized_gate() {
+    fn no_sequence_of_calls_can_open_an_unauthorized_gate() -> Result<(), TestError> {
         let gate = PersistenceGate::new(false);
         for bits in 0u32..64 {
             for step in 0..6 {
@@ -202,6 +206,7 @@ mod tests {
                 assert!(!gate.writes_permitted());
             }
         }
+        Ok(())
     }
 
     /// An authorized gate is exactly as open as the last `set` left it.
@@ -211,7 +216,7 @@ mod tests {
     /// gate at three in the morning has to be able to open it again at four
     /// without restarting capture and losing the dialog table.
     #[test]
-    fn an_authorized_gate_tracks_the_last_request() {
+    fn an_authorized_gate_tracks_the_last_request() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         for bits in 0u32..64 {
             let mut last = true;
@@ -226,16 +231,18 @@ mod tests {
             );
             gate.set(true);
         }
+        Ok(())
     }
 
     /// Repeating a request changes nothing.
     #[test]
-    fn moving_the_gate_where_it_already_is_is_idempotent() {
+    fn moving_the_gate_where_it_already_is_is_idempotent() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         assert!(!gate.set(false));
         assert!(!gate.set(false), "closing a closed gate keeps it closed");
         assert!(gate.set(true));
         assert!(gate.set(true), "opening an open gate keeps it open");
+        Ok(())
     }
 
     /// `authorized` is visible so a caller can tell "you closed it" from
@@ -244,7 +251,7 @@ mod tests {
     /// The REST response reports both, because a 200 carrying only
     /// `enabled: false` reads as success to a client that asked to enable.
     #[test]
-    fn the_ceiling_is_readable_so_denied_is_distinguishable_from_off() {
+    fn the_ceiling_is_readable_so_denied_is_distinguishable_from_off() -> Result<(), TestError> {
         let never = PersistenceGate::new(false);
         let closed = PersistenceGate::new(true);
         closed.set(false);
@@ -259,6 +266,7 @@ mod tests {
             "a run that was authorized still reports it after closing, so a \
              client can tell its close took effect"
         );
+        Ok(())
     }
 
     /// A close is remembered after the gate reopens.
@@ -267,7 +275,7 @@ mod tests {
     /// stopped partway, and by then the gate may be open again. A live read of
     /// `writes_permitted` would report the final state and lose the fact.
     #[test]
-    fn a_close_is_remembered_after_the_gate_reopens() {
+    fn a_close_is_remembered_after_the_gate_reopens() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         assert!(!gate.closed_during_run(), "nothing has happened yet");
 
@@ -278,6 +286,7 @@ mod tests {
             gate.closed_during_run(),
             "reopening does not un-happen the close the container has to report"
         );
+        Ok(())
     }
 
     /// A run nobody touched reports no close.
@@ -285,7 +294,7 @@ mod tests {
     /// The clause it drives makes every container read as suspect, so it must
     /// fire on a real event and not on the mere existence of a gate.
     #[test]
-    fn an_untouched_gate_reports_no_close() {
+    fn an_untouched_gate_reports_no_close() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         for _ in 0..3 {
             gate.set(true);
@@ -294,6 +303,7 @@ mod tests {
             !gate.closed_during_run(),
             "asking an open gate to open did not close anything"
         );
+        Ok(())
     }
 
     /// A run the command line never authorized reports no close either.
@@ -302,7 +312,7 @@ mod tests {
     /// to change. Latching there would put "the operator closed the
     /// persistence gate" into a container from a run where no operator did.
     #[test]
-    fn an_unauthorized_gate_reports_no_close() {
+    fn an_unauthorized_gate_reports_no_close() -> Result<(), TestError> {
         let gate = PersistenceGate::new(false);
         gate.set(false);
         gate.set(true);
@@ -311,11 +321,12 @@ mod tests {
             !gate.closed_during_run(),
             "nothing was writing, so nothing was stopped"
         );
+        Ok(())
     }
 
     /// The record survives every later request.
     #[test]
-    fn no_sequence_of_calls_erases_a_close() {
+    fn no_sequence_of_calls_erases_a_close() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         gate.set(false);
         for bits in 0u32..32 {
@@ -327,11 +338,12 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Every holder sees the record, not just the one that closed the gate.
     #[test]
-    fn the_record_is_shared_like_the_gate() {
+    fn the_record_is_shared_like_the_gate() -> Result<(), TestError> {
         let gate = Arc::new(PersistenceGate::new(true));
         let rest_door = Arc::clone(&gate);
         rest_door.set(false);
@@ -339,11 +351,12 @@ mod tests {
             gate.closed_during_run(),
             "the exporter reads the record the socket wrote"
         );
+        Ok(())
     }
 
     /// The ceiling is fixed at construction and nothing moves it.
     #[test]
-    fn the_ceiling_never_moves() {
+    fn the_ceiling_never_moves() -> Result<(), TestError> {
         let gate = PersistenceGate::new(true);
         for want in [false, true, false, false, true] {
             gate.set(want);
@@ -354,6 +367,7 @@ mod tests {
             denied.set(want);
             assert!(!denied.authorized());
         }
+        Ok(())
     }
 
     /// One gate, shared — not a copy per door.
@@ -363,7 +377,7 @@ mod tests {
     /// exporter went on writing, which is the exact failure the control is
     /// there to prevent.
     #[test]
-    fn every_holder_sees_one_gate() {
+    fn every_holder_sees_one_gate() -> Result<(), TestError> {
         let gate = Arc::new(PersistenceGate::new(true));
         let rest_door = Arc::clone(&gate);
         let exporter = Arc::clone(&gate);
@@ -375,6 +389,7 @@ mod tests {
         );
         rest_door.set(true);
         assert!(exporter.writes_permitted());
+        Ok(())
     }
 
     /// A close made on one thread is visible to a reader on another.
@@ -383,23 +398,25 @@ mod tests {
     /// riding on it, and this pins that: the value crosses threads, so a
     /// future edit cannot quietly make the gate thread-local.
     #[test]
-    fn a_close_crosses_threads() {
+    fn a_close_crosses_threads() -> Result<(), TestError> {
         let gate = Arc::new(PersistenceGate::new(true));
         let closer = Arc::clone(&gate);
         std::thread::spawn(move || closer.set(false))
             .join()
-            .expect("the closing thread finished");
+            .map_err(|e| format!("the closing thread finished: {e:?}"))?;
         assert!(
             !gate.writes_permitted(),
             "a close made on another thread must be visible here"
         );
+        Ok(())
     }
 
     /// The gate is `Send + Sync`, because `ApiState` is cloned into every
     /// axum handler task and the exporter reads it from the capture thread.
     #[test]
-    fn the_gate_can_be_shared_across_tasks() {
+    fn the_gate_can_be_shared_across_tasks() -> Result<(), TestError> {
         const fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PersistenceGate>();
+        Ok(())
     }
 }

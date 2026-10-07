@@ -494,27 +494,31 @@ fn highlight_search_in_line<'a>(line: &str, query: &str, base_style: Style) -> L
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A query with no occurrence yields a single unhighlighted span.
     #[test]
-    fn highlight_search_in_line_no_match() {
+    fn highlight_search_in_line_no_match() -> Result<(), TestError> {
         let line = highlight_search_in_line("Hello World", "xyz", Style::default());
         assert_eq!(line.spans.len(), 1);
+        Ok(())
     }
 
     /// Repeated matches split the line into alternating match/text spans.
     #[test]
-    fn highlight_search_in_line_with_match() {
+    fn highlight_search_in_line_with_match() -> Result<(), TestError> {
         let line = highlight_search_in_line("Hello World Hello", "Hello", Style::default());
         // "Hello" appears twice, so we get: match, " World ", match
         assert!(line.spans.len() >= 3);
+        Ok(())
     }
 
     /// Lowercase query still highlights an uppercase occurrence.
     #[test]
-    fn highlight_search_case_insensitive() {
+    fn highlight_search_case_insensitive() -> Result<(), TestError> {
         let line = highlight_search_in_line("INVITE sip:foo", "invite", Style::default());
         assert!(line.spans.len() >= 2);
+        Ok(())
     }
 
     /// The raw view scrolls by wrapped rows, so a match's scroll offset
@@ -523,7 +527,7 @@ mod tests {
     /// several rows, the two disagree, and n/N lands short if the unwrapped
     /// index is used.
     #[test]
-    fn search_match_lines_maps_to_wrapped_row_offset() {
+    fn search_match_lines_maps_to_wrapped_row_offset() -> Result<(), TestError> {
         // At width 10: info(1 row) + blank(1 row) + a 20-col line(2 rows)
         // put the matching 23-col line at wrapped row 4 — while its
         // unwrapped display index would be only 3.
@@ -536,17 +540,19 @@ mod tests {
             "match offset must be the wrapped-row start of the line, not its \
              unwrapped index (3)"
         );
+        Ok(())
     }
 
     /// With no wrapping (width wider than every line) the wrapped-row
     /// offsets collapse back to the plain display-line indices: info at 0,
     /// the second raw line at 3 (info, blank, line0, line1).
     #[test]
-    fn search_match_lines_unwrapped_matches_display_indices() {
+    fn search_match_lines_unwrapped_matches_display_indices() -> Result<(), TestError> {
         let info = "INVITE probe";
         let raw_text = "Via: udp\nCSeq: 1 INVITE";
         let rows = search_match_lines(info, raw_text, "cseq", 200);
         assert_eq!(rows, vec![3]);
+        Ok(())
     }
 
     /// The raw viewer's info line says when the bytes were never on a wire.
@@ -559,7 +565,8 @@ mod tests {
     /// origin, in `InputOrigin::as_str`'s spelling, so the TUI, the summary
     /// line and `--json` cannot disagree about one message.
     #[test]
-    fn the_raw_viewer_info_line_says_when_the_bytes_were_never_on_a_wire() {
+    fn the_raw_viewer_info_line_says_when_the_bytes_were_never_on_a_wire() -> Result<(), TestError>
+    {
         use crate::capture::parse::{InputOrigin, TransportProto};
         use crate::tui::header_form::HeaderFormMode;
 
@@ -584,7 +591,7 @@ mod tests {
             5060,
             TransportProto::Tcp,
         )
-        .expect("fixture parses");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
 
         msg.input_origin = Some(InputOrigin::Uprobe);
         let (info, _) = raw_display_text(&msg, HeaderFormMode::default());
@@ -602,16 +609,18 @@ mod tests {
                 "an ordinary wire capture's info line must be unchanged: {plain}"
             );
         }
+        Ok(())
     }
 
     /// A minimal INVITE produces the expected line layout: info, blank,
     /// start-line, header, body separator, SDP line.
     #[test]
-    fn highlight_sip_message_basic() {
+    fn highlight_sip_message_basic() -> Result<(), TestError> {
         let theme = crate::tui::Theme::default();
         let raw = "INVITE sip:bob@example.com SIP/2.0\r\nFrom: alice\r\n\r\nv=0\r\n";
         let lines = highlight_sip_message("info line", raw, "", &theme);
         // info + blank + first line + header + blank separator + sdp line
         assert!(lines.len() >= 4);
+        Ok(())
     }
 }
