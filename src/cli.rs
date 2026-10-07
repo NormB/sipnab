@@ -2626,8 +2626,8 @@ pub struct SecurityArgs {
     /// capture device is opened. The file is opened for APPEND and never
     /// truncated, so successive runs accumulate; created mode 0600 if absent,
     /// because argv holds capture paths and a path holds a customer name.
-    /// The value of a flag that takes a secret inline, such as --hep-auth or
-    /// --api-key, is recorded as `[redacted]`.
+    /// The record replaces the value of a flag that takes a secret inline,
+    /// such as --hep-auth or --api-key, with `[redacted]`.
     ///
     /// **A record that cannot be written stops the run.** A best-effort line
     /// would be worse than none: its absence would mean either "not enabled"
