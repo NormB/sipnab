@@ -105,7 +105,11 @@ entry that carries them.
   time the HEP datagram was sniffed, so every message in a feed got the
   sniffer's clock: a 60 s call relayed or replayed as HEP showed as seven
   messages in the same millisecond. `--hep-listen` already used the HEP
-  timestamp; both now follow one rule.
+  timestamp; both now follow one rule. Found from Giovanni Maruzzelli's
+  ([@gmaruzz](https://github.com/gmaruzz)) retest of the loopback HEP setup in
+  [#343](https://github.com/NormB/sipnab/issues/343), which also showed that a
+  HEP port with no listener loses messages (see `[capture]` in the
+  configuration reference).
 - **Refusals name the setting the user wrote.** Quality band flags were refused
   naming `[quality]` keys; `--business-hours` naming `[security]
   business_hours`; an empty `--hep-auth` or `--metrics-auth` naming the
