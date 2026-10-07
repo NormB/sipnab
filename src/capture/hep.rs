@@ -8931,15 +8931,19 @@ mod tests {
         /// wrong end.
         #[test]
         fn a_refused_hmac_token_is_refused_for_its_own_reason() {
+            let key = Some(crate::test_material::key_str("hep-refusal-reason"));
             let mut cache = HmacNonceCache::new();
-            let datagram = [0u8; 8];
+            // Any bytes will do: the refusals below depend on the token's span
+            // and presence, not on the datagram. Drawn from test_material so no
+            // literal reaches the HMAC path (CodeQL rust/hard-coded-cryptographic-value).
+            let datagram = crate::test_material::key_for("hep-refusal-reason-datagram");
             // A span of the wrong length is a malformed token.
             assert_eq!(
-                hmac_auth_ok(Some("k"), &datagram, Some((0, 4)), 30, &mut cache),
+                hmac_auth_ok(key, &datagram, Some((0, 4)), 30, &mut cache),
                 Err(HepRefusal::HmacBadFormat)
             );
             assert_eq!(
-                hmac_auth_ok(Some("k"), &datagram, None, 30, &mut cache),
+                hmac_auth_ok(key, &datagram, None, 30, &mut cache),
                 Err(HepRefusal::AuthMissing)
             );
             assert_eq!(
