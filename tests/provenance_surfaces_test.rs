@@ -96,7 +96,7 @@ fn store_with(path: &str, strip_origin: bool) -> DialogStore {
         if let PacketAction::Sip { msg, .. } =
             pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt)
         {
-            store.process_message(msg);
+            store.process_message(*msg);
         }
     }
     store

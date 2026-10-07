@@ -2130,18 +2130,6 @@ impl RelayControlMessage {
 /// plain `&mut` stores directly. Separating the (duplicated) classification
 /// from the (legitimately different) application is the core of the pipeline
 /// unification (WS1).
-// `Sip` dominates: the enum is 288 bytes and every returned `PacketAction`
-// pays it, including the `None` that most packets on a media-heavy link
-// produce. Boxing `msg` would shrink it to a Vec plus a discriminant at the
-// cost of one allocation per SIP message, which is plausibly the better trade
-// and is tracked separately.
-//
-// Not done here because it is a hot-path change across 24 destructuring sites
-// and the case for it rests on a packet mix nobody has measured. Adding the
-// frame pointer to `SipMessage` pushed this past clippy's threshold; it did
-// not create the imbalance, which predates it. Silencing with a reason beats
-// either an unmeasured rewrite or a lint that everyone learns to ignore.
-#[allow(clippy::large_enum_variant)]
 pub enum PacketAction {
     /// Nothing to record: not SIP/RTP/RTCP, a DTLS handshake already consumed
     /// for key material, or opted out via `PipelineOptions`.
@@ -2152,8 +2140,9 @@ pub enum PacketAction {
     /// still counts, matches, and outputs the message; appliers gate the
     /// dialog-store write on the option.
     Sip {
-        /// The parsed message, to move into the dialog store.
-        msg: sip::message::SipMessage,
+        /// The parsed message, to move into the dialog store. Boxed so the
+        /// largest variant does not set the size every `PacketAction` pays.
+        msg: Box<sip::message::SipMessage>,
         /// `(media_ip, media_port, call_id, media)` links to apply to streams.
         sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
     },
@@ -2338,7 +2327,7 @@ pub fn classify_packet(
                     }
                 }
                 return PacketAction::Sip {
-                    msg: sip_msg,
+                    msg: Box::new(sip_msg),
                     sdp_links,
                 };
             }
@@ -2651,7 +2640,7 @@ pub fn process_packet(
                 return;
             }
             // Quick write to dialog store, then release.
-            dialog_store.write().process_message(msg);
+            dialog_store.write().process_message(*msg);
             // Link SDP media endpoints to RTP streams (separate lock).
             if !sdp_links.is_empty() {
                 let mut ss = stream_store.write();
@@ -4205,6 +4194,17 @@ mod resolved_media_tests {
 /// parallel.
 #[cfg(test)]
 mod rtpproxy_control_tests {
+
+    /// Every packet the pipeline classifies returns a `PacketAction`, most of
+    /// them `None` or an RTP packet, so the enum's size is paid on the hot
+    /// path whatever the variant. The parsed SIP message is boxed so it does
+    /// not set that size: clippy's `large_enum_variant` threshold is 200
+    /// bytes, and this keeps the whole enum well under it.
+    #[test]
+    fn packet_action_stays_small() {
+        let size = std::mem::size_of::<super::PacketAction>();
+        assert!(size <= 128, "PacketAction is {size} bytes");
+    }
     use super::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
     use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
     use crate::relay::reconcile::RelayLink;

@@ -1065,19 +1065,21 @@ mod tests {
             }
         }
 
-        /// Run `run_multi_capture` over `devs` on a helper thread and return
-        /// (coordinator result rx, sibling-stop flag, opened counter,
-        /// caller-side ready rx).
-        #[allow(clippy::type_complexity)]
-        fn run(
-            devs: &[&str],
-            with_ready: bool,
-        ) -> (
-            crossbeam_channel::Receiver<Result<()>>,
-            Arc<AtomicBool>,
-            Arc<AtomicU64>,
-            Option<crossbeam_channel::Receiver<Result<(), String>>>,
-        ) {
+        /// A multi-device capture running on a helper thread, and the handles a
+        /// test reads it through.
+        struct CoordinatorRun {
+            /// The coordinator's result, once it returns.
+            done: crossbeam_channel::Receiver<Result<()>>,
+            /// Set when the coordinator asks the siblings to stop.
+            stop: Arc<AtomicBool>,
+            /// How many fake devices opened.
+            opened: Arc<AtomicU64>,
+            /// Readiness, as the caller sees it, when the test asked for it.
+            ready: Option<crossbeam_channel::Receiver<Result<(), String>>>,
+        }
+
+        /// Run `run_multi_capture` over `devs` on a helper thread.
+        fn run(devs: &[&str], with_ready: bool) -> CoordinatorRun {
             let stop = Arc::new(AtomicBool::new(false));
             let opened = Arc::new(AtomicU64::new(0));
             let devs: Vec<CaptureSource> = devs
@@ -1107,7 +1109,12 @@ mod tests {
                     let _ = done_tx.send(res);
                 })
                 .unwrap();
-            (done_rx, stop, opened, with_ready.then_some(ready_rx))
+            CoordinatorRun {
+                done: done_rx,
+                stop,
+                opened,
+                ready: with_ready.then_some(ready_rx),
+            }
         }
 
         /// One failed device open must (a) surface ONE error naming that
@@ -1116,7 +1123,12 @@ mod tests {
         /// error instead of hanging on live siblings forever.
         #[test]
         fn open_failure_stops_siblings_and_surfaces_one_named_error() {
-            let (done_rx, stop, opened, ready_rx) = run(&["good0", "bad1", "good2"], true);
+            let CoordinatorRun {
+                done: done_rx,
+                stop,
+                opened,
+                ready: ready_rx,
+            } = run(&["good0", "bad1", "good2"], true);
             let msg = ready_rx
                 .unwrap()
                 .recv_timeout(Duration::from_secs(5))
@@ -1137,7 +1149,11 @@ mod tests {
         /// the coordinator still returns the named error.
         #[test]
         fn open_failure_without_ready_channel_still_tears_down() {
-            let (done_rx, stop, _opened, _none) = run(&["good0", "bad1"], false);
+            let CoordinatorRun {
+                done: done_rx,
+                stop,
+                ..
+            } = run(&["good0", "bad1"], false);
             let res = done_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("coordinator must finish without a ready channel too");
@@ -1150,7 +1166,12 @@ mod tests {
         /// caller gets `Ok(())` on ready and the siblings keep running.
         #[test]
         fn all_devices_ok_does_not_stop_anyone() {
-            let (done_rx, stop, opened, ready_rx) = run(&["good0", "good1"], true);
+            let CoordinatorRun {
+                done: done_rx,
+                stop,
+                opened,
+                ready: ready_rx,
+            } = run(&["good0", "good1"], true);
             ready_rx
                 .unwrap()
                 .recv_timeout(Duration::from_secs(5))

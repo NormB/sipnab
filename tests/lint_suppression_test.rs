@@ -13,10 +13,20 @@
 use std::process::Command;
 
 /// Lints whose suppression is refused, with the design fix each one asks for.
-const REFUSED: &[(&str, &str)] = &[(
-    "too_many_arguments",
-    "group the values that travel together into a named type",
-)];
+const REFUSED: &[(&str, &str)] = &[
+    (
+        "too_many_arguments",
+        "group the values that travel together into a named type",
+    ),
+    (
+        "large_enum_variant",
+        "box the large variant's data so every value of the enum stays small",
+    ),
+    (
+        "type_complexity",
+        "name the type: a struct with named fields instead of a nested tuple",
+    ),
+];
 
 /// Every `allow` attribute naming a refused lint, as `path:line: lint`.
 fn suppressions() -> Vec<String> {

@@ -65,7 +65,7 @@ fn capture_of(capture: &str) -> (DialogStore, String) {
         if let PacketAction::Sip { msg, .. } =
             pipeline::classify_packet(&parsed, &mut heuristic, &opts, &mut decrypt)
         {
-            store.process_message(msg);
+            store.process_message(*msg);
         }
     }
     let _ = reader.join();

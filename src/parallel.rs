@@ -390,7 +390,7 @@ fn reconstruct(
             if !cfg.no_dialog {
                 // The store takes the message by move — cloning a SipMessage
                 // deep-copies every header String.
-                ds.process_message(msg);
+                ds.process_message(*msg);
                 // Same provenance the single-threaded router records, so a
                 // `--cores` run and a `--cores 1` run reach the same answer
                 // about which source advertised an endpoint and when.

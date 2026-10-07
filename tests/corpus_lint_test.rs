@@ -129,7 +129,7 @@ fn ingest(path: &Path) -> Option<Ingested> {
         match classify_packet(&parsed, &mut heuristic, &opts, &mut decrypt) {
             PacketAction::None => {}
             PacketAction::Sip { msg, sdp_links } => {
-                out.dialogs.process_message(msg);
+                out.dialogs.process_message(*msg);
                 for (ip, port, call_id, media) in &sdp_links {
                     out.streams
                         .link_to_dialog_with_sdp(*ip, *port, call_id, media);
