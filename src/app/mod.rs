@@ -87,23 +87,19 @@ pub fn pipeline_options(cli: &Cli, decided: PipelineDecisions) -> crate::pipelin
 
 /// The pipeline options the REST and MCP servers read capture files with.
 ///
-/// A file opened through a server is read as the same file given to `-I` on
-/// this command line: `--hep-parse` unwraps HEP, `--portrange` gates
-/// signaling, and the run's `--no-rtp`, `--no-dialog`, `--rtpproxy-control`
-/// and `--quiet-bad-parse` apply. It is a FILE, so the port gate applies even
-/// in a TUI run, whose live capture leaves the gate to its BPF filter.
+/// A file opened through a server is read with this run's `--hep-parse`,
+/// `--no-rtp`, `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse`.
+/// It reads SIP on every port, not only `--portrange`: the TUI's own file open
+/// does the same, and `open_capture` always did, so an agent opening a capture
+/// whose SIP rides another port still sees its calls.
 #[must_use]
-pub fn server_pipeline_options(
-    cli: &Cli,
-    config: &Config,
-    portrange: (u16, u16),
-) -> crate::pipeline::PipelineOptions {
+pub fn server_pipeline_options(cli: &Cli, config: &Config) -> crate::pipeline::PipelineOptions {
     pipeline_options(
         cli,
         PipelineDecisions {
             no_rtp: cli.no_rtp(config),
             hep_parse: cli.hep_parse(config),
-            sip_portrange: Some(portrange),
+            sip_portrange: None,
         },
     )
 }
@@ -261,28 +257,29 @@ mod tests {
         Ok(())
     }
 
-    /// The servers read a FILE with the run's options: `-E`, the resolved port
-    /// range, `--no-rtp`, and the `[capture]` keys a config file sets.
+    /// The servers read a FILE with the run's options: `-E`, `--no-rtp`,
+    /// `--no-dialog`, and the `[capture]` keys a config file sets. Not the
+    /// port range: a file opened through a server reads SIP on every port, as
+    /// the TUI's own file open does and as `open_capture` always has (Norm,
+    /// 2026-10-07: keep reading every port).
     #[test]
-    fn server_pipeline_options_read_a_file_as_dash_i_does() {
+    fn server_pipeline_options_read_a_file_with_the_runs_options_on_every_port() {
         let flagged = server_pipeline_options(
-            &cli_from(&["-E", "--no-rtp", "--no-dialog"]),
+            &cli_from(&["-E", "--no-rtp", "--no-dialog", "--portrange", "5070-5080"]),
             &Config::default(),
-            (5070, 5080),
         );
         assert!(flagged.hep_parse, "-E reaches the servers");
         assert!(flagged.no_rtp, "--no-rtp reaches the servers");
         assert!(flagged.no_dialog, "--no-dialog reaches the servers");
         assert_eq!(
-            flagged.sip_portrange,
-            Some((5070, 5080)),
-            "a file is gated by the run's port range, as on -I"
+            flagged.sip_portrange, None,
+            "a file opened through a server reads every port"
         );
 
         let mut keyed = Config::default();
         keyed.capture.hep_parse = Some(true);
         keyed.capture.no_rtp = Some(true);
-        let from_config = server_pipeline_options(&cli_from(&[]), &keyed, (5060, 5061));
+        let from_config = server_pipeline_options(&cli_from(&[]), &keyed);
         assert!(
             from_config.hep_parse,
             "[capture] hep_parse reaches the servers"

@@ -138,12 +138,11 @@ entry that carries them.
   (and `[capture] hep_parse`) did not apply there: a HEP copy that
   `-I file -E` decoded showed no SIP when opened through a server. The
   servers now read every capture file with the run's options, built by the
-  same function the packet loop and the TUI use: `--hep-parse`,
-  `--portrange` (or `[capture] portrange`), `--no-rtp`, `--no-dialog`,
-  `--rtpproxy-control` and `--quiet-bad-parse`. MCP `find_in_captures` reads
-  with them too. `--portrange` gates a file as it does on `-I`: sipnab skips SIP
-  outside the range and `capture_status` reports what it skipped. Pass
-  `--portrange 1-65535` to read every port.
+  same function the packet loop and the TUI use: `--hep-parse`, `--no-rtp`,
+  `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse`. MCP
+  `find_in_captures` reads with them too. A file opened through a server still
+  reads SIP on every port, as the TUI's own file open does: `--portrange` does
+  not apply there.
 
 ## [0.5.205] - 2026-10-07
 

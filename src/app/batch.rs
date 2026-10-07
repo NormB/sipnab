@@ -3056,13 +3056,10 @@ fn build_configured_alert_engine(cli: &Cli, config: &Config) -> AlertEngine {
 }
 
 /// The selection of tools, budgets and surfaces the companion servers start
-/// with, resolved from the CLI and the configuration. `portrange` is the
-/// run's resolved `--portrange`, which the servers' capture-file readers gate
-/// signaling with, as `-I` does.
+/// with, resolved from the CLI and the configuration.
 fn server_selection(
     cli: &Cli,
     config: &Config,
-    portrange: (u16, u16),
     evidence_ring: Option<Arc<RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
     actions: &crate::security::actions::Actions,
     engines: &DetectionEngines,
@@ -3095,7 +3092,7 @@ fn server_selection(
         // findings list can tell "nothing was watching" from "the
         // traffic was clean".
         armed_detections: engines.armed_kinds(),
-        pipeline_options: crate::app::server_pipeline_options(cli, config, portrange),
+        pipeline_options: crate::app::server_pipeline_options(cli, config),
     }
 }
 
@@ -3579,14 +3576,7 @@ impl BatchRunner {
             &dialog_store,
             &stream_store,
             Some(&engines.alerts),
-            server_selection(
-                &cli,
-                config,
-                policy.portrange,
-                evidence_ring.clone(),
-                &actions,
-                &engines,
-            ),
+            server_selection(&cli, config, evidence_ring.clone(), &actions, &engines),
             // Captured above, before the reconciler moved to its own thread.
             // `None` here is what makes `query_relay` (and GET /v1/relay/...)
             // refuse: on a file-backed run no permit exists to capture.
