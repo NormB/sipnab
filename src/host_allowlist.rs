@@ -287,9 +287,12 @@ fn is_ip_literal(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
-    fn loopback() -> SocketAddr {
-        "127.0.0.1:8080".parse().expect("addr")
+    fn loopback() -> Result<SocketAddr, TestError> {
+        Ok("127.0.0.1:8080"
+            .parse()
+            .map_err(|e| format!("addr: {e:?}"))?)
     }
 
     fn check(list: &HostAllowlist, host: &str) -> Result<(), HostRejection> {
@@ -299,8 +302,8 @@ mod tests {
     /// The loopback names pass on any port, in any case, and with IPv6
     /// brackets.
     #[test]
-    fn loopback_names_pass_on_any_port() {
-        let list = HostAllowlist::new(loopback(), &[]);
+    fn loopback_names_pass_on_any_port() -> Result<(), TestError> {
+        let list = HostAllowlist::new(loopback()?, &[]);
         for host in [
             "localhost",
             "localhost:8080",
@@ -312,43 +315,51 @@ mod tests {
         ] {
             assert_eq!(check(&list, host), Ok(()), "{host}");
         }
+        Ok(())
     }
 
     /// A rebound attacker's name is refused with 403, with and without a
     /// port, and the refusal names both the host and the flag.
     #[test]
-    fn a_foreign_name_is_refused_naming_the_flag() {
-        let list = HostAllowlist::new(loopback(), &[]);
+    fn a_foreign_name_is_refused_naming_the_flag() -> Result<(), TestError> {
+        let list = HostAllowlist::new(loopback()?, &[]);
         for host in [
             "evil.example",
             "evil.example:8080",
             "127.0.0.1.evil.example",
             "localhost.evil.example:8080",
         ] {
-            let err = check(&list, host).expect_err(host);
+            let err = check(&list, host).err().ok_or(host)?;
             assert_eq!(err.status(), 403, "{host}");
             let msg = err.message("--api-allowed-host");
             assert!(msg.contains(host), "{msg}");
             assert!(msg.contains("--api-allowed-host"), "{msg}");
         }
+        Ok(())
     }
 
     /// An address literal that is not this server's, on a specific bind, is
     /// refused like a name.
     #[test]
-    fn another_address_is_refused_on_a_specific_bind() {
-        let list = HostAllowlist::new(loopback(), &[]);
+    fn another_address_is_refused_on_a_specific_bind() -> Result<(), TestError> {
+        let list = HostAllowlist::new(loopback()?, &[]);
         assert_eq!(
             check(&list, "10.0.0.5:8080").map_err(|e| e.status()),
             Err(403)
         );
+        Ok(())
     }
 
     /// The bound address passes on a non-loopback bind; another address and
     /// a name do not.
     #[test]
-    fn the_bound_address_passes() {
-        let list = HostAllowlist::new("192.0.2.7:8080".parse().expect("addr"), &[]);
+    fn the_bound_address_passes() -> Result<(), TestError> {
+        let list = HostAllowlist::new(
+            "192.0.2.7:8080"
+                .parse()
+                .map_err(|e| format!("addr: {e:?}"))?,
+            &[],
+        );
         assert_eq!(check(&list, "192.0.2.7:8080"), Ok(()));
         assert_eq!(
             check(&list, "192.0.2.8:8080").map_err(|e| e.status()),
@@ -358,15 +369,21 @@ mod tests {
             check(&list, "box.example:8080").map_err(|e| e.status()),
             Err(403)
         );
-        let v6 = HostAllowlist::new("[2001:db8::7]:8080".parse().expect("addr"), &[]);
+        let v6 = HostAllowlist::new(
+            "[2001:db8::7]:8080"
+                .parse()
+                .map_err(|e| format!("addr: {e:?}"))?,
+            &[],
+        );
         assert_eq!(check(&v6, "[2001:db8::7]:8080"), Ok(()));
+        Ok(())
     }
 
     /// A wildcard bind accepts any address literal, and still refuses names.
     #[test]
-    fn a_wildcard_bind_accepts_address_literals_only() {
+    fn a_wildcard_bind_accepts_address_literals_only() -> Result<(), TestError> {
         for bind in ["0.0.0.0:8080", "[::]:8080"] {
-            let list = HostAllowlist::new(bind.parse().expect("addr"), &[]);
+            let list = HostAllowlist::new(bind.parse().map_err(|e| format!("addr: {e:?}"))?, &[]);
             assert_eq!(check(&list, "192.0.2.7:8080"), Ok(()), "{bind}");
             assert_eq!(check(&list, "[2001:db8::7]:8080"), Ok(()), "{bind}");
             assert_eq!(
@@ -375,13 +392,14 @@ mod tests {
                 "{bind}"
             );
         }
+        Ok(())
     }
 
     /// An added entry passes; with a port, on that port only.
     #[test]
-    fn added_entries_pass_and_a_port_pins_them() {
+    fn added_entries_pass_and_a_port_pins_them() -> Result<(), TestError> {
         let list = HostAllowlist::new(
-            loopback(),
+            loopback()?,
             &["Proxy.Example".to_string(), "api.example:8443".to_string()],
         );
         assert_eq!(check(&list, "proxy.example"), Ok(()));
@@ -395,24 +413,26 @@ mod tests {
             check(&list, "evil.example").map_err(|e| e.status()),
             Err(403)
         );
+        Ok(())
     }
 
     /// `*` turns the check off: anything, even no Host at all, is served.
     #[test]
-    fn a_star_disables_the_check() {
-        let list = HostAllowlist::new(loopback(), &["proxy.example".into(), "*".into()]);
+    fn a_star_disables_the_check() -> Result<(), TestError> {
+        let list = HostAllowlist::new(loopback()?, &["proxy.example".into(), "*".into()]);
         assert!(list.is_disabled());
         assert_eq!(check(&list, "evil.example"), Ok(()));
         assert_eq!(list.check(None, None), Ok(()));
         assert_eq!(list.describe(), vec!["*".to_string()]);
+        Ok(())
     }
 
     /// No Host and no target authority is a 400, as rmcp answers it; the
     /// target's authority stands in when the header is absent.
     #[test]
-    fn a_missing_host_is_a_bad_request_unless_the_target_names_one() {
-        let list = HostAllowlist::new(loopback(), &[]);
-        let err = list.check(None, None).expect_err("no host");
+    fn a_missing_host_is_a_bad_request_unless_the_target_names_one() -> Result<(), TestError> {
+        let list = HostAllowlist::new(loopback()?, &[]);
+        let err = list.check(None, None).err().ok_or("no host")?;
         assert_eq!(err, HostRejection::Missing);
         assert_eq!(err.status(), 400);
         assert_eq!(list.check(None, Some("127.0.0.1:8080")), Ok(()));
@@ -427,12 +447,13 @@ mod tests {
                 .map_err(|e| e.status()),
             Err(403)
         );
+        Ok(())
     }
 
     /// A Host that is not a valid authority is a 400, not a pass.
     #[test]
-    fn a_malformed_host_is_a_bad_request() {
-        let list = HostAllowlist::new(loopback(), &[]);
+    fn a_malformed_host_is_a_bad_request() -> Result<(), TestError> {
+        let list = HostAllowlist::new(loopback()?, &[]);
         for bad in [
             &b""[..],
             b"localhost:notaport",
@@ -451,11 +472,12 @@ mod tests {
                 String::from_utf8_lossy(bad)
             );
         }
+        Ok(())
     }
 
     /// The refusal suggests the host without its port as the flag value.
     #[test]
-    fn the_refusal_suggests_the_bare_host() {
+    fn the_refusal_suggests_the_bare_host() -> Result<(), TestError> {
         let msg =
             HostRejection::NotAllowed("evil.example:8080".into()).message("--mcp-allowed-host");
         assert!(msg.ends_with("--mcp-allowed-host evil.example."), "{msg}");
@@ -463,5 +485,6 @@ mod tests {
             msg.starts_with("Forbidden: Host header is not allowed"),
             "{msg}"
         );
+        Ok(())
     }
 }

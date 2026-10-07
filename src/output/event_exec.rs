@@ -745,12 +745,13 @@ fn migrate_template_vars(template: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A child whose status check errors must be cleaned up (killed and
     /// reaped), not silently forgotten — dropping a `Child` without waiting
     /// leaves a zombie. A still-running child is kept.
     #[test]
-    fn reap_action_on_error_cleans_up() {
+    fn reap_action_on_error_cleans_up() -> Result<(), TestError> {
         use std::io;
         use std::process::ExitStatus;
         assert!(matches!(
@@ -761,15 +762,16 @@ mod tests {
             reap_action(&Ok::<Option<ExitStatus>, io::Error>(None)),
             ReapAction::Keep
         ));
+        Ok(())
     }
 
     /// Run `sh -c <cmd>` to completion and return its real exit status.
-    fn status_of(cmd: &str) -> ExitStatus {
-        Command::new("sh")
+    fn status_of(cmd: &str) -> Result<ExitStatus, TestError> {
+        Ok(Command::new("sh")
             .arg("-c")
             .arg(cmd)
             .status()
-            .expect("sh should run")
+            .map_err(|e| format!("sh should run: {e:?}"))?)
     }
 
     /// Fire the dialog hook `n` times, pausing so each child has exited before
@@ -787,8 +789,8 @@ mod tests {
     /// of this exact bug: a sleep long enough on an idle box and too short on a
     /// busy one. The loop below is bounded, so a genuinely stuck child still
     /// fails the test rather than hanging it.
-    fn fire_n(engine: &mut EventExecEngine, n: usize) -> ExecOutcomeCounts {
-        let dialog = make_dialog();
+    fn fire_n(engine: &mut EventExecEngine, n: usize) -> Result<ExecOutcomeCounts, TestError> {
+        let dialog = make_dialog()?;
         for _ in 0..n {
             engine.fire_dialog_event(&dialog);
         }
@@ -800,7 +802,7 @@ mod tests {
             // as a success or a failure. Cumulative across calls, which is what
             // the callers assert on.
             if out.succeeded + out.failed >= out.spawned {
-                return out;
+                return Ok(out);
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -817,14 +819,14 @@ mod tests {
     /// status away, so a hook that failed and a hook that worked reached the
     /// same branch with the same (absent) information.
     #[test]
-    fn reap_action_carries_the_exit_status() {
-        let good = status_of("exit 0");
-        let bad = status_of("exit 7");
+    fn reap_action_carries_the_exit_status() -> Result<(), TestError> {
+        let good = status_of("exit 0")?;
+        let bad = status_of("exit 7")?;
         let ReapAction::Exited(observed_good) = reap_action(&Ok(Some(good))) else {
-            panic!("a finished child must report Exited");
+            return Err("a finished child must report Exited".into());
         };
         let ReapAction::Exited(observed_bad) = reap_action(&Ok(Some(bad))) else {
-            panic!("a finished child must report Exited");
+            return Err("a finished child must report Exited".into());
         };
         assert!(observed_good.success(), "exit 0 is a success");
         assert!(!observed_bad.success(), "exit 7 is a failure");
@@ -833,12 +835,13 @@ mod tests {
             Some(7),
             "the exact exit code must survive the reaper"
         );
+        Ok(())
     }
 
     /// A hook that exits non-zero and a hook that exits zero produce different
     /// ledgers. Before the fix both produced the same one: nothing.
     #[test]
-    fn failing_hook_is_counted_separately_from_a_succeeding_one() {
+    fn failing_hook_is_counted_separately_from_a_succeeding_one() -> Result<(), TestError> {
         let mut succeeding = EventExecEngine::new(
             Some("exit 0".to_string()),
             None,
@@ -846,7 +849,7 @@ mod tests {
             3.0,
             DEFAULT_QUEUE_DEPTH,
         );
-        let good = fire_n(&mut succeeding, 3);
+        let good = fire_n(&mut succeeding, 3)?;
         let mut failing = EventExecEngine::new(
             Some("exit 7".to_string()),
             None,
@@ -854,7 +857,7 @@ mod tests {
             3.0,
             DEFAULT_QUEUE_DEPTH,
         );
-        let bad = fire_n(&mut failing, 3);
+        let bad = fire_n(&mut failing, 3)?;
 
         assert_ne!(good, bad, "the two runs must be distinguishable");
         // Positive control on the success side: a fix that counted every
@@ -866,12 +869,13 @@ mod tests {
         assert_eq!(bad.spawned, 3);
         assert_eq!(bad.failed, 3, "every `exit 7` is a failure");
         assert_eq!(bad.succeeded, 0, "no `exit 7` may be booked as a success");
+        Ok(())
     }
 
     /// A failing hook must not change capture behavior: it is not retried, and
     /// it does not stop later hooks from running.
     #[test]
-    fn failing_hook_does_not_disarm_later_hooks() {
+    fn failing_hook_does_not_disarm_later_hooks() -> Result<(), TestError> {
         let mut engine = EventExecEngine::new(
             Some("exit 7".to_string()),
             None,
@@ -879,9 +883,9 @@ mod tests {
             3.0,
             DEFAULT_QUEUE_DEPTH,
         );
-        let after_first = fire_n(&mut engine, 1);
+        let after_first = fire_n(&mut engine, 1)?;
         assert_eq!(after_first.failed, 1, "the first hook failed");
-        let after_more = fire_n(&mut engine, 2);
+        let after_more = fire_n(&mut engine, 2)?;
         assert_eq!(
             after_more.spawned, 3,
             "a failed hook must not stop later events from running theirs"
@@ -890,12 +894,13 @@ mod tests {
             after_more.failed, 3,
             "each failure is booked once — no retries"
         );
+        Ok(())
     }
 
     /// Every spawned command lands in exactly one bucket, so `unfinished` is
     /// what has not been accounted for yet rather than a free-floating number.
     #[test]
-    fn outcome_counts_account_for_every_spawn() {
+    fn outcome_counts_account_for_every_spawn() -> Result<(), TestError> {
         let counts = ExecOutcomeCounts {
             spawned: 10,
             succeeded: 4,
@@ -916,26 +921,28 @@ mod tests {
         };
         assert_eq!(clean.unfinished(), 0);
         assert!(!clean.any_trouble(), "an all-success run is not trouble");
+        Ok(())
     }
 
     /// Failure reporting escalates by order of magnitude: the first failure is
     /// always reported, and a broken hook firing at packet rate does not turn
     /// the log into the flood it is reporting.
     #[test]
-    fn order_of_magnitude_reports_first_then_decades() {
+    fn order_of_magnitude_reports_first_then_decades() -> Result<(), TestError> {
         for n in [1u64, 10, 100, 1000, 10_000] {
             assert!(is_order_of_magnitude(n), "{n} is a power of ten");
         }
         for n in [0u64, 2, 9, 11, 99, 101, 999] {
             assert!(!is_order_of_magnitude(n), "{n} is not a power of ten");
         }
+        Ok(())
     }
 
     /// An event whose command is held back by the rate limit is counted, not
     /// dropped without trace — a run that ran no commands has to be able to say
     /// whether that is because none were needed or because all were suppressed.
     #[test]
-    fn rate_limited_events_are_counted() {
+    fn rate_limited_events_are_counted() -> Result<(), TestError> {
         let mut engine = EventExecEngine::new(
             Some("exit 0".to_string()),
             None,
@@ -943,7 +950,7 @@ mod tests {
             3.0,
             DEFAULT_QUEUE_DEPTH,
         );
-        let dialog = make_dialog();
+        let dialog = make_dialog()?;
         for _ in 0..5 {
             engine.fire_dialog_event(&dialog);
         }
@@ -954,6 +961,7 @@ mod tests {
             "the other 3 events are on the books"
         );
         assert_eq!(counts.suppressed(), 3);
+        Ok(())
     }
 
     // The per-RTP-packet hot path guards the quality-event work on this; it must
@@ -961,7 +969,7 @@ mod tests {
     // guard lets the hot path skip the StreamKey rebuild + store lookup).
     /// `quality_events_enabled` is true iff an `--on-quality` command is set.
     #[test]
-    fn quality_events_enabled_tracks_command() {
+    fn quality_events_enabled_tracks_command() -> Result<(), TestError> {
         let off = EventExecEngine::new(None, None, 0, 4.0, DEFAULT_QUEUE_DEPTH);
         assert!(!off.quality_events_enabled());
         let on = EventExecEngine::new(
@@ -972,6 +980,7 @@ mod tests {
             DEFAULT_QUEUE_DEPTH,
         );
         assert!(on.quality_events_enabled());
+        Ok(())
     }
 
     use crate::capture::parse::TransportProto;
@@ -988,14 +997,18 @@ mod tests {
     }
 
     /// Fixed timestamp (2024-06-15 12:00:00 UTC) for determinism.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build a minimal dialog from a single INVITE.
-    fn make_dialog() -> SipDialog {
+    fn make_dialog() -> Result<SipDialog, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1009,19 +1022,19 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
-        SipDialog::new(&msg).expect("should create dialog")
+        .map_err(|e| format!("should parse: {e:?}"))?;
+        Ok(SipDialog::new(&msg).ok_or("should create dialog")?)
     }
 
     /// Build a fresh single-packet PCMU RTP stream with SSRC 0xAABBCCDD.
-    fn make_stream() -> RtpStream {
+    fn make_stream() -> Result<RtpStream, TestError> {
         let key = StreamKey {
             ssrc: 0xAABBCCDD,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -1039,49 +1052,52 @@ mod tests {
             ssrc: 0xAABBCCDD,
             payload_offset: 12,
         };
-        RtpStream::new(key, &hdr, ts())
+        Ok(RtpStream::new(key, &hdr, ts()?))
     }
 
     /// `%call_id` migrates to `$SIPNAB_CALL_ID`.
     #[test]
-    fn migrate_template_vars_call_id() {
+    fn migrate_template_vars_call_id() -> Result<(), TestError> {
         let migrated = migrate_template_vars("echo %call_id");
         assert_eq!(migrated, "echo \"${SIPNAB_CALL_ID}\"");
+        Ok(())
     }
 
     /// Run a migrated legacy template through `sh -c` the way a hook runs,
     /// with `SIPNAB_FROM` set to `value`, inside a directory holding one file
     /// so an unquoted `*` would visibly glob. Returns stdout.
-    fn run_migrated(template: &str, value: &str) -> String {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("glob-would-match-this"), b"").expect("seed file");
+    fn run_migrated(template: &str, value: &str) -> Result<String, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("glob-would-match-this"), b"")
+            .map_err(|e| format!("seed file: {e:?}"))?;
         let out = Command::new("sh")
             .arg("-c")
             .arg(migrate_template_vars(template))
             .env("SIPNAB_FROM", value)
             .current_dir(dir.path())
             .output()
-            .expect("sh should run");
-        String::from_utf8(out.stdout).expect("utf-8 stdout")
+            .map_err(|e| format!("sh should run: {e:?}"))?;
+        Ok(String::from_utf8(out.stdout).map_err(|e| format!("utf-8 stdout: {e:?}"))?)
     }
 
     /// A captured From value must reach a legacy `%from` hook as ONE argument,
     /// byte for byte: no word splitting on its spaces, no glob expansion of
     /// its `*`. An unquoted `$SIPNAB_FROM` fails both (CWE-78).
     #[test]
-    fn legacy_placeholder_is_one_unexpanded_argument() {
+    fn legacy_placeholder_is_one_unexpanded_argument() -> Result<(), TestError> {
         let hostile = "a  b * -o /etc/x";
         assert_eq!(
-            run_migrated("printf '<%s>' %from", hostile),
+            run_migrated("printf '<%s>' %from", hostile)?,
             format!("<{hostile}>")
         );
+        Ok(())
     }
 
     /// Every legacy name reaches the hook as its own variable's value, so no
     /// shorter name (`%src`, `%state`) captures a longer one (`%ssrc`,
     /// `%stream_json`), and each value arrives as one unsplit word.
     #[test]
-    fn every_legacy_placeholder_reaches_its_own_variable() {
+    fn every_legacy_placeholder_reaches_its_own_variable() -> Result<(), TestError> {
         let names = [
             "json",
             "call_id",
@@ -1112,29 +1128,31 @@ mod tests {
                 .arg(migrate_template_vars(&format!("printf '<%s>' %{name}")))
                 .env(&var, &value)
                 .output()
-                .expect("sh should run");
+                .map_err(|e| format!("sh should run: {e:?}"))?;
             assert_eq!(
                 String::from_utf8_lossy(&out.stdout),
                 format!("<{value}>"),
                 "%{name} must expand {var}"
             );
         }
+        Ok(())
     }
 
     /// Multiple `%` placeholders in one template all migrate.
     #[test]
-    fn migrate_template_vars_multiple() {
+    fn migrate_template_vars_multiple() -> Result<(), TestError> {
         let migrated = migrate_template_vars("notify --from=%from --to=%to --state=%state");
         assert_eq!(
             migrated,
             "notify --from=\"${SIPNAB_FROM}\" --to=\"${SIPNAB_TO}\" --state=\"${SIPNAB_STATE}\""
         );
+        Ok(())
     }
 
     /// The command template is stored verbatim — values are only ever
     /// passed as env vars, never interpolated (injection defense).
     #[test]
-    fn env_var_injection_prevents_command_injection() {
+    fn env_var_injection_prevents_command_injection() -> Result<(), TestError> {
         // A malicious call-id with shell metacharacters should NOT be
         // interpolated into the command string. It is only passed as an env var.
         let engine = EventExecEngine::new(
@@ -1149,15 +1167,16 @@ mod tests {
             engine.on_dialog_cmd.as_deref(),
             Some("echo $SIPNAB_CALL_ID")
         );
+        Ok(())
     }
 
     /// With rate_limit=10, exactly 10 of 15 exec attempts are allowed.
     #[test]
-    fn rate_limiting_blocks_excess() {
+    fn rate_limiting_blocks_excess() -> Result<(), TestError> {
         let mut engine =
             EventExecEngine::new(Some("true".to_string()), None, 10, 3.0, DEFAULT_QUEUE_DEPTH);
 
-        let _dialog = make_dialog();
+        let _dialog = make_dialog()?;
         let mut fired = 0;
 
         for _ in 0..15 {
@@ -1168,43 +1187,48 @@ mod tests {
         }
 
         assert_eq!(fired, 10, "should only allow 10 execs with rate_limit=10");
+        Ok(())
     }
 
     /// Low jitter and zero loss yield an estimated MOS above 4.0.
     #[test]
-    fn mos_estimation_good_quality() {
+    fn mos_estimation_good_quality() -> Result<(), TestError> {
         // Good conditions: low jitter, no loss — uses canonical estimate_mos
         let mos = quality::estimate_mos(5.0, 0.0, Some("PCMU"));
         assert!(
             mos > 4.0,
             "good conditions should give MOS > 4.0: got {mos}"
         );
+        Ok(())
     }
 
     /// High jitter and heavy loss yield an estimated MOS below 3.0.
     #[test]
-    fn mos_estimation_bad_quality() {
+    fn mos_estimation_bad_quality() -> Result<(), TestError> {
         // Bad conditions: high jitter, significant loss — uses canonical estimate_mos
         let mos = quality::estimate_mos(150.0, 15.0, None);
         assert!(mos < 3.0, "bad conditions should give MOS < 3.0: got {mos}");
+        Ok(())
     }
 
     /// Firing events with no commands configured neither panics nor spawns.
     #[test]
-    fn no_cmd_configured_noop() {
+    fn no_cmd_configured_noop() -> Result<(), TestError> {
         let mut engine = EventExecEngine::new(None, None, 10, 3.0, DEFAULT_QUEUE_DEPTH);
         // Should not panic or spawn anything
-        engine.fire_dialog_event(&make_dialog());
+        engine.fire_dialog_event(&make_dialog()?);
 
-        let stream = make_stream();
+        let stream = make_stream()?;
         engine.fire_quality_event(&stream, quality::MosDelay::unknown());
+        Ok(())
     }
 
     /// A fresh engine reports queue depth 0.
     #[test]
-    fn queue_depth_tracking() {
+    fn queue_depth_tracking() -> Result<(), TestError> {
         let engine = EventExecEngine::new(None, None, 10, 3.0, DEFAULT_QUEUE_DEPTH);
         assert_eq!(engine.queue_depth(), 0);
+        Ok(())
     }
 
     /// Queueing a dialog event decides it without forking: nothing reaches the
@@ -1216,10 +1240,10 @@ mod tests {
     /// syscall straight back under the guards, and would be invisible in the
     /// output of any capture.
     #[test]
-    fn queueing_a_dialog_event_spawns_nothing_until_dispatch() {
+    fn queueing_a_dialog_event_spawns_nothing_until_dispatch() -> Result<(), TestError> {
         let mut engine =
             EventExecEngine::new(Some("true".to_string()), None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
-        let dialog = make_dialog();
+        let dialog = make_dialog()?;
 
         engine.queue_dialog_event(&dialog);
         assert_eq!(engine.pending_depth(), 1, "the request must be parked");
@@ -1233,15 +1257,16 @@ mod tests {
         engine.dispatch_pending();
         assert_eq!(engine.pending_depth(), 0, "dispatch must empty the queue");
         assert_eq!(engine.outcomes().spawned, 1, "dispatch must spawn it");
+        Ok(())
     }
 
     /// The same, for the quality hook: the MOS gate and the JSON render happen
     /// at queue time (they read the stream), the spawn does not.
     #[test]
-    fn queueing_a_quality_event_spawns_nothing_until_dispatch() {
+    fn queueing_a_quality_event_spawns_nothing_until_dispatch() -> Result<(), TestError> {
         let mut engine =
             EventExecEngine::new(None, Some("true".to_string()), 0, 5.0, DEFAULT_QUEUE_DEPTH);
-        let mut stream = make_stream();
+        let mut stream = make_stream()?;
         // Loss high enough that the E-model MOS lands below the 5.0 threshold.
         stream.packet_count = 100;
         stream.lost_packets = 50;
@@ -1253,6 +1278,7 @@ mod tests {
         engine.dispatch_pending();
         assert_eq!(engine.pending_depth(), 0);
         assert_eq!(engine.outcomes().spawned, 1, "dispatch must spawn it");
+        Ok(())
     }
 
     /// `SIPNAB_LOSS` carries the shared loss figure, not a private copy of
@@ -1270,10 +1296,10 @@ mod tests {
     /// 10.0% — the same 90-received/10-lost pair that separates the correct
     /// denominator from the plausible wrong one.
     #[test]
-    fn the_quality_hook_exports_the_shared_loss_figure() {
+    fn the_quality_hook_exports_the_shared_loss_figure() -> Result<(), TestError> {
         let mut engine =
             EventExecEngine::new(None, Some("true".to_string()), 0, 5.0, DEFAULT_QUEUE_DEPTH);
-        let mut stream = make_stream();
+        let mut stream = make_stream()?;
         stream.packet_count = 90;
         stream.lost_packets = 10;
         let expected = stream.loss_percent();
@@ -1283,13 +1309,13 @@ mod tests {
         );
 
         engine.queue_quality_event(&stream, quality::MosDelay::unknown());
-        let request = engine.pending.first().expect("the event must be queued");
+        let request = engine.pending.first().ok_or("the event must be queued")?;
         let loss = request
             .env
             .iter()
             .find(|(k, _)| *k == "SIPNAB_LOSS")
             .map(|(_, v)| v.as_str())
-            .expect("SIPNAB_LOSS must be exported");
+            .ok_or("SIPNAB_LOSS must be exported")?;
 
         assert_eq!(
             loss,
@@ -1300,41 +1326,44 @@ mod tests {
         assert_eq!(loss, "10.0", "and that figure is 10 lost out of 100 sent");
 
         engine.dispatch_pending();
+        Ok(())
     }
 
     /// A gate that rejects the event queues nothing, so `dispatch_pending` has
     /// nothing to run — the deferral must not turn a suppressed event into a
     /// command.
     #[test]
-    fn a_suppressed_event_queues_nothing() {
+    fn a_suppressed_event_queues_nothing() -> Result<(), TestError> {
         // No command configured at all.
         let mut none = EventExecEngine::new(None, None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
-        none.queue_dialog_event(&make_dialog());
+        none.queue_dialog_event(&make_dialog()?);
         assert_eq!(none.pending_depth(), 0);
 
         // Rate limit of 1/s: the second event in the same window is booked as
         // rate-limited and never queued.
         let mut limited =
             EventExecEngine::new(Some("true".to_string()), None, 1, 3.0, DEFAULT_QUEUE_DEPTH);
-        let dialog = make_dialog();
+        let dialog = make_dialog()?;
         limited.queue_dialog_event(&dialog);
         limited.queue_dialog_event(&dialog);
         assert_eq!(limited.pending_depth(), 1, "only the allowed one is queued");
         assert_eq!(limited.outcomes().rate_limited, 1);
         limited.dispatch_pending();
         assert_eq!(limited.outcomes().spawned, 1);
+        Ok(())
     }
 
     /// `fire_dialog_event` stays the queue-then-dispatch pair, so the direct
     /// callers (and every existing test of them) still see one spawn per call
     /// and the two paths cannot drift apart.
     #[test]
-    fn firing_directly_still_spawns_immediately() {
+    fn firing_directly_still_spawns_immediately() -> Result<(), TestError> {
         let mut engine =
             EventExecEngine::new(Some("true".to_string()), None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
-        engine.fire_dialog_event(&make_dialog());
+        engine.fire_dialog_event(&make_dialog()?);
         assert_eq!(engine.outcomes().spawned, 1);
         assert_eq!(engine.pending_depth(), 0, "nothing may be left parked");
+        Ok(())
     }
 
     /// The declared queue depth is what decides how many slow hooks may run at
@@ -1346,9 +1375,9 @@ mod tests {
     /// Both runs below leave the rate limit unlimited, so the only thing
     /// separating a dropped event from a spawned one is the depth.
     #[test]
-    fn the_declared_queue_depth_decides_how_many_slow_hooks_run_at_once() {
+    fn the_declared_queue_depth_decides_how_many_slow_hooks_run_at_once() -> Result<(), TestError> {
         let slow = || Some("sleep 5".to_string());
-        let dialog = make_dialog();
+        let dialog = make_dialog()?;
 
         let mut shallow = EventExecEngine::new(slow(), None, 0, 3.0, 2);
         for _ in 0..4 {
@@ -1375,20 +1404,22 @@ mod tests {
             "the same four events at a depth of eight must all run"
         );
         assert_eq!(deep.outcomes().queue_full, 0);
+        Ok(())
     }
 
     /// `dispatch_pending` on an empty queue is a no-op — the common case, once
     /// per packet, on every run with no `--on-*` command.
     #[test]
-    fn dispatching_an_empty_queue_does_nothing() {
+    fn dispatching_an_empty_queue_does_nothing() -> Result<(), TestError> {
         let mut engine = EventExecEngine::new(None, None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
         engine.dispatch_pending();
         assert_eq!(engine.outcomes(), ExecOutcomeCounts::default());
+        Ok(())
     }
 
     /// Both dialog and quality templates are migrated at construction.
     #[test]
-    fn legacy_template_migration_at_construction() {
+    fn legacy_template_migration_at_construction() -> Result<(), TestError> {
         let engine = EventExecEngine::new(
             Some("echo %call_id %from".to_string()),
             Some("alert %mos %jitter".to_string()),
@@ -1404,5 +1435,6 @@ mod tests {
             engine.on_quality_cmd.as_deref(),
             Some("alert \"${SIPNAB_MOS}\" \"${SIPNAB_JITTER}\"")
         );
+        Ok(())
     }
 }

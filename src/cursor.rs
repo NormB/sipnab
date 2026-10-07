@@ -111,21 +111,23 @@ pub fn format_cursor(at: chrono::DateTime<chrono::Utc>, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A timestamp in UTC, for the cursor tests.
-    fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .expect("test timestamp")
-            .with_timezone(&chrono::Utc)
+    fn at(s: &str) -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(chrono::DateTime::parse_from_rfc3339(s)
+            .map_err(|e| format!("test timestamp: {e:?}"))?
+            .with_timezone(&chrono::Utc))
     }
 
     /// The cursor travels back in a URL query, so it must carry no `+`: there
     /// `+` decodes to a space and corrupts the timestamp. UTC renders as `Z`.
     #[test]
-    fn format_cursor_is_url_safe_zulu() {
-        let c = format_cursor(at("2026-07-31T10:00:00Z"), "abc@host");
+    fn format_cursor_is_url_safe_zulu() -> Result<(), TestError> {
+        let c = format_cursor(at("2026-07-31T10:00:00Z")?, "abc@host");
         assert!(!c.contains('+'), "a `+` in a query decodes to a space: {c}");
         assert!(c.contains('Z'), "UTC renders as Zulu, not +00:00: {c}");
+        Ok(())
     }
 
     /// The window is half-open: the lower bound is inclusive, the upper
@@ -133,9 +135,9 @@ mod tests {
     /// instant. This is the one rule REST `/v1/dialogs` and MCP `search_by_time`
     /// share, and the boundary case is the whole reason to share it.
     #[test]
-    fn time_window_is_half_open() {
-        let lo = at("2026-07-31T10:00:00Z");
-        let hi = at("2026-07-31T11:00:00Z");
+    fn time_window_is_half_open() -> Result<(), TestError> {
+        let lo = at("2026-07-31T10:00:00Z")?;
+        let hi = at("2026-07-31T11:00:00Z")?;
         // Inclusive lower bound.
         assert!(
             in_time_window(lo, Some(lo), Some(hi)),
@@ -148,49 +150,52 @@ mod tests {
         );
         // Interior stays in; either side stays out.
         assert!(in_time_window(
-            at("2026-07-31T10:30:00Z"),
+            at("2026-07-31T10:30:00Z")?,
             Some(lo),
             Some(hi)
         ));
         assert!(!in_time_window(
-            at("2026-07-31T09:59:59Z"),
+            at("2026-07-31T09:59:59Z")?,
             Some(lo),
             Some(hi)
         ));
         assert!(!in_time_window(
-            at("2026-07-31T11:00:01Z"),
+            at("2026-07-31T11:00:01Z")?,
             Some(lo),
             Some(hi)
         ));
         // A `None` bound is unbounded on that side.
-        assert!(in_time_window(at("2000-01-01T00:00:00Z"), None, Some(hi)));
-        assert!(in_time_window(at("2099-01-01T00:00:00Z"), Some(lo), None));
+        assert!(in_time_window(at("2000-01-01T00:00:00Z")?, None, Some(hi)));
+        assert!(in_time_window(at("2099-01-01T00:00:00Z")?, Some(lo), None));
         assert!(in_time_window(lo, None, None));
         // Adjacent windows tile: the boundary instant belongs to the LATER one.
-        let later = at("2026-07-31T12:00:00Z");
+        let later = at("2026-07-31T12:00:00Z")?;
         assert!(
             !in_time_window(hi, Some(lo), Some(hi)) && in_time_window(hi, Some(hi), Some(later)),
             "the shared boundary instant is claimed by exactly one window"
         );
+        Ok(())
     }
 
     /// A compound cursor round-trips through format and parse.
     #[test]
-    fn cursor_round_trips() {
-        let raw = format_cursor(at("2026-07-31T10:00:00Z"), "abc@host");
-        let parsed = parse_cursor(&raw).expect("parses");
-        assert_eq!(parsed.at, at("2026-07-31T10:00:00Z"));
+    fn cursor_round_trips() -> Result<(), TestError> {
+        let raw = format_cursor(at("2026-07-31T10:00:00Z")?, "abc@host");
+        let parsed = parse_cursor(&raw).map_err(|e| format!("parses: {e:?}"))?;
+        assert_eq!(parsed.at, at("2026-07-31T10:00:00Z")?);
         assert_eq!(parsed.id.as_deref(), Some("abc@host"));
+        Ok(())
     }
 
     /// A bare timestamp parses, keeping the pre-compound client working.
     #[test]
-    fn cursor_accepts_a_bare_timestamp() {
-        let parsed = parse_cursor("2026-07-31T10:00:00Z").expect("parses");
+    fn cursor_accepts_a_bare_timestamp() -> Result<(), TestError> {
+        let parsed = parse_cursor("2026-07-31T10:00:00Z").map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(parsed.id, None);
         // Strictly after, with no tie-break available.
-        assert!(!parsed.precedes(at("2026-07-31T10:00:00Z"), "anything"));
-        assert!(parsed.precedes(at("2026-07-31T10:00:01Z"), "anything"));
+        assert!(!parsed.precedes(at("2026-07-31T10:00:00Z")?, "anything"));
+        assert!(parsed.precedes(at("2026-07-31T10:00:01Z")?, "anything"));
+        Ok(())
     }
 
     /// A tie group split across a page boundary is neither dropped nor repeated.
@@ -199,25 +204,29 @@ mod tests {
     /// the same instant and a page ending at the middle one, the next page must
     /// contain exactly the third.
     #[test]
-    fn cursor_splits_a_tie_group_at_the_page_boundary() {
-        let t = at("2026-07-31T10:00:00Z");
-        let c = parse_cursor(&format_cursor(t, "b")).expect("parses");
+    fn cursor_splits_a_tie_group_at_the_page_boundary() -> Result<(), TestError> {
+        let t = at("2026-07-31T10:00:00Z")?;
+        let c = parse_cursor(&format_cursor(t, "b")).map_err(|e| format!("parses: {e:?}"))?;
         assert!(!c.precedes(t, "a"), "already returned");
         assert!(!c.precedes(t, "b"), "the boundary itself was returned");
         assert!(c.precedes(t, "c"), "the rest of the tie group must follow");
+        Ok(())
     }
 
     /// An identity containing the separator still splits at the FIRST one.
     #[test]
-    fn cursor_splits_on_the_first_separator_only() {
-        let parsed = parse_cursor("2026-07-31T10:00:00Z|a|b").expect("parses");
+    fn cursor_splits_on_the_first_separator_only() -> Result<(), TestError> {
+        let parsed =
+            parse_cursor("2026-07-31T10:00:00Z|a|b").map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(parsed.id.as_deref(), Some("a|b"));
+        Ok(())
     }
 
     /// A cursor whose timestamp half is not RFC 3339 is an error, not a reset.
     #[test]
-    fn cursor_rejects_a_non_timestamp() {
-        let err = parse_cursor("yesterday|abc").expect_err("must reject");
+    fn cursor_rejects_a_non_timestamp() -> Result<(), TestError> {
+        let err = parse_cursor("yesterday|abc").err().ok_or("must reject")?;
         assert!(err.contains("RFC 3339"), "got {err:?}");
+        Ok(())
     }
 }

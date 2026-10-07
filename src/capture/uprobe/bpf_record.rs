@@ -244,6 +244,7 @@ mod tests {
     use super::*;
     use sipnab_bpf_types::FLAG_HAS_TUPLE;
     use std::net::Ipv6Addr;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build a record **through the shared type**, exactly as the kernel does.
     ///
@@ -299,29 +300,35 @@ mod tests {
     /// **The reason this backend exists.** With the tuple flag set, the packet
     /// carries the addresses the plaintext actually went out on.
     #[test]
-    fn a_record_with_a_tuple_produces_a_packet_with_real_addresses() {
+    fn a_record_with_a_tuple_produces_a_packet_with_real_addresses() -> Result<(), TestError> {
         let raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
-        let pkt = decode(&raw, 7).expect("a SIP record decodes");
-        let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+        let pkt = decode(&raw, 7).ok_or("a SIP record decodes")?;
+        let meta = pkt.pre_parsed.as_ref().ok_or("pre-parsed")?;
 
         assert_eq!(meta.src_addr.to_string(), "203.0.113.5");
         assert_eq!(meta.dst_addr.to_string(), "198.51.100.9");
         assert_eq!(meta.src_port, 5061);
         assert_eq!(meta.dst_port, 5060);
         assert_eq!(meta.ip_protocol, IP_PROTO_TCP);
-        assert!(pkt.interface.as_deref().unwrap().contains("opensips"));
+        assert!(
+            pkt.interface
+                .as_deref()
+                .ok_or("interface is set")?
+                .contains("opensips")
+        );
+        Ok(())
     }
 
     /// **And the rule that makes the above worth anything.** Without the flag,
     /// the packet must look exactly like a tracefs one — no peer at all —
     /// rather than carrying whatever happened to be in the record.
     #[test]
-    fn a_record_without_a_tuple_claims_no_peer_at_all() {
+    fn a_record_without_a_tuple_claims_no_peer_at_all() -> Result<(), TestError> {
         // Addresses ARE present in the bytes; the flag says they were not
         // observed for this write. The flag wins.
         let raw = record(0, sipnab_bpf_types::FAMILY_IPV4, INVITE);
-        let pkt = decode(&raw, 0).expect("still a SIP record");
-        let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+        let pkt = decode(&raw, 0).ok_or("still a SIP record")?;
+        let meta = pkt.pre_parsed.as_ref().ok_or("pre-parsed")?;
 
         assert!(
             meta.src_addr.is_unspecified() && meta.dst_addr.is_unspecified(),
@@ -329,79 +336,86 @@ mod tests {
         );
         assert_eq!(meta.src_port, 0);
         assert_eq!(meta.dst_port, 0);
+        Ok(())
     }
 
     /// A family sipnab does not carry is reported as no peer, not as a peer it
     /// cannot name.
     #[test]
-    fn an_unknown_address_family_yields_no_peer() {
+    fn an_unknown_address_family_yields_no_peer() -> Result<(), TestError> {
         let raw = record(FLAG_HAS_TUPLE, 777, INVITE);
-        let pkt = decode(&raw, 0).expect("decodes");
-        let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+        let pkt = decode(&raw, 0).ok_or("decodes")?;
+        let meta = pkt.pre_parsed.as_ref().ok_or("pre-parsed")?;
         assert!(meta.src_addr.is_unspecified() && meta.dst_addr.is_unspecified());
+        Ok(())
     }
 
     #[test]
-    fn ipv6_addresses_survive_the_round_trip() {
+    fn ipv6_addresses_survive_the_round_trip() -> Result<(), TestError> {
         let raw = with_ipv6(
             INVITE,
             Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
             Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2),
         );
-        let pkt = decode(&raw, 0).expect("decodes");
-        let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+        let pkt = decode(&raw, 0).ok_or("decodes")?;
+        let meta = pkt.pre_parsed.as_ref().ok_or("pre-parsed")?;
         assert_eq!(meta.src_addr.to_string(), "2001:db8::1");
         assert_eq!(meta.dst_addr.to_string(), "2001:db8::2");
+        Ok(())
     }
 
     /// Non-SIP never reaches a dialog store. The kernel filters too, but a
     /// record that slipped through must not be treated as a message here.
     #[test]
-    fn a_non_sip_record_is_rejected() {
+    fn a_non_sip_record_is_rejected() -> Result<(), TestError> {
         let raw = record(
             FLAG_HAS_TUPLE,
             sipnab_bpf_types::FAMILY_IPV4,
             b"GET / HTTP/1.1\r\n\r\n",
         );
         assert!(decode(&raw, 0).is_none());
+        Ok(())
     }
 
     /// A record shorter than its own header cannot be decoded into anything,
     /// and must not be decoded into something that looks like a message.
     #[test]
-    fn a_short_record_is_refused_rather_than_decoded_partially() {
+    fn a_short_record_is_refused_rather_than_decoded_partially() -> Result<(), TestError> {
         assert!(decode(&[0u8; 8], 0).is_none());
         assert!(decode(&[], 0).is_none());
+        Ok(())
     }
 
     /// A length longer than the bytes present must not read past them.
     #[test]
-    fn a_length_larger_than_the_payload_is_clamped() {
+    fn a_length_larger_than_the_payload_is_clamped() -> Result<(), TestError> {
         let mut raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
         // Claim a full 2 KiB write while carrying only the INVITE.
         let at = std::mem::offset_of!(TlsRecord, len);
         raw[at..at + 4].copy_from_slice(&(MAX_PAYLOAD as u32).to_ne_bytes());
-        let pkt = decode(&raw, 0).expect("decodes what is actually there");
+        let pkt = decode(&raw, 0).ok_or("decodes what is actually there")?;
         assert_eq!(
             pkt.data.len(),
             INVITE.len(),
             "the claimed length must never widen the read past the record"
         );
+        Ok(())
     }
 
     /// The pointer must survive, and must still refuse to name a frame.
     #[test]
-    fn the_packet_carries_a_pointer_that_cannot_be_resolved_to_a_frame() {
+    fn the_packet_carries_a_pointer_that_cannot_be_resolved_to_a_frame() -> Result<(), TestError> {
         let raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
-        let pkt = decode(&raw, 9).expect("decodes");
-        let loc = pkt.frame_locator().expect("both halves present");
+        let pkt = decode(&raw, 9).ok_or("decodes")?;
+        let loc = pkt.frame_locator().ok_or("both halves present")?;
         assert_eq!(loc.origin.ordinal, 9);
         assert!(loc.origin.digest.is_none());
-        let r = pkt.frame_ref().expect("owned pointer");
+        let r = pkt.frame_ref().ok_or("owned pointer")?;
         assert!(matches!(
             r.source_kind(),
             crate::capture::packet::FrameSource::Uprobe { pid: 4242, .. }
         ));
+        Ok(())
     }
 
     /// **A sample that wrapped the ring must decode to the same packet.**
@@ -411,10 +425,10 @@ mod tests {
     /// case misses: inside the header, on a field edge, and one byte either
     /// side of the header/payload seam.
     #[test]
-    fn a_wrapped_sample_decodes_the_same_as_a_contiguous_one() {
+    fn a_wrapped_sample_decodes_the_same_as_a_contiguous_one() -> Result<(), TestError> {
         let raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
-        let whole = decode(&raw, 7).expect("the contiguous record decodes");
-        let expected = whole.pre_parsed.as_ref().expect("pre-parsed");
+        let whole = decode(&raw, 7).ok_or("the contiguous record decodes")?;
+        let expected = whole.pre_parsed.as_ref().ok_or("pre-parsed")?;
 
         let mut stitch = Vec::new();
         for split in 0..=raw.len() {
@@ -423,14 +437,15 @@ mod tests {
             assert_eq!(joined, &raw[..], "split at {split} lost or reordered bytes");
 
             let pkt =
-                decode(joined, 7).unwrap_or_else(|| panic!("split at {split} failed to decode"));
-            let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+                decode(joined, 7).ok_or_else(|| format!("split at {split} failed to decode"))?;
+            let meta = pkt.pre_parsed.as_ref().ok_or("pre-parsed")?;
             assert_eq!(meta.src_addr, expected.src_addr, "split at {split}");
             assert_eq!(meta.dst_addr, expected.dst_addr, "split at {split}");
             assert_eq!(meta.src_port, expected.src_port, "split at {split}");
             assert_eq!(meta.dst_port, expected.dst_port, "split at {split}");
             assert_eq!(pkt.data, whole.data, "split at {split}");
         }
+        Ok(())
     }
 
     /// The unwrapped case must not pay for the wrapped one.
@@ -439,13 +454,14 @@ mod tests {
     /// reassembly buffer was never written, and that the returned slice is the
     /// caller's own memory rather than a duplicate of it.
     #[test]
-    fn a_contiguous_sample_is_borrowed_not_copied() {
+    fn a_contiguous_sample_is_borrowed_not_copied() -> Result<(), TestError> {
         let raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
         let mut stitch = Vec::new();
 
         let got = assemble(&raw, &[], &mut stitch);
         assert_eq!(got.as_ptr(), raw.as_ptr(), "the sample was copied");
         assert!(stitch.is_empty(), "the reassembly buffer was touched");
+        Ok(())
     }
 }
 
@@ -463,6 +479,7 @@ mod loader_tests {
     use crate::capture::channel::packet_channel;
     use sipnab_bpf_types::FLAG_HAS_TUPLE;
 
+    type TestError = Box<dyn std::error::Error>;
     const INVITE: &[u8] = b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: x\r\n\r\n";
 
     /// One record as the kernel program emits it, every field placed at the
@@ -496,22 +513,25 @@ mod loader_tests {
     /// must refuse by name and point at the backend that works, never attach
     /// to nothing and read as a quiet trunk.
     #[test]
-    fn a_build_without_kernel_programs_is_refused_by_name() {
+    fn a_build_without_kernel_programs_is_refused_by_name() -> Result<(), TestError> {
         let err = refuse_without_programs(&[])
-            .expect_err("no programs, no capture")
+            .err()
+            .ok_or("no programs, no capture")?
             .to_string();
         assert!(err.contains("no kernel programs"), "{err}");
         assert!(
             err.contains("--uprobe-backend tracefs"),
             "the refusal names the way forward: {err}"
         );
+        Ok(())
     }
 
     /// The failure is on the readiness channel BEFORE it is returned, with
     /// every target named: the launch sequence waits on that channel before
     /// dropping the privileges loading BPF needs.
     #[test]
-    fn a_failed_attach_is_reported_on_the_ready_channel_with_every_target_named() {
+    fn a_failed_attach_is_reported_on_the_ready_channel_with_every_target_named()
+    -> Result<(), TestError> {
         let targets = [
             crate::capture::UprobeTarget {
                 library: "/lib/libssl.so.3".to_string(),
@@ -523,14 +543,15 @@ mod loader_tests {
             },
         ];
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
-        let refusal = refuse_without_programs(&[]).expect_err("no programs");
+        let refusal = refuse_without_programs(&[]).err().ok_or("no programs")?;
 
         let err = attach_failed(&describe_targets(&targets), &refusal, Some(ready_tx)).to_string();
 
         let reported = ready_rx
             .try_recv()
-            .expect("readiness must be answered")
-            .expect_err("and the answer is a failure");
+            .map_err(|e| format!("readiness must be answered: {e:?}"))?
+            .err()
+            .ok_or("and the answer is a failure")?;
         assert_eq!(reported, err, "one message, both places");
         assert!(
             err.starts_with(
@@ -539,21 +560,23 @@ mod loader_tests {
             ),
             "{err}"
         );
+        Ok(())
     }
 
     /// Nobody waiting on readiness does not turn the failure into a success.
     #[test]
-    fn a_failed_attach_without_a_ready_channel_still_fails() {
-        let refusal = refuse_without_programs(&[]).expect_err("no programs");
+    fn a_failed_attach_without_a_ready_channel_still_fails() -> Result<(), TestError> {
+        let refusal = refuse_without_programs(&[]).err().ok_or("no programs")?;
         let err = attach_failed("", &refusal, None).to_string();
         assert!(err.contains("no kernel programs"), "{err}");
+        Ok(())
     }
 
     /// The copy handed to the ELF parser is the object byte for byte, whole
     /// words long, zero-padded, and reports the object's own length -- for
     /// lengths on, off and either side of a word boundary.
     #[test]
-    fn the_aligned_copy_is_the_object_byte_for_byte_on_a_word_boundary() {
+    fn the_aligned_copy_is_the_object_byte_for_byte_on_a_word_boundary() -> Result<(), TestError> {
         for len in [0usize, 1, 7, 8, 9, 1001] {
             let object: Vec<u8> = (0..len).map(|i| (i % 251) as u8 + 1).collect();
             let (words, n) = aligned_copy(&object);
@@ -571,25 +594,27 @@ mod loader_tests {
                 "the tail of the last word is padding, not garbage: len {len}"
             );
         }
+        Ok(())
     }
 
     // ── One ring event ───────────────────────────────────────────────────
 
     /// A lost-records event is counted and sends nothing.
     #[test]
-    fn a_lost_event_is_counted_and_sends_nothing() {
+    fn a_lost_event_is_counted_and_sends_nothing() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
         let (mut stitch, mut ordinal) = (Vec::new(), 7u64);
         let got = take_event(RingEvent::Lost(5), &mut stitch, &mut ordinal, &tx);
         assert_eq!(got, (0, 5));
         assert_eq!(ordinal, 7, "no packet, no ordinal");
         assert!(rx.try_iter().next().is_none());
+        Ok(())
     }
 
     /// A sample becomes one packet carrying the running ordinal, which then
     /// advances -- the ordinal is the reader's, threaded across sweeps.
     #[test]
-    fn a_sample_becomes_one_packet_carrying_the_running_ordinal() {
+    fn a_sample_becomes_one_packet_carrying_the_running_ordinal() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
         let raw = record(INVITE);
         let (mut stitch, mut ordinal) = (Vec::new(), 41u64);
@@ -606,7 +631,7 @@ mod loader_tests {
 
         assert_eq!(got, (1, 0));
         assert_eq!(ordinal, 42);
-        let pkt = rx.try_iter().next().expect("a packet");
+        let pkt = rx.try_iter().next().ok_or("a packet")?;
         assert_eq!(&pkt.data[..], INVITE);
         assert_eq!(pkt.origin.map(|o| o.ordinal), Some(41));
         assert_eq!(
@@ -614,12 +639,13 @@ mod loader_tests {
             Some(5060),
             "the tuple the kernel read out of the socket survives"
         );
+        Ok(())
     }
 
     /// A sample the kernel split across the ring boundary decodes exactly as
     /// the contiguous one does.
     #[test]
-    fn a_split_sample_is_stitched_before_it_is_decoded() {
+    fn a_split_sample_is_stitched_before_it_is_decoded() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
         let raw = record(INVITE);
         let (head, tail) = raw.split_at(TlsRecord::HEADER_LEN + 10);
@@ -633,12 +659,13 @@ mod loader_tests {
         );
 
         assert_eq!(got, (1, 0));
-        assert_eq!(&rx.try_iter().next().expect("a packet").data[..], INVITE);
+        assert_eq!(&rx.try_iter().next().ok_or("a packet")?.data[..], INVITE);
+        Ok(())
     }
 
     /// A record that is not SIP sends nothing and does not consume an ordinal.
     #[test]
-    fn a_sample_that_is_not_sip_sends_nothing_and_keeps_the_ordinal() {
+    fn a_sample_that_is_not_sip_sends_nothing_and_keeps_the_ordinal() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
         let raw = record(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
         let (mut stitch, mut ordinal) = (Vec::new(), 3u64);
@@ -654,12 +681,13 @@ mod loader_tests {
         assert_eq!(got, (0, 0));
         assert_eq!(ordinal, 3);
         assert!(rx.try_iter().next().is_none());
+        Ok(())
     }
 
     /// A packet nobody can receive is not numbered, so the next one that is
     /// delivered still carries the next ordinal.
     #[test]
-    fn a_closed_channel_sends_nothing_and_keeps_the_ordinal() {
+    fn a_closed_channel_sends_nothing_and_keeps_the_ordinal() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
         drop(rx);
         let raw = record(INVITE);
@@ -675,5 +703,6 @@ mod loader_tests {
         );
         assert_eq!(got, (0, 0));
         assert_eq!(ordinal, 9);
+        Ok(())
     }
 }

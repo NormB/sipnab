@@ -958,6 +958,7 @@ mod tests {
     //! `setcap` command-shape tests (none of which require root).
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
     /// A secret file you own that your group or other users can read is
     /// refused, naming the mode, and the same file at 0600 opens. This is the
     /// one rule every secret file sipnab reads goes through.
@@ -988,76 +989,84 @@ mod tests {
 
     /// A normal (non-root) test process reports `is_root() == false`.
     #[test]
-    fn is_root_returns_false_for_normal_user() {
+    fn is_root_returns_false_for_normal_user() -> Result<(), TestError> {
         // CI and dev machines run as non-root
         assert!(!is_root());
+        Ok(())
     }
 
     /// The drop is skipped when `--no-priv-drop` is set or the process is not
     /// root, whatever user was named; a root process with a named user drops.
     #[test]
-    fn the_drop_is_skipped_only_by_the_flag_or_a_non_root_process() {
+    fn the_drop_is_skipped_only_by_the_flag_or_a_non_root_process() -> Result<(), TestError> {
         assert!(drop_is_skipped(Some("nobody"), true, true));
         assert!(drop_is_skipped(Some("nobody"), false, false));
         assert!(drop_is_skipped(None, true, false));
         assert!(!drop_is_skipped(Some("nobody"), false, true));
+        Ok(())
     }
 
     /// A root process with no `--user` drops to the default user on Linux;
     /// on macOS it keeps root, so CoreAudio keeps its per-user session.
     #[test]
-    fn a_root_process_without_a_user_drops_except_on_macos() {
+    fn a_root_process_without_a_user_drops_except_on_macos() -> Result<(), TestError> {
         assert_eq!(
             drop_is_skipped(None, false, true),
             cfg!(target_os = "macos")
         );
+        Ok(())
     }
 
     /// `no_priv_drop == true` returns `Ok` without touching any syscall.
     #[test]
-    fn no_priv_drop_flag_skips_immediately() {
+    fn no_priv_drop_flag_skips_immediately() -> Result<(), TestError> {
         // Should return Ok without touching any syscalls
         assert!(drop_privileges(None, true).is_ok());
+        Ok(())
     }
 
     /// When not root, `drop_privileges` is a no-op that returns `Ok`.
     #[test]
-    fn non_root_skips_privilege_drop() {
+    fn non_root_skips_privilege_drop() -> Result<(), TestError> {
         // When not root, drop_privileges is a no-op
         assert!(drop_privileges(None, false).is_ok());
+        Ok(())
     }
 
     /// A drop that did not happen records no user, so an output-file error
     /// never blames a privilege drop that never ran. The recording side needs
     /// root to reach (`set_uid`); a non-root test process cannot drive it.
     #[test]
-    fn a_skipped_drop_records_no_user() {
+    fn a_skipped_drop_records_no_user() -> Result<(), TestError> {
         if is_root() {
             stderr_line!("skipped: running as root, a drop would really happen");
-            return;
+            return Ok(());
         }
         assert!(drop_privileges(None, true).is_ok());
         assert!(drop_privileges(Some("nobody"), false).is_ok());
         assert_eq!(dropped_to(), None);
+        Ok(())
     }
 
     /// `nobody` resolves to a non-zero uid or gid on Linux and macOS.
     #[test]
-    fn resolve_user_nobody_succeeds() {
+    fn resolve_user_nobody_succeeds() -> Result<(), TestError> {
         // "nobody" exists on both Linux and macOS
-        let (uid, gid) = resolve_user("nobody").expect("nobody user should exist");
+        let (uid, gid) =
+            resolve_user("nobody").map_err(|e| format!("nobody user should exist: {e:?}"))?;
         // On macOS nobody is typically uid 65534, on Linux it varies,
         // but it should always be non-zero
         assert!(uid > 0 || gid > 0, "nobody should have non-zero uid or gid");
+        Ok(())
     }
 
     /// An unknown username errors with a "not found" message suggesting
     /// `--user`.
     #[test]
-    fn resolve_user_nonexistent_returns_error() {
+    fn resolve_user_nonexistent_returns_error() -> Result<(), TestError> {
         let result = resolve_user("nonexistent_user_xyz123");
         assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
+        let msg = result.err().ok_or("expected an error, got Ok")?.to_string();
         assert!(
             msg.contains("not found"),
             "Error should mention 'not found', got: {msg}"
@@ -1066,6 +1075,7 @@ mod tests {
             msg.contains("--user"),
             "Error should suggest --user flag, got: {msg}"
         );
+        Ok(())
     }
 
     /// Locking must actually lock, not merely return success.
@@ -1079,7 +1089,7 @@ mod tests {
     /// SUCCESSFUL return implies pinned pages.
     #[cfg(target_os = "linux")]
     #[test]
-    fn locking_key_memory_pins_pages_the_kernel_reports() {
+    fn locking_key_memory_pins_pages_the_kernel_reports() -> Result<(), TestError> {
         fn vmlck_kb() -> u64 {
             std::fs::read_to_string("/proc/self/status")
                 .ok()
@@ -1111,35 +1121,39 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// `disable_core_dumps` never panics regardless of permission outcome.
     #[test]
-    fn disable_core_dumps_does_not_panic() {
+    fn disable_core_dumps_does_not_panic() -> Result<(), TestError> {
         // May or may not succeed depending on permissions, but must not panic
         let _ = disable_core_dumps();
+        Ok(())
     }
 
     /// `root` resolves to uid 0.
     #[test]
-    fn resolve_user_root_is_uid_zero() {
-        let (uid, _gid) = resolve_user("root").expect("root should exist");
+    fn resolve_user_root_is_uid_zero() -> Result<(), TestError> {
+        let (uid, _gid) = resolve_user("root").map_err(|e| format!("root should exist: {e:?}"))?;
         assert_eq!(uid, 0, "root must resolve to uid 0");
+        Ok(())
     }
 
     /// As non-root, requesting a target user is still a no-op `Ok`.
     #[test]
-    fn drop_privileges_with_target_user_non_root_is_noop() {
+    fn drop_privileges_with_target_user_non_root_is_noop() -> Result<(), TestError> {
         // As a non-root process, requesting a target user is still a no-op Ok
         // (the actual setuid path requires root and is exercised separately).
         assert!(drop_privileges(Some("nobody"), false).is_ok());
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
     /// When already root, the `setcap` command runs directly (no `sudo`) with
     /// the executable as the final argument.
     #[test]
-    fn setcap_command_root_is_direct() {
+    fn setcap_command_root_is_direct() -> Result<(), TestError> {
         let (prog, args) = setcap_command("/usr/local/bin/sipnab", true);
         assert_eq!(prog, "setcap");
         assert_eq!(
@@ -1150,36 +1164,45 @@ mod tests {
             ]
         );
         // The executable must be the final argument setcap operates on.
-        assert_eq!(args.last().unwrap(), "/usr/local/bin/sipnab");
+        assert_eq!(
+            args.last().ok_or("a last element")?,
+            "/usr/local/bin/sipnab"
+        );
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
     /// When not root, the command is wrapped in `sudo setcap ...`.
     #[test]
-    fn setcap_command_non_root_wraps_sudo() {
+    fn setcap_command_non_root_wraps_sudo() -> Result<(), TestError> {
         let (prog, args) = setcap_command("/home/u/.cargo/bin/sipnab", false);
         assert_eq!(prog, "sudo");
         assert_eq!(args[0], "setcap");
         assert_eq!(args[1], CAPTURE_CAPS);
-        assert_eq!(args.last().unwrap(), "/home/u/.cargo/bin/sipnab");
+        assert_eq!(
+            args.last().ok_or("a last element")?,
+            "/home/u/.cargo/bin/sipnab"
+        );
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
     /// `CAPTURE_CAPS` requests `cap_net_raw` + `cap_net_admin` in the `+ep`
     /// sets.
     #[test]
-    fn capture_caps_cover_raw_and_admin() {
+    fn capture_caps_cover_raw_and_admin() -> Result<(), TestError> {
         // CAP_NET_RAW opens the socket; CAP_NET_ADMIN enables promiscuous mode.
         assert!(CAPTURE_CAPS.contains("cap_net_raw"));
         assert!(CAPTURE_CAPS.contains("cap_net_admin"));
         // Effective + permitted file-capability sets.
         assert!(CAPTURE_CAPS.ends_with("+ep"));
+        Ok(())
     }
 
     /// `chroot` without `CAP_SYS_CHROOT` errors rather than silently succeeds,
     /// and the message names the directory it failed on.
     #[test]
-    fn do_chroot_without_root_fails_and_names_the_directory() {
+    fn do_chroot_without_root_fails_and_names_the_directory() -> Result<(), TestError> {
         // chroot(2) requires CAP_SYS_CHROOT; as a normal user this must error
         // rather than silently succeed (covers the error path of do_chroot).
         if is_root() {
@@ -1187,15 +1210,16 @@ mod tests {
                 "do_chroot_without_root_fails_and_names_the_directory",
                 "the process IS root, so chroot(2) succeeds; this gate asserts the unprivileged failure path",
             );
-            return;
+            return Ok(());
         }
         let result = do_chroot(std::path::Path::new("/tmp"));
-        let msg = result.expect_err("non-root chroot must fail").to_string();
+        let msg = result.err().ok_or("non-root chroot must fail")?.to_string();
         assert!(
             msg.contains("chroot") && msg.contains("/tmp"),
             "the operator has to be told which directory could not be entered, \
              got: {msg}"
         );
+        Ok(())
     }
 
     // ── The failure path: every step reports, none of them warns ──────────
@@ -1233,21 +1257,24 @@ mod tests {
     /// process looks unprivileged by uid and still holds group-granted access
     /// to the capture device, key files and everything else.
     #[test]
-    fn drop_supplementary_groups_reports_failure_instead_of_returning_ok() {
+    fn drop_supplementary_groups_reports_failure_instead_of_returning_ok() -> Result<(), TestError>
+    {
         if is_root() {
             skip_loudly(
                 "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
                 "the process IS root, so setgroups(2) succeeds; this gate asserts the failure path",
             );
-            return;
+            return Ok(());
         }
         let msg = drop_supplementary_groups()
-            .expect_err("setgroups(0, NULL) needs CAP_SETGID and must fail here")
+            .err()
+            .ok_or("setgroups(0, NULL) needs CAP_SETGID and must fail here")?
             .to_string();
         assert!(
             msg.contains("setgroups"),
             "the failure must name the syscall that refused, got: {msg}"
         );
+        Ok(())
     }
 
     /// `set_gid` reports a refused `setgid` rather than returning `Ok`.
@@ -1256,40 +1283,44 @@ mod tests {
     /// refuses. A silent `Ok` here would leave the process in the group it
     /// started in while the caller believed it had shed them.
     #[test]
-    fn set_gid_reports_a_refused_setgid_rather_than_returning_ok() {
+    fn set_gid_reports_a_refused_setgid_rather_than_returning_ok() -> Result<(), TestError> {
         if is_root() {
             skip_loudly(
                 "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
                 "the process IS root, so setgid(0) succeeds; this gate asserts the failure path",
             );
-            return;
+            return Ok(());
         }
         let msg = set_gid(0)
-            .expect_err("an unprivileged process cannot setgid(0)")
+            .err()
+            .ok_or("an unprivileged process cannot setgid(0)")?
             .to_string();
         assert!(
             msg.contains("setgid"),
             "the failure must name the syscall that refused, got: {msg}"
         );
+        Ok(())
     }
 
     /// `set_uid` reports a refused `setuid` rather than returning `Ok`.
     #[test]
-    fn set_uid_reports_a_refused_setuid_rather_than_returning_ok() {
+    fn set_uid_reports_a_refused_setuid_rather_than_returning_ok() -> Result<(), TestError> {
         if is_root() {
             skip_loudly(
                 "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
                 "the process IS root, so setuid(0) succeeds; this gate asserts the failure path",
             );
-            return;
+            return Ok(());
         }
         let msg = set_uid(0)
-            .expect_err("an unprivileged process cannot setuid(0)")
+            .err()
+            .ok_or("an unprivileged process cannot setuid(0)")?
             .to_string();
         assert!(
             msg.contains("setuid"),
             "the failure must name the syscall that refused, got: {msg}"
         );
+        Ok(())
     }
 
     /// The post-drop verification rejects ids that are not the ones asked for.
@@ -1300,13 +1331,14 @@ mod tests {
     /// process that is not uid 0 is the cheapest way to prove it actually
     /// compares rather than always returning `Ok`.
     #[test]
-    fn verify_dropped_rejects_ids_that_are_not_the_ones_requested() {
+    fn verify_dropped_rejects_ids_that_are_not_the_ones_requested() -> Result<(), TestError> {
         // SAFETY: getuid/getgid are read-only syscalls that cannot fail.
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
         // Pick a target this process demonstrably does not have.
         let (wrong_uid, wrong_gid) = (uid.wrapping_add(1), gid.wrapping_add(1));
         let msg = verify_dropped(wrong_uid, wrong_gid)
-            .expect_err("the process does not hold those ids")
+            .err()
+            .ok_or("the process does not hold those ids")?
             .to_string();
         assert!(
             msg.contains("verification failed"),
@@ -1317,49 +1349,55 @@ mod tests {
             "the message must carry both the expected and the actual uid so the \
              operator can see which half of the drop did not happen, got: {msg}"
         );
+        Ok(())
     }
 
     /// The verification accepts the ids the process actually holds, so the
     /// rejection above is a real comparison and not a blanket failure.
     #[test]
-    fn verify_dropped_accepts_the_ids_the_process_actually_holds() {
+    fn verify_dropped_accepts_the_ids_the_process_actually_holds() -> Result<(), TestError> {
         // SAFETY: getuid/getgid are read-only syscalls that cannot fail.
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
         assert!(
             verify_dropped(uid, gid).is_ok(),
             "a process already holding the target ids has completed the drop"
         );
+        Ok(())
     }
 
     /// A username containing a null byte is rejected before it reaches
     /// `getpwnam_r`, which would otherwise see a silently truncated name.
     #[test]
-    fn resolve_user_rejects_a_username_with_an_interior_null_byte() {
+    fn resolve_user_rejects_a_username_with_an_interior_null_byte() -> Result<(), TestError> {
         let msg = resolve_user("root\0nobody")
-            .expect_err("a null byte cannot cross the C boundary")
+            .err()
+            .ok_or("a null byte cannot cross the C boundary")?
             .to_string();
         assert!(
             msg.contains("null byte"),
             "the failure must name the null byte rather than report 'not found', \
              got: {msg}"
         );
+        Ok(())
     }
 
     /// A chroot path containing a null byte is rejected before `chroot(2)`,
     /// for the same reason: C would stop at the null and confine the process
     /// somewhere other than the operator named.
     #[test]
-    fn do_chroot_rejects_a_path_with_an_interior_null_byte() {
+    fn do_chroot_rejects_a_path_with_an_interior_null_byte() -> Result<(), TestError> {
         use std::os::unix::ffi::OsStrExt as _;
         let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp\0/evil"));
         let msg = do_chroot(path)
-            .expect_err("a null byte cannot cross the C boundary")
+            .err()
+            .ok_or("a null byte cannot cross the C boundary")?
             .to_string();
         assert!(
             msg.contains("null byte"),
             "the failure must name the null byte rather than report an errno from \
              a truncated path, got: {msg}"
         );
+        Ok(())
     }
     // ── Pieces of the drop that run unprivileged once their inputs are ────
     // ── arguments rather than syscalls ──────────────────────────────────
@@ -1375,44 +1413,51 @@ mod tests {
     /// the real one was -- the half an attacker who gets code execution
     /// actually inherits.
     #[test]
-    fn a_drop_that_left_the_effective_uid_behind_is_refused() {
+    fn a_drop_that_left_the_effective_uid_behind_is_refused() -> Result<(), TestError> {
         let msg = check_dropped_ids(65534, 65534, (65534, 65534, 0, 65534))
-            .expect_err("euid 0 is still root")
+            .err()
+            .ok_or("euid 0 is still root")?
             .to_string();
         assert!(msg.contains("EFFECTIVE"), "{msg}");
         assert!(
             msg.contains("expected euid=65534/egid=65534, got euid=0/egid=65534"),
             "both sides of the comparison are named: {msg}"
         );
+        Ok(())
     }
 
     /// egid 0 under an unprivileged uid is exactly what reversing the two
     /// group calls produces on macOS -- root by group, wearing `nobody`.
     #[test]
-    fn an_effective_gid_of_zero_under_an_unprivileged_uid_is_refused() {
+    fn an_effective_gid_of_zero_under_an_unprivileged_uid_is_refused() -> Result<(), TestError> {
         let msg = check_dropped_ids(65534, 65534, (65534, 65534, 65534, 0))
-            .expect_err("egid 0 is wheel")
+            .err()
+            .ok_or("egid 0 is wheel")?
             .to_string();
         assert!(msg.contains("got euid=65534/egid=0"), "{msg}");
+        Ok(())
     }
 
     /// A real gid that was not dropped fails the first comparison, and says
     /// which half is wrong.
     #[test]
-    fn a_real_gid_that_was_not_dropped_is_refused() {
+    fn a_real_gid_that_was_not_dropped_is_refused() -> Result<(), TestError> {
         let msg = check_dropped_ids(65534, 65534, (65534, 0, 65534, 65534))
-            .expect_err("gid 0 was not given up")
+            .err()
+            .ok_or("gid 0 was not given up")?
             .to_string();
         assert!(
             msg.contains("expected uid=65534/gid=65534, got uid=65534/gid=0"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// All four ids matching is a completed drop.
     #[test]
-    fn a_drop_whose_four_ids_all_match_is_accepted() {
+    fn a_drop_whose_four_ids_all_match_is_accepted() -> Result<(), TestError> {
         assert!(check_dropped_ids(65534, 65534, (65534, 65534, 65534, 65534)).is_ok());
+        Ok(())
     }
 
     /// Groups go first, and a failure there stops the sequence before the GID
@@ -1420,21 +1465,23 @@ mod tests {
     /// `drop_group_credentials`); if the two calls were swapped, an
     /// unprivileged caller would see `setgid` refuse first instead.
     #[test]
-    fn group_credentials_are_surrendered_supplementary_list_first() {
+    fn group_credentials_are_surrendered_supplementary_list_first() -> Result<(), TestError> {
         if is_root() {
             skip_loudly(
                 "group_credentials_are_surrendered_supplementary_list_first",
                 "the process IS root, so setgroups(2) succeeds; this gate asserts which step refuses first",
             );
-            return;
+            return Ok(());
         }
         let msg = drop_group_credentials(0)
-            .expect_err("an unprivileged process cannot shed its groups")
+            .err()
+            .ok_or("an unprivileged process cannot shed its groups")?
             .to_string();
         assert!(
             msg.starts_with("setgroups failed"),
             "the supplementary list is the FIRST step to refuse: {msg}"
         );
+        Ok(())
     }
 
     /// Setting the ids a process already holds is permitted at any privilege
@@ -1445,33 +1492,37 @@ mod tests {
     /// first column of `Uid:`/`Gid:` is the real id), which needs no `unsafe`.
     #[cfg(target_os = "linux")]
     #[test]
-    fn setting_the_ids_the_process_already_holds_succeeds_and_changes_nothing() {
-        let status = std::fs::read_to_string("/proc/self/status").expect("procfs is mounted");
-        let real = |key: &str| -> u32 {
+    fn setting_the_ids_the_process_already_holds_succeeds_and_changes_nothing()
+    -> Result<(), TestError> {
+        let status = std::fs::read_to_string("/proc/self/status")
+            .map_err(|e| format!("procfs is mounted: {e:?}"))?;
+        let real = |key: &str| -> Result<u32, String> {
             status
                 .lines()
                 .find(|l| l.starts_with(key))
                 .and_then(|l| l.split_whitespace().nth(1))
                 .and_then(|v| v.parse().ok())
-                .unwrap_or_else(|| panic!("no {key} line in /proc/self/status"))
+                .ok_or_else(|| format!("no {key} line in /proc/self/status"))
         };
-        let (uid, gid) = (real("Uid:"), real("Gid:"));
-        set_gid(gid).expect("setgid to the real gid is always permitted");
-        set_uid(uid).expect("setuid to the real uid is always permitted");
+        let (uid, gid) = (real("Uid:")?, real("Gid:")?);
+        set_gid(gid).map_err(|e| format!("setgid to the real gid is always permitted: {e:?}"))?;
+        set_uid(uid).map_err(|e| format!("setuid to the real uid is always permitted: {e:?}"))?;
         assert!(
             verify_dropped(uid, gid).is_ok(),
             "and the process holds exactly the ids it held before"
         );
+        Ok(())
     }
 
     /// `getpwnam_r` answers ERANGE when the scratch buffer cannot hold the
     /// entry's strings. The lookup must grow the buffer and retry, not report
     /// a user that exists as unresolvable.
     #[test]
-    fn a_scratch_buffer_too_small_for_the_entry_grows_until_it_fits() {
-        let (uid, _gid) =
-            resolve_user_with_buffer("root", 1).expect("a one-byte buffer is grown, not fatal");
+    fn a_scratch_buffer_too_small_for_the_entry_grows_until_it_fits() -> Result<(), TestError> {
+        let (uid, _gid) = resolve_user_with_buffer("root", 1)
+            .map_err(|e| format!("a one-byte buffer is grown, not fatal: {e:?}"))?;
         assert_eq!(uid, 0);
+        Ok(())
     }
 
     // ── --setup-caps, minus the privileged command ───────────────────────
@@ -1480,69 +1531,76 @@ mod tests {
     /// file capabilities on a symlink do nothing.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_setcap_target_is_the_real_binary_behind_a_symlink() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_setcap_target_is_the_real_binary_behind_a_symlink() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let real = dir.path().join("sipnab-real");
-        std::fs::write(&real, b"").expect("write");
+        std::fs::write(&real, b"").map_err(|e| format!("write: {e:?}"))?;
         let link = dir.path().join("sipnab");
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        std::os::unix::fs::symlink(&real, &link).map_err(|e| format!("symlink: {e:?}"))?;
 
-        let target = setcap_target(&link).expect("a UTF-8 path");
-        let canonical = std::fs::canonicalize(&real).expect("canonicalize");
+        let target = setcap_target(&link).map_err(|e| format!("a UTF-8 path: {e:?}"))?;
+        let canonical = std::fs::canonicalize(&real).map_err(|e| format!("canonicalize: {e:?}"))?;
         assert_eq!(std::path::Path::new(&target), canonical.as_path());
+        Ok(())
     }
 
     /// A path that cannot be canonicalized is used as given, rather than
     /// failing before `setcap` can say what is wrong with it.
     #[cfg(target_os = "linux")]
     #[test]
-    fn an_uncanonicalizable_setcap_target_is_used_as_given() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_uncanonicalizable_setcap_target_is_used_as_given() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let absent = dir.path().join("not-here");
         assert_eq!(
-            setcap_target(&absent).expect("still a UTF-8 path"),
+            setcap_target(&absent).map_err(|e| format!("still a UTF-8 path: {e:?}"))?,
             absent.display().to_string()
         );
+        Ok(())
     }
 
     /// `setcap` takes a C string; a path that is not UTF-8 is refused with a
     /// reason instead of being mangled on the way.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_setcap_target_that_is_not_utf8_is_refused() {
+    fn a_setcap_target_that_is_not_utf8_is_refused() -> Result<(), TestError> {
         use std::os::unix::ffi::OsStrExt as _;
         let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/nonexistent/\xff\xfe"));
         let msg = setcap_target(path)
-            .expect_err("not representable as &str")
+            .err()
+            .ok_or("not representable as &str")?
             .to_string();
         assert!(msg.contains("not valid UTF-8"), "{msg}");
+        Ok(())
     }
 
     /// A command that could not be spawned is reported with the remedy for
     /// the usual cause: the package that ships `setcap` is not installed.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_setcap_that_cannot_be_spawned_names_the_package_to_install() {
+    fn a_setcap_that_cannot_be_spawned_names_the_package_to_install() -> Result<(), TestError> {
         let spawn = Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         let msg = setcap_outcome("setcap", "/usr/bin/sipnab", spawn)
-            .expect_err("nothing ran")
+            .err()
+            .ok_or("nothing ran")?
             .to_string();
         assert!(msg.contains("failed to run 'setcap'"), "{msg}");
         assert!(msg.contains("libcap2-bin"), "{msg}");
+        Ok(())
     }
 
     /// A non-zero exit is a failure naming the code and the binary, never a
     /// success -- the capability was not granted.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_setcap_that_exits_non_zero_is_a_failure_naming_the_code() {
+    fn a_setcap_that_exits_non_zero_is_a_failure_naming_the_code() -> Result<(), TestError> {
         use std::os::unix::process::ExitStatusExt as _;
         let msg = setcap_outcome(
             "sudo",
             "/usr/bin/sipnab",
             Ok(std::process::ExitStatus::from_raw(1 << 8)),
         )
-        .expect_err("exit 1 granted nothing")
+        .err()
+        .ok_or("exit 1 granted nothing")?
         .to_string();
         assert_eq!(msg, "setcap failed (exit Some(1)) on /usr/bin/sipnab");
 
@@ -1551,18 +1609,20 @@ mod tests {
             "/usr/bin/sipnab",
             Ok(std::process::ExitStatus::from_raw(9)),
         )
-        .expect_err("a killed setcap granted nothing")
+        .err()
+        .ok_or("a killed setcap granted nothing")?
         .to_string();
         assert!(
             killed.contains("exit None"),
             "no code for a signal: {killed}"
         );
+        Ok(())
     }
 
     /// A zero exit is the grant.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_setcap_that_exits_zero_is_the_grant() {
+    fn a_setcap_that_exits_zero_is_the_grant() -> Result<(), TestError> {
         use std::os::unix::process::ExitStatusExt as _;
         assert!(
             setcap_outcome(
@@ -1572,6 +1632,7 @@ mod tests {
             )
             .is_ok()
         );
+        Ok(())
     }
 
     // ── What a refused mlockall is reported as ───────────────────────────
@@ -1581,7 +1642,7 @@ mod tests {
     /// so the mapping is pinned here with the outcome as an argument.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_refused_memory_lock_names_the_limit_to_raise() {
+    fn a_refused_memory_lock_names_the_limit_to_raise() -> Result<(), TestError> {
         assert_eq!(memory_lock_outcome(Ok(())), MemoryLock::Locked);
         match memory_lock_outcome(Err(std::io::Error::from_raw_os_error(libc::ENOMEM))) {
             MemoryLock::Unlocked(reason) => {
@@ -1592,7 +1653,8 @@ mod tests {
                     "the kernel's own reason is kept: {reason}"
                 );
             }
-            MemoryLock::Locked => panic!("a refusal must not read as locked"),
+            MemoryLock::Locked => return Err("a refusal must not read as locked".into()),
         }
+        Ok(())
     }
 }

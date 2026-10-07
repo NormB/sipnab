@@ -2200,6 +2200,7 @@ mod tests {
     use super::render::fkey_bar_items;
     use super::save::csv_escape;
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     fn stores() -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>) {
         let app = App::new_test();
@@ -2208,7 +2209,7 @@ mod tests {
 
     /// The save target a run resolved reaches the session's F10 save.
     #[test]
-    fn the_resolved_save_target_reaches_the_session() {
+    fn the_resolved_save_target_reaches_the_session() -> Result<(), TestError> {
         let (d, s) = stores();
         let target = std::path::PathBuf::from("/home/u/.sipnabrc");
         let options = TuiOptions {
@@ -2216,23 +2217,25 @@ mod tests {
             ..TuiOptions::default()
         };
         assert_eq!(options.into_app(d, s).column_config_path, Ok(target));
+        Ok(())
     }
 
     /// A session built without a save target refuses rather than guessing.
     #[test]
-    fn a_session_with_no_save_target_refuses_to_save() {
+    fn a_session_with_no_save_target_refuses_to_save() -> Result<(), TestError> {
         let (d, s) = stores();
         let app = TuiOptions::default().into_app(d, s);
         assert_eq!(
             app.column_config_path,
             Err("not saved: no config file for this session".to_string())
         );
+        Ok(())
     }
 
     /// A refused names persistence is on the status line when the session
     /// opens: a TUI run logs only errors, so a warning would never be seen.
     #[test]
-    fn a_refused_name_persistence_is_on_the_status_line_at_start() {
+    fn a_refused_name_persistence_is_on_the_status_line_at_start() -> Result<(), TestError> {
         let (d, s) = stores();
         let options = TuiOptions {
             name_setup: NameSetup {
@@ -2247,12 +2250,13 @@ mod tests {
             options.into_app(d, s).status_error.as_deref(),
             Some("Name edits not saved: the settings in use come from /etc/sipnab/sipnab.toml")
         );
+        Ok(())
     }
 
     /// A config file that hid another is on the status line when the session
     /// opens, for the same reason as a refused save: TUI runs log only errors.
     #[test]
-    fn a_shadowed_config_is_on_the_status_line_at_start() {
+    fn a_shadowed_config_is_on_the_status_line_at_start() -> Result<(), TestError> {
         let (d, s) = stores();
         let options = TuiOptions {
             startup_notice: Some("Reading A. Also present and NOT read: B.".into()),
@@ -2262,11 +2266,12 @@ mod tests {
             options.into_app(d, s).status_error.as_deref(),
             Some("Reading A. Also present and NOT read: B.")
         );
+        Ok(())
     }
 
     /// Both notices at once are both shown, not one overwriting the other.
     #[test]
-    fn two_startup_notices_are_both_on_the_status_line() {
+    fn two_startup_notices_are_both_on_the_status_line() -> Result<(), TestError> {
         let (d, s) = stores();
         let options = TuiOptions {
             startup_notice: Some("Reading A. Also present and NOT read: B.".into()),
@@ -2280,24 +2285,26 @@ mod tests {
             options.into_app(d, s).status_error.as_deref(),
             Some("Reading A. Also present and NOT read: B. | Name edits not saved: X")
         );
+        Ok(())
     }
 
     /// One of a thing is singular; zero and many are plural. The screens used
     /// `destination(s)` and `talker(s)`, which make the reader do the grammar.
     #[test]
-    fn count_noun_agrees_with_its_number() {
+    fn count_noun_agrees_with_its_number() -> Result<(), TestError> {
         assert_eq!(count_noun(1, "finding", "findings"), "1 finding");
         assert_eq!(count_noun(0, "finding", "findings"), "0 findings");
         assert_eq!(count_noun(7, "finding", "findings"), "7 findings");
         assert_eq!(count_noun(1, "dialog", "dialogs"), "1 dialog");
         assert_eq!(count_noun(2, "match", "matches"), "2 matches");
+        Ok(())
     }
 
     /// F1 opens the help overlay, but nothing on a POPULATED call list
     /// said so (only the empty-state message did) — the f-key bar listed
     /// F2..F10 but never F1. Help must be advertised at every width.
     #[test]
-    fn fkey_bar_advertises_help_on_call_list_at_all_widths() {
+    fn fkey_bar_advertises_help_on_call_list_at_all_widths() -> Result<(), TestError> {
         for width in [60u16, 90, 120] {
             let items = fkey_bar_items(&View::CallList, &None, width, false);
             assert!(
@@ -2305,13 +2312,14 @@ mod tests {
                 "width {width}: F1 Help missing from f-key bar: {items:?}"
             );
         }
+        Ok(())
     }
 
     /// A real App carries the running libpcap's report, from the one
     /// `capture::libpcap::running` that `--version`, MCP and REST read, so the
     /// help view cannot name a different library than they do.
     #[test]
-    fn app_carries_the_running_libpcap() {
+    fn app_carries_the_running_libpcap() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let app = App::new(ds, ss, Theme::default(), Keymap::default());
@@ -2319,16 +2327,18 @@ mod tests {
             app.libpcap,
             crate::capture::libpcap::running().summary_line()
         );
+        Ok(())
     }
 
     /// A fresh App starts on the call-list view with the quit flag clear.
     #[test]
-    fn app_default_view_is_call_list() {
+    fn app_default_view_is_call_list() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let app = App::new(ds, ss, Theme::default(), Keymap::default());
         assert_eq!(app.current_view, View::CallList);
         assert!(!app.should_quit);
+        Ok(())
     }
 
     /// An App with a live reconfigure control wired, plus the sender a "capture
@@ -2350,26 +2360,26 @@ mod tests {
     /// Without a control (a file source, `--multi-device`), a re-apply request
     /// is a no-op — the editor is validate-only there.
     #[test]
-    fn request_filter_reapply_is_a_noop_without_a_control() {
+    fn request_filter_reapply_is_a_noop_without_a_control() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
         assert!(!app.can_reapply_filter());
         assert!(!app.request_filter_reapply("udp port 5060".to_string()));
         assert!(app.bpf_pending.is_none());
+        Ok(())
     }
 
     /// A confirmed apply promotes the requested filter to the effective filter,
     /// resets the editor, and clears the pending marker.
     #[test]
-    fn a_confirmed_apply_promotes_the_filter() {
+    fn a_confirmed_apply_promotes_the_filter() -> Result<(), TestError> {
         use crate::capture::reconfigure::FilterApplyOutcome;
         let (mut app, _control, otx) = app_with_reconfigure();
         assert!(app.can_reapply_filter());
         assert!(app.request_filter_reapply("udp port 5060".to_string()));
         // The capture loop installs generation 1 and reports success.
-        otx.send(FilterApplyOutcome::Applied { generation: 1 })
-            .unwrap();
+        otx.send(FilterApplyOutcome::Applied { generation: 1 })?;
         app.drain_filter_outcomes();
         assert_eq!(
             app.bpf_filter, "udp port 5060",
@@ -2388,12 +2398,13 @@ mod tests {
             app.status_error.as_deref(),
             Some("filter changed; applies to new packets")
         );
+        Ok(())
     }
 
     /// A rejected apply leaves the running filter unchanged and reports the
     /// error, so a filter libpcap could not install never takes the capture out.
     #[test]
-    fn a_rejected_apply_keeps_the_old_filter() {
+    fn a_rejected_apply_keeps_the_old_filter() -> Result<(), TestError> {
         use crate::capture::reconfigure::FilterApplyOutcome;
         let (mut app, _control, otx) = app_with_reconfigure();
         app.set_bpf_filter("udp port 5060".to_string(), false);
@@ -2401,24 +2412,28 @@ mod tests {
         otx.send(FilterApplyOutcome::Rejected {
             generation: 1,
             error: "syntax error".to_string(),
-        })
-        .unwrap();
+        })?;
         app.drain_filter_outcomes();
         assert_eq!(app.bpf_filter, "udp port 5060", "the old filter stands");
         assert!(app.bpf_pending.is_none());
-        assert!(app.status_error.as_deref().unwrap().contains("rejected"));
+        assert!(
+            app.status_error
+                .as_deref()
+                .ok_or("status_error is set")?
+                .contains("rejected")
+        );
+        Ok(())
     }
 
     /// A stale outcome (an older generation, or another socket's late report)
     /// does not disturb a newer pending request.
     #[test]
-    fn a_stale_outcome_does_not_clear_a_newer_pending() {
+    fn a_stale_outcome_does_not_clear_a_newer_pending() -> Result<(), TestError> {
         use crate::capture::reconfigure::FilterApplyOutcome;
         let (mut app, control, otx) = app_with_reconfigure();
         control.request("old".to_string()); // generation 1, not tracked by the app
         app.request_filter_reapply("new".to_string()); // generation 2 is what the app awaits
-        otx.send(FilterApplyOutcome::Applied { generation: 1 })
-            .unwrap();
+        otx.send(FilterApplyOutcome::Applied { generation: 1 })?;
         app.drain_filter_outcomes();
         assert!(
             app.bpf_pending.is_some(),
@@ -2428,13 +2443,14 @@ mod tests {
             app.bpf_filter, "new",
             "the stale outcome did not promote 'new'"
         );
+        Ok(())
     }
 
     /// WS4.3: one frame derives the displayed dialog list AT MOST once,
     /// and an unchanged store + unchanged view inputs mean the next frame
     /// derives it ZERO times (cache hit keyed on the store generation).
     #[test]
-    fn call_list_frame_derives_displayed_rows_at_most_once() {
+    fn call_list_frame_derives_displayed_rows_at_most_once() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![
@@ -2442,10 +2458,10 @@ mod tests {
             make_invite("once-2@test", "1003", "1004", base_ts()),
         ]);
         let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
 
         let before = calls();
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         let first = calls() - before;
         assert!(
             first <= 1,
@@ -2453,12 +2469,13 @@ mod tests {
         );
 
         let mid = calls();
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         assert_eq!(
             calls() - mid,
             0,
             "unchanged data: the next frame must reuse the cached list"
         );
+        Ok(())
     }
 
     /// A busy capture bumps the store generation on every ingest, so on a
@@ -2469,7 +2486,7 @@ mod tests {
     /// refreshes the list at most once per DISPLAYED_REBUILD_MIN; between
     /// refreshes the cached list serves the frame.
     #[test]
-    fn busy_generation_churn_does_not_rederive_displayed_list_per_tick() {
+    fn busy_generation_churn_does_not_rederive_displayed_list_per_tick() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![make_invite(
             "busy-0@test",
@@ -2507,13 +2524,14 @@ mod tests {
             app.cached_displayed_count, 6,
             "the refresh must pick up dialogs ingested while throttled"
         );
+        Ok(())
     }
 
     /// Explicit user actions must never be throttled: changing the search
     /// query (or filter/sort — same key) re-derives immediately even when
     /// the churn floor has not elapsed.
     #[test]
-    fn user_input_changes_bypass_the_displayed_rebuild_floor() {
+    fn user_input_changes_bypass_the_displayed_rebuild_floor() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![
             make_invite("bypass-1@test", "1001", "1002", base_ts()),
@@ -2531,11 +2549,15 @@ mod tests {
             "a changed user input must re-derive immediately, floor or not"
         );
         assert_eq!(app.cached_displayed_count, 1, "search narrowed the list");
+        Ok(())
     }
 
     /// Insert one synthetic RTP stream (unique SSRC/ports per `i`).
-    fn push_rtp_stream(ss: &mut crate::rtp::stream_store::StreamStore, i: u16) {
-        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+    fn push_rtp_stream(
+        ss: &mut crate::rtp::stream_store::StreamStore,
+        i: u16,
+    ) -> Result<(), TestError> {
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let parsed = crate::capture::ParsedPacket {
             frame_bytes: None,
             frame: None,
@@ -2569,6 +2591,7 @@ mod tests {
             payload_offset: 12,
         };
         ss.process_rtp(&parsed, &rtp, ts);
+        Ok(())
     }
 
     /// Stream list, same contract as the call list: stream-store churn
@@ -2576,15 +2599,15 @@ mod tests {
     /// navigate the cached rows (they used to re-filter under a BLOCKING
     /// read per keypress), and a user input change bypasses the floor.
     #[test]
-    fn stream_list_churn_and_keypresses_do_not_rederive_displayed() {
+    fn stream_list_churn_and_keypresses_do_not_rederive_displayed() -> Result<(), TestError> {
         use crossterm::event::KeyCode;
         let mut app = App::new_test();
         {
             let ss = app.stream_store.clone();
             let mut ss = ss.write();
-            push_rtp_stream(&mut ss, 0);
-            push_rtp_stream(&mut ss, 1);
-            push_rtp_stream(&mut ss, 2);
+            push_rtp_stream(&mut ss, 0)?;
+            push_rtp_stream(&mut ss, 1)?;
+            push_rtp_stream(&mut ss, 2)?;
         }
         app.current_view = View::StreamList;
         let calls = || stream_list::DISPLAYED_STREAMS_CALLS.with(|c| c.get());
@@ -2597,7 +2620,8 @@ mod tests {
                 &crate::capture::ParsedPacket {
                     frame_bytes: None,
                     frame: None,
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .ok_or("a valid timestamp")?,
                     src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                     src_port: 20000 + i * 2,
@@ -2626,7 +2650,7 @@ mod tests {
                     ssrc: 0xBBBB_0000 + u32::from(i),
                     payload_offset: 12,
                 },
-                chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?,
             );
             app.handle_key(KeyCode::Down); // navigates + settles a tick
             app.sync_caches();
@@ -2654,7 +2678,7 @@ mod tests {
         {
             let ss = app.stream_store.clone();
             let mut ss = ss.write();
-            push_rtp_stream(&mut ss, 7);
+            push_rtp_stream(&mut ss, 7)?;
         }
         app.search_query = "bbbb0000".into();
         let before = calls();
@@ -2665,6 +2689,7 @@ mod tests {
             1,
             "search narrowed to SSRC BBBB0000"
         );
+        Ok(())
     }
 
     /// E (Mermaid export) reads codec segments while the processing
@@ -2674,12 +2699,12 @@ mod tests {
     /// frame-rate-critical: it must wait out transient contention and
     /// never drop segments.
     #[test]
-    fn rtp_codec_segments_survive_stream_store_write_contention() {
+    fn rtp_codec_segments_survive_stream_store_write_contention() -> Result<(), TestError> {
         let app = App::new_test();
         {
             let ss = app.stream_store.clone();
             let mut ss = ss.write();
-            push_rtp_stream(&mut ss, 0);
+            push_rtp_stream(&mut ss, 0)?;
             ss.link_to_dialog(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                 30000,
@@ -2697,60 +2722,65 @@ mod tests {
         // read. The signal guarantees the lock is held when we read.
         let ss = app.stream_store.clone();
         let (locked_tx, locked_rx) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn(move || {
+        let writer = std::thread::spawn(move || -> Result<(), String> {
             let _w = ss.write();
-            locked_tx.send(()).unwrap();
+            locked_tx
+                .send(())
+                .map_err(|e| format!("signal the lock: {e}"))?;
             std::thread::sleep(std::time::Duration::from_millis(200));
+            Ok(())
         });
-        locked_rx.recv().unwrap();
+        locked_rx.recv()?;
         let segs = app.rtp_codec_segments("contended@test");
-        writer.join().unwrap();
+        writer.join().map_err(|_| "thread panicked")??;
         assert_eq!(
             segs.len(),
             1,
             "export must never silently drop RTP segments on transient \
              stream-store lock contention"
         );
+        Ok(())
     }
 
     /// Selection resolution (Enter → stream detail, naming) must resolve
     /// from the cached display order, lock-free — index into the cache.
     #[test]
-    fn stream_selection_resolves_from_cached_order() {
+    fn stream_selection_resolves_from_cached_order() -> Result<(), TestError> {
         let mut app = App::new_test();
         {
             let ss = app.stream_store.clone();
             let mut ss = ss.write();
-            push_rtp_stream(&mut ss, 0);
-            push_rtp_stream(&mut ss, 1);
+            push_rtp_stream(&mut ss, 0)?;
+            push_rtp_stream(&mut ss, 1)?;
         }
         app.current_view = View::StreamList;
         app.sync_caches();
         app.stream_list.move_down(app.stream_displayed.keys.len());
-        let key = controllers::get_selected_stream_key(&app).expect("selected stream");
+        let key = controllers::get_selected_stream_key(&app).ok_or("selected stream")?;
         assert_eq!(key, app.stream_displayed.keys[1]);
         // Selection past the cached end (evicted rows): no panic, None.
         app.stream_list.move_to_bottom(100);
         assert_eq!(controllers::get_selected_stream_key(&app), None);
+        Ok(())
     }
 
     /// Quality dashboard: stream churn refreshes the snapshot at the
     /// floor, never per tick; the first snapshot after opening the view
     /// is immediate.
     #[test]
-    fn dashboard_snapshot_churn_is_floored() {
+    fn dashboard_snapshot_churn_is_floored() -> Result<(), TestError> {
         let mut app = App::new_test();
         {
             let ss = app.stream_store.clone();
             let mut ss = ss.write();
-            push_rtp_stream(&mut ss, 0);
+            push_rtp_stream(&mut ss, 0)?;
         }
         app.current_view = View::QualityDashboard;
         app.sync_caches(); // first snapshot: immediate
         let rows = app
             .dashboard_snapshot
             .as_ref()
-            .expect("snapshot")
+            .ok_or("snapshot")?
             .rows
             .len();
         assert_eq!(rows, 1);
@@ -2758,11 +2788,15 @@ mod tests {
         {
             let ss = app.stream_store.clone();
             let mut ss = ss.write();
-            push_rtp_stream(&mut ss, 1);
+            push_rtp_stream(&mut ss, 1)?;
         }
         app.sync_caches();
         assert_eq!(
-            app.dashboard_snapshot.as_ref().unwrap().rows.len(),
+            app.dashboard_snapshot
+                .as_ref()
+                .ok_or("dashboard_snapshot is set")?
+                .rows
+                .len(),
             1,
             "churn within the floor must keep serving the cached snapshot"
         );
@@ -2770,16 +2804,21 @@ mod tests {
         app.elapse_churn_floors_for_test();
         app.sync_caches();
         assert_eq!(
-            app.dashboard_snapshot.as_ref().unwrap().rows.len(),
+            app.dashboard_snapshot
+                .as_ref()
+                .ok_or("dashboard_snapshot is set")?
+                .rows
+                .len(),
             2,
             "floor elapsed: snapshot must pick up the new stream"
         );
+        Ok(())
     }
 
     /// Statistics view: the aggregate text is derived at the floor, not
     /// per tick (it walks every dialog).
     #[test]
-    fn statistics_text_churn_is_floored() {
+    fn statistics_text_churn_is_floored() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![make_invite(
             "stats-1@test",
@@ -2812,13 +2851,14 @@ mod tests {
             "floor elapsed: text must pick up the new dialog: {}",
             app.stats.text
         );
+        Ok(())
     }
 
     /// A merged multi-selection ladder interleaves its dialogs in time
     /// order, whatever order they were checked in, and keeps each row's
     /// provenance in step with it.
     #[test]
-    fn a_merged_ladder_is_in_time_order_with_matching_provenance() {
+    fn a_merged_ladder_is_in_time_order_with_matching_provenance() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let later = base_ts() + chrono::TimeDelta::seconds(10);
         let mut app = App::with_processed_messages(vec![
@@ -2836,13 +2876,14 @@ mod tests {
             .map(|(c, _)| c.as_str())
             .collect();
         assert_eq!(cids, vec!["m-early@test", "m-late@test"]);
+        Ok(())
     }
 
     /// RTP codec segments feed only a plain ladder with RTP bars on: with the
     /// bars off, none are fetched and the ladder key carries no stream
     /// generation, so stream churn cannot force a relayout.
     #[test]
-    fn a_ladder_without_rtp_bars_ignores_the_stream_store() {
+    fn a_ladder_without_rtp_bars_ignores_the_stream_store() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![make_invite(
             "nobars@test",
@@ -2858,12 +2899,13 @@ mod tests {
             app.flow.ladder.key.as_ref().map(|k| k.stream_generation),
             Some(None)
         );
+        Ok(())
     }
 
     /// A single dialog's ladder carries the dialog's post-dial delay on its
     /// first 180.
     #[test]
-    fn a_dialog_ladder_annotates_its_post_dial_delay() {
+    fn a_dialog_ladder_annotates_its_post_dial_delay() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite, make_response};
         let mut app = App::with_processed_messages(vec![
             make_invite("pdd@test", "1001", "1002", base_ts()),
@@ -2884,13 +2926,14 @@ mod tests {
             .filter_map(|r| r.pdd_note.as_deref())
             .collect();
         assert_eq!(notes, vec!["  PDD: 250ms"]);
+        Ok(())
     }
 
     /// Extended/merged call-flow: a busy store must not force a full
     /// multi-leg relayout every tick — the ladder key holds the adopted
     /// store generation until the churn floor elapses.
     #[test]
-    fn extended_ladder_holds_store_generation_under_churn() {
+    fn extended_ladder_holds_store_generation_under_churn() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![make_invite(
             "ext-1@test",
@@ -2906,7 +2949,7 @@ mod tests {
                 source: LadderSource::ExtendedStore(g),
                 ..
             }) => *g,
-            other => panic!("expected extended ladder key, got {other:?}"),
+            other => return Err(format!("expected extended ladder key, got {other:?}").into()),
         };
 
         app.dialog_store
@@ -2922,7 +2965,7 @@ mod tests {
                 *g, g0,
                 "store churn within the floor must hold the adopted generation"
             ),
-            other => panic!("expected extended ladder key, got {other:?}"),
+            other => return Err(format!("expected extended ladder key, got {other:?}").into()),
         }
 
         app.elapse_churn_floors_for_test();
@@ -2935,8 +2978,9 @@ mod tests {
                 *g > g0,
                 "floor elapsed: the new store generation must be adopted"
             ),
-            other => panic!("expected extended ladder key, got {other:?}"),
+            other => return Err(format!("expected extended ladder key, got {other:?}").into()),
         }
+        Ok(())
     }
 
     // ── Contended-store render ticks (busy-capture flicker) ────────
@@ -2964,7 +3008,7 @@ mod tests {
     /// A tick under a contended dialog-store write lock skips the frame
     /// and leaves the previous frame on screen (no blank flash).
     #[test]
-    fn contended_dialog_write_lock_must_not_blank_the_frame() {
+    fn contended_dialog_write_lock_must_not_blank_the_frame() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![make_invite(
@@ -2973,9 +3017,9 @@ mod tests {
             "1002",
             base_ts(),
         )]);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
-        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(draw_frame(&mut terminal, &mut app)?);
         let before = terminal.backend().buffer().clone();
         assert!(
             backend_text(&terminal).contains("1001"),
@@ -2986,19 +3030,20 @@ mod tests {
         let ds = app.dialog_store.clone();
         let _writer = ds.write();
         app.sync_caches(); // the real loop runs this every tick too
-        let drew = draw_frame(&mut terminal, &mut app).unwrap();
+        let drew = draw_frame(&mut terminal, &mut app)?;
         assert!(!drew, "a tick under a contended store must skip the frame");
         assert_eq!(
             terminal.backend().buffer(),
             &before,
             "a skipped tick must leave the previous frame on screen (no blank flash)"
         );
+        Ok(())
     }
 
     /// A contended stream-store write lock also skips the whole frame —
     /// rendering needs a consistent snapshot of BOTH stores or none.
     #[test]
-    fn contended_stream_write_lock_also_skips_the_frame() {
+    fn contended_stream_write_lock_also_skips_the_frame() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![make_invite(
@@ -3007,39 +3052,41 @@ mod tests {
             "1002",
             base_ts(),
         )]);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
-        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(draw_frame(&mut terminal, &mut app)?);
         let before = terminal.backend().buffer().clone();
 
         let ss = app.stream_store.clone();
         let _writer = ss.write();
-        let drew = draw_frame(&mut terminal, &mut app).unwrap();
+        let drew = draw_frame(&mut terminal, &mut app)?;
         assert!(
             !drew,
             "the frame renders from a consistent snapshot of BOTH stores or not at all"
         );
         assert_eq!(terminal.backend().buffer(), &before);
+        Ok(())
     }
 
     /// Contention on the very first tick (nothing drawn yet) skips
     /// without panicking or flushing anything.
     #[test]
-    fn first_tick_under_contention_skips_cleanly() {
+    fn first_tick_under_contention_skips_cleanly() -> Result<(), TestError> {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new_test();
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         let ds = app.dialog_store.clone();
         let _writer = ds.write();
         // Nothing drawn yet: skipping must not panic or flush anything.
-        assert!(!draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(!draw_frame(&mut terminal, &mut app)?);
+        Ok(())
     }
 
     /// Once contention clears the next tick draws again, and the
     /// successful draw resets the skip counter (a stale counter would
     /// force a blocking read and deadlock on the same-thread guard).
     #[test]
-    fn tick_after_contention_clears_redraws_and_resets_the_skip_counter() {
+    fn tick_after_contention_clears_redraws_and_resets_the_skip_counter() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![make_invite(
@@ -3048,30 +3095,31 @@ mod tests {
             "1002",
             base_ts(),
         )]);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
-        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(draw_frame(&mut terminal, &mut app)?);
 
         let ds = app.dialog_store.clone();
         {
             let _writer = ds.write();
-            assert!(!draw_frame(&mut terminal, &mut app).unwrap());
+            assert!(!draw_frame(&mut terminal, &mut app)?);
         }
         // Contention cleared: the next tick draws again.
-        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(draw_frame(&mut terminal, &mut app)?);
         assert!(backend_text(&terminal).contains("1001"));
         // And the successful draw reset the skip counter: a fresh
         // contended tick skips (a stale counter would block forever here,
         // deadlocking on the same-thread write guard).
         let _writer = ds.write();
-        assert!(!draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(!draw_frame(&mut terminal, &mut app)?);
+        Ok(())
     }
 
     /// After FORCED_DRAW_AFTER_SKIPS consecutive skipped ticks, the next
     /// tick takes blocking reads and draws — contention never starves
     /// the UI indefinitely.
     #[test]
-    fn sustained_contention_forces_a_blocking_frame() {
+    fn sustained_contention_forces_a_blocking_frame() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![make_invite(
@@ -3080,29 +3128,33 @@ mod tests {
             "1002",
             base_ts(),
         )]);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
-        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(draw_frame(&mut terminal, &mut app)?);
 
         let ds = app.dialog_store.clone();
         let (locked_tx, locked_rx) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn(move || {
+        let writer = std::thread::spawn(move || -> Result<(), String> {
             let guard = ds.write();
-            locked_tx.send(()).unwrap();
+            locked_tx
+                .send(())
+                .map_err(|e| format!("signal the lock: {e}"))?;
             std::thread::sleep(std::time::Duration::from_millis(300));
             drop(guard);
+            Ok(())
         });
-        locked_rx.recv().unwrap();
+        locked_rx.recv()?;
         for _ in 0..FORCED_DRAW_AFTER_SKIPS {
             assert!(
-                !draw_frame(&mut terminal, &mut app).unwrap(),
+                !draw_frame(&mut terminal, &mut app)?,
                 "ticks under contention skip while below the force threshold"
             );
         }
         // The next tick refuses to starve: it takes blocking reads and
         // draws as soon as the writer releases.
-        assert!(draw_frame(&mut terminal, &mut app).unwrap());
-        writer.join().unwrap();
+        assert!(draw_frame(&mut terminal, &mut app)?);
+        writer.join().map_err(|_| "thread panicked")??;
+        Ok(())
     }
 
     /// WS4.3c: one CallFlow frame lays out the ladder AT MOST once; an
@@ -3110,7 +3162,7 @@ mod tests {
     /// out ZERO times (style-only inputs like the color mode re-style the
     /// cached layout); a store mutation re-derives exactly once.
     #[test]
-    fn call_flow_frame_lays_out_ladder_at_most_once() {
+    fn call_flow_frame_lays_out_ladder_at_most_once() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite, make_ok};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![make_invite(
@@ -3121,10 +3173,10 @@ mod tests {
         )]);
         app.current_view = View::CallFlow("flow-1@test".to_string());
         let calls = || call_flow::prepare::LAYOUT_CALLS.with(|c| c.get());
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
 
         let before = calls();
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         let first = calls() - before;
         assert!(
             first <= 1,
@@ -3132,7 +3184,7 @@ mod tests {
         );
 
         let mid = calls();
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         assert_eq!(
             calls() - mid,
             0,
@@ -3141,7 +3193,7 @@ mod tests {
 
         // Style-only input change: re-style the cached layout, no re-layout.
         app.color_mode = ColorMode::CallId;
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         assert_eq!(
             calls() - mid,
             0,
@@ -3153,18 +3205,19 @@ mod tests {
             "flow-1@test",
             base_ts() + chrono::TimeDelta::seconds(1),
         ));
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         assert_eq!(
             calls() - mid,
             1,
             "a dialog mutation must re-derive the layout exactly once"
         );
+        Ok(())
     }
 
     /// The status-bar dialog counts must refresh from the store on the
     /// event-loop tick itself — not as a render side effect.
     #[test]
-    fn sync_caches_refreshes_dialog_counts_without_rendering() {
+    fn sync_caches_refreshes_dialog_counts_without_rendering() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![
             make_invite("sync-1@test", "1001", "1002", base_ts()),
@@ -3174,13 +3227,14 @@ mod tests {
         app.sync_caches();
         assert_eq!(app.cached_dialog_count, 2);
         assert_eq!(app.cached_displayed_count, 2);
+        Ok(())
     }
 
     /// Sticky-bottom autoscroll is tick logic, not render logic: with the
     /// selection on the last row and new dialogs arriving, sync_caches()
     /// must pull the selection to the new bottom.
     #[test]
-    fn sync_caches_applies_sticky_bottom_autoscroll() {
+    fn sync_caches_applies_sticky_bottom_autoscroll() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![make_invite(
             "auto-1@test",
@@ -3206,6 +3260,7 @@ mod tests {
             2,
             "selection must follow the new bottom row"
         );
+        Ok(())
     }
 
     /// Field crash regression: with the selection on the bottom row of a
@@ -3215,7 +3270,7 @@ mod tests {
     /// (call_list.rs visible-window slice). The render must survive and
     /// the tick must clamp the selection back onto a real row.
     #[test]
-    fn call_list_render_survives_display_shrink_with_stale_offset() {
+    fn call_list_render_survives_display_shrink_with_stale_offset() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![
@@ -3227,35 +3282,37 @@ mod tests {
         // 6-row terminal: 3 status lines + f-key bar + table header leave
         // exactly ONE visible data row, so selecting the bottom row stores
         // scroll offset 3 in the table state.
-        let mut terminal = Terminal::new(TestBackend::new(120, 6)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 6))?;
         app.sync_caches();
         assert_eq!(app.displayed.ids.len(), 4);
         app.call_list.move_to_bottom(app.displayed.ids.len());
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
 
         // Narrow the search: only the two "keep" dialogs stay displayed.
         app.search_query = "keep".into();
         app.sync_caches();
-        terminal.draw(|f| app.render(f)).unwrap(); // panicked before the fix
+        terminal.draw(|f| app.render(f))?; // panicked before the fix
 
         assert!(
             app.call_list.selected() < 2,
             "selection must be clamped to the shrunken list, got {}",
             app.call_list.selected()
         );
+        Ok(())
     }
 
     /// Same defect class in the stream list: a stale bottom-row selection
     /// plus a search that narrows the displayed streams must not push the
     /// visible-window slice start past the list length.
     #[test]
-    fn stream_list_render_survives_display_shrink_with_stale_selection() {
+    fn stream_list_render_survives_display_shrink_with_stale_selection() -> Result<(), TestError> {
         use ratatui::{Terminal, backend::TestBackend};
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         {
             let mut store = ss.write();
-            let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            let ts =
+                chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
             for i in 0..4u16 {
                 let parsed = crate::capture::ParsedPacket {
                     frame_bytes: None,
@@ -3301,13 +3358,14 @@ mod tests {
         }
         let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
         app.current_view = View::StreamList;
-        let mut terminal = Terminal::new(TestBackend::new(120, 7)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 7))?;
         app.stream_list.move_to_bottom(4);
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
 
         // Narrow the search so a single stream remains displayed.
         app.search_query = "keep-1".into();
-        terminal.draw(|f| app.render(f)).unwrap(); // panicked before the fix
+        terminal.draw(|f| app.render(f))?; // panicked before the fix
+        Ok(())
     }
 
     /// Enter with multiple rows checked (`[*]`) must open a flow showing ALL
@@ -3315,7 +3373,7 @@ mod tests {
     /// cursor (>) row's dialog — and drilling into a row must open the raw
     /// view of THAT row's dialog.
     #[test]
-    fn enter_with_multi_selection_shows_all_checked_dialogs() {
+    fn enter_with_multi_selection_shows_all_checked_dialogs() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use crossterm::event::KeyCode;
         use ratatui::{Terminal, backend::TestBackend};
@@ -3334,8 +3392,8 @@ mod tests {
                 base_ts() + chrono::TimeDelta::seconds(10),
             ),
         ]);
-        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-        terminal.draw(|f| app.render(f)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 24))?;
+        terminal.draw(|f| app.render(f))?;
 
         // Check rows 0 (a@test) and 2 (c@test), cursor ends on row 2.
         app.handle_key(KeyCode::Char(' '));
@@ -3344,7 +3402,7 @@ mod tests {
         app.handle_key(KeyCode::Char(' '));
         app.handle_key(KeyCode::Enter);
         assert!(matches!(app.current_view, View::CallFlow(_)));
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
 
         // The ladder must contain message rows from BOTH checked dialogs.
         let row_cids: std::collections::HashSet<&str> = app
@@ -3371,14 +3429,15 @@ mod tests {
                 assert_eq!(call_id, "a@test", "raw view must show the row's own dialog");
                 assert_eq!(*message_index, 0);
             }
-            v => panic!("expected RawMessage view, got {v:?}"),
+            v => return Err(format!("expected RawMessage view, got {v:?}").into()),
         }
+        Ok(())
     }
 
     /// A single checked row (or none) keeps the classic behavior: Enter
     /// opens the cursor row's dialog flow.
     #[test]
-    fn enter_with_single_or_no_selection_opens_cursor_dialog() {
+    fn enter_with_single_or_no_selection_opens_cursor_dialog() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use crossterm::event::KeyCode;
         let mut app = App::with_processed_messages(vec![
@@ -3400,17 +3459,18 @@ mod tests {
         app.handle_key(KeyCode::Char(' '));
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.current_view, View::CallFlow("b@test".to_string()));
+        Ok(())
     }
 
     /// Render one frame and return the given buffer row as a string.
-    fn rendered_row(app: &mut App, width: u16, height: u16, y: u16) -> String {
+    fn rendered_row(app: &mut App, width: u16, height: u16, y: u16) -> Result<String, TestError> {
         use ratatui::{Terminal, backend::TestBackend};
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| app.render(f)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        terminal.draw(|f| app.render(f))?;
         let buf = terminal.backend().buffer().clone();
-        (0..width)
+        Ok((0..width)
             .map(|x| buf[(x, y)].symbol().to_string())
-            .collect()
+            .collect())
     }
 
     /// Field incident regression (the "filter does not work" report): a
@@ -3420,7 +3480,7 @@ mod tests {
     /// expression `(method == 'OPTIONS' OR method == 'INVITE')`, yet "4
     /// displayed" because an invisible query "559" was still ANDed in).
     #[test]
-    fn persisted_search_query_stays_visible_on_status_line() {
+    fn persisted_search_query_stays_visible_on_status_line() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         use crossterm::event::KeyCode;
         let mut app = App::with_processed_messages(vec![
@@ -3444,12 +3504,13 @@ mod tests {
             app.cached_displayed_count, 1,
             "persisted query must narrow the list (that is its point)"
         );
-        let line3 = rendered_row(&mut app, 120, 24, 2);
+        let line3 = rendered_row(&mut app, 120, 24, 2)?;
         assert!(
             line3.contains("559"),
             "a query that still narrows the list must be visible on the \
              status line, got: {line3:?}"
         );
+        Ok(())
     }
 
     /// F9 (clear filter) must clear EVERYTHING that narrows the call list —
@@ -3457,7 +3518,7 @@ mod tests {
     /// full dialog count. Mirrors the field incident's dialog population
     /// (OPTIONS + INVITE) and its exact match expression.
     #[test]
-    fn clear_filter_key_clears_match_expression_and_search() {
+    fn clear_filter_key_clears_match_expression_and_search() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite, make_request};
         use crossterm::event::KeyCode;
         let mut messages: Vec<crate::sip::SipMessage> = (0..6)
@@ -3487,7 +3548,7 @@ mod tests {
 
         // The incident's exact match expression: matches ALL 8 dialogs.
         let expr = "(method == 'OPTIONS' OR method == 'INVITE')";
-        app.active_filter = Some(crate::sip::dsl::FilterExpr::parse(expr).unwrap());
+        app.active_filter = Some(crate::sip::dsl::FilterExpr::parse(expr)?);
         app.active_filter_text = expr.to_string();
         app.sync_caches();
         assert_eq!(
@@ -3515,6 +3576,7 @@ mod tests {
             app.cached_displayed_count, 8,
             "after clear-filter every dialog must be displayed again"
         );
+        Ok(())
     }
 
     /// Field report: "the PDD shown looks like the length of the call".
@@ -3523,7 +3585,7 @@ mod tests {
     /// column must show the 1.5 s, and the call length must be visible in
     /// its own Duration column — both values available, never conflated.
     #[test]
-    fn pdd_column_is_pdd_and_duration_column_is_call_length() {
+    fn pdd_column_is_pdd_and_duration_column_is_call_length() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite, make_request, make_response};
         let t0 = base_ts();
         let mut app = App::with_processed_messages(vec![
@@ -3559,7 +3621,7 @@ mod tests {
         // Ground truth from the store before looking at the rendering.
         {
             let store = app.dialog_store.read();
-            let d = store.get("call-pdd@test").expect("dialog exists");
+            let d = store.get("call-pdd@test").ok_or("dialog exists")?;
             assert_eq!(d.timing.pdd_ms(), Some(1500), "PDD is INVITE→180");
             assert_eq!(
                 (d.updated_at - d.created_at).num_milliseconds(),
@@ -3569,12 +3631,12 @@ mod tests {
         }
 
         // Header advertises both columns; the row shows both values.
-        let header = rendered_row(&mut app, 160, 10, 3);
+        let header = rendered_row(&mut app, 160, 10, 3)?;
         assert!(
             header.contains("PDD") && header.contains("Duration"),
             "both PDD and Duration columns must exist, header: {header:?}"
         );
-        let row = rendered_row(&mut app, 160, 10, 4);
+        let row = rendered_row(&mut app, 160, 10, 4)?;
         assert!(
             row.contains("1500ms"),
             "PDD column must show INVITE→180, row: {row:?}"
@@ -3583,12 +3645,13 @@ mod tests {
             row.contains("1m1s"),
             "Duration column must show the call length, row: {row:?}"
         );
+        Ok(())
     }
 
     /// Recent data updates yield the fast active poll timeout; an idle
     /// (backdated) timestamp yields the slow idle timeout.
     #[test]
-    fn adaptive_timeout_active_vs_idle() {
+    fn adaptive_timeout_active_vs_idle() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
@@ -3599,6 +3662,7 @@ mod tests {
         // Simulate idle by backdating the timestamp
         app.last_data_update = Instant::now() - Duration::from_secs(10);
         assert!(app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS));
+        Ok(())
     }
 
     /// A failed `try_read` (the store's write lock is held by a busy
@@ -3606,7 +3670,7 @@ mod tests {
     /// stay fast. Previously a `None` read was treated like an unchanged
     /// count, downgrading the loop to the slow idle poll under contention.
     #[test]
-    fn contended_dialog_read_keeps_active_poll() {
+    fn contended_dialog_read_keeps_active_poll() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let mut app = App::new(ds.clone(), ss, Theme::default(), Keymap::default());
@@ -3627,12 +3691,13 @@ mod tests {
             app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS),
             "contention must keep the responsive poll cadence"
         );
+        Ok(())
     }
 
     /// A successful, unchanged read is genuinely idle: the cadence is left
     /// alone (no spurious activity signal on a static pcap).
     #[test]
-    fn unchanged_dialog_count_stays_idle() {
+    fn unchanged_dialog_count_stays_idle() -> Result<(), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
@@ -3649,12 +3714,13 @@ mod tests {
         app.reconcile_dialog_count(Some(3));
         assert_eq!(app.last_known_dialog_count, 3);
         assert!(app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS));
+        Ok(())
     }
 
     /// When config sets both `selected` and its legacy alias `highlight`,
     /// `selected` wins.
     #[test]
-    fn theme_from_config_selected_overrides_highlight() {
+    fn theme_from_config_selected_overrides_highlight() -> Result<(), TestError> {
         let config = ThemeConfig {
             highlight: Some("red".to_string()),
             selected: Some("blue".to_string()),
@@ -3663,12 +3729,13 @@ mod tests {
         // Exercise config precedence independently of the runner's NO_COLOR.
         let theme = Theme::from_config_with_no_color(&config, false);
         assert_eq!(theme.selected, Color::Blue); // selected wins over highlight
+        Ok(())
     }
 
     /// The legacy `highlight` alias applies to `selected` when no
     /// explicit `selected` color is configured.
     #[test]
-    fn theme_from_config_highlight_fallback() {
+    fn theme_from_config_highlight_fallback() -> Result<(), TestError> {
         let config = ThemeConfig {
             highlight: Some("red".to_string()),
             ..Default::default()
@@ -3676,12 +3743,13 @@ mod tests {
         // Exercise the alias independently of the runner's NO_COLOR.
         let theme = Theme::from_config_with_no_color(&config, false);
         assert_eq!(theme.selected, Color::Red); // highlight applies when selected is None
+        Ok(())
     }
 
     /// A configured rebind replaces the default key while unconfigured
     /// actions keep their defaults.
     #[test]
-    fn keymap_from_config_overrides_default() {
+    fn keymap_from_config_overrides_default() -> Result<(), TestError> {
         let config = KeybindingsConfig {
             quit: Some("x".to_string()),
             ..Default::default()
@@ -3689,21 +3757,23 @@ mod tests {
         let keymap = Keymap::from_config(&config);
         assert_eq!(keymap.quit, KeyCode::Char('x'));
         assert_eq!(keymap.help, KeyCode::F(1)); // unchanged default
+        Ok(())
     }
 
     /// `csv_escape` quotes fields containing commas, quotes or newlines
     /// and doubles embedded quotes; plain text passes through.
     #[test]
-    fn csv_escape_quotes_commas() {
+    fn csv_escape_quotes_commas() -> Result<(), TestError> {
         assert_eq!(csv_escape("hello"), "hello");
         assert_eq!(csv_escape("hello,world"), "\"hello,world\"");
         assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+        Ok(())
     }
 
     /// `View` equality compares variants and their payloads (Call-IDs).
     #[test]
-    fn view_equality() {
+    fn view_equality() -> Result<(), TestError> {
         assert_eq!(View::CallList, View::CallList);
         assert_ne!(View::CallList, View::StreamList);
         assert_eq!(
@@ -3714,13 +3784,14 @@ mod tests {
             View::CallFlow("abc".to_string()),
             View::CallFlow("def".to_string())
         );
+        Ok(())
     }
 
     // ── SaveFormat round-trips ──────────────────────────────────────
 
     /// `SaveFormat::next` cycles through all 11 formats back to the start.
     #[test]
-    fn save_format_next_full_cycle() {
+    fn save_format_next_full_cycle() -> Result<(), TestError> {
         // 12 formats (Notes, the operator's notes file, is the twelfth) —
         // next() applied 12 times returns to start.
         let mut f = SaveFormat::Pcap;
@@ -3728,11 +3799,12 @@ mod tests {
             f = f.next();
         }
         assert_eq!(f, SaveFormat::Pcap);
+        Ok(())
     }
 
     /// `prev` is the exact inverse of `next` for every format.
     #[test]
-    fn save_format_prev_is_inverse_of_next() {
+    fn save_format_prev_is_inverse_of_next() -> Result<(), TestError> {
         let formats = [
             SaveFormat::Pcap,
             SaveFormat::PcapNg,
@@ -3751,12 +3823,13 @@ mod tests {
             assert_eq!(f.next().prev(), f, "prev∘next != id for {f:?}");
             assert_eq!(f.prev().next(), f, "next∘prev != id for {f:?}");
         }
+        Ok(())
     }
 
     /// Every format has non-empty extension/label/category/description,
     /// with a few exact values spot-checked.
     #[test]
-    fn save_format_extension_label_category_description_nonempty() {
+    fn save_format_extension_label_category_description_nonempty() -> Result<(), TestError> {
         let formats = [
             SaveFormat::Pcap,
             SaveFormat::PcapNg,
@@ -3780,6 +3853,7 @@ mod tests {
         assert_eq!(SaveFormat::RtpJson.extension(), "rtp.json");
         assert_eq!(SaveFormat::Pcap.category(), "Packet capture");
         assert_eq!(SaveFormat::Json.category(), "Structured/analytics");
+        Ok(())
     }
 
     // ── Display-mode enum cycles ────────────────────────────────────
@@ -3787,19 +3861,20 @@ mod tests {
     /// SDP display mode cycles None → Summary → Full → None with
     /// matching status-bar labels.
     #[test]
-    fn sdp_display_mode_cycle_and_labels() {
+    fn sdp_display_mode_cycle_and_labels() -> Result<(), TestError> {
         assert_eq!(SdpDisplayMode::None.next(), SdpDisplayMode::Summary);
         assert_eq!(SdpDisplayMode::Summary.next(), SdpDisplayMode::Full);
         assert_eq!(SdpDisplayMode::Full.next(), SdpDisplayMode::None);
         assert!(SdpDisplayMode::None.label().contains("SDP"));
         assert!(SdpDisplayMode::Summary.label().contains("Summary"));
         assert!(SdpDisplayMode::Full.label().contains("Full"));
+        Ok(())
     }
 
     /// Timestamp mode cycles Absolute → DeltaPrev → DeltaFirst → Scaled
     /// → Absolute with "Time:" labels.
     #[test]
-    fn timestamp_mode_cycle_and_labels() {
+    fn timestamp_mode_cycle_and_labels() -> Result<(), TestError> {
         assert_eq!(TimestampMode::Absolute.next(), TimestampMode::DeltaPrev);
         assert_eq!(TimestampMode::DeltaPrev.next(), TimestampMode::DeltaFirst);
         assert_eq!(TimestampMode::DeltaFirst.next(), TimestampMode::Scaled);
@@ -3812,18 +3887,20 @@ mod tests {
         ] {
             assert!(m.label().contains("Time"));
         }
+        Ok(())
     }
 
     /// Color mode cycles Method → CallId → CSeq → Method with "Color:"
     /// labels.
     #[test]
-    fn color_mode_cycle_and_labels() {
+    fn color_mode_cycle_and_labels() -> Result<(), TestError> {
         assert_eq!(ColorMode::Method.next(), ColorMode::CallId);
         assert_eq!(ColorMode::CallId.next(), ColorMode::CSeq);
         assert_eq!(ColorMode::CSeq.next(), ColorMode::Method);
         for m in [ColorMode::Method, ColorMode::CallId, ColorMode::CSeq] {
             assert!(m.label().contains("Color"));
         }
+        Ok(())
     }
 
     // ── FilterDialogState navigation & build ────────────────────────
@@ -3831,7 +3908,7 @@ mod tests {
     /// `text_field`/`text_field_mut` map indices 0-4 to the five filter
     /// fields; out-of-range indices yield ""/None.
     #[test]
-    fn filter_dialog_text_field_accessors() {
+    fn filter_dialog_text_field_accessors() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             sip_from: "a".to_string(),
             sip_to: "b".to_string(),
@@ -3852,23 +3929,25 @@ mod tests {
         }
         assert_eq!(st.text_field(0), "az");
         assert!(st.text_field_mut(99).is_none());
+        Ok(())
     }
 
     /// Tab focus wraps from the first element to the last and back.
     #[test]
-    fn filter_dialog_focus_wraps_both_directions() {
+    fn filter_dialog_focus_wraps_both_directions() -> Result<(), TestError> {
         let mut st = FilterDialogState::default();
         assert_eq!(st.focused_field(), 0);
         st.focus_prev(); // wrap to last
         assert_eq!(st.focused_field(), FILTER_ITEM_COUNT - 1);
         st.focus_next(); // wrap back to 0
         assert_eq!(st.focused_field(), 0);
+        Ok(())
     }
 
     /// Focus indices classify correctly as text field, "All" master
     /// checkbox (not a method slot), method checkbox, or button.
     #[test]
-    fn filter_dialog_focus_classification() {
+    fn filter_dialog_focus_classification() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             focused_field: 0,
             ..Default::default()
@@ -3890,12 +3969,13 @@ mod tests {
         st.focused_field = FILTER_BUTTON_IDX;
         assert!(!st.is_text_field_focused());
         assert!(!st.is_checkbox_focused());
+        Ok(())
     }
 
     /// Arrow navigation moves through the 2-column method grid and exits
     /// upward via the "All" row to the last text field.
     #[test]
-    fn filter_dialog_checkbox_grid_navigation() {
+    fn filter_dialog_checkbox_grid_navigation() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             focused_field: METHOD_CHECKBOX_BASE,
             ..Default::default()
@@ -3916,12 +3996,13 @@ mod tests {
         st.checkbox_up();
         assert!(st.is_text_field_focused());
         assert_eq!(st.focused_field(), FILTER_TEXT_FIELD_COUNT - 1);
+        Ok(())
     }
 
     /// Down walks the left column, continues into the right column, then
     /// reaches the buttons — vertical navigation covers every checkbox.
     #[test]
-    fn filter_dialog_checkbox_down_traverses_both_columns_then_buttons() {
+    fn filter_dialog_checkbox_down_traverses_both_columns_then_buttons() -> Result<(), TestError> {
         // Down walks the LEFT column to its bottom, then continues into the
         // RIGHT column, then to the buttons — so the right column is reachable
         // by vertical navigation.
@@ -3957,11 +4038,12 @@ mod tests {
         };
         st.checkbox_up();
         assert_eq!(st.checkbox_index(), Some(8));
+        Ok(())
     }
 
     /// Default state: all methods checked, no narrowing, no expression.
     #[test]
-    fn filter_dialog_default_all_methods_checked() {
+    fn filter_dialog_default_all_methods_checked() -> Result<(), TestError> {
         // SIP messages must be checked by default → no narrowing → no expression.
         let st = FilterDialogState::default();
         assert!(
@@ -3974,11 +4056,12 @@ mod tests {
             "all-checked + empty text == no active filter"
         );
         assert!(st.build_filter_expression().is_none());
+        Ok(())
     }
 
     /// `clear()` re-checks every method (show all) and empties the state.
     #[test]
-    fn filter_dialog_clear_resets_to_all_checked() {
+    fn filter_dialog_clear_resets_to_all_checked() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             methods: [false; 10],
             sip_from: "x".to_string(),
@@ -3990,12 +4073,13 @@ mod tests {
             "clear() must re-check all methods (show all)"
         );
         assert!(st.is_empty());
+        Ok(())
     }
 
     /// `any_method_checked` follows the checkbox array (none checked
     /// means "show nothing").
     #[test]
-    fn filter_dialog_any_method_checked_tracks_state() {
+    fn filter_dialog_any_method_checked_tracks_state() -> Result<(), TestError> {
         let mut st = FilterDialogState::default();
         assert!(st.any_method_checked());
         st.methods = [false; 10];
@@ -4005,12 +4089,13 @@ mod tests {
         );
         st.methods[3] = true;
         assert!(st.any_method_checked());
+        Ok(())
     }
 
     /// Unchecking one method builds an OR expression over the other nine
     /// (excluding it), and text fields AND-join with the method clause.
     #[test]
-    fn filter_dialog_uncheck_one_excludes_that_method() {
+    fn filter_dialog_uncheck_one_excludes_that_method() -> Result<(), TestError> {
         // From the all-checked default, unchecking INVITE (index 2) must produce
         // a method filter over the OTHER nine and exclude INVITE.
         let mut st = FilterDialogState {
@@ -4021,7 +4106,7 @@ mod tests {
         assert!(!st.methods[2], "INVITE now unchecked");
         let expr = st
             .build_filter_expression()
-            .expect("partial selection → expression");
+            .ok_or("partial selection → expression")?;
         assert!(
             !expr.contains("'INVITE'"),
             "unchecked INVITE must be excluded: {expr}"
@@ -4032,24 +4117,28 @@ mod tests {
         // Text fields AND-join with the method clause.
         st.sip_from = "1001".to_string();
         st.source = "10.0.0.1".to_string();
-        let expr = st.build_filter_expression().unwrap();
+        let expr = st
+            .build_filter_expression()
+            .ok_or("build_filter_expression gives a value")?;
         assert!(expr.contains("from.user") && expr.contains("src.ip") && expr.contains(" AND "));
+        Ok(())
     }
 
     /// All methods checked plus empty text fields builds no expression.
     #[test]
-    fn filter_dialog_all_methods_checked_yields_no_method_filter() {
+    fn filter_dialog_all_methods_checked_yields_no_method_filter() -> Result<(), TestError> {
         let st = FilterDialogState {
             methods: [true; 10],
             ..Default::default()
         };
         // All checked → method filter omitted; with no text fields → None.
         assert!(st.build_filter_expression().is_none());
+        Ok(())
     }
 
     /// `clear()` also resets focus and cursor position, not just fields.
     #[test]
-    fn filter_dialog_clear_resets_everything() {
+    fn filter_dialog_clear_resets_everything() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             sip_from: "x".to_string(),
             sip_to: "y".to_string(),
@@ -4062,11 +4151,12 @@ mod tests {
         assert!(st.is_empty());
         assert_eq!(st.focused_field(), 0);
         assert_eq!(st.cursor_pos, 0);
+        Ok(())
     }
 
     /// `sync_cursor` places the cursor at the end of the focused field.
     #[test]
-    fn filter_dialog_sync_cursor_to_field_end() {
+    fn filter_dialog_sync_cursor_to_field_end() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             sip_to: "hello".to_string(),
             focused_field: 1, // SIP To
@@ -4075,11 +4165,15 @@ mod tests {
         };
         st.sync_cursor();
         assert_eq!(st.cursor_pos, 5);
+        Ok(())
     }
 
     /// A one-message INVITE dialog carrying `extra` headers, for the
     /// Header-field tests.
-    fn header_test_dialog(call_id: &str, extra: &[&str]) -> crate::sip::dialog::SipDialog {
+    fn header_test_dialog(
+        call_id: &str,
+        extra: &[&str],
+    ) -> Result<crate::sip::dialog::SipDialog, TestError> {
         let mut headers = vec![
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKtui",
             "From: <sip:1001@example.com>;tag=t1",
@@ -4095,7 +4189,9 @@ mod tests {
             &headers,
             b"",
         );
-        let ip: std::net::IpAddr = "192.0.2.1".parse().expect("an address");
+        let ip: std::net::IpAddr = "192.0.2.1"
+            .parse()
+            .map_err(|e| format!("an address: {e:?}"))?;
         let msg = crate::sip::parser::parse_sip(
             &raw,
             chrono::Utc::now(),
@@ -4105,51 +4201,58 @@ mod tests {
             5060,
             crate::net::TransportProto::Udp,
         )
-        .expect("the test INVITE parses");
-        crate::sip::dialog::SipDialog::new(&msg).expect("an INVITE opens a dialog")
+        .map_err(|e| format!("the test INVITE parses: {e:?}"))?;
+        Ok(crate::sip::dialog::SipDialog::new(&msg).ok_or("an INVITE opens a dialog")?)
     }
 
     /// Whether the dialog's built expression selects `dialog`.
-    fn dialog_selects(st: &FilterDialogState, dialog: &crate::sip::dialog::SipDialog) -> bool {
-        let expr = st.build_filter_expression().expect("a header term");
-        FilterExpr::parse(&expr)
-            .unwrap_or_else(|e| panic!("the dialog built {expr:?}, which must parse: {e}"))
+    fn dialog_selects(
+        st: &FilterDialogState,
+        dialog: &crate::sip::dialog::SipDialog,
+    ) -> Result<bool, TestError> {
+        let expr = st.build_filter_expression().ok_or("a header term")?;
+        Ok(FilterExpr::parse(&expr)
+            .map_err(|e| format!("the dialog built {expr:?}, which must parse: {e}"))?
             .matches_dialog(
                 dialog,
                 &[],
                 crate::rtp::diagnosis::CaptureMedia::Absent,
                 crate::rtp::quality::MosDelay::unknown(),
-            )
+            ))
     }
 
     /// The Header field takes `Name: text` and selects the calls carrying that
     /// header with that text in its value — literally, like every other text
     /// field here, so a `.` is a dot and not "any character".
     #[test]
-    fn filter_dialog_header_field_matches_name_and_literal_text() {
+    fn filter_dialog_header_field_matches_name_and_literal_text() -> Result<(), TestError> {
         let st = FilterDialogState {
             header: "x-trunk: north.east".to_string(),
             ..Default::default()
         };
-        let hit = header_test_dialog("h1@test", &["X-Trunk: north.east-7"]);
-        let regex_only = header_test_dialog("h2@test", &["X-Trunk: northXeast"]);
-        let other_header = header_test_dialog("h3@test", &["Foo-Bar: north.east"]);
-        let none = header_test_dialog("h4@test", &[]);
+        let hit = header_test_dialog("h1@test", &["X-Trunk: north.east-7"])?;
+        let regex_only = header_test_dialog("h2@test", &["X-Trunk: northXeast"])?;
+        let other_header = header_test_dialog("h3@test", &["Foo-Bar: north.east"])?;
+        let none = header_test_dialog("h4@test", &[])?;
         assert!(
-            dialog_selects(&st, &hit),
+            dialog_selects(&st, &hit)?,
             "name any case, text as a substring"
         );
-        assert!(!dialog_selects(&st, &regex_only), "the text is literal");
-        assert!(!dialog_selects(&st, &other_header), "only the named header");
-        assert!(!dialog_selects(&st, &none));
+        assert!(!dialog_selects(&st, &regex_only)?, "the text is literal");
+        assert!(
+            !dialog_selects(&st, &other_header)?,
+            "only the named header"
+        );
+        assert!(!dialog_selects(&st, &none)?);
+        Ok(())
     }
 
     /// A bare name, or a name and colon with no text, selects the calls that
     /// carry the header at all.
     #[test]
-    fn filter_dialog_header_field_bare_name_means_present() {
-        let with = header_test_dialog("p1@test", &["P-Asserted-Identity: <sip:a@example.com>"]);
-        let without = header_test_dialog("p2@test", &[]);
+    fn filter_dialog_header_field_bare_name_means_present() -> Result<(), TestError> {
+        let with = header_test_dialog("p1@test", &["P-Asserted-Identity: <sip:a@example.com>"])?;
+        let without = header_test_dialog("p2@test", &[])?;
         for typed in [
             "P-Asserted-Identity",
             "p-asserted-identity:",
@@ -4159,43 +4262,47 @@ mod tests {
                 header: typed.to_string(),
                 ..Default::default()
             };
-            assert!(dialog_selects(&st, &with), "{typed:?} selects the carrier");
-            assert!(!dialog_selects(&st, &without), "{typed:?} skips the rest");
+            assert!(dialog_selects(&st, &with)?, "{typed:?} selects the carrier");
+            assert!(!dialog_selects(&st, &without)?, "{typed:?} skips the rest");
         }
+        Ok(())
     }
 
     /// A compact name typed in the Header field reads its long form.
     #[test]
-    fn filter_dialog_header_field_honors_compact_names() {
+    fn filter_dialog_header_field_honors_compact_names() -> Result<(), TestError> {
         let st = FilterDialogState {
             header: "k: 100rel".to_string(),
             ..Default::default()
         };
         assert!(dialog_selects(
             &st,
-            &header_test_dialog("k1@test", &["Supported: 100rel"])
-        ));
+            &header_test_dialog("k1@test", &["Supported: 100rel"])?
+        )?);
+        Ok(())
     }
 
     /// A name that is not a header name is a parse error the dialog shows, not
     /// a filter that silently matches nothing.
     #[test]
-    fn filter_dialog_header_field_rejects_a_non_token_name() {
+    fn filter_dialog_header_field_rejects_a_non_token_name() -> Result<(), TestError> {
         let st = FilterDialogState {
             header: "two words: x".to_string(),
             ..Default::default()
         };
-        let expr = st.build_filter_expression().expect("a header term");
+        let expr = st.build_filter_expression().ok_or("a header term")?;
         let err = FilterExpr::parse(&expr)
-            .expect_err("not a token")
+            .err()
+            .ok_or("not a token")?
             .to_string();
         assert!(err.contains("header name"), "{err}");
+        Ok(())
     }
 
     /// The Header field is text field 5, after Payload, and the time bounds
     /// follow it; `clear()` and `is_empty()` both know it.
     #[test]
-    fn filter_dialog_header_field_is_a_text_field() {
+    fn filter_dialog_header_field_is_a_text_field() -> Result<(), TestError> {
         let mut st = FilterDialogState {
             payload: "p".to_string(),
             header: "h".to_string(),
@@ -4219,22 +4326,24 @@ mod tests {
         st.clear();
         assert!(st.header.is_empty());
         assert!(st.is_empty());
+        Ok(())
     }
 
     // ── FromToMode ───────────────────────────────────────────────────
 
     /// Default mode shows the user, falls back to host, then "-".
     #[test]
-    fn from_to_mode_default_prefers_user_then_host() {
+    fn from_to_mode_default_prefers_user_then_host() -> Result<(), TestError> {
         let m = FromToMode::Default;
         assert_eq!(m.format(Some("1001"), Some("h:5060")), "1001");
         assert_eq!(m.format(None, Some("h:5060")), "h:5060");
         assert_eq!(m.format(None, None), "-");
+        Ok(())
     }
 
     /// HostPort mode shows only the host and ignores the user entirely.
     #[test]
-    fn from_to_mode_host_port_only() {
+    fn from_to_mode_host_port_only() -> Result<(), TestError> {
         let m = FromToMode::HostPort;
         assert_eq!(m.format(Some("1001"), Some("h:5060")), "h:5060");
         assert_eq!(
@@ -4242,11 +4351,12 @@ mod tests {
             "-",
             "host mode ignores the user"
         );
+        Ok(())
     }
 
     /// User mode shows only the user, with "-" when absent (legacy).
     #[test]
-    fn from_to_mode_user_only_is_legacy_behavior() {
+    fn from_to_mode_user_only_is_legacy_behavior() -> Result<(), TestError> {
         let m = FromToMode::User;
         assert_eq!(m.format(Some("1001"), Some("h")), "1001");
         assert_eq!(
@@ -4254,22 +4364,24 @@ mod tests {
             "-",
             "user mode shows '-' when no user"
         );
+        Ok(())
     }
 
     /// UserHostPort mode combines `user@host`, degrading to whichever
     /// part exists.
     #[test]
-    fn from_to_mode_user_host_combines() {
+    fn from_to_mode_user_host_combines() -> Result<(), TestError> {
         let m = FromToMode::UserHostPort;
         assert_eq!(m.format(Some("1001"), Some("h:5060")), "1001@h:5060");
         assert_eq!(m.format(Some("1001"), None), "1001");
         assert_eq!(m.format(None, Some("h:5060")), "h:5060");
         assert_eq!(m.format(None, None), "-");
+        Ok(())
     }
 
     /// The `u`-key cycle visits all four modes and returns to Default.
     #[test]
-    fn from_to_mode_cycle_is_four_states() {
+    fn from_to_mode_cycle_is_four_states() -> Result<(), TestError> {
         let m = FromToMode::default();
         assert_eq!(m, FromToMode::Default);
         assert_eq!(m.next(), FromToMode::HostPort);
@@ -4280,12 +4392,13 @@ mod tests {
             FromToMode::Default,
             "cycles back to Default"
         );
+        Ok(())
     }
 
     /// `parse` round-trips every `as_config_str` value and rejects
     /// unknown/empty strings with None.
     #[test]
-    fn from_to_mode_parse_roundtrip_and_invalid() {
+    fn from_to_mode_parse_roundtrip_and_invalid() -> Result<(), TestError> {
         for m in [
             FromToMode::Default,
             FromToMode::HostPort,
@@ -4296,13 +4409,14 @@ mod tests {
         }
         assert_eq!(FromToMode::parse("bogus"), None);
         assert_eq!(FromToMode::parse(""), None);
+        Ok(())
     }
 
     // ── App state setters ───────────────────────────────────────────
 
     /// The capture-mode and BPF-filter setters store the given strings.
     #[test]
-    fn app_set_capture_mode_and_bpf_filter() {
+    fn app_set_capture_mode_and_bpf_filter() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.set_capture_mode("Offline (cap.pcap)".to_string());
         assert_eq!(app.capture_mode, "Offline (cap.pcap)");
@@ -4317,24 +4431,27 @@ mod tests {
             app.bpf_filter_generated,
             "the generated default is marked so the status line can summarize it"
         );
+        Ok(())
     }
 
     /// `mark_data_updated` flips an idle App back to active polling.
     #[test]
-    fn app_mark_data_updated_resets_to_active() {
+    fn app_mark_data_updated_resets_to_active() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.last_data_update = Instant::now() - Duration::from_secs(10);
         assert!(app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS));
         app.mark_data_updated();
         assert!(app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS));
+        Ok(())
     }
 
     /// `is_paused` mirrors the TUI-local paused flag.
     #[test]
-    fn app_is_paused_reflects_flag() {
+    fn app_is_paused_reflects_flag() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(!app.is_paused());
         app.paused = true;
         assert!(app.is_paused());
+        Ok(())
     }
 }

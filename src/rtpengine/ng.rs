@@ -181,6 +181,7 @@ pub fn parse(input: &[u8]) -> Result<NgMessage<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Shaped exactly like the live offer in the committed fixture.
     fn offer_bytes() -> Vec<u8> {
@@ -200,9 +201,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_request_and_names_its_call() {
+    fn parses_a_request_and_names_its_call() -> Result<(), TestError> {
         let raw = offer_bytes();
-        let m = parse(&raw).expect("offer parses");
+        let m = parse(&raw).map_err(|e| format!("offer parses: {e:?}"))?;
         assert_eq!(m.cookie, b"cookie1");
         assert_eq!(m.command, Some(NgCommand::Offer));
         assert_eq!(m.call_id, Some(&b"km-670bd208@sipnab"[..]));
@@ -210,18 +211,19 @@ mod tests {
         assert_eq!(m.to_tag, None);
         assert!(!m.is_reply());
         assert!(
-            m.sdp.expect("sdp").starts_with(b"v=0\r\n"),
+            m.sdp.ok_or("sdp")?.starts_with(b"v=0\r\n"),
             "SDP handed on byte-exact"
         );
+        Ok(())
     }
 
     /// The asymmetry this whole delivery choice rests on. If this ever starts
     /// returning a call-id, the argument for HEP over a wire sniffer weakens
     /// and someone should re-read the module note before acting on it.
     #[test]
-    fn a_reply_carries_the_rewritten_sdp_and_no_call_id() {
+    fn a_reply_carries_the_rewritten_sdp_and_no_call_id() -> Result<(), TestError> {
         let raw = offer_reply_bytes();
-        let m = parse(&raw).expect("reply parses");
+        let m = parse(&raw).map_err(|e| format!("reply parses: {e:?}"))?;
         assert!(m.is_reply(), "no command means reply");
         assert_eq!(m.command, None);
         assert_eq!(m.result, Some(&b"ok"[..]));
@@ -230,23 +232,25 @@ mod tests {
             "rtpengine replies do NOT name the call; the correlation-id does"
         );
         assert!(
-            m.sdp.expect("sdp").contains_str("38664"),
+            m.sdp.ok_or("sdp")?.contains_str("38664"),
             "the reply is what carries the relay's allocated port"
         );
+        Ok(())
     }
 
     #[test]
-    fn classifies_the_commands_that_carry_the_join_key() {
+    fn classifies_the_commands_that_carry_the_join_key() -> Result<(), TestError> {
         assert_eq!(NgCommand::classify("offer"), NgCommand::Offer);
         assert_eq!(NgCommand::classify("answer"), NgCommand::Answer);
         assert_eq!(NgCommand::classify("delete"), NgCommand::Delete);
         assert_eq!(NgCommand::classify("ping"), NgCommand::Other("ping"));
+        Ok(())
     }
 
     /// RE5: these must be recognized distinctly so a run can report them as
     /// unattributed, rather than either attributing them or staying quiet.
     #[test]
-    fn recognizes_media_creating_commands_separately() {
+    fn recognizes_media_creating_commands_separately() -> Result<(), TestError> {
         for name in ["subscribe request", "publish", "start recording"] {
             assert_eq!(
                 NgCommand::classify(name),
@@ -258,20 +262,23 @@ mod tests {
             NgCommand::classify("start recording"),
             NgCommand::Other("start recording")
         );
+        Ok(())
     }
 
     #[test]
-    fn rejects_a_datagram_with_no_cookie_separator() {
+    fn rejects_a_datagram_with_no_cookie_separator() -> Result<(), TestError> {
         assert!(parse(b"d7:command5:offere").is_err(), "no separator");
         assert!(parse(b" d7:command5:offere").is_err(), "empty cookie");
         assert!(parse(b"").is_err(), "empty datagram");
+        Ok(())
     }
 
     #[test]
-    fn rejects_a_body_that_is_not_a_dictionary() {
+    fn rejects_a_body_that_is_not_a_dictionary() -> Result<(), TestError> {
         assert!(parse(b"cookie1 i5e").is_err(), "top-level int");
         assert!(parse(b"cookie1 li1ee").is_err(), "top-level list");
         assert!(parse(b"cookie1 d7:command").is_err(), "truncated");
+        Ok(())
     }
 
     /// The correlation-id is the ONLY thing that can name a reply's call, and
@@ -279,7 +286,7 @@ mod tests {
     /// stops working, relay-side sockets become unattributable on any capture
     /// where the parties' own addresses are not independently visible.
     #[test]
-    fn a_reply_is_named_by_the_hep_correlation_id_alone() {
+    fn a_reply_is_named_by_the_hep_correlation_id_alone() -> Result<(), TestError> {
         let raw = offer_reply_bytes();
         let links = crate::rtpengine::sdp_links_from_ng(&raw, Some("call-from-correlation"));
         assert_eq!(links.len(), 1, "the reply's SDP has one m= line");
@@ -290,22 +297,24 @@ mod tests {
             call_id, "call-from-correlation",
             "a reply carries no call-id of its own; the correlation-id names it"
         );
+        Ok(())
     }
 
     /// Without a correlation-id there is nothing to name a reply, and guessing
     /// would attach a relay port to whatever call was most recently seen.
     #[test]
-    fn a_reply_with_no_correlation_id_attributes_nothing() {
+    fn a_reply_with_no_correlation_id_attributes_nothing() -> Result<(), TestError> {
         let raw = offer_reply_bytes();
         assert!(
             crate::rtpengine::sdp_links_from_ng(&raw, None).is_empty(),
             "an unnamed reply must contribute no endpoints"
         );
+        Ok(())
     }
 
     /// RE5: recording and forking commands are counted, never attributed.
     #[test]
-    fn a_media_creating_command_is_counted_and_not_attributed() {
+    fn a_media_creating_command_is_counted_and_not_attributed() -> Result<(), TestError> {
         // A DELTA, not a reset-and-expect-1. The tally is process-global and
         // shared with every test in this binary; resetting it poisoned the
         // other tests that read it, and `== 1` raced any concurrent note.
@@ -326,6 +335,7 @@ mod tests {
             crate::relay::media_creating_commands_seen() > before,
             "but the run must be able to SAY it saw one"
         );
+        Ok(())
     }
 
     /// Helper: byte-slice substring search, so the test reads as intent.

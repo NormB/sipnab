@@ -1034,6 +1034,7 @@ fn parse_voip_metrics(data: &[u8]) -> Result<VoipMetrics> {
 /// packet-type preservation, and truncation handling.
 #[cfg(test)]
 mod tests {
+    type TestError = Box<dyn std::error::Error>;
     /// The VoIP Metrics jitter-buffer fields are read at RFC 3611's offsets.
     ///
     /// # The defect
@@ -1060,7 +1061,7 @@ mod tests {
     /// the bug. This test builds the block from the RFC's layout instead, with
     /// a distinct value in every field so no two can be confused.
     #[test]
-    fn voip_metrics_jitter_buffer_fields_use_the_rfc_3611_offsets() {
+    fn voip_metrics_jitter_buffer_fields_use_the_rfc_3611_offsets() -> Result<(), TestError> {
         let mut body = [0u8; 32];
         body[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes()); // SSRC
         body[20] = 80; // R factor
@@ -1073,7 +1074,7 @@ mod tests {
         body[28..30].copy_from_slice(&120u16.to_be_bytes()); // JB maximum
         body[30..32].copy_from_slice(&200u16.to_be_bytes()); // JB abs max
 
-        let m = parse_voip_metrics(&body).expect("a 32-byte body parses");
+        let m = parse_voip_metrics(&body).map_err(|e| format!("a 32-byte body parses: {e:?}"))?;
         assert_eq!(m.ssrc, 0xDEAD_BEEF);
         assert_eq!(
             m.r_factor, 80,
@@ -1083,6 +1084,7 @@ mod tests {
         assert_eq!(m.jb_nominal, 60, "JB nominal is at 26-27, not 24-25");
         assert_eq!(m.jb_maximum, 120, "JB maximum is at 28-29");
         assert_eq!(m.jb_abs_max, 200, "JB abs max is at 30-31 and must be read");
+        Ok(())
     }
 
     /// The 65535 ceiling is tested against JB abs max, the field the RFC caps.
@@ -1093,22 +1095,24 @@ mod tests {
     /// buffer whose absolute maximum was genuinely capped reported `false` and
     /// one whose maximum happened to be 65535 reported `true`.
     #[test]
-    fn the_jitter_buffer_ceiling_is_tested_against_the_field_the_rfc_caps() {
+    fn the_jitter_buffer_ceiling_is_tested_against_the_field_the_rfc_caps() -> Result<(), TestError>
+    {
         let mut body = [0u8; 32];
         body[28..30].copy_from_slice(&65535u16.to_be_bytes()); // JB maximum
         body[30..32].copy_from_slice(&200u16.to_be_bytes()); // JB abs max
-        let m = parse_voip_metrics(&body).expect("parses");
+        let m = parse_voip_metrics(&body).map_err(|e| format!("parses: {e:?}"))?;
         assert!(
             !m.jb_abs_max_is_capped(),
             "a capped JB MAXIMUM is not a capped JB ABS MAX"
         );
 
         body[30..32].copy_from_slice(&65535u16.to_be_bytes());
-        let m = parse_voip_metrics(&body).expect("parses");
+        let m = parse_voip_metrics(&body).map_err(|e| format!("parses: {e:?}"))?;
         assert!(
             m.jb_abs_max_is_capped(),
             "this one really is at the ceiling"
         );
+        Ok(())
     }
 
     /// RX config is carried rather than silently consumed.
@@ -1118,11 +1122,12 @@ mod tests {
     /// defines them, and "is the buffer adaptive" is the first question a
     /// jitter-buffer number raises.
     #[test]
-    fn the_rx_config_octet_is_carried() {
+    fn the_rx_config_octet_is_carried() -> Result<(), TestError> {
         let mut body = [0u8; 32];
         body[24] = 0xE0;
-        let m = parse_voip_metrics(&body).expect("parses");
+        let m = parse_voip_metrics(&body).map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(m.rx_config, 0xE0);
+        Ok(())
     }
 
     use super::*;
@@ -1186,7 +1191,7 @@ mod tests {
     /// A minimal SR decodes SSRC, NTP/RTP timestamps, and counters with no
     /// report blocks.
     #[test]
-    fn parse_sender_report_basic() {
+    fn parse_sender_report_basic() -> Result<(), TestError> {
         let data = build_sr(0xAABBCCDD, 0x1122334455667788, 160000, 100, 16000);
         let packets = parse_rtcp(&data);
         assert_eq!(packets.len(), 1);
@@ -1202,13 +1207,14 @@ mod tests {
                 // The jitter-buffer values the fixture wrote, asserted so this test
                 // can no longer pass against a parser that shifts them.
             }
-            other => panic!("Expected SenderReport, got {other:?}"),
+            other => return Err(format!("Expected SenderReport, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// An RR with one reception report block decodes every block field.
     #[test]
-    fn parse_receiver_report_with_block() {
+    fn parse_receiver_report_with_block() -> Result<(), TestError> {
         let data = build_rr_with_report(0x11111111, 0x22222222, 25, 320);
         let packets = parse_rtcp(&data);
         assert_eq!(packets.len(), 1);
@@ -1224,15 +1230,16 @@ mod tests {
                 assert_eq!(r.cumulative_lost, 5);
                 assert_eq!(r.highest_seq, 1000);
             }
-            other => panic!("Expected ReceiverReport, got {other:?}"),
+            other => return Err(format!("Expected ReceiverReport, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A 24-bit cumulative-lost field with its sign bit set (net duplicates)
     /// decodes as a negative `i32` per RFC 3550, not a huge positive count
     /// from zero-extension.
     #[test]
-    fn parse_report_block_negative_cumulative_lost() {
+    fn parse_report_block_negative_cumulative_lost() -> Result<(), TestError> {
         let mut data = Vec::new();
         data.push(0x81); // V=2, P=0, RC=1
         data.push(201); // PT=RR
@@ -1255,13 +1262,14 @@ mod tests {
                     "0xFFFFFF must sign-extend to -1, not 16777215"
                 );
             }
-            other => panic!("expected ReceiverReport, got {other:?}"),
+            other => return Err(format!("expected ReceiverReport, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A BYE listing two SSRCs yields both in order.
     #[test]
-    fn parse_bye_multiple_ssrcs() {
+    fn parse_bye_multiple_ssrcs() -> Result<(), TestError> {
         let data = build_bye(&[0xAAAAAAAA, 0xBBBBBBBB]);
         let packets = parse_rtcp(&data);
         assert_eq!(packets.len(), 1);
@@ -1270,14 +1278,15 @@ mod tests {
             RtcpPacket::Bye(bye) => {
                 assert_eq!(bye.ssrc_list, vec![0xAAAAAAAA, 0xBBBBBBBB]);
             }
-            other => panic!("Expected Bye, got {other:?}"),
+            other => return Err(format!("Expected Bye, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A compound datagram (SR followed by RR) parses into two packets in
     /// wire order.
     #[test]
-    fn parse_compound_sr_plus_rr() {
+    fn parse_compound_sr_plus_rr() -> Result<(), TestError> {
         let mut data = build_sr(0x10, 0, 0, 50, 8000);
         data.extend_from_slice(&build_rr_with_report(0x20, 0x10, 10, 100));
         let packets = parse_rtcp(&data);
@@ -1285,29 +1294,32 @@ mod tests {
 
         assert!(matches!(&packets[0], RtcpPacket::SenderReport(_)));
         assert!(matches!(&packets[1], RtcpPacket::ReceiverReport(_)));
+        Ok(())
     }
 
     /// An empty payload yields an empty packet list.
     #[test]
-    fn empty_data_returns_empty() {
+    fn empty_data_returns_empty() -> Result<(), TestError> {
         let packets = parse_rtcp(&[]);
         assert!(packets.is_empty());
+        Ok(())
     }
 
     /// A header whose declared length exceeds the data stops parsing
     /// without panicking or emitting a packet.
     #[test]
-    fn truncated_packet_stops_cleanly() {
+    fn truncated_packet_stops_cleanly() -> Result<(), TestError> {
         // Valid SR header but truncated body
         let data = [0x80, 200, 0x00, 0x06, 0x00]; // Length says 28 bytes but only 5
         let packets = parse_rtcp(&data);
         assert!(packets.is_empty());
+        Ok(())
     }
 
     /// An unrecognized packet type (210) is preserved as
     /// `RtcpPacket::Unknown`, not dropped.
     #[test]
-    fn unknown_packet_type_preserved() {
+    fn unknown_packet_type_preserved() -> Result<(), TestError> {
         let mut data = Vec::new();
         data.push(0x80); // V=2
         data.push(210); // Unknown PT
@@ -1318,6 +1330,7 @@ mod tests {
             &packets[0],
             RtcpPacket::Unknown { packet_type: 210 }
         ));
+        Ok(())
     }
 
     /// A VoIP Metrics block with every field set to a plain in-range value,
@@ -1352,7 +1365,7 @@ mod tests {
     /// puts the binary point at the left edge of the byte. Dividing by 255
     /// would report 100% for a value that means 99.6%.
     #[test]
-    fn xr_fraction_fields_use_the_binary_point_scale() {
+    fn xr_fraction_fields_use_the_binary_point_scale() -> Result<(), TestError> {
         let mut m = plain_metrics();
         m.loss_rate = 128;
         m.discard_rate = 64;
@@ -1366,13 +1379,14 @@ mod tests {
             "255/256 is not 100%: {}",
             m.gap_density_pct()
         );
+        Ok(())
     }
 
     /// 127 is RFC 3611's "this parameter is unavailable" on all seven
     /// single-byte fields that define it. Publishing it raw puts an R factor
     /// of 127 and a MOS of 12.7 on screen, both off their own scales.
     #[test]
-    fn xr_unavailable_sentinel_reads_as_absent() {
+    fn xr_unavailable_sentinel_reads_as_absent() -> Result<(), TestError> {
         let mut m = plain_metrics();
         m.r_factor = 127;
         m.ext_r_factor = 127;
@@ -1388,6 +1402,7 @@ mod tests {
         assert_eq!(m.signal_level_dbm0(), None);
         assert_eq!(m.noise_level_dbm0(), None);
         assert_eq!(m.rerl_db(), None);
+        Ok(())
     }
 
     /// MOS is carried as MOS x 10 over 10..=50. A byte outside that range is
@@ -1395,7 +1410,7 @@ mod tests {
     /// commonly sends 0, and rendering that as 0.0 puts a below-floor score
     /// beside a healthy stream.
     #[test]
-    fn xr_mos_outside_the_rfc_range_is_absent() {
+    fn xr_mos_outside_the_rfc_range_is_absent() -> Result<(), TestError> {
         let mut m = plain_metrics();
         m.mos_lq = 0;
         m.mos_cq = 51;
@@ -1410,46 +1425,50 @@ mod tests {
             Some(5.0),
             "the range is inclusive at the ceiling"
         );
+        Ok(())
     }
 
     /// R factor runs 0 to 100. 101 through 126 are off the scale and are
     /// reported absent rather than as a better-than-perfect call.
     #[test]
-    fn xr_r_factor_above_the_scale_is_absent() {
+    fn xr_r_factor_above_the_scale_is_absent() -> Result<(), TestError> {
         let mut m = plain_metrics();
         m.r_factor = 100;
         m.ext_r_factor = 101;
         assert_eq!(m.r_factor(), Some(100), "100 is the top of the scale");
         assert_eq!(m.ext_r_factor(), None, "101 is off the scale");
+        Ok(())
     }
 
     /// Signal and noise levels are two's complement on the wire, over 0 to
     /// -127 dBm0. Read as the declared `u8` a normal speech level of -20 dBm0
     /// prints as 236.
     #[test]
-    fn xr_levels_decode_as_twos_complement() {
+    fn xr_levels_decode_as_twos_complement() -> Result<(), TestError> {
         let mut m = plain_metrics();
         m.signal_level = 0xEC; // -20 dBm0
         m.noise_level = 0xB0; // -80 dBm0
         assert_eq!(m.signal_level_dbm0(), Some(-20));
         assert_eq!(m.noise_level_dbm0(), Some(-80));
+        Ok(())
     }
 
     /// RFC 3611 clamps `jb_abs_max` at 65535, so that value is a floor rather
     /// than a measurement and must be flagged as such.
     #[test]
-    fn xr_jb_abs_max_ceiling_is_flagged() {
+    fn xr_jb_abs_max_ceiling_is_flagged() -> Result<(), TestError> {
         let mut m = plain_metrics();
         m.jb_abs_max = 65_534;
         assert!(!m.jb_abs_max_is_capped());
         m.jb_abs_max = 65_535;
         assert!(m.jb_abs_max_is_capped());
+        Ok(())
     }
 
     /// An XR carrying a VoIP Metrics block (BT=7) decodes its SSRC and
     /// quality fields.
     #[test]
-    fn parse_xr_voip_metrics() {
+    fn parse_xr_voip_metrics() -> Result<(), TestError> {
         // Build a minimal XR packet with VoIP Metrics block
         let mut data = Vec::new();
         // RTCP header: V=2, P=0, reserved=0, PT=207, length=10 (44 bytes total)
@@ -1508,11 +1527,12 @@ mod tests {
                         assert_eq!(vm.r_factor, 80);
                         assert_eq!(vm.mos_lq, 35);
                     }
-                    other => panic!("Expected VoipMetrics, got {:?}", other),
+                    other => return Err(format!("Expected VoipMetrics, got {:?}", other).into()),
                 }
             }
-            other => panic!("Expected ExtendedReport, got {:?}", other),
+            other => return Err(format!("Expected ExtendedReport, got {:?}", other).into()),
         }
+        Ok(())
     }
 
     /// Every RTCP packet type sipnab can meet must be recognized as RTCP,
@@ -1523,7 +1543,7 @@ mod tests {
     /// and `207 & 0x7F` is RTP payload type 79 — a real media stream that
     /// never existed.
     #[test]
-    fn rtcp_types_outside_sr_to_app_are_still_rtcp() {
+    fn rtcp_types_outside_sr_to_app_are_still_rtcp() -> Result<(), TestError> {
         for pt in [200u8, 201, 202, 203, 204, 205, 206, 207, 210, 213] {
             assert!(
                 is_rtcp_packet_type(pt),
@@ -1538,13 +1558,14 @@ mod tests {
         for pt in [0u8, 8, 9, 18, 34, 96, 111, 127, 191, 224, 255] {
             assert!(!is_rtcp_packet_type(pt), "{pt} is not an RTCP packet type");
         }
+        Ok(())
     }
 
     /// The content test recognizes a real XR datagram — the byte shape that
     /// appears on the conventional odd RTCP port in captured traffic — and
     /// rejects RTP.
     #[test]
-    fn looks_like_rtcp_accepts_xr_and_rejects_rtp() {
+    fn looks_like_rtcp_accepts_xr_and_rejects_rtp() -> Result<(), TestError> {
         // V=2, PT=207 (XR), length=0xF8 words → (0xF8 + 1) * 4 = 996 bytes,
         // then the originator SSRC and a Receiver Reference Time block
         // (BT=4, length 2). Framed exactly like the real thing.
@@ -1573,12 +1594,13 @@ mod tests {
             !looks_like_rtcp(&muxed_rtp),
             "the length check must reject RTP whose byte 1 lands in the RTCP range"
         );
+        Ok(())
     }
 
     /// Compound RTCP is recognized from its first sub-packet, and short or
     /// wrong-version input is not.
     #[test]
-    fn looks_like_rtcp_edges() {
+    fn looks_like_rtcp_edges() -> Result<(), TestError> {
         let mut compound = build_sr(0x10, 0, 0, 50, 8000);
         compound.extend_from_slice(&build_rr_with_report(0x20, 0x10, 10, 100));
         assert!(looks_like_rtcp(&compound));
@@ -1593,6 +1615,7 @@ mod tests {
         assert!(!looks_like_rtcp(&[0x80, 200, 0, 6, 0, 0, 0, 1]));
         // Header-only (length field 0) carries nothing.
         assert!(!looks_like_rtcp(&[0x80, 203, 0, 0, 0, 0, 0, 0]));
+        Ok(())
     }
 
     /// [RFC 3550 section 6.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.1): *"padding MUST only be added to the last
@@ -1608,7 +1631,7 @@ mod tests {
     /// One bit, on a classifier that decides RTP against RTCP for every
     /// datagram on a media port.
     #[test]
-    fn a_padded_first_packet_of_a_compound_is_not_rtcp() {
+    fn a_padded_first_packet_of_a_compound_is_not_rtcp() -> Result<(), TestError> {
         let mut compound = build_sr(0x10, 0, 0, 50, 8000);
         compound.extend_from_slice(&build_rr_with_report(0x20, 0x10, 10, 100));
         assert!(looks_like_rtcp(&compound), "the fixture must be RTCP first");
@@ -1619,6 +1642,7 @@ mod tests {
             "the first packet does not fill the datagram, so something follows \
              it and its padding bit is a MUST violation"
         );
+        Ok(())
     }
 
     /// Whether every sub-packet length in `data` totals the datagram exactly.
@@ -1652,7 +1676,7 @@ mod tests {
     /// datagram, followed by one that completes it — and the rule must call it
     /// chaining, or the SRTCP test is asserting nothing.
     #[test]
-    fn the_chain_guard_sees_a_trailer_that_completes_the_datagram() {
+    fn the_chain_guard_sees_a_trailer_that_completes_the_datagram() -> Result<(), TestError> {
         let mut chaining = vec![0x80u8, 201, 0, 1, 0x11, 0x22, 0x33, 0x44];
         chaining.extend_from_slice(&[0x80, 203, 0, 4]);
         chaining.extend_from_slice(&[0x11; 16]);
@@ -1672,6 +1696,7 @@ mod tests {
              recognized as chaining, so the guard on the SRTCP fixture cannot \
              tell the two apart"
         );
+        Ok(())
     }
 
     /// And it refuses every shape the corpus says A.2 would refuse.
@@ -1681,7 +1706,7 @@ mod tests {
     /// after the cleartext header, a ragged tail of one to three bytes, and a
     /// first sub-packet claiming more than the datagram carries.
     #[test]
-    fn the_chain_guard_refuses_each_shape_the_corpus_holds() {
+    fn the_chain_guard_refuses_each_shape_the_corpus_holds() -> Result<(), TestError> {
         let mut encrypted = vec![0x80u8, 201, 0, 1, 0, 0, 0, 1];
         encrypted.extend_from_slice(&[0xA5; 20]);
         assert!(!lengths_chain_to_the_end(&encrypted), "SRTCP");
@@ -1699,6 +1724,7 @@ mod tests {
         // The positive control, so the three above cannot pass by the rule
         // refusing everything.
         assert!(lengths_chain_to_the_end(&[0x80, 201, 0, 1, 0, 0, 0, 1]));
+        Ok(())
     }
 
     /// The SRTCP fixture is built to defeat the guard that failed.
@@ -1709,7 +1735,7 @@ mod tests {
     /// sub-packet fill the datagram, the weak guard and the walking guard agree
     /// again and the survived mutation becomes invisible a second time.
     #[test]
-    fn the_srtcp_fixture_is_one_the_weak_guard_would_have_missed() {
+    fn the_srtcp_fixture_is_one_the_weak_guard_would_have_missed() -> Result<(), TestError> {
         let mut srtcp = vec![0x80u8, 201, 0, 1, 0x11, 0x22, 0x33, 0x44];
         srtcp.extend_from_slice(&0x8000_0001u32.to_be_bytes());
         srtcp.extend_from_slice(&[0xA5; 16]);
@@ -1726,6 +1752,7 @@ mod tests {
              {weak_verdict}, walking says {walking_verdict}), so the mutation \
              that once survived would survive again unnoticed"
         );
+        Ok(())
     }
 
     /// SRTCP is still RTCP, although its sub-packet lengths cannot chain.
@@ -1745,7 +1772,7 @@ mod tests {
     /// Refusing one hands encrypted call control to the RTP path, which reads
     /// its cleartext header as a stream and reports media nobody sent.
     #[test]
-    fn srtcp_is_still_rtcp_although_its_lengths_cannot_chain() {
+    fn srtcp_is_still_rtcp_although_its_lengths_cannot_chain() -> Result<(), TestError> {
         // A Receiver Report declaring 8 bytes, then 4 bytes of SRTCP index
         // and a 16-byte tag: exactly the 28-byte shape counted in the corpus.
         let mut srtcp = vec![0x80u8, 201, 0, 1, 0x11, 0x22, 0x33, 0x44];
@@ -1769,6 +1796,7 @@ mod tests {
              rule would ACCEPT it and this test proves nothing about the rule \
              it exists to keep out"
         );
+        Ok(())
     }
 
     /// A single packet that fills the datagram IS the last one, so it may pad.
@@ -1778,7 +1806,7 @@ mod tests {
     /// reject every padded single-packet datagram --- which RFC 3550 permits
     /// explicitly --- while the negative test above went on passing.
     #[test]
-    fn a_padded_single_packet_that_fills_the_datagram_is_still_rtcp() {
+    fn a_padded_single_packet_that_fills_the_datagram_is_still_rtcp() -> Result<(), TestError> {
         let mut only = build_rr_with_report(1, 2, 0, 0);
         assert!(looks_like_rtcp(&only), "the fixture must be RTCP first");
         only[0] |= 0x20; // P on the only packet, which is also the last
@@ -1786,6 +1814,7 @@ mod tests {
             looks_like_rtcp(&only),
             "a lone packet is the last packet, and RFC 3550 lets the last one pad"
         );
+        Ok(())
     }
 
     /// An XR arriving as the FIRST sub-packet of a datagram parses into its
@@ -1793,7 +1822,7 @@ mod tests {
     /// dropped: a compound starting with SR is recognized, one starting with
     /// XR was not, so the metrics were lost as well as misfiled.
     #[test]
-    fn xr_first_in_datagram_parses() {
+    fn xr_first_in_datagram_parses() -> Result<(), TestError> {
         let mut data = vec![0x80, 207];
         data.extend_from_slice(&4u16.to_be_bytes()); // (4 + 1) * 4 = 20 bytes
         data.extend_from_slice(&0x44B6_2E0Au32.to_be_bytes()); // originator
@@ -1813,14 +1842,15 @@ mod tests {
                     }]
                 );
             }
-            other => panic!("expected ExtendedReport, got {other:?}"),
+            other => return Err(format!("expected ExtendedReport, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// An XR truncated before its originator SSRC produces no
     /// ExtendedReport.
     #[test]
-    fn parse_xr_truncated() {
+    fn parse_xr_truncated() -> Result<(), TestError> {
         // XR with header but SSRC field would be at bytes 4..8, which is missing
         // Length=0 means total packet = 4 bytes (just the header)
         let data = vec![0x80, 207, 0, 0];
@@ -1832,6 +1862,7 @@ mod tests {
                     .iter()
                     .all(|p| !matches!(p, RtcpPacket::ExtendedReport(_)))
         );
+        Ok(())
     }
 
     /// Build the compact-NTP stamp an endpoint would put in an SR sent
@@ -1849,15 +1880,16 @@ mod tests {
     /// interactive speech, and 20 ms of it is the reporter sitting on the SR
     /// before answering — which RFC 3550 subtracts out and so must we.
     #[test]
-    fn a_stated_round_trip_survives_the_wire_format() {
+    fn a_stated_round_trip_survives_the_wire_format() -> Result<(), TestError> {
         let now = chrono::Utc::now();
         let dlsr = (20.0 * 65536.0 / 1000.0) as u32;
         let rtt = rtt_from_sender_report_echo(now, lsr_sent_ago(now, 200), dlsr)
-            .expect("a normal report yields a round trip");
+            .ok_or("a normal report yields a round trip")?;
         assert!(
             (rtt - 180.0).abs() < 1.0,
             "expected ~180 ms (200 ms elapsed less 20 ms of reporter delay), got {rtt}"
         );
+        Ok(())
     }
 
     /// No SR seen by the reporter is NOT a round trip of zero.
@@ -1866,16 +1898,17 @@ mod tests {
     /// that as 0 ms would make the worst case — a reporter that has heard
     /// nothing — read as the best possible network.
     #[test]
-    fn a_reporter_that_has_seen_no_sr_yields_no_measurement() {
+    fn a_reporter_that_has_seen_no_sr_yields_no_measurement() -> Result<(), TestError> {
         let now = chrono::Utc::now();
         assert_eq!(rtt_from_sender_report_echo(now, 0, 0), None);
         // Anti-vacuity: the same call with a real LSR does measure something.
         assert!(rtt_from_sender_report_echo(now, lsr_sent_ago(now, 50), 0).is_some());
+        Ok(())
     }
 
     /// Clock disagreement is refused, not rounded into a plausible number.
     #[test]
-    fn a_figure_that_can_only_be_clock_skew_is_refused() {
+    fn a_figure_that_can_only_be_clock_skew_is_refused() -> Result<(), TestError> {
         let now = chrono::Utc::now();
         // An SR stamped in the future: the subtraction runs backwards.
         assert_eq!(
@@ -1892,27 +1925,29 @@ mod tests {
         // A genuinely bad path is still REPORTED — the guard must not swallow
         // the satellite case it exists to sit above.
         let bad = rtt_from_sender_report_echo(now, lsr_sent_ago(now, 900), 0)
-            .expect("900 ms is terrible and real");
+            .ok_or("900 ms is terrible and real")?;
         assert!((bad - 900.0).abs() < 2.0, "got {bad}");
+        Ok(())
     }
 
     /// The reporter's own delay is subtracted, or every busy endpoint looks
     /// like a slow network.
     #[test]
-    fn the_reporters_own_delay_does_not_count_as_network_time() {
+    fn the_reporters_own_delay_does_not_count_as_network_time() -> Result<(), TestError> {
         let now = chrono::Utc::now();
         let elapsed_ms = 500;
         let no_delay =
-            rtt_from_sender_report_echo(now, lsr_sent_ago(now, elapsed_ms), 0).expect("some rtt");
+            rtt_from_sender_report_echo(now, lsr_sent_ago(now, elapsed_ms), 0).ok_or("some rtt")?;
         let with_delay = rtt_from_sender_report_echo(
             now,
             lsr_sent_ago(now, elapsed_ms),
             (400.0 * 65536.0 / 1000.0) as u32,
         )
-        .expect("some rtt");
+        .ok_or("some rtt")?;
         assert!(
             (no_delay - 500.0).abs() < 2.0 && (with_delay - 100.0).abs() < 2.0,
             "400 ms of reporter delay must come off: {no_delay} vs {with_delay}"
         );
+        Ok(())
     }
 }

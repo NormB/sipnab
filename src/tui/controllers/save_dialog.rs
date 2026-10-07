@@ -167,6 +167,7 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build an unmodified `KeyEvent` for `code`.
     fn key(code: KeyCode) -> KeyEvent {
@@ -177,8 +178,8 @@ mod tests {
     /// large exports froze the UI with no feedback. The write is deferred
     /// one event-loop tick so the "Saving…" status paints first.
     #[test]
-    fn enter_defers_the_write_and_paints_saving_first() {
-        let dir = tempfile::tempdir().unwrap();
+    fn enter_defers_the_write_and_paints_saving_first() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.txt");
         let mut app = crate::tui::controllers::test_support::app_with_dialogs();
         app.save.format = SaveFormat::Txt;
@@ -208,13 +209,14 @@ mod tests {
             "got: {:?}",
             app.status_error
         );
+        Ok(())
     }
 
     /// Delete removes the char AT the cursor (cursor stays put) and is a
     /// no-op at end-of-line — the same forward-delete the filter dialog had
     /// but the save dialog was missing.
     #[test]
-    fn delete_removes_char_at_cursor() {
+    fn delete_removes_char_at_cursor() -> Result<(), TestError> {
         let mut app = crate::tui::controllers::test_support::app_with_dialogs();
         app.active_popup = Some(Popup::SaveDialog);
         app.save.path = "/tmp/x".to_string();
@@ -227,6 +229,7 @@ mod tests {
         app.save.cursor = app.save.path.len();
         handle_save_popup_key(&mut app, key(KeyCode::Delete));
         assert_eq!(app.save.path, "tmp/x", "Delete at EOL is a no-op");
+        Ok(())
     }
 
     /// Enter on an empty or whitespace-only path must be rejected at the
@@ -234,7 +237,7 @@ mod tests {
     /// rather than queuing a `PendingSave` whose write is guaranteed to
     /// fail on the next tick.
     #[test]
-    fn enter_with_blank_path_is_rejected_without_queuing() {
+    fn enter_with_blank_path_is_rejected_without_queuing() -> Result<(), TestError> {
         for blank in ["", "   ", "\t "] {
             let mut app = crate::tui::controllers::test_support::app_with_dialogs();
             app.save.format = SaveFormat::Txt;
@@ -262,5 +265,6 @@ mod tests {
                 app.status_error
             );
         }
+        Ok(())
     }
 }

@@ -229,9 +229,10 @@ mod tests {
     use super::*;
     use crate::llmnr::parser::{LlmnrAnswer, LlmnrMessage, LlmnrQuestion};
     use serial_test::serial;
+    type TestError = Box<dyn std::error::Error>;
 
-    fn ts(ms: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp_millis(ms).expect("valid timestamp")
+    fn ts(ms: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::from_timestamp_millis(ms).ok_or("valid timestamp")?)
     }
 
     fn query(name: &str) -> LlmnrMessage {
@@ -250,8 +251,8 @@ mod tests {
         }
     }
 
-    fn response(name: &str, addr: &str) -> LlmnrMessage {
-        LlmnrMessage {
+    fn response(name: &str, addr: &str) -> Result<LlmnrMessage, TestError> {
+        Ok(LlmnrMessage {
             id: 0x8006,
             is_response: true,
             conflict: false,
@@ -263,102 +264,113 @@ mod tests {
                 name: name.to_string(),
                 rtype: 1,
                 ttl: 30,
-                address: Some(addr.parse().expect("valid addr")),
+                address: Some(addr.parse().map_err(|e| format!("valid addr: {e:?}"))?),
             }],
-        }
+        })
     }
 
-    fn ip(s: &str) -> IpAddr {
-        s.parse().expect("valid addr")
+    fn ip(s: &str) -> Result<IpAddr, TestError> {
+        Ok(s.parse().map_err(|e| format!("valid addr: {e:?}"))?)
     }
 
     #[test]
     #[serial(llmnr_store)]
-    fn a_query_records_the_asking_host_and_the_name() {
+    fn a_query_records_the_asking_host_and_the_name() -> Result<(), TestError> {
         reset_llmnr();
-        record_llmnr(&query("GHS08"), ip("192.0.2.79"), ts(0));
+        record_llmnr(&query("GHS08"), ip("192.0.2.79")?, ts(0)?);
 
         let report = llmnr_report();
         assert_eq!(report.packets, 1);
         assert_eq!(report.hosts.len(), 1);
-        assert_eq!(report.hosts[0].addr, ip("192.0.2.79"));
+        assert_eq!(report.hosts[0].addr, ip("192.0.2.79")?);
         assert_eq!(report.hosts[0].queries, 1);
         assert_eq!(report.hosts[0].names_queried, vec!["GHS08".to_string()]);
         reset_llmnr();
+        Ok(())
     }
 
     /// A responder answers only for itself, so its answer section is an
     /// identification: this address owns this hostname.
     #[test]
     #[serial(llmnr_store)]
-    fn a_response_identifies_the_responding_host() {
+    fn a_response_identifies_the_responding_host() -> Result<(), TestError> {
         reset_llmnr();
-        record_llmnr(&response("GHS08", "192.0.2.80"), ip("192.0.2.80"), ts(5));
+        record_llmnr(&response("GHS08", "192.0.2.80")?, ip("192.0.2.80")?, ts(5)?);
 
         let report = llmnr_report();
         assert_eq!(report.hosts[0].names_claimed, vec!["GHS08".to_string()]);
         assert_eq!(report.claimed_names(), vec!["GHS08"]);
         reset_llmnr();
+        Ok(())
     }
 
     /// The operationally interesting case from the motivating capture: a host
     /// asks repeatedly and nothing on the segment ever answers.
     #[test]
     #[serial(llmnr_store)]
-    fn a_name_nothing_answers_for_is_reported_unresolved() {
+    fn a_name_nothing_answers_for_is_reported_unresolved() -> Result<(), TestError> {
         reset_llmnr();
-        record_llmnr(&query("GHS08"), ip("192.0.2.79"), ts(0));
-        record_llmnr(&query("GHS08"), ip("192.0.2.79"), ts(100));
+        record_llmnr(&query("GHS08"), ip("192.0.2.79")?, ts(0)?);
+        record_llmnr(&query("GHS08"), ip("192.0.2.79")?, ts(100)?);
 
         let report = llmnr_report();
         assert_eq!(report.unresolved_names(), vec!["GHS08"]);
         assert!(report.claimed_names().is_empty());
         reset_llmnr();
+        Ok(())
     }
 
     #[test]
     #[serial(llmnr_store)]
-    fn an_answered_name_is_not_reported_unresolved() {
+    fn an_answered_name_is_not_reported_unresolved() -> Result<(), TestError> {
         reset_llmnr();
-        record_llmnr(&query("GHS08"), ip("192.0.2.79"), ts(0));
-        record_llmnr(&response("GHS08", "192.0.2.80"), ip("192.0.2.80"), ts(5));
+        record_llmnr(&query("GHS08"), ip("192.0.2.79")?, ts(0)?);
+        record_llmnr(&response("GHS08", "192.0.2.80")?, ip("192.0.2.80")?, ts(5)?);
 
         let report = llmnr_report();
         assert!(report.unresolved_names().is_empty());
         assert_eq!(report.claimed_names(), vec!["GHS08"]);
         reset_llmnr();
+        Ok(())
     }
 
     #[test]
     #[serial(llmnr_store)]
-    fn repeated_queries_do_not_duplicate_the_name() {
+    fn repeated_queries_do_not_duplicate_the_name() -> Result<(), TestError> {
         reset_llmnr();
         for n in 0..5 {
-            record_llmnr(&query("GHS08"), ip("192.0.2.79"), ts(n));
+            record_llmnr(&query("GHS08"), ip("192.0.2.79")?, ts(n)?);
         }
         let report = llmnr_report();
         assert_eq!(report.hosts[0].queries, 5);
         assert_eq!(report.hosts[0].names_queried.len(), 1);
         reset_llmnr();
+        Ok(())
     }
 
     #[test]
     #[serial(llmnr_store)]
-    fn the_name_cap_is_counted_rather_than_silently_swallowing() {
+    fn the_name_cap_is_counted_rather_than_silently_swallowing() -> Result<(), TestError> {
         reset_llmnr();
         for n in 0..(MAX_NAMES_PER_HOST + 4) {
-            record_llmnr(&query(&format!("host{n}")), ip("192.0.2.79"), ts(n as i64));
+            record_llmnr(
+                &query(&format!("host{n}")),
+                ip("192.0.2.79")?,
+                ts(n as i64)?,
+            );
         }
         let report = llmnr_report();
         assert_eq!(report.hosts[0].names_queried.len(), MAX_NAMES_PER_HOST);
         assert_eq!(report.dropped_names, 4);
         reset_llmnr();
+        Ok(())
     }
 
     #[test]
     #[serial(llmnr_store)]
-    fn a_capture_without_llmnr_reports_empty() {
+    fn a_capture_without_llmnr_reports_empty() -> Result<(), TestError> {
         reset_llmnr();
         assert!(llmnr_report().is_empty());
+        Ok(())
     }
 }

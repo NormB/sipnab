@@ -834,10 +834,11 @@ fn exit_code(result: std::io::Result<()>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Every kind has its own fixed slot, all above stdio and none shared.
     #[test]
-    fn every_send_descriptor_has_its_own_fixed_slot_above_stdio() {
+    fn every_send_descriptor_has_its_own_fixed_slot_above_stdio() -> Result<(), TestError> {
         let slots: Vec<RawFd> = SendFd::ALL.iter().map(|k| k.slot()).collect();
         assert_eq!(
             slots,
@@ -845,11 +846,12 @@ mod tests {
             "the worker adopts these numbers, so they are the contract between \
              the two processes and must not move"
         );
+        Ok(())
     }
 
     /// The plan names exactly the descriptors that exist, and nothing else.
     #[test]
-    fn the_plan_names_exactly_the_descriptors_that_exist() {
+    fn the_plan_names_exactly_the_descriptors_that_exist() -> Result<(), TestError> {
         let unprivileged = FdPlan::new([SendFd::UdpV4, SendFd::UdpV6]);
         assert_eq!(unprivileged.render(), "udp4,udp6");
         assert!(!unprivileged.contains(SendFd::RawV4));
@@ -870,11 +872,12 @@ mod tests {
             "an empty plan is spelled out, never an empty argument a parser \
              could read as missing"
         );
+        Ok(())
     }
 
     /// What the parent renders, the worker reads back unchanged.
     #[test]
-    fn a_plan_survives_the_command_line() {
+    fn a_plan_survives_the_command_line() -> Result<(), TestError> {
         for kinds in [
             vec![],
             vec![SendFd::UdpV4],
@@ -888,11 +891,12 @@ mod tests {
                 "{kinds:?} did not survive render/parse"
             );
         }
+        Ok(())
     }
 
     /// A value the parent never writes is refused, not guessed at.
     #[test]
-    fn a_send_fds_value_the_parent_never_writes_is_refused() {
+    fn a_send_fds_value_the_parent_never_writes_is_refused() -> Result<(), TestError> {
         for bad in ["", "udp5", "udp4,", "udp4,udp4", "raw4,none", "UDP4"] {
             assert!(
                 FdPlan::parse(bad).is_err(),
@@ -900,6 +904,7 @@ mod tests {
                  not place would wrap whatever happens to sit at that number"
             );
         }
+        Ok(())
     }
 
     /// A full set of worker arguments.
@@ -914,7 +919,7 @@ mod tests {
 
     /// The worker reads back exactly what the parent wrote.
     #[test]
-    fn worker_arguments_survive_the_command_line() {
+    fn worker_arguments_survive_the_command_line() -> Result<(), TestError> {
         let args = some_args();
         let rendered = args.to_args();
         assert_eq!(
@@ -931,6 +936,7 @@ mod tests {
             ]
         );
         assert_eq!(WorkerArgs::parse(&rendered), Ok(args));
+        Ok(())
     }
 
     /// Every argument is required, once, and nothing else is accepted.
@@ -939,18 +945,22 @@ mod tests {
     /// some number nobody configured -- the shape the batch path's
     /// `--kill-rate-limit` test exists to catch one layer up.
     #[test]
-    fn a_missing_duplicated_or_unknown_worker_argument_is_refused() {
+    fn a_missing_duplicated_or_unknown_worker_argument_is_refused() -> Result<(), TestError> {
         let full = some_args().to_args();
         for flag in ["--rate-limit", "--send-fds", "--run-as", "--log-level"] {
-            let at = full.iter().position(|a| a == flag).expect("rendered");
+            let at = full.iter().position(|a| a == flag).ok_or("rendered")?;
             let mut missing = full.clone();
             missing.drain(at..at + 2);
-            let err = WorkerArgs::parse(&missing).expect_err("a flag is missing");
+            let err = WorkerArgs::parse(&missing)
+                .err()
+                .ok_or("a flag is missing")?;
             assert!(err.contains(flag), "the refusal must name {flag}: {err}");
 
             let mut twice = full.clone();
             twice.extend_from_slice(&full[at..at + 2]);
-            let err = WorkerArgs::parse(&twice).expect_err("a flag is repeated");
+            let err = WorkerArgs::parse(&twice)
+                .err()
+                .ok_or("a flag is repeated")?;
             assert!(err.contains(flag), "the refusal must name {flag}: {err}");
         }
         let mut unknown = full.clone();
@@ -968,9 +978,10 @@ mod tests {
         let at = not_a_number
             .iter()
             .position(|a| a == "--rate-limit")
-            .expect("rendered");
+            .ok_or("rendered")?;
         not_a_number[at + 1] = "ten".to_string();
         assert!(WorkerArgs::parse(&not_a_number).is_err());
+        Ok(())
     }
 
     /// Only a descriptor of the family and type its slot promises is adopted.
@@ -980,7 +991,7 @@ mod tests {
     /// someone's connection; wrapping a UDP socket as the raw one would send a
     /// hand-built IP header as payload.
     #[test]
-    fn only_a_descriptor_of_the_promised_family_and_type_is_adopted() {
+    fn only_a_descriptor_of_the_promised_family_and_type_is_adopted() -> Result<(), TestError> {
         use libc::{AF_INET, AF_INET6, AF_UNIX, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
         let expected = [
             (SendFd::RawV4, AF_INET, SOCK_RAW),
@@ -1014,12 +1025,13 @@ mod tests {
                 }
             }
         }
+        Ok(())
     }
 
     /// Clear means every set reads zero, and a set that cannot be read is
     /// not clear.
     #[test]
-    fn capabilities_are_clear_only_when_every_set_reads_zero() {
+    fn capabilities_are_clear_only_when_every_set_reads_zero() -> Result<(), TestError> {
         let clear = "Name:\tsipnab\nCapInh:\t0000000000000000\n\
                      CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n\
                      CapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n";
@@ -1035,7 +1047,7 @@ mod tests {
                 &format!("{set}:\t0000000000000000"),
                 &format!("{set}:\t0000000000002000"),
             );
-            let err = caps_all_clear(&held).expect_err("CAP_NET_RAW is held");
+            let err = caps_all_clear(&held).err().ok_or("CAP_NET_RAW is held")?;
             assert!(err.contains(set), "the refusal must name {set}: {err}");
         }
 
@@ -1044,13 +1056,14 @@ mod tests {
             caps_all_clear(unreadable).is_err(),
             "a status with no CapEff line proves nothing about the effective set"
         );
+        Ok(())
     }
 
     /// Each present descriptor moves to its own slot; every other slot in the
     /// fixed range is named as vacant, so the worker cannot inherit whatever
     /// the parent happened to have open at that number.
     #[test]
-    fn placement_moves_each_source_to_its_slot_and_vacates_the_rest() {
+    fn placement_moves_each_source_to_its_slot_and_vacates_the_rest() -> Result<(), TestError> {
         let p = Placement::plan(&[(SendFd::UdpV4, 40), (SendFd::RawV4, 41)]);
         assert_eq!(p.len, 2);
         assert_eq!(
@@ -1071,6 +1084,7 @@ mod tests {
             vec![3, 4, 5, 6],
             "nothing placed, everything vacated"
         );
+        Ok(())
     }
 
     /// A worker holding no send descriptor refuses; one holding any does not.
@@ -1079,23 +1093,26 @@ mod tests {
     /// to transmit, and the refusal says so rather than reporting a send error
     /// per request as though something had merely failed.
     #[test]
-    fn a_worker_holding_no_send_descriptor_refuses_and_one_holding_any_does_not() {
-        let reason = refusal(&SendSockets::default()).expect("nothing to send through");
+    fn a_worker_holding_no_send_descriptor_refuses_and_one_holding_any_does_not()
+    -> Result<(), TestError> {
+        let reason = refusal(&SendSockets::default()).ok_or("nothing to send through")?;
         assert!(reason.contains("no send descriptor"), "{reason}");
 
         let one = SendSockets {
             udp_v4: Some(KillUdpSocket(
-                UdpSocket::bind("127.0.0.1:0").expect("bind (nothing is sent)"),
+                UdpSocket::bind("127.0.0.1:0")
+                    .map_err(|e| format!("bind (nothing is sent): {e:?}"))?,
             )),
             ..SendSockets::default()
         };
         assert_eq!(refusal(&one), None, "one descriptor is enough to serve");
+        Ok(())
     }
 
     /// The refusing worker answers every request with the refusal, in order,
     /// and stops at `Shutdown` without answering what follows it.
     #[test]
-    fn a_refusing_worker_answers_each_request_and_stops_at_shutdown() {
+    fn a_refusing_worker_answers_each_request_and_stops_at_shutdown() -> Result<(), TestError> {
         let request = || KillRequest::SendResponse {
             dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
             dst_port: 5060,
@@ -1105,7 +1122,7 @@ mod tests {
         };
         let mut input = Vec::new();
         for msg in [request(), request(), KillRequest::Shutdown, request()] {
-            wire::write_frame(&mut input, &msg).expect("encode");
+            wire::write_frame(&mut input, &msg).map_err(|e| format!("encode: {e:?}"))?;
         }
         let mut output = Vec::new();
         refuse_all(
@@ -1113,12 +1130,12 @@ mod tests {
             &mut output,
             "no descriptor here",
         )
-        .expect("a clean stream");
+        .map_err(|e| format!("a clean stream: {e:?}"))?;
 
         let mut replies = std::io::Cursor::new(output);
         let mut seen = Vec::new();
-        while let Some(reply) =
-            wire::read_frame::<_, KillResponse>(&mut replies).expect("well framed")
+        while let Some(reply) = wire::read_frame::<_, KillResponse>(&mut replies)
+            .map_err(|e| format!("well framed: {e:?}"))?
         {
             seen.push(reply);
         }
@@ -1135,6 +1152,7 @@ mod tests {
             ],
             "two requests before the Shutdown, two refusals, nothing after it"
         );
+        Ok(())
     }
 
     /// A worker whose response pipe is slow waits for it rather than dropping
@@ -1146,7 +1164,7 @@ mod tests {
     /// waits on the worker. More requests than the outcome channel holds, so
     /// a worker that offered instead of waiting would lose the overflow.
     #[test]
-    fn a_slow_response_pipe_delays_outcomes_and_loses_none() {
+    fn a_slow_response_pipe_delays_outcomes_and_loses_none() -> Result<(), TestError> {
         /// A writer that blocks its first write until released.
         struct Gate {
             open: crossbeam_channel::Receiver<()>,
@@ -1177,7 +1195,7 @@ mod tests {
                 src_port: 5060,
                 response_bytes: b"SIP/2.0 200 OK\r\n\r\n".to_vec(),
             };
-            wire::write_frame(&mut input, &request).expect("encode");
+            wire::write_frame(&mut input, &request).map_err(|e| format!("encode: {e:?}"))?;
         }
         let (release, open) = crossbeam_channel::bounded::<()>(1);
         let out = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -1197,17 +1215,19 @@ mod tests {
             )
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
-        release.send(()).expect("release the pipe");
+        release
+            .send(())
+            .map_err(|e| format!("release the pipe: {e:?}"))?;
         served
             .join()
-            .expect("serve returns")
-            .expect("serve succeeds");
+            .map_err(|e| format!("serve returns: {e:?}"))?
+            .map_err(|e| format!("serve succeeds: {e:?}"))?;
 
         let bytes = out.lock().clone();
         let mut replies = std::io::Cursor::new(bytes);
         let mut n = 0usize;
         while wire::read_frame::<_, KillResponse>(&mut replies)
-            .expect("well framed")
+            .map_err(|e| format!("well framed: {e:?}"))?
             .is_some()
         {
             n += 1;
@@ -1216,5 +1236,6 @@ mod tests {
             n, total,
             "every request must produce exactly one outcome, however slow the pipe"
         );
+        Ok(())
     }
 }

@@ -102,22 +102,23 @@ pub fn accused(findings: &[&Finding]) -> Vec<AccusedSource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build a finding without dragging the alert engine in.
-    fn f(ip: &str, rule: &str, secs: i64) -> Finding {
-        Finding {
+    fn f(ip: &str, rule: &str, secs: i64) -> Result<Finding, TestError> {
+        Ok(Finding {
             rule_name: rule.to_string(),
-            src_ip: ip.parse().expect("test ip"),
+            src_ip: ip.parse().map_err(|e| format!("test ip: {e:?}"))?,
             detail: String::new(),
-            timestamp: DateTime::from_timestamp(secs, 0).expect("test timestamp"),
-        }
+            timestamp: DateTime::from_timestamp(secs, 0).ok_or("test timestamp")?,
+        })
     }
 
     #[test]
-    fn one_source_many_findings_becomes_one_row() {
+    fn one_source_many_findings_becomes_one_row() -> Result<(), TestError> {
         let all = [
-            f("198.51.100.7", "scanner", 10),
-            f("198.51.100.7", "scanner", 20),
+            f("198.51.100.7", "scanner", 10)?,
+            f("198.51.100.7", "scanner", 20)?,
         ];
         let refs: Vec<&Finding> = all.iter().collect();
         let out = accused(&refs);
@@ -125,38 +126,40 @@ mod tests {
         assert_eq!(out[0].findings, 2);
         assert_eq!(out[0].first_seen, all[0].timestamp);
         assert_eq!(out[0].last_seen, all[1].timestamp);
+        Ok(())
     }
 
     /// The distinction the `rules` set exists to keep: three findings of one
     /// rule and one each of three rules have the same count and are not the
     /// same evidence.
     #[test]
-    fn distinct_rules_are_kept_apart_from_repeat_findings() {
+    fn distinct_rules_are_kept_apart_from_repeat_findings() -> Result<(), TestError> {
         let repeat = [
-            f("198.51.100.7", "scanner", 1),
-            f("198.51.100.7", "scanner", 2),
-            f("198.51.100.7", "scanner", 3),
+            f("198.51.100.7", "scanner", 1)?,
+            f("198.51.100.7", "scanner", 2)?,
+            f("198.51.100.7", "scanner", 3)?,
         ];
         let varied = [
-            f("198.51.100.8", "scanner", 1),
-            f("198.51.100.8", "reg-flood", 2),
-            f("198.51.100.8", "digest-leak", 3),
+            f("198.51.100.8", "scanner", 1)?,
+            f("198.51.100.8", "reg-flood", 2)?,
+            f("198.51.100.8", "digest-leak", 3)?,
         ];
         let rr: Vec<&Finding> = repeat.iter().collect();
         let vr: Vec<&Finding> = varied.iter().collect();
         assert_eq!(accused(&rr)[0].findings, accused(&vr)[0].findings);
         assert_eq!(accused(&rr)[0].rules.len(), 1);
         assert_eq!(accused(&vr)[0].rules.len(), 3);
+        Ok(())
     }
 
     /// Busiest first, then by address, so two runs over one capture agree.
     #[test]
-    fn output_is_ordered_and_stable() {
+    fn output_is_ordered_and_stable() -> Result<(), TestError> {
         let all = [
-            f("198.51.100.9", "scanner", 1),
-            f("198.51.100.7", "scanner", 2),
-            f("198.51.100.7", "scanner", 3),
-            f("198.51.100.8", "scanner", 4),
+            f("198.51.100.9", "scanner", 1)?,
+            f("198.51.100.7", "scanner", 2)?,
+            f("198.51.100.7", "scanner", 3)?,
+            f("198.51.100.8", "scanner", 4)?,
         ];
         let refs: Vec<&Finding> = all.iter().collect();
         let out = accused(&refs);
@@ -164,19 +167,22 @@ mod tests {
         assert_eq!(out[0].src_ip.to_string(), "198.51.100.7", "busiest first");
         assert_eq!(out[1].src_ip.to_string(), "198.51.100.8", "then by address");
         assert_eq!(out[2].src_ip.to_string(), "198.51.100.9");
+        Ok(())
     }
 
     /// Nobody asked the detector, so the field says so rather than claiming
     /// the source has no relationship.
     #[test]
-    fn established_is_unknown_until_a_caller_supplies_it() {
-        let all = [f("198.51.100.7", "scanner", 1)];
+    fn established_is_unknown_until_a_caller_supplies_it() -> Result<(), TestError> {
+        let all = [f("198.51.100.7", "scanner", 1)?];
         let refs: Vec<&Finding> = all.iter().collect();
         assert_eq!(accused(&refs)[0].established, None);
+        Ok(())
     }
 
     #[test]
-    fn no_findings_accuse_nobody() {
+    fn no_findings_accuse_nobody() -> Result<(), TestError> {
         assert!(accused(&[]).is_empty());
+        Ok(())
     }
 }

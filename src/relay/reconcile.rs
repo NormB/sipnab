@@ -926,21 +926,24 @@ mod tests {
     use crate::capture::CaptureSource;
     use crate::relay::types::{Enumeration, RelayStream, RelayTag};
     use std::cell::RefCell;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The address the scripted relay reports for every stream.
     const RELAY_IP: &str = "203.0.113.7";
 
     /// That same address, parsed, for building lookup keys.
-    fn relay_ip() -> std::net::IpAddr {
-        RELAY_IP.parse().expect("a literal v4 address parses")
+    fn relay_ip() -> Result<std::net::IpAddr, TestError> {
+        Ok(RELAY_IP
+            .parse()
+            .map_err(|e| format!("a literal v4 address parses: {e:?}"))?)
     }
 
     /// A permit, which only a live source can grant.
-    fn permit() -> TransmitPermit {
+    fn permit() -> Result<TransmitPermit, TestError> {
         let live = CaptureSource::Live {
             device: "eth0".to_owned(),
         };
-        TransmitPermit::for_source(&live).expect("a live source grants a permit")
+        Ok(TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?)
     }
 
     /// What a scripted relay should answer with.
@@ -1128,23 +1131,28 @@ mod tests {
     /// two-party call three parties, after which the analysis that judges
     /// one-way audio and asymmetry answers a question nobody asked.
     #[test]
-    fn a_port_held_by_a_media_subscriber_is_attributed_but_not_called_a_leg() {
+    fn a_port_held_by_a_media_subscriber_is_attributed_but_not_called_a_leg()
+    -> Result<(), TestError> {
         let mut r = Reconciler::new(ForkedRelay);
-        let p = permit();
-        let summary = r.at_startup(&p).expect("startup asks once");
+        let p = permit()?;
+        let summary = r.at_startup(&p).ok_or("startup asks once")?;
 
         let leg = r
-            .on_unexplained_stream(&p, relay_ip(), 30000)
-            .expect("the leg's port is in the snapshot");
+            .on_unexplained_stream(&p, relay_ip()?, 30000)
+            .map_err(|e| format!("the leg's port is in the snapshot: {e:?}"))?;
         assert!(
             !leg.is_media_subscriber,
             "a side with an offer/answer peer is a leg of the call"
         );
 
-        let fork = r.on_unexplained_stream(&p, relay_ip(), 30010).expect(
-            "the fork's port is the relay's media for this call, so \
-                     it must still be attributed",
-        );
+        let fork = r
+            .on_unexplained_stream(&p, relay_ip()?, 30010)
+            .map_err(|e| {
+                format!(
+                    "the fork's port is the relay's media for this call, so \
+                     it must still be attributed: {e:?}"
+                )
+            })?;
         assert_eq!(
             fork.call_id, "call-a",
             "the subscriber's port belongs to the call it forks"
@@ -1161,20 +1169,22 @@ mod tests {
              counted are a recording or forwarding fork, or three streams on \
              a two-party call look like a bug in sipnab: {summary}"
         );
+        Ok(())
     }
 
     /// A relay that could not be reached never said the stream was not its
     /// media. Collapsing the two is how a run that never reached the relay
     /// comes to read as a run that asked and was told "not mine".
     #[test]
-    fn a_relay_that_could_not_be_asked_is_not_a_relay_that_said_no() {
+    fn a_relay_that_could_not_be_asked_is_not_a_relay_that_said_no() -> Result<(), TestError> {
         let mut r = Reconciler::new(ScriptedRelay::new(Answer::Fail));
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, relay_ip(), 30000)
-            .expect_err("a relay that is down attributes nothing");
+            .on_unexplained_stream(&p, relay_ip()?, 30000)
+            .err()
+            .ok_or("a relay that is down attributes nothing")?;
 
         assert!(
             matches!(why, Unattributed::AskFailed { .. }),
@@ -1183,27 +1193,30 @@ mod tests {
              conclude the stream is not the relay's media, which nothing here \
              established"
         );
+        Ok(())
     }
 
     /// The relay answered `list`, but the `query` for that call failed. Its
     /// ports are UNKNOWN, not absent.
     #[test]
-    fn a_call_that_could_not_be_read_leaves_its_ports_unknown() {
+    fn a_call_that_could_not_be_read_leaves_its_ports_unknown() -> Result<(), TestError> {
         let relay =
             ScriptedRelay::new(Answer::Calls(vec!["call-a"], false)).holding("call-a", None);
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, relay_ip(), 30000)
-            .expect_err("an unreadable call attributes nothing");
+            .on_unexplained_stream(&p, relay_ip()?, 30000)
+            .err()
+            .ok_or("an unreadable call attributes nothing")?;
 
         assert!(
             !matches!(why, Unattributed::RelayDoesNotHoldIt),
             "a port may belong to the call whose query failed, so the answer \
              must not be `the relay does not hold it` -- got {why:?}"
         );
+        Ok(())
     }
 
     /// The honest "no" must remain REACHABLE. Without this, every test above
@@ -1211,16 +1224,17 @@ mod tests {
     /// [`Unattributed::RelayDoesNotHoldIt`] -- and sipnab would have traded a
     /// false denial for a permanent shrug.
     #[test]
-    fn a_complete_answer_can_still_say_the_relay_does_not_hold_it() {
+    fn a_complete_answer_can_still_say_the_relay_does_not_hold_it() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000, 30001]));
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, relay_ip(), 40000)
-            .expect_err("40000 is not a port the relay named");
+            .on_unexplained_stream(&p, relay_ip()?, 40000)
+            .err()
+            .ok_or("40000 is not a port the relay named")?;
 
         assert_eq!(
             why,
@@ -1228,6 +1242,7 @@ mod tests {
             "the relay was reached, enumerated completely and every call was \
              read -- that is the one case where `not mine` is a fact"
         );
+        Ok(())
     }
 
     /// One port number on two interfaces is two sockets. rtpengine allocates
@@ -1235,26 +1250,30 @@ mod tests {
     /// contrived case -- and keying the index on the port alone attributes one
     /// interface's media to the other interface's call.
     #[test]
-    fn the_same_port_on_two_interfaces_is_two_different_calls() {
+    fn the_same_port_on_two_interfaces_is_two_different_calls() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a", "call-b"], false))
             .holding_on("call-a", "203.0.113.7", vec![30000])
             .holding_on("call-b", "198.51.100.9", vec![30000]);
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
-        let first = "203.0.113.7".parse().expect("a literal v4 address parses");
-        let second = "198.51.100.9".parse().expect("a literal v4 address parses");
+        let first = "203.0.113.7"
+            .parse()
+            .map_err(|e| format!("a literal v4 address parses: {e:?}"))?;
+        let second = "198.51.100.9"
+            .parse()
+            .map_err(|e| format!("a literal v4 address parses: {e:?}"))?;
 
         assert_eq!(
             r.on_unexplained_stream(&p, first, 30000)
-                .expect("the relay holds this socket")
+                .map_err(|e| format!("the relay holds this socket: {e:?}"))?
                 .call_id,
             "call-a"
         );
         assert_eq!(
             r.on_unexplained_stream(&p, second, 30000)
-                .expect("the relay holds this socket too")
+                .map_err(|e| format!("the relay holds this socket too: {e:?}"))?
                 .call_id,
             "call-b",
             "port 30000 on the second interface belongs to the other call; \
@@ -1265,6 +1284,7 @@ mod tests {
             2,
             "two sockets, not one overwriting the other"
         );
+        Ok(())
     }
 
     /// What the relay already said is not said again. Re-handing the startup
@@ -1272,14 +1292,14 @@ mod tests {
     /// store measures its staleness bound from that stamp -- so a replayed
     /// index would make every endpoint look perpetually current.
     #[test]
-    fn a_socket_already_handed_over_is_not_handed_over_twice() {
+    fn a_socket_already_handed_over_is_not_handed_over_twice() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000, 30001]));
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
-        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?;
         let first = r.take_new_links(t0);
         assert_eq!(first.links.len(), 2, "both ports the relay named");
         assert_eq!(first.taken_at, Some(t0));
@@ -1293,29 +1313,30 @@ mod tests {
             second.taken_at, None,
             "an empty hand-over must not claim the relay answered at a time"
         );
+        Ok(())
     }
 
     /// A refresh hands over only what IT learned, stamped with when the relay
     /// answered rather than when a store happened to be written to.
     #[test]
-    fn a_refresh_hands_over_only_what_it_learned() {
+    fn a_refresh_hands_over_only_what_it_learned() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]))
             .failing_first(1);
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
-        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?;
         assert!(
             r.take_new_links(t0).links.is_empty(),
             "the startup query failed, so nothing was learned"
         );
 
         // The refresh retries the call and this time it answers.
-        assert!(r.on_unexplained_stream(&p, relay_ip(), 30000).is_ok());
+        assert!(r.on_unexplained_stream(&p, relay_ip()?, 30000).is_ok());
 
-        let t1 = chrono::DateTime::from_timestamp(1_700_000_060, 0).expect("valid");
+        let t1 = chrono::DateTime::from_timestamp(1_700_000_060, 0).ok_or("valid")?;
         let handed = r.take_new_links(t1);
         assert_eq!(handed.links.len(), 1);
         assert_eq!(handed.links[0].port, 30000);
@@ -1324,15 +1345,16 @@ mod tests {
             Some(t1),
             "stamped with the refresh, not with the startup that learned nothing"
         );
+        Ok(())
     }
 
     /// Startup happens once. There is no second startup.
     #[test]
-    fn startup_asks_once_and_never_again() {
+    fn startup_asks_once_and_never_again() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
 
         assert!(r.at_startup(&p).is_some(), "the first startup asks");
         let after_first = r.transactions();
@@ -1348,22 +1370,23 @@ mod tests {
             after_first,
             "repeated startups must not spend transactions"
         );
+        Ok(())
     }
 
     /// The not-a-poller proof, stated as a number: a port the snapshot already
     /// explains costs NO control traffic, however often it is seen.
     #[test]
-    fn an_explained_port_costs_no_control_traffic() {
+    fn an_explained_port_costs_no_control_traffic() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
         let after_startup = r.transactions();
 
         for _ in 0..1000 {
             assert!(
-                r.on_unexplained_stream(&p, relay_ip(), 30000).is_ok(),
+                r.on_unexplained_stream(&p, relay_ip()?, 30000).is_ok(),
                 "the snapshot explains this port"
             );
         }
@@ -1375,21 +1398,22 @@ mod tests {
              transactions -- any growth here means a poller was built by \
              accident"
         );
+        Ok(())
     }
 
     /// An UNEXPLAINED port is asked about once for the run, not once per
     /// packet. This is the arm that would turn a busy capture into a flood.
     #[test]
-    fn an_unexplained_port_is_asked_about_once() {
+    fn an_unexplained_port_is_asked_about_once() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
         let after_startup = r.transactions();
 
         for _ in 0..500 {
-            assert!(r.on_unexplained_stream(&p, relay_ip(), 40000).is_err());
+            assert!(r.on_unexplained_stream(&p, relay_ip()?, 40000).is_err());
         }
 
         assert_eq!(
@@ -1397,21 +1421,26 @@ mod tests {
             1,
             "500 sightings of one unexplained port must cost a single refresh"
         );
+        Ok(())
     }
 
     /// The ceiling does not depend on the traffic. A capture full of distinct
     /// orphan ports cannot buy more control transactions than the run allows.
     #[test]
-    fn the_ceiling_bounds_the_run_whatever_the_traffic() {
+    fn the_ceiling_bounds_the_run_whatever_the_traffic() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay).with_budget(5);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         let mut last = None;
         for port in 40000..40200_u16 {
-            last = Some(r.on_unexplained_stream(&p, relay_ip(), port).unwrap_err());
+            last = Some(
+                r.on_unexplained_stream(&p, relay_ip()?, port)
+                    .err()
+                    .ok_or("expected an error, got Ok")?,
+            );
         }
 
         assert!(
@@ -1426,37 +1455,41 @@ mod tests {
             "once the ceiling is reached sipnab must SAY the port was never \
              asked about, not imply the relay disowned it"
         );
+        Ok(())
     }
 
     /// A capped list is not a complete one, and a port missing from it proves
     /// nothing.
     #[test]
-    fn a_truncated_enumeration_is_not_an_empty_one() {
+    fn a_truncated_enumeration_is_not_an_empty_one() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], true))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         assert!(r.enumeration_was_partial(), "the relay said it had more");
         assert_eq!(
-            r.on_unexplained_stream(&p, relay_ip(), 40000).unwrap_err(),
+            r.on_unexplained_stream(&p, relay_ip()?, 40000)
+                .err()
+                .ok_or("expected an error, got Ok")?,
             Unattributed::EnumerationWasPartial,
             "a port absent from a PARTIAL list may belong to a call the list \
              never named"
         );
+        Ok(())
     }
 
     /// A call whose query failed is retried on the next refresh. Writing it
     /// off for the run would make a transient relay hiccup permanent, and the
     /// budget -- not a one-shot latch -- is what bounds the retries.
     #[test]
-    fn a_call_that_failed_once_is_retried_not_written_off() {
+    fn a_call_that_failed_once_is_retried_not_written_off() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]))
             .failing_first(1);
         let mut r = Reconciler::new(relay);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         assert_eq!(
@@ -1466,29 +1499,32 @@ mod tests {
         );
 
         assert!(
-            r.on_unexplained_stream(&p, relay_ip(), 30000).is_ok(),
+            r.on_unexplained_stream(&p, relay_ip()?, 30000).is_ok(),
             "the refresh retries the call that failed, and this time it \
              answers -- a port the relay genuinely holds must not stay \
              unattributed because of one transient failure"
         );
+        Ok(())
     }
 
     /// A relay that DECLINED the question was reached and understood it, but
     /// it still never said this port is unheld.
     #[test]
-    fn a_refusal_is_not_an_empty_relay() {
+    fn a_refusal_is_not_an_empty_relay() -> Result<(), TestError> {
         let mut r = Reconciler::new(ScriptedRelay::new(Answer::Refuse("not authorized")));
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, relay_ip(), 30000)
-            .expect_err("a refusal attributes nothing");
+            .on_unexplained_stream(&p, relay_ip()?, 30000)
+            .err()
+            .ok_or("a refusal attributes nothing")?;
 
         assert!(
             !matches!(why, Unattributed::RelayDoesNotHoldIt),
             "a refused enumeration establishes nothing about this port -- got {why:?}"
         );
+        Ok(())
     }
 
     /// A relay whose enumeration CHANGES between refreshes.
@@ -1593,8 +1629,8 @@ mod tests {
     /// -- not left unattributed, but attributed to the WRONG call, for the
     /// 300 s the endpoint stays live.
     #[test]
-    fn a_reused_relay_port_is_reported_again_with_its_new_call() {
-        let p = permit();
+    fn a_reused_relay_port_is_reported_again_with_its_new_call() -> Result<(), TestError> {
+        let p = permit()?;
         let mut r = Reconciler::new(ReassigningRelay::new(
             vec![vec!["call-A"], vec!["call-B"]],
             vec![30000],
@@ -1614,7 +1650,13 @@ mod tests {
 
         // Any unexplained socket refreshes the snapshot, and the relay now
         // reports call-B holding the port call-A had.
-        let _ = r.on_unexplained_stream(&p, "198.51.100.9".parse().expect("valid"), 41234);
+        let _ = r.on_unexplained_stream(
+            &p,
+            "198.51.100.9"
+                .parse()
+                .map_err(|e| format!("valid: {e:?}"))?,
+            41234,
+        );
 
         let reported: Vec<String> = r
             .take_new_links(chrono::Utc::now())
@@ -1629,6 +1671,7 @@ mod tests {
             "the index learned the reassignment; the store has to learn it too, \
              or media on this port stays credited to call-A"
         );
+        Ok(())
     }
 
     /// ...and a socket the relay reports twice for ONE call is reported once.
@@ -1640,8 +1683,8 @@ mod tests {
     /// bound quietly stops existing. A relay multiplexing RTP and RTCP on one
     /// port (RFC 5761) reports exactly this shape.
     #[test]
-    fn a_socket_repeated_within_one_call_is_reported_only_once() {
-        let p = permit();
+    fn a_socket_repeated_within_one_call_is_reported_only_once() -> Result<(), TestError> {
+        let p = permit()?;
         let mut r =
             Reconciler::new(ReassigningRelay::new(vec![vec!["call-A"]], vec![30000]).muxed());
 
@@ -1653,6 +1696,7 @@ mod tests {
             1,
             "one socket, one call, one link -- got {for_port:?}"
         );
+        Ok(())
     }
 
     /// Drain the hand-over and name the call(s) reported for one port.
@@ -1671,13 +1715,15 @@ mod tests {
     /// plausible half-fix -- firing the hand-over only on the FIRST change
     /// repairs the reported symptom and leaves every later recycle silent.
     #[test]
-    fn a_port_reassigned_twice_is_handed_over_each_time() {
-        let p = permit();
+    fn a_port_reassigned_twice_is_handed_over_each_time() -> Result<(), TestError> {
+        let p = permit()?;
         let mut r = Reconciler::new(ReassigningRelay::new(
             vec![vec!["call-A"], vec!["call-B"], vec!["call-C"]],
             vec![30000],
         ));
-        let other: IpAddr = "198.51.100.9".parse().expect("valid");
+        let other: IpAddr = "198.51.100.9"
+            .parse()
+            .map_err(|e| format!("valid: {e:?}"))?;
 
         r.at_startup(&p);
         assert_eq!(named(&mut r, 30000), vec!["call-A".to_owned()], "startup");
@@ -1695,6 +1741,7 @@ mod tests {
             vec!["call-C".to_owned()],
             "second reassignment -- a port recycled again is news again"
         );
+        Ok(())
     }
 
     /// Two ports reassigned in ONE refresh are both handed over.
@@ -1704,8 +1751,8 @@ mod tests {
     /// changed, so push once" reports one of these and drops the other,
     /// leaving half the call's media on the ended call.
     #[test]
-    fn two_ports_reassigned_in_one_refresh_are_both_handed_over() {
-        let p = permit();
+    fn two_ports_reassigned_in_one_refresh_are_both_handed_over() -> Result<(), TestError> {
+        let p = permit()?;
         let mut r = Reconciler::new(ReassigningRelay::new(
             vec![vec!["call-A"], vec!["call-B"]],
             vec![30000, 30002],
@@ -1714,7 +1761,13 @@ mod tests {
         r.at_startup(&p);
         let _ = r.take_new_links(chrono::Utc::now());
 
-        let _ = r.on_unexplained_stream(&p, "198.51.100.9".parse().expect("valid"), 41234);
+        let _ = r.on_unexplained_stream(
+            &p,
+            "198.51.100.9"
+                .parse()
+                .map_err(|e| format!("valid: {e:?}"))?,
+            41234,
+        );
 
         let mut got: Vec<(u16, String)> = r
             .take_new_links(chrono::Utc::now())
@@ -1728,14 +1781,22 @@ mod tests {
             vec![(30000, "call-B".to_owned()), (30002, "call-B".to_owned())],
             "both recycled ports have to reach the store"
         );
+        Ok(())
     }
 
     /// Offer `n` distinct unexplained sockets to a relay that holds nothing.
-    fn flood<R: ReadOnlyRelay>(r: &mut Reconciler<R>, p: &TransmitPermit, n: u16) {
-        let ip: IpAddr = "198.51.100.9".parse().expect("valid");
+    fn flood<R: ReadOnlyRelay>(
+        r: &mut Reconciler<R>,
+        p: &TransmitPermit,
+        n: u16,
+    ) -> Result<(), TestError> {
+        let ip: IpAddr = "198.51.100.9"
+            .parse()
+            .map_err(|e| format!("valid: {e:?}"))?;
         for i in 0..n {
             let _ = r.on_unexplained_stream(p, ip, 40000 + i);
         }
+        Ok(())
     }
 
     /// The set of sockets already asked about cannot outgrow the ceiling.
@@ -1746,12 +1807,12 @@ mod tests {
     /// the life of the run. Every entry now costs a transaction, so the
     /// ceiling bounds the memory as well as the traffic.
     #[test]
-    fn the_tracked_socket_set_cannot_outgrow_the_transaction_ceiling() {
-        let p = permit();
+    fn the_tracked_socket_set_cannot_outgrow_the_transaction_ceiling() -> Result<(), TestError> {
+        let p = permit()?;
         let mut r =
             Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
         r.at_startup(&p);
-        flood(&mut r, &p, 200);
+        flood(&mut r, &p, 200)?;
 
         assert!(
             r.tracked_sockets() <= r.budget() as usize,
@@ -1760,6 +1821,7 @@ mod tests {
             r.tracked_sockets(),
             r.budget()
         );
+        Ok(())
     }
 
     /// ...and the size does not depend on how much traffic arrives.
@@ -1768,23 +1830,24 @@ mod tests {
     /// offered sockets. A bound that is real answers the same both times; a
     /// bound that merely looks generous does not.
     #[test]
-    fn the_tracked_set_is_the_same_size_however_many_sockets_arrive() {
-        let p = permit();
+    fn the_tracked_set_is_the_same_size_however_many_sockets_arrive() -> Result<(), TestError> {
+        let p = permit()?;
         let mut small =
             Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
         small.at_startup(&p);
-        flood(&mut small, &p, 50);
+        flood(&mut small, &p, 50)?;
 
         let mut large =
             Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
         large.at_startup(&p);
-        flood(&mut large, &p, 500);
+        flood(&mut large, &p, 500)?;
 
         assert_eq!(
             small.tracked_sockets(),
             large.tracked_sockets(),
             "10x the sockets must not mean more state"
         );
+        Ok(())
     }
 
     /// While the ceiling has room, a repeated socket is still asked about once.
@@ -1794,14 +1857,17 @@ mod tests {
     /// into a control transaction, which is the poller this module exists to
     /// prevent.
     #[test]
-    fn a_repeated_socket_still_costs_one_transaction_while_the_ceiling_has_room() {
-        let p = permit();
+    fn a_repeated_socket_still_costs_one_transaction_while_the_ceiling_has_room()
+    -> Result<(), TestError> {
+        let p = permit()?;
         let mut r =
             Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(20);
         r.at_startup(&p);
         let before = r.transactions();
 
-        let ip: IpAddr = "198.51.100.9".parse().expect("valid");
+        let ip: IpAddr = "198.51.100.9"
+            .parse()
+            .map_err(|e| format!("valid: {e:?}"))?;
         for _ in 0..10 {
             let _ = r.on_unexplained_stream(&p, ip, 41234);
         }
@@ -1812,6 +1878,7 @@ mod tests {
             "ten offers of one socket must cost one ask, not ten"
         );
         assert_eq!(r.tracked_sockets(), 1, "and it is remembered exactly once");
+        Ok(())
     }
 
     /// A socket refused for want of budget SAYS that, and does not claim the
@@ -1822,21 +1889,27 @@ mod tests {
     /// `RelayDoesNotHoldIt` is the one answer here that asserts something
     /// about the traffic rather than about sipnab.
     #[test]
-    fn a_socket_never_asked_about_is_not_reported_as_disowned() {
-        let p = permit();
+    fn a_socket_never_asked_about_is_not_reported_as_disowned() -> Result<(), TestError> {
+        let p = permit()?;
         let mut r =
             Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(2);
         r.at_startup(&p);
-        flood(&mut r, &p, 20);
+        flood(&mut r, &p, 20)?;
 
         let why = r
-            .on_unexplained_stream(&p, "203.0.113.9".parse().expect("valid"), 45000)
-            .expect_err("the ceiling is spent, so nothing was asked");
+            .on_unexplained_stream(
+                &p,
+                "203.0.113.9".parse().map_err(|e| format!("valid: {e:?}"))?,
+                45000,
+            )
+            .err()
+            .ok_or("the ceiling is spent, so nothing was asked")?;
         assert_eq!(
             why,
             Unattributed::BudgetSpent,
             "a port nobody asked about is not a port the relay disowned"
         );
+        Ok(())
     }
 
     /// A relay that caps a narrow `list` and answers a wide one in full.
@@ -1924,7 +1997,9 @@ mod tests {
                     codec: Some("PCMU".to_owned()),
                     streams: vec![RelayStream {
                         local_address: RELAY_IP.to_owned(),
-                        local_port: 30000 + u16::try_from(index).expect("a small index"),
+                        local_port: 30000
+                            + u16::try_from(index)
+                                .map_err(|e| anyhow::anyhow!("a small index: {e}"))?,
                         endpoint: None,
                         advertised_endpoint: None,
                         is_rtcp: false,
@@ -1957,10 +2032,11 @@ mod tests {
     /// Stopping at the first capped answer is what reports the rest as
     /// orphans.
     #[test]
-    fn a_capped_enumeration_is_asked_again_for_more_than_a_datagram_carries() {
+    fn a_capped_enumeration_is_asked_again_for_more_than_a_datagram_carries()
+    -> Result<(), TestError> {
         let (relay, limits) = widening(40);
         let mut r = Reconciler::new(relay).with_budget(200);
-        let line = r.at_startup(&permit()).expect("startup asks once");
+        let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
 
         assert_eq!(
             *limits.borrow(),
@@ -1976,6 +2052,7 @@ mod tests {
             !r.enumeration_was_partial(),
             "the wider answer was complete, so nothing may still read as partial"
         );
+        Ok(())
     }
 
     /// A relay with no wider transport keeps its capped answer, and the run
@@ -1985,10 +2062,11 @@ mod tests {
     /// the same missing calls, and only one of them tells the operator to go
     /// and enable something.
     #[test]
-    fn a_wider_enumeration_that_fails_keeps_the_capped_answer_and_says_so() {
+    fn a_wider_enumeration_that_fails_keeps_the_capped_answer_and_says_so() -> Result<(), TestError>
+    {
         let (relay, _limits) = widening(40);
         let mut r = Reconciler::new(relay.refusing_wide()).with_budget(200);
-        let line = r.at_startup(&permit()).expect("startup asks once");
+        let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
 
         assert!(
             r.enumeration_was_partial(),
@@ -2007,17 +2085,18 @@ mod tests {
             32,
             "the calls the capped answer DID name must still be read"
         );
+        Ok(())
     }
 
     /// The wider ask is spent once for the run, not once per refresh.
     #[test]
-    fn a_wider_enumeration_is_attempted_once_for_the_run() {
-        let p = permit();
+    fn a_wider_enumeration_is_attempted_once_for_the_run() -> Result<(), TestError> {
+        let p = permit()?;
         let (relay, limits) = widening(40);
         let mut r = Reconciler::new(relay.refusing_wide()).with_budget(200);
         r.at_startup(&p);
         // A socket the snapshot does not hold forces a refresh.
-        let _ = r.on_unexplained_stream(&p, relay_ip(), 49999);
+        let _ = r.on_unexplained_stream(&p, relay_ip()?, 49999);
 
         let wide = limits
             .borrow()
@@ -2031,21 +2110,23 @@ mod tests {
              not on every refresh: {:?}",
             limits.borrow()
         );
+        Ok(())
     }
 
     /// A complete enumeration is never widened. Nothing is missing, so there
     /// is nothing to reach for and no packet to spend.
     #[test]
-    fn a_complete_enumeration_is_never_widened() {
+    fn a_complete_enumeration_is_never_widened() -> Result<(), TestError> {
         let (relay, limits) = widening(5);
         let mut r = Reconciler::new(relay).with_budget(200);
-        r.at_startup(&permit());
+        r.at_startup(&permit()?);
         assert_eq!(
             *limits.borrow(),
             vec![DEFAULT_LIST_LIMIT],
             "the relay held five calls and answered completely; a second, \
              wider `list` is a packet sent to production for nothing"
         );
+        Ok(())
     }
 
     /// Reaching further than the ceiling can read SAYS how many calls went
@@ -2056,16 +2137,17 @@ mod tests {
     /// operator should not have to do, and the calls in the gap are exactly
     /// the ones whose streams would otherwise look like orphans.
     #[test]
-    fn calls_the_ceiling_could_not_read_are_counted_in_the_summary() {
+    fn calls_the_ceiling_could_not_read_are_counted_in_the_summary() -> Result<(), TestError> {
         let (relay, _limits) = widening(40);
         let mut r = Reconciler::new(relay).with_budget(12);
-        let line = r.at_startup(&permit()).expect("startup asks once");
+        let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
 
         assert!(
             line.contains("30 call(s) were never read"),
             "the enumeration named 40 calls and the ceiling paid for ten \
              queries; the other thirty have to be named: {line}"
         );
+        Ok(())
     }
 
     /// Every reason "nothing" can mean reads as its own sentence, and the two
@@ -2073,7 +2155,7 @@ mod tests {
     /// The describe line is what an operator reads, so two reasons rendering
     /// alike would collapse exactly the distinction the enum exists to keep.
     #[test]
-    fn every_reason_for_no_attribution_reads_as_its_own_sentence() {
+    fn every_reason_for_no_attribution_reads_as_its_own_sentence() -> Result<(), TestError> {
         let all = [
             Unattributed::RelayDoesNotHoldIt,
             Unattributed::EnumerationWasPartial,
@@ -2111,73 +2193,79 @@ mod tests {
             "the one real answer must not hedge: {}",
             lines[0]
         );
+        Ok(())
     }
 
     /// A call whose query failed leaves the port UNKNOWN, and says how many
     /// calls are in that state -- the number an operator needs to judge how
     /// big the hole is.
     #[test]
-    fn an_unreadable_call_is_reported_as_an_incomplete_snapshot_with_its_count() {
+    fn an_unreadable_call_is_reported_as_an_incomplete_snapshot_with_its_count()
+    -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a", "call-b"], false))
             .holding("call-a", None)
             .holding("call-b", None);
         let mut r = Reconciler::new(relay);
-        let p = permit();
-        let summary = r.at_startup(&p).expect("startup asks once");
+        let p = permit()?;
+        let summary = r.at_startup(&p).ok_or("startup asks once")?;
         assert!(
             summary.contains("2 call(s) could not be read"),
             "the summary names the unread calls: {summary}"
         );
 
         assert_eq!(
-            r.on_unexplained_stream(&p, relay_ip(), 30000),
+            r.on_unexplained_stream(&p, relay_ip()?, 30000),
             Err(Unattributed::SnapshotIncomplete { unread_calls: 2 })
         );
+        Ok(())
     }
 
     /// A relay with no per-call statistics form refuses the question rather
     /// than inventing an answer; the implementations that can answer override
     /// the default.
     #[test]
-    fn a_relay_without_a_per_call_form_refuses_per_call_statistics() {
+    fn a_relay_without_a_per_call_form_refuses_per_call_statistics() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec![], false));
         let err = relay
-            .call_statistics(&permit(), "call-a")
-            .expect_err("the default has no per-call form");
+            .call_statistics(&permit()?, "call-a")
+            .err()
+            .ok_or("the default has no per-call form")?;
         assert!(
             err.to_string().contains("no per-call statistics form"),
             "{err}"
         );
+        Ok(())
     }
 
     /// The enumeration limit is what the relay is asked for, and a capped
     /// answer at a custom limit is still reached past.
     #[test]
-    fn with_list_limit_is_the_limit_the_relay_is_asked_for() {
+    fn with_list_limit_is_the_limit_the_relay_is_asked_for() -> Result<(), TestError> {
         let (relay, limits) = widening(3);
         let mut r = Reconciler::new(relay).with_list_limit(5).with_budget(50);
-        r.at_startup(&permit());
+        r.at_startup(&permit()?);
         assert_eq!(*limits.borrow(), vec![5], "three calls fit under five");
 
         let (relay, limits) = widening(8);
         let mut r = Reconciler::new(relay).with_list_limit(5).with_budget(50);
-        r.at_startup(&permit());
+        r.at_startup(&permit()?);
         assert_eq!(
             *limits.borrow(),
             vec![5, WIDE_LIST_LIMIT],
             "a capped answer at five is followed by the one wider ask"
         );
+        Ok(())
     }
 
     /// A limit already as wide as the reach is never "widened": the second
     /// ask would be the same question, and a packet spent for nothing.
     #[test]
-    fn a_limit_already_at_the_wide_ceiling_is_not_asked_again() {
+    fn a_limit_already_at_the_wide_ceiling_is_not_asked_again() -> Result<(), TestError> {
         let (relay, limits) = widening(usize::from(u16::MAX) / 60);
         let mut r = Reconciler::new(relay)
             .with_list_limit(WIDE_LIST_LIMIT)
             .with_budget(3);
-        let line = r.at_startup(&permit()).expect("startup asks once");
+        let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
         // 1092 calls against a limit of 1024: capped, and nothing wider to ask.
         assert_eq!(*limits.borrow(), vec![WIDE_LIST_LIMIT], "{line}");
         assert!(r.enumeration_was_partial());
@@ -2185,32 +2273,36 @@ mod tests {
             !line.contains("wider ask"),
             "no wider ask was made, so none may be reported: {line}"
         );
+        Ok(())
     }
 
     /// The snapshot is every attributed socket, stamped with when the relay
     /// answered and which relay it was.
     #[test]
-    fn the_snapshot_carries_every_attributed_socket_and_when_the_relay_answered() {
+    fn the_snapshot_carries_every_attributed_socket_and_when_the_relay_answered()
+    -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a", "call-b"], false))
             .holding("call-a", Some(vec![30000, 30001]))
             .holding_on("call-b", "198.51.100.9", vec![40000]);
         let mut r = Reconciler::new(relay);
-        r.at_startup(&permit());
+        r.at_startup(&permit()?);
 
         let mut links: Vec<(IpAddr, u16, String)> =
             r.links().map(|(a, p, c)| (a, p, c.to_owned())).collect();
         links.sort();
-        let other: IpAddr = "198.51.100.9".parse().expect("valid");
+        let other: IpAddr = "198.51.100.9"
+            .parse()
+            .map_err(|e| format!("valid: {e:?}"))?;
         assert_eq!(
             links,
             vec![
                 (other, 40000, "call-b".to_owned()),
-                (relay_ip(), 30000, "call-a".to_owned()),
-                (relay_ip(), 30001, "call-a".to_owned()),
+                (relay_ip()?, 30000, "call-a".to_owned()),
+                (relay_ip()?, 30001, "call-a".to_owned()),
             ]
         );
 
-        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?;
         let snap = r.snapshot(t0);
         assert_eq!(snap.taken_at, Some(t0));
         assert_eq!(
@@ -2226,16 +2318,17 @@ mod tests {
         assert_eq!(from_snapshot, links, "the snapshot is the index, whole");
 
         assert_eq!(r.describe_relay(), "203.0.113.7:22222");
+        Ok(())
     }
 
     /// A run whose ceiling is already spent asks nothing at startup and says
     /// so, rather than reporting an empty relay.
     #[test]
-    fn a_run_with_no_ceiling_left_asks_nothing_and_says_so() {
+    fn a_run_with_no_ceiling_left_asks_nothing_and_says_so() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay).with_budget(0);
-        let line = r.at_startup(&permit()).expect("startup still reports");
+        let line = r.at_startup(&permit()?).ok_or("startup still reports")?;
 
         assert_eq!(
             r.transactions(),
@@ -2248,51 +2341,55 @@ mod tests {
             "{line}"
         );
         assert_eq!(r.attributed_ports(), 0);
+        Ok(())
     }
 
     /// A `list` answered with something that is not an enumeration is an ask
     /// that failed, not a relay holding nothing.
     #[test]
-    fn a_list_answered_with_something_else_is_an_ask_failure_not_a_denial() {
+    fn a_list_answered_with_something_else_is_an_ask_failure_not_a_denial() -> Result<(), TestError>
+    {
         let mut r = Reconciler::new(ScriptedRelay::new(Answer::NotAList));
-        let p = permit();
-        let line = r.at_startup(&p).expect("startup asks once");
+        let p = permit()?;
+        let line = r.at_startup(&p).ok_or("startup asks once")?;
         assert!(
             line.contains("answered a `list` with something else"),
             "{line}"
         );
 
         assert_eq!(
-            r.on_unexplained_stream(&p, relay_ip(), 30000),
+            r.on_unexplained_stream(&p, relay_ip()?, 30000),
             Err(Unattributed::AskFailed {
                 reason: "the relay answered a `list` with something else".to_owned()
             })
         );
+        Ok(())
     }
 
     /// A refusal names the relay's reason, both in the summary and in the
     /// answer a caller gets back.
     #[test]
-    fn a_refused_enumeration_carries_the_relays_reason() {
+    fn a_refused_enumeration_carries_the_relays_reason() -> Result<(), TestError> {
         let mut r = Reconciler::new(ScriptedRelay::new(Answer::Refuse("not authorized")));
-        let p = permit();
-        let line = r.at_startup(&p).expect("startup asks once");
+        let p = permit()?;
+        let line = r.at_startup(&p).ok_or("startup asks once")?;
         assert_eq!(
             line,
             "203.0.113.7:22222 refused to enumerate its calls: not authorized"
         );
         assert_eq!(
-            r.on_unexplained_stream(&p, relay_ip(), 30000),
+            r.on_unexplained_stream(&p, relay_ip()?, 30000),
             Err(Unattributed::AskFailed {
                 reason: "the relay refused: not authorized".to_owned()
             })
         );
+        Ok(())
     }
 
     /// A wider ask the relay REFUSED, or answered with something other than a
     /// list, keeps the capped answer and says why the reach failed.
     #[test]
-    fn a_wider_ask_that_is_refused_or_misanswered_says_why() {
+    fn a_wider_ask_that_is_refused_or_misanswered_says_why() -> Result<(), TestError> {
         let cases = [
             (
                 ControlReply::Refused {
@@ -2308,7 +2405,7 @@ mod tests {
         for (reply, why) in cases {
             let (relay, _limits) = widening(40);
             let mut r = Reconciler::new(relay.answering_wide(reply)).with_budget(200);
-            let line = r.at_startup(&permit()).expect("startup asks once");
+            let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
             assert!(
                 line.contains(&format!("was attempted and failed ({why})")),
                 "{line}"
@@ -2319,16 +2416,18 @@ mod tests {
             );
             assert_eq!(r.attributed_ports(), 32, "and its calls are still read");
         }
+        Ok(())
     }
 
     /// A capped answer that used the last transaction cannot be reached past,
     /// and the summary says both that the reach failed for want of budget and
     /// that the ceiling is now spent.
     #[test]
-    fn a_capped_answer_on_the_last_transaction_says_the_reach_had_no_budget() {
+    fn a_capped_answer_on_the_last_transaction_says_the_reach_had_no_budget()
+    -> Result<(), TestError> {
         let (relay, limits) = widening(40);
         let mut r = Reconciler::new(relay).with_budget(1);
-        let line = r.at_startup(&permit()).expect("startup asks once");
+        let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
 
         assert_eq!(
             *limits.borrow(),
@@ -2347,17 +2446,18 @@ mod tests {
             line.ends_with("so no further questions will be asked"),
             "{line}"
         );
+        Ok(())
     }
 
     /// A relay stream whose address is not an IP address cannot be keyed. It
     /// is counted and SAID, rather than the port silently never attributing.
     #[test]
-    fn a_relay_stream_that_names_no_ip_address_is_counted_and_said() {
+    fn a_relay_stream_that_names_no_ip_address_is_counted_and_said() -> Result<(), TestError> {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a", "call-b"], false))
             .holding("call-a", Some(vec![30000]))
             .holding_on("call-b", "relay-interface-0", vec![30002, 30004]);
         let mut r = Reconciler::new(relay);
-        let line = r.at_startup(&permit()).expect("startup asks once");
+        let line = r.at_startup(&permit()?).ok_or("startup asks once")?;
 
         assert_eq!(
             r.attributed_ports(),
@@ -2371,6 +2471,7 @@ mod tests {
             ),
             "{line}"
         );
+        Ok(())
     }
 
     /// The refresh that spends the LAST transaction still read a complete
@@ -2382,17 +2483,19 @@ mod tests {
     /// just been asked about and disowned. The honest "no" has to stay
     /// reachable, and a sentence claiming no question was asked is false.
     #[test]
-    fn the_refresh_that_spends_the_last_transaction_can_still_say_not_mine() {
+    fn the_refresh_that_spends_the_last_transaction_can_still_say_not_mine() -> Result<(), TestError>
+    {
         let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
             .holding("call-a", Some(vec![30000]));
         let mut r = Reconciler::new(relay).with_budget(3);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
         assert_eq!(r.transactions(), 2, "startup: one list, one query");
 
         let why = r
-            .on_unexplained_stream(&p, relay_ip(), 40000)
-            .expect_err("40000 is not a port the relay named");
+            .on_unexplained_stream(&p, relay_ip()?, 40000)
+            .err()
+            .ok_or("40000 is not a port the relay named")?;
         assert_eq!(
             r.transactions(),
             3,
@@ -2405,10 +2508,11 @@ mod tests {
         );
 
         assert_eq!(
-            r.on_unexplained_stream(&p, relay_ip(), 40001),
+            r.on_unexplained_stream(&p, relay_ip()?, 40001),
             Err(Unattributed::BudgetSpent),
             "the next port, which nothing could pay to ask about, was never asked"
         );
+        Ok(())
     }
 
     /// ...and a refresh the ceiling cut SHORT stays a gap, never a denial.
@@ -2418,24 +2522,26 @@ mod tests {
     /// never reached, and "the relay does not hold it" would be the false
     /// denial this module exists to prevent.
     #[test]
-    fn a_refresh_the_ceiling_cut_short_is_still_a_gap() {
+    fn a_refresh_the_ceiling_cut_short_is_still_a_gap() -> Result<(), TestError> {
         let mut r = Reconciler::new(ReassigningRelay::new(
             vec![vec![], vec!["call-A", "call-B"]],
             vec![30000],
         ))
         .with_budget(3);
-        let p = permit();
+        let p = permit()?;
         r.at_startup(&p);
 
         // The refresh lists two calls and can pay to read only one of them.
         let why = r
-            .on_unexplained_stream(&p, relay_ip(), 41234)
-            .expect_err("41234 is not call-A's port");
+            .on_unexplained_stream(&p, relay_ip()?, 41234)
+            .err()
+            .ok_or("41234 is not call-A's port")?;
         assert_eq!(r.transactions(), 3);
         assert_eq!(
             why,
             Unattributed::BudgetSpent,
             "call-B was never read, so this port may be its: {why:?}"
         );
+        Ok(())
     }
 }

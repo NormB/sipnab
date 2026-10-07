@@ -116,66 +116,73 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::sync_channel;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A timeout is the signal to poll.
     #[test]
-    fn a_timeout_means_poll() {
+    fn a_timeout_means_poll() -> Result<(), TestError> {
         assert_eq!(
             wait_outcome(Err(RecvTimeoutError::Timeout)),
             WaitOutcome::Poll
         );
+        Ok(())
     }
 
     /// An explicit shutdown signal stops the loop.
     #[test]
-    fn a_signal_means_stop() {
+    fn a_signal_means_stop() -> Result<(), TestError> {
         assert_eq!(wait_outcome(Ok(())), WaitOutcome::Stop);
+        Ok(())
     }
 
     /// A closed channel (the sender dropped at capture end) stops the loop --
     /// the ordinary way a run ends its poller.
     #[test]
-    fn a_closed_channel_means_stop() {
+    fn a_closed_channel_means_stop() -> Result<(), TestError> {
         assert_eq!(
             wait_outcome(Err(RecvTimeoutError::Disconnected)),
             WaitOutcome::Stop
         );
+        Ok(())
     }
 
     /// A poll faster than its interval has not slipped -- the ordinary case.
     #[test]
-    fn a_poll_within_the_interval_has_not_slipped() {
+    fn a_poll_within_the_interval_has_not_slipped() -> Result<(), TestError> {
         assert!(!cadence_slipped(
             Duration::from_millis(100),
             Duration::from_secs(3)
         ));
+        Ok(())
     }
 
     /// A poll exactly as long as the interval is on time, not a slip: the
     /// cadence is met, if only just. The boundary a mutation to `>=` would break.
     #[test]
-    fn a_poll_exactly_on_the_interval_has_not_slipped() {
+    fn a_poll_exactly_on_the_interval_has_not_slipped() -> Result<(), TestError> {
         assert!(!cadence_slipped(
             Duration::from_secs(3),
             Duration::from_secs(3)
         ));
+        Ok(())
     }
 
     /// A poll that took longer than its interval has slipped: the run cannot keep
     /// the cadence it was asked for, and the operator must be told rather than
     /// left to read an interval that is silently not being met.
     #[test]
-    fn a_poll_longer_than_the_interval_has_slipped() {
+    fn a_poll_longer_than_the_interval_has_slipped() -> Result<(), TestError> {
         assert!(cadence_slipped(
             Duration::from_millis(3100),
             Duration::from_secs(3)
         ));
+        Ok(())
     }
 
     /// Dropping the sender ends the loop -- it does not hang waiting out the
     /// interval, and it does not poll after being told to stop.
     #[test]
-    fn dropping_the_sender_ends_the_loop_without_polling() {
+    fn dropping_the_sender_ends_the_loop_without_polling() -> Result<(), TestError> {
         let (tx, rx) = sync_channel::<()>(0);
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
@@ -184,16 +191,17 @@ mod tests {
         let handle = spawn(Duration::from_secs(3600), rx, move || {
             c.fetch_add(1, Ordering::SeqCst);
         })
-        .expect("spawns");
+        .map_err(|e| format!("spawns: {e:?}"))?;
         drop(tx);
         handle
             .join()
-            .expect("the loop ends when the channel closes");
+            .map_err(|e| format!("the loop ends when the channel closes: {e:?}"))?;
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
             "no poll fires when shutdown arrives before the first interval"
         );
+        Ok(())
     }
 
     /// The loop calls `poll` once per elapsed interval and keeps going until the
@@ -206,7 +214,7 @@ mod tests {
     /// runner fired only one and the suite went red, so the repeated-poll
     /// behavior is pinned deterministically here instead.
     #[test]
-    fn poll_loop_polls_once_per_interval_until_the_channel_closes() {
+    fn poll_loop_polls_once_per_interval_until_the_channel_closes() -> Result<(), TestError> {
         let (tx, rx) = sync_channel::<()>(0);
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
@@ -223,15 +231,17 @@ mod tests {
             3,
             "poll runs once per interval, repeatedly, until the channel closes"
         );
+        Ok(())
     }
 
     /// A stop signal already waiting ends the loop before any poll -- the
     /// `Ok(())` arm of `wait_outcome`, exercised through the real loop rather
     /// than in isolation.
     #[test]
-    fn poll_loop_does_not_poll_when_a_signal_is_already_waiting() {
+    fn poll_loop_does_not_poll_when_a_signal_is_already_waiting() -> Result<(), TestError> {
         let (tx, rx) = sync_channel::<()>(1);
-        tx.send(()).expect("buffered send has room");
+        tx.send(())
+            .map_err(|e| format!("buffered send has room: {e:?}"))?;
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
         poll_loop(Duration::ZERO, &rx, move || {
@@ -245,12 +255,13 @@ mod tests {
             0,
             "a pending stop signal ends the loop before the first poll"
         );
+        Ok(())
     }
 
     /// A channel closed before the loop starts ends it before any poll -- the
     /// `Disconnected` arm, through the real loop.
     #[test]
-    fn poll_loop_does_not_poll_when_the_channel_is_already_closed() {
+    fn poll_loop_does_not_poll_when_the_channel_is_already_closed() -> Result<(), TestError> {
         let (tx, rx) = sync_channel::<()>(0);
         drop(tx);
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
@@ -263,5 +274,6 @@ mod tests {
             0,
             "a closed channel ends the loop before the first poll"
         );
+        Ok(())
     }
 }
