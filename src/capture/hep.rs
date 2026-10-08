@@ -5117,15 +5117,29 @@ mod tests {
     /// **A collector that goes away counts as a `connect` failure** once the
     /// sender tries to dial it again.
     ///
-    /// The port stays BOUND and not listening, held by `socket2`, so the
-    /// redial is refused on the spot and no other test's listener can take
-    /// the number in between: a refused connection must be this sender's
-    /// own collector refusing, not a race.
+    /// A second socket binds the collector's port with `SO_REUSEPORT` while
+    /// the collector is still listening, and keeps it bound and not listening
+    /// after the collector closes. The port is never free, so the redial is
+    /// refused on the spot and no other test's listener can take the number
+    /// in between: a refused connection must be this sender's own collector
+    /// refusing, not a race.
     #[test]
     fn a_refused_reconnect_counts_as_a_connect_failure() -> Result<(), TestError> {
         use crate::capture::hep_export::ExportFailure;
-        let collector = std::net::TcpListener::bind("127.0.0.1:0")
+        let reuse_port_socket = || -> Result<socket2::Socket, TestError> {
+            let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                .map_err(|e| format!("socket: {e:?}"))?;
+            socket
+                .set_reuse_port(true)
+                .map_err(|e| format!("reuse port: {e:?}"))?;
+            Ok(socket)
+        };
+        let listening = reuse_port_socket()?;
+        listening
+            .bind(&std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
             .map_err(|e| format!("bind collector: {e:?}"))?;
+        listening.listen(16).map_err(|e| format!("listen: {e:?}"))?;
+        let collector = std::net::TcpListener::from(listening);
         let addr = collector
             .local_addr()
             .map_err(|e| format!("collector addr: {e:?}"))?;
@@ -5140,15 +5154,19 @@ mod tests {
         .map_err(|e| format!("connect: {e:?}"))?;
         send_one(&sender)
             .map_err(|e| format!("the first packet crosses the live connection: {e:?}"))?;
-        drop(accept_within(&collector, "the first connection")?);
-        drop(collector);
-
-        let hold = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
-            .map_err(|e| format!("socket: {e:?}"))?;
-        hold.set_reuse_address(true)
-            .map_err(|e| format!("reuse: {e:?}"))?;
+        let first = accept_within(&collector, "the first connection")?;
+        let hold = reuse_port_socket()?;
         hold.bind(&addr.into())
             .map_err(|e| format!("hold the port, not listening: {e:?}"))?;
+        drop(first);
+        drop(collector);
+
+        let intruder = std::net::TcpListener::bind(addr);
+        assert!(
+            matches!(&intruder, Err(e) if e.kind() == std::io::ErrorKind::AddrInUse),
+            "no other socket may bind the collector's port between the two phases: {intruder:?}"
+        );
+        drop(intruder);
 
         let counters = sender.counters();
         assert!(
