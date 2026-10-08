@@ -91,6 +91,11 @@ jobs:
       - name: Install the pinned eBPF nightly
         run: (cd bpf && rustup toolchain install --profile minimal && rustc --version) && bpf-linker --version
 
+      # Deliberately NOT ./.github/actions/runner-target, which the other
+      # self-hosted jobs use to keep a warm target directory between runs. This
+      # job's point is two builds in fresh trees under runner.temp; a warm
+      # directory would let the second build reuse the first's artifacts.
+      # The runner-target workflow-shape test holds this exemption by name.
       - name: Build twice and compare
         env:
           WORK: ${{ runner.temp }}/reproducible

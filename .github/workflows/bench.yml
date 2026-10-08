@@ -53,18 +53,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
 
+      # Keep the build outside the workspace, per runner, so the release build
+      # is incremental across nights instead of starting from nothing after
+      # checkout's clean. See the action for the location and the size cap.
+      - uses: ./.github/actions/runner-target
+
       - name: Build the release binary
         # Release, not debug: a debug build measures the absence of
         # optimization, and the baseline was recorded from a release build.
         run: cargo build --features full --release
 
       - name: Measure against the committed baseline
-        run: bench/regression-gate.sh target/release/sipnab
+        run: bench/regression-gate.sh "${CARGO_TARGET_DIR:-target}/release/sipnab"
 
       - name: Record what was measured
         if: always()
         run: |
-          echo "Baseline and rationale: bench/baseline.json" >> "$GITHUB_STEP_SUMMARY"
-          echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          cat bench/baseline.json >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Baseline and rationale: bench/baseline.json"
+            echo '```json'
+            cat bench/baseline.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

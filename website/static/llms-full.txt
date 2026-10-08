@@ -44602,6 +44602,24 @@ minutes rather than a hosted queue, and the hook no longer repeats it on every
 push. The script still runs it by hand, and pre-push keeps the reduced
 combinations.
 
+The self-hosted jobs keep their builds between runs. `actions/checkout`
+deletes untracked files at the start of every job (`clean: true`, which runs
+`git clean -ffdx`), and an in-workspace `target/` is untracked, so until
+2026-10-08 every leg recompiled 279 to 701 crates from nothing. The clean
+stays, because several gates read the disk and must not see another branch's
+leftovers. The build directory moved instead:
+[`.github/actions/runner-target`](../../.github/actions/runner-target/action.yml)
+sets `CARGO_TARGET_DIR` to `$HOME/.cache/sipnab-ci/<runner name>/target`,
+outside the workspace and one per runner, because cargo locks its build
+directory and four runners on one directory would build one at a time. Before
+each build,
+[`scripts/ci-target-cap.sh`](../../scripts/ci-target-cap.sh) removes that
+directory when it is over 64 GiB. The action's header gives the measurements
+behind the number. The Features job, `bench.yml` and `self-hosted-smoke.yml`
+use it. `reproducible.yml` does not: it exists to build twice in fresh trees.
+[`tests/ci_runner_target_test.rs`](../../tests/ci_runner_target_test.rs) holds
+both the use and that exemption, and drives the cap script.
+
 [`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&

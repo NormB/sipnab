@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Persistent per-runner target directory
+description: >-
+  On a self-hosted runner, point CARGO_TARGET_DIR at a directory outside the
+  workspace that belongs to this runner alone, after bounding its size. Does
+  nothing on a GitHub-hosted runner.
+
+# WHY THIS EXISTS
+#
+# The self-hosted runners are persistent: the same runner processes take job
+# after job on one machine. Their builds were not. actions/checkout's default
+# `clean: true` runs `git clean -ffdx`, and target/ is untracked, so every job
+# began with `Removing target/` and rebuilt from nothing. Measured on
+# 2026-10-08 over one push's feature matrix: 279 to 701 crates compiled per
+# leg, one to three minutes of cargo per leg, eighteen legs.
+#
+# The clean stays: a job must not read untracked leftovers from another
+# branch, because several gates read the disk rather than git. The build
+# directory moves out of the workspace instead.
+#
+# WHERE: $HOME/.cache/sipnab-ci/<runner name>/target.
+# - Outside the workspace, so the checkout clean does not reach it.
+# - Outside the runner's own installation directory, so it does not depend on
+#   where a runner is installed and survives re-registering a runner.
+# - Under ~/.cache, the conventional place for data that can be regenerated:
+#   deleting it costs one cold build and nothing else.
+# - One directory per runner name. Cargo locks its build directory, so the
+#   runners sharing one directory would run their builds one at a time.
+#
+# THE CAP: 64 GiB per runner, checked before every build by
+# scripts/ci-target-cap.sh, which removes the directory when it is over.
+# Measured 2026-10-08, the in-workspace target directory each runner held
+# after one feature-matrix leg: 13.96 GiB (the leg that runs the full test
+# suite), 1.61, 1.19 and 0.65 GiB (check-only legs). A runner that holds all
+# eighteen legs at once is bounded above by 13.96 + 17 x 1.61 = 41.3 GiB; the
+# remaining 22.7 GiB under the cap is for bench.yml's release build, which
+# was not measured here, and for dependency rebuilds after a Cargo.lock
+# change. The check runs before the build, so a directory can pass the cap by
+# one job's growth (13.96 GiB, the largest leg measured) before the next job
+# removes it: at most 4 x (64 + 14) = 312 GiB across four runners, 28% of the
+# 1123 GiB free on the root filesystem that day.
+#
+# Not for reproducible.yml: its purpose is two builds in fresh trees, and a
+# warm directory would make that comparison meaningless.
+# tests/ci_runner_target_test.rs holds both the use and that exemption.
+runs:
+  using: composite
+  steps:
+    - name: Bound and select the per-runner target directory
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        set -euo pipefail
+        CARGO_TARGET_DIR="$HOME/.cache/sipnab-ci/$RUNNER_NAME/target"
+        bash "$GITHUB_WORKSPACE/scripts/ci-target-cap.sh" "$CARGO_TARGET_DIR" 64G
+        echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
