@@ -4,6 +4,11 @@
 //!
 //! Shared across modules, and only compiled in test builds.
 
+use parking_lot::Mutex;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
 /// Build raw SIP bytes from a request/status line, header lines, and an optional body.
 ///
 /// Each header line gets `\r\n` appended; the blank line separator between
@@ -194,6 +199,93 @@ pub fn capture_logs(level: tracing::Level, f: impl FnOnce()) -> String {
     });
     let bytes = buf.0.lock().clone();
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// A deterministic pause inside a capture read, for tests.
+///
+/// Used by the `find_in_captures` sweep and by the capture comparison.
+///
+/// The reader asks its stop check before every packet; this counts those
+/// looks and, on the chosen one, records that the reader reached it and waits
+/// until the test releases it. A test therefore knows the read is held mid-file
+/// without sleeping and hoping. It also carries a clock offset the job adds to
+/// its elapsed time, so a test can move a sweep past its deadline without
+/// waiting one out. The wait is bounded by [`TestHold::LIVENESS`], so a test
+/// that forgets to release cannot leave a thread behind.
+#[derive(Debug)]
+pub struct TestHold {
+    /// The look to stop at, counted from 1.
+    at: u64,
+    /// Looks so far.
+    looks: AtomicU64,
+    /// Milliseconds added to the job's elapsed time.
+    skew_ms: AtomicU64,
+    /// (reached, released).
+    state: Mutex<(bool, bool)>,
+    /// Signals both transitions.
+    changed: parking_lot::Condvar,
+}
+
+impl TestHold {
+    /// The longest a hold waits for its release, and a test for its arrival.
+    /// A liveness bound, not a timing assumption: the paths it bounds take
+    /// milliseconds, and it only expires when something is stuck.
+    pub const LIVENESS: Duration = Duration::from_secs(30);
+
+    /// A hold at the reader's `at`-th look, counted from 1.
+    pub fn at_look(at: u64) -> Arc<Self> {
+        Arc::new(Self {
+            at,
+            looks: AtomicU64::new(0),
+            skew_ms: AtomicU64::new(0),
+            state: Mutex::new((false, false)),
+            changed: parking_lot::Condvar::new(),
+        })
+    }
+
+    /// One look by the reader. Blocks on the chosen look until released.
+    pub fn look(&self) {
+        if self.looks.fetch_add(1, Ordering::Relaxed) + 1 != self.at {
+            return;
+        }
+        let mut state = self.state.lock();
+        state.0 = true;
+        self.changed.notify_all();
+        let until = Instant::now() + Self::LIVENESS;
+        while !state.1 {
+            if self.changed.wait_until(&mut state, until).timed_out() {
+                break;
+            }
+        }
+    }
+
+    /// Wait until the reader is held, up to [`Self::LIVENESS`]. True when it is.
+    pub fn wait_reached(&self) -> bool {
+        let mut state = self.state.lock();
+        let until = Instant::now() + Self::LIVENESS;
+        while !state.0 {
+            if self.changed.wait_until(&mut state, until).timed_out() {
+                break;
+            }
+        }
+        state.0
+    }
+
+    /// Move the held job's clock forward by `ms`.
+    pub fn advance_clock_ms(&self, ms: u64) {
+        self.skew_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+
+    /// The offset [`Self::advance_clock_ms`] added.
+    pub fn clock_skew_ms(&self) -> u64 {
+        self.skew_ms.load(Ordering::Relaxed)
+    }
+
+    /// Let the held reader go on.
+    pub fn release(&self) {
+        self.state.lock().1 = true;
+        self.changed.notify_all();
+    }
 }
 
 #[cfg(all(test, feature = "native"))]
