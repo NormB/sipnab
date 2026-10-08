@@ -264,7 +264,7 @@ from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
 Two details soften this and one sharpens it. The HEP v1 header that `parse_hep_v12`
-([`src/capture/hep.rs:1393`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1393)) reads has no time field, so the listener stamps local
+([`src/capture/hep.rs:1400`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1400)) reads has no time field, so the listener stamps local
 receive time, and a v3 packet without a `TS_SEC` chunk is stamped the same way — a
 v1 mirror therefore has *one* clock, not two. A v2 packet carries the sender's time
 in its time header, as v3 does. And when the skew runs the wrong way,

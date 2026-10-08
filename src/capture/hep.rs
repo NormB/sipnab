@@ -1349,7 +1349,7 @@ fn hep_carried_time(sec: u32, usec: u32) -> Option<DateTime<Utc>> {
 /// ```text
 /// offset  size  field
 ///  0       1    version (1 or 2)
-///  1       1    header length: 8 + the address block, never the time header
+///  1       1    header length: not read (see below)
 ///  2       1    address family: 2 (AF_INET) or 10 (AF_INET6)
 ///  3       1    IP protocol (6 TCP, 17 UDP, 22 and 50 as proxy tracers use)
 ///  4       2    source port, big-endian
@@ -1370,6 +1370,14 @@ fn hep_carried_time(sec: u32, usec: u32) -> Option<DateTime<Utc>> {
 /// struct, which is little-endian on the hosts it runs on. `captid` is
 /// copied in native order by every sender, little-endian on those hosts.
 ///
+/// The header length byte is not read: the header size follows from the
+/// family byte alone, as in Kamailio's `hepv2_received`, which never reads
+/// `hp_l`. Senders disagree on it. captagent and Kamailio's `siptrace` write 8
+/// plus the address block, but sngrep's `capture_eep_send_v2`
+/// (`src/capture_eep.c`) computes the total datagram length and writes
+/// `hdr.hp_l = htons(tlen);` into the 8-bit field, which keeps one byte of the
+/// total length. Checking it would refuse every packet sngrep sends.
+///
 /// Version 1 has no time header: `timestamp` and `capture_id` are `None`,
 /// and the consumer supplies the time. Neither version has a protocol-type
 /// or auth-key field, so `protocol` is SIP and there is no `auth_key`. The
@@ -1387,9 +1395,8 @@ fn hep_carried_time(sec: u32, usec: u32) -> Option<DateTime<Utc>> {
 /// # Errors
 ///
 /// Returns an error when the packet is shorter than the fixed header, the
-/// family is neither IPv4 nor IPv6, the header length disagrees with the
-/// family's address block, or the packet ends inside the address block or
-/// (version 2) the time header.
+/// family is neither IPv4 nor IPv6, or the packet ends inside the address
+/// block or (version 2) the time header.
 fn parse_hep_v12(data: &[u8]) -> Result<HepPacket> {
     let version = data.first().copied().context("HEP v1/v2 packet is empty")?;
     ensure!(
@@ -1397,7 +1404,6 @@ fn parse_hep_v12(data: &[u8]) -> Result<HepPacket> {
         "HEP v{version} packet too short: {} bytes, the fixed header is {HEP12_FIXED_HEADER}",
         data.len(),
     );
-    let declared_len = usize::from(data[1]);
     let family = data[2];
     let ip_protocol = data[3];
     let src_port = u16::from_be_bytes([data[4], data[5]]);
@@ -1412,11 +1418,6 @@ fn parse_hep_v12(data: &[u8]) -> Result<HepPacket> {
         ),
     };
     let header_len = HEP12_FIXED_HEADER + block_len;
-    ensure!(
-        declared_len == header_len,
-        "HEP v{version} header length {declared_len} disagrees with family {family}, \
-         whose header is {header_len} bytes",
-    );
     ensure!(
         data.len() >= header_len,
         "HEP v{version} packet truncated: {} bytes, the header with its addresses is {header_len}",
@@ -7141,41 +7142,132 @@ mod tests {
         Ok(())
     }
 
-    /// A header length that disagrees with the family's address block is
-    /// refused: 16 and 40 are the only values a v1 or v2 header can hold.
+    /// A HEP v2 datagram written as sngrep's `capture_eep_send_v2`
+    /// (`src/capture_eep.c`) writes it on a little-endian host. It is the
+    /// captagent layout except for the header length byte: sngrep computes
+    /// the total datagram length and stores `hdr.hp_l = htons(tlen);` into the
+    /// 8-bit field, which keeps the low byte of the byte-swapped value, the
+    /// HIGH byte of the total length.
+    fn sngrep_hep_v2(
+        (src, dst): (&str, &str),
+        ip_protocol: u8,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
+        let src: std::net::SocketAddr = src.parse()?;
+        let dst: std::net::SocketAddr = dst.parse()?;
+        let (family, mut addrs) = match (src.ip(), dst.ip()) {
+            (IpAddr::V4(s), IpAddr::V4(d)) => (2u8, [s.octets(), d.octets()].concat()),
+            (IpAddr::V6(s), IpAddr::V6(d)) => (10u8, [s.octets(), d.octets()].concat()),
+            _ => return Err("one family".into()),
+        };
+        // tlen = sizeof(struct hep_hdr) + sizeof(struct hep_timehdr), plus the
+        // address block, plus the payload.
+        let tlen = u16::try_from(8 + 12 + addrs.len() + payload.len())?;
+        let hp_l = tlen.to_be_bytes()[0];
+        let mut d = vec![2u8, hp_l, family, ip_protocol];
+        d.extend_from_slice(&src.port().to_be_bytes());
+        d.extend_from_slice(&dst.port().to_be_bytes());
+        d.append(&mut addrs);
+        d.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+        d.extend_from_slice(&123_456u32.to_le_bytes());
+        d.extend_from_slice(&0x0102u16.to_le_bytes());
+        d.extend_from_slice(&[0xAA, 0xAA]);
+        d.extend_from_slice(payload);
+        assert_eq!(d.len(), usize::from(tlen));
+        Ok(d)
+    }
+
+    /// sngrep's HEP v2 packets parse, IPv4 and IPv6, although their header
+    /// length byte holds the high byte of the total length rather than the
+    /// header length.
     #[test]
-    fn hep12_header_length_must_match_the_family() -> Result<(), TestError> {
+    fn sngrep_hep_v2_packets_parse() -> Result<(), TestError> {
+        // Long enough that the total length's high byte is not zero.
+        let mut payload = b"INVITE sip:bob@example.com SIP/2.0\r\nX-Pad: ".to_vec();
+        payload.resize(700, b'a');
+        payload.extend_from_slice(b"\r\n\r\n");
+        for (src, dst, proto, hp_l) in [
+            ("192.0.2.10:5060", "198.51.100.20:5080", 17u8, 2u8),
+            ("[2001:db8::10]:5062", "[2001:db8:1::20]:5064", 6, 2),
+        ] {
+            let data = sngrep_hep_v2((src, dst), proto, &payload)?;
+            assert_eq!(
+                data[1],
+                hp_l,
+                "sngrep's byte for a {}-byte datagram",
+                data.len()
+            );
+            let hep = parse_hep(&data).map_err(|e| format!("{src}: {e}"))?;
+            let src: std::net::SocketAddr = src.parse()?;
+            let dst: std::net::SocketAddr = dst.parse()?;
+            assert_eq!(hep.version, 2);
+            assert_eq!(hep.src_addr, src.ip());
+            assert_eq!(hep.dst_addr, dst.ip());
+            assert_eq!(hep.src_port, src.port());
+            assert_eq!(hep.dst_port, dst.port());
+            assert_eq!(hep.ip_protocol, proto);
+            assert_eq!(hep.protocol, HepProtocol::Sip);
+            assert_eq!(hep.timestamp, Some(ref_time()?));
+            assert_eq!(hep.capture_id, Some(0x0102));
+            assert_eq!(hep.payload, payload);
+        }
+        Ok(())
+    }
+
+    /// The header length byte is not consulted: with a valid family and
+    /// enough bytes, every value of it parses to the same packet, because
+    /// sngrep writes the high byte of the total length there and Kamailio's
+    /// receiver never reads it.
+    #[test]
+    fn hep12_header_length_byte_is_not_consulted() -> Result<(), TestError> {
         let v4 = hep12(
             2,
             ("192.0.2.1:5060", "192.0.2.2:5060"),
             17,
             Some(REF_TIME),
-            b"x",
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
         )?;
+        let v6 = hep12(
+            1,
+            ("[2001:db8::1]:5060", "[2001:db8::2]:5060"),
+            6,
+            None,
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        )?;
+        for base in [v4, v6] {
+            let reference = parse_hep(&base)?;
+            for hp_l in 0..=u8::MAX {
+                let mut data = base.clone();
+                data[1] = hp_l;
+                let hep = parse_hep(&data).map_err(|e| format!("hp_l {hp_l}: {e}"))?;
+                assert_eq!(hep.src_addr, reference.src_addr, "hp_l {hp_l}");
+                assert_eq!(hep.dst_addr, reference.dst_addr, "hp_l {hp_l}");
+                assert_eq!(hep.timestamp, reference.timestamp, "hp_l {hp_l}");
+                assert_eq!(hep.payload, reference.payload, "hp_l {hp_l}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A packet that ends inside its family's address block is refused by a
+    /// message that says so, whatever its header length byte says.
+    #[test]
+    fn hep12_packet_too_short_for_its_addresses_is_refused() -> Result<(), TestError> {
+        let v4 = hep12(1, ("192.0.2.1:5060", "192.0.2.2:5060"), 17, None, b"")?;
         let v6 = hep12(
             1,
             ("[2001:db8::1]:5060", "[2001:db8::2]:5060"),
             17,
             None,
-            b"x",
+            b"",
         )?;
-        for (mut data, bad) in [
-            (v4.clone(), 40u8),
-            (v4.clone(), 28),
-            (v4.clone(), 14),
-            (v4, 0),
-            (v6.clone(), 16),
-            (v6.clone(), 52),
-            (v6, 255),
-        ] {
-            data[1] = bad;
+        for (full, cut) in [(&v4, 15usize), (&v4, 8), (&v6, 39), (&v6, 16)] {
+            let mut data = full[..cut].to_vec();
+            data[1] = 0;
             let err = parse_hep(&data)
                 .err()
-                .ok_or_else(|| format!("header length {bad} must be refused"))?;
-            assert!(
-                err.to_string().contains("header length"),
-                "header length {bad}: {err}"
-            );
+                .ok_or_else(|| format!("{cut} of {} bytes must be refused", full.len()))?;
+            assert!(err.to_string().contains("truncated"), "{cut}: {err}");
         }
         Ok(())
     }

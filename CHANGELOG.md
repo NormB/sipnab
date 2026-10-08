@@ -27,9 +27,13 @@ entry that carries them.
   and `tv_usec`, little-endian, as Kamailio reads them) and the capture ID. A
   version 2 message takes the time its packet carries; a version 1 message,
   which carries none, takes the time sipnab received or sniffed it. The
-  transport comes from the IP protocol byte by the rule HEP v3 uses. sipnab
-  refuses a packet whose family is neither IPv4 nor IPv6, or whose header
-  length disagrees with its family, with a message that names the field.
+  transport comes from the IP protocol byte by the rule HEP v3 uses. The
+  header size follows from the family byte alone, as in Kamailio's receiver,
+  and sipnab does not read the header length byte, so it now accepts the HEP
+  v2 packets `sngrep` sends, which carry one byte of the total datagram length
+  there. sipnab refuses a packet whose family is neither IPv4 nor IPv6, or
+  that ends inside its addresses or time header, with a message that names
+  the field.
   Affected: any sender configured for HEP version 1 or 2, read with
   `--hep-listen` or `--hep-parse`. The change leaves HEP v3 as it was.
 
