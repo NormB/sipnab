@@ -968,9 +968,14 @@ mod tests {
                 .ok_or("a flag is repeated")?;
             assert!(err.contains(flag), "the refusal must name {flag}: {err}");
         }
+        // Given a value, so the refusal is for the unknown name and not for
+        // a flag left without one.
         let mut unknown = full.clone();
-        unknown.push("--kill-scanner".to_string());
-        assert!(WorkerArgs::parse(&unknown).is_err());
+        unknown.extend(["--kill-scanner".to_string(), "on".to_string()]);
+        let err = WorkerArgs::parse(&unknown)
+            .err()
+            .ok_or("an unknown flag is refused")?;
+        assert_eq!(err, "unknown argument \"--kill-scanner\"");
 
         let mut dangling = full.clone();
         dangling.push("--rate-limit".to_string());
@@ -1061,6 +1066,184 @@ mod tests {
             caps_all_clear(unreadable).is_err(),
             "a status with no CapEff line proves nothing about the effective set"
         );
+        Ok(())
+    }
+
+    /// A kernel that reports no ambient set is still clear, while a set whose
+    /// value is not hexadecimal is not.
+    ///
+    /// The ambient line is documented as optional ("where the kernel reports
+    /// one"): requiring it would refuse to start every worker on a kernel
+    /// that predates ambient capabilities. A garbled value is the opposite
+    /// case: it says nothing about what is held, so it must not read as zero.
+    #[test]
+    fn a_missing_ambient_set_is_clear_and_an_unreadable_set_is_not() -> Result<(), TestError> {
+        let no_ambient = "Name:\tsipnab\nCapInh:\t0000000000000000\n\
+                          CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n";
+        assert_eq!(caps_all_clear(no_ambient), Ok(()));
+
+        let garbled = no_ambient.replace("CapEff:\t0000000000000000", "CapEff:\tzz");
+        let err = caps_all_clear(&garbled)
+            .err()
+            .ok_or("a garbled set proves nothing")?;
+        assert!(
+            err.starts_with("CapEff \"zz\" is unreadable"),
+            "the refusal names the set and its value: {err}"
+        );
+        Ok(())
+    }
+
+    /// One `KillRequest::SendResponse` to a documentation-range address.
+    fn a_request(host: u8) -> KillRequest {
+        KillRequest::SendResponse {
+            dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, host)),
+            dst_port: 5060,
+            src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 200)),
+            src_port: 5060,
+            response_bytes: b"SIP/2.0 200 OK\r\n\r\n".to_vec(),
+        }
+    }
+
+    /// A well-formed four-byte length followed by a body that is no message.
+    const GARBAGE_FRAME: [u8; 7] = [0, 0, 0, 3, b'z', b'z', b'z'];
+
+    /// Every response frame in `bytes`.
+    fn responses_in(bytes: Vec<u8>) -> Result<Vec<KillResponse>, TestError> {
+        let mut replies = std::io::Cursor::new(bytes);
+        let mut seen = Vec::new();
+        while let Some(reply) = wire::read_frame::<_, KillResponse>(&mut replies)
+            .map_err(|e| format!("well framed: {e:?}"))?
+        {
+            seen.push(reply);
+        }
+        Ok(seen)
+    }
+
+    /// A request stream that turns unreadable stops the worker: nothing after
+    /// the corrupt frame is acted on.
+    ///
+    /// `pump_requests` stops at the first unreadable request because, once a
+    /// frame fails, nothing that follows on the stream can be trusted to be
+    /// what the parent sent. The request after it would be readable here,
+    /// which is what makes stopping observable.
+    #[test]
+    fn a_corrupt_request_stops_the_worker_before_anything_after_it() -> Result<(), TestError> {
+        let mut input = Vec::new();
+        wire::write_frame(&mut input, &a_request(1)).map_err(|e| format!("encode: {e:?}"))?;
+        input.extend_from_slice(&GARBAGE_FRAME);
+        wire::write_frame(&mut input, &a_request(2)).map_err(|e| format!("encode: {e:?}"))?;
+
+        let out = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        /// Collects what the worker writes.
+        struct Shared(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl Write for Shared {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serve(
+            std::io::Cursor::new(input),
+            Shared(std::sync::Arc::clone(&out)),
+            u32::MAX,
+            SendSockets::default(),
+        )
+        .map_err(|e| format!("serve returns: {e:?}"))?;
+
+        let seen = responses_in(out.lock().clone())?;
+        assert_eq!(
+            seen.len(),
+            1,
+            "the request before the corrupt frame is answered and the one after \
+             it is not: {seen:?}"
+        );
+        Ok(())
+    }
+
+    /// A response pipe that breaks is not written to again, and the worker
+    /// still returns.
+    ///
+    /// Once the parent's end is gone no outcome can be booked, so the writer
+    /// stops at the first failed write; the worker then finds its outcome
+    /// channel closed and exits instead of answering requests nobody hears.
+    #[test]
+    fn a_broken_response_pipe_is_written_once_and_the_worker_returns() -> Result<(), TestError> {
+        /// A pipe whose reader is gone: every write fails, and is counted.
+        struct Broken(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut input = Vec::new();
+        for host in 1..=5 {
+            wire::write_frame(&mut input, &a_request(host))
+                .map_err(|e| format!("encode: {e:?}"))?;
+        }
+        let writes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        serve(
+            std::io::Cursor::new(input),
+            Broken(std::sync::Arc::clone(&writes)),
+            u32::MAX,
+            SendSockets::default(),
+        )
+        .map_err(|e| format!("serve returns: {e:?}"))?;
+        assert_eq!(
+            writes.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "one failed write, and no write after it"
+        );
+        Ok(())
+    }
+
+    /// The refusing worker reports a broken response pipe or a corrupt
+    /// request as an error, never as the orderly end `Ok` stands for.
+    ///
+    /// `worker_main` turns that error into exit code 5; an `Ok` here would
+    /// exit 0 and read as a clean shutdown.
+    #[test]
+    fn a_refusing_worker_reports_a_broken_pipe_or_a_corrupt_request() -> Result<(), TestError> {
+        /// A pipe whose reader is gone.
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut input = Vec::new();
+        wire::write_frame(&mut input, &a_request(1)).map_err(|e| format!("encode: {e:?}"))?;
+        let err = refuse_all(std::io::Cursor::new(input), Broken, "no descriptor here")
+            .err()
+            .ok_or("a refusal that cannot be delivered is an error")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+
+        let err = refuse_all(
+            std::io::Cursor::new(GARBAGE_FRAME.to_vec()),
+            Vec::new(),
+            "no descriptor here",
+        )
+        .err()
+        .ok_or("a corrupt request is an error")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        Ok(())
+    }
+
+    /// How serving ended maps to the worker's exit code: 0 for an orderly
+    /// end, 5 for an error.
+    #[test]
+    fn serving_ends_in_exit_code_zero_or_five() -> Result<(), TestError> {
+        assert_eq!(exit_code(Ok(())), 0);
+        assert_eq!(exit_code(Err(std::io::ErrorKind::BrokenPipe.into())), 5);
         Ok(())
     }
 

@@ -358,6 +358,94 @@ fn the_worker_exit_code_names_the_step_that_stopped_it() -> Result<(), TestError
     Ok(())
 }
 
+/// A request stream that turns unreadable ends the worker with exit code 5,
+/// never with the 0 of an orderly end.
+///
+/// The frame below has a well-formed length and a body that is no request:
+/// what a misdirected descriptor or a corrupted pipe would deliver. A worker
+/// that exited 0 here would make that failure indistinguishable from a
+/// shutdown.
+#[test]
+fn a_corrupt_request_stream_ends_the_worker_with_exit_code_five() -> Result<(), TestError> {
+    use std::io::Write;
+    let mut worker = Reaped(run_worker_directly(&[
+        "--rate-limit",
+        "10",
+        "--send-fds",
+        "none",
+        "--run-as",
+        "nobody",
+        "--log-level",
+        "error",
+    ])?);
+    let mut to_worker = worker.0.stdin.take().ok_or("stdin")?;
+    to_worker.write_all(&[0, 0, 0, 3, b'z', b'z', b'z'])?;
+    drop(to_worker);
+    let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
+        .ok_or("a worker reading a corrupt request must exit")?;
+    assert_eq!(status.code(), Some(5), "a corrupt request: {status:?}");
+    Ok(())
+}
+
+/// The worker's ready line states what it holds where it can be checked: no
+/// send descriptor, only stdio open, and its environment by NAME only.
+///
+/// The module documentation promises the worker "inherits stdio and its send
+/// descriptors and nothing else", and that the ready line prints this rather
+/// than asserting it. Values are left out because a value could be a secret;
+/// the marker variable below carries a value that must not appear.
+#[test]
+fn the_ready_line_names_open_descriptors_and_environment_names_only() -> Result<(), TestError> {
+    let marker_value = "marker-value-that-must-not-be-logged";
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    command
+        .arg(KILL_WORKER_ARG)
+        .args([
+            "--rate-limit",
+            "10",
+            "--send-fds",
+            "none",
+            "--run-as",
+            "nobody",
+            "--log-level",
+            "info",
+        ])
+        .env_clear()
+        .env("SIPNAB_READY_LINE_MARKER", marker_value)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // An instrumented build's worker writes its coverage through this; it is
+    // on the worker's own allowlist for that reason.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    let output = command.output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "end of stdin is an orderly end"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let ready = stderr
+        .lines()
+        .find(|l| l.contains(" ready: "))
+        .ok_or_else(|| format!("no ready line in: {stderr}"))?;
+    assert!(
+        ready.contains("10 responses/s, send descriptors [], open descriptors [0, 1, 2],"),
+        "only stdio is open and nothing is held: {ready}"
+    );
+    assert!(
+        ready.contains("SIPNAB_READY_LINE_MARKER"),
+        "the environment is listed by name: {ready}"
+    );
+    assert!(
+        !stderr.contains(marker_value),
+        "no environment value is logged: {stderr}"
+    );
+    Ok(())
+}
+
 /// A descriptor of the wrong kind at a promised slot stops the worker at
 /// startup: wrapping a stream socket as the UDP one would write kill
 /// responses into whatever connection it belongs to.

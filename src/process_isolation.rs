@@ -3833,4 +3833,166 @@ mod tests {
         );
         Ok(())
     }
+
+    /// The one-letter scheduler state of `pid`, from `/proc/<pid>/stat`.
+    #[cfg(target_os = "linux")]
+    fn proc_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // The state follows the parenthesized command name.
+        stat.rsplit_once(") ")?.1.chars().next()
+    }
+
+    /// A worker that answers with something that is not a response frame is
+    /// killed, and the defense is reported as disabled with every request it
+    /// held counted as lost.
+    ///
+    /// `read_outcomes` documents why: a worker that speaks garbage is broken,
+    /// and one left running would go on sending without being heard. A
+    /// stand-in process holds the place of the worker so the kill can be read
+    /// from the kernel: killed and not yet reaped, it is a zombie (`Z`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_worker_that_answers_garbage_is_killed_and_its_requests_are_lost() -> Result<(), TestError>
+    {
+        use std::io::Write;
+        let (_req_r, req_w) = std::io::pipe().map_err(|e| format!("request pipe: {e:?}"))?;
+        let (resp_r, mut resp_w) = std::io::pipe().map_err(|e| format!("response pipe: {e:?}"))?;
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .map_err(|e| format!("spawn a stand-in worker process: {e:?}"))?;
+        let mut handle = ScannerKillHandle::attach(req_w, resp_r, Some(child), Vec::new())
+            .map_err(|e| format!("attach: {e:?}"))?;
+        let pid = handle.worker_pid().ok_or("the stand-in has a pid")?;
+
+        handle
+            .send_kill(request_to(test_net_v4(40), 5060, sample_response()))
+            .map_err(|e| format!("an empty queue has room: {e:?}"))?;
+        // A well-formed length followed by a body that is no response.
+        resp_w
+            .write_all(&[0, 0, 0, 3, b'z', b'z', b'z'])
+            .map_err(|e| format!("write the garbage frame: {e:?}"))?;
+
+        within(std::time::Duration::from_secs(10), || {
+            handle.defense_disabled().then_some(())
+        })
+        .ok_or("an unreadable response must disable the defense")?;
+        within(std::time::Duration::from_secs(10), || {
+            (proc_state(pid) == Some('Z')).then_some(())
+        })
+        .ok_or_else(|| {
+            format!(
+                "the worker that sent garbage must be killed; its state is {:?}",
+                proc_state(pid)
+            )
+        })?;
+        assert!(!handle.is_alive(), "a killed worker is not alive");
+        let counts = handle.counts();
+        assert_eq!(
+            (
+                counts.accepted,
+                counts.outcomes(),
+                counts.lost_to_worker_exit
+            ),
+            (1, 0, 1),
+            "the request it held can never be answered: {counts:?}"
+        );
+        handle.shutdown();
+        assert_eq!(handle.worker_pid(), None, "shutdown reaps it");
+        Ok(())
+    }
+
+    /// A request offered after the forwarder has lost the worker's request
+    /// pipe is refused as `Disconnected`, is not counted as accepted, and
+    /// disables the defense.
+    ///
+    /// This is the case where the worker closed its request pipe while its
+    /// response pipe is still open, so the reader has not yet seen it go: the
+    /// queue's own disconnection is then the only evidence, and `send_kill`
+    /// must treat it exactly as the documented `Disconnected` error.
+    /// `Shutdown` requests are used to wait for the disconnection because they
+    /// are never counted as accepted (offers made before the forwarder runs
+    /// may find the queue full; those are counted as dropped, not accepted).
+    #[test]
+    fn a_request_offered_after_the_request_pipe_broke_is_refused_and_not_accepted()
+    -> Result<(), TestError> {
+        let (dropped_tx, dropped_rx) = crossbeam_channel::bounded::<()>(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+        let handle = handle_over_pipes(move |req, resp| {
+            drop(req);
+            let _ = dropped_tx.send(());
+            let _ = release_rx.recv();
+            drop(resp);
+            Ok(())
+        })?;
+        // Dropped before the handle, so the peer lets go before the handle's
+        // own drop joins the reader.
+        let _release = Release(release_tx);
+        dropped_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|e| format!("the peer closes its request pipe: {e:?}"))?;
+
+        handle
+            .send_kill(request_to(test_net_v4(41), 5060, sample_response()))
+            .map_err(|e| format!("the queue itself is still open: {e:?}"))?;
+        within(std::time::Duration::from_secs(10), || {
+            matches!(
+                handle.send_kill(KillRequest::Shutdown),
+                Err(TrySendError::Disconnected(_))
+            )
+            .then_some(())
+        })
+        .ok_or("the forwarder must stop once the request pipe is broken")?;
+
+        let refused = handle
+            .send_kill(request_to(test_net_v4(41), 5060, sample_response()))
+            .err()
+            .ok_or("no forwarder is left to take it")?;
+        assert!(
+            matches!(
+                refused,
+                TrySendError::Disconnected(KillRequest::SendResponse { .. })
+            ),
+            "the refused request comes back to the caller: {refused:?}"
+        );
+        assert!(handle.defense_disabled(), "the defense is reported as gone");
+        let counts = handle.counts();
+        assert_eq!(
+            counts.accepted, 1,
+            "only the request the queue took is accepted: {counts:?}"
+        );
+        Ok(())
+    }
+
+    /// A send the socket refuses is reported as an `Error` naming the
+    /// destination, and nothing reaches it.
+    ///
+    /// A datagram over the UDP payload limit is refused by the kernel at
+    /// `sendto` (`EMSGSIZE`), which is a failure of the send itself rather
+    /// than of the decision to send.
+    #[test]
+    fn a_send_the_socket_refuses_is_an_error_naming_the_destination() -> Result<(), TestError> {
+        let (listener, port) = loopback_listener()?;
+        let (mut worker, _tx, _rx) = socketless_worker(None, 10);
+        worker.sock_v4 = Some(udp_v4_sender()?);
+        let oversized = vec![b'x'; 70_000];
+        let outcome = worker.process_send(localhost_v4(), port, localhost_v4(), 5060, &oversized);
+        let KillResponse::Error { message } = outcome else {
+            return Err(format!("an oversized datagram cannot be sent, got {outcome:?}").into());
+        };
+        assert!(
+            message.starts_with(&format!("send to 127.0.0.1:{port} failed:")),
+            "{message}"
+        );
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("non-blocking: {e:?}"))?;
+        let mut buf = [0u8; 16];
+        let nothing = listener
+            .recv_from(&mut buf)
+            .err()
+            .ok_or("nothing may arrive from a refused send")?;
+        assert_eq!(nothing.kind(), std::io::ErrorKind::WouldBlock);
+        Ok(())
+    }
 }
