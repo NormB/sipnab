@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The MCP `find_in_captures` job bounds are operator settings.**
+  `--mcp-sweep-max-running` / `[limits] mcp_sweep_max_running` (default 4,
+  accepted 1 to 64) sets how many sweeps one server runs at once.
+  `--mcp-sweep-max-held-results` / `[limits] mcp_sweep_max_held_results`
+  (default 16, accepted 1 to 256) sets how many finished results wait for a
+  poll. `--mcp-sweep-result-retention-secs` /
+  `[limits] mcp_sweep_result_retention_secs` (default 600, accepted 1 to
+  43200, twelve hours) sets how long a finished result waits. Before this, the
+  source fixed the three at those defaults. The flag overrides the key. The refusal
+  of a sweep past the running bound reports the configured bound and names
+  its setting, and the refusal of an unknown job id reports the configured
+  retention and held bound and names both flags.
+
 ### Fixed
 
 - **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP

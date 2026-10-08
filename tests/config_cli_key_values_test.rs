@@ -829,6 +829,21 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "limits",
+        "mcp_sweep_max_held_results",
+        KeyKind::Int { lo: 1, hi: 256 },
+    ),
+    (
+        "limits",
+        "mcp_sweep_max_running",
+        KeyKind::Int { lo: 1, hi: 64 },
+    ),
+    (
+        "limits",
+        "mcp_sweep_result_retention_secs",
+        KeyKind::Int { lo: 1, hi: 43200 },
+    ),
+    (
+        "limits",
         "metrics_max_conn",
         KeyKind::Int {
             lo: 1,

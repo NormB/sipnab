@@ -465,6 +465,18 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("limits", "mcp_sweep_max_files", Merge::Override),
     ),
     (
+        "mcp-sweep-max-held-results",
+        Link::Key("limits", "mcp_sweep_max_held_results", Merge::Override),
+    ),
+    (
+        "mcp-sweep-max-running",
+        Link::Key("limits", "mcp_sweep_max_running", Merge::Override),
+    ),
+    (
+        "mcp-sweep-result-retention-secs",
+        Link::Key("limits", "mcp_sweep_result_retention_secs", Merge::Override),
+    ),
+    (
         "mcp-tls-cert",
         Link::Key("mcp", "tls_cert", Merge::Override),
     ),

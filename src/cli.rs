@@ -3490,6 +3490,63 @@ pub struct McpArgs {
     )]
     pub mcp_sweep_deadline_ms: Option<u64>,
 
+    /// `find_in_captures` sweeps one server runs at once (default 4, maximum
+    /// 64). Config: `[limits] mcp_sweep_max_running`.
+    ///
+    /// Each running sweep is an OS thread reading capture files. A start past
+    /// this many is refused, naming `find_in_captures_status` and
+    /// `cancel_find_in_captures`, rather than queued.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING`] and the maximum in
+    /// [`crate::config::MAX_MCP_SWEEP_MAX_RUNNING`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-sweep-max-running",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_MCP_SWEEP_MAX_RUNNING)
+    )]
+    pub mcp_sweep_max_running: Option<u64>,
+
+    /// Finished `find_in_captures` results one server holds for collection
+    /// (default 16, maximum 256). Config:
+    /// `[limits] mcp_sweep_max_held_results`.
+    ///
+    /// A result waits for its poll. Past this many finished results, the
+    /// result of the earliest-started sweep is dropped first.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS`] and the maximum in
+    /// [`crate::config::MAX_MCP_SWEEP_MAX_HELD_RESULTS`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-sweep-max-held-results",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_MCP_SWEEP_MAX_HELD_RESULTS)
+    )]
+    pub mcp_sweep_max_held_results: Option<u64>,
+
+    /// Seconds a finished `find_in_captures` result waits for its poll
+    /// (default 600, maximum 43200). Config:
+    /// `[limits] mcp_sweep_result_retention_secs`.
+    ///
+    /// Counted from the moment the sweep finished. After it, the job id is
+    /// unknown and a poll of it is refused.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS`] and the maximum in
+    /// [`crate::config::MAX_MCP_SWEEP_RESULT_RETENTION_SECS`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-sweep-result-retention-secs",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_MCP_SWEEP_RESULT_RETENTION_SECS)
+    )]
+    pub mcp_sweep_result_retention_secs: Option<u64>,
+
     /// Maximum MCP tool calls one peer may make per second (`0` = unlimited).
     ///
     /// The other half of `--mcp-max-concurrent`, and a different question:
@@ -4997,6 +5054,40 @@ impl Default for McpSweepLimits {
     }
 }
 
+/// The bounds on the `find_in_captures` jobs one MCP server holds: sweeps
+/// running at once, finished results waiting for collection, and how long
+/// one waits.
+///
+/// Resolved once per run by [`Cli::mcp_sweep_job_limits`] from
+/// `--mcp-sweep-max-running`, `--mcp-sweep-max-held-results` and
+/// `--mcp-sweep-result-retention-secs` and their `[limits]` keys, and carried
+/// to the MCP server as one value. Separate from [`McpSweepLimits`] because
+/// these bound the server's table of jobs, not one sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpSweepJobLimits {
+    /// Sweeps one server runs at once.
+    pub max_running: usize,
+    /// Finished results one server holds for collection at once.
+    pub max_held_results: usize,
+    /// Seconds a finished result waits for its poll, from the moment the
+    /// sweep finished.
+    pub result_retention_secs: u64,
+}
+
+impl Default for McpSweepJobLimits {
+    /// The shipped bounds, [`Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING`],
+    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS`] and
+    /// [`Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS`].
+    fn default() -> Self {
+        Self {
+            max_running: usize::try_from(Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING).unwrap_or(usize::MAX),
+            max_held_results: usize::try_from(Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS)
+                .unwrap_or(usize::MAX),
+            result_retention_secs: Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS,
+        }
+    }
+}
+
 impl McpSweepLimits {
     /// The limits one call runs under: each requested value clamped to the
     /// ceiling in `self`, and `0` or no request meaning the ceiling itself.
@@ -5059,6 +5150,33 @@ impl Cli {
     /// Lives here for the reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`]
     /// records.
     pub const DEFAULT_MCP_SWEEP_DEADLINE_MS: u64 = 30_000;
+    /// Default number of `find_in_captures` sweeps one server runs at once —
+    /// see [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// Each sweep is an OS thread reading capture files from one disk, so
+    /// sweeps past a handful compete for the same disk and finish no sooner
+    /// together than one after another. Four lets an agent run a few
+    /// questions side by side without letting a loop of calls start a thread
+    /// per call. Lives here for the reason
+    /// [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records.
+    pub const DEFAULT_MCP_SWEEP_MAX_RUNNING: u64 = 4;
+    /// Default number of finished `find_in_captures` results one server
+    /// holds for collection — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// An agent that never polls would otherwise leave one result behind per
+    /// sweep. Sixteen is four rounds of
+    /// [`Self::DEFAULT_MCP_SWEEP_MAX_RUNNING`]. Lives here for the reason
+    /// [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records.
+    pub const DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS: u64 = 16;
+    /// Default seconds a finished `find_in_captures` result waits for its
+    /// poll: ten minutes from the moment the sweep finished — see
+    /// [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// Long enough for an agent that started a sweep, did other work and came
+    /// back; short enough that results nobody collects do not outlive the
+    /// conversation that asked for them. Lives here for the reason
+    /// [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records.
+    pub const DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS: u64 = 600;
     /// Default color mode. `auto` means "color when stdout is a terminal".
     pub const DEFAULT_COLOR: &'static str = "auto";
     /// Default scanner-kill response code. `200 OK` is the conventional default: it
@@ -5303,6 +5421,37 @@ impl Cli {
                 .mcp_sweep_deadline_ms
                 .or(config.limits.mcp_sweep_deadline_ms)
                 .unwrap_or(Self::DEFAULT_MCP_SWEEP_DEADLINE_MS),
+        }
+    }
+
+    /// MCP sweep job bounds: `--mcp-sweep-max-running`,
+    /// `--mcp-sweep-max-held-results` and `--mcp-sweep-result-retention-secs`,
+    /// else `[limits] mcp_sweep_max_running`, `mcp_sweep_max_held_results` and
+    /// `mcp_sweep_result_retention_secs`, else the defaults. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    #[must_use]
+    pub fn mcp_sweep_job_limits(&self, config: &crate::config::Config) -> McpSweepJobLimits {
+        let running = self
+            .mcp_args
+            .mcp_sweep_max_running
+            .or(config.limits.mcp_sweep_max_running)
+            .unwrap_or(Self::DEFAULT_MCP_SWEEP_MAX_RUNNING);
+        let held = self
+            .mcp_args
+            .mcp_sweep_max_held_results
+            .or(config.limits.mcp_sweep_max_held_results)
+            .unwrap_or(Self::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS);
+        McpSweepJobLimits {
+            // Both are bounded by small maxima (`MAX_MCP_SWEEP_MAX_RUNNING`,
+            // `MAX_MCP_SWEEP_MAX_HELD_RESULTS`), so they fit `usize` on every
+            // target sipnab builds for.
+            max_running: usize::try_from(running).unwrap_or(usize::MAX),
+            max_held_results: usize::try_from(held).unwrap_or(usize::MAX),
+            result_retention_secs: self
+                .mcp_args
+                .mcp_sweep_result_retention_secs
+                .or(config.limits.mcp_sweep_result_retention_secs)
+                .unwrap_or(Self::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS),
         }
     }
 
@@ -11091,6 +11240,39 @@ mod tests {
                 resolve: |c, cfg| c.mcp_sweep_limits(cfg).deadline_ms,
                 requires: &[],
             },
+            Case {
+                key: "mcp_sweep_max_running",
+                flag: "--mcp-sweep-max-running",
+                set_key: |l| l.mcp_sweep_max_running = Some(2),
+                key_value: 2,
+                flag_value: "6",
+                flag_number: 6,
+                shipped: Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING,
+                resolve: |c, cfg| c.mcp_sweep_job_limits(cfg).max_running as u64,
+                requires: &[],
+            },
+            Case {
+                key: "mcp_sweep_max_held_results",
+                flag: "--mcp-sweep-max-held-results",
+                set_key: |l| l.mcp_sweep_max_held_results = Some(3),
+                key_value: 3,
+                flag_value: "40",
+                flag_number: 40,
+                shipped: Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS,
+                resolve: |c, cfg| c.mcp_sweep_job_limits(cfg).max_held_results as u64,
+                requires: &[],
+            },
+            Case {
+                key: "mcp_sweep_result_retention_secs",
+                flag: "--mcp-sweep-result-retention-secs",
+                set_key: |l| l.mcp_sweep_result_retention_secs = Some(30),
+                key_value: 30,
+                flag_value: "3600",
+                flag_number: 3_600,
+                shipped: Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS,
+                resolve: |c, cfg| c.mcp_sweep_job_limits(cfg).result_retention_secs,
+                requires: &[],
+            },
         ];
 
         for c in &cases {
@@ -11266,6 +11448,9 @@ mod tests {
             "--mcp-max-wait-seconds",
             "--mcp-sweep-max-files",
             "--mcp-sweep-deadline-ms",
+            "--mcp-sweep-max-running",
+            "--mcp-sweep-max-held-results",
+            "--mcp-sweep-result-retention-secs",
             // `--api-rate-limit-per-peer` is deliberately absent: 0 DISABLES
             // that cap, the reading every per-peer rate knob here carries.
             "--api-max-rows",
@@ -11316,6 +11501,18 @@ mod tests {
                 "--mcp-sweep-deadline-ms",
                 crate::config::MAX_MCP_SWEEP_DEADLINE_MS,
             ),
+            (
+                "--mcp-sweep-max-running",
+                crate::config::MAX_MCP_SWEEP_MAX_RUNNING,
+            ),
+            (
+                "--mcp-sweep-max-held-results",
+                crate::config::MAX_MCP_SWEEP_MAX_HELD_RESULTS,
+            ),
+            (
+                "--mcp-sweep-result-retention-secs",
+                crate::config::MAX_MCP_SWEEP_RESULT_RETENTION_SECS,
+            ),
         ] {
             let over = (max + 1).to_string();
             assert!(
@@ -11365,6 +11562,37 @@ mod tests {
             bare.mcp_sweep_limits(&crate::config::Config::default()),
             McpSweepLimits::default(),
             "with nothing set, the resolver must report the shipped ceilings"
+        );
+        Ok(())
+    }
+
+    /// The shipped job bounds are four running sweeps, sixteen held results
+    /// and 600 seconds of retention, the figures the sweep jobs enforced
+    /// before they were settings. The maxima are 64, 256 and twelve hours.
+    ///
+    /// Written as numbers rather than through the constants, so a change to
+    /// a constant is a change this test sees.
+    #[test]
+    fn the_shipped_sweep_job_bounds_are_four_sixteen_and_ten_minutes() -> Result<(), TestError> {
+        assert_eq!(Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING, 4);
+        assert_eq!(Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS, 16);
+        assert_eq!(Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS, 600);
+        assert_eq!(crate::config::MAX_MCP_SWEEP_MAX_RUNNING, 64);
+        assert_eq!(crate::config::MAX_MCP_SWEEP_MAX_HELD_RESULTS, 256);
+        assert_eq!(crate::config::MAX_MCP_SWEEP_RESULT_RETENTION_SECS, 43_200);
+        assert_eq!(
+            McpSweepJobLimits::default(),
+            McpSweepJobLimits {
+                max_running: 4,
+                max_held_results: 16,
+                result_retention_secs: 600,
+            }
+        );
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        assert_eq!(
+            bare.mcp_sweep_job_limits(&crate::config::Config::default()),
+            McpSweepJobLimits::default(),
+            "with nothing set, the resolver must report the shipped bounds"
         );
         Ok(())
     }

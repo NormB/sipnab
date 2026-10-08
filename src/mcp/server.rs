@@ -587,6 +587,19 @@ impl SipnabMcp {
         self
     }
 
+    /// Set the bounds on the `find_in_captures` jobs this server holds:
+    /// sweeps running at once, finished results held, and how long one waits
+    /// for its poll, resolved by `Cli::mcp_sweep_job_limits`.
+    ///
+    /// Replaces the job table with an empty one under these bounds, so it is
+    /// set while the server is built, before any sweep starts and before the
+    /// server is cloned per session.
+    #[must_use]
+    pub fn with_sweep_job_limits(mut self, limits: crate::cli::McpSweepJobLimits) -> Self {
+        self.sweeps = Arc::new(super::sweep::SweepJobs::new(limits));
+        self
+    }
+
     /// Cap the tool calls this server accepts per second from any ONE peer.
     /// `per_second == 0` leaves the limit off, the same spelling of
     /// "unlimited" [`Self::with_max_concurrent`] uses — a positive value
@@ -7636,7 +7649,8 @@ impl SipnabMcp {
                        status running with progress, or status done or \
                        canceled with the sweep result. A finished result is \
                        returned once; the job id is unknown after that, and \
-                       after 600 seconds uncollected.",
+                       after --mcp-sweep-result-retention-secs (default 600) \
+                       uncollected.",
         output_schema = schema_for_output::<crate::mcp::sweep::FindInCapturesResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -10802,7 +10816,7 @@ mod tests {
         Ok(())
     }
 
-    /// One sweep more than `MAX_RUNNING_SWEEPS` is refused with an error that
+    /// One sweep more than the shipped running bound is refused with an error that
     /// says how many run and what to do, and the running ones are untouched.
     #[tokio::test]
     async fn a_sweep_past_the_running_bound_is_refused() -> Result<(), TestError> {
@@ -10814,7 +10828,8 @@ mod tests {
         let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
         let mut holds = Vec::new();
         let mut ids = Vec::new();
-        for _ in 0..crate::mcp::sweep::MAX_RUNNING_SWEEPS {
+        let bound = crate::cli::McpSweepJobLimits::default().max_running;
+        for _ in 0..bound {
             holds.push(hold_next_sweep(&srv, 1));
             let started = start_sweep(&srv, None).await?;
             assert_eq!(started["status"], "running", "{started}");
@@ -10831,8 +10846,7 @@ mod tests {
             .ok_or("a sweep past the bound must be refused")?;
         let msg = format!("{err:?}");
         assert!(
-            msg.contains(&crate::mcp::sweep::MAX_RUNNING_SWEEPS.to_string())
-                && msg.contains("cancel_find_in_captures"),
+            msg.contains(&format!("at once ({bound}")) && msg.contains("cancel_find_in_captures"),
             "the refusal names the bound and the way out: {msg}"
         );
         drop(holds);
@@ -10844,7 +10858,7 @@ mod tests {
         Ok(())
     }
 
-    /// A finished result nobody polled is kept for `RESULT_RETENTION` after
+    /// A finished result nobody polled is kept for the shipped retention after
     /// it finished and dropped after that; the job id is then unknown.
     ///
     /// Driven with the reap's own clock argument, so the test does not wait
@@ -10864,7 +10878,9 @@ mod tests {
         srv.sweeps.wait_finished(&id).await;
         let finished = srv.sweeps.finished_at(&id).ok_or("the job finished")?;
 
-        let retention = crate::mcp::sweep::RESULT_RETENTION;
+        let retention = std::time::Duration::from_secs(
+            crate::cli::McpSweepJobLimits::default().result_retention_secs,
+        );
         srv.sweeps.reap(finished + retention);
         assert!(
             srv.sweeps.holds(&id),
@@ -10886,14 +10902,14 @@ mod tests {
         Ok(())
     }
 
-    /// At most `MAX_HELD_RESULTS` finished results wait for collection; past
+    /// At most the shipped held bound of finished results wait for collection; past
     /// that the oldest is dropped, so results nobody polls cannot accumulate.
     #[tokio::test]
     async fn finished_results_past_the_held_bound_drop_the_oldest() -> Result<(), TestError> {
         let root = sweep_root("job-held", &[], &[])?;
         let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
         let mut ids = Vec::new();
-        for _ in 0..=crate::mcp::sweep::MAX_HELD_RESULTS {
+        for _ in 0..=crate::cli::McpSweepJobLimits::default().max_held_results {
             let id = srv
                 .sweeps
                 .start(
@@ -10915,6 +10931,216 @@ mod tests {
         assert!(!srv.sweeps.holds(&ids[0]), "the oldest result is dropped");
         for id in &ids[1..] {
             assert!(srv.sweeps.holds(id), "{id} is within the bound");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// Start `n` sweeps of the server's root, each held at its first packet
+    /// so it is still running, and return the holds (which release the
+    /// sweeps when dropped) with the job ids.
+    async fn start_held_sweeps(
+        srv: &SipnabMcp,
+        n: usize,
+    ) -> Result<(Vec<ReleaseOnDrop>, Vec<String>), TestError> {
+        let mut holds = Vec::new();
+        let mut ids = Vec::new();
+        for _ in 0..n {
+            holds.push(hold_next_sweep(srv, 1));
+            let started = start_sweep(srv, None).await?;
+            assert_eq!(started["status"], "running", "{started}");
+            ids.push(started["job_id"].as_str().ok_or("a job id")?.to_string());
+        }
+        Ok((holds, ids))
+    }
+
+    /// Try to start one more sweep, held so that an admitted one is still
+    /// running, and return the refusal's text, or `None` when it was admitted.
+    async fn one_more_sweep(
+        srv: &SipnabMcp,
+        holds: &mut Vec<ReleaseOnDrop>,
+    ) -> Result<Option<String>, TestError> {
+        holds.push(hold_next_sweep(srv, 1));
+        match srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                wait_seconds: Some(0),
+                ..Default::default()
+            }))
+            .await
+        {
+            Ok(r) => {
+                let v: serde_json::Value =
+                    serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?;
+                assert_eq!(v["status"], "running", "{v}");
+                Ok(None)
+            }
+            // A refused start leaves its hold unconsumed. Each caller stops
+            // starting sweeps at the first refusal, so no later sweep meets it.
+            Err(e) => Ok(Some(format!("{e:?}"))),
+        }
+    }
+
+    /// A configured running bound of 2 refuses the third sweep, and the
+    /// refusal reports the configured 2 and names the setting.
+    ///
+    /// Below the shipped four on purpose: a bound read from the constant
+    /// admits the third, so this fails for that defect.
+    #[tokio::test]
+    async fn a_configured_running_bound_of_two_refuses_the_third_sweep() -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-running-two",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_job_limits(crate::cli::McpSweepJobLimits {
+                max_running: 2,
+                ..Default::default()
+            });
+        let (mut holds, _ids) = start_held_sweeps(&srv, 2).await?;
+        let msg = one_more_sweep(&srv, &mut holds)
+            .await?
+            .ok_or("a third sweep must be refused under a running bound of 2")?;
+        assert!(
+            msg.contains("at once (2")
+                && msg.contains("--mcp-sweep-max-running")
+                && msg.contains("[limits] mcp_sweep_max_running"),
+            "the refusal reports the configured bound and names the setting: {msg}"
+        );
+        drop(holds);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A configured running bound of 6 admits the fifth and sixth sweeps,
+    /// which the shipped four refuses, and refuses the seventh.
+    #[tokio::test]
+    async fn a_configured_running_bound_of_six_admits_the_fifth_sweep() -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-running-six",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_job_limits(crate::cli::McpSweepJobLimits {
+                max_running: 6,
+                ..Default::default()
+            });
+        let (mut holds, _ids) = start_held_sweeps(&srv, 4).await?;
+        for nth in ["fifth", "sixth"] {
+            let refused = one_more_sweep(&srv, &mut holds).await?;
+            assert!(
+                refused.is_none(),
+                "the {nth} sweep is inside a running bound of 6: {refused:?}"
+            );
+        }
+        let msg = one_more_sweep(&srv, &mut holds)
+            .await?
+            .ok_or("a seventh sweep must be refused under a running bound of 6")?;
+        assert!(msg.contains("at once (6"), "{msg}");
+        drop(holds);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A configured retention of 30 seconds keeps a finished result for 30
+    /// seconds and drops it one millisecond later, by the reap's own clock;
+    /// the refusal for the expired id reports the configured 30 seconds and
+    /// names the setting.
+    #[tokio::test]
+    async fn a_configured_retention_expires_a_result_at_the_configured_time()
+    -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-retention-30",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_job_limits(crate::cli::McpSweepJobLimits {
+                result_retention_secs: 30,
+                ..Default::default()
+            });
+        let hold = hold_next_sweep(&srv, 1);
+        let started = start_sweep(&srv, None).await?;
+        let id = started["job_id"].as_str().ok_or("a job id")?.to_string();
+        hold.0.release();
+        srv.sweeps.wait_finished(&id).await;
+        let finished = srv.sweeps.finished_at(&id).ok_or("the job finished")?;
+
+        let retention = std::time::Duration::from_secs(30);
+        srv.sweeps.reap(finished + retention);
+        assert!(
+            srv.sweeps.holds(&id),
+            "a result is kept for the whole configured retention"
+        );
+        srv.sweeps
+            .reap(finished + retention + std::time::Duration::from_millis(1));
+        assert!(
+            !srv.sweeps.holds(&id),
+            "and dropped 30 seconds after it finished, not 600"
+        );
+        let err = srv
+            .find_in_captures_status(Parameters(FindInCapturesStatusParams {
+                job_id: id.clone(),
+                wait_seconds: Some(0),
+            }))
+            .await
+            .err()
+            .ok_or("an expired job is unknown")?;
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("more than 30 seconds ago")
+                && msg.contains("--mcp-sweep-result-retention-secs"),
+            "the refusal reports the configured retention and names the setting: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A configured held bound of 3 keeps three finished results and drops
+    /// the oldest of four, and only the oldest.
+    #[tokio::test]
+    async fn a_configured_held_bound_drops_the_oldest_past_that_count() -> Result<(), TestError> {
+        let root = sweep_root("job-held-three", &[], &[])?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_job_limits(crate::cli::McpSweepJobLimits {
+                max_held_results: 3,
+                ..Default::default()
+            });
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            let id = srv
+                .sweeps
+                .start(
+                    crate::mcp::sweep::SweepPlan {
+                        candidates: Vec::new(),
+                        filter: crate::sip::dsl::FilterExpr::parse("state == 'failed'")
+                            .map_err(|e| format!("filter: {e}"))?,
+                        limits: crate::cli::McpSweepLimits::default(),
+                        row_cap: 100,
+                        options: crate::pipeline::PipelineOptions::default(),
+                    },
+                    std::time::Instant::now(),
+                )
+                .map_err(|e| format!("start: {e}"))?;
+            srv.sweeps.wait_finished(&id).await;
+            ids.push(id);
+        }
+        srv.sweeps.reap(std::time::Instant::now());
+        assert!(
+            !srv.sweeps.holds(&ids[0]),
+            "four results against a held bound of 3: the oldest is dropped"
+        );
+        for id in &ids[1..] {
+            assert!(
+                srv.sweeps.holds(id),
+                "{id} is one of the newest three and is kept"
+            );
         }
         let _ = std::fs::remove_dir_all(&root);
         Ok(())

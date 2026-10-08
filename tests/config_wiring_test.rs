@@ -1156,6 +1156,24 @@ fn limit_probes() -> Vec<LimitProbe> {
             waits_out_a_window: false,
         },
         LimitProbe {
+            key: "mcp_sweep_max_running",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_sweep_max_running,
+            waits_out_a_window: false,
+        },
+        LimitProbe {
+            key: "mcp_sweep_max_held_results",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_sweep_max_held_results,
+            waits_out_a_window: false,
+        },
+        LimitProbe {
+            key: "mcp_sweep_result_retention_secs",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_sweep_result_retention_secs,
+            waits_out_a_window: true,
+        },
+        LimitProbe {
             key: "max_lost_sequences",
             enabled: true,
             observe: probe_max_lost_sequences,
@@ -2144,10 +2162,127 @@ fn probe_mcp_max_wait_seconds() -> Result<(String, String), TestError> {
     Ok((String::new(), String::new()))
 }
 
+/// One MCP stdio server with `root` as its file root, driven one tool call
+/// at a time. The process is terminated when this is dropped.
+#[cfg(feature = "mcp")]
+struct McpSession {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    out: std::io::BufReader<std::process::ChildStdout>,
+    next_id: u64,
+}
+
+#[cfg(feature = "mcp")]
+impl McpSession {
+    /// Start the server on `pcap` with `cfg` (or `--no-config`) and finish
+    /// the MCP handshake.
+    fn start(
+        cfg: Option<&std::path::Path>,
+        pcap: &std::path::Path,
+        root: &std::path::Path,
+    ) -> Result<Self, TestError> {
+        use std::io::BufRead;
+        let mut args: Vec<String> = vec![
+            "--mcp".into(),
+            "-N".into(),
+            "-I".into(),
+            pcap.to_str().ok_or("non-UTF-8 path")?.into(),
+            "--mcp-file-root".into(),
+            root.to_str().ok_or("non-UTF-8 path")?.into(),
+            "--quiet".into(),
+        ];
+        match cfg {
+            Some(c) => {
+                args.push("--config".into());
+                args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
+            }
+            None => args.push("--no-config".into()),
+        }
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let stdin = child.stdin.take().ok_or("stdin")?;
+        let out = std::io::BufReader::new(child.stdout.take().ok_or("stdout")?);
+        let mut session = Self {
+            child,
+            stdin,
+            out,
+            next_id: 2,
+        };
+        session.send(serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                  "clientInfo":{"name":"probe","version":"0"}}}))?;
+        let mut line = String::new();
+        session.out.read_line(&mut line)?;
+        session.send(serde_json::json!({
+        "jsonrpc":"2.0","method":"notifications/initialized"}))?;
+        Ok(session)
+    }
+
+    /// Write one JSON-RPC message.
+    fn send(&mut self, v: serde_json::Value) -> Result<(), TestError> {
+        use std::io::Write;
+        writeln!(self.stdin, "{v}")?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    /// Call tool `name` with `arguments` and return the JSON-RPC response to
+    /// it (`null` when none arrived): `result` for an answer, `error` for a
+    /// refusal.
+    fn call(
+        &mut self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, TestError> {
+        use std::io::BufRead;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(serde_json::json!({
+        "jsonrpc":"2.0","id":id,"method":"tools/call",
+        "params":{"name":name,"arguments":arguments}}))?;
+        let mut line = String::new();
+        for _ in 0..40 {
+            line.clear();
+            if self.out.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v["id"] == serde_json::json!(id) {
+                return Ok(v);
+            }
+        }
+        Ok(serde_json::Value::Null)
+    }
+}
+
+#[cfg(feature = "mcp")]
+impl Drop for McpSession {
+    fn drop(&mut self) {
+        let _ = terminate(&mut self.child);
+    }
+}
+
+/// The tool's JSON answer inside a JSON-RPC response, or `null` for a
+/// refusal or no response.
+#[cfg(feature = "mcp")]
+fn tool_answer(response: &serde_json::Value) -> serde_json::Value {
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    serde_json::from_str(text).unwrap_or_default()
+}
+
 /// Run `find_in_captures` once over the MCP stdio server, with `root` as the
 /// file root, and return the tool's JSON answer (`null` when none arrived).
 ///
-/// The two `[limits]` sweep keys are visible on no other surface, so their
+/// The `[limits]` sweep keys are visible on no other surface, so their
 /// probes drive this tool the way `probe_mcp_max_wait_seconds` drives
 /// `await_condition`.
 #[cfg(feature = "mcp")]
@@ -2156,76 +2291,161 @@ fn mcp_find_in_captures(
     pcap: &std::path::Path,
     root: &std::path::Path,
 ) -> Result<serde_json::Value, TestError> {
-    use std::io::{BufRead, BufReader, Write};
-    let mut args: Vec<String> = vec![
-        "--mcp".into(),
-        "-N".into(),
-        "-I".into(),
-        pcap.to_str().ok_or("non-UTF-8 path")?.into(),
-        "--mcp-file-root".into(),
-        root.to_str().ok_or("non-UTF-8 path")?.into(),
-        "--quiet".into(),
-    ];
-    match cfg {
-        Some(c) => {
-            args.push("--config".into());
-            args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
-        }
-        None => args.push("--no-config".into()),
-    }
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    let mut stdin = child.stdin.take().ok_or("stdin")?;
-    let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
+    let mut session = McpSession::start(cfg, pcap, root)?;
+    let response = session.call(
+        "find_in_captures",
+        serde_json::json!({"filter":"method == 'INVITE'"}),
+    )?;
+    Ok(tool_answer(&response))
+}
 
-    let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
-        writeln!(w, "{v}")?;
-        w.flush()
+/// A file root of `count` links to the largest pcapng fixture, so a sweep of
+/// it is still reading when the next tool call arrives.
+///
+/// Links rather than copies: the sweep follows them, and the probe writes
+/// none of the fixture's bytes.
+#[cfg(feature = "mcp")]
+fn slow_sweep_root(dir: &tempfile::TempDir, count: usize) -> Result<PathBuf, TestError> {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("pcap-samples")
+        .join("sipp-branch-scenario.pcapng");
+    let root = dir.path().join("slow-root");
+    std::fs::create_dir(&root)?;
+    for i in 0..count {
+        std::os::unix::fs::symlink(&fixture, root.join(format!("rot-{i:02}.pcapng")))?;
+    }
+    Ok(root)
+}
+
+/// `mcp_sweep_max_running`: a second sweep started while the first still
+/// reads, against a running bound of one.
+///
+/// The observation is whether the server admitted the second sweep, not a
+/// copy of the setting. The first sweep reads twenty large files, so it is
+/// still running when the second call arrives; the premise is asserted, so a
+/// first sweep that finished early fails here rather than reading as a dead
+/// key.
+#[cfg(feature = "mcp")]
+fn probe_mcp_sweep_max_running() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let root = slow_sweep_root(&dir, 20)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_sweep_max_running = 1\n")?;
+    let second = |cfg: Option<&std::path::Path>| -> Result<String, TestError> {
+        let mut session = McpSession::start(cfg, &pcap, &root)?;
+        let args = serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0});
+        let first = tool_answer(&session.call("find_in_captures", args.clone())?);
+        assert_eq!(
+            first["status"], "running",
+            "premise: the first sweep must still be running: {first}"
+        );
+        let response = session.call("find_in_captures", args)?;
+        Ok(match response["error"]["message"].as_str() {
+            Some(m) if m.contains("--mcp-sweep-max-running") => "second=refused".to_string(),
+            Some(m) => format!("second=error:{m}"),
+            None => format!("second={}", tool_answer(&response)["status"]),
+        })
     };
-    send(
-        &mut stdin,
-        serde_json::json!({
-        "jsonrpc":"2.0","id":1,"method":"initialize",
-        "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                  "clientInfo":{"name":"probe","version":"0"}}}),
-    )?;
-    let mut line = String::new();
-    out.read_line(&mut line)?;
-    send(
-        &mut stdin,
-        serde_json::json!({
-        "jsonrpc":"2.0","method":"notifications/initialized"}),
-    )?;
-    send(
-        &mut stdin,
-        serde_json::json!({
-        "jsonrpc":"2.0","id":2,"method":"tools/call",
-        "params":{"name":"find_in_captures","arguments":{
-            "filter":"method == 'INVITE'"}}}),
-    )?;
+    Ok((second(None)?, second(Some(&cfg))?))
+}
 
-    let mut answer = serde_json::Value::Null;
-    for _ in 0..40 {
-        line.clear();
-        if out.read_line(&mut line).unwrap_or(0) == 0 {
-            break;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if v["id"] != serde_json::json!(2) {
-            continue;
-        }
-        let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
-        answer = serde_json::from_str(text).unwrap_or_default();
-        break;
-    }
-    let _ = terminate(&mut child);
-    Ok(answer)
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_sweep_max_running() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
+}
+
+/// `mcp_sweep_max_held_results`: two finished results against a held bound
+/// of one.
+///
+/// Sweep A reads twenty large files and sweep B one, both started without
+/// waiting. A poll that waits for A then finds B finished too, so with a
+/// bound of one the reap drops A, the older result, and the poll is refused;
+/// without the key A's result is handed over.
+#[cfg(feature = "mcp")]
+fn probe_mcp_sweep_max_held_results() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let root = slow_sweep_root(&dir, 20)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_sweep_max_held_results = 1\n")?;
+    let poll_a = |cfg: Option<&std::path::Path>| -> Result<String, TestError> {
+        let mut session = McpSession::start(cfg, &pcap, &root)?;
+        let a = tool_answer(&session.call(
+            "find_in_captures",
+            serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0}),
+        )?);
+        assert_eq!(a["status"], "running", "premise: A is still reading: {a}");
+        let b = tool_answer(&session.call(
+            "find_in_captures",
+            serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0,"max_files":1}),
+        )?);
+        assert_eq!(b["status"], "running", "premise: B started as a job: {b}");
+        let id = a["job_id"].as_str().ok_or("A's job id")?;
+        let response = session.call(
+            "find_in_captures_status",
+            serde_json::json!({"job_id":id,"wait_seconds":30}),
+        )?;
+        Ok(match response["error"]["message"].as_str() {
+            Some(m) if m.contains("unknown sweep job") => "a=dropped".to_string(),
+            Some(m) => format!("a=error:{m}"),
+            None => format!("a={}", tool_answer(&response)["status"]),
+        })
+    };
+    Ok((poll_a(None)?, poll_a(Some(&cfg))?))
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_sweep_max_held_results() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
+}
+
+/// `mcp_sweep_result_retention_secs`: a finished result polled three
+/// seconds after its sweep started, against a retention of one second.
+///
+/// The sweep reads one large file, so it is still running when the call
+/// that started it returns, and finishes well inside the three seconds.
+/// With the key the result has expired and the poll is refused; without it
+/// the result is handed over.
+#[cfg(feature = "mcp")]
+fn probe_mcp_sweep_result_retention_secs() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let root = slow_sweep_root(&dir, 1)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_sweep_result_retention_secs = 1\n")?;
+    let poll_late = |cfg: Option<&std::path::Path>| -> Result<String, TestError> {
+        let mut session = McpSession::start(cfg, &pcap, &root)?;
+        let started = tool_answer(&session.call(
+            "find_in_captures",
+            serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0}),
+        )?);
+        assert_eq!(
+            started["status"], "running",
+            "premise: the sweep is a job: {started}"
+        );
+        let id = started["job_id"].as_str().ok_or("a job id")?;
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let response = session.call(
+            "find_in_captures_status",
+            serde_json::json!({"job_id":id,"wait_seconds":0}),
+        )?;
+        Ok(match response["error"]["message"].as_str() {
+            Some(m) if m.contains("unknown sweep job") => "result=expired".to_string(),
+            Some(m) => format!("result=error:{m}"),
+            None => format!("result={}", tool_answer(&response)["status"]),
+        })
+    };
+    Ok((poll_late(None)?, poll_late(Some(&cfg))?))
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_sweep_result_retention_secs() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
 }
 
 /// `mcp_sweep_max_files`: a three-file root against a one-file ceiling.
