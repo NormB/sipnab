@@ -10378,9 +10378,9 @@ mod tests {
     }
 
     /// A REST router over `srv`'s stores, built as the run builds it, with no
-    /// keys configured.
+    /// keys configured and `file_root` as `--api-file-root`.
     #[cfg(feature = "api")]
-    fn rest_router_over(srv: &SipnabMcp) -> axum::Router {
+    fn rest_router_over(srv: &SipnabMcp, file_root: Option<std::path::PathBuf>) -> axum::Router {
         use crate::output::api::{ApiState, ArchivePasswordPolicy, RateLimiter};
         crate::output::api::build_router(ApiState {
             relay_query: Default::default(),
@@ -10402,50 +10402,53 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
-            file_root: None,
+            file_root,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         })
     }
 
-    /// While a sweep is held mid-read, another MCP call and a REST request on
-    /// the same single-threaded runtime both answer.
-    ///
-    /// The run serves REST and MCP from ONE thread running one
-    /// `new_current_thread` runtime (`crate::app::servers`), and this test
-    /// builds exactly that: one thread, one such runtime, the sweep's tool
-    /// call and the two other requests as tasks on it. The sweep is held at
-    /// its reader's first look by a [`crate::mcp::sweep::TestHold`], so "mid-
-    /// read" is a fact the test waits for rather than a moment it races. A
-    /// sweep that reads on the runtime thread holds that thread inside the
-    /// hold, and neither answer can arrive until it is released.
+    /// A REST `GET` of `uri` from this host.
     #[cfg(feature = "api")]
-    #[test]
-    fn a_held_sweep_leaves_mcp_and_rest_answering() -> Result<(), TestError> {
-        use tower::ServiceExt;
-        let root = sweep_root(
-            "responsive",
-            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
-            &[],
-        )?;
-        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
-        let hold = crate::mcp::sweep::TestHold::at_look(1);
-        srv.sweeps.hold_next(Arc::clone(&hold));
-        let router = rest_router_over(&srv);
+    fn local_get(uri: &str) -> Result<axum::http::Request<axum::body::Body>, TestError> {
         let mut request = axum::http::Request::builder()
-            .uri("/v1/dialogs")
+            .uri(uri)
             .body(axum::body::Body::empty())
-            .map_err(|e| format!("build request: {e:?}"))?;
+            .map_err(|e| format!("build request {uri}: {e:?}"))?;
         request
             .extensions_mut()
             .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
                 localhost(),
                 12345,
             )));
+        Ok(request)
+    }
+
+    /// Run `held` on the runtime the run serves REST and MCP from, and while
+    /// the read inside it is held at `hold`, require another MCP call and a
+    /// REST request on that same runtime to answer.
+    ///
+    /// The run serves REST and MCP from ONE thread running one
+    /// `new_current_thread` runtime (`crate::app::servers`), and this builds
+    /// exactly that: one thread, one such runtime, `held` and the two other
+    /// requests as tasks on it. `hold` makes "mid-read" a fact the test waits
+    /// for rather than a moment it races. A read on the runtime thread holds
+    /// that thread inside the hold, and neither answer can arrive until it is
+    /// released. `what` names the held request in the failure.
+    #[cfg(feature = "api")]
+    fn others_answer_while_held(
+        srv: &SipnabMcp,
+        hold: &Arc<crate::mcp::sweep::TestHold>,
+        what: &str,
+        held: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+    ) -> Result<(), TestError> {
+        use tower::ServiceExt;
+        let router = rest_router_over(srv, None);
+        let request = local_get("/v1/dialogs")?;
+        let srv = srv.clone();
 
         let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
         let (answer_tx, answer_rx) = std::sync::mpsc::channel::<(bool, u16)>();
-        let sweeper = srv.clone();
         let servers = std::thread::Builder::new()
             .name("servers-under-test".to_string())
             .spawn(move || -> Result<(), String> {
@@ -10454,16 +10457,7 @@ mod tests {
                     .build()
                     .map_err(|e| format!("runtime: {e}"))?;
                 rt.block_on(async move {
-                    let sweep = tokio::spawn(async move {
-                        sweeper
-                            .find_in_captures(Parameters(FindInCapturesParams {
-                                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
-                                ..Default::default()
-                            }))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| format!("the sweep: {e:?}"))
-                    });
+                    let held = tokio::spawn(held);
                     go_rx.await.map_err(|e| format!("go: {e}"))?;
                     let mcp_answered = srv.server_capabilities().await.is_ok();
                     let rest = router
@@ -10471,7 +10465,8 @@ mod tests {
                         .await
                         .map_err(|e| format!("REST: {e:?}"))?;
                     let _ = answer_tx.send((mcp_answered, rest.status().as_u16()));
-                    sweep.await.map_err(|e| format!("join the sweep: {e}"))?
+                    held.await
+                        .map_err(|e| format!("join the held request: {e}"))?
                 })
             })
             .map_err(|e| format!("spawn the server thread: {e}"))?;
@@ -10488,19 +10483,132 @@ mod tests {
         // Released whatever happened, so the server thread always ends.
         hold.release();
         let joined = servers.join();
-        let _ = std::fs::remove_dir_all(&root);
 
         if !reached {
-            return Err("the sweep never reached its hold".into());
+            return Err(format!("{what} never reached its hold").into());
         }
-        let (mcp_answered, rest_status) = answer.ok_or(
-            "no MCP or REST answer arrived while the sweep was held mid-read: the \
-             sweep is reading on the shared server thread and blocks it",
-        )?;
+        let (mcp_answered, rest_status) = answer.ok_or_else(|| {
+            format!(
+                "no MCP or REST answer arrived while {what} was held mid-read: \
+                 {what} is reading on the shared server thread and blocks it"
+            )
+        })?;
         joined.map_err(|_| "the server thread panicked")??;
         assert!(mcp_answered, "server_capabilities answered with an error");
         assert_eq!(rest_status, 200, "GET /v1/dialogs");
         Ok(())
+    }
+
+    /// While a sweep is held mid-read, another MCP call and a REST request on
+    /// the same single-threaded runtime both answer.
+    ///
+    /// The sweep is held at its reader's first look by a
+    /// [`crate::mcp::sweep::TestHold`]; [`others_answer_while_held`] builds the
+    /// run's server thread around it.
+    #[cfg(feature = "api")]
+    #[test]
+    fn a_held_sweep_leaves_mcp_and_rest_answering() -> Result<(), TestError> {
+        let root = sweep_root(
+            "responsive",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let hold = crate::mcp::sweep::TestHold::at_look(1);
+        srv.sweeps.hold_next(Arc::clone(&hold));
+        let sweeper = srv.clone();
+        let held = async move {
+            sweeper
+                .find_in_captures(Parameters(FindInCapturesParams {
+                    filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                    ..Default::default()
+                }))
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("the sweep: {e:?}"))
+        };
+        let result = others_answer_while_held(&srv, &hold, "the sweep", held);
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    /// A root holding two different captures, `a.pcap` and `b.pcap`, and a
+    /// hold on the comparison read of `a.pcap` at its first look.
+    #[cfg(feature = "api")]
+    fn held_compare_root(
+        tag: &str,
+    ) -> Result<(std::path::PathBuf, Arc<crate::mcp::sweep::TestHold>), TestError> {
+        let root = sweep_root(
+            tag,
+            &[
+                ("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
+                ("b.pcap", "tests/fixtures/sip_call.pcap"),
+            ],
+            &[],
+        )?;
+        let hold = crate::mcp::sweep::TestHold::at_look(1);
+        crate::capture::compare::hold_next_read_of(
+            &crate::capture::output_guard::canonical_target(&root.join("a.pcap")),
+            Arc::clone(&hold),
+        );
+        Ok((root, hold))
+    }
+
+    /// While MCP `compare_captures` is held mid-read, another MCP call and a
+    /// REST request on the same single-threaded runtime both answer.
+    ///
+    /// The comparison reads two whole files; read on the runtime thread, it
+    /// would hold every other MCP call and REST request until both were read.
+    #[cfg(feature = "api")]
+    #[test]
+    fn a_held_mcp_compare_leaves_mcp_and_rest_answering() -> Result<(), TestError> {
+        let (root, hold) = held_compare_root("compare-mcp")?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let comparer = srv.clone();
+        let held = async move {
+            comparer
+                .compare_captures(Parameters(
+                    crate::mcp::tools::compare::CompareCapturesParams {
+                        a: "a.pcap".to_string(),
+                        b: "b.pcap".to_string(),
+                        ..Default::default()
+                    },
+                ))
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("the comparison: {e:?}"))
+        };
+        let result = others_answer_while_held(&srv, &hold, "compare_captures", held);
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    /// While REST `GET /v1/captures/compare` is held mid-read, an MCP call and
+    /// another REST request on the same single-threaded runtime both answer.
+    ///
+    /// The REST twin of [`a_held_mcp_compare_leaves_mcp_and_rest_answering`]:
+    /// the route reads the same two files through the same comparison.
+    #[cfg(feature = "api")]
+    #[test]
+    fn a_held_rest_compare_leaves_mcp_and_rest_answering() -> Result<(), TestError> {
+        use tower::ServiceExt;
+        let (root, hold) = held_compare_root("compare-rest")?;
+        let srv = server_with_dialog("loaded@test")?;
+        let router = rest_router_over(&srv, Some(root.clone()));
+        let request = local_get("/v1/captures/compare?a=a.pcap&b=b.pcap")?;
+        let held = async move {
+            let response = router
+                .oneshot(request)
+                .await
+                .map_err(|e| format!("GET /v1/captures/compare: {e:?}"))?;
+            match response.status().as_u16() {
+                200 => Ok(()),
+                other => Err(format!("GET /v1/captures/compare answered {other}")),
+            }
+        };
+        let result = others_answer_while_held(&srv, &hold, "GET /v1/captures/compare", held);
+        let _ = std::fs::remove_dir_all(&root);
+        result
     }
 
     /// Releases a [`crate::mcp::sweep::TestHold`] when dropped, so a test that

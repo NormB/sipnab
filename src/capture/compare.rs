@@ -18,6 +18,9 @@
 use crate::sip::dialog::dialog_group_value_raw;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use crate::test_utils::TestHold;
+
 /// Dimensions diffed when the caller names none: how many calls reached each
 /// state, and which final response codes they ended on.
 pub const DEFAULT_DIMENSIONS: &[&str] = &["state", "response_code"];
@@ -189,6 +192,29 @@ pub struct CaptureRef<'a> {
     pub name: &'a str,
 }
 
+/// Pauses a test placed on the next read of a path, each taken by that read.
+///
+/// Keyed by path so the comparisons other tests run at the same time never
+/// pick one up.
+#[cfg(test)]
+static HOLDS: parking_lot::Mutex<Vec<(std::path::PathBuf, std::sync::Arc<TestHold>)>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// Hold the next comparison read of `path` at `hold`, so a test knows the
+/// comparison is mid-read without racing it.
+#[cfg(test)]
+pub(crate) fn hold_next_read_of(path: &std::path::Path, hold: std::sync::Arc<TestHold>) {
+    HOLDS.lock().push((path.to_path_buf(), hold));
+}
+
+/// The pause placed on `path`, removed so it holds one read.
+#[cfg(test)]
+fn take_hold(path: &std::path::Path) -> Option<std::sync::Arc<TestHold>> {
+    let mut holds = HOLDS.lock();
+    let at = holds.iter().position(|(p, _)| p == path)?;
+    Some(holds.swap_remove(at).1)
+}
+
 /// Read `path` and reduce it to per-dimension tallies.
 ///
 /// `max_dialogs`/`max_streams` are the caller's: the ceilings are policy, and a
@@ -212,7 +238,17 @@ fn snapshot(
     )));
     let ss = Arc::new(parking_lot::RwLock::new(StreamStore::new(max_streams)));
     let progress = std::sync::atomic::AtomicU64::new(0);
-    let outcome = crate::capture::replay::read_into_stores(path, opts, &ds, &ss, &progress);
+    #[cfg(test)]
+    let hold = take_hold(path);
+    let stop = || -> Option<String> {
+        #[cfg(test)]
+        if let Some(h) = &hold {
+            h.look();
+        }
+        None
+    };
+    let outcome =
+        crate::capture::replay::read_into_stores_until(path, opts, &ds, &ss, &progress, &stop);
 
     let dialogs_read = ds.read();
     let streams_read = ss.read();
@@ -401,6 +437,7 @@ pub fn compare(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     type TestError = Box<dyn std::error::Error>;
 
@@ -408,6 +445,65 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples")
             .join(name)
+    }
+
+    /// A hold placed on one path is taken only by a read of that path, and
+    /// only once: a comparison another test runs on a different file never
+    /// stops at it, and a second read of the same file runs free.
+    #[test]
+    fn a_read_hold_is_taken_by_its_own_path_once() -> Result<(), TestError> {
+        let held = PathBuf::from("/nonexistent/sipnab-compare-hold/held.pcap");
+        let other = PathBuf::from("/nonexistent/sipnab-compare-hold/other.pcap");
+        let hold = TestHold::at_look(1);
+        hold_next_read_of(&held, Arc::clone(&hold));
+        assert!(take_hold(&other).is_none(), "another path takes no hold");
+        let taken = take_hold(&held).ok_or("the held path takes its hold")?;
+        assert!(Arc::ptr_eq(&taken, &hold), "the hold placed, not another");
+        assert!(take_hold(&held).is_none(), "a hold holds one read");
+        Ok(())
+    }
+
+    /// A comparison stops at a hold placed on its baseline's read, before
+    /// it has finished that file, and completes once released.
+    #[test]
+    fn a_comparison_stops_at_a_hold_on_its_read() -> Result<(), TestError> {
+        let dir = std::env::temp_dir().join(format!("sipnab-compare-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+        let a = dir.join("a.pcap");
+        std::fs::copy(fixture("sip-rtp-g711.pcap"), &a).map_err(|e| format!("copy: {e}"))?;
+        let b = fixture("b2bua-asterisk.pcapng");
+        let hold = TestHold::at_look(1);
+        hold_next_read_of(&a, Arc::clone(&hold));
+        let (reader_a, reader_b) = (a.clone(), b.clone());
+        let reader = std::thread::spawn(move || {
+            compare(
+                CaptureRef {
+                    path: &reader_a,
+                    name: "a.pcap",
+                },
+                CaptureRef {
+                    path: &reader_b,
+                    name: "b.pcap",
+                },
+                &["state".to_string()],
+                &crate::pipeline::PipelineOptions::default(),
+                1000,
+                1000,
+                50,
+            )
+        });
+        let reached = hold.wait_reached();
+        let unfinished = !reader.is_finished();
+        hold.release();
+        let joined = reader.join();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(reached, "the comparison reached the hold on its baseline");
+        assert!(unfinished, "a held comparison has not finished");
+        let cmp = joined
+            .map_err(|_| "the reader panicked")?
+            .map_err(|e| format!("the released comparison completes: {e}"))?;
+        assert!(cmp.a.dialogs > 0, "the held side was read to the end");
+        Ok(())
     }
 
     /// An unknown dimension is refused before any file is read, naming the
