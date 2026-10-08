@@ -5993,7 +5993,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // measurement: without reproducible.yml the scan reads 136, and with
     // HEAD's release.yml swapped back in it reads 141.
     // 137 -> 146 with reproducible builds (+9, as measured on its older base).
-    const EXPECTED_REFERENCES: usize = 146;
+    // 146 -> 153: seven, all in the new `.github/workflows/pr-text.yml`, which
+    // runs `scripts/check-message-identity.sh` from both of its jobs and names
+    // it in its header comment, and names `tests/private_identity_test.rs`
+    // four times in comments. Attributed by measurement: without pr-text.yml
+    // the scan reads 146.
+    const EXPECTED_REFERENCES: usize = 153;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

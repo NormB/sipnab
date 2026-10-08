@@ -44,6 +44,9 @@ use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "support/executable.rs"]
+mod executable;
+
 type TestError = Box<dyn std::error::Error>;
 
 // -- Harness ---------------------------------------------------------
@@ -374,10 +377,12 @@ mod guidance {
 
 // -- Messages: commit messages and pull request descriptions ----------
 //
-// A commit message is published the moment the commit is pushed, and a pull
-// request description becomes the commit message on `main` when the pull
-// request is squash-merged. Neither is a tracked file, so nothing above reads
-// them. The descriptions of #389 and #393 named the development host and were
+// A commit message is published the moment the commit is pushed, and it
+// reaches `main`: this repository's squash merges build the commit message
+// from the branch's commit messages, and its title from the commit (one
+// commit) or the pull request title. A pull request description stays on the
+// pull request page, and it is public from the moment the pull request is
+// opened. Neither is a tracked file, so nothing above reads them. The descriptions of #389 and #393 named the development host and were
 // edited by hand on 2026-10-07 to remove it.
 
 /// The line git writes above the diff that `git commit -v` appends.
@@ -399,15 +404,34 @@ type LineRule = fn(&str) -> bool;
 ///
 /// Every line is read, `#` lines included. git removes `#` lines only from a
 /// message written in an editor; `git commit -m` and `-F` keep them, and a
-/// pull request description keeps its Markdown headings, which become part of
-/// the commit message on `main` when it is squash-merged.
+/// pull request description is published with its Markdown headings, which
+/// start with `#`.
 ///
 /// Reading stops at the scissors line, because `git commit -v` appends the
 /// staged diff below it and git removes everything from that line down before
 /// it makes the commit. One gap remains: git removes that part only when the
 /// message is edited in an editor, so a scissors line typed into a
-/// `git commit -m` message keeps the lines below it in the commit, unchecked.
+/// `git commit -m` message keeps the lines below it in the commit, unchecked
+/// by the hook. CI reads committed messages with [`Scissors::Read`], which
+/// closes that gap for every commit in a pull request.
 fn message_findings(text: &str) -> Vec<Finding> {
+    message_findings_from(text, Scissors::Cut)
+}
+
+/// What the scan does at a scissors line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scissors {
+    /// Stop there: the message is being written, and git removes the line
+    /// and everything below it (the commit-msg hook).
+    Cut,
+    /// Read on: the text is already published as it stands, a committed
+    /// message read back from git or a pull request's text, and nothing
+    /// removes the lines below it (CI).
+    Read,
+}
+
+/// [`message_findings`], with the scissors line handled as `scissors` says.
+fn message_findings_from(text: &str, scissors: Scissors) -> Vec<Finding> {
     let classes: [(&'static str, LineRule); 5] = [
         ("A", |l| rule::lab_host(l) || rule::bare_host(l)),
         ("B", rule::lab_machine),
@@ -417,7 +441,7 @@ fn message_findings(text: &str) -> Vec<Finding> {
     ];
     let mut found = Vec::new();
     for (i, line) in text.lines().enumerate() {
-        if line == SCISSORS {
+        if scissors == Scissors::Cut && line == SCISSORS {
             break;
         }
         for (class, hit) in classes {
@@ -463,7 +487,20 @@ fn message_in_sipnab_scan_message_names_no_private_identity() -> Result<(), Test
     })?;
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read the message in {path}: {e}"))?;
-    let found = message_findings(&text);
+    // `SIPNAB_MESSAGE_WHOLE=1` reads past a scissors line (CI, over text that
+    // is already published). Unset or empty, the scan stops there (the
+    // commit-msg hook). Any other value is an error, not a guess at a mode.
+    let scissors = match std::env::var("SIPNAB_MESSAGE_WHOLE").as_deref() {
+        Err(_) | Ok("") => Scissors::Cut,
+        Ok("1") => Scissors::Read,
+        Ok(other) => {
+            return Err(format!(
+                "SIPNAB_MESSAGE_WHOLE is '{other}'; set it to 1 or leave it unset"
+            )
+            .into());
+        }
+    };
+    let found = message_findings_from(&text, scissors);
     let report: Vec<String> = found
         .iter()
         .map(|(n, class, line)| {
@@ -478,7 +515,7 @@ fn message_in_sipnab_scan_message_names_no_private_identity() -> Result<(), Test
         found.is_empty(),
         "the message in {path} names a private identity. A commit message is \
          published when the commit is pushed, and a pull request description \
-         becomes the commit message on main when it is squash-merged.\n{}",
+         is public from the moment the pull request is opened.\n{}",
         report.join("\n")
     );
     Ok(())
@@ -521,8 +558,8 @@ fn m2_a_clean_message_has_no_findings() -> Result<(), TestError> {
 ///
 /// git strips `#` lines only when the message was written in an editor. With
 /// `git commit -m` or `-F` it keeps them, and a pull request description is
-/// never stripped: its Markdown headings start with `#` and become part of
-/// the commit message on `main` when it is squash-merged.
+/// never stripped: its Markdown headings start with `#` and are published on
+/// the pull request page as written.
 #[test]
 fn m3_a_heading_line_is_scanned() -> Result<(), TestError> {
     let message = "Fix the parser\n\n## Tested on thor-02\n\nBody.\n";
@@ -589,6 +626,16 @@ fn run_message_script_with(
     tag: &str,
     bin: &std::ffi::OsStr,
 ) -> Result<(i32, String), TestError> {
+    run_message_script_env(message, tag, bin, &[])
+}
+
+/// [`run_message_script_with`] with `envs` set for the script.
+fn run_message_script_env(
+    message: &str,
+    tag: &str,
+    bin: &std::ffi::OsStr,
+    envs: &[(&str, &str)],
+) -> Result<(i32, String), TestError> {
     let dir = std::env::temp_dir().join(format!(
         "sipnab-message-identity-{}-{tag}",
         std::process::id()
@@ -601,6 +648,9 @@ fn run_message_script_with(
         .arg(&file)
         .env("SIPNAB_MESSAGE_TEST_BIN", bin)
         .env_remove("SIPNAB_SCAN_MESSAGE")
+        .env_remove("SIPNAB_MESSAGE_FEATURES")
+        .env_remove("SIPNAB_MESSAGE_WHOLE")
+        .envs(envs.iter().copied())
         .current_dir(repo())
         .output()
         .map_err(|e| format!("bash {MESSAGE_SCRIPT}: {e}"))?;
@@ -658,6 +708,508 @@ fn message_script_refuses_a_run_that_checked_nothing() -> Result<(), TestError> 
         "a run that did not execute the test must fail:\n{out}"
     );
     assert!(out.contains("NOT CHECKED"), "and say so:\n{out}");
+    Ok(())
+}
+
+/// Run `scripts/check-message-identity.sh` with a stand-in `cargo` first on
+/// `PATH`, and return the script's exit code, its output and the arguments it
+/// passed to cargo.
+///
+/// The cargo line cannot be run from inside this suite (see
+/// [`run_message_script`]), so the CONVERSION the script performs -- from
+/// `SIPNAB_MESSAGE_FEATURES` to cargo's feature flags -- is what is tested.
+/// The stand-in records its arguments one per line and reports one passed
+/// test, which is what a clean run prints. `features` of `None` leaves the
+/// variable unset, which is the commit-msg hook's path.
+fn run_message_script_cargo_args(
+    features: Option<&str>,
+    tag: &str,
+) -> Result<(i32, String, Vec<String>), TestError> {
+    let dir = std::env::temp_dir().join(format!(
+        "sipnab-message-features-{}-{tag}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let args_file = dir.join("cargo-args.txt");
+    executable::write_executable(
+        &dir.join("cargo"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'test result: ok. 1 passed; 0 failed'\n",
+            args_file.display()
+        ),
+    )?;
+    let message = dir.join("message.txt");
+    std::fs::write(&message, "Fix the parser\n")?;
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = Command::new("bash");
+    cmd.arg(repo().join(MESSAGE_SCRIPT))
+        .arg(&message)
+        .env("PATH", path)
+        .env_remove("SIPNAB_MESSAGE_TEST_BIN")
+        .env_remove("SIPNAB_SCAN_MESSAGE")
+        .env_remove("SIPNAB_MESSAGE_FEATURES")
+        .env_remove("SIPNAB_MESSAGE_WHOLE")
+        .current_dir(repo());
+    if let Some(f) = features {
+        cmd.env("SIPNAB_MESSAGE_FEATURES", f);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("bash {MESSAGE_SCRIPT}: {e}"))?;
+    let args: Vec<String> = std::fs::read_to_string(&args_file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    std::fs::remove_dir_all(&dir)?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok((out.status.code().unwrap_or(-1), text, args))
+}
+
+/// The two arguments that follow `flag` in a recorded cargo command line.
+fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let at = args.iter().position(|a| a == flag)?;
+    args.get(at + 1).map(String::as_str)
+}
+
+/// M8. With `SIPNAB_MESSAGE_FEATURES` unset, the script builds with
+/// `--features full`.
+///
+/// That is the commit-msg hook's path: the pre-commit hook has just built
+/// `private_identity_test` with `--features full`, and the same features reuse
+/// that binary instead of rebuilding the crate.
+#[test]
+fn m8_the_message_script_defaults_to_the_hooks_features() -> Result<(), TestError> {
+    let (rc, out, args) = run_message_script_cargo_args(None, "default")?;
+    assert_eq!(rc, 0, "the stand-in cargo reports a pass:\n{out}");
+    assert_eq!(
+        flag_value(&args, "--features"),
+        Some("full"),
+        "unset, the script must build with --features full: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--no-default-features"),
+        "unset, the script must keep the default features: {args:?}"
+    );
+    Ok(())
+}
+
+/// M9. `SIPNAB_MESSAGE_FEATURES=none` builds with no features at all.
+///
+/// The pull-request-text workflow sets it: `private_identity_test` uses
+/// nothing from the crate, so a cold runner need not build `full` (and the
+/// system libraries `full` links) to read a pull request's text.
+#[test]
+fn m9_the_message_script_builds_without_features_when_told_none() -> Result<(), TestError> {
+    let (rc, out, args) = run_message_script_cargo_args(Some("none"), "none")?;
+    assert_eq!(rc, 0, "the stand-in cargo reports a pass:\n{out}");
+    assert!(
+        args.iter().any(|a| a == "--no-default-features"),
+        "none must turn the default features off: {args:?}"
+    );
+    assert_eq!(
+        flag_value(&args, "--features"),
+        None,
+        "none must name no feature: {args:?}"
+    );
+    Ok(())
+}
+
+/// M10. A feature list builds with exactly that list, defaults off.
+#[test]
+fn m10_the_message_script_builds_a_named_feature_list() -> Result<(), TestError> {
+    let (rc, out, args) = run_message_script_cargo_args(Some("native,hep"), "list")?;
+    assert_eq!(rc, 0, "the stand-in cargo reports a pass:\n{out}");
+    assert!(
+        args.iter().any(|a| a == "--no-default-features"),
+        "a named list must turn the default features off: {args:?}"
+    );
+    assert_eq!(
+        flag_value(&args, "--features"),
+        Some("native,hep"),
+        "the named list must reach cargo unchanged: {args:?}"
+    );
+    Ok(())
+}
+
+/// M11. A value that is not a feature list is refused before cargo runs.
+///
+/// Exit 2, "could not check": a typo must not quietly fall back to another
+/// feature set, and nothing but feature names may reach the command line.
+#[test]
+fn m11_the_message_script_refuses_a_malformed_feature_list() -> Result<(), TestError> {
+    let (rc, out, args) = run_message_script_cargo_args(Some("full $(id)"), "bad")?;
+    assert_eq!(
+        rc, 2,
+        "a malformed feature list must not be checked:\n{out}"
+    );
+    assert!(
+        out.contains("SIPNAB_MESSAGE_FEATURES"),
+        "the refusal must name the variable:\n{out}"
+    );
+    assert!(args.is_empty(), "cargo must not run: {args:?}");
+    Ok(())
+}
+
+/// M13. In whole-message mode the scissors line does not end the scan.
+///
+/// CI reads a commit message from `git log --format=%B`, which is the message
+/// as committed: git already removed the `git commit -v` diff when it made the
+/// commit, and nothing downstream removes anything else. A scissors line still
+/// present there was typed into the message, and the lines below it are
+/// published with it, so CI must read them.
+#[test]
+fn m13_whole_message_mode_reads_past_the_scissors_line() -> Result<(), TestError> {
+    let message = format!("Fix the parser\n\nBody.\n{SCISSORS}\nMeasured on thor-02\n");
+    assert!(
+        message_findings_from(&message, Scissors::Cut).is_empty(),
+        "the editor mode stops at the scissors line"
+    );
+    let found = message_findings_from(&message, Scissors::Read);
+    assert!(
+        found.iter().any(|(n, c, _)| *n == 5 && *c == "A"),
+        "whole-message mode must find the host name below the scissors line: {found:?}"
+    );
+    Ok(())
+}
+
+/// M14. `SIPNAB_MESSAGE_WHOLE=1` reaches the check through the script, and any
+/// other value is refused rather than read as one mode or the other.
+#[test]
+fn m14_the_message_script_reads_the_whole_message_when_told() -> Result<(), TestError> {
+    let message = format!("Fix the parser\n\nBody.\n{SCISSORS}\nMeasured on thor-02\n");
+    let bin = std::env::current_exe()?;
+    let (rc, out) = run_message_script_env(&message, "cut", bin.as_os_str(), &[])?;
+    assert_eq!(rc, 0, "unset, the scan stops at the scissors line:\n{out}");
+    let (rc, out) = run_message_script_env(
+        &message,
+        "whole",
+        bin.as_os_str(),
+        &[("SIPNAB_MESSAGE_WHOLE", "1")],
+    )?;
+    assert_eq!(rc, 1, "whole, the line below the scissors is read:\n{out}");
+    assert!(out.contains("line 5: class A"), "and named:\n{out}");
+    let (rc, out) = run_message_script_env(
+        &message,
+        "badwhole",
+        bin.as_os_str(),
+        &[("SIPNAB_MESSAGE_WHOLE", "yes")],
+    )?;
+    assert_eq!(rc, 2, "a value other than 1 is not a mode:\n{out}");
+    Ok(())
+}
+
+/// The workflow that checks what a pull request publishes.
+const PR_TEXT_WORKFLOW: &str = ".github/workflows/pr-text.yml";
+
+/// The name of the job in [`PR_TEXT_WORKFLOW`] that checks what lands on
+/// `main`. It is the status context branch protection requires, so renaming
+/// it silently drops the requirement.
+const PR_TEXT_REQUIRED_JOB: &str = "Commit messages and PR title name no private identity";
+
+/// The lines of the job `id` under `jobs:` in a workflow, or `None`.
+fn workflow_job<'a>(wf: &'a str, id: &str) -> Option<Vec<&'a str>> {
+    let head = format!("  {id}:");
+    let mut lines = wf.lines().skip_while(|l| *l != head);
+    let first = lines.next()?;
+    let mut block = vec![first];
+    block.extend(
+        lines.take_while(|l| {
+            l.is_empty() || l.starts_with("    ") || l.trim_start().starts_with('#')
+        }),
+    );
+    Some(block)
+}
+
+/// M12. CI checks what a pull request puts on `main` -- its title and every
+/// commit message in its range -- and passes each value it reads from the
+/// event as data.
+///
+/// This repository's squash merges take the commit title from the commit
+/// (one commit) or the pull request title, and the body from the branch's
+/// commit messages (`squash_merge_commit_message = COMMIT_MESSAGES`); rebase
+/// merges keep the commit messages; merge commits carry the branch name and
+/// the title. The commit-msg hook checks a message only on the machine that
+/// wrote it, so this job reads them again from the range itself. It runs on
+/// `edited` because the title can change after the last push.
+///
+/// The title, the branch name and the two SHAs come from the event, and the
+/// first two are written by whoever opens the pull request. `${{ }}` is
+/// substituted as text before the shell reads a `run:` script, so any of them
+/// placed there would run as code. The only lines allowed to name them are
+/// `env:` entries, where the runner hands them to the shell as values.
+#[test]
+fn m12_ci_checks_the_title_and_every_commit_message_in_the_range() -> Result<(), TestError> {
+    let wf = std::fs::read_to_string(repo().join(PR_TEXT_WORKFLOW))
+        .map_err(|e| format!("{PR_TEXT_WORKFLOW}: {e}"))?;
+    let trigger = wf
+        .lines()
+        .find(|l| l.trim_start().starts_with("types:"))
+        .ok_or_else(|| format!("{PR_TEXT_WORKFLOW} names no pull_request types"))?;
+    for t in ["opened", "edited", "reopened", "synchronize"] {
+        assert!(
+            trigger.contains(t),
+            "{PR_TEXT_WORKFLOW} must run on `{t}`: {trigger}"
+        );
+    }
+    assert!(
+        wf.lines().any(|l| l.trim() == "permissions:")
+            && wf.lines().any(|l| l.trim() == "contents: read")
+            && !wf.contains(": write"),
+        "{PR_TEXT_WORKFLOW} must grant contents: read and nothing more"
+    );
+
+    let allowed = [
+        "PR_TITLE: ${{ github.event.pull_request.title }}",
+        "PR_BODY: ${{ github.event.pull_request.body }}",
+        "BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+        "HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+        "HEAD_REF: ${{ github.head_ref }}",
+        "PR_NUMBER: ${{ github.event.pull_request.number }}",
+        "group: pr-text-${{ github.event.pull_request.number }}",
+        // A `with:` input of actions/checkout, not a script.
+        "ref: ${{ github.event.pull_request.base.sha }}",
+    ];
+    let unsafe_lines: Vec<&str> = wf
+        .lines()
+        .filter(|l| l.contains("github.event.pull_request") || l.contains("github.head_ref"))
+        .filter(|l| !allowed.contains(&l.trim()))
+        .collect();
+    assert!(
+        unsafe_lines.is_empty(),
+        "{PR_TEXT_WORKFLOW} names an event value outside its env entries, where \
+         it would be substituted into a script:\n  {}",
+        unsafe_lines.join("\n  ")
+    );
+
+    let job = workflow_job(&wf, "commits")
+        .ok_or_else(|| format!("{PR_TEXT_WORKFLOW} has no `commits` job"))?;
+    let has = |want: &str| job.iter().any(|l| l.trim() == want);
+    let runs = |want: &str| job.iter().any(|l| l.trim_start().starts_with(want));
+    assert!(
+        has(&format!("name: {PR_TEXT_REQUIRED_JOB}")),
+        "the required job must be named `{PR_TEXT_REQUIRED_JOB}`: branch \
+         protection requires that context by name"
+    );
+    for env in [
+        "PR_TITLE: ${{ github.event.pull_request.title }}",
+        "BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+        "HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+        "HEAD_REF: ${{ github.head_ref }}",
+        "SIPNAB_MESSAGE_FEATURES: none",
+        "SIPNAB_MESSAGE_WHOLE: '1'",
+        "fetch-depth: 0",
+    ] {
+        assert!(has(env), "the `commits` job must carry `{env}`");
+    }
+    assert!(
+        runs(r#"git rev-list --reverse "$BASE_SHA..$HEAD_SHA""#),
+        "the `commits` job must walk every commit in base..head"
+    );
+    assert!(
+        runs(r#"git log -1 --format=%B "$sha""#),
+        "the `commits` job must read each commit's message as committed"
+    );
+    assert!(
+        runs(&format!("bash {MESSAGE_SCRIPT} ")),
+        "the `commits` job must run {MESSAGE_SCRIPT}, the rule the hook runs"
+    );
+    assert!(
+        !job.iter()
+            .any(|l| l.trim_start().starts_with("continue-on-error")),
+        "the `commits` job is the one that blocks, so it must fail"
+    );
+
+    // The description stays on the pull request page and is public from the
+    // moment the pull request is opened, so a red check cannot unpublish it:
+    // it is reported, and the job passes.
+    let advisory = workflow_job(&wf, "description")
+        .ok_or_else(|| format!("{PR_TEXT_WORKFLOW} has no `description` job"))?;
+    assert!(
+        advisory
+            .iter()
+            .any(|l| l.trim() == "PR_BODY: ${{ github.event.pull_request.body }}"),
+        "the `description` job must read the body through env"
+    );
+    assert!(
+        advisory.iter().any(|l| l.contains("::warning")),
+        "the `description` job must report a finding as a warning"
+    );
+    let run_line = advisory
+        .iter()
+        .find(|l| {
+            l.trim_start()
+                .starts_with(&format!("bash {MESSAGE_SCRIPT} "))
+        })
+        .ok_or("the `description` job must run the script")?;
+    assert!(
+        run_line.contains("&& rc=0 || rc=$?"),
+        "the `description` job must not let the script's exit end the step: {run_line}"
+    );
+    let exits: Vec<&&str> = advisory
+        .iter()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.starts_with('#') && t.contains("exit ") && !t.contains("exit 0")
+        })
+        .collect();
+    assert!(
+        exits.is_empty(),
+        "the `description` job is advisory and must not fail: {exits:?}"
+    );
+    // Passing by itself, not failing and being ignored: `continue-on-error`
+    // leaves a failed check on the pull request, which reads as a broken
+    // build rather than as a note about the description.
+    assert!(
+        !advisory
+            .iter()
+            .any(|l| l.trim_start().starts_with("continue-on-error")),
+        "the `description` job must pass with a warning, not fail and be ignored"
+    );
+    Ok(())
+}
+
+/// M15. The checks run main's code, and read the pull request only as data.
+///
+/// The `commits` job becomes a required check, so a pull request must not be
+/// able to weaken the rule that judges it. On `pull_request` GitHub runs the
+/// workflow file, the script and the test from the pull request itself. On
+/// `pull_request_target` it runs the base branch's workflow file, and each job
+/// checks out the base commit, so the script, the test and Cargo.lock are
+/// main's. The pull request's commits are fetched as objects and read with
+/// `git rev-list` and `git log`; nothing switches the tree to them, and
+/// nothing from them is built or run.
+///
+/// `pull_request_target` runs with a write token unless the workflow says
+/// otherwise, and a cache written there can be restored by a later run on
+/// `main`, so the workflow grants `contents: read` at its top level and uses
+/// no cache.
+#[test]
+fn m15_ci_runs_mains_code_and_reads_the_pull_request_as_data() -> Result<(), TestError> {
+    let wf = std::fs::read_to_string(repo().join(PR_TEXT_WORKFLOW))
+        .map_err(|e| format!("{PR_TEXT_WORKFLOW}: {e}"))?;
+    let lines: Vec<&str> = wf.lines().collect();
+    let top = |l: &&str| !l.starts_with(' ') && !l.starts_with('#') && !l.is_empty();
+
+    // The trigger: pull_request_target and not pull_request.
+    assert!(
+        lines.iter().any(|l| {
+            let t = l.trim();
+            t == "pull_request_target:" || t.starts_with("pull_request_target: # zizmor")
+        }),
+        "{PR_TEXT_WORKFLOW} must run on pull_request_target, so the base \
+         branch's workflow file is the one that runs"
+    );
+    assert!(
+        !lines.iter().any(|l| l.trim() == "pull_request:"),
+        "{PR_TEXT_WORKFLOW} must not run on pull_request, where the pull \
+         request's own workflow, script and test would judge it"
+    );
+
+    // Workflow-level permissions, and no job widens them.
+    let at = lines
+        .iter()
+        .position(|l| *l == "permissions:")
+        .ok_or_else(|| format!("{PR_TEXT_WORKFLOW} has no top-level permissions"))?;
+    let block: Vec<&str> = lines[at + 1..]
+        .iter()
+        .take_while(|l| !top(l))
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .copied()
+        .collect();
+    assert_eq!(
+        block,
+        vec!["  contents: read"],
+        "{PR_TEXT_WORKFLOW} must grant contents: read and nothing else at the top"
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.trim() == "permissions:").count(),
+        1,
+        "no job in {PR_TEXT_WORKFLOW} may restate permissions"
+    );
+
+    // Every checkout is the base commit, and nothing switches to the PR.
+    let checkouts = lines
+        .iter()
+        .filter(|l| l.contains("uses: actions/checkout@"))
+        .count();
+    let base_refs = lines
+        .iter()
+        .filter(|l| l.trim() == "ref: ${{ github.event.pull_request.base.sha }}")
+        .count();
+    assert!(checkouts >= 2, "both jobs check out the repository");
+    assert_eq!(
+        base_refs, checkouts,
+        "every checkout in {PR_TEXT_WORKFLOW} must name the base SHA as its ref"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.trim_start().starts_with("ref:") && !l.contains("base.sha")),
+        "no checkout may name any ref but the base SHA"
+    );
+    for verb in [
+        "git checkout",
+        "git switch",
+        "git reset",
+        "git restore",
+        "git worktree",
+        "git merge",
+        "git cherry-pick",
+        "git am",
+    ] {
+        assert!(
+            !wf.contains(verb),
+            "{PR_TEXT_WORKFLOW} must never put the pull request's tree on disk: `{verb}`"
+        );
+    }
+    assert!(
+        !wf.contains("actions/cache"),
+        "{PR_TEXT_WORKFLOW} must use no cache: a cache saved from a \
+         pull_request_target run is restorable on main"
+    );
+
+    // The PR's commits are fetched as data, and the fetched head is the one
+    // the event names.
+    let job = workflow_job(&wf, "commits")
+        .ok_or_else(|| format!("{PR_TEXT_WORKFLOW} has no `commits` job"))?;
+    let has = |want: &str| job.iter().any(|l| l.trim() == want);
+    assert!(
+        has(r#"git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head""#),
+        "the `commits` job must fetch the pull request's head as a remote ref"
+    );
+    assert!(
+        has("PR_NUMBER: ${{ github.event.pull_request.number }}"),
+        "the pull request number must reach the shell through env"
+    );
+    let fetch = job
+        .iter()
+        .position(|l| l.trim_start().starts_with("git fetch "))
+        .ok_or("no fetch")?;
+    let verify = job
+        .iter()
+        .position(|l| {
+            l.trim()
+                == r#"if [ "$(git rev-parse --verify 'refs/remotes/pr/head^{commit}')" != "$HEAD_SHA" ]; then"#
+        })
+        .ok_or("the `commits` job must check the fetched head against HEAD_SHA")?;
+    let walk = job
+        .iter()
+        .position(|l| l.trim_start().starts_with("git rev-list "))
+        .ok_or("no rev-list")?;
+    assert!(
+        fetch < verify && verify < walk,
+        "the fetched head must be verified after the fetch and before any \
+         message is read"
+    );
     Ok(())
 }
 
