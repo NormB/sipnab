@@ -826,7 +826,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // links scripts/check-message-identity.sh.
     // 491 -> 493: docs/internals/testing.md links tests/support/ports.rs and
     // tests/released_port_scan_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 493;
+    // 493 -> 494: docs/internals/build-ci-release.md's pip paragraph links
+    // tests/ci_pip_network_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 494;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
