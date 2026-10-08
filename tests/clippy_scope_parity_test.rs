@@ -54,6 +54,9 @@ fn is_invocation(line: &str) -> bool {
         && !l.starts_with("echo")
         && !l.contains("--fix")
         && !l.contains("Reproduce:")
+        // Another architecture's lint is its own rule; see
+        // `a_cross_architecture_clippy_is_not_the_host_scope`.
+        && !l.contains("--target")
 }
 
 /// The clippy invocation a file makes, as the flags between `clippy` and `--`.
@@ -78,6 +81,26 @@ fn clippy_scopes(src: &str) -> Vec<String> {
         })
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// A clippy run for another architecture (`--target`) is not the host gate.
+///
+/// `.githooks/pre-push` lints the other Linux architecture too, so code under
+/// `#[cfg(target_arch = ...)]` is read before CI. That run cannot use CI's
+/// scope: `--workspace --all-targets` reaches a crate whose build script
+/// (`alsa-sys`) needs a sysroot for the other target, which a development host
+/// does not have. It is a separate rule with its own test,
+/// `tests/pre_push_cross_arch_test.rs`, and the host scope stays CI's.
+#[test]
+fn a_cross_architecture_clippy_is_not_the_host_scope() -> Result<(), TestError> {
+    let hook = "cargo clippy --workspace --all-features --all-targets -- -D warnings\n\
+                CARGO_TARGET_DIR=x cargo clippy --target \"$CROSS_TARGET\" --features full --tests -- -D warnings\n";
+    assert_eq!(
+        clippy_scopes(hook),
+        ["--workspace --all-features --all-targets"],
+        "only the host invocation is the host scope"
+    );
+    Ok(())
 }
 
 /// The commit gate lints test binaries.

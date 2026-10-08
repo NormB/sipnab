@@ -281,6 +281,39 @@ fi
 fi
 fi
 
+# -- The other Linux architecture --------------------------------------------
+#
+# Code under `#[cfg(target_arch = "x86_64")]` is never compiled on an aarch64
+# host (and the reverse), so every check above passes over it. On 2026-10-07
+# nine calls in x86_64-only tests passed both hooks on the aarch64
+# development host and failed CI's x86_64 jobs on PR #386. This runs clippy for the other architecture over the
+# lib, bins and tests with `--features full`, in its own target directory:
+# CI's `--workspace --all-targets` reaches `alsa-sys`, whose build script
+# needs a sysroot for the other target. A missing target
+# is reported, not passed.
+CROSS_TARGET="$(sh "$(dirname "$0")/../scripts/cross-arch-target.sh" 2>/dev/null || true)"
+if [ -z "$CROSS_TARGET" ]; then
+	printf '  cross-arch clippy ... %bNOT CHECKED -- no other architecture known for %s%b\n' "$YELLOW" "$(uname -m)" "$NC"
+	printf '    CI still compiles both: x86_64 in quality.yml (Coverage, Clippy to Code Scanning), aarch64 in ci.yml (Check, Features).\n'
+elif ! rustup target list --installed 2>/dev/null | grep -qx "$CROSS_TARGET"; then
+	printf '  cross-arch clippy (%s) ... %bNOT CHECKED -- the target is not installed%b\n' "$CROSS_TARGET" "$YELLOW" "$NC"
+	printf '    Install it with: rustup target add %s\n' "$CROSS_TARGET"
+else
+printf '  cargo clippy --target %s --features full --tests ... ' "$CROSS_TARGET"
+if CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/cross-arch" cargo clippy --target "$CROSS_TARGET" --features full --tests -- -D warnings; then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	printf '\n'
+	printf '%bPush blocked: code for %s does not pass clippy.%b\n' "$RED" "$CROSS_TARGET" "$NC"
+	printf 'Reproduce with:\n'
+	printf '    CARGO_TARGET_DIR=target/cross-arch cargo clippy --target %s --features full --tests -- -D warnings\n' "$CROSS_TARGET"
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
+fi
+fi
+
 # -- CI's feature matrix: on the local runners, not in this hook ------------
 #
 # Every combination ci.yml's Features job lists used to be rebuilt here, on
