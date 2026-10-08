@@ -2494,6 +2494,65 @@ mod tests {
         Ok(())
     }
 
+    /// Media ICMP findings published by another test do not reach this one.
+    ///
+    /// `dialog_to_json` reads the resolved media findings, and the capture-wide
+    /// `icmp_media` block is emitted for every dialog once any finding exists,
+    /// whatever its Call-ID. When the set was one process-global, a test that
+    /// published findings changed the document every concurrently running
+    /// test rendered: `dialog_ndjson_is_one_compact_line` failed with an
+    /// `icmp_media` block in its compact line and none in its pretty render.
+    /// The other thread here publishes strictly between the two renders, so
+    /// the overlap that was left to chance in the full suite happens on every
+    /// run.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn another_threads_published_media_findings_do_not_reach_this_render() -> Result<(), TestError>
+    {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
+        let render = || {
+            dialog_to_json(
+                &dialog,
+                &[],
+                &MediaDiagnosis::default(),
+                crate::rtp::quality::MosDelay::unknown(),
+            )
+        };
+
+        let before = render();
+
+        let published = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let rendered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let other = {
+            let published = std::sync::Arc::clone(&published);
+            let rendered = std::sync::Arc::clone(&rendered);
+            std::thread::spawn(move || {
+                // A Call-ID this dialog does not have: the capture-wide block
+                // is emitted for every dialog, not only the ones named.
+                crate::pipeline::publish_icmp_media_for_test(resolved_one_per_tier(
+                    "unrelated@example.com",
+                ));
+                published.wait();
+                // Hold the findings until the second render is done, then
+                // clear them the way every publishing test does.
+                rendered.wait();
+                crate::pipeline::reset_icmp_evidence();
+            })
+        };
+
+        published.wait();
+        let after = render();
+        rendered.wait();
+        other.join().map_err(|_| "the publishing thread panicked")?;
+
+        assert_eq!(
+            before, after,
+            "another thread's published media ICMP findings changed this thread's render"
+        );
+        Ok(())
+    }
+
     /// The dialog document carries the code that decided the outcome.
     ///
     /// Without it, `state` says `Failed` and the reader still has to go back to
