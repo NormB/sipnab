@@ -115,14 +115,17 @@ pub(crate) use super::hep_roster::hep_source_label;
 /// * `hep` — the parsed HEP packet whose payload and metadata to convert.
 /// * `source` — the sender, as [`hep_source_label`] names it, recorded as
 ///   interface `"hep:{source}"`.
+/// * `received` — when the packet arrived, the packet's time when it
+///   carries none ([`HepPacket::timestamp`] is `None`).
 ///
 /// # Returns
 ///
-/// A `Packet` whose `data` is the HEP payload and whose `pre_parsed`
-/// carries the HEP-asserted addressing.
-fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
+/// A `Packet` whose `data` is the HEP payload, whose time is the one the
+/// packet carries or else `received`, and whose `pre_parsed` carries the
+/// HEP-asserted addressing.
+fn hep_to_packet(hep: HepPacket, source: &str, received: DateTime<Utc>) -> Packet {
     Packet::with_pre_parsed(
-        hep.timestamp,
+        hep.timestamp.unwrap_or(received),
         hep.payload,
         Some(format!("hep:{source}")),
         PreParsed {
@@ -934,8 +937,13 @@ pub struct HepPacket {
     pub src_port: u16,
     /// Destination transport port.
     pub dst_port: u16,
-    /// Timestamp of the captured packet.
-    pub timestamp: DateTime<Utc>,
+    /// The capture time the packet carries: the `TS_SEC`/`TS_USEC` chunks of
+    /// a HEP v3 packet. `None` when the packet carries none: a v3 packet
+    /// without a `TS_SEC` chunk, and every HEP v2 packet, whose header as
+    /// [`parse_hep`] reads it has no time field. Each consumer supplies its
+    /// own time then: `--hep-listen` the time the packet arrived, `-E` the
+    /// time the wrapper was captured.
+    pub timestamp: Option<DateTime<Utc>>,
     /// Application protocol type (SIP, RTP, RTCP, etc.) — from the HEP
     /// `CHUNK_PROTO_TYPE` chunk. Distinct from `ip_protocol` below.
     pub protocol: HepProtocol,
@@ -992,8 +1000,9 @@ pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
 /// collecting addresses, ports, timestamp, protocol, payload, and optional
 /// correlation/capture/auth chunks. Unknown chunk types are skipped (with a
 /// `tracing::trace` line) for forward compatibility. An out-of-range
-/// `TS_USEC` is clamped rather than rejected, and an unrepresentable
-/// timestamp falls back to the current time.
+/// `TS_USEC` is clamped rather than rejected. A packet with no `TS_SEC`
+/// chunk carries no time, and its `timestamp` is `None` (a `TS_USEC` alone
+/// names no second).
 ///
 /// # One chunk of each known type, or the packet is refused
 ///
@@ -1071,7 +1080,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     let mut dst_addr: Option<IpAddr> = None;
     let mut src_port: u16 = 0;
     let mut dst_port: u16 = 0;
-    let mut ts_sec: u32 = 0;
+    let mut ts_sec: Option<u32> = None;
     let mut ts_usec: u32 = 0;
     let mut protocol = HepProtocol::Unknown(0);
     let mut ip_protocol: u8 = 17; // Default to UDP — most HEP traffic is SIP/UDP or RTP/UDP.
@@ -1190,12 +1199,12 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
             }
             CHUNK_TS_SEC => {
                 ensure!(chunk_data.len() >= 4, "TS_SEC chunk too short");
-                ts_sec = u32::from_be_bytes([
+                ts_sec = Some(u32::from_be_bytes([
                     chunk_data[0],
                     chunk_data[1],
                     chunk_data[2],
                     chunk_data[3],
-                ]);
+                ]));
             }
             CHUNK_TS_USEC => {
                 ensure!(chunk_data.len() >= 4, "TS_USEC chunk too short");
@@ -1247,10 +1256,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     // `ts_usec` is attacker-controlled; widen and clamp before the µs→ns
     // conversion so it can't overflow u32 (panic in debug / wrap in release).
     let nanos = (ts_usec as u64 * 1000).min(999_999_999) as u32;
-    let timestamp = Utc
-        .timestamp_opt(ts_sec as i64, nanos)
-        .single()
-        .unwrap_or_else(Utc::now);
+    let timestamp = ts_sec.and_then(|sec| Utc.timestamp_opt(i64::from(sec), nanos).single());
 
     Ok(HepPacket {
         version: 3,
@@ -1302,8 +1308,9 @@ fn known_chunk_bit(chunk_type: u16) -> Option<u32> {
 ///
 /// Reads the fixed IPv4-only header (ports at bytes 2..6, addresses at
 /// 6..14) and treats everything past the declared header length as payload.
-/// HEP v2 carries no timestamp, so the packet is stamped with the current
-/// time; protocol is always SIP over UDP and there is no auth-key field.
+/// The header this reads has no time field, so `timestamp` is `None` and
+/// the consumer supplies the time; protocol is always SIP over UDP and there
+/// is no auth-key field.
 ///
 /// # Arguments
 ///
@@ -1352,7 +1359,7 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
         dst_addr,
         src_port,
         dst_port,
-        timestamp: Utc::now(),
+        timestamp: None,
         protocol: HepProtocol::Sip, // v2 was SIP-only
         ip_protocol: 17,            // v2 carried only UDP-borne SIP
         payload,
@@ -1590,6 +1597,44 @@ fn append_chunk(buf: &mut Vec<u8>, vendor: u16, chunk_type: u16, data: &[u8]) {
     buf.extend_from_slice(&chunk_type.to_be_bytes());
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(data);
+}
+
+/// `datagram`, a HEP v3 packet, with its `TS_SEC` and `TS_USEC` chunks
+/// removed and its total length rewritten: the packet a sender that stamps
+/// no time sends. Test support for the tests here and in `crate::pipeline`.
+///
+/// # Errors
+///
+/// `datagram` is not a HEP v3 packet whose chunks fill it exactly.
+#[cfg(test)]
+pub(crate) fn hep3_without_time(datagram: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    if datagram.len() < 6 || &datagram[..4] != HEP3_MAGIC {
+        return Err("not a HEP v3 packet".to_string());
+    }
+    let mut chunks = Vec::new();
+    let mut offset = 6;
+    while offset < datagram.len() {
+        let header = datagram
+            .get(offset..offset + CHUNK_HEADER_LEN)
+            .ok_or("truncated chunk header")?;
+        let chunk_type = u16::from_be_bytes([header[2], header[3]]);
+        let len = usize::from(u16::from_be_bytes([header[4], header[5]]));
+        let chunk = datagram
+            .get(offset..offset + len)
+            .ok_or("chunk runs past the datagram")?;
+        if len < CHUNK_HEADER_LEN {
+            return Err("chunk shorter than its header".to_string());
+        }
+        if chunk_type != CHUNK_TS_SEC && chunk_type != CHUNK_TS_USEC {
+            chunks.extend_from_slice(chunk);
+        }
+        offset += len;
+    }
+    let total = u16::try_from(6 + chunks.len()).map_err(|e| e.to_string())?;
+    let mut out = HEP3_MAGIC.to_vec();
+    out.extend_from_slice(&total.to_be_bytes());
+    out.extend_from_slice(&chunks);
+    Ok(out)
 }
 
 // ── CIDR allowlist ──────────────────────────────────────────────────
@@ -1970,7 +2015,7 @@ impl<'a> HepIngest<'a> {
                     .roster
                     .lock()
                     .admitted(hep.capture_id, peer, &source, now);
-                let mut packet = hep_to_packet(hep, &source);
+                let mut packet = hep_to_packet(hep, &source, Utc::now());
                 // The other half of the pointer. Stamped from the SENDER's
                 // counter, not the listener's, and before the send for the
                 // same reason the offline readers stamp before theirs: once
@@ -3547,8 +3592,8 @@ pub fn file_export_notice(
 /// finds two permits, not one, and neither is reachable without proving
 /// something first.
 pub struct HepSender {
-    /// Where finished packets go: a connected UDP socket, a TCP stream, or a
-    /// TLS stream over one. Behind a mutex because a stream sink is `&mut` —
+    /// Where finished packets go: an unconnected UDP socket that addresses
+    /// each datagram, a TCP stream, or a TLS stream over one. Behind a mutex because a stream sink is `&mut` —
     /// a half-written packet interleaved with another would desynchronize the
     /// collector's framing for the rest of the connection — while the packet
     /// path holds only `&self`.
@@ -3620,7 +3665,7 @@ pub struct HepSenderOpts<'a> {
 /// not turn the forwarding path into a spin.
 ///
 /// The first connection is made here so an unreachable collector is an error
-/// the operator sees at startup, exactly as the connected UDP socket gives
+/// the operator sees at startup, as the UDP sender's startup connect gives
 /// them. `TCP_NODELAY` is set because these are small packets whose whole
 /// value is timeliness; Nagle would hold a SIP message back waiting for
 /// company.
@@ -3892,15 +3937,24 @@ impl HepSender {
                 let socket = UdpSocket::bind(local).with_context(|| {
                     format!("Failed to bind ephemeral UDP socket ({local}) for HEP sender")
                 })?;
-                socket
-                    .connect(dest)
+                // A destination with no route is still refused at startup:
+                // a second socket connects to it (no packet is sent) and is
+                // dropped.
+                UdpSocket::bind(local)
+                    .and_then(|probe| probe.connect(dest))
                     .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
+                // Unconnected, each datagram addressed with `send_to`. On a
+                // connected UDP socket the kernel reports an ICMP
+                // port-unreachable on the NEXT send, which then fails with
+                // ECONNREFUSED and that datagram is lost; an unconnected
+                // socket is not told, so no datagram is dropped for an
+                // earlier one's error.
                 let bound = socket
                     .local_addr()
                     .with_context(|| "Failed to read the local address of the HEP UDP sender")?;
                 let sink: HepSink = Box::new(move |pkt: &[u8]| {
                     socket
-                        .send(pkt)
+                        .send_to(pkt, dest)
                         .map(|_| Delivery::Direct)
                         .map_err(|e| SinkFailure::at(super::hep_export::ExportFailure::Write, e))
                 });
@@ -3980,7 +4034,7 @@ impl HepSender {
     ///
     /// Builds the HEP v3 envelope from the SIP message's network metadata
     /// (addresses, ports, timestamp) and the raw SIP bytes, then sends it
-    /// over the connected UDP socket.
+    /// through the sender's transport.
     ///
     /// # Errors
     ///
@@ -3988,8 +4042,9 @@ impl HepSender {
     ///
     /// # Side effects
     ///
-    /// Transmits one datagram on the connected UDP socket; in `Hmac` auth
-    /// mode also reads the clock and increments the atomic nonce counter.
+    /// Transmits one packet through the sender's transport (one datagram
+    /// over UDP); in `Hmac` auth mode also reads the clock and increments the
+    /// atomic nonce counter.
     pub fn send(&self, msg: &crate::sip::message::SipMessage) -> Result<()> {
         let endpoint = HepEndpoint {
             src_addr: msg.src_addr,
@@ -4122,7 +4177,8 @@ impl HepSender {
     ///
     /// # Side effects
     ///
-    /// Transmits one datagram on the connected UDP socket.
+    /// Writes one packet to the sink: one datagram on the UDP socket, or a
+    /// write to the TCP or TLS connection.
     fn transmit(&self, _permit: &HepExportPermit, pkt: &[u8]) -> Result<()> {
         let mut sink = self.sink.lock();
         // Counted here, where every packet passes, so no transport can add a
@@ -6340,6 +6396,66 @@ mod tests {
     /// A SIP request as the wire carries it.
     const OPTIONS: &[u8] = b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
 
+    /// A UDP exporter aimed at a port with no listener loses no later
+    /// datagram to the ICMP port-unreachable the kernel gets back
+    /// (HEP-SEND1). The sender used a connected socket, so each ICMP error
+    /// was reported on the NEXT send, which failed with ECONNREFUSED and
+    /// dropped that datagram: `-H` to a closed loopback port reported
+    /// "4 packet(s) sent, 3 failed (write 3)", and the first datagram after
+    /// a collector started was lost the same way.
+    #[test]
+    fn a_udp_exporter_loses_nothing_to_a_closed_port() -> Result<(), TestError> {
+        const EACH: usize = 4;
+        // A loopback port with nothing bound to it: bound to learn a free
+        // number, then closed.
+        let dest = UdpSocket::bind("127.0.0.1:0")
+            .map_err(|e| format!("reserve a port: {e:?}"))?
+            .local_addr()
+            .map_err(|e| format!("reserved addr: {e:?}"))?;
+        let sender = HepSender::new(&dest.to_string(), 7, None, HepAuthMode::Plain)
+            .map_err(|e| format!("build sender: {e:?}"))?;
+        let pp = captured(OPTIONS, TransportProto::Udp, 5060);
+        let mut errors = Vec::new();
+        for _ in 0..EACH {
+            if let Err(e) = sender.forward_parsed(&pp) {
+                errors.push(format!("{e:#}"));
+            }
+        }
+
+        // The collector starts on that port, and every later datagram reaches it.
+        let collector = UdpSocket::bind(dest).map_err(|e| format!("bind collector: {e:?}"))?;
+        collector
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        for _ in 0..EACH {
+            if let Err(e) = sender.forward_parsed(&pp) {
+                errors.push(format!("{e:#}"));
+            }
+        }
+        let mut buf = [0u8; 2048];
+        let mut received = 0;
+        while received < EACH {
+            match collector.recv(&mut buf) {
+                Ok(_) => received += 1,
+                Err(_) => break,
+            }
+        }
+
+        let counted = sender.counters().snapshot();
+        assert!(errors.is_empty(), "no send may fail: {errors:?}");
+        assert_eq!(
+            counted.sent,
+            2 * EACH as u64,
+            "every datagram counts as sent"
+        );
+        assert_eq!(counted.failed(), 0, "none counts as failed");
+        assert_eq!(
+            received, EACH,
+            "every datagram sent after the collector started reaches it"
+        );
+        Ok(())
+    }
+
     /// The failure this shipped with. `-d eth0 --hep-send homer:9060` on a
     /// TCP trunk: the batch loop re-parsed every message with a literal
     /// `TransportProto::Udp` before handing it to the sender, so the IP
@@ -6626,7 +6742,7 @@ mod tests {
         assert_eq!(hep.protocol, HepProtocol::Sip);
         assert_eq!(hep.payload[..], sip_payload[..]);
         assert_eq!(hep.capture_id, Some(42));
-        assert_eq!(hep.timestamp.timestamp(), 1700000000);
+        assert_eq!(hep.timestamp.map(|t| t.timestamp()), Some(1700000000));
         Ok(())
     }
 
@@ -6775,9 +6891,10 @@ mod tests {
         assert_eq!(parsed.protocol, HepProtocol::Sip);
         assert_eq!(parsed.capture_id, Some(99));
         assert_eq!(parsed.payload[..], payload[..]);
-        assert_eq!(parsed.timestamp.timestamp(), 1700000000);
+        let carried = parsed.timestamp.ok_or("the packet carries a time")?;
+        assert_eq!(carried.timestamp(), 1700000000);
         // Microsecond precision: 500_000_000 ns = 500_000 us
-        assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 500_000);
+        assert_eq!(carried.timestamp_subsec_micros(), 500_000);
         Ok(())
     }
 
@@ -6960,7 +7077,7 @@ mod tests {
         // that this compiles is the assertion.
         sender
             .transmit(&sender.permit, b"HEP3\x00\x06")
-            .map_err(|e| format!("a connected loopback socket must accept a datagram: {e:?}"))?;
+            .map_err(|e| format!("a loopback UDP sender must accept a datagram: {e:?}"))?;
         Ok(())
     }
 
@@ -7911,10 +8028,11 @@ mod tests {
             dst_addr: "192.0.2.20".parse()?,
             src_port: 22222,
             dst_port: 2223,
-            timestamp: Utc
-                .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
-                .single()
-                .ok_or("a valid UTC time")?,
+            timestamp: Some(
+                Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                    .single()
+                    .ok_or("a valid UTC time")?,
+            ),
             // rtpengine's own capture protocol for a mirrored `ng` datagram.
             protocol: HepProtocol::Unknown(0x3d),
             payload: b"cookie1 d7:command5:offere".to_vec(),
@@ -7924,7 +8042,7 @@ mod tests {
             auth_span: None,
             ip_protocol: 17,
         };
-        let packet = hep_to_packet(hep, "0.0.0.0:9060");
+        let packet = hep_to_packet(hep, "0.0.0.0:9060", Utc::now());
         let origin = packet
             .pre_parsed
             .as_ref()
@@ -7956,10 +8074,11 @@ mod tests {
             dst_addr: "192.0.2.20".parse()?,
             src_port: 5060,
             dst_port: 5060,
-            timestamp: Utc
-                .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
-                .single()
-                .ok_or("a valid UTC time")?,
+            timestamp: Some(
+                Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                    .single()
+                    .ok_or("a valid UTC time")?,
+            ),
             protocol: HepProtocol::Sip,
             payload: payload.to_vec(),
             correlation_id: None,
@@ -7968,7 +8087,7 @@ mod tests {
             auth_span: None,
             ip_protocol: 17,
         };
-        let packet = hep_to_packet(hep, "0.0.0.0:9060");
+        let packet = hep_to_packet(hep, "0.0.0.0:9060", Utc::now());
         let meta = packet
             .pre_parsed
             .as_ref()
@@ -7992,10 +8111,11 @@ mod tests {
             dst_addr: "192.168.1.20".parse()?,
             src_port: 5060,
             dst_port: 5061,
-            timestamp: Utc
-                .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
-                .single()
-                .ok_or("a valid UTC time")?,
+            timestamp: Some(
+                Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                    .single()
+                    .ok_or("a valid UTC time")?,
+            ),
             protocol: HepProtocol::Sip,
             payload: b"REGISTER sip:carol SIP/2.0\r\n\r\n".to_vec(),
             correlation_id: None,
@@ -8004,7 +8124,7 @@ mod tests {
             auth_span: None,
             ip_protocol: 6,
         };
-        let packet = hep_to_packet(hep, "0.0.0.0:9060");
+        let packet = hep_to_packet(hep, "0.0.0.0:9060", Utc::now());
         let meta = packet.pre_parsed.as_ref().ok_or("pre_parsed is set")?;
         assert_eq!(meta.ip_protocol, 6);
         Ok(())
@@ -8461,8 +8581,9 @@ mod tests {
         assert_eq!(parsed.ip_protocol, 17);
         assert_eq!(parsed.capture_id, Some(1000));
         assert_eq!(&parsed.payload[..], payload);
-        assert_eq!(parsed.timestamp.timestamp(), 1234567890);
-        assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 250_000);
+        let carried = parsed.timestamp.ok_or("the packet carries a time")?;
+        assert_eq!(carried.timestamp(), 1234567890);
+        assert_eq!(carried.timestamp_subsec_micros(), 250_000);
         Ok(())
     }
 
@@ -8665,6 +8786,102 @@ mod tests {
         for needle in ["no packets admitted for 30s", "auth_mismatch", "192.0.2.7"] {
             assert!(line.contains(needle), "`{needle}` missing from: {line}");
         }
+        Ok(())
+    }
+
+    /// A HEP v3 packet carries a time only when it has a `TS_SEC` chunk:
+    /// without one `timestamp` is `None`, not 1970-01-01 (HEP-TS2).
+    #[test]
+    fn a_hep_v3_packet_without_ts_sec_carries_no_time() -> Result<(), TestError> {
+        let timed = hep3_from(9, None, b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        assert_eq!(
+            parse_hep(&timed)?.timestamp.map(|t| t.timestamp()),
+            Some(1_700_000_000),
+            "control: the time chunks are read"
+        );
+        let untimed = hep3_without_time(&timed)?;
+        let parsed = parse_hep(&untimed)?;
+        assert_eq!(parsed.timestamp, None);
+        assert_eq!(
+            parsed.payload,
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n".to_vec(),
+            "the rest of the packet still parses"
+        );
+        Ok(())
+    }
+
+    /// `-L` stamps a HEP v3 packet that carries no `TS_SEC`/`TS_USEC` chunks
+    /// with the time it arrived (HEP-TS2). The parser defaulted the missing
+    /// seconds to 0, so such a packet was timed 1970-01-01T00:00:00Z. A
+    /// packet that carries a time keeps it.
+    #[test]
+    fn a_hep_v3_packet_without_time_chunks_keeps_its_arrival_time() -> Result<(), TestError> {
+        let opts = keyed_opts(right_key(), Duration::from_secs(30));
+        let t0 = Instant::now();
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
+        let peer: IpAddr = "192.0.2.9".parse().map_err(|e| format!("literal: {e:?}"))?;
+        let timed = hep3_from(9, Some(right_key()), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let untimed = hep3_without_time(&timed)?;
+        assert_eq!(
+            untimed.len() + 2 * (CHUNK_HEADER_LEN + 4),
+            timed.len(),
+            "control: exactly the two time chunks are removed"
+        );
+
+        let before = Utc::now();
+        let packet = ingest
+            .receive(&untimed, peer, t0)
+            .packet
+            .ok_or("the untimed packet is admitted")?;
+        let after = Utc::now();
+        assert!(
+            packet.timestamp >= before && packet.timestamp <= after,
+            "a packet with no time chunks is timed by its arrival, between \
+             {before} and {after}, not {}",
+            packet.timestamp
+        );
+
+        let packet = ingest
+            .receive(&timed, peer, t0)
+            .packet
+            .ok_or("the timed packet is admitted")?;
+        assert_eq!(
+            packet.timestamp.timestamp(),
+            1_700_000_000,
+            "a packet that carries a time keeps it"
+        );
+        Ok(())
+    }
+
+    /// `-L` stamps a HEP v2 packet with the time it arrived: the v2 header
+    /// this parser reads has no time field.
+    #[test]
+    fn a_hep_v2_packet_keeps_its_arrival_time() -> Result<(), TestError> {
+        let mut opts = keyed_opts(right_key(), Duration::from_secs(30));
+        opts.auth_key = None;
+        let t0 = Instant::now();
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
+        let peer: IpAddr = "192.0.2.10"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
+        let v2 = make_hep_v2(
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(192, 0, 2, 2),
+            5060,
+            5060,
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        );
+        let before = Utc::now();
+        let packet = ingest
+            .receive(&v2, peer, t0)
+            .packet
+            .ok_or("the v2 packet is admitted")?;
+        let after = Utc::now();
+        assert!(
+            packet.timestamp >= before && packet.timestamp <= after,
+            "a v2 packet is timed by its arrival, between {before} and {after}, not {}",
+            packet.timestamp
+        );
         Ok(())
     }
 

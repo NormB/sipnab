@@ -235,9 +235,11 @@ sipnab --vcon-forward ./spool --vcon-forward-url "$STORE_URL" --vcon-forward-onc
 
 `--vcon-forward-once` makes one pass and exits: `0` when the store accepted
 every container, or the spool held none, `1` when the store refused one or
-one is still waiting, `2` when sipnab refuses a setting, and `3` when the store
-refused the credentials or the client. A config file sipnab refuses exits `1`,
-as on any run. Without `--vcon-forward-once` the forwarder makes a pass every
+one is still waiting, `2` when sipnab refuses a setting given on the command
+line, and `3` when the store refused the credentials or the client. A config
+file sipnab refuses exits `1`, as on any run, and so does an `[vcon_forward]
+auth_file` that sipnab cannot read or that holds no credential. The same file
+named by `--vcon-forward-auth-file` exits `2`. Without `--vcon-forward-once` the forwarder makes a pass every
 `--vcon-forward-interval` seconds (default 5) until SIGTERM or SIGINT. Stopping
 it means stopping: it sends nothing more after the signal, and a container it
 had not reached stays in the spool for the next run.

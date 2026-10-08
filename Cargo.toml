@@ -40,7 +40,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.206"
+version = "0.5.207"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]

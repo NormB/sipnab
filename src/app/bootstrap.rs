@@ -3912,9 +3912,11 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// # Returns
 ///
 /// `Some` exit code from [`crate::app::vcon_forward::run`]; the exit code of
-/// [`load_config`]'s refusal (1 for the file, 2 for a setting); `Some(2)` when
-/// the credential cannot be read or the `vcon` feature is not compiled in;
-/// `None` when `--vcon-forward` was not given.
+/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// credential's file cannot be read or holds no credential, 1 if
+/// `[vcon_forward] auth_file` named it and 2 if `--vcon-forward-auth-file`
+/// did ([`crate::settings::Origin`]); `Some(2)` when the `vcon` feature is
+/// not compiled in; `None` when `--vcon-forward` was not given.
 ///
 /// # Side effects
 ///
@@ -3949,9 +3951,9 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
                 interval,
                 &crate::signals::shutdown_requested,
             )),
-            Err(msg) => {
+            Err((origin, msg)) => {
                 tracing::error!("{msg}");
-                Some(2)
+                Some(origin.exit_code())
             }
         }
     }
@@ -5049,9 +5051,10 @@ fn composite_filter_warning(
 /// post-dial delay against first RTP, ringback analysis, one-way-audio onset —
 /// inherits the offset.
 ///
-/// Two details soften this and one sharpens it. HEP v2 carries no timestamp,
-/// so `parse_hep_v2` stamps local receive time and a v2 mirror has ONE clock;
-/// v3 falls back the same way when the chunk pair is unrepresentable. And when
+/// Two details soften this and one sharpens it. The HEP v2 header as
+/// `parse_hep_v2` reads it has no time field, so the listener stamps local
+/// receive time and a v2 mirror has ONE clock; a v3 packet without a
+/// `TS_SEC` chunk is stamped the same way. And when
 /// the skew runs backwards, `sip::timing::elapsed_ms` refuses the pair rather
 /// than publishing it, so the visible symptom is a MISSING duration rather
 /// than a negative one. The sharpening detail is that a FORWARD skew has no

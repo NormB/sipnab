@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.207] - 2026-10-08
 
 ### Added
 
@@ -108,6 +108,36 @@ entry that carries them.
 
 ### Fixed
 
+- **`-H` over UDP no longer loses a datagram to an earlier one's ICMP
+  error.** The sender used a connected UDP socket, so the ICMP
+  port-unreachable answering a datagram sent to a port with no listener made
+  the next send fail with `ECONNREFUSED`, and sipnab lost that datagram: `sipnab
+  -N -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19063` with nothing bound
+  reported "4 packet(s) sent, 3 failed (write 3)". It now sends each datagram
+  from an unconnected socket with `send_to`, and the same run to a port with
+  no listener reports 7 sent and none failed. TCP and TLS export work as
+  before.
+- **A HEP packet that carries no time keeps the receive or capture time.**
+  A HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as
+  1970-01-01T00:00:00Z, and a HEP v2 packet took the time sipnab parsed it,
+  on both `-L` and `-E`. `HepPacket::timestamp` is now an `Option`, set only
+  when the packet carries a `TS_SEC` chunk. Without one, `-L` uses the time
+  the packet arrived and `-E` the time sipnab captured the wrapper, so a
+  capture file read later keeps its own times. The HMAC replay window reads
+  the token's own timestamp, not this one, and behaves as before.
+- **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits
+  1.** A credential file named by the config key that sipnab could not read,
+  or that held no credential, stopped `--vcon-forward` with exit 2, while
+  every other refused config value exits 1. The exit code now follows the
+  setting that named the file, through the rule `settings::Origin` holds: the key
+  exits 1, and `--vcon-forward-auth-file` still exits 2.
+- **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture]
+  node_name`.** sipnab accepted `--node-name ""` and then passed over it,
+  so the run reported `[capture] node_name` from the config file, or the
+  hostname, with nothing said; it passed over `node_name = ""` for the
+  hostname the same way. The flag exits 2 at parse, by the rule the listener TLS path
+  flags follow, and the key exits 1 when the file loads, each naming itself.
+  A value of only whitespace still passes to the next source.
 - **`--exec-rate-limit` and `--api-max-conn` say that `0` means no limit.**
   Neither the help text nor the reference row said so. The `--api-max-conn`
   text also said it bounds connections; it bounds requests handled at once,

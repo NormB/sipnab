@@ -108,7 +108,7 @@ Packet capture defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface. `--device` overrides it |
-| `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters |
+| `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `ws_ports` | string | `"80, 443, 8080, 8443"` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |
@@ -116,7 +116,7 @@ Packet capture defaults.
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
-| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the note below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
+| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries, or the time sipnab captured the wrapper when the HEP packet carries none. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the note below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
@@ -147,12 +147,16 @@ sipnab reads the copies without any process listening on UDP/9063, but a port
 with no listener costs messages with some senders. The kernel answers each
 datagram sent to a closed port with an ICMP port-unreachable message, and a
 sender that uses a connected UDP socket then fails its next send. Measured on
-2026-10-07: `sipnab -H 127.0.0.1:19063` sent a 7-message call to a port with no
-listener, 3 of the 7 sends failed, and a reader on `lo` saw 4 messages. With a
-process bound to the port, the sender delivered all 7 and the reader saw 7. Keep a receiver bound to
-the port while you sniff it: `sipnab -L 127.0.0.1:9063` is one, and it reads the
-copies itself. Whether a proxy loses copies this way depends on whether its HEP
-sender uses a connected socket.
+2026-10-07 with sipnab's own sender before it changed: `sipnab -H
+127.0.0.1:19063` sent a 7-message call to a port with no listener, 3 of the 7
+sends failed, and a reader on `lo` saw 4 messages. sipnab's `-H` now sends UDP
+from an unconnected socket, which the kernel does not report the ICMP message
+to, so it loses no message this way: on 2026-10-08 the same run to a port with
+no listener reported 7 sent and none failed. Other senders, such as a proxy's
+HEP module, still may. Keep a receiver bound to the port while you sniff it:
+`sipnab -L 127.0.0.1:9063` is one, and it reads the copies itself. Whether a
+proxy loses copies this way depends on whether its HEP sender uses a connected
+socket.
 
 ### [display]
 
@@ -681,7 +685,7 @@ other than `generic` supplies the value, and then the default applies.
 | `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path, the header when the credential is a bare key, and the payload adaptation. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
 | `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows: sipnab refuses a URL with a user name or password in it, and the message shows that part as `[redacted]`. A URL refused from this key exits `1`, as every refused config value does; the same URL from `--vcon-forward-url` exits `2`. `--vcon-forward-url` overrides it |
 | `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. A template refused from this key exits `1`; from `--vcon-forward-replace-url`, `2`. `--vcon-forward-replace-url` overrides it |
-| `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. `--vcon-forward-auth-file` overrides it |
+| `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. A file sipnab cannot read, or one that holds no credential, stops the forwarder with exit 1, as any refused key does. `--vcon-forward-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |

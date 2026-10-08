@@ -579,6 +579,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:4513`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4513)) returns true only for the
+  ([`bootstrap.rs:4554`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4554)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.
