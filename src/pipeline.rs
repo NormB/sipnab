@@ -815,14 +815,8 @@ pub fn icmp_evidence_report() -> IcmpEvidenceReport {
 pub fn reset_icmp_evidence() {
     *ICMP_EVIDENCE.lock() = None;
     ICMP_EVIDENCE_SEEN.store(false, std::sync::atomic::Ordering::Release);
-    *MEDIA_ICMP.lock() = None;
-    *MEDIA_ICMP_RESOLVED.lock() = None;
-    MEDIA_ICMP_RESOLVED_SEEN.store(false, std::sync::atomic::Ordering::Release);
-    // Whatever a test pinned is gone with the set it pinned, so the release is
-    // the same call the test already makes rather than a second one it has to
-    // remember.
-    #[cfg(test)]
-    MEDIA_ICMP_PINNED.store(false, std::sync::atomic::Ordering::Release);
+    with_media_store(|m| *m.lock() = None);
+    with_resolved_media(ResolvedSlot::clear);
 }
 
 // ── What ICMP said about media ───────────────────────────────────────
@@ -1134,7 +1128,30 @@ impl MediaIcmpStore {
 /// Process-global media evidence. Global for the same reason the signaling
 /// store is: `--cores` shards by outer host pair, and an ICMP error's outer
 /// pair is (router, sender) — a different pair from the media it describes.
+///
+/// One per thread in the lib's own unit tests, for the reason
+/// [`with_resolved_media`] gives. A unit test that files evidence and resolves
+/// it on different threads would lose it there; none does.
+#[cfg(not(test))]
 static MEDIA_ICMP: parking_lot::Mutex<Option<Box<MediaIcmpStore>>> = parking_lot::Mutex::new(None);
+
+#[cfg(test)]
+thread_local! {
+    static MEDIA_ICMP: parking_lot::Mutex<Option<Box<MediaIcmpStore>>> =
+        const { parking_lot::Mutex::new(None) };
+}
+
+/// Run `f` against the media evidence store.
+fn with_media_store<R>(f: impl FnOnce(&parking_lot::Mutex<Option<Box<MediaIcmpStore>>>) -> R) -> R {
+    #[cfg(not(test))]
+    {
+        f(&MEDIA_ICMP)
+    }
+    #[cfg(test)]
+    {
+        MEDIA_ICMP.with(f)
+    }
+}
 
 /// Record one ICMP error about a datagram that was not a SIP request.
 ///
@@ -1149,6 +1166,17 @@ static MEDIA_ICMP: parking_lot::Mutex<Option<Box<MediaIcmpStore>>> = parking_lot
 /// Takes the process-global media evidence lock, which is only ever contended
 /// by other ICMP errors.
 fn record_media_icmp_error(quote: &crate::capture::parse::IcmpQuote) {
+    with_media_store(|m| {
+        let mut guard = m.lock();
+        file_media_icmp_error(
+            guard.get_or_insert_with(|| Box::new(MediaIcmpStore::new())),
+            quote,
+        );
+    });
+}
+
+/// File one media ICMP error in `store`. See [`record_media_icmp_error`].
+fn file_media_icmp_error(store: &mut MediaIcmpStore, quote: &crate::capture::parse::IcmpQuote) {
     let evidence = MediaIcmpEvidence {
         timestamp: quote.timestamp,
         reported_by: quote.reporter,
@@ -1160,8 +1188,6 @@ fn record_media_icmp_error(quote: &crate::capture::parse::IcmpQuote) {
         quoted_bytes: quote.quoted_payload.len(),
     };
 
-    let mut guard = MEDIA_ICMP.lock();
-    let store = guard.get_or_insert_with(|| Box::new(MediaIcmpStore::new()));
     store.errors += 1;
 
     // The quoted DESTINATION, never the ICMP source: the former did not
@@ -1309,11 +1335,14 @@ pub struct IcmpMediaReport {
 /// An [`IcmpMediaReport`] with exact totals, one finding per retained flow and
 /// every unreachable endpoint, both busiest first.
 pub fn icmp_media_report(streams: &StreamStore) -> IcmpMediaReport {
-    let guard = MEDIA_ICMP.lock();
-    let Some(store) = guard.as_ref() else {
-        return IcmpMediaReport::default();
-    };
+    with_media_store(|m| match m.lock().as_deref() {
+        Some(store) => media_report_from(store, streams),
+        None => IcmpMediaReport::default(),
+    })
+}
 
+/// The [`icmp_media_report`] of `store`.
+fn media_report_from(store: &MediaIcmpStore, streams: &StreamStore) -> IcmpMediaReport {
     let mut flows: Vec<MediaIcmpFinding> = Vec::with_capacity(store.by_flow.len());
     let mut attributed = 0u64;
     let mut media = 0u64;
@@ -1541,32 +1570,85 @@ impl ResolvedIcmpMedia {
     }
 }
 
-/// Set while a test has published a KNOWN resolved set and is asserting on it.
-///
-/// [`resolve_icmp_media`] publishes unconditionally, and `select_dialogs`
-/// calls it on the way to every post-capture surface -- so any other test
-/// rendering any surface replaces the set this one is in the middle of
-/// reading. The two tests need not be related in any way: sharing a process
-/// and a global is the whole of it. While this is set the resolver still
-/// ANSWERS its caller with the honest resolution of the store it was handed;
-/// it just does not publish, so the published set stays the one the test put
-/// there. Cleared by [`reset_icmp_evidence`], which every such test calls.
-#[cfg(test)]
-static MEDIA_ICMP_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Resolved media findings for the current run, or an empty set.
-static MEDIA_ICMP_RESOLVED: parking_lot::Mutex<Option<std::sync::Arc<ResolvedIcmpMedia>>> =
-    parking_lot::Mutex::new(None);
-
-/// Set once [`resolve_icmp_media`] has run, so the per-dialog lookup on a
-/// capture with no media ICMP — the common case — costs one relaxed load and
-/// no lock.
-static MEDIA_ICMP_RESOLVED_SEEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// The empty answer, shared so a dialog-by-dialog walk allocates nothing.
 static NO_ICMP_MEDIA: std::sync::OnceLock<std::sync::Arc<ResolvedIcmpMedia>> =
     std::sync::OnceLock::new();
+
+/// Resolved media findings for the current run, or none.
+struct ResolvedSlot {
+    /// The published set.
+    set: parking_lot::Mutex<Option<std::sync::Arc<ResolvedIcmpMedia>>>,
+    /// Set once a set has been published, so the per-dialog lookup on a
+    /// capture with no media ICMP — the common case — costs one relaxed load
+    /// and no lock.
+    seen: std::sync::atomic::AtomicBool,
+}
+
+impl ResolvedSlot {
+    /// Empty slot.
+    const fn new() -> Self {
+        Self {
+            set: parking_lot::Mutex::new(None),
+            seen: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Replace the published set with `resolved`.
+    fn publish(&self, resolved: std::sync::Arc<ResolvedIcmpMedia>) {
+        *self.set.lock() = Some(resolved);
+        self.seen.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Drop the published set.
+    fn clear(&self) {
+        *self.set.lock() = None;
+        self.seen.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The published set, or the shared empty one.
+    fn current(&self) -> std::sync::Arc<ResolvedIcmpMedia> {
+        let none = || std::sync::Arc::clone(NO_ICMP_MEDIA.get_or_init(Default::default));
+        if !self.seen.load(std::sync::atomic::Ordering::Acquire) {
+            return none();
+        }
+        self.set
+            .lock()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .unwrap_or_else(none)
+    }
+}
+
+/// The resolved media findings every surface reads.
+#[cfg(not(test))]
+static MEDIA_ICMP_RESOLVED: ResolvedSlot = ResolvedSlot::new();
+
+#[cfg(test)]
+thread_local! {
+    static MEDIA_ICMP_RESOLVED: ResolvedSlot = const { ResolvedSlot::new() };
+}
+
+/// Run `f` against the resolved media findings.
+///
+/// Process-global in every build except the lib's own unit tests, where each
+/// thread has its own. Those tests run in parallel in one process, and the
+/// capture-wide `icmp_media` block reaches EVERY dialog surface once any
+/// finding is published, whatever its Call-ID — so with one shared set, a test
+/// publishing or resolving findings changed what every concurrently running
+/// test rendered, related or not. Each libtest test runs on its own thread, so
+/// one set per thread is one set per test. No unit test resolves on one thread
+/// and renders on another. Integration tests link the lib without `cfg(test)`
+/// and still exercise the global.
+fn with_resolved_media<R>(f: impl FnOnce(&ResolvedSlot) -> R) -> R {
+    #[cfg(not(test))]
+    {
+        f(&MEDIA_ICMP_RESOLVED)
+    }
+    #[cfg(test)]
+    {
+        MEDIA_ICMP_RESOLVED.with(f)
+    }
+}
 
 /// Resolve this run's media ICMP evidence against `streams` and publish it.
 ///
@@ -1588,20 +1670,12 @@ static NO_ICMP_MEDIA: std::sync::OnceLock<std::sync::Arc<ResolvedIcmpMedia>> =
 ///
 /// # Side effects
 ///
-/// Replaces the process-global resolved set. Calling it again with a more
-/// complete store re-resolves — the store only grows, so a later answer is
+/// Replaces the process-global resolved set (in the lib's own unit tests, the
+/// calling thread's). Calling it again with a more complete store re-resolves — the store only grows, so a later answer is
 /// never weaker.
 pub fn resolve_icmp_media(streams: &StreamStore) -> std::sync::Arc<ResolvedIcmpMedia> {
     let resolved = std::sync::Arc::new(ResolvedIcmpMedia::new(icmp_media_report(streams)));
-    // Answer, but do not publish, while a test owns the published set. See
-    // `MEDIA_ICMP_PINNED`: without this a surface test asserting on findings it
-    // published loses them to any concurrent test that renders any surface.
-    #[cfg(test)]
-    if MEDIA_ICMP_PINNED.load(std::sync::atomic::Ordering::Acquire) {
-        return resolved;
-    }
-    *MEDIA_ICMP_RESOLVED.lock() = Some(std::sync::Arc::clone(&resolved));
-    MEDIA_ICMP_RESOLVED_SEEN.store(true, std::sync::atomic::Ordering::Release);
+    with_resolved_media(|slot| slot.publish(std::sync::Arc::clone(&resolved)));
     resolved
 }
 
@@ -1613,28 +1687,20 @@ pub fn resolve_icmp_media(streams: &StreamStore) -> std::sync::Arc<ResolvedIcmpM
 /// nothing rather than reporting badly.
 #[must_use]
 pub fn icmp_media_findings() -> std::sync::Arc<ResolvedIcmpMedia> {
-    if !MEDIA_ICMP_RESOLVED_SEEN.load(std::sync::atomic::Ordering::Acquire) {
-        return std::sync::Arc::clone(NO_ICMP_MEDIA.get_or_init(Default::default));
-    }
-    MEDIA_ICMP_RESOLVED
-        .lock()
-        .as_ref()
-        .map(std::sync::Arc::clone)
-        .unwrap_or_else(|| std::sync::Arc::clone(NO_ICMP_MEDIA.get_or_init(Default::default)))
+    with_resolved_media(ResolvedSlot::current)
 }
 
 /// Publish a known set of findings as this run's resolved evidence.
 ///
-/// Test-only. The surfaces read the process-global set, so proving that a
+/// Test-only, and seen only by the calling thread, which in a unit test is the
+/// calling test. The surfaces read the published set, so proving that a
 /// finding reaches a surface means putting a KNOWN finding there — building one
 /// through a capture would tie every surface test to whatever a fixture's
 /// routers happened to quote, and could not produce a `sdp_endpoint` or an
 /// `endpoint` tier on demand at all.
 #[cfg(test)]
 pub fn publish_icmp_media_for_test(resolved: ResolvedIcmpMedia) {
-    *MEDIA_ICMP_RESOLVED.lock() = Some(std::sync::Arc::new(resolved));
-    MEDIA_ICMP_RESOLVED_SEEN.store(true, std::sync::atomic::Ordering::Release);
-    MEDIA_ICMP_PINNED.store(true, std::sync::atomic::Ordering::Release);
+    with_resolved_media(|slot| slot.publish(std::sync::Arc::new(resolved)));
 }
 
 /// Render one media finding in plain language.
@@ -4462,14 +4528,16 @@ mod resolved_media_tests {
         let store = crate::rtp::stream_store::StreamStore::new(4);
         super::resolve_icmp_media(&store);
         assert!(
-            super::MEDIA_ICMP_RESOLVED_SEEN.load(std::sync::atomic::Ordering::Acquire),
+            super::with_resolved_media(|slot| slot.seen.load(std::sync::atomic::Ordering::Acquire)),
             "resolving must arm the fast path or no surface will look"
         );
 
         super::reset_icmp_evidence();
 
         assert!(
-            !super::MEDIA_ICMP_RESOLVED_SEEN.load(std::sync::atomic::Ordering::Acquire),
+            !super::with_resolved_media(|slot| slot
+                .seen
+                .load(std::sync::atomic::Ordering::Acquire)),
             "a reset that leaves the resolved set armed serves stale findings"
         );
         assert_eq!(super::icmp_media_findings().report().errors, 0);
@@ -4485,8 +4553,8 @@ mod resolved_media_tests {
     /// of the evidence that survived, and a run that asked for a clean slate
     /// would report the previous capture's flows anyway.
     ///
-    /// Drop `*MEDIA_ICMP.lock() = None;` from `reset_icmp_evidence` and the
-    /// second resolve below answers `1` again.
+    /// Drop the media store's clear from `reset_icmp_evidence` and the second
+    /// resolve below answers `1` again.
     #[test]
     #[serial_test::serial(icmp_evidence)]
     fn resetting_drops_the_recorded_media_evidence_not_just_the_answer() -> Result<(), TestError> {
@@ -4513,20 +4581,23 @@ mod resolved_media_tests {
         Ok(())
     }
 
-    /// A resolve from somewhere else must not wipe a published set.
+    /// Another test's media evidence and resolve do not reach this test.
     ///
     /// `publish_icmp_media_for_test` is how every surface test puts a KNOWN
     /// set where the surface will read it. `resolve_icmp_media` is what
-    /// `select_dialogs` calls, and `select_dialogs` is on the way to every
-    /// post-capture surface -- so before the pin, an unrelated test rendering
-    /// an unrelated surface replaced the findings this one was still asserting
-    /// on, and the surface test failed claiming the surface had dropped them.
+    /// `select_dialogs` calls on the way to every post-capture surface, and the
+    /// parser files media evidence for any ICMP error it meets. With one
+    /// process-wide set and store, an unrelated test doing either replaced the
+    /// findings this one was still asserting on, or put its own quote into this
+    /// one's next resolve. The other thread here stands in for that test.
     ///
-    /// Delete the `MEDIA_ICMP_PINNED` check in `resolve_icmp_media` and the
-    /// published set is gone by the time it is read.
+    /// Make `with_resolved_media` hand out one process-global slot in unit
+    /// tests and the published set is replaced before it is read; do the same
+    /// to `with_media_store` and this thread's own resolve counts the other
+    /// thread's quote.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn a_resolve_elsewhere_does_not_wipe_a_published_set() -> Result<(), TestError> {
+    fn another_threads_media_evidence_and_resolve_do_not_reach_this_one() -> Result<(), TestError> {
         super::reset_icmp_evidence();
         super::publish_icmp_media_for_test(ResolvedIcmpMedia::new(IcmpMediaReport {
             errors: 7,
@@ -4535,21 +4606,49 @@ mod resolved_media_tests {
             ..IcmpMediaReport::default()
         }));
 
-        // What another test does on its way to rendering any surface.
-        let elsewhere = super::resolve_icmp_media(&crate::rtp::stream_store::StreamStore::new(4));
-        assert_eq!(
-            elsewhere.report().errors,
-            0,
-            "the resolver still answers its own caller honestly about the \
-             store it was handed"
-        );
+        let resolved = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let checked = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let other = {
+            let resolved = std::sync::Arc::clone(&resolved);
+            let checked = std::sync::Arc::clone(&checked);
+            std::thread::spawn(move || -> Result<u64, String> {
+                // What another test does on its way to rendering any surface.
+                let filed =
+                    super::test_support::file_one_media_icmp_error().map_err(|e| e.to_string());
+                let errors =
+                    super::resolve_icmp_media(&crate::rtp::stream_store::StreamStore::new(4))
+                        .report()
+                        .errors;
+                resolved.wait();
+                // Keep the quote filed until this test has resolved its own.
+                checked.wait();
+                super::reset_icmp_evidence();
+                filed.map(|()| errors)
+            })
+        };
+
+        resolved.wait();
+        let published = super::icmp_media_findings().report().errors;
+        let own = super::resolve_icmp_media(&crate::rtp::stream_store::StreamStore::new(4))
+            .report()
+            .errors;
+        checked.wait();
+        let elsewhere = other.join().map_err(|_| "the other thread panicked")??;
+        super::reset_icmp_evidence();
 
         assert_eq!(
-            super::icmp_media_findings().report().errors,
-            7,
-            "a foreign resolve replaced the set this test published"
+            elsewhere, 1,
+            "the resolver still answers its own caller honestly about the \
+             evidence its thread filed"
         );
-        super::reset_icmp_evidence();
+        assert_eq!(
+            published, 7,
+            "another thread's resolve replaced the set this test published"
+        );
+        assert_eq!(
+            own, 0,
+            "this thread's resolve counted a quote another thread filed"
+        );
         Ok(())
     }
 }
