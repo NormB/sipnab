@@ -2997,20 +2997,33 @@ mod quiet_bad_parse_tests {
         Ok(())
     }
 
-    /// `-E` keeps the sniffed time for a HEP v2 packet, whose header (as
-    /// `parse_hep_v2` reads it) has no time field. It used the time the
-    /// packet was unwrapped instead, which for a capture file read later is
-    /// the time of the read.
+    /// A reference-layout HEP v1 or v2 datagram carrying an OPTIONS from
+    /// 192.0.2.1:5060 to 198.51.100.2:5080 over `ip_protocol`.
+    #[cfg(feature = "hep")]
+    fn hep12_options(
+        version: u8,
+        ip_protocol: u8,
+        time: Option<crate::capture::hep::ReferenceHepTime>,
+    ) -> Result<Vec<u8>, TestError> {
+        Ok(crate::capture::hep::reference_hep12_datagram(
+            &crate::capture::hep::ReferenceHep12 {
+                version,
+                src: "192.0.2.1:5060".parse()?,
+                dst: "198.51.100.2:5080".parse()?,
+                ip_protocol,
+                time,
+                payload: b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+            },
+        )?)
+    }
+
+    /// `-E` keeps the sniffed time for a HEP v1 packet, whose header has no
+    /// time field. It used the time the packet was unwrapped instead, which
+    /// for a capture file read later is the time of the read.
     #[cfg(feature = "hep")]
     #[test]
-    fn hep_parse_keeps_the_sniff_time_for_hep_v2() -> Result<(), TestError> {
-        // version 2, header length 16, ports 5060/5060, 192.0.2.1 ->
-        // 192.0.2.2, two bytes of padding, then the SIP payload.
-        let mut v2 = vec![
-            0x02, 16, 0x13, 0xc4, 0x13, 0xc4, 192, 0, 2, 1, 192, 0, 2, 2, 0, 0,
-        ];
-        v2.extend_from_slice(b"OPTIONS sip:x SIP/2.0\r\n\r\n");
-        let mut wrapper = packet(&v2);
+    fn hep_parse_keeps_the_sniff_time_for_hep_v1() -> Result<(), TestError> {
+        let mut wrapper = packet(&hep12_options(1, 17, None)?);
         // A sniff time in the past, so the clock at unwrap cannot match it.
         wrapper.timestamp = chrono::TimeZone::with_ymd_and_hms(&Utc, 2020, 2, 3, 4, 5, 6)
             .single()
@@ -3018,6 +3031,35 @@ mod quiet_bad_parse_tests {
         let inner = unwrap_hep(&wrapper).ok_or("not read as HEP")??;
         assert_eq!(inner.timestamp, wrapper.timestamp);
         assert_eq!(inner.src_addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert_eq!(inner.dst_addr, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)));
+        Ok(())
+    }
+
+    /// `-E` takes the time a HEP v2 packet's time header carries, as it
+    /// takes a v3 packet's `TS_SEC`/`TS_USEC`, and the transport from the
+    /// header's IP protocol byte.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn hep_parse_takes_the_time_a_hep_v2_packet_carries() -> Result<(), TestError> {
+        let time = crate::capture::hep::ReferenceHepTime {
+            tv_sec: 1_700_000_000,
+            tv_usec: 250_000,
+            captid: 7,
+        };
+        let mut wrapper = packet(&hep12_options(2, 6, Some(time))?);
+        wrapper.timestamp = chrono::TimeZone::with_ymd_and_hms(&Utc, 2020, 2, 3, 4, 5, 6)
+            .single()
+            .ok_or("sniff time")?;
+        let inner = unwrap_hep(&wrapper).ok_or("not read as HEP")??;
+        let carried = chrono::TimeZone::timestamp_opt(&Utc, 1_700_000_000, 250_000_000)
+            .single()
+            .ok_or("carried time")?;
+        assert_eq!(inner.timestamp, carried);
+        assert_eq!(inner.src_addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert_eq!(inner.dst_addr, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)));
+        assert_eq!((inner.src_port, inner.dst_port), (5060, 5080));
+        assert_eq!(inner.transport, TransportProto::Tcp);
+        assert_eq!(&inner.payload[..], b"OPTIONS sip:x SIP/2.0\r\n\r\n");
         Ok(())
     }
 

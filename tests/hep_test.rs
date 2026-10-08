@@ -999,6 +999,189 @@ fn transport_of(stdout: &[String], call_id: &str) -> Option<String> {
     })
 }
 
+// ── HEP v1/v2: captagent's `hep_hdr` layout ──────────────────────────────
+
+/// One HEP v2 datagram written byte by byte as captagent's `send_hepv2`
+/// (`src/modules/transport/hep/transport_hep.c`) writes it on a little-endian
+/// Linux host, with no help from sipnab's own code:
+///
+/// * `struct hep_hdr`: version 2, header length (8 + the address block),
+///   family (2 for IPv4, 10 for IPv6), IP protocol, ports big-endian.
+/// * `struct hep_iphdr` or `struct hep_ip6hdr`: source, then destination.
+/// * `struct hep_timehdr`: `tv_sec`, `tv_usec` and `captid` in the host's
+///   (little-endian) order, padded to 12 bytes.
+/// * The payload.
+fn reference_hep_v2(
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+    ip_protocol: u8,
+    (tv_sec, tv_usec, captid): (u32, u32, u16),
+    payload: &[u8],
+) -> Result<Vec<u8>, TestError> {
+    let mut addrs = Vec::new();
+    let family = match (src.ip(), dst.ip()) {
+        (std::net::IpAddr::V4(s), std::net::IpAddr::V4(d)) => {
+            addrs.extend_from_slice(&s.octets());
+            addrs.extend_from_slice(&d.octets());
+            2u8
+        }
+        (std::net::IpAddr::V6(s), std::net::IpAddr::V6(d)) => {
+            addrs.extend_from_slice(&s.octets());
+            addrs.extend_from_slice(&d.octets());
+            10u8
+        }
+        _ => return Err("source and destination of one family".into()),
+    };
+    let header_len = u8::try_from(8 + addrs.len())?;
+    let mut d = vec![2u8, header_len, family, ip_protocol];
+    d.extend_from_slice(&src.port().to_be_bytes());
+    d.extend_from_slice(&dst.port().to_be_bytes());
+    d.extend_from_slice(&addrs);
+    d.extend_from_slice(&tv_sec.to_le_bytes());
+    d.extend_from_slice(&tv_usec.to_le_bytes());
+    d.extend_from_slice(&captid.to_le_bytes());
+    d.extend_from_slice(&[0, 0]);
+    d.extend_from_slice(payload);
+    Ok(d)
+}
+
+/// A HEP v2 message as these tests send it, and what `--json` must report.
+struct V2Case {
+    call_id: &'static str,
+    src: &'static str,
+    dst: &'static str,
+    ip_protocol: u8,
+    transport: &'static str,
+}
+
+/// The two v2 messages the binary-level tests carry: IPv4 over UDP and IPv6
+/// over TCP, each with the same carried time.
+const V2_CASES: [V2Case; 2] = [
+    V2Case {
+        call_id: "hep-v2-ipv4@192.0.2.10",
+        src: "192.0.2.10:5060",
+        dst: "198.51.100.20:5080",
+        ip_protocol: 17,
+        transport: "UDP",
+    },
+    V2Case {
+        call_id: "hep-v2-ipv6@2001:db8::10",
+        src: "[2001:db8::10]:5062",
+        dst: "[2001:db8:1::20]:5064",
+        ip_protocol: 6,
+        transport: "TCP",
+    },
+];
+
+/// The time every v2 test datagram carries: 2023-11-14T22:13:20.123456Z.
+const V2_TIME: (u32, u32, u16) = (1_700_000_000, 123_456, 0x0102);
+
+/// The v2 datagram for `case`.
+fn v2_datagram(case: &V2Case) -> Result<Vec<u8>, TestError> {
+    let via = case.transport;
+    let msg = format!(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/{via} {src};branch=z9hG4bKv2\r\n\
+         From: <sip:alice@example.com>;tag=1\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n",
+        src = case.src,
+        call_id = case.call_id,
+    );
+    reference_hep_v2(
+        case.src.parse()?,
+        case.dst.parse()?,
+        case.ip_protocol,
+        V2_TIME,
+        msg.as_bytes(),
+    )
+}
+
+/// Assert that the `--json` message line `line` reports `case` with the
+/// addresses, ports, transport and time its HEP v2 header carries.
+fn assert_v2_reported(case: &V2Case, line: &str) -> Result<(), TestError> {
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    let src: std::net::SocketAddr = case.src.parse()?;
+    let dst: std::net::SocketAddr = case.dst.parse()?;
+    assert_eq!(v["call_id"], case.call_id, "{line}");
+    assert_eq!(v["src"], src.ip().to_string(), "{line}");
+    assert_eq!(v["src_port"], src.port(), "{line}");
+    assert_eq!(v["dst"], dst.ip().to_string(), "{line}");
+    assert_eq!(v["dst_port"], dst.port(), "{line}");
+    assert_eq!(v["transport"], case.transport, "{line}");
+    let ts = chrono::DateTime::parse_from_rfc3339(v["timestamp"].as_str().ok_or("timestamp")?)?;
+    assert_eq!(
+        (ts.timestamp(), ts.timestamp_subsec_micros()),
+        (1_700_000_000, 123_456),
+        "the time the v2 time header carries: {line}"
+    );
+    Ok(())
+}
+
+/// **`-E` reads a HEP v2 capture by the reference layout.** A capture file
+/// holding captagent-layout HEP v2 datagrams, read with `--hep-parse`,
+/// reports each call with the addresses, ports and transport its header
+/// carries and the time its time header carries. The parser used to read
+/// the ports as addresses and the family and protocol bytes as ports.
+#[test]
+fn hep_parse_reads_hep_v2_by_the_reference_layout() -> Result<(), TestError> {
+    let frames: Vec<Vec<u8>> = V2_CASES
+        .iter()
+        .map(|case| {
+            Ok::<_, TestError>(pcap_build::udp_frame(
+                [192, 0, 2, 50],
+                [192, 0, 2, 60],
+                40000,
+                9060,
+                &v2_datagram(case)?,
+            ))
+        })
+        .collect::<Result<_, _>>()?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("hep-v2.pcap");
+    pcap_build::write_pcap(&path, &frames)?;
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            path.to_str().ok_or("path.to_str() was None")?,
+            "-E",
+            "--json",
+            "--no-config",
+        ])
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()?;
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for case in &V2_CASES {
+        let line = stdout
+            .lines()
+            .find(|l| l.contains(case.call_id))
+            .ok_or_else(|| format!("{} must be reported:\n{stdout}", case.call_id))?;
+        assert_v2_reported(case, line)?;
+    }
+    Ok(())
+}
+
+/// **`-L` reads a HEP v2 datagram by the reference layout**, with the same
+/// result as `-E` reading it from a file.
+#[test]
+fn hep_listen_reads_hep_v2_by_the_reference_layout() -> Result<(), TestError> {
+    let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"])?;
+    for case in &V2_CASES {
+        srv.send(&v2_datagram(case)?)?;
+        let line = srv
+            .wait_for_stdout(case.call_id, test_timeout(5))
+            .ok_or_else(|| format!("{} must surface on --json stdout", case.call_id))?;
+        assert_v2_reported(case, &line)?;
+    }
+    Ok(())
+}
+
 /// A 20-datagram burst against `--hep-rate-limit 1` logs a
 /// "rate limit exceeded" drop (visible at debug log level).
 #[test]

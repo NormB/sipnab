@@ -2092,9 +2092,9 @@ any other user on the host can read:
 
 **Pitfalls:**
 
-- **HEP v2 cannot travel on a stream.** It declares no total length, so nothing
-  can say where one packet ends and the next begins. A `tcp` or `tls` listener
-  reads HEP v3 only. Senders that emit v2 must stay on `udp`.
+- **HEP v1 and v2 cannot travel on a stream.** They declare no total length, so
+  nothing can say where one packet ends and the next begins. A `tcp` or `tls`
+  listener reads HEP v3 only. Senders that emit v1 or v2 must stay on `udp`.
 - **TLS says the path is private, not who is on it.** sipnab asks connecting
   agents for no certificate of their own, so the identity of a peer still comes
   from `--hep-auth-file`. `--hep-allow` still applies too, and means the same

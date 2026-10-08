@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! HEP (Homer Encapsulation Protocol) v2/v3 receiver and sender.
+//! HEP (Homer Encapsulation Protocol) v1/v2/v3 receiver and HEP v3 sender.
 //!
 //! HEP is used by SIP servers (OpenSIPS, Kamailio, FreeSWITCH, etc.) to mirror
 //! SIP traffic to a capture server. sipnab acts as a HEP receiver (like
@@ -16,11 +16,14 @@
 //!   vendor_id (2) | type (2) | length (2, includes 6-byte header) | data (N)
 //! ```
 //!
-//! **HEP v2** (legacy, fixed header):
+//! **HEP v1 and v2** (legacy, fixed header; see `parse_hep_v12` for the
+//! byte offsets and the references):
 //! ```text
-//! version (1 byte, 0x02) | header_length (1 byte)
-//! src_port (2) | dst_port (2) | src_ip (4) | dst_ip (4)
-//! payload follows immediately after the header
+//! version (1, 0x01 or 0x02) | header_length (1) | family (1) | IP protocol (1)
+//! src_port (2) | dst_port (2)
+//! src_ip | dst_ip: 4 bytes each (family 2) or 16 bytes each (family 10)
+//! v2 only: tv_sec (4) | tv_usec (4) | captid (2) | padding (2)
+//! payload follows
 //! ```
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
@@ -82,10 +85,26 @@ const HEP3_HEADER_LEN: usize = 6;
 /// Minimum chunk size: 6-byte header with no data.
 const CHUNK_HEADER_LEN: usize = 6;
 
+/// HEP v1 version byte.
+const HEP1_VERSION: u8 = 0x01;
 /// HEP v2 version byte.
 const HEP2_VERSION: u8 = 0x02;
-/// Minimum HEP v2 header length for IPv4 (version + hdr_len + ports + IPs).
-const HEP2_MIN_HEADER: usize = 16;
+/// Length of the HEP v1/v2 fixed header, captagent's `struct hep_hdr`:
+/// version, length, family, IP protocol, source port, destination port.
+const HEP12_FIXED_HEADER: usize = 8;
+/// The family byte of an IPv4 HEP v1/v2 packet: `AF_INET` on Linux.
+const HEP12_FAMILY_IPV4: u8 = 2;
+/// The family byte of an IPv6 HEP v1/v2 packet: `AF_INET6` on Linux.
+const HEP12_FAMILY_IPV6: u8 = 10;
+/// Length of `struct hep_iphdr`: IPv4 source and destination.
+const HEP12_IPV4_BLOCK: usize = 8;
+/// Length of `struct hep_ip6hdr`: IPv6 source and destination.
+const HEP12_IPV6_BLOCK: usize = 32;
+/// Length of the HEP v2 time header, `struct hep_timehdr`: `tv_sec` (4),
+/// `tv_usec` (4), `captid` (2), and two bytes of trailing padding. The
+/// struct is not packed, so its size is 12 on the x86-64 and AArch64 ABIs,
+/// and both the senders and Kamailio's receiver advance by that size.
+const HEP2_TIME_HEADER: usize = 12;
 
 // ── HEP→Packet conversion ────────────────────────────────────────────
 
@@ -927,7 +946,7 @@ impl HepProtocol {
 /// A parsed HEP packet with extracted metadata and payload.
 #[derive(Debug, Clone)]
 pub struct HepPacket {
-    /// HEP version (2 or 3).
+    /// HEP version (1, 2 or 3).
     pub version: u8,
     /// Source IP address from the original SIP/RTP flow.
     pub src_addr: IpAddr,
@@ -938,24 +957,26 @@ pub struct HepPacket {
     /// Destination transport port.
     pub dst_port: u16,
     /// The capture time the packet carries: the `TS_SEC`/`TS_USEC` chunks of
-    /// a HEP v3 packet. `None` when the packet carries none: a v3 packet
-    /// without a `TS_SEC` chunk, and every HEP v2 packet, whose header as
-    /// [`parse_hep`] reads it has no time field. Each consumer supplies its
-    /// own time then: `--hep-listen` the time the packet arrived, `-E` the
-    /// time the wrapper was captured.
+    /// a HEP v3 packet, or the `tv_sec`/`tv_usec` fields of a HEP v2 time
+    /// header. `None` when the packet carries none: a v3 packet without a
+    /// `TS_SEC` chunk, and every HEP v1 packet, whose header has no time
+    /// field. Each consumer supplies its own time then: `--hep-listen` the
+    /// time the packet arrived, `-E` the time the wrapper was captured.
     pub timestamp: Option<DateTime<Utc>>,
     /// Application protocol type (SIP, RTP, RTCP, etc.) — from the HEP
     /// `CHUNK_PROTO_TYPE` chunk. Distinct from `ip_protocol` below.
     pub protocol: HepProtocol,
     /// IANA IP protocol number (17 = UDP, 6 = TCP, 132 = SCTP) — from
-    /// the HEP `CHUNK_IP_PROTO` chunk. Defaults to UDP when the chunk
-    /// is absent (the common case for SIP/RTP HEP traffic).
+    /// the HEP v3 `CHUNK_IP_PROTO` chunk, or the IP protocol byte of a v1/v2
+    /// header. Defaults to UDP when a v3 packet has no such chunk (the
+    /// common case for SIP/RTP HEP traffic).
     pub ip_protocol: u8,
     /// The encapsulated payload (SIP message, RTP packet, etc.).
     pub payload: Vec<u8>,
     /// Correlation ID (typically Call-ID), if present (v3 only).
     pub correlation_id: Option<String>,
-    /// Capture agent ID, if present (v3 only).
+    /// Capture agent ID: the v3 `CAPTURE_ID` chunk, or the `captid` field of
+    /// a v2 time header. `None` for v1 and for a v3 packet without the chunk.
     pub capture_id: Option<u32>,
     /// Authenticate-key / shared secret from the HEP `0x000e` chunk, if
     /// present (v3 only). Retained so the receiver can authenticate the
@@ -978,7 +999,7 @@ pub struct HepPacket {
 ///
 /// Detects the version automatically:
 /// - First 4 bytes == `"HEP3"` → HEP v3 (chunk-based)
-/// - First byte == `0x02` → HEP v2 (fixed header)
+/// - First byte == `0x01` or `0x02` → HEP v1 or v2 (fixed header)
 ///
 /// # Errors
 ///
@@ -987,8 +1008,8 @@ pub struct HepPacket {
 pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
     if data.len() >= 4 && &data[..4] == HEP3_MAGIC {
         parse_hep_v3(data)
-    } else if !data.is_empty() && data[0] == HEP2_VERSION {
-        parse_hep_v2(data)
+    } else if !data.is_empty() && (data[0] == HEP1_VERSION || data[0] == HEP2_VERSION) {
+        parse_hep_v12(data)
     } else {
         bail!("Not a HEP packet: unrecognized magic/version byte");
     }
@@ -1253,10 +1274,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         offset += chunk_len;
     }
 
-    // `ts_usec` is attacker-controlled; widen and clamp before the µs→ns
-    // conversion so it can't overflow u32 (panic in debug / wrap in release).
-    let nanos = (ts_usec as u64 * 1000).min(999_999_999) as u32;
-    let timestamp = ts_sec.and_then(|sec| Utc.timestamp_opt(i64::from(sec), nanos).single());
+    let timestamp = ts_sec.and_then(|sec| hep_carried_time(sec, ts_usec));
 
     Ok(HepPacket {
         version: 3,
@@ -1304,72 +1322,242 @@ fn known_chunk_bit(chunk_type: u16) -> Option<u32> {
     Some(1u32 << index)
 }
 
-/// Parse a HEP v2 (fixed-header) packet.
+/// The time a HEP packet carries, from its seconds and microseconds fields:
+/// the v3 `TS_SEC`/`TS_USEC` chunks and the v2 `tv_sec`/`tv_usec` fields.
 ///
-/// Reads the fixed IPv4-only header (ports at bytes 2..6, addresses at
-/// 6..14) and treats everything past the declared header length as payload.
-/// The header this reads has no time field, so `timestamp` is `None` and
-/// the consumer supplies the time; protocol is always SIP over UDP and there
-/// is no auth-key field.
-///
-/// # Arguments
-///
-/// * `data` — the full received datagram, starting at the 0x02 version byte.
+/// `usec` is attacker-controlled; it is widened and clamped before the
+/// microsecond-to-nanosecond conversion so it cannot overflow `u32` (a panic
+/// in debug builds, a wrap in release builds).
 ///
 /// # Returns
 ///
-/// The extracted `HepPacket` with `version = 2`.
+/// The instant, or `None` when chrono cannot represent it.
+fn hep_carried_time(sec: u32, usec: u32) -> Option<DateTime<Utc>> {
+    let nanos = (u64::from(usec) * 1000).min(999_999_999) as u32;
+    Utc.timestamp_opt(i64::from(sec), nanos).single()
+}
+
+/// Parse a HEP v1 or v2 (fixed-header) packet.
+///
+/// The layout is the one sipcapture's own agent writes and Kamailio's
+/// `sipcapture` module reads: captagent's `struct hep_hdr`, `struct
+/// hep_iphdr`, `struct hep_ip6hdr` and `struct hep_timehdr` in
+/// `src/modules/transport/hep/transport_hep.h`, written by `send_hepv2` in
+/// `transport_hep.c`, and the same structs in Kamailio's
+/// `src/modules/sipcapture/hep.h`, read by `hepv2_received` in `hep.c`.
+///
+/// ```text
+/// offset  size  field
+///  0       1    version (1 or 2)
+///  1       1    header length: 8 + the address block, never the time header
+///  2       1    address family: 2 (AF_INET) or 10 (AF_INET6)
+///  3       1    IP protocol (6 TCP, 17 UDP, 22 and 50 as proxy tracers use)
+///  4       2    source port, big-endian
+///  6       2    destination port, big-endian
+///  8       8    IPv4 source, IPv4 destination        (family 2)
+///  8      32    IPv6 source, IPv6 destination        (family 10)
+/// version 2 only, after the address block:
+///  +0      4    tv_sec, little-endian
+///  +4      4    tv_usec, little-endian
+///  +8      2    captid, little-endian
+///  +10     2    padding (the struct is not packed)
+/// then the payload, to the end of the datagram
+/// ```
+///
+/// The time fields are little-endian because Kamailio's `siptrace` writes
+/// them through `to_le` and its `sipcapture` reads them through `to_le`
+/// (a byte swap on a big-endian host only), and captagent copies its native
+/// struct, which is little-endian on the hosts it runs on. `captid` is
+/// copied in native order by every sender, little-endian on those hosts.
+///
+/// Version 1 has no time header: `timestamp` and `capture_id` are `None`,
+/// and the consumer supplies the time. Neither version has a protocol-type
+/// or auth-key field, so `protocol` is SIP and there is no `auth_key`. The
+/// transport is the IP protocol byte, read downstream by the rule a v3
+/// packet's `IP_PROTO` chunk is read by.
+///
+/// # Arguments
+///
+/// * `data` — the full received datagram, starting at the version byte.
+///
+/// # Returns
+///
+/// The extracted `HepPacket` with `version` 1 or 2.
 ///
 /// # Errors
 ///
-/// Returns an error when the packet is too short to hold its declared
-/// header, or the declared header length is below the 16-byte minimum.
-fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
+/// Returns an error when the packet is shorter than the fixed header, the
+/// family is neither IPv4 nor IPv6, the header length disagrees with the
+/// family's address block, or the packet ends inside the address block or
+/// (version 2) the time header.
+fn parse_hep_v12(data: &[u8]) -> Result<HepPacket> {
+    let version = data.first().copied().context("HEP v1/v2 packet is empty")?;
     ensure!(
-        data.len() >= 2,
-        "HEP v2 packet too short to read header length",
+        data.len() >= HEP12_FIXED_HEADER,
+        "HEP v{version} packet too short: {} bytes, the fixed header is {HEP12_FIXED_HEADER}",
+        data.len(),
     );
+    let declared_len = usize::from(data[1]);
+    let family = data[2];
+    let ip_protocol = data[3];
+    let src_port = u16::from_be_bytes([data[4], data[5]]);
+    let dst_port = u16::from_be_bytes([data[6], data[7]]);
 
-    let header_len = data[1] as usize;
+    let block_len = match family {
+        HEP12_FAMILY_IPV4 => HEP12_IPV4_BLOCK,
+        HEP12_FAMILY_IPV6 => HEP12_IPV6_BLOCK,
+        other => bail!(
+            "HEP v{version} address family {other} is neither IPv4 \
+             ({HEP12_FAMILY_IPV4}) nor IPv6 ({HEP12_FAMILY_IPV6})"
+        ),
+    };
+    let header_len = HEP12_FIXED_HEADER + block_len;
     ensure!(
-        header_len >= HEP2_MIN_HEADER,
-        "HEP v2 header length ({header_len}) is below minimum ({HEP2_MIN_HEADER})",
+        declared_len == header_len,
+        "HEP v{version} header length {declared_len} disagrees with family {family}, \
+         whose header is {header_len} bytes",
     );
     ensure!(
         data.len() >= header_len,
-        "HEP v2 packet truncated: have {} bytes, header says {header_len}",
+        "HEP v{version} packet truncated: {} bytes, the header with its addresses is {header_len}",
         data.len(),
     );
 
-    // Fixed layout after version + header_len:
-    //   [2..4]  source port
-    //   [4..6]  dest port
-    //   [6..10] source IPv4
-    //   [10..14] dest IPv4
-    let src_port = u16::from_be_bytes([data[2], data[3]]);
-    let dst_port = u16::from_be_bytes([data[4], data[5]]);
-    let src_addr = IpAddr::V4(Ipv4Addr::new(data[6], data[7], data[8], data[9]));
-    let dst_addr = IpAddr::V4(Ipv4Addr::new(data[10], data[11], data[12], data[13]));
+    let block = &data[HEP12_FIXED_HEADER..header_len];
+    let (src_addr, dst_addr) = if family == HEP12_FAMILY_IPV4 {
+        let src: [u8; 4] = block[..4].try_into().context("IPv4 source")?;
+        let dst: [u8; 4] = block[4..8].try_into().context("IPv4 destination")?;
+        (IpAddr::from(src), IpAddr::from(dst))
+    } else {
+        let src: [u8; 16] = block[..16].try_into().context("IPv6 source")?;
+        let dst: [u8; 16] = block[16..32].try_into().context("IPv6 destination")?;
+        (IpAddr::from(src), IpAddr::from(dst))
+    };
 
-    let payload = data[header_len..].to_vec();
+    let (payload_start, timestamp, capture_id) = if version == HEP2_VERSION {
+        let time_end = header_len + HEP2_TIME_HEADER;
+        ensure!(
+            data.len() >= time_end,
+            "HEP v2 packet truncated inside the time header: {} bytes, the header with \
+             its addresses and time header is {time_end}",
+            data.len(),
+        );
+        let t = &data[header_len..time_end];
+        let tv_sec = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+        let tv_usec = u32::from_le_bytes([t[4], t[5], t[6], t[7]]);
+        let captid = u16::from_le_bytes([t[8], t[9]]);
+        (
+            time_end,
+            hep_carried_time(tv_sec, tv_usec),
+            Some(u32::from(captid)),
+        )
+    } else {
+        (header_len, None, None)
+    };
 
     Ok(HepPacket {
-        version: 2,
+        version,
         src_addr,
         dst_addr,
         src_port,
         dst_port,
-        timestamp: None,
-        protocol: HepProtocol::Sip, // v2 was SIP-only
-        ip_protocol: 17,            // v2 carried only UDP-borne SIP
-        payload,
+        timestamp,
+        protocol: HepProtocol::Sip, // v1 and v2 carry no protocol-type field
+        ip_protocol,
+        payload: data[payload_start..].to_vec(),
         correlation_id: None,
-        capture_id: None,
-        // HEP v2's fixed header has no auth-key field; receiver-side
+        capture_id,
+        // HEP v1/v2 headers have no auth-key field; receiver-side
         // authentication therefore applies to v3 senders only.
         auth_key: None,
         auth_span: None,
     })
+}
+
+/// The time header of a test HEP v2 packet: the three fields of captagent's
+/// `struct hep_timehdr`, as a test writes them.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct ReferenceHepTime {
+    /// `tv_sec`: seconds since the epoch.
+    pub(crate) tv_sec: u32,
+    /// `tv_usec`: microseconds within that second (not range-checked, so a
+    /// test can send an out-of-range value).
+    pub(crate) tv_usec: u32,
+    /// `captid`: the capture node ID.
+    pub(crate) captid: u16,
+}
+
+/// The fields of a test HEP v1 or v2 packet.
+#[cfg(test)]
+pub(crate) struct ReferenceHep12<'a> {
+    /// The version byte, 1 or 2.
+    pub(crate) version: u8,
+    /// Source address and port of the carried message.
+    pub(crate) src: std::net::SocketAddr,
+    /// Destination address and port; the same family as `src`.
+    pub(crate) dst: std::net::SocketAddr,
+    /// The IP protocol byte (`hp_p`).
+    pub(crate) ip_protocol: u8,
+    /// The time header: `Some` for version 2, `None` for version 1.
+    pub(crate) time: Option<ReferenceHepTime>,
+    /// The carried message.
+    pub(crate) payload: &'a [u8],
+}
+
+/// A HEP v1 or v2 datagram written byte by byte as captagent's `send_hepv2`
+/// (`src/modules/transport/hep/transport_hep.c`) writes it on a
+/// little-endian Linux host. Test support for the tests here and in
+/// `crate::pipeline`.
+///
+/// Deliberately independent of the parser's constants, so a wrong constant
+/// in the parser cannot be mirrored here and pass:
+///
+/// * `struct hep_hdr`, 8 bytes: version, `hp_l`, family (2 for IPv4, 10 for
+///   IPv6), IP protocol, then both ports big-endian (`htons`).
+/// * `struct hep_iphdr` (two 4-byte addresses) or `struct hep_ip6hdr` (two
+///   16-byte addresses). `hp_l` counts `hep_hdr` and this block.
+/// * Version 2 only: `struct hep_timehdr`, memcpy'd from a native struct of
+///   `u_int32_t tv_sec; u_int32_t tv_usec; u_int16_t captid;`, so the
+///   fields are little-endian and the struct is padded to 12 bytes. captagent
+///   never writes the two padding bytes; this writes them as `0xAA` so a
+///   parser that reads them as payload is caught.
+/// * The payload.
+///
+/// # Errors
+///
+/// `src` and `dst` are of different families, or `time` is present for
+/// version 1 or absent for version 2.
+#[cfg(test)]
+pub(crate) fn reference_hep12_datagram(
+    r: &ReferenceHep12<'_>,
+) -> std::result::Result<Vec<u8>, String> {
+    let (family, block_len): (u8, u8) = match (r.src.ip(), r.dst.ip()) {
+        (IpAddr::V4(_), IpAddr::V4(_)) => (2, 8),
+        (IpAddr::V6(_), IpAddr::V6(_)) => (10, 32),
+        _ => return Err("source and destination are of different families".to_string()),
+    };
+    match (r.version, r.time.is_some()) {
+        (1, false) | (2, true) => {}
+        (v, has) => return Err(format!("version {v} with a time header present: {has}")),
+    }
+    let mut d = vec![r.version, 8 + block_len, family, r.ip_protocol];
+    d.extend_from_slice(&r.src.port().to_be_bytes());
+    d.extend_from_slice(&r.dst.port().to_be_bytes());
+    for ip in [r.src.ip(), r.dst.ip()] {
+        match ip {
+            IpAddr::V4(a) => d.extend_from_slice(&a.octets()),
+            IpAddr::V6(a) => d.extend_from_slice(&a.octets()),
+        }
+    }
+    if let Some(t) = r.time {
+        d.extend_from_slice(&t.tv_sec.to_le_bytes());
+        d.extend_from_slice(&t.tv_usec.to_le_bytes());
+        d.extend_from_slice(&t.captid.to_le_bytes());
+        d.extend_from_slice(&[0xAA, 0xAA]);
+    }
+    d.extend_from_slice(r.payload);
+    Ok(d)
 }
 
 // ── HEP v3 builder (for sender) ─────────────────────────────────────
@@ -4201,7 +4389,7 @@ impl HepSender {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-/// Tests for HEP v2/v3 parsing and building, receiver-side auth (plain and
+/// Tests for HEP v1/v2/v3 parsing and building, receiver-side auth (plain and
 /// HMAC), bind policy, rate limiting, and the idle watch.
 #[cfg(test)]
 mod tests {
@@ -6190,24 +6378,13 @@ mod tests {
     #[test]
     fn a_stream_that_is_not_hep_v3_is_refused_rather_than_resynchronized() -> Result<(), TestError>
     {
-        let hep2 = [
-            HEP2_VERSION,
-            HEP2_MIN_HEADER as u8,
-            0x13,
-            0xc4,
-            0x13,
-            0xc4,
-            192,
-            0,
+        let hep2 = hep12(
             2,
-            1,
-            192,
-            0,
-            2,
-            2,
-            0,
-            0,
-        ];
+            ("192.0.2.1:5060", "192.0.2.2:5060"),
+            17,
+            Some(REF_TIME),
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        )?;
         let err = hep_stream_frame(&hep2)
             .err()
             .ok_or("HEP v2 declares no total length and cannot be framed")?;
@@ -6693,28 +6870,6 @@ mod tests {
         pkt
     }
 
-    /// Helper: build a minimal HEP v2 packet.
-    fn make_hep_v2(
-        src_ip: Ipv4Addr,
-        dst_ip: Ipv4Addr,
-        src_port: u16,
-        dst_port: u16,
-        payload: &[u8],
-    ) -> Vec<u8> {
-        let header_len: u8 = 16; // version(1) + hdr_len(1) + ports(4) + ips(8) + 2 padding
-        let mut pkt = Vec::new();
-        pkt.push(HEP2_VERSION);
-        pkt.push(header_len);
-        pkt.extend_from_slice(&src_port.to_be_bytes());
-        pkt.extend_from_slice(&dst_port.to_be_bytes());
-        pkt.extend_from_slice(&src_ip.octets());
-        pkt.extend_from_slice(&dst_ip.octets());
-        // Pad to header_len (already at 14 bytes; need 2 more)
-        pkt.extend_from_slice(&[0u8; 2]);
-        pkt.extend_from_slice(payload);
-        pkt
-    }
-
     /// A well-formed IPv4 HEP v3 packet parses with every field intact.
     #[test]
     fn parse_valid_hep_v3_ipv4() -> Result<(), TestError> {
@@ -6773,27 +6928,341 @@ mod tests {
         Ok(())
     }
 
-    /// A well-formed legacy HEP v2 packet parses as SIP with its fixed
-    /// header fields extracted.
-    #[test]
-    fn parse_valid_hep_v2() -> Result<(), TestError> {
-        let payload = b"REGISTER sip:example.com SIP/2.0\r\n\r\n";
-        let data = make_hep_v2(
-            Ipv4Addr::new(192, 168, 1, 10),
-            Ipv4Addr::new(192, 168, 1, 20),
-            5060,
-            5060,
-            payload,
-        );
+    // ── HEP v1/v2: captagent's `hep_hdr` layout ──────────────────────
 
-        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
+    /// A reference-layout HEP v1 or v2 datagram, as `reference_hep12_datagram`
+    /// writes it.
+    fn hep12(
+        version: u8,
+        (src, dst): (&str, &str),
+        ip_protocol: u8,
+        time: Option<ReferenceHepTime>,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
+        Ok(reference_hep12_datagram(&ReferenceHep12 {
+            version,
+            src: src.parse()?,
+            dst: dst.parse()?,
+            ip_protocol,
+            time,
+            payload,
+        })?)
+    }
+
+    /// A time header whose every field is asymmetric, so a byte-order or
+    /// offset error cannot reproduce the value.
+    const REF_TIME: ReferenceHepTime = ReferenceHepTime {
+        tv_sec: 1_700_000_000,
+        tv_usec: 123_456,
+        captid: 0x0102,
+    };
+
+    /// The time `REF_TIME` names.
+    fn ref_time() -> Result<DateTime<Utc>, TestError> {
+        Ok(Utc
+            .timestamp_opt(1_700_000_000, 123_456_000)
+            .single()
+            .ok_or("a valid instant")?)
+    }
+
+    /// A HEP v2 IPv4/UDP packet written byte by byte, without the test
+    /// builder: the layout itself, as one reads it in captagent's
+    /// `transport_hep.h` and `send_hepv2`.
+    #[test]
+    fn hep_v2_ipv4_packet_byte_by_byte_parses_every_field() -> Result<(), TestError> {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
+        let mut data = vec![
+            // struct hep_hdr: hp_v, hp_l (8 + 8), hp_f (AF_INET), hp_p (UDP)
+            0x02, 16, 2, 17, //
+            // hp_sport 5060, hp_dport 5080, big-endian
+            0x13, 0xc4, 0x13, 0xd8, //
+            // struct hep_iphdr: hp_src 192.0.2.10, hp_dst 198.51.100.20
+            192, 0, 2, 10, 198, 51, 100, 20,
+        ];
+        // struct hep_timehdr, little-endian, padded to 12 bytes.
+        data.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+        data.extend_from_slice(&123_456u32.to_le_bytes());
+        data.extend_from_slice(&0x0102u16.to_le_bytes());
+        data.extend_from_slice(&[0xAA, 0xAA]);
+        assert_eq!(data.len(), 28, "8 + 8 + 12 bytes of header");
+        data.extend_from_slice(payload);
+
+        let hep = parse_hep(&data)?;
         assert_eq!(hep.version, 2);
-        assert_eq!(hep.src_addr, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)));
-        assert_eq!(hep.dst_addr, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)));
+        assert_eq!(hep.src_addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+        assert_eq!(hep.dst_addr, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 20)));
         assert_eq!(hep.src_port, 5060);
-        assert_eq!(hep.dst_port, 5060);
+        assert_eq!(hep.dst_port, 5080);
+        assert_eq!(hep.ip_protocol, 17);
         assert_eq!(hep.protocol, HepProtocol::Sip);
-        assert_eq!(hep.payload[..], payload[..]);
+        assert_eq!(hep.timestamp, Some(ref_time()?));
+        assert_eq!(hep.capture_id, Some(0x0102));
+        assert_eq!(hep.payload, payload.to_vec());
+        assert_eq!(hep.correlation_id, None);
+        assert_eq!(hep.auth_key, None);
+        assert_eq!(hep.auth_span, None);
+        Ok(())
+    }
+
+    /// HEP v2 over IPv6 and TCP: the 32-byte address block, then the time
+    /// header, then the payload.
+    #[test]
+    fn hep_v2_ipv6_tcp_parses_every_field() -> Result<(), TestError> {
+        let payload = b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let data = hep12(
+            2,
+            ("[2001:db8::10]:5061", "[2001:db8:1::20]:40123"),
+            6,
+            Some(REF_TIME),
+            payload,
+        )?;
+        assert_eq!(data.len(), 8 + 32 + 12 + payload.len());
+        let hep = parse_hep(&data)?;
+        assert_eq!(hep.version, 2);
+        assert_eq!(hep.src_addr, "2001:db8::10".parse::<IpAddr>()?);
+        assert_eq!(hep.dst_addr, "2001:db8:1::20".parse::<IpAddr>()?);
+        assert_eq!(hep.src_port, 5061);
+        assert_eq!(hep.dst_port, 40123);
+        assert_eq!(hep.ip_protocol, 6);
+        assert_eq!(hep.timestamp, Some(ref_time()?));
+        assert_eq!(hep.capture_id, Some(0x0102));
+        assert_eq!(hep.payload, payload.to_vec());
+        Ok(())
+    }
+
+    /// HEP v1 has no time header: its payload starts right after the
+    /// addresses, and it carries no time and no capture ID.
+    #[test]
+    fn hep_v1_ipv4_has_no_time_header() -> Result<(), TestError> {
+        let payload = b"OPTIONS sip:a@example.com SIP/2.0\r\n\r\n";
+        let data = hep12(
+            1,
+            ("192.0.2.1:5060", "198.51.100.2:5062"),
+            17,
+            None,
+            payload,
+        )?;
+        assert_eq!(data.len(), 16 + payload.len());
+        let hep = parse_hep(&data)?;
+        assert_eq!(hep.version, 1);
+        assert_eq!(hep.src_addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert_eq!(hep.dst_addr, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)));
+        assert_eq!(hep.src_port, 5060);
+        assert_eq!(hep.dst_port, 5062);
+        assert_eq!(hep.ip_protocol, 17);
+        assert_eq!(hep.protocol, HepProtocol::Sip);
+        assert_eq!(hep.timestamp, None);
+        assert_eq!(hep.capture_id, None);
+        assert_eq!(hep.payload, payload.to_vec());
+        Ok(())
+    }
+
+    /// HEP v1 over IPv6 and TCP.
+    #[test]
+    fn hep_v1_ipv6_tcp_parses_every_field() -> Result<(), TestError> {
+        let payload = b"BYE sip:a@example.com SIP/2.0\r\n\r\n";
+        let data = hep12(
+            1,
+            ("[2001:db8::1]:5060", "[2001:db8::2]:5070"),
+            6,
+            None,
+            payload,
+        )?;
+        assert_eq!(data.len(), 40 + payload.len());
+        let hep = parse_hep(&data)?;
+        assert_eq!(hep.version, 1);
+        assert_eq!(hep.src_addr, "2001:db8::1".parse::<IpAddr>()?);
+        assert_eq!(hep.dst_addr, "2001:db8::2".parse::<IpAddr>()?);
+        assert_eq!(hep.src_port, 5060);
+        assert_eq!(hep.dst_port, 5070);
+        assert_eq!(hep.ip_protocol, 6);
+        assert_eq!(hep.timestamp, None);
+        assert_eq!(hep.payload, payload.to_vec());
+        Ok(())
+    }
+
+    /// The IP protocol byte is carried as the sender wrote it, the
+    /// non-standard numbers proxy tracers use (22 for TLS, 50 for WebSocket)
+    /// included, so the transport is decided by the rule v3 uses.
+    #[test]
+    fn hep12_ip_protocol_is_the_header_byte() -> Result<(), TestError> {
+        for proto in [6u8, 17, 22, 50, 132] {
+            for version in [1u8, 2] {
+                let time = (version == 2).then_some(REF_TIME);
+                let data = hep12(
+                    version,
+                    ("192.0.2.1:5060", "192.0.2.2:5060"),
+                    proto,
+                    time,
+                    b"x",
+                )?;
+                assert_eq!(parse_hep(&data)?.ip_protocol, proto, "v{version}");
+            }
+        }
+        Ok(())
+    }
+
+    /// An out-of-range `tv_usec` is clamped as the v3 `TS_USEC` chunk is,
+    /// not overflowed.
+    #[test]
+    fn hep_v2_out_of_range_usec_is_clamped() -> Result<(), TestError> {
+        let time = ReferenceHepTime {
+            tv_usec: u32::MAX,
+            ..REF_TIME
+        };
+        let data = hep12(2, ("192.0.2.1:1", "192.0.2.2:2"), 17, Some(time), b"x")?;
+        let ts = parse_hep(&data)?.timestamp.ok_or("a time")?;
+        assert_eq!(ts.timestamp(), 1_700_000_000);
+        assert_eq!(ts.timestamp_subsec_nanos(), 999_999_999);
+        Ok(())
+    }
+
+    /// A family byte other than 2 (IPv4) or 10 (IPv6) is refused by name:
+    /// without it the address block has no known length.
+    #[test]
+    fn hep12_unknown_family_is_refused() -> Result<(), TestError> {
+        for family in [0u8, 1, 7, 23, 0x13] {
+            let mut data = hep12(
+                2,
+                ("192.0.2.1:5060", "192.0.2.2:5060"),
+                17,
+                Some(REF_TIME),
+                b"x",
+            )?;
+            data[2] = family;
+            let err = parse_hep(&data)
+                .err()
+                .ok_or_else(|| format!("family {family} must be refused"))?;
+            assert!(
+                err.to_string().contains("address family"),
+                "family {family}: {err}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A header length that disagrees with the family's address block is
+    /// refused: 16 and 40 are the only values a v1 or v2 header can hold.
+    #[test]
+    fn hep12_header_length_must_match_the_family() -> Result<(), TestError> {
+        let v4 = hep12(
+            2,
+            ("192.0.2.1:5060", "192.0.2.2:5060"),
+            17,
+            Some(REF_TIME),
+            b"x",
+        )?;
+        let v6 = hep12(
+            1,
+            ("[2001:db8::1]:5060", "[2001:db8::2]:5060"),
+            17,
+            None,
+            b"x",
+        )?;
+        for (mut data, bad) in [
+            (v4.clone(), 40u8),
+            (v4.clone(), 28),
+            (v4.clone(), 14),
+            (v4, 0),
+            (v6.clone(), 16),
+            (v6.clone(), 52),
+            (v6, 255),
+        ] {
+            data[1] = bad;
+            let err = parse_hep(&data)
+                .err()
+                .ok_or_else(|| format!("header length {bad} must be refused"))?;
+            assert!(
+                err.to_string().contains("header length"),
+                "header length {bad}: {err}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every prefix shorter than the full header is refused, for both
+    /// versions and both families, and the time header's truncation is
+    /// named.
+    #[test]
+    fn hep12_every_truncated_header_is_refused() -> Result<(), TestError> {
+        let cases = [
+            hep12(1, ("192.0.2.1:5060", "192.0.2.2:5060"), 17, None, b"")?,
+            hep12(
+                1,
+                ("[2001:db8::1]:5060", "[2001:db8::2]:5060"),
+                17,
+                None,
+                b"",
+            )?,
+            hep12(
+                2,
+                ("192.0.2.1:5060", "192.0.2.2:5060"),
+                17,
+                Some(REF_TIME),
+                b"",
+            )?,
+            hep12(
+                2,
+                ("[2001:db8::1]:5060", "[2001:db8::2]:5060"),
+                17,
+                Some(REF_TIME),
+                b"",
+            )?,
+        ];
+        for full in cases {
+            assert!(
+                parse_hep(&full)?.payload.is_empty(),
+                "the header alone parses"
+            );
+            for n in 0..full.len() {
+                assert!(
+                    parse_hep(&full[..n]).is_err(),
+                    "v{} {} bytes of {} must be refused",
+                    full[0],
+                    n,
+                    full.len()
+                );
+            }
+        }
+        let v2 = hep12(
+            2,
+            ("192.0.2.1:5060", "192.0.2.2:5060"),
+            17,
+            Some(REF_TIME),
+            b"",
+        )?;
+        let err = parse_hep(&v2[..16]).err().ok_or("no time header")?;
+        assert!(err.to_string().contains("time header"), "{err}");
+        let err = parse_hep(&v2[..7]).err().ok_or("no fixed header")?;
+        assert!(err.to_string().contains("too short"), "{err}");
+        Ok(())
+    }
+
+    /// A packet in the layout this parser used to read (ports at bytes 2..6,
+    /// addresses at 6..14, header length 16) is refused: byte 2 there is the
+    /// high byte of the source port, which names no address family.
+    #[test]
+    fn the_previously_assumed_v2_layout_is_refused() -> Result<(), TestError> {
+        let mut old = vec![
+            0x02, 16, 0x13, 0xc4, 0x13, 0xc4, 192, 0, 2, 1, 192, 0, 2, 2, 0, 0,
+        ];
+        old.extend_from_slice(b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let err = parse_hep(&old)
+            .err()
+            .ok_or("the old layout must be refused")?;
+        assert!(err.to_string().contains("address family"), "{err}");
+        Ok(())
+    }
+
+    /// Version bytes other than 1 and 2 (outside the `HEP3` magic) are not
+    /// HEP.
+    #[test]
+    fn only_versions_1_and_2_take_the_fixed_header() -> Result<(), TestError> {
+        let mut data = hep12(1, ("192.0.2.1:5060", "192.0.2.2:5060"), 17, None, b"x")?;
+        for version in [0u8, 3, 4, 0x48] {
+            data[0] = version;
+            assert!(parse_hep(&data).is_err(), "version {version}");
+        }
         Ok(())
     }
 
@@ -6846,17 +7315,6 @@ mod tests {
         assert!(parse_hep(b"").is_err());
         assert!(parse_hep(b"\x00\x00\x00\x00").is_err());
         assert!(parse_hep(b"HTTP/1.1 200 OK").is_err());
-        Ok(())
-    }
-
-    /// Truncated HEP v2 packets (bare version byte, or fewer bytes than
-    /// the declared header) are rejected.
-    #[test]
-    fn parse_hep_v2_truncated() -> Result<(), TestError> {
-        // Just the version byte
-        assert!(parse_hep(&[0x02]).is_err());
-        // Header says 16 bytes but only 10 available
-        assert!(parse_hep(&[0x02, 16, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
         Ok(())
     }
 
@@ -8422,40 +8880,27 @@ mod tests {
         Ok(())
     }
 
-    // ── Malformed / edge HEP v2 parsing ──────────────────────────────
+    // ── Malformed / edge HEP v1/v2 parsing ───────────────────────────
 
-    /// A HEP v2 header length below the 16-byte IPv4 minimum is rejected
-    /// even when enough bytes are present.
-    #[test]
-    fn parse_hep_v2_header_len_below_minimum() -> Result<(), TestError> {
-        // version=2, header_len=10 (< HEP2_MIN_HEADER), followed by padding.
-        let data = [0x02u8, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
-        assert!(
-            format!("{err}").contains("below minimum"),
-            "expected below-minimum error, got: {err}"
-        );
-        Ok(())
-    }
-
-    /// A HEP v2 packet whose header consumes the whole buffer yields an
-    /// empty payload (boundary case: `data[header_len..]` is empty).
+    /// A HEP v2 packet whose header fills the whole datagram has an empty
+    /// payload and still carries its time, capture ID and IP protocol.
     #[test]
     fn parse_hep_v2_empty_payload() -> Result<(), TestError> {
-        let data = make_hep_v2(
-            Ipv4Addr::new(1, 2, 3, 4),
-            Ipv4Addr::new(5, 6, 7, 8),
-            100,
-            200,
+        let data = hep12(
+            2,
+            ("192.0.2.4:100", "192.0.2.8:200"),
+            6,
+            Some(REF_TIME),
             b"",
-        );
+        )?;
         let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.version, 2);
         assert!(hep.payload.is_empty());
-        assert_eq!(hep.ip_protocol, 17);
+        assert_eq!(hep.ip_protocol, 6);
         assert_eq!(hep.protocol, HepProtocol::Sip);
         assert_eq!(hep.correlation_id, None);
-        assert_eq!(hep.capture_id, None);
+        assert_eq!(hep.capture_id, Some(0x0102));
+        assert_eq!(hep.timestamp, Some(ref_time()?));
         Ok(())
     }
 
@@ -8853,10 +9298,10 @@ mod tests {
         Ok(())
     }
 
-    /// `-L` stamps a HEP v2 packet with the time it arrived: the v2 header
-    /// this parser reads has no time field.
+    /// `-L` stamps a HEP v1 packet with the time it arrived: the v1 header
+    /// has no time field.
     #[test]
-    fn a_hep_v2_packet_keeps_its_arrival_time() -> Result<(), TestError> {
+    fn a_hep_v1_packet_keeps_its_arrival_time() -> Result<(), TestError> {
         let mut opts = keyed_opts(right_key(), Duration::from_secs(30));
         opts.auth_key = None;
         let t0 = Instant::now();
@@ -8864,24 +9309,56 @@ mod tests {
         let peer: IpAddr = "192.0.2.10"
             .parse()
             .map_err(|e| format!("literal: {e:?}"))?;
-        let v2 = make_hep_v2(
-            Ipv4Addr::new(192, 0, 2, 1),
-            Ipv4Addr::new(192, 0, 2, 2),
-            5060,
-            5060,
+        let v1 = hep12(
+            1,
+            ("192.0.2.1:5060", "192.0.2.2:5060"),
+            17,
+            None,
             b"OPTIONS sip:x SIP/2.0\r\n\r\n",
-        );
+        )?;
         let before = Utc::now();
+        let packet = ingest
+            .receive(&v1, peer, t0)
+            .packet
+            .ok_or("the v1 packet is admitted")?;
+        let after = Utc::now();
+        assert!(
+            packet.timestamp >= before && packet.timestamp <= after,
+            "a v1 packet is timed by its arrival, between {before} and {after}, not {}",
+            packet.timestamp
+        );
+        Ok(())
+    }
+
+    /// `-L` times a HEP v2 packet by the time its time header carries, not
+    /// by its arrival, and records the addressing its header asserts.
+    #[test]
+    fn a_hep_v2_packet_is_timed_by_its_time_header() -> Result<(), TestError> {
+        let mut opts = keyed_opts(right_key(), Duration::from_secs(30));
+        opts.auth_key = None;
+        let t0 = Instant::now();
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
+        let peer: IpAddr = "192.0.2.10"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
+        let v2 = hep12(
+            2,
+            ("192.0.2.1:5060", "198.51.100.7:5080"),
+            6,
+            Some(REF_TIME),
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        )?;
         let packet = ingest
             .receive(&v2, peer, t0)
             .packet
             .ok_or("the v2 packet is admitted")?;
-        let after = Utc::now();
-        assert!(
-            packet.timestamp >= before && packet.timestamp <= after,
-            "a v2 packet is timed by its arrival, between {before} and {after}, not {}",
-            packet.timestamp
-        );
+        assert_eq!(packet.timestamp, ref_time()?);
+        let pre = packet.pre_parsed.as_ref().ok_or("HEP addressing")?;
+        assert_eq!(pre.src_addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert_eq!(pre.dst_addr, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
+        assert_eq!((pre.src_port, pre.dst_port), (5060, 5080));
+        assert_eq!(pre.ip_protocol, 6);
+        assert_eq!(&packet.data[..], b"OPTIONS sip:x SIP/2.0\r\n\r\n");
         Ok(())
     }
 

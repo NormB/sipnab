@@ -106,7 +106,7 @@ src/
 │   ├── channel.rs        # capped packet channel (capture → processing)
 │   ├── parse.rs          # link/IP/transport decap → ParsedPacket
 │   ├── reassembly.rs     # IPv4/IPv6 fragments + TCP segments (RFC-annotated)
-│   ├── hep.rs            # HEP v2/v3 in/out (Homer)
+│   ├── hep.rs            # HEP v1/v2/v3 in, v3 out (Homer)
 │   ├── tls.rs / decrypt.rs / dtls.rs / rsa_key.rs   # TLS record decryption (tls feature)
 │   ├── websocket.rs      # WS frame unwrap (SIP over WebSocket)
 │   ├── tunnel/           # MPLS/PPPoE/GTP-U/VXLAN/NSH decap → one offset each
