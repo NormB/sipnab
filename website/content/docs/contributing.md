@@ -158,6 +158,21 @@ Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
 means adding a test obliges you to update the count in
 `website/templates/index.html` in the same commit.
 
+**`commit-msg`** runs after `pre-commit` and refuses a commit message that
+names the lab's development host, one of its machines, its DNS domain, an
+address on its LAN, or a path under an account's home directory. These are
+classes A to E of
+[Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network),
+and the rules are the same predicates in `tests/private_identity_test.rs`,
+run through `scripts/check-message-identity.sh`. The hook checks every line of
+the message, including lines that start with `#`: git removes those only from a
+message written in an editor, and `git commit -m` or `-F` keeps them. Checking
+stops at the scissors line that `git commit -v` writes above the diff. One gap
+remains: git removes the lines below a scissors line only when you edit the
+message in an editor, so a scissors line typed into a `git commit -m` message
+keeps the lines after it in the commit, and they are not checked. The hook
+reuses the test binary that `pre-commit` built, so it does not compile anything.
+
 **`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
@@ -226,10 +241,23 @@ Write what a reader can act on:
 | a gate log or a scratch file | nothing -- do not commit it, and add the pattern to `.gitignore` | A transcript carries the paths of the machine that produced it. |
 
 `tests/private_identity_test.rs` enforces all of it and tells you exactly
-which line to change. One exception is allowlisted, and it is functional: the
-self-hosted runner's label on a `runs-on:` line in `.github/workflows/` is how a
-workflow reaches the one machine that can run it, and renaming it there would
-not rename it on the machine.
+which line to change. It has no exceptions. A workflow reaches the
+self-hosted runner by its hardware label, `runs-on: [self-hosted, jetson]`,
+never by the machine's name.
+
+Commit messages and pull request descriptions become public too, and they are
+not tracked files, so the scan above does not read them. The `commit-msg`
+hook checks each commit message. A pull request description has no hook, and
+a squash merge makes the pull request's title and description the commit
+message on `main`. Check the description before you post it:
+
+```bash
+scripts/check-message-identity.sh pr-body.md
+```
+
+The script exits 0 and prints nothing when the file is clean. It exits 1 and
+prints each line that names a private identity, with its line number, its
+class and what to write instead. It exits 2 when it could not check the file.
 
 Capture corpora are the same rule one layer down. The captures that prove this project
 carry real signaling. They live outside the tree, nobody commits them, and

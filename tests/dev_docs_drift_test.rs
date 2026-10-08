@@ -816,7 +816,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // that pairs every flag with its config key.
     // 483 -> 484: docs/internals/testing.md's support table links
     // tests/support/executable.rs.
-    const EXPECTED_CODE_LINKS: usize = 484;
+    // 484 -> 487: docs/internals/build-ci-release.md's commit-msg paragraph
+    // links .githooks/commit-msg, scripts/check-message-identity.sh and
+    // tests/private_identity_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 487;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

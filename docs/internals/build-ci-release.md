@@ -449,6 +449,14 @@ checking, and refuse otherwise, naming the fix: `git config core.hooksPath
 test scripts need it, because they run the repository's hooks against throwaway
 trees.
 
+[`commit-msg`](../../.githooks/commit-msg) opens with the same check. It then
+runs [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh)
+on the commit message, which runs the private-identity rules of
+[`tests/private_identity_test.rs`](../../tests/private_identity_test.rs) over
+each line, and skips with `NOT CHECKED` on a branch that does not carry the
+script. [CONTRIBUTING.md](../../CONTRIBUTING.md#git-hooks) describes what it
+checks and how to check a pull request description the same way.
+
 Two of the thirteen cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8
 prints `REVIEW` and a list and returns zero, a reminder to check the developer

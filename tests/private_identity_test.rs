@@ -137,7 +137,8 @@ fn is_prose(rel: &str) -> bool {
         || rel == "CHANGELOG.md"
 }
 
-/// The one permitted occurrence: a workflow reaching its self-hosted runner.
+/// A workflow line that selects a self-hosted runner, which B6 holds to the
+/// hardware label.
 fn is_runner_label(line: &str) -> bool {
     let l = line.trim();
     (l.contains("runs-on:") || l.contains("labels:")) && l.contains("self-hosted")
@@ -369,6 +370,295 @@ mod guidance {
     pub const TRANSCRIPT: &str = "Untrack it and add the pattern to .gitignore.";
     pub const MAILBOX: &str = "RFC 2606 reserves .test, .example and .invalid for addresses \
                                that cannot reach anyone.";
+}
+
+// -- Messages: commit messages and pull request descriptions ----------
+//
+// A commit message is published the moment the commit is pushed, and a pull
+// request description becomes the commit message on `main` when the pull
+// request is squash-merged. Neither is a tracked file, so nothing above reads
+// them. The descriptions of #389 and #393 named the development host and were
+// edited by hand on 2026-10-07 to remove it.
+
+/// The line git writes above the diff that `git commit -v` appends.
+const SCISSORS: &str = "# ------------------------ >8 ------------------------";
+
+/// One private identity in a message: 1-based line number, class, the line.
+type Finding = (usize, &'static str, String);
+
+/// A rule over one line of text.
+type LineRule = fn(&str) -> bool;
+
+/// Every line of a commit message or pull request description that names a
+/// private identity, with its class.
+///
+/// The classes are the ones a message can carry: A and B (the host and the
+/// lab's machines), C (the domain), D (the LAN) and E (account and corpus
+/// paths). Not G: a `Signed-off-by:` or `Reported-by:` trailer carries a real
+/// address on purpose.
+///
+/// Every line is read, `#` lines included. git removes `#` lines only from a
+/// message written in an editor; `git commit -m` and `-F` keep them, and a
+/// pull request description keeps its Markdown headings, which become part of
+/// the commit message on `main` when it is squash-merged.
+///
+/// Reading stops at the scissors line, because `git commit -v` appends the
+/// staged diff below it and git removes everything from that line down before
+/// it makes the commit. One gap remains: git removes that part only when the
+/// message is edited in an editor, so a scissors line typed into a
+/// `git commit -m` message keeps the lines below it in the commit, unchecked.
+fn message_findings(text: &str) -> Vec<Finding> {
+    let classes: [(&'static str, LineRule); 5] = [
+        ("A", |l| rule::lab_host(l) || rule::bare_host(l)),
+        ("B", rule::lab_machine),
+        ("C", rule::private_domain),
+        ("D", rule::lab_address),
+        ("E", |l| rule::account_path(l) || rule::corpus_path(l)),
+    ];
+    let mut found = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line == SCISSORS {
+            break;
+        }
+        for (class, hit) in classes {
+            if hit(line) {
+                found.push((i + 1, class, line.to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// The replacement text for a class `message_findings` reports.
+fn guidance_for(class: &str) -> &'static str {
+    match class {
+        "A" => guidance::HOST,
+        "B" => guidance::MACHINE,
+        "C" => guidance::DOMAIN,
+        "D" => guidance::ADDRESS,
+        _ => guidance::PATH,
+    }
+}
+
+/// The `#[ignore]`d test the commit-msg hook runs, by exact name.
+const MESSAGE_TEST: &str = "message_in_sipnab_scan_message_names_no_private_identity";
+
+/// The script that runs [`MESSAGE_TEST`] over one message file.
+const MESSAGE_SCRIPT: &str = "scripts/check-message-identity.sh";
+
+/// The message in the file `SIPNAB_SCAN_MESSAGE` names carries no private
+/// identity.
+///
+/// Ignored, so the suite does not run it: it has no input there. The
+/// commit-msg hook runs it through `scripts/check-message-identity.sh`, and
+/// `message_script_refuses_a_planted_message_and_passes_a_clean_one` runs it
+/// on every suite run. An unset variable or an unreadable file is a failure,
+/// not a pass: a check that read nothing must not report a clean message.
+#[test]
+#[ignore = "needs a message file in SIPNAB_SCAN_MESSAGE; the commit-msg hook runs it through scripts/check-message-identity.sh"]
+fn message_in_sipnab_scan_message_names_no_private_identity() -> Result<(), TestError> {
+    let path = std::env::var("SIPNAB_SCAN_MESSAGE").map_err(|_| {
+        "SIPNAB_SCAN_MESSAGE is not set, so there is no message to check. Run \
+         scripts/check-message-identity.sh <file> instead of this test directly."
+    })?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read the message in {path}: {e}"))?;
+    let found = message_findings(&text);
+    let report: Vec<String> = found
+        .iter()
+        .map(|(n, class, line)| {
+            format!(
+                "  line {n}: class {class}: {}\n    {}",
+                line.trim(),
+                guidance_for(class)
+            )
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "the message in {path} names a private identity. A commit message is \
+         published when the commit is pushed, and a pull request description \
+         becomes the commit message on main when it is squash-merged.\n{}",
+        report.join("\n")
+    );
+    Ok(())
+}
+
+/// M1. One planted line per class is found, with its class and line number.
+#[test]
+fn m1_message_findings_reports_each_class_with_its_line() -> Result<(), TestError> {
+    for (planted, class) in [
+        ("Measured on thor-02 overnight", "A"),
+        ("the numbers on thor are lower", "A"),
+        ("Copied the capture from nas2", "B"),
+        ("Reached opensips-1.goes.com over TLS", "C"),
+        ("The relay at 10.0.0.40 answered", "D"),
+        ("Ran against /home/gator/pcaps", "E"),
+    ] {
+        let message = format!("Fix the parser\n\nFirst paragraph.\n{planted}\n");
+        let found = message_findings(&message);
+        assert!(
+            found
+                .iter()
+                .any(|(n, c, l)| *n == 4 && *c == class && l == planted),
+            "class {class} on line 4 was not reported for {planted:?}: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// M2. A clean message has no findings.
+#[test]
+fn m2_a_clean_message_has_no_findings() -> Result<(), TestError> {
+    let message = "Read HEP v1/v2 in the captagent layout\n\n\
+                   Measured on Jetson AGX Thor, 14 cores, against 192.0.2.40.\n\
+                   See https://sipnab.com and opensips.example.com.\n";
+    assert_eq!(message_findings(message), Vec::<Finding>::new());
+    Ok(())
+}
+
+/// M3. A `#` line is scanned.
+///
+/// git strips `#` lines only when the message was written in an editor. With
+/// `git commit -m` or `-F` it keeps them, and a pull request description is
+/// never stripped: its Markdown headings start with `#` and become part of
+/// the commit message on `main` when it is squash-merged.
+#[test]
+fn m3_a_heading_line_is_scanned() -> Result<(), TestError> {
+    let message = "Fix the parser\n\n## Tested on thor-02\n\nBody.\n";
+    let found = message_findings(message);
+    assert!(
+        found.iter().any(|(n, c, _)| *n == 3 && *c == "A"),
+        "a Markdown heading naming the host must be found: {found:?}"
+    );
+    Ok(())
+}
+
+/// M4. Nothing below the scissors line is scanned.
+///
+/// `git commit -v` appends the staged diff below this line and git removes
+/// it before the commit is made, so a host name in the diff is not part of
+/// the message.
+#[test]
+fn m4_nothing_below_the_scissors_line_is_scanned() -> Result<(), TestError> {
+    let message = format!(
+        "Fix the parser\n\nBody.\n{SCISSORS}\n# Do not modify or remove the line above.\n\
+         -measured on thor-02\n+measured on the aarch64 host\n"
+    );
+    let found = message_findings(&message);
+    assert!(
+        found.is_empty(),
+        "the diff below the scissors line is not the message: {found:?}"
+    );
+    // The same host name above the line is found, so the cut is what spares it.
+    let above = format!("Fix the parser\n\nmeasured on thor-02\n{SCISSORS}\n");
+    assert!(
+        !message_findings(&above).is_empty(),
+        "a host name above the scissors line must still be found"
+    );
+    Ok(())
+}
+
+/// M5. Trailers are not flagged: they carry real addresses on purpose.
+#[test]
+fn m5_trailers_carrying_real_addresses_are_not_flagged() -> Result<(), TestError> {
+    let message = "Fix the parser\n\nBody.\n\n\
+                   Signed-off-by: Someone <someone@example.org>\n\
+                   Reported-by: A Person <person@real-company.com>\n";
+    assert_eq!(message_findings(message), Vec::<Finding>::new());
+    Ok(())
+}
+
+/// Run `scripts/check-message-identity.sh` on one message.
+///
+/// The script is driven for real -- its argument handling, the absolute path
+/// it hands on, its exit codes and its output -- but with
+/// `SIPNAB_MESSAGE_TEST_BIN` pointing at THIS test binary instead of letting
+/// it run cargo. Running cargo from inside a cargo test would rebuild the crate
+/// whenever the outer run was built differently: CI's suite is
+/// `cargo test --all-features`, which is not `--features full`, and coverage
+/// and sanitizer runs change the compiler flags. The cargo line itself is
+/// driven by the commit-msg hook on every commit.
+fn run_message_script(message: &str, tag: &str) -> Result<(i32, String), TestError> {
+    run_message_script_with(message, tag, std::env::current_exe()?.as_os_str())
+}
+
+/// [`run_message_script`] with `bin` run in place of the test binary.
+fn run_message_script_with(
+    message: &str,
+    tag: &str,
+    bin: &std::ffi::OsStr,
+) -> Result<(i32, String), TestError> {
+    let dir = std::env::temp_dir().join(format!(
+        "sipnab-message-identity-{}-{tag}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("message.txt");
+    std::fs::write(&file, message)?;
+    let out = Command::new("bash")
+        .arg(repo().join(MESSAGE_SCRIPT))
+        .arg(&file)
+        .env("SIPNAB_MESSAGE_TEST_BIN", bin)
+        .env_remove("SIPNAB_SCAN_MESSAGE")
+        .current_dir(repo())
+        .output()
+        .map_err(|e| format!("bash {MESSAGE_SCRIPT}: {e}"))?;
+    std::fs::remove_dir_all(&dir)?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok((out.status.code().unwrap_or(-1), text))
+}
+
+/// M6. The script refuses a planted message, names the class, and passes a
+/// clean one.
+///
+/// It also pins the coupling the ignore-hygiene gate reads: this file spawns
+/// [`MESSAGE_TEST`] with `"--ignored"`, through the script, on every suite run.
+#[test]
+fn message_script_refuses_a_planted_message_and_passes_a_clean_one() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join(MESSAGE_SCRIPT))
+        .map_err(|e| format!("{MESSAGE_SCRIPT}: {e}"))?;
+    assert!(
+        script.contains("--ignored") && script.contains(MESSAGE_TEST),
+        "{MESSAGE_SCRIPT} must run {MESSAGE_TEST} with \"--ignored\""
+    );
+
+    let (rc, out) = run_message_script("Fix the parser\n\nMeasured on thor-02.\n", "planted")?;
+    assert_eq!(rc, 1, "a planted host name must fail the script:\n{out}");
+    assert!(
+        out.contains("line 3: class A") && out.contains(guidance::HOST),
+        "the failure must name the line, the class and the replacement:\n{out}"
+    );
+
+    let (rc, out) =
+        run_message_script("Fix the parser\n\nMeasured on the aarch64 host.\n", "clean")?;
+    assert_eq!(rc, 0, "a clean message must pass the script:\n{out}");
+    assert!(out.is_empty(), "the script is quiet on success:\n{out}");
+    Ok(())
+}
+
+/// M7. A run that checked nothing is not a pass.
+///
+/// libtest exits 0 when an `--exact` filter matches no test, which is what a
+/// renamed test does. `true` stands in for that run: it exits 0 and prints no
+/// `1 passed`, and the script must report the message as not checked.
+#[test]
+fn message_script_refuses_a_run_that_checked_nothing() -> Result<(), TestError> {
+    let (rc, out) = run_message_script_with(
+        "Fix the parser\n\nMeasured on thor-02.\n",
+        "vacuous",
+        std::ffi::OsStr::new("true"),
+    )?;
+    assert_eq!(
+        rc, 2,
+        "a run that did not execute the test must fail:\n{out}"
+    );
+    assert!(out.contains("NOT CHECKED"), "and say so:\n{out}");
+    Ok(())
 }
 
 // -- Class A: the aarch64 development host ---------------------------
