@@ -22,7 +22,7 @@ entry that carries them.
   rotated files could not reach the older ones. The flag overrides the key.
   The response carries a new `limits` object with the values the sweep ran
   under.
-- **An MCP `find_in_captures` sweep is a background job.** The call waits up
+- **Breaking: an MCP `find_in_captures` sweep is a background job.** The call waits up
   to its new `wait_seconds` parameter (default 30, clamped to
   `--mcp-max-wait-seconds`) and returns the result when the sweep finishes in
   that time. Otherwise it returns a `job_id` with `status: "running"` and
@@ -34,6 +34,9 @@ entry that carries them.
   sweeps run per server. sipnab keeps a finished result for 600 seconds, and
   at most 16 results wait for a poll. The response is `schema_version` 2: it adds
   `job_id`, `status` and `progress`, and leaves out `sweep` while the job runs.
+  A client that reads `sweep` checks `status` first: a sweep that finishes
+  within `wait_seconds` returns `sweep` as before, and one still running
+  returns no `sweep` until `find_in_captures_status` hands it over.
 
 ### Changed
 
