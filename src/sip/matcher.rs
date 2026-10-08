@@ -71,20 +71,26 @@ impl SipMatcher {
         Self::new_with_overrides(
             cli,
             payload_pattern,
-            cli.matching_args.from.as_deref(),
-            cli.matching_args.to.as_deref(),
+            cli.matching_args.from.as_deref().map(|p| (p, "--from")),
+            cli.matching_args.to.as_deref().map(|p| (p, "--to")),
         )
     }
 
     /// Build a matcher with explicit from/to overrides (for config fallback).
     ///
-    /// `effective_from` and `effective_to` should already reflect the
-    /// CLI-over-config priority (i.e., `cli.matching_args.from.or(config.filter.from)`).
+    /// `effective_from` and `effective_to` are each `(pattern, setting)`: the
+    /// pattern in force after the CLI-over-config priority
+    /// ([`Cli::filter_from`] / [`Cli::filter_to`]), and the flag or key it came
+    /// from, which a refusal names.
+    ///
+    /// # Errors
+    ///
+    /// A pattern that does not compile, naming the setting it came from.
     pub fn new_with_overrides(
         cli: &Cli,
         payload_pattern: Option<&str>,
-        effective_from: Option<&str>,
-        effective_to: Option<&str>,
+        effective_from: Option<(&str, &str)>,
+        effective_to: Option<(&str, &str)>,
     ) -> Result<Self> {
         let case_insensitive = cli.matching_args.ignore_case;
         let word = cli.matching_args.word;
@@ -99,14 +105,18 @@ impl SipMatcher {
             .context("invalid payload match expression")?;
 
         let from_regex = effective_from
-            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
-            .transpose()
-            .context("invalid --from pattern")?;
+            .map(|(p, from)| {
+                compile_pattern(p, case_insensitive, word, dot_matches_new_line)
+                    .with_context(|| format!("invalid {from} pattern"))
+            })
+            .transpose()?;
 
         let to_regex = effective_to
-            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
-            .transpose()
-            .context("invalid --to pattern")?;
+            .map(|(p, from)| {
+                compile_pattern(p, case_insensitive, word, dot_matches_new_line)
+                    .with_context(|| format!("invalid {from} pattern"))
+            })
+            .transpose()?;
 
         let contact_regex = cli
             .matching_args
@@ -228,6 +238,16 @@ impl SipMatcher {
 
         true
     }
+}
+
+/// Why `pattern` cannot be a From/To header pattern, or `None` when it
+/// compiles with the default options (`--from`'s and `--to`'s rule, applied
+/// to `[filter] from` and `[filter] to` when the config file loads).
+#[must_use]
+pub fn header_pattern_problem(pattern: &str) -> Option<String> {
+    compile_pattern(pattern, false, false, true)
+        .err()
+        .map(|e| format!("{e:#}"))
 }
 
 /// Compile a user-provided pattern into a [`Regex`] with safety limits.

@@ -676,3 +676,348 @@ fn unreadable_names_files_are_refused() -> Result<(), TestError> {
     failures.extend(key_accepted("names", "hosts_file", "\"/dev/null\"")?);
     verdict(failures)
 }
+
+/// A refused config value exited 1 when `load_config` refused it and 2 when
+/// `plan` did (`[capture] portrange`, `[filter] expression`, `[actions]
+/// tfps`, `[mcp] tools`, `[security] alert`, `[filter] from` and `to`), and 2
+/// for half a TLS pair written in the file. One class of error, one exit
+/// code: a value from the config file exits 1, a value from the command line
+/// exits 2, whichever step refuses it. Each message names the key the
+/// operator wrote, not the flag they did not.
+#[test]
+fn refused_config_values_exit_1_wherever_they_are_refused() -> Result<(), TestError> {
+    let mut failures = Vec::new();
+    let keys: [(&str, &str, &str, &str); 9] = [
+        (
+            "capture",
+            "portrange = \"x\"",
+            "[capture] portrange",
+            "--portrange",
+        ),
+        (
+            "filter",
+            "expression = \"x\"",
+            "[filter] expression",
+            "--filter",
+        ),
+        (
+            "actions",
+            "tfps = [\"x\"]",
+            "[actions] tfps",
+            "--allow-action",
+        ),
+        ("mcp", "tools = [\"x\"]", "[mcp] tools", "--mcp-tools"),
+        ("security", "alert = [\"x\"]", "[security] alert", "--alert"),
+        (
+            "security",
+            "alert = [\"bogus:5/60s\"]",
+            "[security] alert",
+            "--alert",
+        ),
+        ("filter", "from = \"(\"", "[filter] from", "--from"),
+        ("filter", "to = \"(\"", "[filter] to", "--to"),
+        (
+            "api",
+            "tls_cert = \"/nonexistent/cert.pem\"",
+            "[api] tls_cert",
+            "\0",
+        ),
+    ];
+    for (section, line, names, flag) in keys {
+        let body = format!("[{section}]\n{line}\n");
+        let o = run_with_file(&[], &body)?;
+        if !matches!(o.stage, Stage::Config | Stage::Plan) || o.code != 1 {
+            failures.push(format!(
+                "{body}: want exit 1, got {:?}/{} {}",
+                o.stage, o.code, o.message
+            ));
+            continue;
+        }
+        if !o.message.contains(names) {
+            failures.push(format!("{body}: does not name {names}: {}", o.message));
+        }
+        if o.message.contains(&format!("{flag} ")) || o.message.contains(&format!("{flag}:")) {
+            failures.push(format!("{body}: names {flag}, not written: {}", o.message));
+        }
+    }
+    // The same refusals from the command line stay argument errors.
+    let flags: [&[&str]; 8] = [
+        &["--portrange=x"],
+        &["--filter=x"],
+        &["--mcp-tools=x"],
+        &["--alert=x"],
+        &["--alert=bogus:5/60s"],
+        &["--from=("],
+        &["--to=("],
+        &["--api-tls-cert=/nonexistent/cert.pem"],
+    ];
+    for args in flags {
+        let o = run(&argv(args), None);
+        let flag = args[0].split('=').next().unwrap_or_default();
+        if o.accepted() || o.code != 2 || !o.message.contains(flag) {
+            failures.push(format!(
+                "{args:?}: want exit 2 naming {flag}, got {:?}/{} {}",
+                o.stage, o.code, o.message
+            ));
+        }
+    }
+    verdict(failures)
+}
+
+/// The binary exits with the code the in-process pipeline reports for a
+/// refused config value: `[capture] portrange` (refused while planning) and
+/// `[vcon_forward] url` (refused by the forwarder, which runs before the
+/// capture pipeline) exit 1; the same values as flags exit 2.
+#[test]
+fn binary_exit_code_follows_where_the_refused_value_came_from() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let spool = dir.path().join("spool");
+    std::fs::create_dir(&spool)?;
+    let spool = spool.display().to_string();
+    let cases: [(&str, Vec<&str>, i32, &str); 4] = [
+        (
+            "[capture]\nportrange = \"x\"\n",
+            vec!["-N"],
+            1,
+            "[capture] portrange",
+        ),
+        ("", vec!["-N", "--portrange=x"], 2, "--portrange"),
+        (
+            "[vcon_forward]\nurl = \"x\"\nauth_file = \"/nonexistent/auth\"\n",
+            vec!["--vcon-forward", &spool, "--vcon-forward-once"],
+            1,
+            "[vcon_forward] url",
+        ),
+        (
+            "[vcon_forward]\nauth_file = \"/nonexistent/auth\"\n",
+            vec![
+                "--vcon-forward",
+                &spool,
+                "--vcon-forward-once",
+                "--vcon-forward-url=x",
+            ],
+            2,
+            "--vcon-forward-url",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (body, args, code, names) in cases {
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, body)?;
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .arg("-f")
+            .arg(&path)
+            .env("NO_COLOR", "1")
+            .env_remove("SIPNAB_CONFIG")
+            .output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.code() != Some(code) || !stderr.contains(names) {
+            failures.push(format!(
+                "{body:?} {args:?}: want exit {code} naming {names}, got {:?}: {stderr}",
+                out.status.code()
+            ));
+        }
+    }
+    verdict(failures)
+}
+
+/// `--keylog` naming a file that does not exist logged an ERROR and the run
+/// exited 0 without decrypting anything, while `--tls-key` and
+/// `--dtls-keylog` refuse the same condition with exit 1. All three refuse
+/// it alike: exit 1, `Failed to load --<flag> <path>: <reason>`.
+#[test]
+fn missing_key_files_refuse_the_run_alike() -> Result<(), TestError> {
+    let pcap = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
+    let mut failures = Vec::new();
+    for flag in ["--keylog", "--tls-key", "--dtls-keylog"] {
+        let missing = "/nonexistent/sipnab-key-file";
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(["-N", "-F", "--no-cli-print", "-I", pcap, flag, missing])
+            .env("NO_COLOR", "1")
+            .env_remove("SIPNAB_CONFIG")
+            .output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let want = format!("Failed to load {flag} {missing}: ");
+        if out.status.code() != Some(1) || !stderr.contains(&want) {
+            failures.push(format!(
+                "{flag} {missing}: want exit 1 and {want:?}, got {:?}: {stderr}",
+                out.status.code()
+            ));
+        }
+    }
+    verdict(failures)
+}
+
+/// `--snaplen 0` captured no byte of any packet and `--buffer 0` asked the
+/// kernel for no ring, each accepted with nothing said, as were `[capture]
+/// snaplen = 0` and `[capture] buffer = 0`. Refused on both surfaces by the
+/// rule `--count 0` and the `[limits]` counts follow.
+#[test]
+fn zero_snaplen_and_buffer_are_refused_on_both_surfaces() -> Result<(), TestError> {
+    let mut failures = Vec::new();
+    for (flag, key) in [("snaplen", "snaplen"), ("buffer", "buffer")] {
+        failures.extend(flag_refused(flag, "0"));
+        failures.extend(flag_accepted(flag, "1"));
+        failures.extend(flag_accepted(flag, "4294967295"));
+        failures.extend(key_refused("capture", key, "0")?);
+        failures.extend(key_accepted("capture", key, "1")?);
+    }
+    verdict(failures)
+}
+
+/// An empty `--api-tls-cert`, `--mcp-tls-cert` or `--metrics-tls-cert` (or
+/// key), and the same empty path in `[api]`, `[mcp]` or `[metrics]`, was
+/// accepted at startup and failed only when the listener tried to open "".
+/// Refused by the empty-path rule the `[hep]` TLS paths follow: the flag
+/// exits 2 at parse, the key exits 1 at load, each naming itself.
+#[test]
+fn empty_listener_tls_paths_are_refused_on_both_surfaces() -> Result<(), TestError> {
+    let mut failures = Vec::new();
+    for section in ["api", "mcp", "metrics"] {
+        for (half, other) in [("cert", "key"), ("key", "cert")] {
+            let flag = format!("--{section}-tls-{half}");
+            let other_flag = format!("--{section}-tls-{other}=/nonexistent/sipnab-{other}");
+            let arg = format!("{flag}=");
+            let o = run(&argv(&[&arg, &other_flag]), None);
+            let want = Refusal {
+                stage: Stage::Parse,
+                code: 2,
+                names: &flag,
+                not_names: None,
+            };
+            failures.extend(check_refusal(&arg, &o, &want));
+            let body = format!(
+                "[{section}]\ntls_{half} = \"\"\ntls_{other} = \"/nonexistent/sipnab-{other}\"\n"
+            );
+            let o = run_with_file(&[], &body)?;
+            let want = Refusal {
+                stage: Stage::Config,
+                code: 1,
+                names: &format!("[{section}] tls_{half}"),
+                not_names: None,
+            };
+            failures.extend(check_refusal(&body, &o, &want));
+        }
+    }
+    verdict(failures)
+}
+
+/// `--exec-rate-limit 0` and `--api-max-conn 0` switch the limit off, which
+/// neither the help text nor the reference row said; `0` read as a limit of
+/// nothing. The help and the reference row each say what `0` does.
+#[test]
+fn zero_meaning_no_limit_is_stated_where_the_flag_is_documented() -> Result<(), TestError> {
+    use clap::CommandFactory;
+    let reference = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/cli-reference.md"
+    ))?;
+    let cmd = sipnab::cli::Cli::command();
+    let mut failures = Vec::new();
+    for flag in ["exec-rate-limit", "api-max-conn"] {
+        let help = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some(flag))
+            .and_then(|a| a.get_help().map(ToString::to_string))
+            .unwrap_or_default();
+        if !help.contains("`0` means no limit") {
+            failures.push(format!("--{flag} help: {help:?}"));
+        }
+        let row = reference
+            .lines()
+            .find(|l| l.starts_with(&format!("| `--{flag}` |")))
+            .unwrap_or_default();
+        if !row.contains("`0` means no limit") {
+            failures.push(format!("--{flag} reference row: {row:?}"));
+        }
+    }
+    verdict(failures)
+}
+
+/// HEP options that only the listener (`-L`) or the sender (`--hep-send`)
+/// reads were accepted on a run with neither, and did nothing: `--hep-allow
+/// 192.0.2.1` on a pcap run looked like an allowlist and was none. Given on
+/// the command line, each is refused naming what it needs. `-E` is not a HEP
+/// surface for them: it unwraps HEP found in the capture and reads no
+/// allowlist, rate limit or credential.
+#[test]
+fn hep_options_without_their_surface_are_refused_on_the_command_line() -> Result<(), TestError> {
+    let listener = ["--hep-listen=127.0.0.1:0"];
+    let sender = ["--hep-send=127.0.0.1:9"];
+    // (option, the surfaces that make it live, the flag a refusal must name)
+    let cases: [(&str, &[&[&str]], &str); 7] = [
+        ("--hep-allow=192.0.2.1", &[&listener], "--hep-listen"),
+        ("--hep-rate-limit=10", &[&listener], "--hep-listen"),
+        ("--hep-rate-limit-per-peer=5", &[&listener], "--hep-listen"),
+        ("--hep-hmac-window=60", &[&listener], "--hep-listen"),
+        ("--hep-auth-mode=hmac", &[&listener, &sender], "--hep-send"),
+        ("--hep-auth-file=/nonexistent/k", &[&sender], "--hep-send"),
+        ("--hep-id=7", &[&sender], "--hep-send"),
+    ];
+    let mut failures = Vec::new();
+    for (opt, surfaces, needs) in cases {
+        for extra in [
+            &[][..],
+            &["-E"][..],
+            &["-I", "tests/fixtures/sip_call.pcap"][..],
+        ] {
+            let mut args: Vec<&str> = extra.to_vec();
+            args.push(opt);
+            let o = run(&argv(&args), None);
+            if o.accepted() || o.code != 2 || !o.message.contains(needs) {
+                failures.push(format!(
+                    "{args:?}: want exit 2 naming {needs}, got {:?}/{} {}",
+                    o.stage, o.code, o.message
+                ));
+            }
+        }
+        for surface in surfaces {
+            let mut args: Vec<&str> = surface.to_vec();
+            args.push(opt);
+            let o = run(&argv(&args), None);
+            if o.stage == Stage::Parse {
+                failures.push(format!("{args:?}: refused at parse: {}", o.message));
+            }
+        }
+    }
+    verdict(failures)
+}
+
+/// The same settings from a config file are not refused, since one file
+/// serves runs with and without a listener, but a run they cannot affect
+/// says so at startup, naming the key.
+#[test]
+fn hep_keys_without_their_surface_warn_naming_the_key() -> Result<(), TestError> {
+    let pcap = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("sipnab.toml");
+    let mut failures = Vec::new();
+    for (section, line, key) in [
+        ("limits", "hep_rate_limit = 10", "[limits] hep_rate_limit"),
+        (
+            "security",
+            "hep_hmac_window_secs = 60",
+            "[security] hep_hmac_window_secs",
+        ),
+    ] {
+        std::fs::write(&path, format!("[{section}]\n{line}\n"))?;
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(["-N", "--no-cli-print", "-I", pcap, "-f"])
+            .arg(&path)
+            .env("NO_COLOR", "1")
+            .env_remove("SIPNAB_CONFIG")
+            .output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let warned = stderr
+            .lines()
+            .any(|l| l.contains("WARN") && l.contains(key) && l.contains("--hep-listen"));
+        if out.status.code() != Some(0) || !warned {
+            failures.push(format!(
+                "{key}: want exit 0 and a warning naming it, got {:?}: {stderr}",
+                out.status.code()
+            ));
+        }
+    }
+    verdict(failures)
+}

@@ -40,6 +40,51 @@ entry that carries them.
 
 ### Changed
 
+- **Breaking: a refused config value exits 1 wherever startup refuses it.**
+  A value from the config file that `bootstrap::load_config` refused exited
+  1, and one that `bootstrap::plan` refused exited 2: `[capture] portrange`,
+  `[filter] expression`, `[actions] tfps`, `[mcp] tools`, `[security] alert`,
+  half a TLS pair written in `[api]`, `[mcp]` or `[metrics]`, and a
+  `[vcon_forward] url` or `replace_url`. Each now exits 1, the code the exit
+  status table gives a refused configuration; the same value given as a flag
+  still exits 2. A script that tested for 2 after one of these keys reads 1.
+  `[filter] from` and `[filter] to` are now checked when the file loads, and
+  an unknown `[security] alert` rule names the key; planning used to refuse
+  both, naming `--from`, `--to` or nothing.
+- **Breaking: `--keylog` naming a file sipnab cannot read stops the run.** It
+  logged an error and the run went on without decrypting anything, exit 0,
+  while `--tls-key` and `--dtls-keylog` refuse the same condition. All three
+  now exit 1 with `Failed to load --<flag> <path>: <reason>`.
+- **Breaking: sipnab refuses `--snaplen 0`, `--buffer 0`, `[capture] snaplen
+  = 0` and `[capture] buffer = 0`.** A zero snapshot keeps no byte of any
+  packet and a zero buffer asks the kernel for no ring; both started and
+  captured nothing usable. The flags exit 2 and the keys exit 1, by the rule
+  `--count 0` and the `[limits]` counts follow.
+- **Breaking: sipnab refuses an empty TLS path for the REST API, MCP or the
+  metrics endpoint at startup.** `--api-tls-cert ""`, `--api-tls-key ""`,
+  their `--mcp-` and `--metrics-` forms, and an empty `tls_cert` or `tls_key`
+  in `[api]`, `[mcp]` or `[metrics]` used to start and fail when the listener
+  opened the file. The flags exit 2 and the keys exit 1, as the `[hep]` TLS
+  paths already did.
+- **Breaking: sipnab refuses, on the command line, HEP options for a side the
+  run does not start.** `--hep-allow`, `--hep-rate-limit`,
+  `--hep-rate-limit-per-peer` and `--hep-hmac-window` need `--hep-listen`;
+  `--hep-id` needs `--hep-send`; `--hep-auth-mode` and `--hep-auth-file` need
+  one of the two. sipnab accepted each without it, and it did nothing. `-E` is not
+  enough, because it reads no allowlist, rate limit or credential. The same
+  settings in a config file are not refused, since one file serves runs with
+  and without a listener: `[limits] hep_rate_limit`, `[security]
+  hep_hmac_window_secs`, `[hep] tls_cert` and `tls_key` on a run without
+  `--hep-listen`, and `[hep] tls_ca` and `tls_extra_ca` on a run without
+  `--hep-send`, each get a startup warning naming the key.
+- **`--names` and `[names] hosts_file` load through one resolver.** A
+  `hosts_file` that fails to load after startup accepted it is now warned
+  about, as a `--names` file is, instead of skipped without a word.
+- **Every flag and key pair has a startup precedence test.** `--alert`,
+  `--alert-exec`, `--alert-json`, `--syslog`, `--chroot`, `--user`,
+  `--fraud-destination`, `--from`, `--to`, `--from-to-mode`, `--names` and
+  `--node-name` were exempt because their effect showed only after startup.
+  Each consumer now reads one resolver, and the precedence test drives it.
 - **`.githooks/pre-push` runs clippy for the other Linux architecture.** Code
   under `#[cfg(target_arch = "x86_64")]` never compiles on an aarch64 host, so
   every local gate passed over it, and on 2026-10-07 nine x86_64-only test
@@ -63,6 +108,13 @@ entry that carries them.
 
 ### Fixed
 
+- **`--exec-rate-limit` and `--api-max-conn` say that `0` means no limit.**
+  Neither the help text nor the reference row said so. The `--api-max-conn`
+  text also said it bounds connections; it bounds requests handled at once,
+  and answers 503 past it.
+- **The exit status tables name both meanings of exit 3.** The CLI
+  reference named only the lint gate and the man page only the vCon
+  forwarder's `401`/`403` stop; both exit 3.
 - **`find_in_captures` no longer blocks every other MCP call and REST request
   while it reads.** One thread serves REST and MCP, and the sweep read
   its files on that thread inside the tool call, so no other request was

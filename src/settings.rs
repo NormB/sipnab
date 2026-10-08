@@ -54,6 +54,47 @@ pub enum Merge {
     Off,
 }
 
+/// Where a refused setting's value came from, which decides the exit code.
+///
+/// A value from the command line is invalid usage, exit 2. A value from the
+/// config file is a refused configuration, exit 1, whichever startup step
+/// refuses it. The rule lives here once so that `load_config` and `plan`
+/// cannot assign the same class of error two codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A flag or positional argument on this command line.
+    CommandLine,
+    /// A key in the config file.
+    ConfigFile,
+}
+
+impl Origin {
+    /// `CommandLine` when the flag was given, else `ConfigFile`.
+    ///
+    /// # Arguments
+    ///
+    /// * `flag_given` — whether the command line supplied any part of the
+    ///   refused setting.
+    #[must_use]
+    pub const fn of(flag_given: bool) -> Self {
+        if flag_given {
+            Self::CommandLine
+        } else {
+            Self::ConfigFile
+        }
+    }
+
+    /// The process exit code for a refusal of a value from this origin: 2
+    /// for the command line, 1 for the config file.
+    #[must_use]
+    pub const fn exit_code(self) -> i32 {
+        match self {
+            Self::CommandLine => 2,
+            Self::ConfigFile => 1,
+        }
+    }
+}
+
 /// Why a config key has no flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileOnly {
@@ -804,6 +845,16 @@ mod tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// A refused value from the command line exits 2 and one from the config
+    /// file exits 1, as the exit-status table documents.
+    #[test]
+    fn origin_decides_the_exit_code() {
+        assert_eq!(Origin::of(true), Origin::CommandLine);
+        assert_eq!(Origin::of(false), Origin::ConfigFile);
+        assert_eq!(Origin::CommandLine.exit_code(), 2);
+        assert_eq!(Origin::ConfigFile.exit_code(), 1);
+    }
 
     /// Every name the CLI accepts in [`FLAGS`]' spelling: long flags without
     /// dashes, positionals as `<VALUE_NAME>`. `help` and `version` are clap's.

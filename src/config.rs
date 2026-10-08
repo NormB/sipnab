@@ -971,6 +971,39 @@ pub struct CaptureConfig {
     pub bpf_filter: Option<String>,
 }
 
+impl CaptureConfig {
+    /// Refuse a `snaplen` or `buffer` of 0, as `--snaplen` and `--buffer`
+    /// do: a zero snapshot keeps no byte of any packet, and a zero buffer
+    /// asks the kernel for no ring.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        refuse_zero("[capture] snaplen", self.snaplen)?;
+        refuse_zero("[capture] buffer", self.buffer)
+    }
+}
+
+/// Refuse a count of 0: the rule every count key shares with its flag,
+/// which clap's `range(1..)` applies on the command line.
+///
+/// # Arguments
+///
+/// * `key` — the key as the operator writes it, `[section] key`.
+/// * `value` — the key's value, `None` when unset.
+///
+/// # Errors
+/// `crate::Error::ConfigInvalid` saying `<key> must be > 0`.
+fn refuse_zero<T: Copy + PartialEq + From<u8>>(
+    key: &str,
+    value: Option<T>,
+) -> Result<(), crate::Error> {
+    if value == Some(T::from(0)) {
+        return Err(crate::Error::ConfigInvalid(format!("{key} must be > 0")));
+    }
+    Ok(())
+}
+
 /// Display configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -1055,6 +1088,40 @@ pub struct FilterConfig {
     pub to: Option<String>,
     /// Default filter DSL expression.
     pub expression: Option<String>,
+}
+
+/// Why a `[filter] from` / `to` pattern cannot be used: the matcher's own
+/// rule ([`crate::sip::matcher::header_pattern_problem`]).
+#[cfg(feature = "native")]
+fn header_pattern_problem(pattern: &str) -> Option<String> {
+    crate::sip::matcher::header_pattern_problem(pattern)
+}
+
+/// A build without the matcher reads no `[filter] from` or `to`, so there is
+/// no rule to apply.
+#[cfg(not(feature = "native"))]
+fn header_pattern_problem(_pattern: &str) -> Option<String> {
+    None
+}
+
+impl FilterConfig {
+    /// Refuse a `from` or `to` pattern that `--from` or `--to` would refuse:
+    /// one that does not compile.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for (key, value) in [("from", &self.from), ("to", &self.to)] {
+            if let Some(pattern) = value
+                && let Some(problem) = header_pattern_problem(pattern)
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[filter] {key}: {problem}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Crash-handling configuration: what happens when sipnab panics.
@@ -2131,11 +2198,7 @@ impl LimitsConfig {
     /// key (`max_header_line`, `max_tcp_buffer`, `max_tracked_peers`) is below
     /// its floor, naming the offending key.
     pub fn validate(&self) -> Result<(), crate::Error> {
-        if let Some(0) = self.dialog_limit {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] dialog_limit must be > 0".into(),
-            ));
-        }
+        refuse_zero("[limits] dialog_limit", self.dialog_limit)?;
         // `--api-rate-limit-per-peer` is a u32 and clap refuses anything
         // larger; the key used to be clamped to u32::MAX instead, a number
         // the operator did not write.
@@ -2149,21 +2212,9 @@ impl LimitsConfig {
         }
         // Rejected rather than read as "unlimited" or "default": both would
         // turn a typo into silent behavior the operator did not ask for.
-        if let Some(0) = self.mcp_max_rows {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] mcp_max_rows must be > 0".into(),
-            ));
-        }
-        if let Some(0) = self.max_streams {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_streams must be > 0".into(),
-            ));
-        }
-        if let Some(0) = self.max_reassembly {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_reassembly must be > 0".into(),
-            ));
-        }
+        refuse_zero("[limits] mcp_max_rows", self.mcp_max_rows)?;
+        refuse_zero("[limits] max_streams", self.max_streams)?;
+        refuse_zero("[limits] max_reassembly", self.max_reassembly)?;
         // Zero is refused rather than read as "never hold anything": a zero
         // TTL evicts every partial on the first sweep after it arrives, which
         // is reassembly switched off while sipnab still reports each half as a
@@ -2184,21 +2235,15 @@ impl LimitsConfig {
                 "[limits] max_header_line must be >= 256".into(),
             ));
         }
-        if let Some(0) = self.max_headers_per_message {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_headers_per_message must be > 0".into(),
-            ));
-        }
-        if let Some(0) = self.max_messages_per_dialog {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_messages_per_dialog must be > 0".into(),
-            ));
-        }
-        if let Some(0) = self.max_audio_frames {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_audio_frames must be > 0".into(),
-            ));
-        }
+        refuse_zero(
+            "[limits] max_headers_per_message",
+            self.max_headers_per_message,
+        )?;
+        refuse_zero(
+            "[limits] max_messages_per_dialog",
+            self.max_messages_per_dialog,
+        )?;
+        refuse_zero("[limits] max_audio_frames", self.max_audio_frames)?;
         // `LintConfig` reads 0 as "uncapped", which is the permissive
         // direction and therefore the wrong thing for a typo to reach — the
         // same judgement `mcp_max_rows` above records.
@@ -2232,11 +2277,10 @@ impl LimitsConfig {
                     .into(),
             ));
         }
-        if let Some(0) = self.keep_messages_per_idle_dialog {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] keep_messages_per_idle_dialog must be > 0".into(),
-            ));
-        }
+        refuse_zero(
+            "[limits] keep_messages_per_idle_dialog",
+            self.keep_messages_per_idle_dialog,
+        )?;
         if let Some(0) = self.mcp_max_body_bytes {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] mcp_max_body_bytes must be > 0 (0 would answer every \
@@ -2297,29 +2341,16 @@ impl LimitsConfig {
                 )));
             }
         }
-        if let Some(0) = self.max_groups {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_groups must be > 0".into(),
-            ));
-        }
-        if let Some(0) = self.max_grouped_messages {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_grouped_messages must be > 0".into(),
-            ));
-        }
+        refuse_zero("[limits] max_groups", self.max_groups)?;
+        refuse_zero("[limits] max_grouped_messages", self.max_grouped_messages)?;
         // Both byte caps guard against memory exhaustion on untrusted input,
         // so 0 is refused rather than read as "no limit": the permissive
         // reading is the one a typo must never reach.
-        if let Some(0) = self.max_metadata_file_bytes {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_metadata_file_bytes must be > 0".into(),
-            ));
-        }
-        if let Some(0) = self.max_gunzip_bytes {
-            return Err(crate::Error::ConfigInvalid(
-                "[limits] max_gunzip_bytes must be > 0".into(),
-            ));
-        }
+        refuse_zero(
+            "[limits] max_metadata_file_bytes",
+            self.max_metadata_file_bytes,
+        )?;
+        refuse_zero("[limits] max_gunzip_bytes", self.max_gunzip_bytes)?;
         // Floored rather than merely non-zero, and the floor is a measured
         // one: `MIN_TCP_BUFFER` is the widest single header line the parser
         // will accept, so a ceiling below it cannot hold even one header of
@@ -2760,22 +2791,40 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&PathBuf>); 12] = [
-            ("[hep] tls_ca", self.hep.tls_ca.as_ref()),
-            ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_ref()),
-            ("[hep] tls_cert", self.hep.tls_cert.as_ref()),
-            ("[hep] tls_key", self.hep.tls_key.as_ref()),
-            ("[journal] dir", self.journal.dir.as_ref()),
-            ("[tfps] ctl", self.tfps.ctl.as_ref()),
-            ("[tfps] db", self.tfps.db.as_ref()),
-            ("[crash] report_dir", self.crash.report_dir.as_ref()),
+        let keys: [(&str, Option<&Path>); 18] = [
+            ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
+            ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
+            ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
+            ("[hep] tls_key", self.hep.tls_key.as_deref()),
+            (
+                "[api] tls_cert",
+                self.api.tls_cert.as_deref().map(Path::new),
+            ),
+            ("[api] tls_key", self.api.tls_key.as_deref().map(Path::new)),
+            (
+                "[mcp] tls_cert",
+                self.mcp.tls_cert.as_deref().map(Path::new),
+            ),
+            ("[mcp] tls_key", self.mcp.tls_key.as_deref().map(Path::new)),
+            (
+                "[metrics] tls_cert",
+                self.metrics.tls_cert.as_deref().map(Path::new),
+            ),
+            (
+                "[metrics] tls_key",
+                self.metrics.tls_key.as_deref().map(Path::new),
+            ),
+            ("[journal] dir", self.journal.dir.as_deref()),
+            ("[tfps] ctl", self.tfps.ctl.as_deref()),
+            ("[tfps] db", self.tfps.db.as_deref()),
+            ("[crash] report_dir", self.crash.report_dir.as_deref()),
             (
                 "[vcon_forward] auth_file",
-                self.vcon_forward.auth_file.as_ref(),
+                self.vcon_forward.auth_file.as_deref(),
             ),
-            ("[vcon_forward] ca", self.vcon_forward.ca.as_ref()),
-            ("[vcon_forward] done", self.vcon_forward.done.as_ref()),
-            ("[vcon_forward] failed", self.vcon_forward.failed.as_ref()),
+            ("[vcon_forward] ca", self.vcon_forward.ca.as_deref()),
+            ("[vcon_forward] done", self.vcon_forward.done.as_deref()),
+            ("[vcon_forward] failed", self.vcon_forward.failed.as_deref()),
         ];
         for (key, value) in keys {
             if value.is_some_and(|p| p.as_os_str().is_empty()) {

@@ -398,14 +398,17 @@ Success.
 .TP
 .B 1
 Runtime failure (capture error, I/O error, or a requested report could not
-be produced).
+be produced), or a refused configuration: a config file sipnab cannot read,
+or a value in it sipnab refuses.
 .TP
 .B 2
-Invalid usage (bad flag value or combination, or a flag whose feature is not
-compiled in).
+Invalid usage (bad flag value or combination given on the command line, or a
+flag whose feature is not compiled in).
 .TP
 .B 3
-The vCon forwarder stopped because the store answered 401 or 403.
+The lint gate tripped
+.RB ( \-\-lint\-fail\-on ),
+or the vCon forwarder stopped because the store answered 401 or 403.
 .SH LICENSE
 MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.
 .SH SEE ALSO

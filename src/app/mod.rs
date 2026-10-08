@@ -146,7 +146,7 @@ pub fn build_resolver(
     ));
     // System hosts table (offline, cheap).
     let _ = resolver.load_hosts_file(std::path::Path::new("/etc/hosts"));
-    load_manual_names(&resolver, &cli.name_args.names, cfg);
+    load_manual_names(&resolver, &cli.names_files(config), cfg);
 
     let mode = if reverse {
         NameMode::Dns
@@ -158,13 +158,14 @@ pub fn build_resolver(
     (resolver, mode)
 }
 
-/// Load the manual name layer: the operator's `--names` files, the config's
-/// `hosts_file`, then its inline `[names.manual]` table.
+/// Load the manual name layer: the files [`Cli::names_files`] resolves
+/// (`--names`, then `[names] hosts_file`), then the config's inline
+/// `[names.manual]` table.
 ///
 /// # Side effects
 ///
-/// Reads each file; a `--names` file that fails to load is warned about, a
-/// `hosts_file` that fails is skipped silently.
+/// Reads each file. Startup refuses a file it cannot read, so a failure here
+/// is a file that changed since; it is warned about and skipped.
 fn load_manual_names(
     resolver: &crate::names::NameResolver,
     names_files: &[String],
@@ -175,9 +176,6 @@ fn load_manual_names(
         if let Err(e) = resolver.load_manual_file(std::path::Path::new(f)) {
             tracing::warn!("could not load names file {f}: {e}");
         }
-    }
-    if let Some(hf) = &cfg.hosts_file {
-        let _ = resolver.load_manual_file(std::path::Path::new(hf));
     }
     // Inline [names.manual] table from the config (highest-priority manual layer).
     if let Some(manual) = &cfg.manual {

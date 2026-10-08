@@ -610,7 +610,7 @@ Nothing persists. `fail2ban.rs`'s own doc says *"the caller is responsible for
 emitting it — nothing is written here"*
 ([`fail2ban.rs:99-100`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs#L99-L100)); the alert engine's
 findings ring buffer is annotated *"In-memory only"*
-([`alerting.rs:387`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L387)) and holds the *alert*, not
+([`alerting.rs:410`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L410)) and holds the *alert*, not
 the *action* — a `Finding` has no field saying whether a kill went out. The only
 durable-ish signal is two success counters,
 `sipnab_kill_responses_sent_total{mode}`

@@ -922,9 +922,10 @@ fn a_keylog_only_root_can_read_is_loaded_before_the_drop() -> Result<(), TestErr
     Ok(())
 }
 
-/// A keylog that cannot be read says WHY. The message used to stop at
-/// "Loading keylog from <path>", which reads the same for a typo, a
-/// permission problem and a file the producer has not created yet.
+/// A keylog that cannot be read says WHY, and stops the run with exit 1 as
+/// `--tls-key` does. The message used to stop at "Loading keylog from
+/// <path>", which reads the same for a typo, a permission problem and a file
+/// the producer has not created yet.
 #[cfg(feature = "tls")]
 #[test]
 fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
@@ -942,9 +943,10 @@ fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
         .output()?;
     let _ = std::fs::remove_file(&fixture);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "the run must stop:\n{stderr}");
     let line = stderr
         .lines()
-        .find(|l| l.contains("Failed to initialize TLS decryptor"))
+        .find(|l| l.contains("Failed to load --keylog"))
         .ok_or_else(|| format!("the failure must be reported:\n{stderr}"))?;
     assert!(
         line.contains("No such file or directory"),

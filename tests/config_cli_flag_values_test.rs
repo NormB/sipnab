@@ -130,7 +130,7 @@ static SPECS: &[Spec] = &[
     (
         "buffer",
         Kind::Int {
-            lo: 0,
+            lo: 1,
             hi: 4294967295,
         },
         &[],
@@ -146,7 +146,7 @@ static SPECS: &[Spec] = &[
     (
         "snaplen",
         Kind::Int {
-            lo: 0,
+            lo: 1,
             hi: 4294967295,
         },
         &[],
@@ -1190,8 +1190,8 @@ static SPECS: &[Spec] = &[
     (
         "metrics-tls-cert",
         Kind::Text {
-            accept: &["/nonexistent/sipnab-pem", "x", "", " "],
-            reject: &[],
+            accept: &["/nonexistent/sipnab-pem", "x", " "],
+            reject: &[("", 2)],
         },
         &[
             "--metrics-tls-key",
@@ -1203,8 +1203,8 @@ static SPECS: &[Spec] = &[
     (
         "metrics-tls-key",
         Kind::Text {
-            accept: &["/nonexistent/sipnab-pem", "x", "", " "],
-            reject: &[],
+            accept: &["/nonexistent/sipnab-pem", "x", " "],
+            reject: &[("", 2)],
         },
         &[
             "--metrics-tls-cert",
@@ -1264,8 +1264,8 @@ static SPECS: &[Spec] = &[
     (
         "api-tls-cert",
         Kind::Text {
-            accept: &["/nonexistent/sipnab-pem", "x", "", " "],
-            reject: &[],
+            accept: &["/nonexistent/sipnab-pem", "x", " "],
+            reject: &[("", 2)],
         },
         &[
             "--api",
@@ -1277,8 +1277,8 @@ static SPECS: &[Spec] = &[
     (
         "api-tls-key",
         Kind::Text {
-            accept: &["/nonexistent/sipnab-pem", "x", "", " "],
-            reject: &[],
+            accept: &["/nonexistent/sipnab-pem", "x", " "],
+            reject: &[("", 2)],
         },
         &[
             "--api",
@@ -1366,8 +1366,8 @@ static SPECS: &[Spec] = &[
     (
         "mcp-tls-cert",
         Kind::Text {
-            accept: &["/nonexistent/sipnab-pem", "x", "", " "],
-            reject: &[],
+            accept: &["/nonexistent/sipnab-pem", "x", " "],
+            reject: &[("", 2)],
         },
         &[
             "--mcp",
@@ -1380,8 +1380,8 @@ static SPECS: &[Spec] = &[
     (
         "mcp-tls-key",
         Kind::Text {
-            accept: &["/nonexistent/sipnab-pem", "x", "", " "],
-            reject: &[],
+            accept: &["/nonexistent/sipnab-pem", "x", " "],
+            reject: &[("", 2)],
         },
         &[
             "--mcp",
@@ -1702,7 +1702,7 @@ static SPECS: &[Spec] = &[
     (
         "node-name",
         Kind::Text {
-            accept: &["x", "", " ", "0"],
+            accept: &["x", "0", "", " "],
             reject: &[],
         },
         &[],
@@ -1820,7 +1820,7 @@ static SPECS: &[Spec] = &[
             lo: 0,
             hi: 4294967295,
         },
-        &[],
+        &["--hep-send", "127.0.0.1:9"],
     ),
     (
         "hep-auth",
@@ -1836,7 +1836,7 @@ static SPECS: &[Spec] = &[
             accept: &["x", " ", "0", "-1"],
             reject: &[("", 2)],
         },
-        &[],
+        &["--hep-send", "127.0.0.1:9"],
     ),
     (
         "hep-auth-mode",
@@ -1853,9 +1853,13 @@ static SPECS: &[Spec] = &[
                 ("5061-5060", 2),
             ],
         },
-        &[],
+        &["--hep-send", "127.0.0.1:9"],
     ),
-    ("hep-hmac-window", Kind::Int { lo: 1, hi: 300 }, &[]),
+    (
+        "hep-hmac-window",
+        Kind::Int { lo: 1, hi: 300 },
+        &["--hep-listen", "127.0.0.1:0"],
+    ),
     (
         "hep-silence-warn",
         Kind::Int {
@@ -1874,10 +1878,10 @@ static SPECS: &[Spec] = &[
     (
         "hep-allow",
         Kind::Text {
-            accept: &["x", "", " ", "0"],
-            reject: &[],
+            accept: &["192.0.2.1", "192.0.2.0/24", "2001:db8::/32"],
+            reject: &[("x", 2), ("", 2), (" ", 2), ("192.0.2.0/33", 2)],
         },
-        &[],
+        &["--hep-listen", "127.0.0.1:0"],
     ),
     (
         "hep-rate-limit",
@@ -1885,7 +1889,7 @@ static SPECS: &[Spec] = &[
             lo: 0,
             hi: 18446744073709551615,
         },
-        &[],
+        &["--hep-listen", "127.0.0.1:0"],
     ),
     (
         "hep-rate-limit-per-peer",
@@ -1902,7 +1906,7 @@ static SPECS: &[Spec] = &[
                 ("0-65536", 2),
             ],
         },
-        &[],
+        &["--hep-listen", "127.0.0.1:0"],
     ),
     (
         "tls-key",
@@ -2841,8 +2845,9 @@ fn binary_exits_2_naming_the_flag_for_a_parse_refusal() -> Result<(), TestError>
 /// `--hep-rate-limit-per-peer 0` is documented as the same as `off`.
 #[test]
 fn hep_per_peer_rate_limit_zero_means_off() -> Result<(), TestError> {
-    let zero = run(&argv(&["--hep-rate-limit-per-peer=0"]), None);
-    let off = run(&argv(&["--hep-rate-limit-per-peer=off"]), None);
+    let listen = "--hep-listen=127.0.0.1:0";
+    let zero = run(&argv(&[listen, "--hep-rate-limit-per-peer=0"]), None);
+    let off = run(&argv(&[listen, "--hep-rate-limit-per-peer=off"]), None);
     let (Some(z), Some(o)) = (zero.cli.as_deref(), off.cli.as_deref()) else {
         return Err(format!("refused: {} / {}", zero.message, off.message).into());
     };
@@ -2969,6 +2974,18 @@ fn first_token(long: &str) -> Vec<String> {
 
 // ── Flag and key precedence ────────────────────────────────────────────────
 
+/// What the alert settings do: the syslog and JSON channels, the exec
+/// command, and the rules. A channel named in `sources` is already in the
+/// two switches, so `--syslog` and `[security] alert = ["syslog"]` render
+/// alike.
+fn alert_effect(a: &sipnab::cli::AlertSettings) -> String {
+    let rules: Vec<&String> = a.sources.iter().filter(|s| s.contains(':')).collect();
+    format!(
+        "syslog={} json={} exec={:?} rules={rules:?}",
+        a.syslog, a.json, a.exec
+    )
+}
+
 /// Everything a run decides from its command line and config, as text: every
 /// public resolver on `Cli` that reads the config, and the parts of
 /// `bootstrap::plan`'s result that carry a setting. Two configurations with
@@ -3039,7 +3056,28 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.signaling_thresholds(config)),
         format!("{:?}", cli.alias_thresholds(config)),
         format!("{:?}", cli.asymmetry_thresholds(config)),
-        format!("{:?}", cli.fraud_destinations()),
+        // Settings whose effect shows after startup, each through the
+        // resolver its consumer reads: the alert channels app::batch builds,
+        // the matcher's From/To patterns, the account and directory the
+        // privilege drop uses, the fraud watch list, the TUI's From/To column
+        // mode, the manual name files and the node name. Each is rendered as
+        // its effect, without the name of the setting it came from, so a
+        // flag and its key that mean the same thing render the same.
+        alert_effect(&cli.alert_settings(config)),
+        format!("{:?}", cli.filter_from(config).map(|(p, _)| p)),
+        format!("{:?}", cli.filter_to(config).map(|(p, _)| p)),
+        format!("{:?}", sipnab::app::bootstrap::effective_user(cli, config)),
+        format!(
+            "{:?}",
+            sipnab::app::bootstrap::effective_chroot(cli, config)
+        ),
+        format!("{:?}", cli.fraud_watch(config)),
+        format!(
+            "{:?}",
+            sipnab::app::tui_mode::resolve_from_to_mode(cli, config)
+        ),
+        format!("{:?}", cli.names_files(config)),
+        format!("{:?}", cli.node_name(config)),
         // The forwarder's settings, resolved from its flags and
         // `[vcon_forward]`; the credential's value never shows in it.
         format!(
@@ -3079,57 +3117,11 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
 /// Settings rows whose effect `fingerprint` cannot see at startup, each with
 /// where its precedence is tested instead. The list must match exactly: a
 /// row that becomes observable, or a new row that is not, fails
-/// `flag_and_key_combine_as_settings_declares`.
-const PRECEDENCE_ELSEWHERE: &[(&str, &str)] = &[
-    (
-        "alert",
-        "alert channels are built by app::batch when the run starts; no precedence test yet",
-    ),
-    (
-        "alert-exec",
-        "the exec hook is built by app::batch when the run starts; no precedence test yet",
-    ),
-    (
-        "alert-json",
-        "alert channels are built by app::batch when the run starts; no precedence test yet",
-    ),
-    (
-        "chroot",
-        "read by privilege dropping in bootstrap::launch; no precedence test yet",
-    ),
-    (
-        "fraud-destination",
-        "the key is read by app::batch::build_fraud_detector; no precedence test yet",
-    ),
-    (
-        "from",
-        "the matcher is built in plan and has no Debug form; no precedence test yet",
-    ),
-    (
-        "from-to-mode",
-        "read by app::tui_mode when the TUI starts; no precedence test yet",
-    ),
-    (
-        "names",
-        "startup shows that names are on, not which files; app::load_manual_names reads them when the run starts; no precedence test yet",
-    ),
-    (
-        "node-name",
-        "a process-wide value the first plan in a process sets; no precedence test yet",
-    ),
-    (
-        "syslog",
-        "alert channels are built by app::batch when the run starts; no precedence test yet",
-    ),
-    (
-        "to",
-        "the matcher is built in plan and has no Debug form; no precedence test yet",
-    ),
-    (
-        "user",
-        "read by privilege dropping in bootstrap::launch; no precedence test yet",
-    ),
-];
+/// `flag_and_key_combine_as_settings_declares`. Empty: every row's
+/// resolver is in `fingerprint`, so a new row whose key startup cannot see
+/// fails until its resolver is added there (or it is listed here with the
+/// test that proves it).
+const PRECEDENCE_ELSEWHERE: &[(&str, &str)] = &[];
 
 /// Two distinct accepted values for a flag row, as flag-value text (`None`
 /// for a switch's presence).
