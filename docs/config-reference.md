@@ -89,6 +89,10 @@ using.
 
 Standard [TOML](https://toml.io/). All sections and keys are optional. Only set values you want to change from defaults.
 
+A file sipnab cannot read, or a value in it sipnab refuses, stops the run before
+anything starts with exit status `1`, naming the key. The same value given as a
+flag exits `2`. See [Exit codes](cli-reference.md#exit-codes).
+
 ## Sections
 
 <!-- Each section below is headed by the literal TOML table a user types into
@@ -107,8 +111,8 @@ Packet capture defaults.
 | `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `ws_ports` | string | `"80, 443, 8080, 8443"` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
-| `snaplen` | integer | `65535` | Snapshot length in bytes. `--capture-profile` overrides it; `--snaplen` overrides it |
-| `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device). `--buffer` overrides it |
+| `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |
+| `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device). sipnab refuses `0`, which asks the kernel for no ring, as `--buffer` does. `--buffer` overrides it |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
@@ -177,8 +181,8 @@ Default filter presets applied at startup.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `from` | string | -- | Default From header filter (regex). `--from` overrides it |
-| `to` | string | -- | Default To header filter (regex). `--to` overrides it |
+| `from` | string | -- | Default From header filter (regex). sipnab refuses a pattern that does not compile when the file loads, naming the key. `--from` overrides it |
+| `to` | string | -- | Default To header filter (regex). sipnab refuses a pattern that does not compile when the file loads, naming the key. `--to` overrides it |
 | `expression` | string | -- | Default filter DSL expression. `--filter` overrides it |
 
 ```toml
@@ -237,7 +241,7 @@ Security detection defaults.
 | `scanner_established_factor` | integer | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. A registered endpoint that starts probing is a compromised phone worth reporting, but it is also the peer whose ordinary working traffic looks most like probing, and the peer a false positive costs most. `--scanner-established-factor` overrides it |
 | `scanner_answer_grace_ms` | integer | `500` | How long a probe may go without a response before `--kill-scanner` counts it as unanswered, in milliseconds. The default is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)'s Timer T1, the round-trip estimate at which SIP itself gives up waiting and retransmits. Raise it on a link whose round trip runs longer than that, where the default reports every probe still in flight as one nobody answered. `--scanner-answer-grace` overrides it |
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
-| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. `--hep-hmac-window` overrides it |
+| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-hmac-window` overrides it |
 
 **HEP HMAC token version 2, and what a mixed fleet sees.** sipnab 0.5.131
 moved `HMAC_TOKEN_VERSION` from 1 to 2 and refuses v1 by name. Two things
@@ -503,7 +507,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_streams` | integer | `50000` | Maximum RTP streams. `0` fails validation and names the key. `--max-streams` overrides it |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `0` fails validation and names the key. `--max-reassembly` overrides it |
 | `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
-| `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. `--hep-rate-limit` overrides it |
+| `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-rate-limit` overrides it |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
 | `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
@@ -574,8 +578,8 @@ each bundle holds.
 | `tools` | list of strings | `["full"]` | Bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool names, names from `[mcp.bundles]`, or `full`. sipnab refuses to start, naming the entry, when a name is unknown or empty. Names are case-sensitive. `--mcp-tools` replaces the list |
 | `output_schemas` | boolean | `false` | Send each tool's output schema on `tools/list`. MCP makes them optional, and they are more than half of what the tools cost a client. Responses carry the same JSON either way. `--mcp-output-schemas` overrides it |
 | `bundles` | table | -- | `[mcp.bundles]`: your own bundles, each a name for a list of tool names and built-in bundles. A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty, and cannot hold `full` or another custom bundle; sipnab refuses to start, naming the bundle, when one breaks a rule, even when nothing uses it |
-| `tls_cert` | string | -- | PEM certificate chain MCP over HTTP serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only with `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). `--mcp-tls-cert` overrides it |
-| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--mcp-tls-key` overrides it |
+| `tls_cert` | string | -- | PEM certificate chain MCP over HTTP serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only with `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). An empty string fails validation and names the key. `--mcp-tls-cert` overrides it |
+| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--mcp-tls-key` overrides it |
 
 ```toml
 [mcp]
@@ -596,8 +600,8 @@ by pointing its own name at `127.0.0.1` (DNS rebinding). See
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
-| `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). `--api-tls-cert` overrides it |
-| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--api-tls-key` overrides it |
+| `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). An empty string fails validation and names the key. `--api-tls-cert` overrides it |
+| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--api-tls-key` overrides it |
 
 ```toml
 [api]
@@ -630,8 +634,8 @@ How the metrics endpoint serves when `--metrics` starts it.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tls_cert` | string | -- | PEM certificate chain the metrics endpoint serves HTTPS with, the server's certificate first. Needs `tls_key`. See [Metrics TLS](prometheus-metrics.md#metrics-tls). `--metrics-tls-cert` overrides it |
-| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--metrics-tls-key` overrides it |
+| `tls_cert` | string | -- | PEM certificate chain the metrics endpoint serves HTTPS with, the server's certificate first. Needs `tls_key`. See [Metrics TLS](prometheus-metrics.md#metrics-tls). An empty string fails validation and names the key. `--metrics-tls-cert` overrides it |
+| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--metrics-tls-key` overrides it |
 
 ```toml
 [metrics]
@@ -647,10 +651,10 @@ collector's certificate against, and the certificate a TLS listener
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. An empty string fails validation and names the key. `--hep-tls-ca` overrides it |
-| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. `--hep-tls-extra-ca` overrides it |
-| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. `--hep-tls-cert` overrides it |
-| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--hep-tls-key` overrides it |
+| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-ca` overrides it |
+| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-extra-ca` overrides it |
+| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-cert` overrides it |
+| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-key` overrides it |
 
 The sender's trust is one setting. When the command line names
 `--hep-tls-ca` or `--hep-tls-extra-ca`, it replaces both `tls_ca` and
@@ -675,8 +679,8 @@ other than `generic` supplies the value, and then the default applies.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path, the header when the credential is a bare key, and the payload adaptation. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
-| `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows: sipnab refuses a URL with a user name or password in it, and the message shows that part as `[redacted]`. `--vcon-forward-url` overrides it |
-| `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. `--vcon-forward-replace-url` overrides it |
+| `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows: sipnab refuses a URL with a user name or password in it, and the message shows that part as `[redacted]`. A URL refused from this key exits `1`, as every refused config value does; the same URL from `--vcon-forward-url` exits `2`. `--vcon-forward-url` overrides it |
+| `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. A template refused from this key exits `1`; from `--vcon-forward-replace-url`, `2`. `--vcon-forward-replace-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. `--vcon-forward-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |

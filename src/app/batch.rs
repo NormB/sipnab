@@ -949,12 +949,7 @@ pub(crate) fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDe
         tracing::error!("{e}; off-hours fraud detection is OFF for this run");
         None
     });
-    let mut watch = cli.fraud_destinations();
-    if watch.is_empty() {
-        watch = crate::cli::parse_destination_list(
-            config.security.fraud_destination.as_deref().unwrap_or(""),
-        );
-    }
+    let watch = cli.fraud_watch(config);
     Some(
         FraudDetector::with_thresholds(business_hours, cli.fraud_thresholds(config))
             .with_destination_watch(crate::security::destination::DialPlan::common(), watch),
@@ -3005,24 +3000,26 @@ fn parse_alert_sources(specs: &[String], exec_configured: bool) -> AlertSources 
             }
             continue;
         }
-        match value.to_ascii_lowercase().as_str() {
-            "syslog" => sources.syslog = true,
-            "json" => sources.json = true,
+        use crate::security::alerting::names_channel;
+        if names_channel(value, "syslog") {
+            sources.syslog = true;
+        } else if names_channel(value, "json") {
+            sources.json = true;
+        } else if names_channel(value, "exec") {
             // The exec channel is the presence of --alert-exec; naming it
             // here is accepted so the documented triple all work, but it
             // cannot invent a command.
-            "exec" => {
-                if !exec_configured {
-                    sources.warnings.push(
-                        "--alert exec given without --alert-exec <CMD>; no command to run"
-                            .to_owned(),
-                    );
-                }
+            if !exec_configured {
+                sources.warnings.push(
+                    "--alert exec given without --alert-exec <CMD>; no command to run".to_owned(),
+                );
             }
-            other => sources.warnings.push(format!(
-                "Unknown alert channel '{other}'. Valid channels: syslog, json, exec. \
-                 (A value containing ':' is treated as an alert rule.)"
-            )),
+        } else {
+            sources.warnings.push(format!(
+                "Unknown alert channel '{}'. Valid channels: syslog, json, exec. \
+                 (A value containing ':' is treated as an alert rule.)",
+                value.to_ascii_lowercase()
+            ));
         }
     }
     sources
@@ -3031,25 +3028,18 @@ fn parse_alert_sources(specs: &[String], exec_configured: bool) -> AlertSources 
 /// 17b. Initialize alert engine from --alert rules and --alert-exec,
 ///      falling back to config.security.alert and config.security.alert_exec
 fn build_configured_alert_engine(cli: &Cli, config: &Config) -> AlertEngine {
-    let effective_alert_sources: &[String] = if cli.security_args.alert.is_empty() {
-        config.security.alert.as_deref().unwrap_or(&[])
-    } else {
-        &cli.security_args.alert
-    };
-    let effective_alert_exec = cli
-        .security_args
-        .alert_exec
-        .clone()
-        .or(config.security.alert_exec.clone());
-    let sources = parse_alert_sources(effective_alert_sources, effective_alert_exec.is_some());
+    // One resolver for the flags and `[security]` together, the one the
+    // startup precedence tests read.
+    let settings = cli.alert_settings(config);
+    let sources = parse_alert_sources(&settings.sources, settings.exec.is_some());
     for warning in &sources.warnings {
         tracing::warn!("{warning}");
     }
-    let mut alert_engine = build_alert_engine(cli, config, sources.rules, effective_alert_exec);
-    if cli.security_args.syslog || sources.syslog {
+    let mut alert_engine = build_alert_engine(cli, config, sources.rules, settings.exec);
+    if settings.syslog {
         alert_engine.set_syslog(true);
     }
-    if cli.security_args.alert_json || sources.json {
+    if settings.json {
         alert_engine.set_json_output(true);
     }
     alert_engine
@@ -3181,8 +3171,8 @@ impl MediaDecryption {
 ///
 /// # Errors
 ///
-/// An unloadable `--tls-key` file (exit code 1). A keylog that cannot be
-/// read is logged and leaves the run without a decryptor.
+/// An unloadable `--keylog` or `--tls-key` file (exit code 1), refused the
+/// way `--dtls-keylog` and `--srtp-keys` are.
 #[cfg(feature = "tls")]
 fn build_tls_decryptor(
     cli: &Cli,
@@ -3203,17 +3193,21 @@ fn build_tls_decryptor(
         cli.tls_args.keylog.as_deref().map(std::path::Path::new)
     };
     let crypto = crate::crypto::default_backend();
-    let mut d = match TlsDecryptor::new(keylog_path, crypto) {
-        Ok(d) => d,
-        Err(e) => {
-            // `{:#}`: the whole chain. `{}` printed only the outermost
-            // context, "Loading keylog from <path>", which reads the
-            // same for a typo, a permission problem and a file the
-            // producer has not written yet.
-            tracing::error!("Failed to initialize TLS decryptor: {e:#}");
-            return Ok(None);
+    let mut d = TlsDecryptor::new(keylog_path, crypto).map_err(|e| {
+        // `{:#}`: the whole chain. `{}` printed only the outermost
+        // context, "Loading keylog from <path>", which reads the same for
+        // a typo, a permission problem and a file the producer has not
+        // written yet. A run that asked for decryption and cannot have it
+        // stops, as `--tls-key` and `--dtls-keylog` do: it used to go on
+        // without a decryptor and exit 0.
+        crate::app::bootstrap::PlanError {
+            exit_code: 1,
+            message: format!(
+                "Failed to load --keylog {}: {e:#}",
+                cli.tls_args.keylog.as_deref().unwrap_or_default()
+            ),
         }
-    };
+    })?;
     if let Some(records) = cli.tls_args.tls_lockon_window {
         d.set_lockon_window(records);
     }
@@ -15647,6 +15641,30 @@ mod run_state_builder_tests {
         assert!(
             err.message
                 .starts_with("Failed to load --tls-key /nonexistent/key.pem: "),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// A `--keylog` that cannot be read refuses the run with exit 1, as an
+    /// unreadable `--tls-key` and `--dtls-keylog` do. It used to be logged
+    /// and the run went on without a decryptor, exiting 0.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn unreadable_keylog_refuses_the_run_like_the_other_key_files() -> Result<(), TestError> {
+        let err = build_tls_decryptor(&cli(&["--keylog", "/nonexistent/keys.log"]), None)
+            .err()
+            .ok_or("an unreadable keylog is refused")?;
+        assert_eq!(err.exit_code, 1);
+        assert!(
+            err.message
+                .starts_with("Failed to load --keylog /nonexistent/keys.log: "),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("No such file or directory"),
             "{}",
             err.message
         );

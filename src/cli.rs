@@ -624,12 +624,13 @@ pub struct CaptureArgs {
     /// Kernel capture buffer size in MiB (default 64). The ring libpcap fills
     /// and sipnab drains: raise it on busy links, lower it on small hosts or
     /// when capturing many interfaces at once (the cost is per device). See
-    /// `docs/tuning-capture.md`.
+    /// `docs/tuning-capture.md`. Accepts 1 and up.
     #[arg(
         help_heading = "Capture",
         short = 'B',
         long = "buffer",
-        value_name = "MIB"
+        value_name = "MIB",
+        value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub buffer: Option<u32>,
 
@@ -639,8 +640,13 @@ pub struct CaptureArgs {
     #[arg(help_heading = "Capture", long = "buffer-budget", value_name = "MIB")]
     pub buffer_budget: Option<u32>,
 
-    /// Snapshot length for packet capture (bytes).
-    #[arg(help_heading = "Capture", long, value_name = "BYTES")]
+    /// Snapshot length for packet capture (bytes). Accepts 1 and up.
+    #[arg(
+        help_heading = "Capture",
+        long,
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
     pub snaplen: Option<u32>,
 
     /// Named capture profile, which picks a `--snaplen` for you.
@@ -2712,7 +2718,7 @@ pub struct EventExecArgs {
     #[arg(help_heading = "Event execution", long, value_name = "CMD")]
     pub on_quality_exec: Option<String>,
 
-    /// Maximum exec invocations per second (rate limit).
+    /// Maximum exec invocations per second (rate limit). `0` means no limit.
     #[arg(
         help_heading = "Event execution",
         long,
@@ -2770,6 +2776,7 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "FILE",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
         requires = "metrics"
     )]
     pub metrics_tls_cert: Option<String>,
@@ -2780,6 +2787,7 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "FILE",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
         requires = "metrics"
     )]
     pub metrics_tls_key: Option<String>,
@@ -2840,15 +2848,26 @@ pub struct ListenerArgs {
 
     /// Serve the REST API over HTTPS with this certificate chain (PEM, leaf
     /// first). Needs --api-tls-key. TLS 1.2 and 1.3; ALPN http/1.1.
-    #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
+    #[arg(
+        help_heading = "Network listeners",
+        long,
+        value_name = "FILE",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     pub api_tls_cert: Option<String>,
 
     /// Private key (PEM) for --api-tls-cert. Refused when any other user can
     /// read it: chmod 600.
-    #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
+    #[arg(
+        help_heading = "Network listeners",
+        long,
+        value_name = "FILE",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     pub api_tls_key: Option<String>,
 
-    /// Maximum concurrent API connections.
+    /// Maximum API requests handled at once; sipnab answers 503 to a request
+    /// past it. `0` means no limit.
     #[arg(
         help_heading = "Network listeners",
         long,
@@ -3021,7 +3040,8 @@ pub struct McpArgs {
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-tls-cert",
-        value_name = "FILE"
+        value_name = "FILE",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
     )]
     pub mcp_tls_cert: Option<String>,
 
@@ -3030,7 +3050,8 @@ pub struct McpArgs {
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-tls-key",
-        value_name = "FILE"
+        value_name = "FILE",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
     )]
     pub mcp_tls_key: Option<String>,
 
@@ -3745,7 +3766,18 @@ pub struct McpArgs {
 /// own stack frame. See the `RUST_MIN_STACK` note this replaced in
 /// `.cargo/config.toml`: one function carrying every flag sat just over the
 /// 2 MiB libtest thread stack.
+///
+/// An option that only the listener or only the sender reads `requires` that
+/// side, so the command line cannot carry it on a run where it does nothing.
+/// `hep_surface` is either side, for the options both read. The same settings
+/// from the config file are warned about instead
+/// ([`Cli::inert_key_warnings`]).
 #[derive(clap::Args, Debug, Clone)]
+#[command(group(
+    clap::ArgGroup::new("hep_surface")
+        .args(["hep_listen", "hep_send"])
+        .multiple(true)
+))]
 pub struct HepArgs {
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(
@@ -3839,7 +3871,13 @@ pub struct HepArgs {
 
     /// Capture-agent id (HEP 0x000c chunk) stamped on every packet sent via
     /// `--hep-send`. Distinguishes this agent to the Homer collector. Default 1.
-    #[arg(help_heading = "HEP", long = "hep-id", value_name = "ID")]
+    /// Refused without `--hep-send`, which is the side it governs.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-id",
+        value_name = "ID",
+        requires = "hep_send"
+    )]
     pub hep_id: Option<u32>,
 
     /// Homer authenticate key (HEP 0x000e chunk) added to every packet sent via
@@ -3858,8 +3896,14 @@ pub struct HepArgs {
     /// out of the process list. Takes precedence over --hep-auth. When set on
     /// a `--hep-listen` receiver it ENABLES receiver-side authentication:
     /// incoming HEP packets must carry a matching 0x000e auth-key chunk or
-    /// they are dropped.
-    #[arg(help_heading = "HEP", long = "hep-auth-file", value_name = "FILE")]
+    /// they are dropped. Refused without `--hep-listen` or `--hep-send`, the
+    /// two sides it governs.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-auth-file",
+        value_name = "FILE",
+        requires = "hep_surface"
+    )]
     pub hep_auth_file: Option<std::path::PathBuf>,
 
     /// HEP authentication mode: `plain` (default) sends/expects the shared
@@ -3867,18 +3911,21 @@ pub struct HepArgs {
     /// by an on-path sniffer); `hmac` sends/expects a per-message HMAC token
     /// (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay.
     /// `hmac` is sipnab-to-sipnab only — a stock Homer/Kamailio peer will not
-    /// understand it.
+    /// understand it. Refused without `--hep-listen` or `--hep-send`, the two
+    /// sides it governs.
     #[arg(
         help_heading = "HEP",
         long = "hep-auth-mode",
         value_name = "plain|hmac",
-        default_value = "plain"
+        default_value = "plain",
+        requires = "hep_surface"
     )]
     pub hep_auth_mode: HepAuthMode,
 
     /// Seconds either side of now a `--hep-auth-mode hmac` token's timestamp
     /// may fall and still be accepted (default 30, maximum 300). Config:
-    /// `[security] hep_hmac_window_secs`.
+    /// `[security] hep_hmac_window_secs`. Refused without `--hep-listen`,
+    /// the side that checks the window.
     ///
     /// On an agent/collector pair with poor NTP every packet is rejected as
     /// out-of-window, and what the operator sees is a collector receiving
@@ -3894,7 +3941,8 @@ pub struct HepArgs {
         help_heading = "HEP",
         long = "hep-hmac-window",
         value_name = "SECS",
-        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_HEP_HMAC_WINDOW_SECS)
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_HEP_HMAC_WINDOW_SECS),
+        requires = "hep_listen"
     )]
     pub hep_hmac_window_secs: Option<u64>,
 
@@ -3945,14 +3993,21 @@ pub struct HepArgs {
     )]
     pub no_hep_parse: bool,
 
-    /// Allowed source addresses for HEP input (repeatable).
-    #[arg(help_heading = "HEP", long, value_name = "ADDR")]
+    /// Allowed source addresses for HEP input (repeatable). Refused without
+    /// `--hep-listen`, which is the side it governs.
+    #[arg(
+        help_heading = "HEP",
+        long,
+        value_name = "ADDR",
+        requires = "hep_listen"
+    )]
     pub hep_allow: Vec<String>,
 
     /// Maximum HEP packets per second (global ceiling across all senders).
     /// `0` disables the global ceiling (consistent with `off` on the
-    /// per-peer knob); the per-peer cap, if set, still applies.
-    #[arg(help_heading = "HEP", long, value_name = "N")]
+    /// per-peer knob); the per-peer cap, if set, still applies. Refused
+    /// without `--hep-listen`, which is the side it governs.
+    #[arg(help_heading = "HEP", long, value_name = "N", requires = "hep_listen")]
     pub hep_rate_limit: Option<u64>,
 
     /// Maximum HEP packets per second from any single source IP: a number,
@@ -3961,12 +4016,14 @@ pub struct HepArgs {
     /// --hep-rate-limit allowance and starve others. `auto` divides the
     /// global ceiling evenly across the --hep-allow sources (disabled when no
     /// allowlist is set). Leave at `off` for the common single-collector
-    /// topology.
+    /// topology. Refused without `--hep-listen`, which is the side it
+    /// governs.
     #[arg(
         help_heading = "HEP",
         long,
         value_name = "N|auto|off",
-        default_value = "off"
+        default_value = "off",
+        requires = "hep_listen"
     )]
     pub hep_rate_limit_per_peer: PerPeerLimit,
 }
@@ -4865,6 +4922,23 @@ pub fn tls_pair_problem(
     ))
 }
 
+/// The alert settings one run resolves from its flags and `[security]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertSettings {
+    /// The `--alert` values, else `[security] alert`: channels and rules.
+    pub sources: Vec<String>,
+    /// The setting `sources` came from, for a refusal to name.
+    pub from: &'static str,
+    /// The command an alert runs: `--alert-exec`, else `[security]
+    /// alert_exec`.
+    pub exec: Option<String>,
+    /// Alerts go to syslog: `--syslog`, or `syslog` among `sources`.
+    pub syslog: bool,
+    /// Alerts are written as JSON lines: `--alert-json`, or `json` among
+    /// `sources`.
+    pub json: bool,
+}
+
 /// The REST API's certificate and key flags, for [`tls_pair_problem`].
 pub const API_TLS_FLAGS: (&str, &str) = ("--api-tls-cert", "--api-tls-key");
 
@@ -5682,15 +5756,44 @@ impl Cli {
     /// the run that does not need it is earlier than on the one that does.
     #[must_use]
     pub fn tls_settings_problem(&self, config: &crate::config::Config) -> Option<String> {
+        self.tls_settings_refusal(config)
+            .map(|(_, message)| message)
+    }
+
+    /// [`Self::tls_settings_problem`], with where the refused setting came
+    /// from: the command line when it supplied any part of the refused pair
+    /// (or asked for the TLS HEP listener), else the config file.
+    #[must_use]
+    pub fn tls_settings_refusal(
+        &self,
+        config: &crate::config::Config,
+    ) -> Option<(crate::settings::Origin, String)> {
+        use crate::settings::Origin;
         fn label(flag: &str, section: &str, key: &str) -> String {
             format!("{flag} (or [{section}] {key})")
         }
+        let (l, m) = (&self.listener_args, &self.mcp_args);
         let pairs = [
-            ("api", API_TLS_FLAGS, self.api_tls_files(config)),
-            ("mcp", MCP_TLS_FLAGS, self.mcp_tls_files(config)),
-            ("metrics", METRICS_TLS_FLAGS, self.metrics_tls_files(config)),
+            (
+                "api",
+                API_TLS_FLAGS,
+                self.api_tls_files(config),
+                l.api_tls_cert.is_some() || l.api_tls_key.is_some(),
+            ),
+            (
+                "mcp",
+                MCP_TLS_FLAGS,
+                self.mcp_tls_files(config),
+                m.mcp_tls_cert.is_some() || m.mcp_tls_key.is_some(),
+            ),
+            (
+                "metrics",
+                METRICS_TLS_FLAGS,
+                self.metrics_tls_files(config),
+                l.metrics_tls_cert.is_some() || l.metrics_tls_key.is_some(),
+            ),
         ];
-        for (section, (first, second), (first_file, second_file)) in pairs {
+        for (section, (first, second), (first_file, second_file), flag_given) in pairs {
             let first_label = label(first, section, "tls_cert");
             let second_label = label(second, section, "tls_key");
             if let Some(problem) = tls_pair_problem(
@@ -5698,7 +5801,7 @@ impl Cli {
                 first_file.as_deref(),
                 second_file.as_deref(),
             ) {
-                return Some(problem);
+                return Some((Origin::of(flag_given), problem));
             }
         }
         if config.hep.tls_ca.is_some()
@@ -5706,23 +5809,25 @@ impl Cli {
             && self.hep_args.hep_tls_ca.is_none()
             && self.hep_args.hep_tls_extra_ca.is_none()
         {
-            return Some(
+            return Some((
+                Origin::ConfigFile,
                 "[hep] tls_ca and [hep] tls_extra_ca cannot both be set: tls_ca trusts \
                  only its file, tls_extra_ca trusts its file in addition to the host's \
                  CA bundle"
                     .to_string(),
-            );
+            ));
         }
         let (hep_cert, hep_key) = self.hep_tls_files(config);
         if self.hep_listen_transport() == HepTransport::Tls
             && (hep_cert.is_none() || hep_key.is_none())
         {
-            return Some(
+            return Some((
+                Origin::CommandLine,
                 "--hep-listen-transport tls needs --hep-tls-cert (or [hep] tls_cert) \
                  and --hep-tls-key (or [hep] tls_key); a TLS server with nothing to \
                  present cannot complete a handshake"
                     .to_string(),
-            );
+            ));
         }
         None
     }
@@ -5932,6 +6037,170 @@ impl Cli {
         {
             Some(spec) => crate::config::parse_business_hours(spec).map(Some),
             None => Ok(None),
+        }
+    }
+
+    /// The node name this run reports: `--node-name`, else `[capture]
+    /// node_name`, each trimmed and clipped by
+    /// [`crate::provenance::clip_node_name`]; a value empty once trimmed
+    /// passes to the next source. `None` leaves the hostname.
+    #[must_use]
+    pub fn node_name(&self, config: &crate::config::Config) -> Option<String> {
+        [
+            self.mcp_args.node_name.as_deref(),
+            config.capture.node_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(crate::provenance::clip_node_name)
+    }
+
+    /// The fraud destination watch list: `--fraud-destination`, else
+    /// `[security] fraud_destination`, each normalized by
+    /// [`parse_destination_list`]. A flag that lists nothing leaves the key's
+    /// list in force.
+    #[must_use]
+    pub fn fraud_watch(&self, config: &crate::config::Config) -> Vec<String> {
+        let watch = self.fraud_destinations();
+        if watch.is_empty() {
+            parse_destination_list(config.security.fraud_destination.as_deref().unwrap_or(""))
+        } else {
+            watch
+        }
+    }
+
+    /// The manual name files this run loads, in load order: every `--names`
+    /// file, then `[names] hosts_file`.
+    #[must_use]
+    pub fn names_files(&self, config: &crate::config::Config) -> Vec<String> {
+        self.name_args
+            .names
+            .iter()
+            .cloned()
+            .chain(config.names.hosts_file.clone())
+            .collect()
+    }
+
+    /// The From header pattern in force, with the setting it came from:
+    /// `--from`, else `[filter] from`.
+    #[must_use]
+    pub fn filter_from<'a>(
+        &'a self,
+        config: &'a crate::config::Config,
+    ) -> Option<(&'a str, &'static str)> {
+        self.matching_args
+            .from
+            .as_deref()
+            .map(|p| (p, "--from"))
+            .or_else(|| config.filter.from.as_deref().map(|p| (p, "[filter] from")))
+    }
+
+    /// The To header pattern in force, with the setting it came from:
+    /// `--to`, else `[filter] to`.
+    #[must_use]
+    pub fn filter_to<'a>(
+        &'a self,
+        config: &'a crate::config::Config,
+    ) -> Option<(&'a str, &'static str)> {
+        self.matching_args
+            .to
+            .as_deref()
+            .map(|p| (p, "--to"))
+            .or_else(|| config.filter.to.as_deref().map(|p| (p, "[filter] to")))
+    }
+
+    /// One warning for each config-file key set for a HEP side this run does
+    /// not start.
+    ///
+    /// The flags for these settings `require` their side and are refused
+    /// without it. A config file serves runs with and without a listener, so
+    /// the same setting there is not refused; it is named, so an operator who
+    /// believes it is in force can see that it is not.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` — the loaded config file.
+    ///
+    /// # Returns
+    ///
+    /// One sentence per key, naming the key and the flag that starts the
+    /// side it applies to; empty when every key set here applies.
+    #[must_use]
+    pub fn inert_key_warnings(&self, config: &crate::config::Config) -> Vec<String> {
+        const LISTENER: &str = "the HEP listener (--hep-listen/-L)";
+        const SENDER: &str = "the HEP sender (--hep-send/-H)";
+        let listener = self.hep_args.hep_listen.is_some();
+        let sender = self.hep_args.hep_send.is_some();
+        let rows = [
+            (
+                "[limits] hep_rate_limit",
+                config.limits.hep_rate_limit.is_some(),
+                listener,
+                LISTENER,
+            ),
+            (
+                "[security] hep_hmac_window_secs",
+                config.security.hep_hmac_window_secs.is_some(),
+                listener,
+                LISTENER,
+            ),
+            (
+                "[hep] tls_cert",
+                config.hep.tls_cert.is_some(),
+                listener,
+                LISTENER,
+            ),
+            (
+                "[hep] tls_key",
+                config.hep.tls_key.is_some(),
+                listener,
+                LISTENER,
+            ),
+            ("[hep] tls_ca", config.hep.tls_ca.is_some(), sender, SENDER),
+            (
+                "[hep] tls_extra_ca",
+                config.hep.tls_extra_ca.is_some(),
+                sender,
+                SENDER,
+            ),
+        ];
+        rows.into_iter()
+            .filter(|&(_, set, started, _)| set && !started)
+            .map(|(key, _, _, side)| {
+                format!(
+                    "{key} is set in the config file and does nothing in this run: it \
+                     applies to {side}, which this run does not start"
+                )
+            })
+            .collect()
+    }
+
+    /// The alert settings: `--alert`, else `[security] alert`;
+    /// `--alert-exec`, else `[security] alert_exec`; and the syslog and JSON
+    /// channels, which `--syslog` and `--alert-json` turn on beside whatever
+    /// `sources` names.
+    #[must_use]
+    pub fn alert_settings(&self, config: &crate::config::Config) -> AlertSettings {
+        use crate::security::alerting::names_channel;
+        let a = &self.security_args;
+        let (sources, from) = if a.alert.is_empty() {
+            (
+                config.security.alert.clone().unwrap_or_default(),
+                "[security] alert",
+            )
+        } else {
+            (a.alert.clone(), "--alert")
+        };
+        let named = |channel: &str| sources.iter().any(|s| names_channel(s, channel));
+        AlertSettings {
+            syslog: a.syslog || named("syslog"),
+            json: a.alert_json || named("json"),
+            exec: a
+                .alert_exec
+                .clone()
+                .or_else(|| config.security.alert_exec.clone()),
+            from,
+            sources,
         }
     }
 
@@ -6340,7 +6609,7 @@ impl Cli {
                 out = out.replace(key, &format!("[quality] {key}"));
             }
         }
-        (if from_flag { 2 } else { 1 }, out)
+        (crate::settings::Origin::of(from_flag).exit_code(), out)
     }
 
     /// Quality color bands: each flag, else its `[quality]` key, else the
@@ -8637,6 +8906,67 @@ mod tests {
         Ok(())
     }
 
+    /// Each HEP key set for a side the run does not start is named once; a
+    /// run that starts that side names none of them.
+    #[test]
+    fn inert_hep_keys_are_named_only_when_their_side_is_off() -> Result<(), TestError> {
+        use std::path::PathBuf;
+        let mut config = crate::config::Config::default();
+        config.limits.hep_rate_limit = Some(10);
+        config.security.hep_hmac_window_secs = Some(60);
+        config.hep.tls_cert = Some(PathBuf::from("c.pem"));
+        config.hep.tls_key = Some(PathBuf::from("k.pem"));
+        config.hep.tls_ca = Some(PathBuf::from("ca.pem"));
+        config.hep.tls_extra_ca = Some(PathBuf::from("extra.pem"));
+        let listener_keys = [
+            "[limits] hep_rate_limit",
+            "[security] hep_hmac_window_secs",
+            "[hep] tls_cert",
+            "[hep] tls_key",
+        ];
+        let sender_keys = ["[hep] tls_ca", "[hep] tls_extra_ca"];
+        let names = |args: &[&str]| -> Result<Vec<String>, TestError> {
+            Ok(Cli::try_parse_from_args(args)?.inert_key_warnings(&config))
+        };
+        let bare = names(&["sipnab", "-N"])?;
+        assert_eq!(bare.len(), 6, "{bare:?}");
+        for key in listener_keys.iter().chain(&sender_keys) {
+            assert_eq!(
+                bare.iter()
+                    .filter(|w| w.starts_with(&format!("{key} ")))
+                    .count(),
+                1,
+                "{key}: {bare:?}"
+            );
+        }
+        let listening = names(&["sipnab", "-N", "-L", "127.0.0.1:0"])?;
+        assert!(
+            listening
+                .iter()
+                .all(|w| sender_keys.iter().any(|k| w.starts_with(k))),
+            "{listening:?}"
+        );
+        assert_eq!(listening.len(), 2);
+        let sending = names(&["sipnab", "-N", "--hep-send", "127.0.0.1:9"])?;
+        assert!(
+            sending
+                .iter()
+                .all(|w| listener_keys.iter().any(|k| w.starts_with(k))),
+            "{sending:?}"
+        );
+        assert_eq!(sending.len(), 4);
+        let both = names(&[
+            "sipnab",
+            "-N",
+            "-L",
+            "127.0.0.1:0",
+            "--hep-send",
+            "127.0.0.1:9",
+        ])?;
+        assert!(both.is_empty(), "{both:?}");
+        Ok(())
+    }
+
     /// `--hep-auth-mode hmac` parses; the flag defaults to `plain`.
     #[test]
     fn hep_auth_mode_flag_parses() -> Result<(), TestError> {
@@ -10015,7 +10345,15 @@ mod tests {
     /// `--hep-id` and `--hep-auth` parse; both are `None` when absent.
     #[test]
     fn hep_id_and_auth_flags_parse() -> Result<(), TestError> {
-        let cli = Cli::parse_from_args(["sipnab", "--hep-id", "7", "--hep-auth", "secret"]);
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "--hep-send",
+            "127.0.0.1:9",
+            "--hep-id",
+            "7",
+            "--hep-auth",
+            "secret",
+        ]);
         assert_eq!(cli.hep_args.hep_id, Some(7));
         assert_eq!(cli.hep_args.hep_auth.as_deref(), Some("secret"));
         let none = Cli::parse_from_args(["sipnab"]);
@@ -10849,8 +11187,14 @@ mod tests {
             "[security] hep_hmac_window_secs must reach the resolver"
         );
 
-        let flagged =
-            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--hep-hmac-window", "7"]);
+        let flagged = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-hmac-window",
+            "7",
+        ]);
         assert_eq!(
             flagged.hep_hmac_window_secs(&tuned),
             7,
@@ -10866,15 +11210,23 @@ mod tests {
     #[cfg(feature = "hep")]
     #[test]
     fn clap_refuses_an_hmac_window_outside_the_documented_range() -> Result<(), TestError> {
+        // With the listener the window governs, so the range alone decides.
         for bad in ["0", "301"] {
-            assert!(
-                Cli::try_parse_from(["sipnab", "--hep-hmac-window", bad]).is_err(),
-                "--hep-hmac-window {bad} must be refused by clap, as the file is"
+            let err =
+                Cli::try_parse_from(["sipnab", "-L", "127.0.0.1:0", "--hep-hmac-window", bad])
+                    .err()
+                    .ok_or("refused")?;
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "--hep-hmac-window {bad} must be refused by clap for its range, as the file is"
             );
         }
         assert!(
             Cli::try_parse_from([
                 "sipnab",
+                "-L",
+                "127.0.0.1:0",
                 "--hep-hmac-window",
                 &crate::config::MAX_HEP_HMAC_WINDOW_SECS.to_string(),
             ])

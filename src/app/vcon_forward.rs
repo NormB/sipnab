@@ -939,6 +939,17 @@ pub struct ForwardPlan {
     pub limits: ReadLimits,
 }
 
+/// Which step of [`ForwardPlan::resolve_refusal`] refused a setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolveStep {
+    /// The store's URL did not parse.
+    Url,
+    /// The replace URL did not parse.
+    ReplaceUrl,
+    /// Anything else, each of which involves a flag.
+    Other,
+}
+
 /// The value in force of a text setting, and the name of where it came from:
 /// the flag, else the key.
 fn pick_text<'a>(
@@ -978,6 +989,42 @@ impl ForwardPlan {
         args: &crate::cli::VconForwardArgs,
         keys: &crate::config::VconForwardConfig,
     ) -> Result<Self, String> {
+        Self::resolve_refusal(args, keys).map_err(|(_, message)| message)
+    }
+
+    /// [`Self::resolve`], with where a refused value came from.
+    ///
+    /// Only the URL and the replace URL can be refused here from the config
+    /// file alone: a `[vcon_forward]` number, kind or compat name was refused
+    /// when the file loaded, and every other refusal involves a flag or is a
+    /// setting `--vcon-forward` needs and nothing gave.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::resolve`], each message with its
+    /// [`crate::settings::Origin`].
+    pub fn resolve_refusal(
+        args: &crate::cli::VconForwardArgs,
+        keys: &crate::config::VconForwardConfig,
+    ) -> Result<Self, (crate::settings::Origin, String)> {
+        use crate::settings::Origin;
+        let flag = |message: String| (Origin::CommandLine, message);
+        let url_origin = Origin::of(args.vcon_forward_url.is_some());
+        let replace_origin = Origin::of(args.vcon_forward_replace_url.is_some());
+        Self::resolve_inner(args, keys).map_err(|(step, message)| match step {
+            ResolveStep::Url => (url_origin, message),
+            ResolveStep::ReplaceUrl => (replace_origin, message),
+            ResolveStep::Other => flag(message),
+        })
+    }
+
+    /// The body of [`Self::resolve_refusal`]: each refusal with the step that
+    /// made it.
+    fn resolve_inner(
+        args: &crate::cli::VconForwardArgs,
+        keys: &crate::config::VconForwardConfig,
+    ) -> Result<Self, (ResolveStep, String)> {
+        let other = |message: String| (ResolveStep::Other, message);
         use crate::config::{
             FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_INTERVAL, FORWARD_MAX_ERROR_BODY,
             FORWARD_MAX_RESPONSE_HEAD, FORWARD_TIMEOUT,
@@ -985,7 +1032,7 @@ impl ForwardPlan {
         let spool = args
             .vcon_forward
             .clone()
-            .ok_or("--vcon-forward names no spool")?;
+            .ok_or_else(|| other("--vcon-forward names no spool".to_string()))?;
         let kind = match pick_text(
             args.vcon_forward_kind.as_deref(),
             "--vcon-forward-kind",
@@ -993,7 +1040,7 @@ impl ForwardPlan {
             "[vcon_forward] kind",
         ) {
             Some((name, from)) => StoreKind::from_name(name)
-                .ok_or_else(|| format!("{from}: {name:?} is not a store kind"))?,
+                .ok_or_else(|| other(format!("{from}: {name:?} is not a store kind")))?,
             None => StoreKind::Generic,
         };
         let facts = kind.facts();
@@ -1003,11 +1050,15 @@ impl ForwardPlan {
             keys.url.as_deref(),
             "[vcon_forward] url",
         )
-        .ok_or(
-            "--vcon-forward needs the store's URL: give --vcon-forward-url, or [vcon_forward] url \
-             in the config file",
-        )?;
-        let mut url = Endpoint::parse(url_text).map_err(|e| format!("{url_from} {e}"))?;
+        .ok_or_else(|| {
+            other(
+                "--vcon-forward needs the store's URL: give --vcon-forward-url, or \
+                 [vcon_forward] url in the config file"
+                    .to_string(),
+            )
+        })?;
+        let mut url =
+            Endpoint::parse(url_text).map_err(|e| (ResolveStep::Url, format!("{url_from} {e}")))?;
         if let Some(path) = facts.ingest_path
             && url.target == "/"
         {
@@ -1020,9 +1071,10 @@ impl ForwardPlan {
             "[vcon_forward] replace_url",
         );
         if let Some((template, from)) = replace {
-            replace_endpoint(template, "0").map_err(|e| format!("{from} {e}"))?;
+            replace_endpoint(template, "0")
+                .map_err(|e| (ResolveStep::ReplaceUrl, format!("{from} {e}")))?;
         }
-        let credential = credential(args, keys, kind)?;
+        let credential = credential(args, keys, kind).map_err(other)?;
         let compat = match pick_text(
             args.vcon_forward_compat.as_deref(),
             "--vcon-forward-compat",
@@ -1030,36 +1082,42 @@ impl ForwardPlan {
             "[vcon_forward] compat",
         ) {
             Some((name, from)) => Compat::from_name(name)
-                .ok_or_else(|| format!("{from}: {name:?} is not a compat mode"))?,
+                .ok_or_else(|| other(format!("{from}: {name:?} is not a compat mode")))?,
             None => facts.compat,
         };
-        let interval = pick_number(FORWARD_INTERVAL, args.vcon_forward_interval, keys.interval)?;
-        let timeout = pick_number(FORWARD_TIMEOUT, args.vcon_forward_timeout, keys.timeout)?;
+        let interval = pick_number(FORWARD_INTERVAL, args.vcon_forward_interval, keys.interval)
+            .map_err(other)?;
+        let timeout =
+            pick_number(FORWARD_TIMEOUT, args.vcon_forward_timeout, keys.timeout).map_err(other)?;
         let first = pick_number(
             FORWARD_BACKOFF_FIRST,
             args.vcon_forward_backoff_first,
             keys.backoff_first,
-        )?;
+        )
+        .map_err(other)?;
         let cap = pick_number(
             FORWARD_BACKOFF_CAP,
             args.vcon_forward_backoff_cap,
             keys.backoff_cap,
-        )?;
+        )
+        .map_err(other)?;
         if let Some(problem) =
             crate::config::forward_backoff_problem((first.0, &first.1), (cap.0, &cap.1))
         {
-            return Err(problem);
+            return Err(other(problem));
         }
         let head = pick_number(
             FORWARD_MAX_RESPONSE_HEAD,
             args.vcon_forward_max_response_head,
             keys.max_response_head,
-        )?;
+        )
+        .map_err(other)?;
         let body = pick_number(
             FORWARD_MAX_ERROR_BODY,
             args.vcon_forward_max_error_body,
             keys.max_error_body,
-        )?;
+        )
+        .map_err(other)?;
         Ok(Self {
             done_dir: args
                 .vcon_forward_done

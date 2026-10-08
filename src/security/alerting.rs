@@ -277,6 +277,15 @@ const MAX_COOLDOWN_ENTRIES: usize = 10_000;
 /// A value containing `:` is an alert rule instead.
 pub const ALERT_CHANNELS: [&str; 3] = ["syslog", "json", "exec"];
 
+/// Whether the `--alert` / `[security] alert` value `spec` names `channel`
+/// (one of [`ALERT_CHANNELS`]): a value without `:`, compared trimmed and
+/// without regard to case.
+#[must_use]
+pub fn names_channel(spec: &str, channel: &str) -> bool {
+    let value = spec.trim();
+    !value.contains(':') && value.eq_ignore_ascii_case(channel)
+}
+
 /// Default capacity of the in-memory findings ring buffer (Phase 8.3).
 pub const DEFAULT_FINDINGS_HISTORY: usize = 1000;
 

@@ -38,7 +38,10 @@ const KNOWN_UNTESTED: &[&str] = &[
 
     // ── Crypto: need a TLS/SRTP/DTLS pcap + matching keys (M5/T5.1 fixtures) ──
     "keylog-watch", // live keylog tailing — needs the same + a running source
-    "tls-key",      // TLS private-key decrypt — needs TLS-SIP pcap + the key
+    // `tls-key` left this list on 2026-10-08: config_cli_defects_test runs
+    // the binary with a missing key file and asserts the exit 1 refusal.
+    // Narrower than behavior coverage: no RSA handshake is decrypted -- that
+    // still needs a TLS-SIP pcap and its key.
     // `dtls-keylog` left this list on 2026-09-21: batch_run_paths_test loads a
     // two-entry keylog and asserts the run announces both entries. Narrower
     // than behavior coverage, like `srtp-keys` below: no DTLS handshake is

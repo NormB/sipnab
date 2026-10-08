@@ -166,8 +166,12 @@ fn unknown_alert_rule_is_refused() -> Result<(), TestError> {
         ],
         Some("warn"),
     )?;
-    assert_eq!(code, Some(2), "config rule: {stderr}");
-    assert!(stderr.contains("Unknown alert"), "{stderr}");
+    // A refused config value exits 1, naming the key; the flag above exits 2.
+    assert_eq!(code, Some(1), "config rule: {stderr}");
+    assert!(
+        stderr.contains("Unknown alert") && stderr.contains("[security] alert"),
+        "{stderr}"
+    );
     for name in ["scanner", "fraud", "digest", "reg-flood", "reg_flood"] {
         let rule = format!("{name}:2/1m");
         let (_, stderr, code) = run_support::run(

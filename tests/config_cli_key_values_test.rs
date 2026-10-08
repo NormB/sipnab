@@ -130,8 +130,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "api",
         "tls_cert",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "tls_key = \"/nonexistent/sipnab-key\"",
         },
     ),
@@ -139,8 +139,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "api",
         "tls_key",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "tls_cert = \"/nonexistent/sipnab-cert\"",
         },
     ),
@@ -157,7 +157,7 @@ static KEY_SPECS: &[KeySpec] = &[
         "capture",
         "buffer",
         KeyKind::Int {
-            lo: 0,
+            lo: 1,
             hi: 4294967295,
         },
     ),
@@ -210,7 +210,7 @@ static KEY_SPECS: &[KeySpec] = &[
         "capture",
         "snaplen",
         KeyKind::Int {
-            lo: 0,
+            lo: 1,
             hi: 4294967295,
         },
     ),
@@ -868,8 +868,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "mcp",
         "tls_cert",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "tls_key = \"/nonexistent/sipnab-key\"",
         },
     ),
@@ -877,8 +877,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "mcp",
         "tls_key",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "tls_cert = \"/nonexistent/sipnab-cert\"",
         },
     ),
@@ -937,8 +937,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "metrics",
         "tls_cert",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "tls_key = \"/nonexistent/sipnab-key\"",
         },
     ),
@@ -946,8 +946,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "metrics",
         "tls_key",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "tls_cert = \"/nonexistent/sipnab-cert\"",
         },
     ),
@@ -1767,16 +1767,11 @@ fn check_refused(
     if o.accepted() {
         return Ok(Some(format!("{what}: want refused, was accepted")));
     }
-    // A key `load_config` refuses exits 1; a key `plan` refuses (a filter
-    // expression, a port range, an action or alert name, an MCP tool) exits
-    // 2, as `plan` does for every refusal. Both are refusals before
-    // anything runs.
-    let expected = match o.stage {
-        Stage::Config => 1,
-        Stage::Plan => 2,
-        _ => -1,
-    };
-    if o.code != expected {
+    // A refused config value exits 1, whichever step refuses it: one class
+    // of error, one exit code. `load_config` refuses most keys; `plan`
+    // refuses the ones it resolves (a filter expression, a port range, an
+    // action or alert name, an MCP tool).
+    if !matches!(o.stage, Stage::Config | Stage::Plan) || o.code != 1 {
         return Ok(Some(format!(
             "{what}: want a config or plan refusal, got {:?}/{}: {}",
             o.stage, o.code, o.message
@@ -2191,8 +2186,10 @@ fn forward_with(body: &str, extra: &[&str]) -> Result<Outcome, TestError> {
 
 /// The forwarder's URL, replace URL, credential and back-off keys are checked
 /// when the forwarder runs, by the rule its flags follow, before anything is
-/// sent. Each refusal exits 2 and names the key; a refusal that two settings
-/// cause names both.
+/// sent. Each refusal names the key; a refusal that two settings cause names
+/// both. A URL the file alone gave exits 1, as every refused config value
+/// does; a refusal the command line takes part in, or a setting
+/// `--vcon-forward` needs and nothing gave, exits 2.
 #[test]
 fn forwarder_keys_are_checked_when_the_forwarder_runs() -> Result<(), TestError> {
     const BASE: &str = "url = \"http://127.0.0.1:9/v1/vcons\"\nauth_file = \"/nonexistent/auth\"";
@@ -2204,71 +2201,83 @@ fn forwarder_keys_are_checked_when_the_forwarder_runs() -> Result<(), TestError>
             accepted.stage, accepted.code, accepted.message
         ));
     }
-    let refused: &[(&str, &[&str], &[&str])] = &[
+    let refused: &[(&str, &[&str], &[&str], i32)] = &[
         (
             "url = \"x\"\nauth_file = \"/nonexistent/auth\"",
             &[],
             &["[vcon_forward] url"],
+            1,
         ),
         (
             "url = \"\"\nauth_file = \"/nonexistent/auth\"",
             &[],
             &["[vcon_forward] url"],
+            1,
         ),
         (
             "url = \"ftp://127.0.0.1/v1\"\nauth_file = \"/nonexistent/auth\"",
             &[],
             &["[vcon_forward] url"],
+            1,
         ),
         (
             "url = \"https://user:pw@store.example.com/v1\"\nauth_file = \"/nonexistent/auth\"",
             &[],
             &["[vcon_forward] url"],
+            1,
         ),
+        (BASE, &["--vcon-forward-url=x"], &["--vcon-forward-url"], 2),
         (
             "auth_file = \"/nonexistent/auth\"",
             &[],
             &["--vcon-forward-url", "[vcon_forward] url"],
+            2,
         ),
         (
             "url = \"http://127.0.0.1:9/v1/vcons\"",
             &[],
             &["--vcon-forward-auth-file", "[vcon_forward] auth_file"],
+            2,
         ),
         (
             &format!("{BASE}\nreplace_url = \"http://127.0.0.1:9/v1/vcons/fixed\""),
             &[],
             &["[vcon_forward] replace_url"],
+            1,
         ),
         (
             &format!("{BASE}\nreplace_url = \"x{{uuid}}\""),
             &[],
             &["[vcon_forward] replace_url"],
+            1,
         ),
         (
             BASE,
             &["--vcon-forward-auth=Authorization: Bearer from-the-flag"],
             &["--vcon-forward-auth", "[vcon_forward] auth_file"],
+            2,
         ),
         (
             &format!("{BASE}\nbackoff_first = 10"),
             &["--vcon-forward-backoff-cap=5"],
             &["[vcon_forward] backoff_first", "--vcon-forward-backoff-cap"],
+            2,
         ),
         (
             &format!("{BASE}\nbackoff_cap = 5"),
             &["--vcon-forward-backoff-first=10"],
             &["--vcon-forward-backoff-first", "[vcon_forward] backoff_cap"],
+            2,
         ),
     ];
-    for (body, extra, names) in refused {
+    for (body, extra, names, code) in refused {
         let o = forward_with(body, extra)?;
         let what = format!("{body:?} with {extra:?}");
         if let Some(p) = &o.panic {
             failures.push(format!("{what}: panicked: {p}"));
-        } else if o.accepted() || o.stage != Stage::Config || o.code != 2 {
+        } else if o.accepted() || o.stage != Stage::Config || o.code != *code {
             failures.push(format!(
-                "{what}: want a refusal from load_config with exit 2, got {:?}/{}: {}",
+                "{what}: want a refusal from load_config with exit {code}, got {:?}/{}: {}",
                 o.stage, o.code, o.message
             ));
         } else if let Some(missing) = names.iter().find(|n| !o.message.contains(*n)) {

@@ -26,7 +26,8 @@ use super::batch::{CapturePolicy, audio_retention_wanted};
 
 /// A fatal configuration problem found while planning: the message main()
 /// should log and the process exit code (2 for argument errors, 1 for
-/// environment errors) — the same codes the inline checks used.
+/// environment errors and for a value the config file supplied — see
+/// [`crate::settings::Origin`]).
 #[derive(Debug)]
 pub struct PlanError {
     /// Process exit code.
@@ -39,6 +40,15 @@ impl PlanError {
     /// An error with an explicit exit code.
     fn new(exit_code: i32, message: String) -> Self {
         Self { exit_code, message }
+    }
+
+    /// A refused setting, with the exit code its origin carries: 2 for a
+    /// value from the command line, 1 for one from the config file.
+    fn refused(origin: crate::settings::Origin, message: String) -> Self {
+        Self {
+            exit_code: origin.exit_code(),
+            message,
+        }
     }
 
     /// Shorthand for an argument-level error (exit code 2).
@@ -423,8 +433,12 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         (None, Some(key)) => (key, "[capture] portrange"),
         (None, None) => ("5060-5061", "the default port range"),
     };
-    let portrange = crate::config::parse_portrange(portrange_str)
-        .map_err(|e| PlanError::arg(format!("Invalid {portrange_source}: {e}")))?;
+    let portrange = crate::config::parse_portrange(portrange_str).map_err(|e| {
+        PlanError::refused(
+            crate::settings::Origin::of(cli.capture_args.portrange.is_some()),
+            format!("Invalid {portrange_source}: {e}"),
+        )
+    })?;
 
     apply_capture_filter(cli, config, source.as_ref(), portrange, &mut capture_config)?;
 
@@ -466,6 +480,9 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     refuse_cores_without_their_outputs(cli);
     warn_degraded_run_shape(cli, config);
+    for msg in cli.inert_key_warnings(config) {
+        tracing::warn!("{msg}");
+    }
 
     let mode = select_run_mode(cli);
     refuse_unread_detection(cli, config, &mode)?;
@@ -485,7 +502,12 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // An unknown MCP tool or bundle name refuses the run here, in every
     // build, rather than when the MCP server starts.
-    cli.mcp_tool_selection(config).map_err(PlanError::arg)?;
+    cli.mcp_tool_selection(config).map_err(|e| {
+        PlanError::refused(
+            crate::settings::Origin::of(cli.mcp_args.mcp_tools.is_some()),
+            e,
+        )
+    })?;
 
     let max_capture_sources = cli.max_capture_sources(config);
     let hep_senders = if cli.hep_args.hep_listen.is_some() {
@@ -543,18 +565,16 @@ fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError>
     }
 
     // An `[actions]` entry naming nothing sipnab knows is refused here, before
-    // anything runs, rather than read as "nothing enabled".
-    cli.action_policy(config).map_err(PlanError::arg)?;
-    let (alert_sources, from) = if cli.security_args.alert.is_empty() {
-        (
-            config.security.alert.as_deref().unwrap_or(&[]),
-            "[security] alert",
-        )
-    } else {
-        (cli.security_args.alert.as_slice(), "--alert")
-    };
-    for source in alert_sources {
-        check_alert_rule(source.trim(), from)?;
+    // anything runs, rather than read as "nothing enabled". `--allow-action`
+    // values were checked when parsed, so what is refused here came from the
+    // file.
+    cli.action_policy(config)
+        .map_err(|e| PlanError::refused(crate::settings::Origin::ConfigFile, e))?;
+    let alerts = cli.alert_settings(config);
+    let origin = crate::settings::Origin::of(!cli.security_args.alert.is_empty());
+    for source in &alerts.sources {
+        check_alert_rule(source.trim(), alerts.from)
+            .map_err(|message| PlanError::refused(origin, message))?;
     }
     // A names file that cannot be read used to be warned about when names
     // were loaded, and the run went on without the names it asked for.
@@ -575,10 +595,10 @@ fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError>
 ///
 /// # Errors
 ///
-/// A `PlanError` (exit code 2) for a rule that does not parse or names an
-/// unknown kind, or for an unknown channel; the message starts with `from`,
-/// the setting the value came from.
-fn check_alert_rule(source: &str, from: &str) -> Result<(), PlanError> {
+/// The refusal message for a rule that does not parse or names an unknown
+/// kind, or for an unknown channel; it starts with `from`, the setting the
+/// value came from. The caller gives it the exit code of that origin.
+fn check_alert_rule(source: &str, from: &str) -> Result<(), String> {
     if !source.contains(':') {
         // A channel. An unknown one used to be a warning at run time, so a
         // typo ran with no alert channel at all and exited 0.
@@ -587,24 +607,23 @@ fn check_alert_rule(source: &str, from: &str) -> Result<(), PlanError> {
         {
             Ok(())
         } else {
-            Err(PlanError::arg(format!(
+            Err(format!(
                 "{from}: Unknown alert channel '{source}': expected one of {}, or a \
                  rule written name:threshold/window",
                 crate::security::alerting::ALERT_CHANNELS.join(", ")
-            )))
+            ))
         };
     }
-    let rule =
-        crate::security::AlertRule::parse(source).map_err(|e| PlanError::arg(e.to_string()))?;
+    let rule = crate::security::AlertRule::parse(source).map_err(|e| format!("{from}: {e}"))?;
     // The kinds the detectors fire under, from the one shared list: a
     // rule naming anything else parses and then never binds.
     let kinds = crate::security::findings::SECURITY_FINDING_KINDS;
     if !kinds.contains(&rule.name.as_str()) {
-        return Err(PlanError::arg(format!(
-            "Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)",
+        return Err(format!(
+            "{from}: Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)",
             rule.name,
             kinds.join(", ")
-        )));
+        ));
     }
     Ok(())
 }
@@ -626,14 +645,8 @@ fn declare_process_globals(cli: &Cli, config: &Config) {
     // calls is the precedence, because the first writer wins. Written as a
     // chain rather than an if/else so adding a third source cannot
     // accidentally invert it.
-    for candidate in [
-        cli.mcp_args.node_name.as_deref(),
-        config.capture.node_name.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        crate::provenance::set_node_name(candidate);
+    if let Some(name) = cli.node_name(config) {
+        crate::provenance::set_node_name(&name);
     }
 
     // Same shape, same reason: both diagnosers are reached from the TUI, the
@@ -1151,23 +1164,23 @@ fn tunnel_ports_ignored_notice(tunnel_ports: &[u16]) -> Option<String> {
 ///
 /// A `PlanError` (exit code 2) for a pattern that does not compile.
 fn build_matcher(cli: &Cli, config: &Config) -> Result<SipMatcher, PlanError> {
-    let effective_from = cli
-        .matching_args
-        .from
-        .as_deref()
-        .or(config.filter.from.as_deref());
-    let effective_to = cli
-        .matching_args
-        .to
-        .as_deref()
-        .or(config.filter.to.as_deref());
+    let m = &cli.matching_args;
+    // The matcher is one setting composed from several patterns: a refusal
+    // is the command line's when it gave any of them.
+    let origin = crate::settings::Origin::of(
+        m.from.is_some()
+            || m.to.is_some()
+            || m.match_expr.is_some()
+            || m.contact.is_some()
+            || m.ua.is_some(),
+    );
     SipMatcher::new_with_overrides(
         cli,
-        cli.matching_args.match_expr.as_deref(),
-        effective_from,
-        effective_to,
+        m.match_expr.as_deref(),
+        cli.filter_from(config),
+        cli.filter_to(config),
     )
-    .map_err(|e| PlanError::arg(format!("Invalid filter pattern: {e}")))
+    .map_err(|e| PlanError::refused(origin, format!("Invalid filter pattern: {e}")))
 }
 
 /// Output options.
@@ -2391,12 +2404,7 @@ fn confine_after_capture_start(
 
     // 16. Chroot BEFORE dropping privileges (chroot requires root).
     // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
-    let effective_chroot = cli
-        .privilege_args
-        .chroot
-        .as_ref()
-        .or(config.privilege.chroot.as_ref());
-    if let Some(ref chroot_dir) = effective_chroot {
+    if let Some(chroot_dir) = effective_chroot(cli, config) {
         privilege::do_chroot(std::path::Path::new(chroot_dir))
             .map_err(|e| PlanError::new(1, format!("Failed to chroot: {e}")))?;
     }
@@ -3134,11 +3142,22 @@ fn default_log_level(cli: &Cli) -> &'static str {
 ///
 /// Shared by the privilege drop and the scanner-kill worker, which becomes the
 /// same account (or `nobody`) when it starts as root.
-fn effective_user<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str> {
+#[must_use]
+pub fn effective_user<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str> {
     cli.privilege_args
         .user
         .as_deref()
         .or(config.privilege.user.as_deref())
+}
+
+/// The directory this run chroots into before it drops privileges:
+/// `--chroot`, else `[privilege] chroot`.
+#[must_use]
+pub fn effective_chroot<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str> {
+    cli.privilege_args
+        .chroot
+        .as_deref()
+        .or(config.privilege.chroot.as_deref())
 }
 
 /// Whether this run asks for kill responses at all: `--kill-scanner`,
@@ -3916,9 +3935,14 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
             }
         };
         let args = &cli.vcon_forward_args;
-        match ForwardPlan::resolve(args, &loaded.config.vcon_forward)
-            .and_then(ForwardPlan::into_settings)
-        {
+        let plan = match ForwardPlan::resolve_refusal(args, &loaded.config.vcon_forward) {
+            Ok(plan) => plan,
+            Err((origin, msg)) => {
+                tracing::error!("{msg}");
+                return Some(origin.exit_code());
+            }
+        };
+        match plan.into_settings() {
             Ok((settings, interval)) => Some(run(
                 settings,
                 args.vcon_forward_once,
@@ -3941,12 +3965,18 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
 /// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
 /// when this is not a forwarder run). Feature-swapped: without the `vcon`
 /// feature [`run_vcon_forward`] refuses the run before the config is read.
-fn forwarder_settings_problem(cli: &Cli, config: &Config) -> Option<String> {
+fn forwarder_settings_problem(
+    cli: &Cli,
+    config: &Config,
+) -> Option<(crate::settings::Origin, String)> {
     cli.vcon_forward_args.vcon_forward.as_ref()?;
     #[cfg(feature = "vcon")]
     {
-        crate::app::vcon_forward::ForwardPlan::resolve(&cli.vcon_forward_args, &config.vcon_forward)
-            .err()
+        crate::app::vcon_forward::ForwardPlan::resolve_refusal(
+            &cli.vcon_forward_args,
+            &config.vcon_forward,
+        )
+        .err()
     }
     #[cfg(not(feature = "vcon"))]
     {
@@ -4059,6 +4089,8 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         .config
         .display
         .validate()
+        .and_then(|()| loaded.config.capture.validate())
+        .and_then(|()| loaded.config.filter.validate())
         .and_then(|()| loaded.config.theme.validate())
         .and_then(|()| loaded.config.keybindings.validate())
         .and_then(|()| loaded.config.validate_paths())
@@ -4082,24 +4114,19 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // Every listener's TLS files, resolved from the flags and the file
     // together: a certificate from one and its key from the other is a pair,
     // and half a pair from either is refused here, before anything listens,
-    // naming the flag and the key. Exit 2, as the flag-only check this
-    // replaced used.
-    if let Some(problem) = cli.tls_settings_problem(&loaded.config) {
-        return Err(PlanError {
-            exit_code: 2,
-            message: problem,
-        });
+    // naming the flag and the key. Exit 2 when the command line gave part of
+    // the pair, 1 when the file alone did.
+    if let Some((origin, problem)) = cli.tls_settings_refusal(&loaded.config) {
+        return Err(PlanError::refused(origin, problem));
     }
 
     // The forwarder's settings, resolved from its flags and [vcon_forward]
     // together by the forwarder's own resolver: a URL or a credential from
     // either source, refused here naming the flag or key, before the
-    // forwarder reads a file or connects. Exit 2, as a refused flag exits.
-    if let Some(problem) = forwarder_settings_problem(cli, &loaded.config) {
-        return Err(PlanError {
-            exit_code: 2,
-            message: problem,
-        });
+    // forwarder reads a file or connects. Exit 2 for a flag, 1 for a URL
+    // the file alone gave.
+    if let Some((origin, problem)) = forwarder_settings_problem(cli, &loaded.config) {
+        return Err(PlanError::refused(origin, problem));
     }
 
     // Apply configurable security limits from the [limits] section.
@@ -4357,9 +4384,10 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     if let Some(ref expr) = config.filter.expression {
         return match FilterExpr::parse(expr) {
             Ok(f) => Ok(Some(f)),
-            Err(e) => Err(PlanError::arg(format!(
-                "Invalid config filter expression ([filter] expression): {e}"
-            ))),
+            Err(e) => Err(PlanError::refused(
+                crate::settings::Origin::ConfigFile,
+                format!("Invalid config filter expression ([filter] expression): {e}"),
+            )),
         };
     }
 
@@ -5704,7 +5732,8 @@ mod tests {
         Ok(())
     }
 
-    /// A malformed config-file filter expression yields an `Err`, not an exit.
+    /// A malformed config-file filter expression yields an `Err`, not an
+    /// exit, carrying exit code 1: a refused config value.
     #[test]
     fn build_filter_expr_invalid_config_expr_returns_err() -> Result<(), TestError> {
         let mut config = Config::default();
@@ -5712,7 +5741,7 @@ mod tests {
         let err = build_filter_expr(&base_cli(), &config)
             .err()
             .ok_or("a malformed config filter must return Err, not exit")?;
-        assert_eq!(err.exit_code, 2);
+        assert_eq!(err.exit_code, 1);
         assert!(
             err.message.contains("Invalid config filter expression"),
             "got: {}",

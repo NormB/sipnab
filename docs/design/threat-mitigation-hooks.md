@@ -186,7 +186,7 @@ Two tiers, and the boundary is not about detector confidence. It is about
 Every detection reaches `tracing::warn!` under the `sipnab::alert` target
 ([`alerting.rs:721`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L721)), optionally a JSON line on
 stderr, optionally syslog, and the in-memory findings ring buffer
-(`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:268`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L268)).
+(`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:290`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L290)).
 Being wrong here costs a log line.
 
 **Everything belongs in tier 1 unless it meets every condition in tier 2.**

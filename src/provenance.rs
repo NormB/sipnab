@@ -124,7 +124,13 @@ pub fn set_node_name(name: &str) {
 ///
 /// Clips to CHARACTERS, never bytes — the name is arbitrary UTF-8 and a byte
 /// index would panic mid-sequence.
-fn clip_node_name(name: &str) -> Option<String> {
+///
+/// # Returns
+///
+/// The trimmed name clipped to [`MAX_NODE_NAME`] characters, or `None` for a
+/// name that is empty once trimmed.
+#[must_use]
+pub fn clip_node_name(name: &str) -> Option<String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return None;

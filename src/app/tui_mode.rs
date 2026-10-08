@@ -318,7 +318,8 @@ fn tui_capture_mode(cli: &Cli, config: &Config) -> String {
 /// names no mode is refused at startup by
 /// `crate::config::DisplayConfig::validate`; the warning below covers a
 /// `Config` built without loading a file.
-fn resolve_from_to_mode(cli: &Cli, config: &Config) -> crate::tui::FromToMode {
+#[must_use]
+pub fn resolve_from_to_mode(cli: &Cli, config: &Config) -> crate::tui::FromToMode {
     cli.name_args
         .from_to_mode
         .map(|a| crate::tui::FromToMode::parse(a.as_str()).unwrap_or_default())

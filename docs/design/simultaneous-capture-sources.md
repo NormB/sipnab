@@ -54,7 +54,7 @@ the file.
 
 ### 2.1 The chain in `plan`
 
-`plan` ([`src/app/bootstrap.rs:328`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L328)) resolves the source once, into a single
+`plan` ([`src/app/bootstrap.rs:407`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L407)) resolves the source once, into a single
 `Option<CaptureSource>`, through an if/else chain that starts at
 [`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L323) and ends at [`src/app/bootstrap.rs:419`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L419). In order:
 
@@ -78,7 +78,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:2252`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2252)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:2305`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2305)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
@@ -432,7 +432,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:5091`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5091)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:5130`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5130)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -496,7 +496,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:5091`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5091)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:5130`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5130)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

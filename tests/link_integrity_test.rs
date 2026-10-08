@@ -1176,7 +1176,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // Net added links measured from the diff: +8, -1 (the index row that
     // gained a column was rewritten), all to the find_in_captures,
     // find_in_captures_status and cancel_find_in_captures sections.
-    const EXPECTED_WIKI_LINKS: usize = 1326;
+    // 1326 -> 1327: docs/config-reference.md's Format section links the exit
+    // status table in cli-reference.md.
+    const EXPECTED_WIKI_LINKS: usize = 1327;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
