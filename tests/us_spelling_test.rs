@@ -120,11 +120,6 @@ const NOT_A_SUFFIX: &[&str] = &[
 /// Paths the scan does not read, each with the reason it cannot.
 const NOT_SCANNED: &[(&str, &str)] = &[
     (
-        "target/",
-        "build output, not authored text; it also holds vendored crates whose \
-         spellings are their authors' business",
-    ),
-    (
         "LICENSES/",
         "license texts are quoted verbatim and may not be edited, whatever \
          they spell",
