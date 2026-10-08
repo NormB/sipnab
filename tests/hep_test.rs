@@ -19,6 +19,8 @@ use std::process::{Child, Command, Stdio};
 
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
+#[path = "support/ports.rs"]
+mod ports;
 #[path = "support/mod.rs"]
 mod support;
 use std::sync::mpsc;
@@ -1266,11 +1268,10 @@ fn hep_send_run(target: &str, extra: &[&str]) -> Result<(Option<i32>, String), T
 /// that does not resolve. Both are found before the first packet.
 #[test]
 fn a_hep_sender_that_cannot_start_fails_the_run() -> Result<(), TestError> {
-    // A port nothing listens on: bind, read the number, release it.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = closed.local_addr()?.port();
-    drop(closed);
-    let target = format!("127.0.0.1:{port}");
+    // A port nothing listens on, held for the whole test so no other test can
+    // be handed the number and listen on it.
+    let closed = ports::refused_tcp_port()?;
+    let target = closed.addr().to_string();
     for (target, extra, what) in [
         (
             target.as_str(),

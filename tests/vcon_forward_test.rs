@@ -33,6 +33,9 @@ use sipnab::config::{FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_MAX_ERR
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
 
+#[path = "support/ports.rs"]
+mod ports;
+
 /// Any error, boxed, so `?` works on every error type alike.
 type TestError = Box<dyn std::error::Error>;
 
@@ -420,9 +423,9 @@ fn a_5xx_keeps_the_file_backs_off_and_does_not_wedge_the_next() -> Result<(), Te
 /// A store nobody listens on keeps the container for a later pass.
 #[test]
 fn an_unreachable_store_keeps_the_file() -> Result<(), TestError> {
-    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let closed = ports::refused_tcp_port()?;
     let rig = Rig::new(
-        &format!("http://127.0.0.1:{port}/v1/vcons"),
+        &format!("http://{}/v1/vcons", closed.addr()),
         "Authorization",
     )?;
     rig.drop_in("d.vcon.json", &container("018bcfe5-2", RECORDING))?;

@@ -824,7 +824,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/ci-target-cap.sh and tests/ci_runner_target_test.rs.
     // 490 -> 491: build-ci-release.md's workflow table row for pr-text.yml
     // links scripts/check-message-identity.sh.
-    const EXPECTED_CODE_LINKS: usize = 491;
+    // 491 -> 493: docs/internals/testing.md links tests/support/ports.rs and
+    // tests/released_port_scan_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 493;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
