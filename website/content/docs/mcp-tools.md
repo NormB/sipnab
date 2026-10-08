@@ -1195,21 +1195,46 @@ return this one shape. `status` is `running`, `done`, or `canceled`, and
 `sweep` is present only once the job has finished.
 
 The job holds no `--mcp-max-concurrent` slot. A call holds a slot only while it
-waits, and `--mcp-max-wait-seconds` bounds the wait. Constants in the source
-bound the jobs themselves:
+waits, and `--mcp-max-wait-seconds` bounds the wait. Operator settings bound
+the jobs themselves:
 
-| Bound | Value | Name in the source |
-|---|---|---|
-| Sweeps running at once, per server | 4 | `MAX_RUNNING_SWEEPS` |
-| Finished results waiting for a poll, per server | 16 | `MAX_HELD_RESULTS` |
-| How long a finished result waits for a poll | 600 seconds after it finished | `RESULT_RETENTION` |
+| Bound | Flag | Config key | Default | Accepted |
+|---|---|---|---|---|
+| Sweeps running at once, per server | `--mcp-sweep-max-running` | `[limits] mcp_sweep_max_running` | 4 | 1 to 64 |
+| Finished results waiting for a poll, per server | `--mcp-sweep-max-held-results` | `[limits] mcp_sweep_max_held_results` | 16 | 1 to 256 |
+| Seconds a finished result waits for a poll, from the moment it finished | `--mcp-sweep-result-retention-secs` | `[limits] mcp_sweep_result_retention_secs` | 600 | 1 to 43200 |
 
-While four sweeps run, sipnab refuses a fifth with `invalid_request`, and the
-message names the bound and the two tools that end a sweep. One poll hands
-over a finished result. After that poll, after 600 seconds with no poll, or
-once 16 newer results wait, the job id is unknown and sipnab refuses a poll of
-it with `invalid_params`. Past 16 waiting results, sipnab drops the result of
-the earliest-started sweep first.
+With the defaults, while four sweeps run, sipnab refuses a fifth with
+`invalid_request`. The message reports the configured bound, names
+`--mcp-sweep-max-running` and `[limits] mcp_sweep_max_running`, and names the
+two tools that end a sweep. One poll hands over a finished result. After that
+poll, after the retention passes with no poll, or once the held bound of newer
+results wait, the job id is unknown and sipnab refuses a poll of it with
+`invalid_params`. That message reports the configured retention and held bound
+and names both flags. Past the held bound, sipnab drops the result of the
+earliest-started sweep first. The flag overrides the key.
+
+The maxima, and why each is where it is:
+
+- `--mcp-sweep-max-running` accepts at most 64. Each running sweep is one
+  operating system thread reading capture files, with its own scratch dialog
+  and stream stores, so the bound caps the threads and stores that agents can
+  hold at once. 64 is sixteen times the default.
+- `--mcp-sweep-max-held-results` accepts at most 256. A held result keeps one
+  entry per file the sweep matched and one per file it could not read, so the
+  memory results hold is this bound times the largest result. 256 is four held
+  results per running sweep at the running maximum, the ratio the defaults
+  carry.
+- `--mcp-sweep-result-retention-secs` accepts at most 43200, twelve hours, the
+  same span as the `--mcp-sweep-deadline-ms` maximum: a finished result waits
+  at most as long as the longest sweep may run.
+
+sipnab refuses `0` and any value above the maximum from the flag and from the
+key. In the source, the defaults are `DEFAULT_MCP_SWEEP_MAX_RUNNING` (4),
+`DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS` (16) and
+`DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS` (600), and the maxima are
+`MAX_MCP_SWEEP_MAX_RUNNING` (64), `MAX_MCP_SWEEP_MAX_HELD_RESULTS` (256) and
+`MAX_MCP_SWEEP_RESULT_RETENTION_SECS` (43200).
 
 A sweep stops before its next packet, not only before its next file, when the
 deadline passes, when `cancel_find_in_captures` stops it, and when sipnab

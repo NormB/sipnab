@@ -51,6 +51,7 @@ fn metrics_only() -> Selection {
         mcp_body_cap: Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
         mcp_wait_seconds: Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
         mcp_sweep: sipnab::cli::McpSweepLimits::default(),
+        mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
         api_row_cap: Cli::DEFAULT_API_MAX_ROWS as usize,
         api_rate_limit_per_peer: Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
         max_tracked_peers: Cli::DEFAULT_MAX_TRACKED_PEERS,

@@ -214,6 +214,9 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "mcp_max_findings",
             "mcp_sweep_max_files",
             "mcp_sweep_deadline_ms",
+            "mcp_sweep_max_running",
+            "mcp_sweep_max_held_results",
+            "mcp_sweep_result_retention_secs",
             "lint_max_per_rule",
             "exec_queue_depth",
             "max_lost_sequences",
@@ -1011,6 +1014,25 @@ fn refuse_zero<T: Copy + PartialEq + From<u8>>(
         return Err(crate::Error::ConfigInvalid(format!("{key} must be > 0")));
     }
     Ok(())
+}
+
+/// Refuse a `[limits]` key set outside `1..=max`, naming the key, the range,
+/// why the ends are where they are, and the value given.
+///
+/// The one rule for the `find_in_captures` settings, whose flags clap bounds
+/// from the same maxima.
+fn refuse_outside_one_to(
+    key: &str,
+    value: Option<u64>,
+    max: u64,
+    why: &str,
+) -> Result<(), crate::Error> {
+    match value {
+        Some(v) if v == 0 || v > max => Err(crate::Error::ConfigInvalid(format!(
+            "[limits] {key} must be 1-{max} ({why}), got {v}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Display configuration.
@@ -2012,6 +2034,36 @@ pub const MAX_MCP_SWEEP_MAX_FILES: u64 = u32::MAX as u64;
 /// by [`LimitsConfig::validate`] and by clap, from this one number.
 pub const MAX_MCP_SWEEP_DEADLINE_MS: u64 = 43_200_000;
 
+/// Largest `[limits] mcp_sweep_max_running` / `--mcp-sweep-max-running`
+/// accepts: 64.
+///
+/// Each running sweep is one OS thread reading capture files, with its own
+/// scratch dialog and stream stores of up to the row cap, so this bound caps
+/// the threads and the scratch stores MCP agents can hold at once. 64 is
+/// sixteen times the default of four. Refused by [`LimitsConfig::validate`]
+/// and by clap, from this one number.
+pub const MAX_MCP_SWEEP_MAX_RUNNING: u64 = 64;
+
+/// Largest `[limits] mcp_sweep_max_held_results` /
+/// `--mcp-sweep-max-held-results` accepts: 256.
+///
+/// A held result keeps one entry per file the sweep matched and one per file
+/// it could not read, so the memory results hold is this bound times the
+/// largest result. 256 is four held results per running sweep at
+/// [`MAX_MCP_SWEEP_MAX_RUNNING`], the ratio the defaults of 16 and 4 carry.
+/// Refused by [`LimitsConfig::validate`] and by clap, from this one number.
+pub const MAX_MCP_SWEEP_MAX_HELD_RESULTS: u64 = 256;
+
+/// Largest `[limits] mcp_sweep_result_retention_secs` /
+/// `--mcp-sweep-result-retention-secs` accepts: 43200 seconds, twelve hours.
+///
+/// Derived from [`MAX_MCP_SWEEP_DEADLINE_MS`], so the two twelve-hour bounds
+/// are one number: a finished result waits for its poll at most as long as
+/// the longest sweep may run. An uncollected result holds its memory for the
+/// whole retention. Refused by [`LimitsConfig::validate`] and by clap, from
+/// this one number.
+pub const MAX_MCP_SWEEP_RESULT_RETENTION_SECS: u64 = MAX_MCP_SWEEP_DEADLINE_MS / 1000;
+
 /// Resource limits.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -2107,6 +2159,24 @@ pub struct LimitsConfig {
     /// as `mcp_sweep_max_files`. The sweep checks it before each file and
     /// before each packet.
     pub mcp_sweep_deadline_ms: Option<u64>,
+    /// MCP `find_in_captures` sweeps one server runs at once (default: 4,
+    /// maximum [`MAX_MCP_SWEEP_MAX_RUNNING`]).
+    ///
+    /// Each running sweep is an OS thread reading capture files. A start past
+    /// this many is refused rather than queued.
+    pub mcp_sweep_max_running: Option<u64>,
+    /// Finished MCP `find_in_captures` results one server holds for
+    /// collection (default: 16, maximum [`MAX_MCP_SWEEP_MAX_HELD_RESULTS`]).
+    ///
+    /// Past this many, the result of the earliest-started sweep is dropped
+    /// first.
+    pub mcp_sweep_max_held_results: Option<u64>,
+    /// Seconds a finished MCP `find_in_captures` result waits for its poll
+    /// (default: 600, maximum [`MAX_MCP_SWEEP_RESULT_RETENTION_SECS`]).
+    ///
+    /// Counted from the moment the sweep finished. After it the job id is
+    /// unknown.
+    pub mcp_sweep_result_retention_secs: Option<u64>,
     /// Lost RTP sequence numbers retained per stream (default: 1000).
     ///
     /// The window the Packet Loss Map and the burst/gap analysis reason over.
@@ -2306,26 +2376,43 @@ impl LimitsConfig {
             ));
         }
         // Bounded at both ends. 0 would sweep no file at all, or stop before
-        // the first one, and report an incomplete sweep for every request.
-        // The maxima are explained on the constants.
-        if let Some(v) = self.mcp_sweep_max_files
-            && (v == 0 || v > MAX_MCP_SWEEP_MAX_FILES)
-        {
-            return Err(crate::Error::ConfigInvalid(format!(
-                "[limits] mcp_sweep_max_files must be 1-{MAX_MCP_SWEEP_MAX_FILES} \
-                 (0 would open no file, so every sweep would be incomplete), \
-                 got {v}"
-            )));
-        }
-        if let Some(v) = self.mcp_sweep_deadline_ms
-            && (v == 0 || v > MAX_MCP_SWEEP_DEADLINE_MS)
-        {
-            return Err(crate::Error::ConfigInvalid(format!(
-                "[limits] mcp_sweep_deadline_ms must be 1-{MAX_MCP_SWEEP_DEADLINE_MS} \
-                 (0 would stop before the first file; the maximum bounds how \
-                 long one background sweep may run), got {v}"
-            )));
-        }
+        // the first one, and report an incomplete sweep for every request;
+        // for the job bounds, 0 would refuse every sweep or drop every result
+        // before its poll. The maxima are explained on the constants.
+        refuse_outside_one_to(
+            "mcp_sweep_max_files",
+            self.mcp_sweep_max_files,
+            MAX_MCP_SWEEP_MAX_FILES,
+            "0 would open no file, so every sweep would be incomplete",
+        )?;
+        refuse_outside_one_to(
+            "mcp_sweep_deadline_ms",
+            self.mcp_sweep_deadline_ms,
+            MAX_MCP_SWEEP_DEADLINE_MS,
+            "0 would stop before the first file; the maximum bounds how long \
+             one background sweep may run",
+        )?;
+        refuse_outside_one_to(
+            "mcp_sweep_max_running",
+            self.mcp_sweep_max_running,
+            MAX_MCP_SWEEP_MAX_RUNNING,
+            "0 would refuse every sweep; the maximum bounds the sweep threads \
+             one server runs at once",
+        )?;
+        refuse_outside_one_to(
+            "mcp_sweep_max_held_results",
+            self.mcp_sweep_max_held_results,
+            MAX_MCP_SWEEP_MAX_HELD_RESULTS,
+            "0 would drop every finished result before its poll; the maximum \
+             bounds the memory uncollected results hold",
+        )?;
+        refuse_outside_one_to(
+            "mcp_sweep_result_retention_secs",
+            self.mcp_sweep_result_retention_secs,
+            MAX_MCP_SWEEP_RESULT_RETENTION_SECS,
+            "0 would expire a finished result as it finished, before any poll; \
+             the maximum is the longest one sweep may run",
+        )?;
         if let Some(0) = self.max_lost_sequences {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] max_lost_sequences must be > 0 (0 would retain no \
@@ -4590,6 +4677,9 @@ column_selector = "F10"
             mcp_max_findings: Some(1000),
             mcp_sweep_max_files: Some(40),
             mcp_sweep_deadline_ms: Some(60_000),
+            mcp_sweep_max_running: Some(8),
+            mcp_sweep_max_held_results: Some(32),
+            mcp_sweep_result_retention_secs: Some(1800),
             max_lost_sequences: Some(1000),
             quality_interval_secs: Some(5),
             max_groups: Some(10_000),
@@ -4620,6 +4710,9 @@ column_selector = "F10"
             "mcp_max_wait_seconds",
             "mcp_sweep_max_files",
             "mcp_sweep_deadline_ms",
+            "mcp_sweep_max_running",
+            "mcp_sweep_max_held_results",
+            "mcp_sweep_result_retention_secs",
             "max_lost_sequences",
             "max_groups",
             "max_grouped_messages",
@@ -4657,6 +4750,12 @@ column_selector = "F10"
         for (key, max) in [
             ("mcp_sweep_max_files", MAX_MCP_SWEEP_MAX_FILES),
             ("mcp_sweep_deadline_ms", MAX_MCP_SWEEP_DEADLINE_MS),
+            ("mcp_sweep_max_running", MAX_MCP_SWEEP_MAX_RUNNING),
+            ("mcp_sweep_max_held_results", MAX_MCP_SWEEP_MAX_HELD_RESULTS),
+            (
+                "mcp_sweep_result_retention_secs",
+                MAX_MCP_SWEEP_RESULT_RETENTION_SECS,
+            ),
         ] {
             let at: Config = toml::from_str(&format!("[limits]\n{key} = {max}\n"))
                 .map_err(|e| format!("parses: {e:?}"))?;

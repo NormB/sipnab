@@ -336,8 +336,8 @@ guards, each visible in the code:
 
 1. **Off unless armed.** `allow_shutdown: bool`
    ([`server.rs:57`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L57)) is `false` in `new()`
-   ([`server.rs:842`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L842)) and only set by `with_shutdown()`
-   ([`server.rs:842`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L842)), which `servers.rs` calls only
+   ([`server.rs:859`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L859)) and only set by `with_shutdown()`
+   ([`server.rs:859`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L859)), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
    ([`servers.rs:258-262`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L258-L262)). Refusal is the first
    statement of the handler ([`server.rs:2226`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2226)).
@@ -404,7 +404,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:939`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L939)), or — only if armed, only on a
+([`server.rs:1022`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1022)), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -703,9 +703,9 @@ nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:939`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L939))
+arbitrary-file-read"*. It shipped ([`server.rs:1022`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1022))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:939`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L939)), which accepts a bare filename and
+([`server.rs:1022`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1022)), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -846,7 +846,7 @@ The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
 ([`server.rs:8239`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8239)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:939`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L939)).
+`resolve_in_root` ([`server.rs:1022`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1022)).
 
 **What shipped**, against those three:
 

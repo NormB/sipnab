@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 327 | 252 | 36 | 39 | 0 |
+| CLI flags | 330 | 253 | 36 | 41 | 0 |
 | HTTP routes | 41 | 41 | -- | 0 | 0 |
 | MCP tools | 72 | 72 | -- | 0 | 0 |
 
@@ -57,7 +57,7 @@ was driving all of them.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 39 flags it could only call
+The generator understates. Of the 41 flags it could only call
 `referenced`, a read of the tests found 75 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +5 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +4 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +96 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +97 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/archive_password_prompt_test.rs`, `tests/batch_run_paths_test.rs` +11 |  |  |
@@ -118,7 +118,7 @@ behind them.
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-encoding` |  | `ENC` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--no-password-prompt` |  |  | Archives | referenced | `tests/archive_password_prompt_test.rs` |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +96 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +97 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +3 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
@@ -184,7 +184,7 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | e2e | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +39 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +40 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +3 |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | e2e | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
@@ -216,7 +216,7 @@ behind them.
 | `--max-lost-sequences` |  | `N` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_max_lost_sequences moves the burst count 333 -> 33 |
 | `--quality-interval` |  | `SECONDS` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_quality_interval_secs moves the snapshot count on a thirty-second capture |
 | `--quality-threshold` |  | `MOS` | RTP | e2e | `tests/cli_options_test.rs` | **parse-only** | asserts exit 0 only; no test drives it with --on-quality-exec and observes the hook firing |
-| `--kill-scanner` |  |  | Security | e2e | `tests/accused_sources_test.rs`, `tests/api_test.rs` +8 |  |  |
+| `--kill-scanner` |  |  | Security | e2e | `tests/accused_sources_test.rs`, `tests/api_test.rs` +9 |  |  |
 | `--no-kill-scanner` |  |  | Security | referenced | `src/cli.rs`, `src/settings.rs` |  |  |
 | `--sandbox` |  | `MODE` | Security | e2e | `tests/batch_run_paths_test.rs`, `tests/sandbox_test.rs` |  |  |
 | `--seccomp` |  | `MODE` | Security | e2e | `tests/seccomp_child_test.rs` |  |  |
@@ -230,7 +230,7 @@ behind them.
 | `--journal-show` |  |  | Security | e2e | `tests/actions_cli_test.rs` |  |  |
 | `--revert-actions` |  |  | Security | e2e | `tests/actions_cli_test.rs` |  |  |
 | `--allow-action` |  |  | Security | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_mcp_test.rs` +5 |  |  |
-| `--fraud-detect` |  |  | Security | e2e | `src/app/tui_mode.rs`, `tests/cli_options_test.rs` +1 |  |  |
+| `--fraud-detect` |  |  | Security | e2e | `src/app/tui_mode.rs`, `tests/cli_options_test.rs` +2 |  |  |
 | `--no-fraud-detect` |  |  | Security | referenced | `src/cli.rs` |  |  |
 | `--evidence-out` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
@@ -310,6 +310,9 @@ behind them.
 | `--mcp-max-findings` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_findings changes the remaining budget in save_findings |
 | `--mcp-sweep-max-files` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` | **behavior** | via config key: probe_mcp_sweep_max_files changes the files find_in_captures examines |
 | `--mcp-sweep-deadline-ms` |  | `MS` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` | **behavior** | via config key: probe_mcp_sweep_deadline_ms changes the deadline find_in_captures reports |
+| `--mcp-sweep-max-running` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` +2 |  |  |
+| `--mcp-sweep-max-held-results` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/sweep.rs` |  |  |
+| `--mcp-sweep-result-retention-secs` |  | `SECS` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` +1 |  |  |
 | `--mcp-rate-limit-per-peer` |  | `N` | MCP (Model Context Protocol) | e2e | `tests/mcp_stdio_test.rs` |  |  |
 | `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_http_test.rs` +1 |  |  |
 | `--mcp-resource-url` |  | `URL` | MCP (Model Context Protocol) | e2e | `tests/mcp_http_test.rs` |  |  |
@@ -353,17 +356,17 @@ behind them.
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-silence-warn` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-senders` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
-| `--hep-parse` | `-E` |  | HEP | e2e | `src/app/tui_mode.rs`, `tests/app_servers_wiring_test.rs` +4 |  |  |
+| `--hep-parse` | `-E` |  | HEP | e2e | `src/app/tui_mode.rs`, `tests/app_servers_wiring_test.rs` +5 |  |  |
 | `--no-hep-parse` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
-| `--tls-key` | `-k` | `FILE` | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
-| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decrypted_export_test.rs` +3 |  |  |
+| `--tls-key` | `-k` | `FILE` | TLS / Decryption | e2e | `tests/config_cli_defects_test.rs` | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
+| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/config_cli_defects_test.rs` +4 |  |  |
 | `--keylog-fd` |  | `N` | TLS / Decryption | parsed | `src/cli.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
 | `--tls-lockon-window` |  | `RECORDS` | TLS / Decryption | parsed | `tests/cli_defaults_test.rs` |  |  |
-| `--dtls-keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decryption_wrapper_matrix_test.rs` | **behavior** | DECRYPTION MATERIAL. Split proof: parse -> extract -> an SRTP packet decrypts. The file-load hop is untested |
+| `--dtls-keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/config_cli_defects_test.rs` +1 | **behavior** | DECRYPTION MATERIAL. Split proof: parse -> extract -> an SRTP packet decrypts. The file-load hop is untested |
 | `--srtp-keys` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/doc_commands_run_test.rs` | **behavior** | DECRYPTION MATERIAL. Key-file parsing and decryption both tested, with a wrong-key negative. The file-load hop is untested |
 | `--pcap-export-mode` |  | `MODE` | TLS / Decryption | e2e | `tests/cli_flag_behavior_test.rs`, `tests/decrypted_export_test.rs` +1 | **parse-only** | Three tests assert the string->enum mapping. No test writes a file in two modes and compares |
 | `--allow-coredump` |  |  | TLS / Decryption | e2e | `tests/archive_password_test.rs`, `tests/cli_options_test.rs` | **parse-only** | SAFETY SWITCH. Its smoke test runs on a capture with NO key material, so the code it guards never executes either way |
@@ -388,15 +391,15 @@ behind them.
 | `--mint-token` |  |  | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--vcon-forward` |  | `SPOOL_DIR` | vCon forwarder | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward` |  | `SPOOL_DIR` | vCon forwarder | e2e | `tests/config_cli_defects_test.rs`, `tests/config_cli_flag_values_test.rs` +1 |  |  |
 | `--vcon-forward-url` |  | `URL` | vCon forwarder | e2e | `tests/config_cli_flag_values_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--vcon-forward-auth-file` |  | `FILE` | vCon forwarder | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_forward_test.rs` |  |  |
-| `--vcon-forward-auth` |  | `HEADER` | vCon forwarder | referenced | `src/app/bootstrap.rs`, `src/app/run_provenance.rs` +6 |  |  |
+| `--vcon-forward-auth` |  | `HEADER` | vCon forwarder | referenced | `src/app/bootstrap.rs`, `src/app/run_provenance.rs` +7 |  |  |
 | `--vcon-forward-kind` |  | `KIND` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-done` |  | `DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-failed` |  | `DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-replace-url` |  | `TEMPLATE` | vCon forwarder | e2e | `tests/doc_commands_run_test.rs` |  |  |
-| `--vcon-forward-once` |  |  | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-once` |  |  | vCon forwarder | e2e | `tests/config_cli_defects_test.rs`, `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-interval` |  | `SECS` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-timeout` |  | `SECS` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-backoff-first` |  | `SECS` | vCon forwarder | referenced | `src/app/vcon_forward.rs`, `src/cli.rs` +3 |  |  |
@@ -405,8 +408,8 @@ behind them.
 | `--vcon-forward-max-error-body` |  | `BYTES` | vCon forwarder | referenced | `src/app/vcon_forward.rs`, `src/cli.rs` +1 |  |  |
 | `--vcon-forward-ca` |  | `FILE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-compat` |  | `STORE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
-| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +18 |  |  |
-| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +21 |  |  |
+| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +19 |  |  |
+| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +23 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +4 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |
@@ -465,7 +468,7 @@ behind them.
 | `aggregate_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `await_condition` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `build_evidence_package` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
-| `cancel_find_in_captures` | exercised | `tests/mcp_stdio_test.rs` |
+| `cancel_find_in_captures` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `capture_health` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `capture_status` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_audit_sink_test.rs` +13 |
 | `check_codec_negotiation` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
@@ -484,7 +487,7 @@ behind them.
 | `export_vcon` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_completeness_test.rs` +5 |
 | `find_in_captures` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
-| `find_in_captures_status` | exercised | `tests/mcp_stdio_test.rs` |
+| `find_in_captures_status` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `find_problems` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |
 | `generate_fail2ban_rule` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |
 | `generate_repro` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |

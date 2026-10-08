@@ -41,8 +41,9 @@
 //!
 //! The thread asks [`stop_reason`] before every file and before every packet:
 //! a SIGTERM, a cancel and the deadline each stop a sweep inside a file, not
-//! only between files. [`MAX_RUNNING_SWEEPS`], [`MAX_HELD_RESULTS`] and
-//! [`RESULT_RETENTION`] bound what the jobs hold.
+//! only between files. [`crate::cli::McpSweepJobLimits`], from
+//! `--mcp-sweep-max-running`, `--mcp-sweep-max-held-results` and
+//! `--mcp-sweep-result-retention-secs`, bounds what the jobs hold.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -258,32 +259,6 @@ fn bound(value: &str) -> String {
         .take(MAX_REASON_CHARS)
         .collect()
 }
-
-/// Sweeps one server runs at once.
-///
-/// Each sweep is an OS thread reading capture files from one disk, so sweeps
-/// past a handful compete for the same disk and finish no sooner together
-/// than one after another; four lets an agent run a few questions side by
-/// side without letting a loop of calls start a thread per call. A start past
-/// it is refused, naming `cancel_find_in_captures`, rather than queued: a
-/// queue is unbounded work deferred.
-pub const MAX_RUNNING_SWEEPS: usize = 4;
-
-/// Finished results one server keeps for collection at once.
-///
-/// A result waits for its poll, and an agent that never polls would otherwise
-/// leave one behind per sweep. Past this many the oldest finished result is
-/// dropped. Sixteen is four rounds of [`MAX_RUNNING_SWEEPS`].
-pub const MAX_HELD_RESULTS: usize = 16;
-
-/// How long a finished result waits for its poll before it is dropped: ten
-/// minutes from the moment the sweep finished.
-///
-/// Long enough for an agent that started a sweep, did other work and came
-/// back; short enough that results nobody collects do not outlive the
-/// conversation that asked for them. Dropped results are reaped whenever a
-/// sweep tool is called.
-pub const RESULT_RETENTION: Duration = Duration::from_secs(600);
 
 /// Where a sweep job is, as `status` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -542,9 +517,19 @@ impl SweepJob {
 /// Shared by every session clone of the server, for the reason the capture
 /// state is: `SipnabMcp` is cloned per HTTP session, and a per-clone table
 /// would let a job started in one session be unknown to the next, and would
-/// give each session its own [`MAX_RUNNING_SWEEPS`].
+/// give each session its own running bound.
+///
+/// A start past [`McpSweepJobLimits::max_running`] running sweeps is refused,
+/// naming `cancel_find_in_captures`, rather than queued: a queue is unbounded
+/// work deferred. Expired and surplus results are reaped whenever a sweep tool
+/// is called.
+///
+/// [`McpSweepJobLimits::max_running`]: crate::cli::McpSweepJobLimits::max_running
 #[derive(Debug, Default)]
 pub struct SweepJobs {
+    /// The bounds on running sweeps and held results, from the operator's
+    /// settings.
+    limits: crate::cli::McpSweepJobLimits,
     /// The jobs, running and finished, and the next id.
     table: Mutex<JobTable>,
     /// A pause the next sweep's reader stops at, for a test that needs a sweep
@@ -564,12 +549,13 @@ struct JobTable {
 }
 
 impl JobTable {
-    /// Drop results older than [`RESULT_RETENTION`] at `now`, then the oldest
-    /// results past [`MAX_HELD_RESULTS`].
-    fn reap(&mut self, now: Instant) {
+    /// Drop results that finished more than `limits.result_retention_secs`
+    /// before `now`, then the oldest results past `limits.max_held_results`.
+    fn reap(&mut self, now: Instant, limits: crate::cli::McpSweepJobLimits) {
+        let retention = Duration::from_secs(limits.result_retention_secs);
         self.jobs.retain(|j| {
             j.finished_at()
-                .is_none_or(|at| now.saturating_duration_since(at) <= RESULT_RETENTION)
+                .is_none_or(|at| now.saturating_duration_since(at) <= retention)
         });
         let mut held = self
             .jobs
@@ -577,7 +563,7 @@ impl JobTable {
             .filter(|j| j.finished_at().is_some())
             .count();
         self.jobs.retain(|j| {
-            if held > MAX_HELD_RESULTS && j.finished_at().is_some() {
+            if held > limits.max_held_results && j.finished_at().is_some() {
                 held -= 1;
                 false
             } else {
@@ -592,17 +578,30 @@ impl JobTable {
     }
 }
 
-/// The refusal for a job id the table does not hold.
-fn unknown_job(id: &str) -> String {
+/// The refusal for a job id the table does not hold, reporting the bounds
+/// that drop a result and the settings that set them.
+fn unknown_job(id: &str, limits: crate::cli::McpSweepJobLimits) -> String {
     format!(
         "unknown sweep job '{}': it was never started, its result was already \
-         handed over, or it finished more than {} seconds ago",
+         handed over, it finished more than {} seconds ago \
+         (--mcp-sweep-result-retention-secs), or {} newer results were waiting \
+         (--mcp-sweep-max-held-results)",
         bound(id),
-        RESULT_RETENTION.as_secs()
+        limits.result_retention_secs,
+        limits.max_held_results
     )
 }
 
 impl SweepJobs {
+    /// An empty table bounded by `limits`.
+    #[must_use]
+    pub fn new(limits: crate::cli::McpSweepJobLimits) -> Self {
+        Self {
+            limits,
+            ..Self::default()
+        }
+    }
+
     /// Start a sweep of `plan` on its own thread.
     ///
     /// # Returns
@@ -611,8 +610,9 @@ impl SweepJobs {
     ///
     /// # Errors
     ///
-    /// A message naming [`MAX_RUNNING_SWEEPS`] when that many already run, or
-    /// why the thread could not be spawned.
+    /// A message reporting the configured running bound and naming its
+    /// setting when that many already run, or why the thread could not be
+    /// spawned.
     ///
     /// # Side effects
     ///
@@ -622,16 +622,18 @@ impl SweepJobs {
     pub fn start(&self, plan: SweepPlan, now: Instant) -> Result<String, String> {
         let job = {
             let mut table = self.table.lock();
-            table.reap(now);
+            table.reap(now, self.limits);
             let running = table
                 .jobs
                 .iter()
                 .filter(|j| j.finished_at().is_none())
                 .count();
-            if running >= MAX_RUNNING_SWEEPS {
+            let max = self.limits.max_running;
+            if running >= max {
                 return Err(format!(
                     "{running} sweeps are already running, the most one server runs at \
-                     once ({MAX_RUNNING_SWEEPS}); poll one with find_in_captures_status \
+                     once ({max}, set by --mcp-sweep-max-running or [limits] \
+                     mcp_sweep_max_running); poll one with find_in_captures_status \
                      or stop one with cancel_find_in_captures, then start this one"
                 ));
             }
@@ -684,8 +686,8 @@ impl SweepJobs {
     /// A message naming `id` when the table does not hold it.
     pub fn collect(&self, id: &str, now: Instant) -> Result<FindInCapturesResponse, String> {
         let mut table = self.table.lock();
-        table.reap(now);
-        let job = table.find(id).ok_or_else(|| unknown_job(id))?;
+        table.reap(now, self.limits);
+        let job = table.find(id).ok_or_else(|| unknown_job(id, self.limits))?;
         let report = job.report();
         if report.sweep.is_some() {
             table.jobs.retain(|j| !Arc::ptr_eq(j, &job));
@@ -701,8 +703,8 @@ impl SweepJobs {
     /// A message naming `id` when the table does not hold it.
     pub fn cancel(&self, id: &str, now: Instant) -> Result<(), String> {
         let mut table = self.table.lock();
-        table.reap(now);
-        let job = table.find(id).ok_or_else(|| unknown_job(id))?;
+        table.reap(now, self.limits);
+        let job = table.find(id).ok_or_else(|| unknown_job(id, self.limits))?;
         job.cancel.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -717,7 +719,7 @@ impl SweepJobs {
 
     /// Drop expired and surplus results as at `now`.
     pub(crate) fn reap(&self, now: Instant) {
-        self.table.lock().reap(now);
+        self.table.lock().reap(now, self.limits);
     }
 
     /// Whether the table holds job `id`.

@@ -1646,6 +1646,17 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    ("mcp-sweep-max-running", Kind::Int { lo: 1, hi: 64 }, &[]),
+    (
+        "mcp-sweep-max-held-results",
+        Kind::Int { lo: 1, hi: 256 },
+        &[],
+    ),
+    (
+        "mcp-sweep-result-retention-secs",
+        Kind::Int { lo: 1, hi: 43200 },
+        &[],
+    ),
     (
         "mcp-rate-limit-per-peer",
         Kind::Int {
@@ -2999,6 +3010,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.mcp_body_cap(config)),
         format!("{:?}", cli.mcp_wait_cap(config)),
         format!("{:?}", cli.mcp_sweep_limits(config)),
+        format!("{:?}", cli.mcp_sweep_job_limits(config)),
         format!("{:?}", cli.lost_sequence_log_cap(config)),
         format!("{:?}", cli.quality_interval_secs(config)),
         format!("{:?}", cli.group_caps(config)),

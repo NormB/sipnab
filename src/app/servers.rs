@@ -73,6 +73,12 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_sweep_limits(config)`, and carried
     /// here for the same reason `mcp_row_cap` is.
     pub mcp_sweep: crate::cli::McpSweepLimits,
+    /// Bounds on the `find_in_captures` jobs the MCP server holds: sweeps
+    /// running at once, finished results held, and their retention.
+    ///
+    /// Resolved by the caller with `cli.mcp_sweep_job_limits(config)`, and
+    /// carried here for the same reason `mcp_row_cap` is.
+    pub mcp_sweep_jobs: crate::cli::McpSweepJobLimits,
     /// Ceiling on rows in one list-style REST response.
     ///
     /// Resolved by the caller with `cli.api_row_cap(config)`, and carried here
@@ -746,6 +752,7 @@ pub fn start_servers(
                 .with_body_cap(selection.mcp_body_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)
                 .with_sweep_limits(selection.mcp_sweep)
+                .with_sweep_job_limits(selection.mcp_sweep_jobs)
                 .with_findings_cap(selection.mcp_max_findings)
                 .with_pipeline_options(selection.pipeline_options);
             let s = match audit_sink.as_ref() {
@@ -1062,6 +1069,7 @@ mod tests {
             mcp_body_cap: 1,
             mcp_wait_seconds: 1,
             mcp_sweep: crate::cli::McpSweepLimits::default(),
+            mcp_sweep_jobs: crate::cli::McpSweepJobLimits::default(),
             api_row_cap: 1,
             api_rate_limit_per_peer: rate,
             max_tracked_peers: peers,
