@@ -137,6 +137,10 @@ pub struct SipnabMcp {
     /// `--mcp-max-concurrent` permit while producing none. An unbounded wait
     /// is a held connection by another name.
     pub(crate) max_wait_seconds: u64,
+    /// The ceilings one `find_in_captures` sweep runs under, from
+    /// `--mcp-sweep-max-files` / `--mcp-sweep-deadline-ms` or their
+    /// `[limits]` keys. A per-call request is clamped to them.
+    sweep_limits: crate::cli::McpSweepLimits,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -357,6 +361,7 @@ impl SipnabMcp {
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             max_wait_seconds: super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS,
+            sweep_limits: crate::cli::McpSweepLimits::default(),
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
@@ -567,6 +572,14 @@ impl SipnabMcp {
         } else {
             seconds
         };
+        self
+    }
+
+    /// Set the ceilings `find_in_captures` clamps a per-call `max_files` and
+    /// `deadline_ms` to, resolved by `Cli::mcp_sweep_limits`.
+    #[must_use]
+    pub fn with_sweep_limits(mut self, limits: crate::cli::McpSweepLimits) -> Self {
+        self.sweep_limits = limits;
         self
     }
 
@@ -1868,12 +1881,14 @@ pub struct FindInCapturesParams {
     /// Filter DSL expression, the same vocabulary every other filtering tool
     /// takes — `call_id == "abc@example.com"`, `state == failed`.
     pub filter: String,
-    /// Files to open before stopping. Clamped to
-    /// [`crate::mcp::sweep::DEFAULT_MAX_FILES`]; `0` means the default.
+    /// Files to open before stopping. Clamped to the operator's
+    /// `--mcp-sweep-max-files` (default 20); `0` or absent means that
+    /// ceiling.
     #[serde(default)]
     pub max_files: Option<u32>,
-    /// Wall-clock the sweep may spend, in milliseconds. Clamped to
-    /// [`crate::mcp::sweep::DEFAULT_DEADLINE_MS`]; `0` means the default.
+    /// Wall-clock the sweep may spend, in milliseconds. Clamped to the
+    /// operator's `--mcp-sweep-deadline-ms` (default 30000); `0` or absent
+    /// means that ceiling.
     ///
     /// The bound that matters: a file's cost is its size, which the caller
     /// cannot see, so twenty small files and twenty 2 GB files are the same
@@ -7481,9 +7496,11 @@ impl SipnabMcp {
                        WITHOUT touching the loaded capture. Answers 'which of \
                        these 40 rotated files holds Call-ID X', which \
                        open_capture cannot: that tool replaces every dialog and \
-                       stream and voids every cursor. Bounded by max_files and \
-                       deadline_ms, and the response carries files_examined, \
-                       files_total, an unreadable list and a complete flag. \
+                       stream and voids every cursor. max_files and \
+                       deadline_ms are clamped to --mcp-sweep-max-files and \
+                       --mcp-sweep-deadline-ms; the response carries the \
+                       limits applied, files_examined, files_total, an \
+                       unreadable list and a complete flag. \
                        READ complete BEFORE BELIEVING AN EMPTY RESULT: a sweep \
                        that stopped early, or that could not open a file, has \
                        not shown the call is absent.",
@@ -7503,14 +7520,11 @@ impl SipnabMcp {
         let expr = crate::sip::dsl::FilterExpr::parse(&params.filter)
             .map_err(|e| rmcp::ErrorData::invalid_params(format!("filter: {e}"), None))?;
 
-        let max_files = match params.max_files {
-            Some(0) | None => crate::mcp::sweep::DEFAULT_MAX_FILES,
-            Some(n) => (n as usize).min(crate::mcp::sweep::DEFAULT_MAX_FILES),
-        };
-        let deadline_ms = match params.deadline_ms {
-            Some(0) | None => crate::mcp::sweep::DEFAULT_DEADLINE_MS,
-            Some(n) => n.min(crate::mcp::sweep::DEFAULT_DEADLINE_MS),
-        };
+        // The operator's ceilings, not constants: see `McpSweepLimits::clamp`.
+        let limits = self
+            .sweep_limits
+            .clamp(params.max_files, params.deadline_ms);
+        let (max_files, deadline_ms) = (limits.max_files, limits.deadline_ms);
 
         let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(root)
             .map_err(|e| {
@@ -7616,6 +7630,7 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(
             crate::mcp::sweep::FindInCapturesResponse {
                 schema_version: 1,
+                limits: limits.into(),
                 sweep: outcome,
             },
         )?]))
@@ -10164,6 +10179,141 @@ mod tests {
             sweep["complete"], false,
             "one of two files was read: absence is not established"
         );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// Forty rotated captures where only the LAST holds the call: thirty-nine
+    /// copies of a capture without it, then the one with it, named so they
+    /// sort in that order.
+    fn forty_file_root(tag: &str) -> Result<std::path::PathBuf, TestError> {
+        let names: Vec<String> = (0..40).map(|i| format!("rot-{i:02}.pcap")).collect();
+        let files: Vec<(&str, &str)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let source = if i == 39 {
+                    "tests/pcap-samples/sip-rtp-g711.pcap"
+                } else {
+                    "tests/fixtures/sip_call.pcap"
+                };
+                (n.as_str(), source)
+            })
+            .collect();
+        sweep_root(tag, &files, &[])
+    }
+
+    /// Sweep `root` for the Call-ID only `rot-39.pcap` holds, with the
+    /// per-call parameters given, and return the response's JSON.
+    async fn sweep_for_the_last_call(
+        srv: &SipnabMcp,
+        max_files: Option<u32>,
+        deadline_ms: Option<u64>,
+    ) -> Result<serde_json::Value, TestError> {
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                max_files,
+                deadline_ms,
+            }))
+            .await
+            .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
+        let v = serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?;
+        Ok(v)
+    }
+
+    /// An operator who sets the file ceiling to 40 can sweep a 40-file spool
+    /// to the end, and finds a call that is only in the last file.
+    ///
+    /// Before the ceiling was a setting, a per-call `max_files` was clamped to
+    /// a constant 20, so this call could not be found by any request.
+    #[tokio::test]
+    async fn a_configured_file_ceiling_of_forty_sweeps_a_forty_file_root() -> Result<(), TestError>
+    {
+        let root = forty_file_root("forty-configured")?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_limits(crate::cli::McpSweepLimits {
+                max_files: 40,
+                ..Default::default()
+            });
+        let v = sweep_for_the_last_call(&srv, None, None).await?;
+        let sweep = &v["sweep"];
+        assert_eq!(sweep["files_total"], 40, "{sweep}");
+        assert_eq!(sweep["files_examined"], 40, "{sweep}");
+        assert_eq!(sweep["complete"], true, "{sweep}");
+        assert_eq!(sweep["matches"][0]["filename"], "rot-39.pcap", "{sweep}");
+        assert_eq!(v["limits"]["max_files"], 40, "{v}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// With the shipped ceiling the same 40-file sweep stops at 20 and says
+    /// it is incomplete, even when the caller asks for every file.
+    #[tokio::test]
+    async fn the_shipped_file_ceiling_stops_a_forty_file_sweep_at_twenty() -> Result<(), TestError>
+    {
+        let root = forty_file_root("forty-default")?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let v = sweep_for_the_last_call(&srv, Some(40), None).await?;
+        let sweep = &v["sweep"];
+        assert_eq!(sweep["files_total"], 40, "{sweep}");
+        assert_eq!(sweep["files_examined"], 20, "{sweep}");
+        assert_eq!(sweep["stopped_because"], "max-files", "{sweep}");
+        assert_eq!(sweep["complete"], false, "{sweep}");
+        assert!(
+            sweep["matches"].as_array().is_some_and(Vec::is_empty),
+            "the call is in file 40, which was never read: {sweep}"
+        );
+        assert_eq!(v["limits"]["max_files"], 20, "{v}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A per-call `max_files` above the configured ceiling is clamped to it;
+    /// one below it is honored.
+    #[tokio::test]
+    async fn a_per_call_file_limit_is_clamped_to_the_configured_ceiling() -> Result<(), TestError> {
+        let root = forty_file_root("forty-clamp")?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_limits(crate::cli::McpSweepLimits {
+                max_files: 25,
+                ..Default::default()
+            });
+        let above = sweep_for_the_last_call(&srv, Some(35), None).await?;
+        assert_eq!(above["sweep"]["files_examined"], 25, "{above}");
+        assert_eq!(above["limits"]["max_files"], 25, "{above}");
+        let below = sweep_for_the_last_call(&srv, Some(22), None).await?;
+        assert_eq!(below["sweep"]["files_examined"], 22, "{below}");
+        assert_eq!(below["limits"]["max_files"], 22, "{below}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// The configured deadline is the one the sweep runs under: it is the
+    /// value used when the caller names none, and the ceiling a larger
+    /// request is clamped to. Observed through the `limits` the response
+    /// reports, so the test does not wait out a deadline.
+    #[tokio::test]
+    async fn a_configured_deadline_reaches_the_sweep() -> Result<(), TestError> {
+        let root = sweep_root(
+            "deadline",
+            &[("a.pcap", "tests/fixtures/sip_call.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?
+            .with_file_root(&root)
+            .with_sweep_limits(crate::cli::McpSweepLimits {
+                deadline_ms: 45_000,
+                ..Default::default()
+            });
+        let absent = sweep_for_the_last_call(&srv, None, None).await?;
+        assert_eq!(absent["limits"]["deadline_ms"], 45_000, "{absent}");
+        let above = sweep_for_the_last_call(&srv, None, Some(90_000)).await?;
+        assert_eq!(above["limits"]["deadline_ms"], 45_000, "{above}");
+        let inside = sweep_for_the_last_call(&srv, None, Some(40_000)).await?;
+        assert_eq!(inside["limits"]["deadline_ms"], 40_000, "{inside}");
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }

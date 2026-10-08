@@ -1128,13 +1128,14 @@ archive.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter` | string | A [filter DSL](filter-dsl.md) expression, the same vocabulary every other filtering tool takes. Unparseable fails with `invalid_params` before the sweep opens anything | Required |
-| `max_files` | u32? | Files to open before stopping. Clamped to `DEFAULT_MAX_FILES` (20); `0` means the default | 20 |
-| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to `DEFAULT_DEADLINE_MS` (30000); `0` means the default | 30000 |
+| `max_files` | u32? | Files to open before stopping. Clamped to the operator's `--mcp-sweep-max-files` (`[limits] mcp_sweep_max_files`, default 20); `0` means that ceiling | The ceiling |
+| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to the operator's `--mcp-sweep-deadline-ms` (`[limits] mcp_sweep_deadline_ms`, default 30000); `0` means that ceiling | The ceiling |
 
 ```jsonc
 // find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"" }
 {
   "schema_version": 1,
+  "limits": { "max_files": 20, "deadline_ms": 30000 },
   "sweep": {
     "matches": [
       { "filename": "rotated-03.pcap", "dialogs_matched": 1,
@@ -1165,6 +1166,32 @@ characters and keeps the first `MAX_REASON_CHARS` (200).
 **A match does not excuse an incomplete sweep either.** On a rotated spool a
 call that spans a rotation is in two files, so finding it in one says nothing
 about the other.
+
+`limits` is what this sweep ran under: the caller's `max_files` and
+`deadline_ms` after sipnab clamped them to the operator's ceilings.
+
+#### The ceilings are the operator's settings
+
+The operator sets both ceilings, and a caller can only ask for less:
+
+| Ceiling | Flag | Config key | Default | Accepted |
+|---|---|---|---|---|
+| Files per sweep | `--mcp-sweep-max-files` | `[limits] mcp_sweep_max_files` | 20 | 1 to 4294967295 |
+| Milliseconds per sweep | `--mcp-sweep-deadline-ms` | `[limits] mcp_sweep_deadline_ms` | 30000 | 1 to 3600000 |
+
+A spool that rotates forty files needs `--mcp-sweep-max-files 40` before one
+sweep can reach the oldest file. With the default, the sweep stops after 20
+files with `stopped_because: "max-files"` and `complete: false`. The flag
+overrides the key.
+
+The defaults are `DEFAULT_MCP_SWEEP_MAX_FILES` (20) and
+`DEFAULT_MCP_SWEEP_DEADLINE_MS` (30000), which `find_in_captures` reads as
+`DEFAULT_MAX_FILES` (20) and `DEFAULT_DEADLINE_MS` (30000). The maxima are
+`MAX_MCP_SWEEP_MAX_FILES` (4294967295), the largest value of the per-call
+`max_files`, a 32-bit unsigned integer, and `MAX_MCP_SWEEP_DEADLINE_MS`
+(3600000), one hour, the longest one call may hold a `--mcp-max-concurrent`
+slot. sipnab refuses `0` and any value above the maximum from the flag and
+from the key.
 
 #### Why two bounds and not one
 

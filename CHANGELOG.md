@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The MCP `find_in_captures` limits are operator settings.**
+  `--mcp-sweep-max-files` / `[limits] mcp_sweep_max_files` (default 20,
+  accepted 1 to 4294967295) and `--mcp-sweep-deadline-ms` /
+  `[limits] mcp_sweep_deadline_ms` (default 30000, accepted 1 to 3600000)
+  set the ceilings the tool's per-call `max_files` and `deadline_ms` are
+  clamped to. Before this, the tool clamped both to fixed values of 20 files
+  and 30000 ms, so a sweep of a spool with more than 20 rotated files could not
+  reach the older ones. The flag overrides the key. The response carries a
+  new `limits` object with the values the sweep ran under.
+
 ### Changed
 
 - **`.githooks/pre-push` runs clippy for the other Linux architecture.** Code

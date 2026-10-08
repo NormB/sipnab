@@ -25,21 +25,25 @@
 
 use serde::Serialize;
 
-/// Files one sweep will open before stopping, unless the caller says fewer.
+/// Files one sweep will open before stopping when the operator has not set
+/// `--mcp-sweep-max-files`: [`crate::cli::Cli::DEFAULT_MCP_SWEEP_MAX_FILES`].
 ///
 /// A capture root holds rotated files, and forty is a normal day. Twenty is
 /// enough to answer "which of the recent ones" without turning one tool call
-/// into a full read of a spool that may hold months.
-pub const DEFAULT_MAX_FILES: usize = 20;
+/// into a full read of a spool that may hold months. The operator's setting
+/// replaces it as the ceiling a per-call `max_files` is clamped to.
+pub const DEFAULT_MAX_FILES: u64 = crate::cli::Cli::DEFAULT_MCP_SWEEP_MAX_FILES;
 
-/// Wall-clock a sweep may spend before stopping, in milliseconds.
+/// Wall-clock a sweep may spend before stopping, in milliseconds, when the
+/// operator has not set `--mcp-sweep-deadline-ms`:
+/// [`crate::cli::Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS`].
 ///
 /// The bound that actually matters. A file's cost is its size, which the
 /// caller cannot see and a file count does not capture: twenty small files and
 /// twenty 2 GB files are the same `max_files` and wildly different waits. An
 /// agent blocked on a tool call has no way to interrupt it, so the sweep
 /// stops itself.
-pub const DEFAULT_DEADLINE_MS: u64 = 30_000;
+pub const DEFAULT_DEADLINE_MS: u64 = crate::cli::Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS;
 
 /// Longest reason string reported for a file that could not be read.
 ///
@@ -81,8 +85,34 @@ pub struct UnreadableFile {
 pub struct FindInCapturesResponse {
     /// Always 1 under the current schema.
     pub schema_version: u32,
+    /// The limits this sweep ran under, after the caller's request was
+    /// clamped to the operator's ceilings.
+    pub limits: AppliedLimits,
     /// What the sweep covered and found.
     pub sweep: SweepOutcome,
+}
+
+/// The limits one sweep ran under.
+///
+/// Reported so a caller can see the clamp: a `max_files` of 40 against a
+/// `--mcp-sweep-max-files` of 20 comes back as 20.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct AppliedLimits {
+    /// Files the sweep was allowed to open.
+    pub max_files: usize,
+    /// Wall-clock the sweep was allowed to spend, in milliseconds.
+    pub deadline_ms: u64,
+}
+
+impl From<crate::cli::McpSweepLimits> for AppliedLimits {
+    fn from(limits: crate::cli::McpSweepLimits) -> Self {
+        Self {
+            max_files: limits.max_files,
+            deadline_ms: limits.deadline_ms,
+        }
+    }
 }
 
 /// What one sweep found.

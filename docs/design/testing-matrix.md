@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 325 | 252 | 36 | 37 | 0 |
+| CLI flags | 327 | 252 | 36 | 39 | 0 |
 | HTTP routes | 41 | 41 | -- | 0 | 0 |
 | MCP tools | 70 | 70 | -- | 0 | 0 |
 
@@ -57,15 +57,15 @@ was driving all of them.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 37 flags it could only call
-`referenced`, a read of the tests found 73 with a real behavior test --
+The generator understates. Of the 39 flags it could only call
+`referenced`, a read of the tests found 75 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
 which a token search can see.
 
 | Audited verdict | Flags | What it means |
 |---|---|---|
-| `behavior` | 73 | a test asserts an observable effect; it fails if the flag stops working |
+| `behavior` | 75 | a test asserts an observable effect; it fails if the flag stops working |
 | `parse-only` | 13 | a test drives it through clap and asserts nothing downstream |
 | `mention-only` | 4 | the token appears; nothing exercises it |
 
@@ -83,7 +83,7 @@ behind them.
 
 | Flag | Short | Value | Group | Detected | Where | Audited | What a person found |
 |---|---|---|---|---|---|---|---|
-| `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +4 |  |  |
+| `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +5 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +4 |  |  |
 | `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +96 |  |  |
@@ -96,12 +96,12 @@ behind them.
 | `--capture-profile` |  | `PROFILE` | Capture | e2e | `tests/doc_commands_run_test.rs` |  |  |
 | `--limitlen` | `-S` | `BYTES` | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-reassembly` |  |  | Capture | parsed | `src/cli.rs` |  |  |
-| `--quiet-bad-parse` | `-x` |  | Capture | parsed | `src/cli.rs` |  |  |
+| `--quiet-bad-parse` | `-x` |  | Capture | parsed | `src/app/mod.rs`, `src/cli.rs` |  |  |
 | `--portrange` |  | `RANGE` | Capture | e2e | `tests/accused_sources_test.rs`, `tests/analyze_test.rs` +16 |  |  |
 | `--ws-portrange` |  | `RANGE` | Capture | parsed | `src/cli.rs` |  |  |
 | `--multi-device` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-rtp` |  |  | Capture | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` |  |  |
-| `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +14 |  |  |
+| `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +15 |  |  |
 | `--no-promisc` | `-p` |  | Capture | e2e | `tests/plugin_example_test.rs` |  |  |
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
@@ -286,7 +286,7 @@ behind them.
 | `--metrics-max-conn` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not |
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs`, `src/output/api.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
 | `--api-allow-relay-query` |  |  | Network listeners | e2e | `tests/app_servers_wiring_test.rs` |  |  |
-| `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/archive_password_test.rs` |  |  |
+| `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/app_servers_wiring_test.rs` +1 |  |  |
 | `--api-accept-archive-passwords` |  |  | Network listeners | e2e | `tests/archive_password_test.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | e2e | `tests/actions_journal_rest_test.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +18 |  |  |
@@ -308,10 +308,12 @@ behind them.
 | `--mcp-max-body-bytes` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_body_bytes changes the search_messages snippet length |
 | `--mcp-max-wait-seconds` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/tools/await_condition.rs` | **behavior** | via config key: probe_mcp_max_wait_seconds changes the effective await_condition deadline |
 | `--mcp-max-findings` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_findings changes the remaining budget in save_findings |
+| `--mcp-sweep-max-files` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` | **behavior** | via config key: probe_mcp_sweep_max_files changes the files find_in_captures examines |
+| `--mcp-sweep-deadline-ms` |  | `MS` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` | **behavior** | via config key: probe_mcp_sweep_deadline_ms changes the deadline find_in_captures reports |
 | `--mcp-rate-limit-per-peer` |  | `N` | MCP (Model Context Protocol) | e2e | `tests/mcp_stdio_test.rs` |  |  |
 | `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_http_test.rs` +1 |  |  |
 | `--mcp-resource-url` |  | `URL` | MCP (Model Context Protocol) | e2e | `tests/mcp_http_test.rs` |  |  |
-| `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_archive_password_test.rs` +9 |  |  |
+| `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs`, `tests/config_wiring_test.rs` +11 |  |  |
 | `--mcp-evidence-ring` |  | `MIB` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
@@ -351,7 +353,7 @@ behind them.
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-silence-warn` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-senders` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
-| `--hep-parse` | `-E` |  | HEP | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
+| `--hep-parse` | `-E` |  | HEP | e2e | `src/app/tui_mode.rs`, `tests/app_servers_wiring_test.rs` +4 |  |  |
 | `--no-hep-parse` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
@@ -389,7 +391,7 @@ behind them.
 | `--vcon-forward` |  | `SPOOL_DIR` | vCon forwarder | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-url` |  | `URL` | vCon forwarder | e2e | `tests/config_cli_flag_values_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--vcon-forward-auth-file` |  | `FILE` | vCon forwarder | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_forward_test.rs` |  |  |
-| `--vcon-forward-auth` |  | `HEADER` | vCon forwarder | referenced | `src/app/bootstrap.rs`, `src/app/vcon_forward.rs` +5 |  |  |
+| `--vcon-forward-auth` |  | `HEADER` | vCon forwarder | referenced | `src/app/bootstrap.rs`, `src/app/run_provenance.rs` +6 |  |  |
 | `--vcon-forward-kind` |  | `KIND` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-done` |  | `DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-forward-failed` |  | `DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
@@ -418,7 +420,7 @@ behind them.
 | `/v1/actions/revert` | exercised | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` |
 | `/v1/aggregate` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_test.rs` |
-| `/v1/captures/compare` | exercised | `tests/api_test.rs`, `tests/archive_password_test.rs` +1 |
+| `/v1/captures/compare` | exercised | `tests/api_test.rs`, `tests/app_servers_wiring_test.rs` +2 |
 | `/v1/dialogs` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +4 |
 | `/v1/dialogs/compare` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/dialogs/rates` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
@@ -466,7 +468,7 @@ behind them.
 | `capture_health` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `capture_status` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_audit_sink_test.rs` +13 |
 | `check_codec_negotiation` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
-| `compare_captures` | exercised | `tests/mcp_stdio_test.rs`, `tests/population_claim_test.rs` |
+| `compare_captures` | exercised | `tests/app_servers_wiring_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `compare_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +1 |
 | `decode_evidence` | exercised | `tests/mcp_stdio_test.rs` |
 | `decode_ng` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
@@ -480,7 +482,7 @@ behind them.
 | `export_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +1 |
 | `export_vcon` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_completeness_test.rs` +5 |
-| `find_in_captures` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
+| `find_in_captures` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `find_problems` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |
 | `generate_fail2ban_rule` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |
 | `generate_repro` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |

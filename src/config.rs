@@ -212,6 +212,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "mcp_max_body_bytes",
             "mcp_max_wait_seconds",
             "mcp_max_findings",
+            "mcp_sweep_max_files",
+            "mcp_sweep_deadline_ms",
             "lint_max_per_rule",
             "exec_queue_depth",
             "max_lost_sequences",
@@ -1912,6 +1914,27 @@ pub const MIN_TRACKED_PEERS: u64 = 2;
 /// the same judgement [`MIN_TRACKED_PEERS`] records.
 pub const MAX_HEP_HMAC_WINDOW_SECS: u64 = 300;
 
+/// Largest `[limits] mcp_sweep_max_files` / `--mcp-sweep-max-files` accepts:
+/// `u32::MAX`.
+///
+/// Taken from the type of the per-call `max_files` parameter of
+/// `find_in_captures`, which is a `u32`. A ceiling above it is one no caller
+/// could ask for by number, and it converts to `usize` without loss on every
+/// target sipnab builds for. Refused by [`LimitsConfig::validate`] and by
+/// clap, from this one number.
+pub const MAX_MCP_SWEEP_MAX_FILES: u64 = u32::MAX as u64;
+
+/// Largest `[limits] mcp_sweep_deadline_ms` / `--mcp-sweep-deadline-ms`
+/// accepts: 3600000 ms, one hour.
+///
+/// One `find_in_captures` call holds a `--mcp-max-concurrent` permit for the
+/// whole sweep, and the calling agent has no way to interrupt it. The sweep
+/// loop compares the elapsed milliseconds as a `u64`, so the type allows far
+/// more; the ceiling is one hour so that one call cannot hold a permit for
+/// longer than that. Refused by [`LimitsConfig::validate`] and by clap, from
+/// this one number.
+pub const MAX_MCP_SWEEP_DEADLINE_MS: u64 = 3_600_000;
+
 /// Resource limits.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -1992,6 +2015,19 @@ pub struct LimitsConfig {
     /// the journal already holds and sipnab retains no copy for a newer one to
     /// displace.
     pub mcp_max_findings: Option<u64>,
+    /// Files one MCP `find_in_captures` sweep may open (default: 20, maximum
+    /// [`MAX_MCP_SWEEP_MAX_FILES`]).
+    ///
+    /// The ceiling on the tool's per-call `max_files`: a larger request is
+    /// clamped to it, and `0` or no request means this value. A rotated spool
+    /// of forty files needs 40 here before one sweep can reach the oldest.
+    pub mcp_sweep_max_files: Option<u64>,
+    /// Milliseconds one MCP `find_in_captures` sweep may spend (default:
+    /// 30000, maximum [`MAX_MCP_SWEEP_DEADLINE_MS`]).
+    ///
+    /// The ceiling on the tool's per-call `deadline_ms`, applied the same way
+    /// as `mcp_sweep_max_files`. The sweep checks it before each file.
+    pub mcp_sweep_deadline_ms: Option<u64>,
     /// Lost RTP sequence numbers retained per stream (default: 1000).
     ///
     /// The window the Packet Loss Map and the burst/gap analysis reason over.
@@ -2212,6 +2248,27 @@ impl LimitsConfig {
                  spelled expensively)"
                     .into(),
             ));
+        }
+        // Bounded at both ends. 0 would sweep no file at all, or stop before
+        // the first one, and report an incomplete sweep for every request.
+        // The maxima are explained on the constants.
+        if let Some(v) = self.mcp_sweep_max_files
+            && (v == 0 || v > MAX_MCP_SWEEP_MAX_FILES)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] mcp_sweep_max_files must be 1-{MAX_MCP_SWEEP_MAX_FILES} \
+                 (0 would open no file, so every sweep would be incomplete), \
+                 got {v}"
+            )));
+        }
+        if let Some(v) = self.mcp_sweep_deadline_ms
+            && (v == 0 || v > MAX_MCP_SWEEP_DEADLINE_MS)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] mcp_sweep_deadline_ms must be 1-{MAX_MCP_SWEEP_DEADLINE_MS} \
+                 (0 would stop before the first file; the maximum bounds how \
+                 long one call holds an MCP permit), got {v}"
+            )));
         }
         if let Some(0) = self.max_lost_sequences {
             return Err(crate::Error::ConfigInvalid(
@@ -4470,6 +4527,8 @@ column_selector = "F10"
             mcp_max_body_bytes: Some(4096),
             mcp_max_wait_seconds: Some(120),
             mcp_max_findings: Some(1000),
+            mcp_sweep_max_files: Some(40),
+            mcp_sweep_deadline_ms: Some(60_000),
             max_lost_sequences: Some(1000),
             quality_interval_secs: Some(5),
             max_groups: Some(10_000),
@@ -4498,6 +4557,8 @@ column_selector = "F10"
         for key in [
             "mcp_max_body_bytes",
             "mcp_max_wait_seconds",
+            "mcp_sweep_max_files",
+            "mcp_sweep_deadline_ms",
             "max_lost_sequences",
             "max_groups",
             "max_grouped_messages",
@@ -4520,6 +4581,35 @@ column_selector = "F10"
             assert!(
                 err.to_string().contains(key),
                 "the refusal must name {key}, got: {err}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Each sweep ceiling is refused one past its maximum, by name, and the
+    /// maximum itself validates.
+    ///
+    /// The flag is refused by clap from the same constants; this is the file
+    /// half, so neither door is the lenient one.
+    #[test]
+    fn sweep_ceilings_refuse_a_value_above_their_maximum() -> Result<(), TestError> {
+        for (key, max) in [
+            ("mcp_sweep_max_files", MAX_MCP_SWEEP_MAX_FILES),
+            ("mcp_sweep_deadline_ms", MAX_MCP_SWEEP_DEADLINE_MS),
+        ] {
+            let at: Config = toml::from_str(&format!("[limits]\n{key} = {max}\n"))
+                .map_err(|e| format!("parses: {e:?}"))?;
+            assert!(at.limits.validate().is_ok(), "{key} = {max} must validate");
+            let over: Config = toml::from_str(&format!("[limits]\n{key} = {}\n", max + 1))
+                .map_err(|e| format!("parses: {e:?}"))?;
+            let err = over
+                .limits
+                .validate()
+                .err()
+                .ok_or("one past the maximum must be refused")?;
+            assert!(
+                err.to_string().contains(key) && err.to_string().contains(&max.to_string()),
+                "the refusal must name {key} and its maximum {max}, got: {err}"
             );
         }
         Ok(())

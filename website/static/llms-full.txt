@@ -14712,6 +14712,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-max-body-bytes` | `<N>` | `4096` | Maximum bytes of SIP body or matched snippet in one MCP response. `--mcp-max-rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. An SDP body with a dozen codecs and ICE candidates passes the default, and the agent reading the clipped half cannot tell a truncated answer from a short one. Config: `[limits] mcp_max_body_bytes` |
 | `--mcp-max-wait-seconds` | `<N>` | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `--mcp-max-rows` and `--mcp-max-body-bytes` bound how much an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. `await_condition` lets an agent wait for a condition on a live capture instead of re-asking `tail_dialogs` and paying a model turn per empty reply, and an unbounded wait is a held connection by another name. sipnab clamps a larger request to it and says so in the response. Config: `[limits] mcp_max_wait_seconds` |
 | `--mcp-max-findings` | `<N>` | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `--mcp-max-rows` and `--mcp-max-body-bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture. Config: `[limits] mcp_max_findings` |
+| `--mcp-sweep-max-files` | `<N>` | `20` | Files one MCP `find_in_captures` sweep may open, from `1` to `4294967295`. It is the ceiling on the tool's per-call `max_files`: sipnab clamps a larger request to it, and `0` or no request means this value. A rotated spool of forty files needs `40` here before one sweep can reach the oldest file. The response reports the limits applied and `files_examined`, `files_total` and `complete`. Config: `[limits] mcp_sweep_max_files` |
+| `--mcp-sweep-deadline-ms` | `<MS>` | `30000` | Milliseconds one MCP `find_in_captures` sweep may spend, from `1` to `3600000` (one hour). It is the ceiling on the tool's per-call `deadline_ms`, applied the same way as `--mcp-sweep-max-files`. The sweep checks it before each file, and one call holds a `--mcp-max-concurrent` slot until it ends. Config: `[limits] mcp_sweep_deadline_ms` |
 | `--mcp-sampling-budget` | `<PER_HOUR>` | off | Requests per hour sipnab may ask the CLIENT's model to narrate. Off unless set, because client support for the sampling primitive is thin and uneven and nothing here may depend on a narration arriving; a client that did not advertise the capability is never asked and gets structured evidence instead. Requests dedupe by finding signature before they spend from this budget, so a rule a scanner trips five hundred times costs one narration. `0` means NONE, not unlimited: elsewhere a zero limit removes a ceiling, but this one spends the operator's money and the client's rate limit, so zero reads restrictively. sipnab forwards named fields only -- control characters stripped, length clamped, under a system prompt stating every value is untrusted observation -- and never raw message text. Feature: `mcp` |
 | `--mcp-rate-limit-per-peer` | `<N>` | `100` | Maximum tool calls one peer may make per second (`0` = unlimited). The other half of `--mcp-max-concurrent`: that caps calls *in flight*, this caps their *arrival rate*, and without it an agent that stays under the concurrency cap while looping as fast as sipnab answers has no bound at all. A call over the cap gets the same retry-shortly error, never a queue slot. A peer is the source IP over HTTP (the address, not the socket, so reconnecting mints no fresh allowance) and the pipe itself over stdio. Shares its per-peer accounting with `--hep-rate-limit-per-peer`. Feature: `mcp` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). DNS-rebind protection accepts `localhost`, `127.0.0.1`, `::1` and the address `--mcp-bind` binds, on any port, and any IP address when it binds `0.0.0.0` or `::`: the same rule as [`--api-allowed-host`](#network-listeners). Add the public hostname when clients connect by that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
@@ -14777,6 +14779,9 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 20 --mcp-max-body-bytes 512` — a small-context agent: few rows, and each one short, so a page of hits fits the window it has to reason in
 - `sudo sipnab -N -d eth0 --mcp --mcp-max-wait-seconds 300` — let an agent sit on a live capture for up to five minutes per `await_condition` call, on a box watching for a fault that reproduces slowly
 - `sudo sipnab -N -d eth0 --mcp --mcp-max-wait-seconds 5` — hold every wait to five seconds, for a host where MCP slots are scarce and a stalled agent must not occupy one
+- `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab --mcp-sweep-max-files 40` — let one `find_in_captures` call sweep a spool that rotates forty files, so the sweep reaches a call in the oldest file
+- `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab --mcp-sweep-max-files 40 --mcp-sweep-deadline-ms 120000` — the same spool of large files, with two minutes for the sweep to read them
+- `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab --mcp-sweep-deadline-ms 5000` — end every sweep after five seconds, for a host where MCP slots are scarce and one sweep must not hold a slot for longer
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-rate-limit-per-peer 20` — a network-facing MCP server where any one client may make twenty tool calls a second. sipnab answers the twenty-first that second with a retry-shortly error instead of serving it
 - `sipnab -N -I capture.pcap --mcp --mcp-max-concurrent 8 --mcp-rate-limit-per-peer 0` — bound how many calls run at once but put no cap on the arrival rate (`0` = unlimited), for a scripted client that sweeps a capture as fast as it can
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
@@ -17904,6 +17909,8 @@ Resource limits to prevent unbounded memory growth.
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
 | `mcp_max_wait_seconds` | integer | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `mcp_max_rows` and `mcp_max_body_bytes` bound what an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. sipnab clamps a larger request to it and says so in the response. `--mcp-max-wait-seconds` overrides it. `0` fails validation and names the key |
 | `mcp_max_findings` | integer | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `mcp_max_rows` and `mcp_max_body_bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture, where a thousand annotations is a session doing its job. `--mcp-max-findings` overrides it. `0` fails validation and names the key |
+| `mcp_sweep_max_files` | integer | `20` | Files one MCP `find_in_captures` sweep may open. It is the ceiling on the tool's per-call `max_files`: sipnab clamps a larger request to it, and `0` or no request means this value. A rotated spool of forty files needs `40` here before one sweep can reach the oldest file. The response reports the limits applied and `files_examined`, `files_total` and `complete`, so a sweep that stopped early says so. `--mcp-sweep-max-files` overrides it. `0` and values above `4294967295` (the largest per-call `max_files`, a 32-bit unsigned integer) fail validation and name the key |
+| `mcp_sweep_deadline_ms` | integer | `30000` | Milliseconds one MCP `find_in_captures` sweep may spend. It is the ceiling on the tool's per-call `deadline_ms`, applied the same way as `mcp_sweep_max_files`. The sweep checks it before each file. `--mcp-sweep-deadline-ms` overrides it. `0` and values above `3600000` (one hour, the longest one call may hold an MCP slot) fail validation and name the key |
 | `max_lost_sequences` | integer | `1000` | Lost RTP sequence numbers retained per stream. This is the window the Packet Loss Map draws and the burst/gap analysis reasons over, so a 30-minute call losing 1 % shows only its last minute at the default. The burst/gap window widens with it. `--max-lost-sequences` overrides it. `0` fails validation and names the key |
 | `quality_interval_secs` | integer | `5` | Seconds between RTP quality snapshots, which is the resolution of the per-stream quality trend on `rtp_stats`, `GET /v1/streams/{id}`, the TUI and the browser analyzer. The shipped five seconds averages away any burst shorter than itself. The trend still covers an hour of call time whatever this is, so a one-second setting retains 3600 snapshots per stream rather than 720 — resolution costs memory, never history. `--quality-interval` overrides it. Anything outside 1-300 fails validation and names the key |
 | `max_groups` | integer | `100000` | Distinct `--group-by` keys one run retains, the same figure `dialog_limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete. `--max-groups` overrides it |
@@ -22783,13 +22790,14 @@ archive.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter` | string | A [filter DSL](filter-dsl.md) expression, the same vocabulary every other filtering tool takes. Unparseable fails with `invalid_params` before the sweep opens anything | Required |
-| `max_files` | u32? | Files to open before stopping. Clamped to `DEFAULT_MAX_FILES` (20); `0` means the default | 20 |
-| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to `DEFAULT_DEADLINE_MS` (30000); `0` means the default | 30000 |
+| `max_files` | u32? | Files to open before stopping. Clamped to the operator's `--mcp-sweep-max-files` (`[limits] mcp_sweep_max_files`, default 20); `0` means that ceiling | The ceiling |
+| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to the operator's `--mcp-sweep-deadline-ms` (`[limits] mcp_sweep_deadline_ms`, default 30000); `0` means that ceiling | The ceiling |
 
 ```jsonc
 // find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"" }
 {
   "schema_version": 1,
+  "limits": { "max_files": 20, "deadline_ms": 30000 },
   "sweep": {
     "matches": [
       { "filename": "rotated-03.pcap", "dialogs_matched": 1,
@@ -22820,6 +22828,32 @@ characters and keeps the first `MAX_REASON_CHARS` (200).
 **A match does not excuse an incomplete sweep either.** On a rotated spool a
 call that spans a rotation is in two files, so finding it in one says nothing
 about the other.
+
+`limits` is what this sweep ran under: the caller's `max_files` and
+`deadline_ms` after sipnab clamped them to the operator's ceilings.
+
+#### The ceilings are the operator's settings
+
+The operator sets both ceilings, and a caller can only ask for less:
+
+| Ceiling | Flag | Config key | Default | Accepted |
+|---|---|---|---|---|
+| Files per sweep | `--mcp-sweep-max-files` | `[limits] mcp_sweep_max_files` | 20 | 1 to 4294967295 |
+| Milliseconds per sweep | `--mcp-sweep-deadline-ms` | `[limits] mcp_sweep_deadline_ms` | 30000 | 1 to 3600000 |
+
+A spool that rotates forty files needs `--mcp-sweep-max-files 40` before one
+sweep can reach the oldest file. With the default, the sweep stops after 20
+files with `stopped_because: "max-files"` and `complete: false`. The flag
+overrides the key.
+
+The defaults are `DEFAULT_MCP_SWEEP_MAX_FILES` (20) and
+`DEFAULT_MCP_SWEEP_DEADLINE_MS` (30000), which `find_in_captures` reads as
+`DEFAULT_MAX_FILES` (20) and `DEFAULT_DEADLINE_MS` (30000). The maxima are
+`MAX_MCP_SWEEP_MAX_FILES` (4294967295), the largest value of the per-call
+`max_files`, a 32-bit unsigned integer, and `MAX_MCP_SWEEP_DEADLINE_MS`
+(3600000), one hour, the longest one call may hold a `--mcp-max-concurrent`
+slot. sipnab refuses `0` and any value above the maximum from the flag and
+from the key.
 
 #### Why two bounds and not one
 

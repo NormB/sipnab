@@ -416,6 +416,14 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("mcp-signing-key", Link::Secret),
     ("mcp-signing-key-file", Link::Pending),
     (
+        "mcp-sweep-deadline-ms",
+        Link::Key("limits", "mcp_sweep_deadline_ms", Merge::Override),
+    ),
+    (
+        "mcp-sweep-max-files",
+        Link::Key("limits", "mcp_sweep_max_files", Merge::Override),
+    ),
+    (
         "mcp-tls-cert",
         Link::Key("mcp", "tls_cert", Merge::Override),
     ),

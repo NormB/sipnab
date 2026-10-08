@@ -4778,7 +4778,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // separator rows per file: docs/config-reference.md 1 (`[vcon_forward]`),
     // docs/vcon.md 1 (the store kinds), and the same 1, 1 in their site
     // copies.
-    const EXPECTED_TABLES: usize = 1076;
+    // 1076 -> 1078: the `find_in_captures` ceilings table. Attributed by
+    // counting added separator rows per file: docs/mcp-tools.md 1, and the
+    // same 1 in its site copy website/content/docs/mcp-tools.md.
+    const EXPECTED_TABLES: usize = 1078;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
