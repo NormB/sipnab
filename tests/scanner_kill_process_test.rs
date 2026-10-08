@@ -420,6 +420,35 @@ fn the_ready_line_names_open_descriptors_and_environment_names_only() -> Result<
     if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
         command.env("LLVM_PROFILE_FILE", profile);
     }
+    use std::os::unix::process::CommandExt;
+    // The worker is started directly here, not through the run's spawn path,
+    // so it inherits whatever this test process holds without close-on-exec.
+    // On CI that included two descriptors (159 and 162) the harness left
+    // open, and the worker rightly reported them. The run's own spawn path
+    // closes them, and `a_real_run_answers_through_its_worker_and_survives_losing_it`
+    // tests that with stray descriptors 3 and 9; this test is about what the
+    // ready line reports, so it gives
+    // the worker a table of exactly stdio first.
+    //
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only `syscall(close_range)` and `fcntl`, which are async-signal-safe; it
+    // allocates nothing and touches no lock.
+    unsafe {
+        command.pre_exec(|| {
+            let swept = libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_uint,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) == 0;
+            if !swept {
+                for fd in 3..1024 {
+                    libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                }
+            }
+            Ok(())
+        });
+    }
     let output = command.output()?;
     assert_eq!(
         output.status.code(),
