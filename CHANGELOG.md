@@ -108,6 +108,12 @@ entry that carries them.
 
 ### Fixed
 
+- **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits
+  1.** A credential file named by the config key that sipnab could not read,
+  or that held no credential, stopped `--vcon-forward` with exit 2, while
+  every other refused config value exits 1. The exit code now follows the
+  setting that named the file, through the rule `settings::Origin` holds: the key
+  exits 1, and `--vcon-forward-auth-file` still exits 2.
 - **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture]
   node_name`.** sipnab accepted `--node-name ""` and then passed over it,
   so the run reported `[capture] node_name` from the config file, or the

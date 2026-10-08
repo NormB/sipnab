@@ -892,6 +892,9 @@ pub enum Credential {
         /// `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, for
         /// the messages.
         from: &'static str,
+        /// Where `from` was given, which sets the exit code when the file
+        /// is refused.
+        origin: crate::settings::Origin,
     },
 }
 
@@ -1151,11 +1154,17 @@ impl ForwardPlan {
     ///
     /// # Errors
     ///
-    /// The credential's file is refused or holds no credential.
-    pub fn into_settings(self) -> Result<(ForwardSettings, Duration), String> {
+    /// The credential's file is refused or holds no credential, with the
+    /// [`crate::settings::Origin`] of the setting that named the file:
+    /// `--vcon-forward-auth-file` or `[vcon_forward] auth_file`.
+    pub fn into_settings(
+        self,
+    ) -> Result<(ForwardSettings, Duration), (crate::settings::Origin, String)> {
         let auth = match self.credential {
             Credential::Header(h) => h,
-            Credential::File { path, from } => AuthHeader::read_file_for(&path, from, self.kind)?,
+            Credential::File { path, from, origin } => {
+                AuthHeader::read_file_for(&path, from, self.kind).map_err(|e| (origin, e))?
+            }
         };
         Ok((
             ForwardSettings {
@@ -1208,10 +1217,12 @@ fn credential(
         (None, Some(path), _) => Ok(Credential::File {
             path: path.clone(),
             from: AUTH_FLAG,
+            origin: crate::settings::Origin::CommandLine,
         }),
         (None, None, Some(path)) => Ok(Credential::File {
             path: path.clone(),
             from: AUTH_KEY,
+            origin: crate::settings::Origin::ConfigFile,
         }),
         (None, None, None) => Err(format!(
             "--vcon-forward needs a credential: give {AUTH_FLAG}, {AUTH_KEY} in the config file, \

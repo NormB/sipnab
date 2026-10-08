@@ -3912,9 +3912,11 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// # Returns
 ///
 /// `Some` exit code from [`crate::app::vcon_forward::run`]; the exit code of
-/// [`load_config`]'s refusal (1 for the file, 2 for a setting); `Some(2)` when
-/// the credential cannot be read or the `vcon` feature is not compiled in;
-/// `None` when `--vcon-forward` was not given.
+/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// credential's file cannot be read or holds no credential, 1 if
+/// `[vcon_forward] auth_file` named it and 2 if `--vcon-forward-auth-file`
+/// did ([`crate::settings::Origin`]); `Some(2)` when the `vcon` feature is
+/// not compiled in; `None` when `--vcon-forward` was not given.
 ///
 /// # Side effects
 ///
@@ -3949,9 +3951,9 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
                 interval,
                 &crate::signals::shutdown_requested,
             )),
-            Err(msg) => {
+            Err((origin, msg)) => {
                 tracing::error!("{msg}");
-                Some(2)
+                Some(origin.exit_code())
             }
         }
     }

@@ -1057,3 +1057,71 @@ fn empty_node_name_is_refused_on_both_surfaces() -> Result<(), TestError> {
     failures.extend(key_accepted("capture", "node_name", "\"sbc-edge-1\"")?);
     verdict(failures)
 }
+
+/// A `[vcon_forward] auth_file` the forwarder cannot read exited 2 when the
+/// forwarder started, while every other refused config value exits 1. The
+/// credential file is refused by where it was named, through
+/// `settings::Origin`: the key exits 1 naming `[vcon_forward] auth_file`, and
+/// `--vcon-forward-auth-file` exits 2 naming the flag. Both a file that does
+/// not exist and a file that holds no credential are refused this way.
+#[test]
+fn credential_file_refusal_exit_code_follows_where_it_was_named() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let spool = dir.path().join("spool");
+    std::fs::create_dir(&spool)?;
+    let spool = spool.display().to_string();
+    let missing = dir.path().join("missing-auth").display().to_string();
+    let blank_path = dir.path().join("blank-auth");
+    std::fs::write(&blank_path, "\n")?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&blank_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let blank = blank_path.display().to_string();
+    let url = "--vcon-forward-url=http://127.0.0.1:9/vcon";
+    let mut failures = Vec::new();
+    for file in [&missing, &blank] {
+        let from_key = format!("[vcon_forward]\nauth_file = \"{file}\"\n");
+        let from_flag = format!("--vcon-forward-auth-file={file}");
+        let cases: [(&str, Vec<&str>, i32, &str); 2] = [
+            (
+                &from_key,
+                vec!["--vcon-forward", &spool, "--vcon-forward-once", url],
+                1,
+                "[vcon_forward] auth_file",
+            ),
+            (
+                "",
+                vec![
+                    "--vcon-forward",
+                    &spool,
+                    "--vcon-forward-once",
+                    url,
+                    &from_flag,
+                ],
+                2,
+                "--vcon-forward-auth-file",
+            ),
+        ];
+        for (body, args, code, names) in cases {
+            let path = dir.path().join("sipnab.toml");
+            std::fs::write(&path, body)?;
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+                .args(&args)
+                .arg("-f")
+                .arg(&path)
+                .env("NO_COLOR", "1")
+                .env_remove("SIPNAB_CONFIG")
+                .env_remove("SIPNAB_VCON_FORWARD_AUTH")
+                .output()?;
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if out.status.code() != Some(code) || !stderr.contains(names) {
+                failures.push(format!(
+                    "{body:?} {args:?}: want exit {code} naming {names}, got {:?}: {stderr}",
+                    out.status.code()
+                ));
+            }
+        }
+    }
+    verdict(failures)
+}
