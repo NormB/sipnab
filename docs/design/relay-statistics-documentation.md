@@ -1,8 +1,8 @@
 # What the documentation and the site must teach (ST-S5)
 
-**Norm, 2026-09-12:** "the documentation and web site must be improved to
-highlight these capabilities and show the operator how to use them. the
-cookbook and examples must be improved specifically."
+**Requirement (Norm, 2026-09-12):** the documentation and the website highlight
+these capabilities and show the operator how to use them, and the cookbook and
+the examples in particular are improved.
 
 This gates ST-D1 (the cookbook) and ST-D2 (the site). It assumes the vocabulary
 in [`relay-statistics-vocabulary.md`](relay-statistics-vocabulary.md), the

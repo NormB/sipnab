@@ -6,9 +6,8 @@
 //! Written before the behavior exists. Until it did, an enabled
 //! `POST /v1/tfps/ban` ran `tfps_ctl` straight away: no record of it outlived
 //! the process, nothing limited how often, and an unban could lift any ban.
-//! Norm, 2026-09-28: "there must be security focused tests, rate limiting
-//! tests and rate limiting must be enabled, there must be recovery tests that
-//! can back out a bad or stale update".
+//! The requirement (Norm, 2026-09-28): security tests, rate limiting with its
+//! own tests, and recovery tests that back out a bad or stale update.
 //!
 //! Every refusal is checked for its effect: the fake `tfps_ctl` records each
 //! call, and a refused request must leave none.

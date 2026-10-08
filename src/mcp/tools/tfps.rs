@@ -955,8 +955,7 @@ mod tests {
 
     // ── actions are off unless enabled ────────────────────────────────
 
-    /// sipnab changes no external system by default. Norm, 2026-09-28:
-    /// "Default is secure, sipnab doesn't update external systems."
+    /// sipnab changes no external system by default (Norm, 2026-09-28).
     #[tokio::test]
     async fn by_default_ban_and_unban_refuse_and_tfps_ctl_never_runs() -> Result<(), TestError> {
         let fake = Fake::recording(line(BAN, 1)?)?;

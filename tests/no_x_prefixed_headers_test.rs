@@ -5,8 +5,8 @@
 //! [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648) section 3 tells creators
 //! of new parameters they "SHOULD NOT prefix their parameter names with 'X-'
 //! or similar constructs", because a name that starts life as a private
-//! experiment is the name everyone ends up depending on. Norm's instruction on
-//! 2026-09-22 was the same: "sipnab should not by default use x- headers".
+//! experiment is the name everyone ends up depending on. sipnab follows it and
+//! uses no `X-` header by default (Norm, 2026-09-22).
 //!
 //! # What this gate reads, and what it deliberately does not
 //!

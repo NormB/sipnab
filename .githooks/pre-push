@@ -318,12 +318,11 @@ fi
 #
 # Every combination ci.yml's Features job lists used to be rebuilt here, on
 # every push, as a hard gate. Since 2026-09-29 that job runs on the aarch64
-# self-hosted runners (Norm: "move the feature matrix to the local runners"),
-# which build all of it on the same machine within minutes of the push, so the
-# hook no longer repeats it. The break it catches only appears with a feature
-# OFF -- an item used solely under `#[cfg(feature = ...)]` without that gate
-# itself -- and the reduced-combo gate above still catches the commonest cases
-# before the push.
+# self-hosted runners (moved there by Norm), which build all of it on the same
+# machine within minutes of the push, so the hook no longer repeats it. The
+# break it catches only appears with a feature OFF -- an item used solely under
+# `#[cfg(feature = ...)]` without that gate itself -- and the reduced-combo gate
+# above still catches the commonest cases before the push.
 #
 # To see the whole matrix before pushing, run it by hand; it reads the combos
 # and CI's RUSTFLAGS from ci.yml, never a restated copy:

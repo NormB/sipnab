@@ -5,9 +5,7 @@
 //! reader goes looking for a section 7 on the page in front of them, in the
 //! RFC mentioned three paragraphs earlier, or in a design document the
 //! sentence never named -- and that search is worse than no reference at all,
-//! because it ends in a wrong answer as often as in none. Norm, 2026-09-18:
-//! *"references like this §7 in the documentation are worse than confusing
-//! because the user will attempt to locate what §7 means."*
+//! because it ends in a wrong answer as often as in none (Norm, 2026-09-18).
 //!
 //! So a reference names what it points at and links there: "[RFC 3261 section
 //! 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)", or a

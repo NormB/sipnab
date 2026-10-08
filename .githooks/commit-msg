@@ -3,7 +3,8 @@
 # A commit message is published the moment the commit is pushed, and it stays
 # in the history after any later fix. This refuses a message that names the
 # lab's development host, its machines, its DNS domain, its LAN or an account
-# path, using the same rules that scan the tracked files
+# path, or that credits an AI assistant as an author, using the same rules that
+# scan the tracked files
 # (tests/private_identity_test.rs), through scripts/check-message-identity.sh.
 
 set -e
