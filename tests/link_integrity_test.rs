@@ -1178,7 +1178,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // find_in_captures_status and cancel_find_in_captures sections.
     // 1326 -> 1327: docs/config-reference.md's Format section links the exit
     // status table in cli-reference.md.
-    const EXPECTED_WIKI_LINKS: usize = 1327;
+    // 1327 -> 1328: docs/internals/build-ci-release.md's commit-msg paragraph
+    // links CONTRIBUTING.md#git-hooks.
+    const EXPECTED_WIKI_LINKS: usize = 1328;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1310,7 +1312,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 115 -> 116: README.md's vCon bullet links docs/vcon-store.md.
     // 116 -> 135: README.md's "Add it to your voice stack" section links
     // the 19 guides the home page's voice-stack tiles link (4 + 3 + 4 + 4 + 2 + 2).
-    const EXPECTED_COMMUNITY_LINKS: usize = 135;
+    // 135 -> 136: CONTRIBUTING.md's commit-msg hook paragraph links its own
+    // "Never publish a machine, an account, or a network" section.
+    const EXPECTED_COMMUNITY_LINKS: usize = 136;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
