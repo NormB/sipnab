@@ -1702,8 +1702,8 @@ static SPECS: &[Spec] = &[
     (
         "node-name",
         Kind::Text {
-            accept: &["x", "0", "", " "],
-            reject: &[],
+            accept: &["x", "0", " "],
+            reject: &[("", 2)],
         },
         &[],
     ),

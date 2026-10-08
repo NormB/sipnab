@@ -974,13 +974,22 @@ pub struct CaptureConfig {
 impl CaptureConfig {
     /// Refuse a `snaplen` or `buffer` of 0, as `--snaplen` and `--buffer`
     /// do: a zero snapshot keeps no byte of any packet, and a zero buffer
-    /// asks the kernel for no ring.
+    /// asks the kernel for no ring. Refuse an empty `node_name`, as
+    /// `--node-name` does: an empty name names nothing, and it used to be
+    /// passed over for the hostname with nothing said.
     ///
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the key.
     pub fn validate(&self) -> Result<(), crate::Error> {
         refuse_zero("[capture] snaplen", self.snaplen)?;
-        refuse_zero("[capture] buffer", self.buffer)
+        refuse_zero("[capture] buffer", self.buffer)?;
+        if self.node_name.as_deref().is_some_and(str::is_empty) {
+            return Err(crate::Error::ConfigInvalid(
+                "[capture] node_name is empty; give a name, or remove the key for the hostname"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

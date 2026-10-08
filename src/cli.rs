@@ -2776,7 +2776,7 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "FILE",
-        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        value_parser = non_empty_text(),
         requires = "metrics"
     )]
     pub metrics_tls_cert: Option<String>,
@@ -2787,7 +2787,7 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "FILE",
-        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        value_parser = non_empty_text(),
         requires = "metrics"
     )]
     pub metrics_tls_key: Option<String>,
@@ -2852,7 +2852,7 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "FILE",
-        value_parser = clap::builder::NonEmptyStringValueParser::new()
+        value_parser = non_empty_text()
     )]
     pub api_tls_cert: Option<String>,
 
@@ -2862,7 +2862,7 @@ pub struct ListenerArgs {
         help_heading = "Network listeners",
         long,
         value_name = "FILE",
-        value_parser = clap::builder::NonEmptyStringValueParser::new()
+        value_parser = non_empty_text()
     )]
     pub api_tls_key: Option<String>,
 
@@ -3041,7 +3041,7 @@ pub struct McpArgs {
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-tls-cert",
         value_name = "FILE",
-        value_parser = clap::builder::NonEmptyStringValueParser::new()
+        value_parser = non_empty_text()
     )]
     pub mcp_tls_cert: Option<String>,
 
@@ -3051,7 +3051,7 @@ pub struct McpArgs {
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-tls-key",
         value_name = "FILE",
-        value_parser = clap::builder::NonEmptyStringValueParser::new()
+        value_parser = non_empty_text()
     )]
     pub mcp_tls_key: Option<String>,
 
@@ -3738,7 +3738,12 @@ pub struct McpArgs {
     /// NOTE: the default puts your hostname on the wire, which is usually
     /// wanted and occasionally not. Set this to override it. Clipped to 64
     /// characters.
-    #[arg(help_heading = "Output", long = "node-name", value_name = "NAME")]
+    #[arg(
+        help_heading = "Output",
+        long = "node-name",
+        value_name = "NAME",
+        value_parser = non_empty_text()
+    )]
     pub node_name: Option<String>,
 
     /// Permit the `save_findings` MCP tool to record an agent's conclusion.
@@ -6042,8 +6047,10 @@ impl Cli {
 
     /// The node name this run reports: `--node-name`, else `[capture]
     /// node_name`, each trimmed and clipped by
-    /// [`crate::provenance::clip_node_name`]; a value empty once trimmed
-    /// passes to the next source. `None` leaves the hostname.
+    /// [`crate::provenance::clip_node_name`]. An empty value never reaches
+    /// here: clap refuses `--node-name ""` and [`crate::config::Config`]
+    /// refuses `node_name = ""`. A value of only whitespace passes to the
+    /// next source. `None` leaves the hostname.
     #[must_use]
     pub fn node_name(&self, config: &crate::config::Config) -> Option<String> {
         [
@@ -7320,6 +7327,14 @@ pub fn resolve_named_secret(
             Ok(Some(trimmed.to_string()))
         }
     }
+}
+
+/// The rule for a text flag whose empty value would name nothing: clap
+/// refuses `""` at parse (exit 2), naming the flag. The listener TLS path
+/// flags and `--node-name` share it; each paired config key refuses `""` at
+/// load (exit 1).
+fn non_empty_text() -> clap::builder::NonEmptyStringValueParser {
+    clap::builder::NonEmptyStringValueParser::new()
 }
 
 /// `--vcon-forward-auth`: any value but an empty or blank one. A malformed

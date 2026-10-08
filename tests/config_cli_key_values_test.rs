@@ -184,8 +184,8 @@ static KEY_SPECS: &[KeySpec] = &[
         "capture",
         "node_name",
         KeyKind::Literal {
-            accept: &["\"x\"", "\"\"", "\" \"", "\"0\""],
-            reject: &[],
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
             ctx: "",
         },
     ),

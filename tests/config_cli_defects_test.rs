@@ -1021,3 +1021,39 @@ fn hep_keys_without_their_surface_warn_naming_the_key() -> Result<(), TestError>
     }
     verdict(failures)
 }
+
+/// `--node-name ""` was accepted and then passed over for `[capture]
+/// node_name`, so an operator who cleared the name on the command line got
+/// the config file's name with nothing said; `[capture] node_name = ""` was
+/// accepted and then ignored for the hostname. The flag is refused at parse
+/// (exit 2) by the non-empty rule the listener TLS path flags follow, and
+/// the key at load (exit 1), each naming itself.
+#[test]
+fn empty_node_name_is_refused_on_both_surfaces() -> Result<(), TestError> {
+    let mut failures = Vec::new();
+    failures.extend(flag_refused("node-name", ""));
+    failures.extend(flag_accepted("node-name", "sbc-edge-1"));
+    // The flag refused even when the file names the box, which is the case
+    // in which the empty flag used to fall through to the key.
+    let o = run_with_file(
+        &["--node-name="],
+        "[capture]\nnode_name = \"from-the-file\"\n",
+    )?;
+    let want = Refusal {
+        stage: Stage::Parse,
+        code: 2,
+        names: "--node-name",
+        not_names: None,
+    };
+    failures.extend(check_refusal("--node-name= with the key set", &o, &want));
+    let o = run_with_file(&[], "[capture]\nnode_name = \"\"\n")?;
+    let want = Refusal {
+        stage: Stage::Config,
+        code: 1,
+        names: "[capture] node_name",
+        not_names: Some("--node-name"),
+    };
+    failures.extend(check_refusal("[capture] node_name = \"\"", &o, &want));
+    failures.extend(key_accepted("capture", "node_name", "\"sbc-edge-1\"")?);
+    verdict(failures)
+}

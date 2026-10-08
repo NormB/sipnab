@@ -108,6 +108,13 @@ entry that carries them.
 
 ### Fixed
 
+- **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture]
+  node_name`.** sipnab accepted `--node-name ""` and then passed over it,
+  so the run reported `[capture] node_name` from the config file, or the
+  hostname, with nothing said; it passed over `node_name = ""` for the
+  hostname the same way. The flag exits 2 at parse, by the rule the listener TLS path
+  flags follow, and the key exits 1 when the file loads, each naming itself.
+  A value of only whitespace still passes to the next source.
 - **`--exec-rate-limit` and `--api-max-conn` say that `0` means no limit.**
   Neither the help text nor the reference row said so. The `--api-max-conn`
   text also said it bounds connections; it bounds requests handled at once,
