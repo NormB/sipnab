@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:383`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L383)), `capture_hep` ([`src/capture/hep.rs:2880`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2880)), the
+([`src/capture/file.rs:383`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L383)), `capture_hep` ([`src/capture/hep.rs:3068`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3068)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:631`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L631)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -256,17 +256,18 @@ compliant proxy keeps an unanswered INVITE transaction alive.
 
 **F4 — Clock disagreement.** A HEP v3 packet's timestamp comes from the
 *sender's* clock, read from the `TS_SEC`/`TS_USEC` chunks by `parse_hep_v3`
-([`src/capture/hep.rs:980`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L980) onward) and carried verbatim into `Packet::timestamp`
+([`src/capture/hep.rs:1060`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1060) onward) and carried verbatim into `Packet::timestamp`
 by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)). A live packet's timestamp comes
 from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:1276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1276)). Two
 clocks, no discipline between them. Every figure that subtracts a signaling time
 from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
-Two details soften this and one sharpens it. The HEP v2 header as `parse_hep_v2`
-([`src/capture/hep.rs:1327`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1327)) reads it has no time field, so the listener stamps local
+Two details soften this and one sharpens it. The HEP v1 header that `parse_hep_v12`
+([`src/capture/hep.rs:1400`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1400)) reads has no time field, so the listener stamps local
 receive time, and a v3 packet without a `TS_SEC` chunk is stamped the same way — a
-v2 mirror therefore has *one* clock, not two. And when the skew runs the wrong way,
+v1 mirror therefore has *one* clock, not two. A v2 packet carries the sender's time
+in its time header, as v3 does. And when the skew runs the wrong way,
 `elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)) refuses a backwards pair rather than
 publishing it, so the visible symptom is a *missing* duration, not a negative
 one. Its own rustdoc names the cause: *"a merge of files whose clocks
@@ -846,7 +847,7 @@ Things this design could not settle from the code alone.
   advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
   Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
-  ([`src/capture/hep.rs:886`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L886)) parses protocol type 5 as RTCP, and SRC1 says such a
+  ([`src/capture/hep.rs:908`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L908)) parses protocol type 5 as RTCP, and SRC1 says such a
   report has nothing to attach to. Whether it becomes attachable once the NIC
   supplies the stream depends on whether the HEP path reaches RTCP ingestion at
   all, which this design did not trace.

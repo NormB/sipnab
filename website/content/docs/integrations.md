@@ -6,7 +6,7 @@ description = "Forward captured traffic to HEP/Homer, run external commands on d
 
 ## Forward to Homer over HEP
 
-sipnab supports HEP v2/v3 (Homer Encapsulation Protocol, [specification](https://github.com/sipcapture/HEP)) for integration with Homer/SIPCAPTURE.
+sipnab receives HEP v1, v2 and v3 and sends HEP v3 (Homer Encapsulation Protocol, [specification](https://github.com/sipcapture/HEP)) for integration with Homer/SIPCAPTURE.
 
 ### Receiving HEP
 

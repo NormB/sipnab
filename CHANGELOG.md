@@ -8,6 +8,35 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP
+  v1.** The version 2 reader took the ports from bytes 2 to 5 and two IPv4
+  addresses from bytes 6 to 13. The header those bytes belong to is the
+  `struct hep_hdr` of `captagent`, sipcapture's capture agent, and Kamailio's
+  `sipcapture` module reads it the same way: bytes 2 and 3 hold the address
+  family and the IP protocol, bytes 4 to 7 the ports, and the addresses follow
+  from byte 8, 4 bytes each for IPv4 and 16 bytes each for IPv6. The reader
+  also started the payload at the header length byte, which does not count
+  the 12-byte time header a version 2 packet carries, so every message it
+  produced began with header bytes and did not parse as SIP. It assumed IPv4
+  and UDP and never read the time. sipnab now reads the family, the IP
+  protocol, IPv4 or IPv6 addresses, and, for version 2, the time (`tv_sec`
+  and `tv_usec`, little-endian, as Kamailio reads them) and the capture ID. A
+  version 2 message takes the time its packet carries; a version 1 message,
+  which carries none, takes the time sipnab received or sniffed it. The
+  transport comes from the IP protocol byte by the rule HEP v3 uses. The
+  header size follows from the family byte alone, as in Kamailio's receiver,
+  and sipnab does not read the header length byte, so it now accepts the HEP
+  v2 packets `sngrep` sends, which carry one byte of the total datagram length
+  there. sipnab refuses a packet whose family is neither IPv4 nor IPv6, or
+  that ends inside its addresses or time header, with a message that names
+  the field.
+  Affected: any sender configured for HEP version 1 or 2, read with
+  `--hep-listen` or `--hep-parse`. The change leaves HEP v3 as it was.
+
 ## [0.5.207] - 2026-10-08
 
 ### Added

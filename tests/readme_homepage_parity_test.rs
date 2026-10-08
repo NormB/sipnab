@@ -32,7 +32,7 @@ const CAPABILITIES: &[(&str, &str)] = &[
     ("WASM plugins", "--plugin"),
     ("eBPF TLS capture", "--uprobe-tls"),
     ("Export formats", "SIPp XML"),
-    ("HEP v2/v3", "HEP v2/v3"),
+    ("HEP v1/v2/v3", "HEP v1/v2/v3"),
     ("REST API", "REST API"),
     ("Prometheus metrics", "Prometheus"),
     ("MCP server", "MCP server"),

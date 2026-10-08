@@ -5051,10 +5051,11 @@ fn composite_filter_warning(
 /// post-dial delay against first RTP, ringback analysis, one-way-audio onset —
 /// inherits the offset.
 ///
-/// Two details soften this and one sharpens it. The HEP v2 header as
-/// `parse_hep_v2` reads it has no time field, so the listener stamps local
-/// receive time and a v2 mirror has ONE clock; a v3 packet without a
-/// `TS_SEC` chunk is stamped the same way. And when
+/// Two details soften this and one sharpens it. The HEP v1 header has no
+/// time field (`parse_hep_v12`), so the listener stamps local receive time
+/// and a v1 mirror has ONE clock; a v3 packet without a `TS_SEC` chunk is
+/// stamped the same way. A v2 packet carries the sender's time in its time
+/// header, as v3 does. And when
 /// the skew runs backwards, `sip::timing::elapsed_ms` refuses the pair rather
 /// than publishing it, so the visible symptom is a MISSING duration rather
 /// than a negative one. The sharpening detail is that a FORWARD skew has no
@@ -5097,8 +5098,8 @@ fn two_clocks_warning(source: Option<&CaptureSource>) -> Option<String> {
     }
     Some(format!(
         "this run reads timestamps from TWO clocks: {} is stamped by the \
-         remote HEP sender (HEP v3 carries the sender's own TS_SEC/TS_USEC; a \
-         v2 mirror carries none and is stamped locally, which is one clock), \
+         remote HEP sender (HEP v3 and v2 carry the sender's own time; a \
+         v1 mirror carries none and is stamped locally, which is one clock), \
          while {} is stamped by this host's kernel. Nothing disciplines them. \
          Any figure subtracting a signaling time from a media time — post-dial \
          delay against first RTP, ringback, one-way-audio onset — carries the \
@@ -8444,6 +8445,30 @@ mod tests {
             msg.contains("eth0") && msg.contains("127.0.0.1:19060"),
             "name BOTH members, so an operator reading a log knows which run \
              they are looking at: {msg}"
+        );
+        Ok(())
+    }
+
+    /// The warning names which HEP versions carry the sender's time: v3 and
+    /// v2 do (v2 in its `struct hep_timehdr`), v1 does not. It said a v2
+    /// mirror carries none, which was the parser's misreading of the v2
+    /// header, not the format.
+    #[test]
+    fn two_clocks_warning_names_the_hep_versions_that_carry_a_time() -> Result<(), TestError> {
+        let composite = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            hep_src("127.0.0.1:19060"),
+        ]);
+        let msg = two_clocks_warning(Some(&composite)).ok_or("two clocks")?;
+        assert!(
+            msg.contains("HEP v3 and v2 carry the sender's own time"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("a v1 mirror carries none and is stamped locally"),
+            "{msg}"
         );
         Ok(())
     }

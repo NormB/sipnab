@@ -247,7 +247,7 @@ Next: [REST API and metrics](docs/rest-api.md),
   JSON or a command of your own (`--alert`, `--alert-exec`). It can write
   fail2ban input (`--fail2ban`), and ask [TFPS](docs/tfps-sipnab.md) to ban a
   source, which is an action that stays off until `--allow-action` enables it
-- **HEP v3** send over UDP, TCP or TLS, and HEP v2/v3 receive
+- **HEP v3** send over UDP, TCP or TLS, and HEP v1/v2/v3 receive
 - **TLS and SRTP decryption.** From an SSLKEYLOGFILE (TLS 1.2 and 1.3), an RSA
   private key (`--tls-key`, TLS 1.2 RSA key exchange only), SRTP keys (the
   SDES `a=crypto` keys in the SDP, or a master-keys file with `--srtp-keys`),
@@ -337,7 +337,7 @@ starts fine on a host without libasound, and WAV export still works there.
 | `audio` | RTP audio playback in the TUI, through the lazily loaded `sipnab-audio` plugin, and WAV export | yes |
 | `metrics` | Standalone Prometheus metrics server (`--metrics`) | yes |
 | `tls` | TLS and DTLS decryption, SRTP key extraction | no |
-| `hep` | HEP v3 send, HEP v2/v3 receive | no |
+| `hep` | HEP v3 send, HEP v1/v2/v3 receive | no |
 | `api` | REST API and its Prometheus endpoint, over HTTP or HTTPS | no |
 | `mcp` | MCP server, stdio transport | no |
 | `mcp-http` | MCP server over HTTP (Streamable HTTP). Implies `mcp` and `api` | no |
