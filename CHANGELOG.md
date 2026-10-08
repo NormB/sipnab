@@ -8,6 +8,162 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+**Held:** the LINT8 test conversion is a branch of separate commits that lands on `main` as one squash-merged pull request; the release follows that merge.
+
+### Changed
+
+- **Unit tests under `src/` return `Result` and use `?` (LINT8).** The
+  `#[cfg(test)]` code no longer calls `.unwrap()`, `.expect(`, `.expect_err(`,
+  `.unwrap_err()` or `panic!(`; a failure returns an error that names what was
+  being done. The test names and count are unchanged. The calls that remain
+  are the ones whose panic is the behavior under test: the three crash-handler
+  probes in `src/crash.rs`, the panicking socket thread in
+  `src/capture/live.rs`, and the `#[should_panic]` power-of-two test in
+  `src/capture/uprobe/perf.rs`. No user-visible behavior changes.
+- **The hardcoded-material gate no longer reports a counter in a test that
+  returns `Result<(), _>`.** `tests/hardcoded_crypto_material_test.rs` treated
+  a function with a material word in its name and a return type as one that
+  returns material; a test returning `Result<(), TestError>` returns no value.
+  A function returning material inside a `Result` is still reported.
+
+## [0.5.206] - 2026-10-07
+
+### Security
+
+- **`--help` no longer prints secrets from the environment.** With
+  `SIPNAB_API_KEY`, `SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_SIGNING_KEY` or
+  `SIPNAB_HEP_AUTH` exported, `sipnab --help` printed the value beside the flag
+  (`[env: SIPNAB_HEP_AUTH=<value>]`). Help now names the variable only.
+  `tests/help_env_values_test.rs` reads every environment-backed flag from the
+  parser, so a flag added later is held to the same rule.
+- **`--run-provenance-file` no longer records secrets.** The record held the
+  command line as given, so `--hep-auth <key>`, `--api-key=<key>` and the other
+  flags that take a secret inline wrote that secret to the file. Their values
+  are now recorded as `[redacted]`. `cli::SECRET_FLAGS` lists those flags, and
+  `tests/secret_flags_test.rs` fails when a flag read from an environment
+  variable, or one whose value is named as a key, token, password, header or
+  `user:pass`, is missing from it.
+- **sipnab no longer echoes or records the user name and password in a URL.**
+  sipnab refused `--vcon-forward-url https://user:pass@host/` with a message
+  that quoted the whole URL, password included, and the run provenance record
+  kept any URL argument as given. Every refusal of a forwarder URL, and every
+  URL argument in the provenance record (`--flag value` and `--flag=value`),
+  now shows the user name and password as `[redacted]`. Both use one
+  function, `run_provenance::redact_url_userinfo`.
+
+### Added
+
+- **The vCon forwarder takes its settings from `sipnab.toml`.** A
+  `[vcon_forward]` section has a key for each forwarder flag that is not
+  per-run: `kind`, `url`, `replace_url`, `auth_file`, `ca`, `done`, `failed`,
+  `interval`, `timeout`, `compat`, `backoff_first`, `backoff_cap`,
+  `max_response_head` and `max_error_body`. A flag overrides its key, each key
+  is checked by the rule its flag follows, and `--dump-config` shows them.
+  `--vcon-forward` no longer requires `--vcon-forward-url` and
+  `--vcon-forward-auth-file` on the command line; without a URL or a credential
+  from either source, sipnab refuses the run with exit 2, naming the flag and
+  the key.
+- **`--vcon-forward-kind` (`generic`, `vcon-store`, `conserver`) and
+  `[vcon_forward] kind`.** A kind supplies what that store needs, as measured on
+  2026-10-07: the ingest path for a base URL (`/v1/vcons` for vcon.store,
+  `/vcon/external-ingress?ingress_list=sipnab` for a conserver), the header
+  for a bare key (`Authorization: Bearer <key>`, `x-conserver-api-token:
+  <key>`), and the payload adaptation (`vcon-store` sends `extensions` as an
+  object). An explicit URL path, a full header line or `--vcon-forward-compat`
+  overrides each. `generic`, the default, supplies nothing, as before.
+  `--vcon-forward-compat vcon-store` keeps its meaning, and takes `none` to turn
+  a kind's adaptation off. `docs/vcon.md` shows how to chain two forwarders to
+  deliver to two stores.
+- **The forwarder's credential from the environment.** `SIPNAB_VCON_FORWARD_AUTH`
+  (or `--vcon-forward-auth`, whose value the process list shows) holds what
+  the auth file holds. It is refused when empty and beside
+  `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, `--help` does not
+  show its value, and it is removed from every log line, failure record and
+  stop reason the way the file's value is.
+- **The forwarder's fixed numbers are settings.** `--vcon-forward-backoff-first`
+  (default 2 s) and `--vcon-forward-backoff-cap` (default 300 s) space the
+  retries, and refuse 0 and a first delay longer than the cap;
+  `--vcon-forward-max-response-head` (default 65536 bytes) and
+  `--vcon-forward-max-error-body` (default 8192 bytes) bound what is read of a
+  store's answer and kept of a refusal, and refuse 0. The defaults are the
+  former constants. The constants that remain each state why they are not
+  settings.
+
+### Changed
+
+- **Values that did nothing, or did the wrong thing, are refused at startup.**
+  A program that tries every flag and every `sipnab.toml` key with accepted,
+  boundary and refused values (`tests/config_cli_flag_values_test.rs`,
+  `tests/config_cli_key_values_test.rs`) found each of these; each has a test in
+  `tests/config_cli_defects_test.rs`. A command line or config file that used
+  one of them now stops with an error naming the flag or key.
+  - `--kill-ua ""` matched every User-Agent, so every caller counted as a
+    scanner, and on a live capture that armed the kill response. An empty or
+    invalid pattern is refused; the flag and the detector share one compile rule.
+  - `--pdd-threshold`, `--ack-timeout`, `--no-final-response-timeout`,
+    `--duration-asymmetry-pct`, `--duration-asymmetry-secs` and
+    `--late-media-ms` accepted 0, negative, NaN and infinite values, and
+    percentages over 100, which their keys refuse.
+  - `--mcp-max-rows`, `--max-streams` and `--max-reassembly` accepted 0.
+  - `--count 0` read no packet and `--limitlen 0` parsed no byte, each exiting
+    0; `--duration 0` (also `0s`, `0m`, `0h`) stopped a live capture before its
+    first packet and exited 0; `--cores 0` ran as `--cores 1`.
+  - `--alert` with an unknown channel was a warning; it is refused.
+  - A fraud destination the dial plan never labels (`US`, which the plan labels
+    `NANP`, `USA`, `XX`) was accepted and matched nothing, on both surfaces.
+  - A negative or non-finite declared one-way delay was dropped from the MOS
+    calculation without a message.
+  - MOS boundaries above 5 and loss boundaries above 100 were accepted.
+  - `[display] color` accepted any value and ran as `auto`.
+  - `[limits] api_rate_limit_per_peer` above 4,294,967,295 was clamped; the
+    `--api-rate-limit-per-peer` flag refuses it.
+  - An empty `[journal] dir`, `[tfps] ctl`, `[tfps] db`, `[hep] tls_*` or
+    `[crash] report_dir` was accepted.
+  - Invalid `[theme]` and `[keybindings]` values, `[display] from_to`,
+    `[display] visible_columns` and `[names.manual]` entries were dropped with a
+    warning the TUI screen hid. An unreadable `--names` file was a warning and an
+    unreadable `[names] hosts_file` was skipped without one.
+
+### Fixed
+
+- **`-E` times each message by the HEP packet's own timestamp.** It kept the
+  time the HEP datagram was sniffed, so every message in a feed got the
+  sniffer's clock: a 60 s call relayed or replayed as HEP showed as seven
+  messages in the same millisecond. `--hep-listen` already used the HEP
+  timestamp; both now follow one rule. Found from Giovanni Maruzzelli's
+  ([@gmaruzz](https://github.com/gmaruzz)) retest of the loopback HEP setup in
+  [#343](https://github.com/NormB/sipnab/issues/343), which also showed that a
+  HEP port with no listener loses messages (see `[capture]` in the
+  configuration reference).
+- **Refusals name the setting the user wrote.** Quality band flags were refused
+  naming `[quality]` keys; `--business-hours` naming `[security]
+  business_hours`; an empty `--hep-auth` or `--metrics-auth` naming the
+  `--*-file` flag; `--uprobe-tls` naming a flag that was not given; and
+  `[capture] portrange` naming `--portrange`. Refusals for `-I`,
+  `--input-name`, `--bpf-file`, `--alert`, `--uprobe-library` and `[filter]
+  expression` did not name the setting at all.
+- A malformed `--ws-portrange` exits 2, as `--portrange` does, instead of 1.
+- The `exec_queue_depth` refusal message no longer contains runs of spaces.
+- `--vcon-forward-once --help` names exit `3`, which a `401` or `403` from the
+  store already produced. The man page describes `--vcon-forward-kind`,
+  `--vcon-forward-auth`, `SIPNAB_VCON_FORWARD_AUTH`, the back-off and size
+  flags, `[vcon_forward]` and every forwarder exit status, and lists exit `3`.
+- The command reference and configuration reference state the range each
+  setting accepts, for every value listed under Changed above.
+- **Captures read through MCP and REST apply the run's options.** MCP
+  `open_capture` and `compare_captures`, and REST `GET /v1/captures/compare`,
+  read capture files with the pipeline defaults, so `-E` / `--hep-parse`
+  (and `[capture] hep_parse`) did not apply there: a HEP copy that
+  `-I file -E` decoded showed no SIP when opened through a server. The
+  servers now read every capture file with the run's options, built by the
+  same function the packet loop and the TUI use: `--hep-parse`, `--no-rtp`,
+  `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse`. MCP
+  `find_in_captures` reads with them too. A file opened through a server still
+  reads SIP on every port, as the TUI's own file open does: `--portrange` does
+  not apply there.
+
 ## [0.5.205] - 2026-10-07
 
 ### Added
@@ -43,6 +199,24 @@ entry that carries them.
   `--redact` rather than rewritten. The container on disk never changes, and each change is
   logged. [Send sipnab's vCons to vcon.store](docs/vcon-store.md) has the
   measurements.
+- **sipnab.com publishes the `contrib/` index (SITE-CONTRIB).** `/docs/contrib/`
+  is generated from `contrib/README.md` by `scripts/build-site-pages.py` and is
+  listed in the docs navigation, `llms.txt` and `llms-full.txt`. The generator
+- **sipnab.com publishes the contributor guide and the `contrib/` index
+  (SITE-CONTRIB).** `/docs/contributing/` is generated from `CONTRIBUTING.md`
+  and `/docs/contrib/` from `contrib/README.md` by
+  `scripts/build-site-pages.py`, and both are listed in the docs navigation,
+  `llms.txt` and `llms-full.txt`. The guide's private-identity examples are
+  now invented (`buildbox-7`, `sbc-east-2`, `192.0.2.40`) rather than lab
+  names, which `private_identity_test` bans from every site page, and
+  `b10_the_guide_names_the_role_alternative` requires the invented name. The generator
+  now resolves a page's relative links from that page's own directory rather
+  than from `docs/`, and rewrites links to repo files that are neither pages
+  nor code to GitHub URLs. `contributor_docs_are_generated_site_pages` requires
+  both pages, their generated banners, and links that resolve;
+  `site_pages_mirror_is_current` holds them equal to their sources. The
+  `contrib/README.md` link to the MCP walkthrough, renamed earlier to
+  `docs/mcp-deploy.md`, now points at that page.
 
 - **The call report and the vCon carry MOS (CMP6).** Wherever a stream's MOS
   is computed from the capture, it is now reported. The call report's text

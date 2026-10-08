@@ -452,7 +452,7 @@ const RUN_BUDGET: Duration = Duration::from_secs(2);
 /// `posix_spawn` makes the children that hit this in practice. Without a copy
 /// of the address space they come about fifty times as often as `fork`
 /// children did (12,000 to 16,000 a second against about 270, measured on
-/// thor-02);
+/// the aarch64 development host);
 /// forked probes missed that mutant in 2 runs of 5, these caught it in 20 of
 /// 20. Linux only: `clone` and `/proc/self/fd`.
 #[cfg(target_os = "linux")]

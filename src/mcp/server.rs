@@ -151,6 +151,11 @@ pub struct SipnabMcp {
     allow_shutdown: bool,
     /// Whether `open_capture` may replace the loaded capture.
     allow_open_capture: bool,
+    /// The run's pipeline options, which every capture file this server reads
+    /// is classified with: `open_capture`, `compare_captures` and
+    /// `find_in_captures`. The default (no `--hep-parse`, no port gate) is a
+    /// server built without a run, as in a test.
+    pub(crate) pipeline_options: crate::pipeline::PipelineOptions,
     /// The archive passwords the OPERATOR configured when starting sipnab,
     /// for `open_capture` to try on an encrypted archive. MCP takes no
     /// password from a tool call; this is the only way one reaches it.
@@ -356,6 +361,7 @@ impl SipnabMcp {
             protected_inputs: Default::default(),
             allow_shutdown: false,
             allow_open_capture: false,
+            pipeline_options: crate::pipeline::PipelineOptions::default(),
             #[cfg(feature = "archive")]
             archive_candidates: Arc::new(crate::capture::archive::password::run_candidates()),
             relay_query: None,
@@ -828,6 +834,19 @@ impl SipnabMcp {
     /// Permit `open_capture` to replace the capture this server holds.
     pub fn with_open_capture(mut self) -> Self {
         self.allow_open_capture = true;
+        self
+    }
+
+    /// Read every capture file with the run's pipeline options.
+    ///
+    /// `open_capture`, `compare_captures` and `find_in_captures` read a file
+    /// with these, so the file reads as it does given to `-I` on the same
+    /// command line: `--hep-parse` unwraps a HEP copy, `--portrange` gates its
+    /// signaling, and `--no-rtp`, `--no-dialog`, `--rtpproxy-control` and
+    /// `--quiet-bad-parse` apply.
+    #[must_use]
+    pub fn with_pipeline_options(mut self, options: crate::pipeline::PipelineOptions) -> Self {
+        self.pipeline_options = options;
         self
     }
 
@@ -7549,6 +7568,7 @@ impl SipnabMcp {
 
             if let Err((_, e)) = crate::mcp::load::read_into_stores(
                 &path,
+                &self.pipeline_options,
                 &scratch_dialogs,
                 &scratch_streams,
                 &progress,
@@ -7878,7 +7898,10 @@ impl SipnabMcp {
             };
 
             let load = super::load::spawn(
-                path.clone(),
+                super::load::LoadSource {
+                    path: path.clone(),
+                    options: self.pipeline_options,
+                },
                 &params.filename,
                 &instance,
                 Arc::clone(&self.dialog_store),
@@ -17816,6 +17839,154 @@ mod archive_password_tests {
         assert_eq!(entry["filename"], "evidence.zip");
         assert_eq!(entry["encrypted"], true, "{v}");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+}
+
+/// The run's pipeline options reach every capture file this server reads.
+///
+/// `open_capture` used to read with the defaults, so `-E` / `--hep-parse` and
+/// `--portrange` applied to `-I` and not to the same file opened here.
+#[cfg(test)]
+mod run_options_tests {
+    use super::*;
+    use rmcp::handler::server::tool::Extension;
+    use rmcp::handler::server::wrapper::Parameters;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A server over empty stores that may open captures in `root`, reading
+    /// them with `options`.
+    fn server_reading_with(
+        root: &std::path::Path,
+        options: crate::pipeline::PipelineOptions,
+    ) -> SipnabMcp {
+        SipnabMcp::new(
+            Arc::new(RwLock::new(DialogStore::new(100, false))),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        )
+        .with_source_exhausted(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+        .with_open_capture()
+        .with_file_root(root)
+        .with_pipeline_options(options)
+    }
+
+    /// The JSON payload of a tool result, the block that is not the
+    /// provenance note.
+    fn payload(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
+        let note = crate::mcp::shape::untrusted_note();
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .find(|t| *t != note)
+            .ok_or("the result carries no payload block")?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Open `filename` through `open_capture` and wait for the load to finish.
+    async fn open_and_load(server: &SipnabMcp, filename: &str) -> Result<(), TestError> {
+        server
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: filename.into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
+            .await
+            .map_err(|e| format!("open_capture refused: {e:?}"))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let status = server
+                .capture_status()
+                .await
+                .map_err(|e| format!("capture_status failed: {e:?}"))?;
+            let v = payload(&status)?;
+            if v["load"]["done"] == true {
+                if !v["load"]["error"].is_null() {
+                    return Err(format!("the load failed: {v}").into());
+                }
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("the load never finished: {v}").into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// With the run's `--hep-parse`, `open_capture` reads a HEP copy as the SIP
+    /// inside it, with the inner addresses; without it the file holds no SIP.
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn open_capture_reads_a_hep_copy_with_the_runs_hep_parse() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        let hep_time = chrono::DateTime::from_timestamp(1_718_000_000, 0).ok_or("a time")?;
+        std::fs::write(
+            root.path().join("hep.pcap"),
+            crate::test_utils::hep_invite_pcap("mcp-open-hep@x", hep_time),
+        )?;
+
+        let on = server_reading_with(
+            root.path(),
+            crate::pipeline::PipelineOptions {
+                hep_parse: true,
+                ..Default::default()
+            },
+        );
+        open_and_load(&on, "hep.pcap").await?;
+        {
+            let store = on.dialog_store.read();
+            let dialog = store
+                .get("mcp-open-hep@x")
+                .ok_or("with the run's --hep-parse the HEP copy must load as a dialog")?;
+            assert_eq!(dialog.src_addr, std::net::IpAddr::from([10, 1, 0, 1]));
+            assert_eq!(dialog.dst_addr, std::net::IpAddr::from([10, 2, 0, 1]));
+            assert_eq!(dialog.created_at, hep_time, "the HEP header's time");
+        }
+
+        let off = server_reading_with(root.path(), crate::pipeline::PipelineOptions::default());
+        open_and_load(&off, "hep.pcap").await?;
+        assert!(
+            off.dialog_store.read().is_empty(),
+            "without --hep-parse the HEP payload stays opaque"
+        );
+        Ok(())
+    }
+
+    /// The run's `--portrange` reaches `open_capture` as it reaches `-I`: a
+    /// range that excludes the call's signaling port drops the call.
+    #[tokio::test]
+    #[serial_test::serial(portrange_skips)]
+    async fn open_capture_applies_the_runs_port_range() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+            root.path().join("call.pcap"),
+        )?;
+
+        let open = server_reading_with(root.path(), crate::pipeline::PipelineOptions::default());
+        open_and_load(&open, "call.pcap").await?;
+        assert!(
+            !open.dialog_store.read().is_empty(),
+            "ungated, the fixture's call loads"
+        );
+
+        let gated = server_reading_with(
+            root.path(),
+            crate::pipeline::PipelineOptions {
+                sip_portrange: Some((5999, 5999)),
+                ..Default::default()
+            },
+        );
+        open_and_load(&gated, "call.pcap").await?;
+        assert!(
+            gated.dialog_store.read().is_empty(),
+            "a --portrange that excludes 5060 must drop the call on open_capture, as on -I"
+        );
+        crate::pipeline::reset_portrange_skips();
         Ok(())
     }
 }

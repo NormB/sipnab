@@ -100,14 +100,28 @@ impl CaptureLoad {
     }
 }
 
-/// Start reading `path` into the stores on a background thread.
+/// The capture file a load reads, and the pipeline options it reads it with.
+///
+/// A pair because the two travel together: the options are the run's (its
+/// `--hep-parse`, `--portrange`, `--no-rtp`, `--no-dialog`,
+/// `--rtpproxy-control` and `--quiet-bad-parse`), and a capture opened without
+/// them reads differently from the same file given to `-I`.
+pub struct LoadSource {
+    /// The capture file, already resolved inside the file root.
+    pub path: PathBuf,
+    /// The options every packet of the file is classified with.
+    pub options: crate::pipeline::PipelineOptions,
+}
+
+/// Start reading `source.path` into the stores on a background thread.
 ///
 /// The caller has already rotated the capture identity and cleared the stores
 /// under its own lock; this function only fills them.
 ///
 /// # Arguments
 ///
-/// * `path` — the capture file, already resolved inside the file root.
+/// * `source` — the capture file, already resolved inside the file root, and
+///   the run's pipeline options it is read with.
 /// * `filename` — the bare name the caller asked for, for progress reports.
 /// * `instance` — the capture-instance id this load belongs to.
 /// * `dialog_store` / `stream_store` — the same shared stores every reader
@@ -133,7 +147,7 @@ impl CaptureLoad {
 /// Spawns a detached OS thread named `mcp-pcap-load` which writes both stores,
 /// updates the progress counter, and sets `source_exhausted` when it stops.
 pub fn spawn(
-    path: PathBuf,
+    source: LoadSource,
     filename: &str,
     instance: &str,
     dialog_store: Arc<RwLock<DialogStore>>,
@@ -154,7 +168,16 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("mcp-pcap-load".to_string())
         .spawn(move || {
-            let read = || read_into_stores(&path, &dialog_store, &stream_store, &worker.packets);
+            let LoadSource { path, options } = source;
+            let read = || {
+                read_into_stores(
+                    &path,
+                    &options,
+                    &dialog_store,
+                    &stream_store,
+                    &worker.packets,
+                )
+            };
             // The operator's passwords, on this thread alone, for this load.
             #[cfg(feature = "archive")]
             let (result, locked) = {
@@ -210,7 +233,8 @@ pub fn archive_note(locked: u64) -> Option<String> {
     })
 }
 
-/// Read every packet of `path` into the two stores, tracking completeness.
+/// Read every packet of `path` into the two stores with `opts`, the run's
+/// pipeline options, tracking completeness.
 ///
 /// A thin wrapper over [`crate::capture::replay::read_into_stores`], the shared
 /// non-mcp reader. This layer adds the one thing that reader deliberately does
@@ -230,12 +254,13 @@ pub fn archive_note(locked: u64) -> Option<String> {
 /// open reports zero and the reason.
 pub(crate) fn read_into_stores(
     path: &Path,
+    opts: &crate::pipeline::PipelineOptions,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
 ) -> Result<u64, (u64, String)> {
     let outcome =
-        crate::capture::replay::read_into_stores(path, dialog_store, stream_store, progress);
+        crate::capture::replay::read_into_stores(path, opts, dialog_store, stream_store, progress);
     if outcome.stopped_early {
         super::completeness::note_source_stopped_early();
     }
@@ -263,7 +288,10 @@ mod tests {
             .join("tests/pcap-samples/sip-rtp-g711.pcap");
 
         let load = spawn(
-            path,
+            LoadSource {
+                path,
+                options: crate::pipeline::PipelineOptions::default(),
+            },
             "sip-rtp-g711.pcap",
             "test-instance",
             Arc::clone(&dialog_store),
@@ -309,7 +337,10 @@ mod tests {
         let dialog_store = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let stream_store = Arc::new(RwLock::new(StreamStore::new(1000)));
         let load = spawn(
-            std::path::PathBuf::from("/nonexistent/sipnab-open-capture-test.pcap"),
+            LoadSource {
+                path: std::path::PathBuf::from("/nonexistent/sipnab-open-capture-test.pcap"),
+                options: crate::pipeline::PipelineOptions::default(),
+            },
             "sipnab-open-capture-test.pcap",
             "test-instance",
             dialog_store,

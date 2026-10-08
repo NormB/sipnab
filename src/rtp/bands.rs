@@ -24,6 +24,10 @@
 //! MEDIA, not about rendering: the same question a report, an alert or an
 //! export answers when it calls a stream bad. `tui/` decides the color.
 
+/// The top of the MOS scale (ITU-T P.800: 1 bad to 5 excellent). A MOS band
+/// boundary above it names a band no score can reach.
+pub const MOS_SCALE_MAX: f64 = 5.0;
+
 /// Where "good" becomes "warning", and "warning" becomes "bad".
 ///
 /// One value per boundary, named for the thing it bounds. Defaults are the
@@ -171,6 +175,25 @@ impl QualityBands {
                     "{key} ({value}) must be a finite number of 0 or more; a \
                      boundary that is not compares false against every \
                      measurement and paints the column green"
+                ));
+            }
+        }
+        for (key, value) in [("mos_warn", self.mos_warn), ("mos_bad", self.mos_bad)] {
+            if value > MOS_SCALE_MAX {
+                return Err(format!(
+                    "{key} ({value}) is above {MOS_SCALE_MAX}, the top of the MOS \
+                     scale, so no score could ever reach that band"
+                ));
+            }
+        }
+        for (key, value) in [
+            ("loss_warn_pct", self.loss_warn_pct),
+            ("loss_bad_pct", self.loss_bad_pct),
+        ] {
+            if value > 100.0 {
+                return Err(format!(
+                    "{key} ({value}) is above 100 %, so no loss could ever reach \
+                     that band"
                 ));
             }
         }

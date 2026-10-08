@@ -120,6 +120,17 @@ pub struct Selection {
     /// question. Carried on Selection for the same reason `mcp_row_cap` is —
     /// this struct is where per-run decisions about the servers already live.
     pub armed_detections: Vec<&'static str>,
+    /// The run's pipeline options, built by the caller with
+    /// [`crate::app::pipeline_options`] from the same command line and config
+    /// the run's own packet loop uses.
+    ///
+    /// Both doors read capture files with them: MCP `open_capture`,
+    /// `compare_captures` and `find_in_captures`, and REST
+    /// `GET /v1/captures/compare`. Without them those files were read with
+    /// the defaults, so `--hep-parse`, `--portrange`, `--no-rtp`,
+    /// `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse` applied to
+    /// `-I` and not to the same file opened through a server.
+    pub pipeline_options: crate::pipeline::PipelineOptions,
 }
 
 /// Handles to the running servers thread.
@@ -636,6 +647,7 @@ pub fn start_servers(
                 .api_file_root
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
                 #[cfg(feature = "archive")]
@@ -727,7 +739,8 @@ pub fn start_servers(
                 )
                 .with_body_cap(selection.mcp_body_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)
-                .with_findings_cap(selection.mcp_max_findings);
+                .with_findings_cap(selection.mcp_max_findings)
+                .with_pipeline_options(selection.pipeline_options);
             let s = match audit_sink.as_ref() {
                 Some(sink) => s.with_audit_sink(Arc::clone(sink)),
                 None => s,
@@ -1052,6 +1065,7 @@ mod tests {
             mcp: false,
             metrics: false,
             armed_detections: Vec::new(),
+            pipeline_options: Default::default(),
         }
     }
 

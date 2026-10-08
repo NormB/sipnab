@@ -25,8 +25,10 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use sipnab::app::vcon_forward::{
-    AuthHeader, Compat, Endpoint, ForwardSettings, Forwarder, MAX_ERROR_BODY, backoff_delay,
+    AuthHeader, BackoffPolicy, Compat, Endpoint, ForwardSettings, Forwarder, ReadLimits, StoreKind,
+    backoff_delay,
 };
+use sipnab::config::{FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_MAX_ERROR_BODY};
 
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
@@ -66,6 +68,8 @@ enum Reply {
     Status(u16, String),
     /// Read the request and say nothing, for this long.
     Silence(Duration),
+    /// Answer with these bytes exactly: status line, headers and body.
+    Raw(String),
 }
 
 /// The script: the request and its 0-based index in, the reply out.
@@ -204,6 +208,10 @@ fn exchange(
             stream.flush()?;
         }
         Reply::Silence(d) => std::thread::sleep(d),
+        Reply::Raw(text) => {
+            stream.write_all(text.as_bytes())?;
+            stream.flush()?;
+        }
     }
     Ok(())
 }
@@ -248,6 +256,9 @@ impl Rig {
             timeout: Duration::from_secs(5),
             compat: Compat::Off,
             ca: None,
+            kind: StoreKind::Generic,
+            backoff: BackoffPolicy::default(),
+            limits: ReadLimits::default(),
         };
         Ok(Self { dir, settings })
     }
@@ -392,11 +403,16 @@ fn a_5xx_keeps_the_file_backs_off_and_does_not_wedge_the_next() -> Result<(), Te
     assert!(rig.spool().join("a.vcon.json").exists());
     assert_eq!(store.requests().len(), 2);
 
-    let early = fwd.pass(t0 + backoff_delay(1) / 2, &never);
+    let delay = backoff_delay(
+        1,
+        FORWARD_BACKOFF_FIRST.default,
+        FORWARD_BACKOFF_CAP.default,
+    );
+    let early = fwd.pass(t0 + delay / 2, &never);
     assert_eq!(store.requests().len(), 2, "retried before its delay");
     assert_eq!(early.waiting, ["a.vcon.json"]);
 
-    fwd.pass(t0 + backoff_delay(1) + Duration::from_millis(1), &never);
+    fwd.pass(t0 + delay + Duration::from_millis(1), &never);
     assert_eq!(store.requests().len(), 3, "not retried after its delay");
     Ok(())
 }
@@ -467,7 +483,8 @@ fn a_4xx_moves_to_failed_with_a_bounded_record_and_no_secret() -> Result<(), Tes
     assert_eq!(record["status"], 400);
     let body = record["body"].as_str().ok_or("no body")?;
     assert!(body.starts_with("bad vCon"), "{body}");
-    assert!(body.len() <= MAX_ERROR_BODY, "{} bytes", body.len());
+    let most = usize::try_from(FORWARD_MAX_ERROR_BODY.default)?;
+    assert!(body.len() <= most, "{} bytes", body.len());
     assert_eq!(record["body_truncated"], true);
     Ok(())
 }
@@ -914,10 +931,20 @@ fn a_replace_url_without_a_uuid_is_refused() -> Result<(), TestError> {
 
 /// Run `sipnab` with `args` at trace level, returning (stdout, stderr, code).
 fn sipnab(args: &[&str]) -> Result<(String, String, Option<i32>), TestError> {
+    sipnab_env(args, &[])
+}
+
+/// [`sipnab`], with `env` added to the environment.
+fn sipnab_env(
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<(String, String, Option<i32>), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("SIPNAB_LOG", "trace")
         .env("NO_COLOR", "1")
+        .env_remove(CREDENTIAL_ENV)
+        .envs(env.iter().copied())
         .output()?;
     Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -936,8 +963,13 @@ fn forward_args(rig: &Rig, url: &str) -> Vec<String> {
         "--vcon-forward-auth-file".into(),
         rig.auth_file().display().to_string(),
         "--vcon-forward-once".into(),
+        // No config file on the host running the tests is read.
+        "--no-config".into(),
     ]
 }
+
+/// The environment variable that carries the credential in place of a file.
+const CREDENTIAL_ENV: &str = "SIPNAB_VCON_FORWARD_AUTH";
 
 /// `--vcon-forward-once` exits 0 when everything was delivered and 1 when a
 /// container was refused, logs one line naming the refused file and its
@@ -1275,5 +1307,613 @@ fn the_binary_refuses_a_forwarder_with_a_capture_flag() -> Result<(), TestError>
     let (_, err, code) = sipnab(&argv)?;
     assert_eq!(code, Some(2), "{err}");
     assert!(err.contains("cannot be used with"), "{err}");
+    Ok(())
+}
+
+// ── The credential from the environment ─────────────────────────────────
+
+/// The forwarder flags for `rig` and `url` with no credential flag: the
+/// credential comes from the environment.
+fn env_forward_args(rig: &Rig, url: &str) -> Vec<String> {
+    let mut args = forward_args(rig, url);
+    let at = args
+        .iter()
+        .position(|a| a == "--vcon-forward-auth-file")
+        .unwrap_or(args.len());
+    args.drain(at..(at + 2).min(args.len()));
+    args
+}
+
+/// `SIPNAB_VCON_FORWARD_AUTH` holds what the auth file holds, one
+/// `Header-Name: value` line, and the forwarder sends it as that header. The
+/// value appears in no output and no failure record, even when the store
+/// echoes the request back in a refusal.
+#[test]
+fn the_credential_can_come_from_the_environment() -> Result<(), TestError> {
+    let store = FakeStore::start(|req, _| {
+        if String::from_utf8_lossy(&req.body).contains("refuse-me") {
+            Reply::Status(
+                422,
+                format!("no: {}", req.header("authorization").join(",")),
+            )
+        } else {
+            Reply::Status(201, String::new())
+        }
+    })?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("good.vcon.json", &container("018bcfe5-50", RECORDING))?;
+    rig.drop_in("bad.vcon.json", &container("refuse-me", RECORDING))?;
+    let args = env_forward_args(&rig, &store.url("/v1/vcons"));
+    assert!(!args.iter().any(|a| a.contains("auth")), "{args:?}");
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let credential = format!("Authorization: {}", secret());
+
+    let (out, err, code) = sipnab_env(&argv, &[(CREDENTIAL_ENV, &credential)])?;
+
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    let seen = store.requests();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    for req in &seen {
+        assert_eq!(req.header("authorization"), [secret().as_str()]);
+    }
+    assert!(rig.settings.done_dir.join("good.vcon.json").exists());
+    let record = std::fs::read_to_string(rig.settings.failed_dir.join("bad.vcon.json.error.json"))?;
+    assert!(record.contains("[auth value removed]"), "{record}");
+    for text in [&out, &err, &record] {
+        assert!(!text.contains(&secret()), "the secret leaked: {text}");
+    }
+    Ok(())
+}
+
+/// A credential from the environment that the store refuses with a 401 echoing
+/// it back stops the forwarder with exit 3, and the stop reason it logs carries
+/// the removal marker, not the value.
+#[test]
+fn the_environment_credential_stays_out_of_the_stop_reason() -> Result<(), TestError> {
+    let store = FakeStore::start(|req, _| {
+        Reply::Status(
+            401,
+            format!("rejected: {}", req.header("authorization").join(",")),
+        )
+    })?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("s.vcon.json", &container("018bcfe5-51", RECORDING))?;
+    let args = env_forward_args(&rig, &store.url("/v1/vcons"));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let credential = format!("Authorization: Bearer {}", secret());
+    let (out, err, code) = sipnab_env(&argv, &[(CREDENTIAL_ENV, &credential)])?;
+    assert_eq!(code, Some(3), "{err}");
+    assert!(
+        err.lines()
+            .any(|l| l.contains("401") && l.contains("[auth value removed]")),
+        "{err}"
+    );
+    assert!(
+        !out.contains(&secret()) && !err.contains(&secret()),
+        "{err}"
+    );
+    Ok(())
+}
+
+/// The credential has one source. The environment variable and
+/// `--vcon-forward-auth-file` together are refused before anything is sent,
+/// naming both flags and quoting neither value.
+#[test]
+fn the_environment_credential_conflicts_with_the_auth_file() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("c.vcon.json", &container("018bcfe5-52", RECORDING))?;
+    let args = forward_args(&rig, &store.url("/v1/vcons"));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let credential = format!("Authorization: {}", secret());
+    let (out, err, code) = sipnab_env(&argv, &[(CREDENTIAL_ENV, &credential)])?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains("--vcon-forward-auth ") || err.contains("--vcon-forward-auth <"),
+        "{err}"
+    );
+    assert!(err.contains("--vcon-forward-auth-file"), "{err}");
+    assert!(
+        !out.contains(&secret()) && !err.contains(&secret()),
+        "{err}"
+    );
+    assert!(store.requests().is_empty());
+    assert!(rig.spool().join("c.vcon.json").exists());
+    Ok(())
+}
+
+/// An empty or blank credential in the environment is refused with exit 2,
+/// and so is one that is not a `Header-Name: value` line, without quoting it.
+#[test]
+fn an_unusable_environment_credential_is_refused() -> Result<(), TestError> {
+    let rig = Rig::new("http://127.0.0.1:9/v1/vcons", "Authorization")?;
+    let args = env_forward_args(&rig, "http://127.0.0.1:9/v1/vcons");
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let token_only = secret();
+    for value in ["", "   ", token_only.as_str()] {
+        let (out, err, code) = sipnab_env(&argv, &[(CREDENTIAL_ENV, value)])?;
+        assert_eq!(code, Some(2), "{value:?}: {err}");
+        assert!(
+            err.contains(CREDENTIAL_ENV) || err.contains("--vcon-forward-auth <"),
+            "{value:?}: {err}"
+        );
+        assert!(!err.contains("required arguments"), "{value:?}: {err}");
+        assert!(
+            !out.contains(&secret()) && !err.contains(&secret()),
+            "{err}"
+        );
+    }
+    Ok(())
+}
+
+/// `--help` names the environment variable but never shows its value.
+#[test]
+fn help_never_shows_the_environment_credential() -> Result<(), TestError> {
+    let credential = format!("Authorization: {}", secret());
+    let (out, err, code) = sipnab_env(&["--help"], &[(CREDENTIAL_ENV, &credential)])?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        out.contains(CREDENTIAL_ENV),
+        "--help does not name the variable"
+    );
+    assert!(!out.contains(&secret()) && !err.contains(&secret()));
+    Ok(())
+}
+
+/// A capture run is unaffected by a credential exported for the forwarder:
+/// the variable is read only by `--vcon-forward`.
+#[test]
+fn a_capture_run_ignores_an_exported_credential() -> Result<(), TestError> {
+    let credential = format!("Authorization: {}", secret());
+    let (out, err, code) = sipnab_env(
+        &["-N", "--no-config", "-I", "tests/fixtures/sip_call.pcap"],
+        &[(CREDENTIAL_ENV, &credential)],
+    )?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!out.contains(&secret()) && !err.contains(&secret()));
+    Ok(())
+}
+
+// ── Settings from sipnab.toml ───────────────────────────────────────────
+
+/// A `sipnab.toml` holding `[vcon_forward]` with `body`, in `rig`'s directory.
+fn write_forward_config(rig: &Rig, body: &str) -> Result<PathBuf, TestError> {
+    let path = rig.dir.path().join("sipnab.toml");
+    std::fs::write(&path, format!("[vcon_forward]\n{body}\n"))?;
+    Ok(path)
+}
+
+/// TOML's spelling of `path` as a string.
+fn toml_path(path: &Path) -> String {
+    format!("{:?}", path.display().to_string())
+}
+
+/// Every `[vcon_forward]` setting can come from `sipnab.toml`: with only the
+/// spool and `--vcon-forward-once` on the command line, the forwarder posts to
+/// the file's URL with the file's credential and moves each container to the
+/// file's directories.
+#[test]
+fn the_forwarder_reads_its_settings_from_sipnab_toml() -> Result<(), TestError> {
+    let store = FakeStore::start(|req, _| {
+        if String::from_utf8_lossy(&req.body).contains("refuse-me") {
+            Reply::Status(400, "no".into())
+        } else {
+            Reply::Status(201, String::new())
+        }
+    })?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("ok.vcon.json", &container("018bcfe5-53", RECORDING))?;
+    rig.drop_in("no.vcon.json", &container("refuse-me", RECORDING))?;
+    let sent = rig.dir.path().join("sent");
+    let held = rig.dir.path().join("held");
+    let config = write_forward_config(
+        &rig,
+        &format!(
+            "url = {:?}\nauth_file = {}\ndone = {}\nfailed = {}\ninterval = 2\ntimeout = 5\n\
+             compat = \"none\"\nbackoff_first = 3\nbackoff_cap = 60\n\
+             max_response_head = 32768\nmax_error_body = 4096",
+            store.url("/v1/vcons"),
+            toml_path(&rig.auth_file()),
+            toml_path(&sent),
+            toml_path(&held),
+        ),
+    )?;
+    let spool = rig.spool().display().to_string();
+    let config = config.display().to_string();
+    let (out, err, code) = sipnab(&[
+        "--vcon-forward",
+        &spool,
+        "--config",
+        &config,
+        "--vcon-forward-once",
+    ])?;
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert_eq!(store.requests().len(), 2, "{err}");
+    assert!(sent.join("ok.vcon.json").exists(), "{err}");
+    assert!(held.join("no.vcon.json.error.json").exists(), "{err}");
+    assert!(
+        !rig.settings.done_dir.exists(),
+        "the default directory was used"
+    );
+    Ok(())
+}
+
+/// A flag overrides its `[vcon_forward]` key: the file names a store on the
+/// discard port and a delivered directory, the flags name the live store and
+/// another directory, and the flags win.
+#[test]
+fn a_flag_overrides_its_sipnab_toml_key() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("ok.vcon.json", &container("018bcfe5-54", RECORDING))?;
+    let from_file = rig.dir.path().join("from-file");
+    let from_flag = rig.dir.path().join("from-flag");
+    let config = write_forward_config(
+        &rig,
+        &format!(
+            "url = \"http://127.0.0.1:9/v1/vcons\"\nauth_file = \"/nonexistent/auth\"\n\
+             done = {}",
+            toml_path(&from_file),
+        ),
+    )?;
+    let (spool, config, auth, done, url) = (
+        rig.spool().display().to_string(),
+        config.display().to_string(),
+        rig.auth_file().display().to_string(),
+        from_flag.display().to_string(),
+        store.url("/v1/vcons"),
+    );
+    let (out, err, code) = sipnab(&[
+        "--vcon-forward",
+        &spool,
+        "--config",
+        &config,
+        "--vcon-forward-url",
+        &url,
+        "--vcon-forward-auth-file",
+        &auth,
+        "--vcon-forward-done",
+        &done,
+        "--vcon-forward-once",
+    ])?;
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert_eq!(store.requests().len(), 1);
+    assert!(from_flag.join("ok.vcon.json").exists(), "{err}");
+    assert!(!from_file.exists(), "the key's directory was used");
+    Ok(())
+}
+
+// ── Configured limits and back-off ──────────────────────────────────────
+
+/// The failure record keeps at most the configured number of bytes of the
+/// store's answer, and says when it cut it; a limit above the answer's size
+/// keeps all of it.
+#[test]
+fn a_configured_error_body_limit_bounds_the_failure_record() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(400, format!("bad: {}", "x".repeat(5000))))?;
+    for (limit, cut) in [(100usize, true), (10_000, false)] {
+        let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+        rig.settings.limits.error_body = limit;
+        rig.drop_in("f.vcon.json", &container("018bcfe5-60", RECORDING))?;
+        let report = rig.forwarder()?.pass(Instant::now(), &never);
+        assert_eq!(report.refused, ["f.vcon.json"]);
+        let text = std::fs::read_to_string(rig.settings.failed_dir.join("f.vcon.json.error.json"))?;
+        let record: serde_json::Value = serde_json::from_str(&text)?;
+        let body = record["body"].as_str().ok_or("no body")?;
+        assert!(body.len() <= limit, "{limit}: {} bytes", body.len());
+        assert_eq!(record["body_truncated"], cut, "{limit}");
+        if !cut {
+            assert_eq!(body.len(), 5005, "{limit}");
+        }
+    }
+    Ok(())
+}
+
+/// An answer whose status line and headers exceed the configured head limit
+/// is no answer: the container waits for a retry. The same answer under the
+/// default limit delivers.
+#[test]
+fn a_configured_response_head_limit_is_honored() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| {
+        Reply::Raw(format!(
+            "HTTP/1.1 201 Created\r\nX-Padding: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "a".repeat(2000)
+        ))
+    })?;
+    let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.settings.limits.response_head = 512;
+    rig.drop_in("h.vcon.json", &container("018bcfe5-61", RECORDING))?;
+    let report = rig.forwarder()?.pass(Instant::now(), &never);
+    assert_eq!(report.waiting, ["h.vcon.json"], "{report:?}");
+    assert!(rig.spool().join("h.vcon.json").exists());
+
+    rig.settings.limits = ReadLimits::default();
+    let report = rig.forwarder()?.pass(Instant::now(), &never);
+    assert_eq!(report.delivered, ["h.vcon.json"], "{report:?}");
+    Ok(())
+}
+
+/// A container that draws a 5xx waits the configured first delay, not the
+/// default one, before its next try.
+#[test]
+fn a_configured_backoff_spaces_the_retries() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(503, "busy".into()))?;
+    let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.settings.backoff = BackoffPolicy {
+        first_secs: 10,
+        cap_secs: 10,
+    };
+    rig.drop_in("r.vcon.json", &container("018bcfe5-62", RECORDING))?;
+    let mut fwd = rig.forwarder()?;
+    let t0 = Instant::now();
+    fwd.pass(t0, &never);
+    assert_eq!(store.requests().len(), 1);
+    // Past the default first delay of 2 s, inside the configured 10 s.
+    fwd.pass(t0 + Duration::from_secs(5), &never);
+    assert_eq!(
+        store.requests().len(),
+        1,
+        "retried before the configured delay"
+    );
+    fwd.pass(
+        t0 + Duration::from_secs(10) + Duration::from_millis(1),
+        &never,
+    );
+    assert_eq!(
+        store.requests().len(),
+        2,
+        "not retried after the configured delay"
+    );
+    Ok(())
+}
+
+// ── Store kinds ─────────────────────────────────────────────────────────
+
+/// A stand-in for vcon.store, answering as vcon.store was measured to answer
+/// on 2026-10-07: `POST /v1/vcons` with `Authorization: Bearer <key>`; `400`
+/// for `extensions` as an array and for a Dialog Object without `type` and
+/// `parties`; `409` for a uuid it holds; `201` otherwise.
+fn vcon_store_stand_in(key: String) -> Result<FakeStore, TestError> {
+    let held = Arc::new(Mutex::new(Vec::<String>::new()));
+    FakeStore::start(move |req, _| {
+        if req.method != "POST" || req.target != "/v1/vcons" {
+            return Reply::Status(404, "not found".into());
+        }
+        if req.header("authorization") != [format!("Bearer {key}").as_str()] {
+            return Reply::Status(401, "unauthorized".into());
+        }
+        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
+            return Reply::Status(400, "invalid JSON".into());
+        };
+        if doc["extensions"].is_array() {
+            return Reply::Status(400, "extensions: Expected object, received array".into());
+        }
+        let dialogs = doc["dialog"].as_array().cloned().unwrap_or_default();
+        if dialogs
+            .iter()
+            .any(|d| d.get("type").is_none() || d.get("parties").is_none())
+        {
+            return Reply::Status(400, "dialog: type and parties required".into());
+        }
+        let uuid = doc["uuid"].as_str().unwrap_or_default().to_string();
+        let mut stored = held.lock();
+        if stored.contains(&uuid) {
+            return Reply::Status(409, "exists".into());
+        }
+        stored.push(uuid);
+        Reply::Status(201, "{}".into())
+    })
+}
+
+/// `--vcon-forward-kind vcon-store` with the store's base URL and the bare
+/// key in the environment: the forwarder posts to `/v1/vcons` with
+/// `Authorization: Bearer <key>`, sends `extensions` as an object, and files a
+/// second container with the same uuid, which the store answers `409`, as
+/// refused. The key appears in no output and no record.
+#[test]
+fn the_vcon_store_kind_delivers_to_a_vcon_store_stand_in() -> Result<(), TestError> {
+    let key = secret();
+    let store = vcon_store_stand_in(key.clone())?;
+    let rig = Rig::new(&store.url("/"), "Authorization")?;
+    rig.drop_in("a.vcon.json", &container("018bcfe5-70", RECORDING))?;
+    rig.drop_in("b.vcon.json", &container("018bcfe5-70", RECORDING))?;
+    let spool = rig.spool().display().to_string();
+    let base = format!("http://{}", store.addr);
+    let (out, err, code) = sipnab_env(
+        &[
+            "--vcon-forward",
+            &spool,
+            "--no-config",
+            "--vcon-forward-kind",
+            "vcon-store",
+            "--vcon-forward-url",
+            &base,
+            "--vcon-forward-once",
+        ],
+        &[(CREDENTIAL_ENV, &key)],
+    )?;
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    let seen = store.requests();
+    assert_eq!(seen.len(), 2, "{err}");
+    assert_eq!(seen[0].target, "/v1/vcons");
+    let sent: serde_json::Value = serde_json::from_slice(&seen[0].body)?;
+    assert!(sent["extensions"].is_object(), "{sent}");
+    assert!(rig.settings.done_dir.join("a.vcon.json").exists(), "{err}");
+    let record = std::fs::read_to_string(rig.settings.failed_dir.join("b.vcon.json.error.json"))?;
+    assert!(record.contains("409"), "{record}");
+    for text in [&out, &err, &record] {
+        assert!(!text.contains(&key), "the key leaked: {text}");
+    }
+    Ok(())
+}
+
+/// A stand-in for a self-hosted conserver, answering as the one in the development lab
+/// was measured to answer on 2026-10-07:
+/// `POST /vcon/external-ingress?ingress_list=sipnab` with
+/// `x-conserver-api-token: <key>`; `403` without the right key; `422` for a
+/// body that is not JSON or has no `uuid`; `204` otherwise, a repeated uuid
+/// included.
+fn conserver_stand_in(key: String) -> Result<FakeStore, TestError> {
+    FakeStore::start(move |req, _| {
+        if req.method != "POST" || req.target != "/vcon/external-ingress?ingress_list=sipnab" {
+            return Reply::Status(404, "{\"detail\":\"Not Found\"}".into());
+        }
+        if req.header("x-conserver-api-token") != [key.as_str()] {
+            return Reply::Status(403, "{\"detail\":\"Invalid API Key\"}".into());
+        }
+        match serde_json::from_slice::<serde_json::Value>(&req.body) {
+            Ok(doc) if doc["uuid"].is_string() => Reply::Status(204, String::new()),
+            _ => Reply::Status(422, "{\"detail\":\"invalid\"}".into()),
+        }
+    })
+}
+
+/// `[vcon_forward] kind = "conserver"` with the server's base URL and an
+/// auth file holding the bare key: the forwarder posts to the `sipnab`
+/// external ingress list with `x-conserver-api-token: <key>`, sends the
+/// container unchanged, delivers on `204`, and files a container the server
+/// answers `422` as refused.
+#[test]
+fn the_conserver_kind_delivers_to_a_conserver_stand_in() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let key = secret();
+    let store = conserver_stand_in(key.clone())?;
+    let rig = Rig::new(&store.url("/"), "Authorization")?;
+    let bytes = container("018bcfe5-71", NO_CONTENT);
+    rig.drop_in("a.vcon.json", &bytes)?;
+    rig.drop_in("b.vcon.json", "{\"vcon\":\"0.4.0\"}")?;
+    let bare = rig.dir.path().join("bare.key");
+    std::fs::write(&bare, format!("{key}\n"))?;
+    std::fs::set_permissions(&bare, std::fs::Permissions::from_mode(0o600))?;
+    let config = write_forward_config(
+        &rig,
+        &format!(
+            "kind = \"conserver\"\nurl = \"http://{}\"\nauth_file = {}",
+            store.addr,
+            toml_path(&bare)
+        ),
+    )?;
+    let (spool, config) = (
+        rig.spool().display().to_string(),
+        config.display().to_string(),
+    );
+    let (out, err, code) = sipnab(&[
+        "--vcon-forward",
+        &spool,
+        "--config",
+        &config,
+        "--vcon-forward-once",
+    ])?;
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    let seen = store.requests();
+    assert_eq!(seen.len(), 2, "{err}");
+    assert_eq!(seen[0].header("x-conserver-api-token"), [key.as_str()]);
+    assert_eq!(seen[0].body, bytes.as_bytes(), "the container was changed");
+    assert!(rig.settings.done_dir.join("a.vcon.json").exists(), "{err}");
+    assert!(
+        rig.settings
+            .failed_dir
+            .join("b.vcon.json.error.json")
+            .exists(),
+        "{err}"
+    );
+    assert!(!out.contains(&key) && !err.contains(&key));
+    Ok(())
+}
+
+/// The generic kind is the default and keeps today's rule: an auth file
+/// holding a bare key, with no header name, is refused at startup with exit
+/// 2, and the refusal does not quote it.
+#[test]
+fn the_generic_kind_refuses_a_bare_key() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("http://127.0.0.1:9/v1/vcons", "Authorization")?;
+    std::fs::write(rig.auth_file(), format!("{}\n", secret()))?;
+    std::fs::set_permissions(rig.auth_file(), std::fs::Permissions::from_mode(0o600))?;
+    let args = forward_args(&rig, "http://127.0.0.1:9/v1/vcons");
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (out, err, code) = sipnab(&argv)?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("--vcon-forward-auth-file"), "{err}");
+    assert!(!out.contains(&secret()) && !err.contains(&secret()));
+    Ok(())
+}
+
+/// Two stores, as `docs/vcon.md` chains them: the second forwarder's spool
+/// is the first one's delivered directory. A container the first store
+/// accepts reaches the second; one the first refuses does not.
+#[test]
+fn two_chained_forwarders_deliver_to_two_stores() -> Result<(), TestError> {
+    let first = FakeStore::start(|req, _| {
+        if String::from_utf8_lossy(&req.body).contains("refuse-me") {
+            Reply::Status(400, "no".into())
+        } else {
+            Reply::Status(201, String::new())
+        }
+    })?;
+    let second = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
+    let rig = Rig::new(&first.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("ok.vcon.json", &container("018bcfe5-80", RECORDING))?;
+    rig.drop_in("no.vcon.json", &container("refuse-me", RECORDING))?;
+    let spool = rig.spool().display().to_string();
+    let delivered = rig.spool().join("delivered");
+    let (first_url, second_url, auth, delivered_text, second_done) = (
+        first.url("/v1/vcons"),
+        second.url("/v1/vcons"),
+        rig.auth_file().display().to_string(),
+        delivered.display().to_string(),
+        delivered.join("second").display().to_string(),
+    );
+    let (_, err, code) = sipnab(&[
+        "--vcon-forward",
+        &spool,
+        "--no-config",
+        "--vcon-forward-url",
+        &first_url,
+        "--vcon-forward-auth-file",
+        &auth,
+        "--vcon-forward-done",
+        &delivered_text,
+        "--vcon-forward-once",
+    ])?;
+    assert_eq!(code, Some(1), "{err}");
+    let (_, err, code) = sipnab(&[
+        "--vcon-forward",
+        &delivered_text,
+        "--no-config",
+        "--vcon-forward-url",
+        &second_url,
+        "--vcon-forward-auth-file",
+        &auth,
+        "--vcon-forward-done",
+        &second_done,
+        "--vcon-forward-once",
+    ])?;
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(first.requests().len(), 2);
+    let reached = second.requests();
+    assert_eq!(reached.len(), 1, "{reached:?}");
+    assert!(String::from_utf8_lossy(&reached[0].body).contains("018bcfe5-80"));
+    assert!(delivered.join("second").join("ok.vcon.json").exists());
+    assert!(rig.settings.failed_dir.join("no.vcon.json").exists());
+    Ok(())
+}
+
+/// A forwarder whose config file sipnab refuses exits 1, as any run with a
+/// refused config file does, naming the key, and sends nothing.
+#[test]
+fn a_refused_config_file_stops_the_forwarder_with_exit_1() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in("a.vcon.json", &container("018bcfe5-81", RECORDING))?;
+    let config = write_forward_config(&rig, "interval = 0")?;
+    let args = forward_args(&rig, &store.url("/v1/vcons"));
+    let mut argv: Vec<String> = args.into_iter().filter(|a| a != "--no-config").collect();
+    argv.extend(["--config".to_string(), config.display().to_string()]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab(&argv)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("[vcon_forward] interval"), "{err}");
+    assert!(store.requests().is_empty());
     Ok(())
 }

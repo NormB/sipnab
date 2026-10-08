@@ -1226,7 +1226,7 @@ fn replace_hostname(text: &str, needle: &str, replacement: &str) -> String {
     /// Whether the characters `side` yields continue the same host name.
     ///
     /// The dot is the whole reason this is a function. It separates labels
-    /// inside `thor-02.example.com` and ends a sentence in "on node thor-02.",
+    /// inside `edge-07.example.com` and ends a sentence in "on node edge-07.",
     /// and the note this sweep exists for writes the second — so a rule that
     /// treated every dot as a separator would leave the one occurrence that
     /// matters untouched. A dot continues the name only when a label follows.
@@ -2110,13 +2110,13 @@ mod tests {
             "only the standalone occurrence is the host"
         );
         assert_eq!(
-            replace_hostname("thor-02x and thor-02.", "thor-02", "N"),
-            "thor-02x and N.",
+            replace_hostname("edge-07x and edge-07.", "edge-07", "N"),
+            "edge-07x and N.",
             "a full stop ends the name; an alphanumeric continues it"
         );
         assert_eq!(
-            replace_hostname("thor-02.example.com is longer", "thor-02", "N"),
-            "thor-02.example.com is longer",
+            replace_hostname("edge-07.example.com is longer", "edge-07", "N"),
+            "edge-07.example.com is longer",
             "a dot followed by a label is a separator, not the end of the name"
         );
         assert_eq!(replace_hostname("nothing here", "", "N"), "nothing here");

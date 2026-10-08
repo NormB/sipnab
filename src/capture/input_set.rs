@@ -920,7 +920,10 @@ fn expand_dir(
             String::new()
         };
         match opts.name_glob.as_deref() {
-            Some(g) => bail!("no files matching '{g}' in '{}'{deeper}", dir.display()),
+            Some(g) => bail!(
+                "no files matching --input-name '{g}' in '{}'{deeper}",
+                dir.display()
+            ),
             None => bail!("no files in '{}'{deeper}", dir.display()),
         }
     }

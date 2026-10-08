@@ -3556,3 +3556,42 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// The example config's `[vcon_forward]` block, uncommented, is a real
+/// configuration: every key is known, it loads, it passes the section's
+/// validation, and each value lands where the forwarder reads it.
+#[test]
+fn contrib_example_vcon_forward_block_uncommented_is_a_real_config() -> Result<(), TestError> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/sipnabrc.example");
+    let text = std::fs::read_to_string(path)?;
+    let block = text
+        .split("# -- vCon forwarder")
+        .nth(1)
+        .ok_or("the example carries a vCon forwarder block")?;
+    let uncommented: String = block
+        .lines()
+        .take_while(|l| !l.starts_with("# --"))
+        .filter_map(|l| l.strip_prefix("# "))
+        .filter(|l| l.starts_with('[') || l.contains(" = "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(
+        sipnab::config::Config::unknown_keys(&uncommented)?,
+        Vec::<String>::new(),
+        "every uncommented key is known:\n{uncommented}"
+    );
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("sipnab.toml");
+    std::fs::write(&file, &uncommented)?;
+    let loaded = sipnab::config::Config::load(Some(file.to_str().ok_or("utf-8")?), false)?;
+    let v = loaded.config.vcon_forward;
+    v.validate()?;
+    assert_eq!(v.kind.as_deref(), Some("conserver"), "{uncommented}");
+    assert_eq!(v.url.as_deref(), Some("http://127.0.0.1:8000"));
+    assert_eq!(
+        v.auth_file.as_deref(),
+        Some(std::path::Path::new("/etc/sipnab/conserver.key"))
+    );
+    assert_eq!(v.interval, Some(5));
+    Ok(())
+}

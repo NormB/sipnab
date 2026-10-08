@@ -47,6 +47,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "api",
             "metrics",
             "hep",
+            "vcon_forward",
         ]
         .as_slice(),
     );
@@ -241,6 +242,28 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         ["tls_ca", "tls_extra_ca", "tls_cert", "tls_key"].as_slice(),
     );
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
+    // [vcon_forward] holds the vCon forwarder's standing settings, one key per
+    // forwarder flag that is not per-run intent or a secret.
+    m.insert(
+        "vcon_forward",
+        [
+            "kind",
+            "url",
+            "replace_url",
+            "auth_file",
+            "ca",
+            "done",
+            "failed",
+            "interval",
+            "timeout",
+            "compat",
+            "backoff_first",
+            "backoff_cap",
+            "max_response_head",
+            "max_error_body",
+        ]
+        .as_slice(),
+    );
     m.insert(
         "names",
         [
@@ -421,6 +444,9 @@ pub struct Config {
     /// [`HepConfig`].
     #[serde(default)]
     pub hep: HepConfig,
+    /// The vCon forwarder's settings -- see [`VconForwardConfig`].
+    #[serde(default)]
+    pub vcon_forward: VconForwardConfig,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -468,6 +494,278 @@ pub struct HepConfig {
     pub tls_cert: Option<PathBuf>,
     /// PEM private key for `tls_cert`. `--hep-tls-key` replaces it.
     pub tls_key: Option<PathBuf>,
+}
+
+/// `[vcon_forward]`: the settings of the vCon forwarder
+/// (`sipnab --vcon-forward <SPOOL_DIR>`), each the value of the flag of the
+/// same name, which overrides it.
+///
+/// The spool itself and `--vcon-forward-once` stay on the command line: the
+/// first names this run's input and the second is per-run intent. The
+/// credential's value has no key, because a secret does not belong in
+/// sipnab.toml: `auth_file` names the file that holds it.
+///
+/// The URL, the replace URL and the credential are checked when the
+/// forwarder starts, by the rules the flags follow; every other key is checked
+/// whenever the file is loaded.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VconForwardConfig {
+    /// The kind of store, one of [`FORWARD_KINDS`]: what the forwarder
+    /// supplies when a setting is not given. `--vcon-forward-kind` overrides
+    /// it.
+    pub kind: Option<String>,
+    /// Where each container is POSTed, or, with a `kind` other than
+    /// `generic` and no path, the store's base URL. `--vcon-forward-url`
+    /// overrides it.
+    pub url: Option<String>,
+    /// The URL template a `409` is PUT to, `{uuid}` filled in.
+    /// `--vcon-forward-replace-url` overrides it.
+    pub replace_url: Option<String>,
+    /// The file holding the one `Header-Name: value` line that authenticates
+    /// the forwarder. `--vcon-forward-auth-file` overrides it;
+    /// `--vcon-forward-auth` (or `SIPNAB_VCON_FORWARD_AUTH`) beside it is
+    /// refused.
+    pub auth_file: Option<PathBuf>,
+    /// The only CA file trusted for an `https://` store.
+    /// `--vcon-forward-ca` overrides it.
+    pub ca: Option<PathBuf>,
+    /// Where a delivered container goes. `--vcon-forward-done` overrides it.
+    pub done: Option<PathBuf>,
+    /// Where a refused container goes. `--vcon-forward-failed` overrides it.
+    pub failed: Option<PathBuf>,
+    /// Seconds between passes over the spool. See [`FORWARD_INTERVAL`].
+    pub interval: Option<u64>,
+    /// Seconds to wait to connect and for each read and write. See
+    /// [`FORWARD_TIMEOUT`].
+    pub timeout: Option<u64>,
+    /// The store deviation to correct for in the copy sent, one of
+    /// [`FORWARD_COMPAT`]. `--vcon-forward-compat` overrides it.
+    pub compat: Option<String>,
+    /// Seconds before the first retry. See [`FORWARD_BACKOFF_FIRST`].
+    pub backoff_first: Option<u64>,
+    /// The longest wait between retries, in seconds. See
+    /// [`FORWARD_BACKOFF_CAP`].
+    pub backoff_cap: Option<u64>,
+    /// The most bytes of a store's status line and headers read. See
+    /// [`FORWARD_MAX_RESPONSE_HEAD`].
+    pub max_response_head: Option<u64>,
+    /// The most bytes of a store's refusal kept in a failure record. See
+    /// [`FORWARD_MAX_ERROR_BODY`].
+    pub max_error_body: Option<u64>,
+}
+
+/// A whole-number forwarder setting, declared once: its key, its flag, the
+/// values both accept and the value when neither is given. The flag's parser
+/// ([`ForwardNumber::parse`]) and the key's check
+/// ([`VconForwardConfig::validate`]) are the same rule, [`ForwardNumber::check`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardNumber {
+    /// The `[vcon_forward]` key.
+    pub key: &'static str,
+    /// The flag, with its dashes.
+    pub flag: &'static str,
+    /// The smallest value accepted.
+    pub min: u64,
+    /// The largest value accepted.
+    pub max: u64,
+    /// The value when neither the flag nor the key is given.
+    pub default: u64,
+}
+
+impl ForwardNumber {
+    /// `value`, when it is from [`Self::min`] to [`Self::max`].
+    ///
+    /// # Errors
+    /// The range, for the caller to prefix with the setting's name.
+    pub fn check(&self, value: u64) -> Result<u64, String> {
+        if (self.min..=self.max).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "{value} is out of range: give a whole number from {} to {}",
+                self.min, self.max
+            ))
+        }
+    }
+
+    /// The flag's value parser: a decimal whole number that passes
+    /// [`Self::check`].
+    ///
+    /// # Errors
+    /// Not a whole number, or out of range.
+    pub fn parse(&self, text: &str) -> Result<u64, String> {
+        let value = text.parse::<u64>().map_err(|_| {
+            format!(
+                "not a whole number: give one from {} to {}",
+                self.min, self.max
+            )
+        })?;
+        self.check(value)
+    }
+
+    /// The value in force, and where it came from: the flag, else the key,
+    /// else [`Self::default`]. The second half names the source for a
+    /// message: the flag, `[vcon_forward] <key>`, or `the default`.
+    #[must_use]
+    pub fn pick(&self, flag: Option<u64>, key: Option<u64>) -> (u64, String) {
+        match (flag, key) {
+            (Some(v), _) => (v, self.flag.to_string()),
+            (None, Some(v)) => (v, format!("[vcon_forward] {}", self.key)),
+            (None, None) => (self.default, "the default".to_string()),
+        }
+    }
+}
+
+/// Seconds between passes over the spool.
+pub const FORWARD_INTERVAL: ForwardNumber = ForwardNumber {
+    key: "interval",
+    flag: "--vcon-forward-interval",
+    min: 1,
+    max: 3600,
+    default: 5,
+};
+
+/// Seconds the forwarder waits to connect, and for each read and write,
+/// before the store counts as unreachable.
+pub const FORWARD_TIMEOUT: ForwardNumber = ForwardNumber {
+    key: "timeout",
+    flag: "--vcon-forward-timeout",
+    min: 1,
+    max: 600,
+    default: 30,
+};
+
+/// The largest value a seconds or bytes setting below accepts: `u32::MAX`.
+/// The type's own limit, not a policy: it keeps every delay and every byte
+/// count representable on any target sipnab builds for.
+const FORWARD_U32_MAX: u64 = u32::MAX as u64;
+
+/// Seconds a container waits after its first failed try. Each failed try
+/// after it doubles the wait, up to [`FORWARD_BACKOFF_CAP`].
+pub const FORWARD_BACKOFF_FIRST: ForwardNumber = ForwardNumber {
+    key: "backoff_first",
+    flag: "--vcon-forward-backoff-first",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 2,
+};
+
+/// The longest a container waits between tries, in seconds.
+pub const FORWARD_BACKOFF_CAP: ForwardNumber = ForwardNumber {
+    key: "backoff_cap",
+    flag: "--vcon-forward-backoff-cap",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 300,
+};
+
+/// The most bytes of a store's status line and headers the forwarder reads.
+/// An answer with more is treated as no answer, and the container is retried.
+pub const FORWARD_MAX_RESPONSE_HEAD: ForwardNumber = ForwardNumber {
+    key: "max_response_head",
+    flag: "--vcon-forward-max-response-head",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 64 * 1024,
+};
+
+/// The most bytes of a store's answer to a refused container that its
+/// `<name>.error.json` record keeps.
+pub const FORWARD_MAX_ERROR_BODY: ForwardNumber = ForwardNumber {
+    key: "max_error_body",
+    flag: "--vcon-forward-max-error-body",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 8 * 1024,
+};
+
+/// Every whole-number forwarder setting.
+pub const FORWARD_NUMBERS: [ForwardNumber; 6] = [
+    FORWARD_INTERVAL,
+    FORWARD_TIMEOUT,
+    FORWARD_BACKOFF_FIRST,
+    FORWARD_BACKOFF_CAP,
+    FORWARD_MAX_RESPONSE_HEAD,
+    FORWARD_MAX_ERROR_BODY,
+];
+
+/// The names `--vcon-forward-compat` and `[vcon_forward] compat` accept.
+/// `none` sends every container byte for byte, the default; `vcon-store`
+/// corrects for vcon.store's deviations from the vCon drafts.
+pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];
+
+/// The names `--vcon-forward-kind` and `[vcon_forward] kind` accept, in the
+/// order of the forwarder's kind table. `generic` supplies nothing: every
+/// setting is given explicitly, as before kinds existed.
+pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];
+
+/// Why a first retry delay and a cap cannot both hold, or `None` when they
+/// can: the first delay may not be longer than the longest. Each value comes
+/// with where it came from, as [`ForwardNumber::pick`] names it.
+#[must_use]
+pub fn forward_backoff_problem(first: (u64, &str), cap: (u64, &str)) -> Option<String> {
+    (first.0 > cap.0).then(|| {
+        format!(
+            "the first retry delay, {} s from {}, is longer than the longest, {} s from {}; \
+             give a first delay no longer than the cap",
+            first.0, first.1, cap.0, cap.1
+        )
+    })
+}
+
+impl VconForwardConfig {
+    /// Refuse a value its flag would refuse.
+    ///
+    /// Each whole-number key is held to its [`ForwardNumber`] range, `compat`
+    /// to [`FORWARD_COMPAT`], `kind` to [`FORWARD_KINDS`], and the back-off pair to
+    /// [`forward_backoff_problem`] with the default standing in for a key
+    /// that is not set. The URLs and the credential are checked when the
+    /// forwarder starts, where the flags are.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for (number, value) in self.numbers() {
+            if let Some(v) = value {
+                number.check(v).map_err(|e| {
+                    crate::Error::ConfigInvalid(format!("[vcon_forward] {}: {e}", number.key))
+                })?;
+            }
+        }
+        for (key, value, names) in [
+            ("compat", &self.compat, FORWARD_COMPAT),
+            ("kind", &self.kind, FORWARD_KINDS),
+        ] {
+            if let Some(name) = value
+                && !names.contains(&name.as_str())
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[vcon_forward] {key}: {name:?} is not one of {}",
+                    names.join(", ")
+                )));
+            }
+        }
+        let first = FORWARD_BACKOFF_FIRST.pick(None, self.backoff_first);
+        let cap = FORWARD_BACKOFF_CAP.pick(None, self.backoff_cap);
+        match forward_backoff_problem((first.0, &first.1), (cap.0, &cap.1)) {
+            Some(problem) => Err(crate::Error::ConfigInvalid(problem)),
+            None => Ok(()),
+        }
+    }
+
+    /// Each whole-number key beside the setting it is.
+    #[must_use]
+    pub fn numbers(&self) -> [(ForwardNumber, Option<u64>); 6] {
+        [
+            (FORWARD_INTERVAL, self.interval),
+            (FORWARD_TIMEOUT, self.timeout),
+            (FORWARD_BACKOFF_FIRST, self.backoff_first),
+            (FORWARD_BACKOFF_CAP, self.backoff_cap),
+            (FORWARD_MAX_RESPONSE_HEAD, self.max_response_head),
+            (FORWARD_MAX_ERROR_BODY, self.max_error_body),
+        ]
+    }
 }
 
 /// `[mcp]`: which tools the MCP server registers, and whether it advertises
@@ -693,6 +991,58 @@ pub struct DisplayConfig {
     pub from_to: Option<String>,
 }
 
+impl DisplayConfig {
+    /// Reject a `color` that `--color` would refuse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, when `color` is not one
+    /// of [`COLOR_MODES`]. Any other spelling used to run in `auto` with
+    /// nothing said.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(c) = &self.color
+            && !COLOR_MODES.contains(&c.as_str())
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[display] color must be one of {}, got {c:?}",
+                COLOR_MODES.join(", ")
+            )));
+        }
+        self.validate_tui_keys()
+    }
+
+    /// The `[display]` keys only the TUI reads: `from_to` and
+    /// `visible_columns`. An unknown value used to be dropped when the TUI
+    /// started, with only a log warning the TUI screen covers; an unknown
+    /// column label hid that column, and `["x"]` hid all of them.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key and the value.
+    fn validate_tui_keys(&self) -> Result<(), crate::Error> {
+        #[cfg(feature = "tui")]
+        {
+            if let Some(m) = &self.from_to
+                && crate::tui::FromToMode::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] from_to must be one of default, host-port, user, \
+                     user-host-port, got {m:?}"
+                )));
+            }
+            let labels = crate::tui::call_list::COLUMN_LABELS;
+            for col in self.visible_columns.iter().flatten() {
+                if !labels.iter().any(|l| l.eq_ignore_ascii_case(col)) {
+                    return Err(crate::Error::ConfigInvalid(format!(
+                        "[display] visible_columns names {col:?}, which is not a \
+                         column; the columns are {}",
+                        labels.join(", ")
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Filter presets.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -891,6 +1241,15 @@ impl SecurityConfig {
     /// [`MAX_HEP_HMAC_WINDOW_SECS`], or when `business_hours` is not two whole
     /// hours in `0..=23`.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(raw) = self.fraud_destination.as_deref()
+            && let Some(bad) = crate::security::destination::unknown_destination(raw)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[security] fraud_destination {bad:?} is not a destination sipnab can \
+                 match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for \
+                 +1 numbers), comma-separated"
+            )));
+        }
         // Bounded at BOTH ends, and the two ends fail differently. At 0 only a
         // token stamped in the same second as the receiver's clock is accepted,
         // which is the outage the key exists to fix rather than a strict
@@ -1185,11 +1544,23 @@ pub fn expand_env_in_value(
 /// `crate::Error::ConfigInvalid`, naming the key, for anything that is not two
 /// integers in `0..=23` separated by `-`.
 pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
+    business_hours_window(spec).map_err(|reason| {
+        crate::Error::ConfigInvalid(format!("[security] business_hours {reason}"))
+    })
+}
+
+/// The rule behind [`parse_business_hours`], with the refusal returned as the
+/// reason alone, so `--business-hours` and `[security] business_hours` each
+/// name the setting the operator actually wrote.
+///
+/// # Errors
+/// The reason `spec` is not a business-hours window.
+pub fn business_hours_window(spec: &str) -> Result<(u8, u8), String> {
     let invalid = || {
-        crate::Error::ConfigInvalid(format!(
-            "[security] business_hours must be \"START-END\" in whole hours 0-23, \
+        format!(
+            "must be \"START-END\" in whole hours 0-23, \
              e.g. \"8-18\" (or \"22-6\" for an overnight window); got {spec:?}"
-        ))
+        )
     };
     let (start, end) = spec.trim().split_once('-').ok_or_else(invalid)?;
     let start: u8 = start.trim().parse().map_err(|_| invalid())?;
@@ -1198,13 +1569,31 @@ pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
         return Err(invalid());
     }
     if start == end {
-        return Err(crate::Error::ConfigInvalid(format!(
-            "[security] business_hours start and end must differ; \"{start}-{end}\" is a \
+        return Err(format!(
+            "start and end must differ; \"{start}-{end}\" is a \
              zero-width window that would treat every call as off-hours"
-        )));
+        ));
     }
     Ok((start, end))
 }
+
+/// Whether `v` is a usable duration or percentage threshold: finite and
+/// above zero. The one rule `[diagnosis]` and its flags share.
+#[must_use]
+pub fn positive_finite(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
+/// Whether `v` is a usable measurement boundary: finite and zero or more.
+/// The one rule `[quality]`, `[media] one_way_delay_ms` and their flags
+/// share.
+#[must_use]
+pub fn non_negative_finite(v: f64) -> bool {
+    v.is_finite() && v >= 0.0
+}
+
+/// The values `--color` and `[display] color` accept.
+pub const COLOR_MODES: [&str; 3] = ["auto", "always", "never"];
 
 /// Parse a `"START-END"` port range like `"5060-5061"` into an inclusive pair.
 ///
@@ -1299,7 +1688,7 @@ impl DiagnosisConfig {
             ("duration_asymmetry_secs", self.duration_asymmetry_secs),
         ] {
             if let Some(v) = value
-                && !(v.is_finite() && v > 0.0)
+                && !positive_finite(v)
             {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[diagnosis] {key} must be a finite number > 0, got {v}"
@@ -1398,6 +1787,17 @@ impl MediaConfig {
     /// `crate::Error::ConfigInvalid`, naming the codec, when a `codec_ie` value
     /// is not finite or is outside `0.0..95.0`.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Refused rather than ignored: the MOS resolver discards a negative
+        // or non-finite declared delay and falls back to a measured or an
+        // assumed one, so accepting it here scored every stream against a
+        // delay the operator had not declared.
+        if let Some(ms) = self.one_way_delay_ms
+            && !non_negative_finite(ms)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[media] one_way_delay_ms must be a finite number of 0 or more, got {ms}"
+            )));
+        }
         // Refused rather than ignored: a typo used to leave the default in
         // force with nothing said, so every wideband MOS quietly answered a
         // question the operator had not asked.
@@ -1697,6 +2097,17 @@ impl LimitsConfig {
                 "[limits] dialog_limit must be > 0".into(),
             ));
         }
+        // `--api-rate-limit-per-peer` is a u32 and clap refuses anything
+        // larger; the key used to be clamped to u32::MAX instead, a number
+        // the operator did not write.
+        if let Some(v) = self.api_rate_limit_per_peer
+            && u32::try_from(v).is_err()
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] api_rate_limit_per_peer must be at most {} (0 disables the cap), got {v}",
+                u32::MAX
+            )));
+        }
         // Rejected rather than read as "unlimited" or "default": both would
         // turn a typo into silent behavior the operator did not ask for.
         if let Some(0) = self.mcp_max_rows {
@@ -1764,7 +2175,9 @@ impl LimitsConfig {
         // fork bomb pointed at the box doing the capturing.
         if let Some(0) = self.exec_queue_depth {
             return Err(crate::Error::ConfigInvalid(
-                "[limits] exec_queue_depth must be > 0 (it bounds child processes,                  so there is no unlimited setting; to run no hooks, drop                  --on-dialog-exec and --on-quality-exec)"
+                "[limits] exec_queue_depth must be > 0 (it bounds child processes, \
+                 so there is no unlimited setting; to run no hooks, drop \
+                 --on-dialog-exec and --on-quality-exec)"
                     .into(),
             ));
         }
@@ -1973,6 +2386,18 @@ pub struct NamesConfig {
     pub dns_cache_entries: Option<u64>,
 }
 
+/// Whether `path` names something sipnab can open and read as a file.
+///
+/// # Errors
+/// The open fails, or `path` is a directory.
+pub fn readable_file(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::File::open(path)?.metadata()?;
+    if meta.is_dir() {
+        return Err(std::io::Error::other("is a directory"));
+    }
+    Ok(())
+}
+
 impl NamesConfig {
     /// Reject a `dns_cache_entries` of 0, matching the `--dns-cache-entries`
     /// flag's `range(1..)`. A cap of 0 evicts on every insert, so the
@@ -1987,6 +2412,28 @@ impl NamesConfig {
                  holding about one entry)"
                     .into(),
             ));
+        }
+        // A file that cannot be read used to be skipped without a word.
+        if let Some(hf) = &self.hosts_file
+            && let Err(e) = readable_file(Path::new(hf))
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[names] hosts_file {hf:?} cannot be read: {e}"
+            )));
+        }
+        // Each entry used to be warned about and skipped when names were
+        // loaded, after startup had already accepted the file.
+        for (ip, name) in self.manual.iter().flatten() {
+            if ip.parse::<std::net::IpAddr>().is_err() {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[names.manual] key {ip:?} is not an IP address"
+                )));
+            }
+            if !crate::names::is_valid_name(name) {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[names.manual] name {name:?} for {ip} is not a valid name"
+                )));
+            }
         }
         Ok(())
     }
@@ -2056,6 +2503,80 @@ pub struct KeybindingsConfig {
     pub clear_calls: Option<String>,
     /// Open column selector (default: `"F10"`).
     pub column_selector: Option<String>,
+}
+
+impl ThemeConfig {
+    /// Reject a color the TUI cannot parse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, for a value
+    /// [`parse_color`] refuses. Such a value used to be dropped when the TUI
+    /// started, with only a log warning the TUI screen covers, and the
+    /// default color kept.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        #[cfg(feature = "tui")]
+        for (key, value) in [
+            ("background", &self.background),
+            ("foreground", &self.foreground),
+            ("highlight", &self.highlight),
+            ("header", &self.header),
+            ("selected", &self.selected),
+            ("accent", &self.accent),
+            ("good", &self.good),
+            ("warning", &self.warning),
+            ("bad", &self.bad),
+            ("muted", &self.muted),
+            ("border", &self.border),
+            ("status_bg", &self.status_bg),
+        ] {
+            if let Some(v) = value
+                && parse_color(v).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[theme] {key} = {v:?} is not a color: give a name (red, \
+                     dark_gray, reset, ...) or #rrggbb"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl KeybindingsConfig {
+    /// Reject a key the TUI cannot parse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, for a value
+    /// [`parse_keycode`] refuses. Such a value used to be dropped when the TUI
+    /// started, with only a log warning the TUI screen covers, and the
+    /// default binding kept.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        #[cfg(feature = "tui")]
+        for (key, value) in [
+            ("quit", &self.quit),
+            ("help", &self.help),
+            ("filter", &self.filter),
+            ("save", &self.save),
+            ("search", &self.search),
+            ("settings", &self.settings),
+            ("pause", &self.pause),
+            ("autoscroll", &self.autoscroll),
+            ("extended_flow", &self.extended_flow),
+            ("clear_calls", &self.clear_calls),
+            ("column_selector", &self.column_selector),
+        ] {
+            if let Some(v) = value
+                && parse_keycode(v).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[keybindings] {key} = {v:?} is not a key: give one character, \
+                     a function key (F1-F12) or a named key (Enter, Esc, Tab, Space, \
+                     Backspace)"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2170,6 +2691,42 @@ pub struct ConfigOrigin {
 }
 
 impl Config {
+    /// Reject a path-valued key set to the empty string.
+    ///
+    /// Each flag paired with one of these keys refuses an empty path, and an
+    /// empty path names no file: an empty `[journal] dir` would journal into
+    /// whatever directory sipnab was started from.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the first such key.
+    pub fn validate_paths(&self) -> Result<(), crate::Error> {
+        let keys: [(&str, Option<&PathBuf>); 12] = [
+            ("[hep] tls_ca", self.hep.tls_ca.as_ref()),
+            ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_ref()),
+            ("[hep] tls_cert", self.hep.tls_cert.as_ref()),
+            ("[hep] tls_key", self.hep.tls_key.as_ref()),
+            ("[journal] dir", self.journal.dir.as_ref()),
+            ("[tfps] ctl", self.tfps.ctl.as_ref()),
+            ("[tfps] db", self.tfps.db.as_ref()),
+            ("[crash] report_dir", self.crash.report_dir.as_ref()),
+            (
+                "[vcon_forward] auth_file",
+                self.vcon_forward.auth_file.as_ref(),
+            ),
+            ("[vcon_forward] ca", self.vcon_forward.ca.as_ref()),
+            ("[vcon_forward] done", self.vcon_forward.done.as_ref()),
+            ("[vcon_forward] failed", self.vcon_forward.failed.as_ref()),
+        ];
+        for (key, value) in keys {
+            if value.is_some_and(|p| p.as_os_str().is_empty()) {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "{key} is empty; give a path, or remove the key for the default"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Load configuration from the first available source.
     ///
     /// Search order:
@@ -3605,6 +4162,169 @@ column_selector = "F10"
             c.api.allowed_hosts,
             Some(vec!["proxy.example".to_string(), "*".to_string()])
         );
+        Ok(())
+    }
+
+    /// A `[vcon_forward]` section holding `body`, deserialized.
+    fn forward_keys(body: &str) -> Result<VconForwardConfig, toml::de::Error> {
+        Ok(toml::from_str::<Config>(&format!("[vcon_forward]\n{body}\n"))?.vcon_forward)
+    }
+
+    /// What a fallible test returns.
+    type Outcome = Result<(), Box<dyn std::error::Error>>;
+
+    /// Every `[vcon_forward]` key parses, is known, passes validation, and
+    /// shows in `--dump-config`'s serialization.
+    #[test]
+    fn the_vcon_forward_keys_parse_validate_and_dump() -> Outcome {
+        let body = "kind = \"vcon-store\"\nurl = \"https://store.example.com/v1/vcons\"\n\
+                    replace_url = \"https://store.example.com/v1/vcons/{uuid}\"\n\
+                    auth_file = \"/etc/sipnab/vcon.auth\"\nca = \"/etc/sipnab/store-ca.pem\"\n\
+                    done = \"/srv/sent\"\nfailed = \"/srv/held\"\ninterval = 7\ntimeout = 9\n\
+                    compat = \"vcon-store\"\nbackoff_first = 4\nbackoff_cap = 120\n\
+                    max_response_head = 16384\nmax_error_body = 2048";
+        let text = format!("[vcon_forward]\n{body}\n");
+        assert_eq!(Config::unknown_keys(&text)?, Vec::<String>::new());
+        let keys = forward_keys(body)?;
+        keys.validate()?;
+        let config = Config {
+            vcon_forward: keys,
+            ..Config::default()
+        };
+        config.validate_paths()?;
+        let dumped = config.dump()?;
+        for line in body.lines() {
+            assert!(dumped.contains(line), "{line} not in:\n{dumped}");
+        }
+        Ok(())
+    }
+
+    /// Each whole-number key is accepted at both ends of its range and refused
+    /// one past each, by name; its flag's parser accepts and refuses the same
+    /// values, because both are `ForwardNumber::check`.
+    #[test]
+    fn the_vcon_forward_numbers_are_held_to_their_ranges() -> Outcome {
+        for number in FORWARD_NUMBERS {
+            // The other half of the back-off pair, set so the pair holds at
+            // either end of this key's range.
+            let partner = match number.key {
+                "backoff_first" => "\nbackoff_cap = 4294967295",
+                "backoff_cap" => "\nbackoff_first = 1",
+                _ => "",
+            };
+            for good in [number.min, number.max] {
+                let keys = forward_keys(&format!("{} = {good}{partner}", number.key))?;
+                assert!(keys.validate().is_ok(), "{} = {good}", number.key);
+                assert_eq!(number.parse(&good.to_string()), Ok(good), "{}", number.flag);
+            }
+            for bad in [number.min - 1, number.max + 1] {
+                let keys = forward_keys(&format!("{} = {bad}{partner}", number.key))?;
+                let e = keys
+                    .validate()
+                    .err()
+                    .ok_or("out of range accepted")?
+                    .to_string();
+                assert!(e.contains(&format!("[vcon_forward] {}", number.key)), "{e}");
+                assert!(
+                    number.parse(&bad.to_string()).is_err(),
+                    "{} {bad}",
+                    number.flag
+                );
+            }
+            for text in ["", "x", "1.5", "-1", "0x10"] {
+                assert!(number.parse(text).is_err(), "{} {text:?}", number.flag);
+            }
+        }
+        Ok(())
+    }
+
+    /// The defaults the forwarder had as constants are the declared defaults.
+    #[test]
+    fn the_vcon_forward_defaults_are_the_former_constants() {
+        assert_eq!(FORWARD_INTERVAL.default, 5);
+        assert_eq!(FORWARD_TIMEOUT.default, 30);
+        assert_eq!(FORWARD_BACKOFF_FIRST.default, 2);
+        assert_eq!(FORWARD_BACKOFF_CAP.default, 300);
+        assert_eq!(FORWARD_MAX_RESPONSE_HEAD.default, 64 * 1024);
+        assert_eq!(FORWARD_MAX_ERROR_BODY.default, 8 * 1024);
+        for number in FORWARD_NUMBERS {
+            assert!(number.check(number.default).is_ok(), "{}", number.key);
+        }
+    }
+
+    /// A first back-off longer than the cap is refused, naming both keys, or
+    /// the key and the default it is measured against.
+    #[test]
+    fn a_vcon_forward_first_backoff_longer_than_the_cap_is_refused() -> Outcome {
+        let e = forward_keys("backoff_first = 10\nbackoff_cap = 5")?
+            .validate()
+            .err()
+            .ok_or("10 > 5 accepted")?
+            .to_string();
+        assert!(
+            e.contains("[vcon_forward] backoff_first") && e.contains("[vcon_forward] backoff_cap"),
+            "{e}"
+        );
+        let e = forward_keys("backoff_first = 301")?
+            .validate()
+            .err()
+            .ok_or("301 > the default 300 accepted")?
+            .to_string();
+        assert!(
+            e.contains("[vcon_forward] backoff_first") && e.contains("300"),
+            "{e}"
+        );
+        assert!(forward_keys("backoff_first = 300")?.validate().is_ok());
+        assert!(forward_keys("backoff_cap = 2")?.validate().is_ok());
+        let e = forward_keys("backoff_cap = 1")?
+            .validate()
+            .err()
+            .ok_or("1 < the default 2 accepted")?
+            .to_string();
+        assert!(e.contains("[vcon_forward] backoff_cap"), "{e}");
+        Ok(())
+    }
+
+    /// `compat` and `kind` accept exactly the names their flags accept.
+    #[test]
+    fn the_vcon_forward_names_are_the_flags_names() -> Outcome {
+        for (key, names) in [("compat", FORWARD_COMPAT), ("kind", FORWARD_KINDS)] {
+            for name in names {
+                assert!(
+                    forward_keys(&format!("{key} = {name:?}"))?
+                        .validate()
+                        .is_ok(),
+                    "{key} {name}"
+                );
+            }
+            for bad in ["x", "", "VCON-STORE", "off"] {
+                let e = forward_keys(&format!("{key} = {bad:?}"))?
+                    .validate()
+                    .err()
+                    .ok_or("unknown name accepted")?
+                    .to_string();
+                assert!(e.contains(&format!("[vcon_forward] {key}")), "{e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// An empty path in a `[vcon_forward]` path key is refused by name, as
+    /// its flag refuses an empty path.
+    #[test]
+    fn an_empty_vcon_forward_path_is_refused() -> Outcome {
+        for key in ["auth_file", "ca", "done", "failed"] {
+            let config = Config {
+                vcon_forward: forward_keys(&format!("{key} = \"\""))?,
+                ..Config::default()
+            };
+            let e = config
+                .validate_paths()
+                .err()
+                .ok_or("empty path accepted")?
+                .to_string();
+            assert!(e.contains(&format!("[vcon_forward] {key}")), "{e}");
+        }
         Ok(())
     }
 

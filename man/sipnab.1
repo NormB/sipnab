@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-09-16" "sipnab 0.5.205" "User Commands"
+.TH SIPNAB 1 "2026-10-07" "sipnab 0.5.206" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -168,19 +168,105 @@ Run as the vCon forwarder: a separate process that POSTs each container in an
 .B \-\-export\-vcon\-dir
 spool to
 .BR \-\-vcon\-forward\-url ,
-byte for byte, with the one header in
-.BR \-\-vcon\-forward\-auth\-file ,
-and moves it by the answer: a 2xx to the delivered directory, another 4xx to
-the failed directory beside a
+byte for byte, with the one header the credential names, and moves it by the
+answer: a 2xx to the delivered directory, another 4xx to the failed directory
+beside a
 .I name.error.json
 record, a 5xx, timeout or refused connection retried later. A 401 or 403
 stops it: nothing more is sent, no file moves, and it exits 3. Captures nothing,
 and is refused beside any capture flag. Requires a build with the
 .B vcon
-feature. With
+feature. Every forwarder flag except
+.BR \-\-vcon\-forward ,
 .B \-\-vcon\-forward\-once
-it makes one pass and exits 0 when every container was delivered, 3 after a
-401 or 403, and 1 otherwise.
+and
+.B \-\-vcon\-forward\-auth
+has a key in the
+.B [vcon_forward]
+section of
+.IR sipnab.toml ,
+named after the flag without its
+.B \-\-vcon\-forward\-
+prefix, with underscores for dashes; the flag overrides its key. A URL and a
+credential are required, from a flag or from a key.
+.IP
+Exit status: 0 with
+.B \-\-vcon\-forward\-once
+when every container was delivered or the spool held none, and without it
+after SIGTERM or SIGINT; 1 with
+.B \-\-vcon\-forward\-once
+when a container was refused or is still waiting, and when the config file
+cannot be read or holds a
+.B [vcon_forward]
+number,
+.B kind
+or
+.B compat
+outside its range or list, or an empty path; 2 when sipnab refuses the
+settings (a refused flag value, no URL or no credential, a refused URL, an
+unreadable credential, or a build without the
+.B vcon
+feature); 3 after a 401 or 403.
+.TP
+.BI \-\-vcon\-forward\-url " url"
+Where each container is POSTed,
+.I http://
+or
+.IR https:// .
+With a
+.B \-\-vcon\-forward\-kind
+other than
+.BR generic ,
+a URL with no path is the store's base URL and the kind adds its ingest path.
+A URL with a user name or password in it is refused; the message shows that
+part as
+.BR [redacted] .
+.TP
+.BI \-\-vcon\-forward\-kind " kind"
+The kind of store:
+.B generic
+(the default, which supplies nothing),
+.B vcon\-store
+or
+.BR conserver .
+A kind supplies the ingest path for a base URL, the header for a bare key, and
+the payload adaptation; an explicit setting overrides each.
+.TP
+.BI \-\-vcon\-forward\-auth\-file " file"
+File holding one line,
+.IR "Header-Name: value" ,
+sent with every request, or the bare key with a kind other than
+.BR generic .
+Refused when other users can read it.
+.TP
+.BI \-\-vcon\-forward\-auth " header"
+The credential itself, as the auth file holds it. Also read from
+.BR SIPNAB_VCON_FORWARD_AUTH .
+A flag's value is visible to other users in the process list; prefer the
+environment variable or the file. Refused when empty and beside
+.B \-\-vcon\-forward\-auth\-file
+or the
+.B auth_file
+key. The value never appears in a log line, an error or a failure record.
+.TP
+.BI \-\-vcon\-forward\-backoff\-first " secs"
+Seconds a container waits after its first failed try; each further failure
+doubles the wait. 1 to 4294967295, no longer than the cap. Default: 2.
+.TP
+.BI \-\-vcon\-forward\-backoff\-cap " secs"
+The longest wait between tries, 1 to 4294967295, no shorter than
+.BR \-\-vcon\-forward\-backoff\-first .
+Default: 300.
+.TP
+.BI \-\-vcon\-forward\-max\-response\-head " bytes"
+The most bytes of a store's status line and headers read; an answer with more
+counts as no answer and the container is retried. 1 to 4294967295. Default:
+65536.
+.TP
+.BI \-\-vcon\-forward\-max\-error\-body " bytes"
+The most bytes of a refused container's answer its
+.I name.error.json
+record keeps. 1 to 4294967295. Default: 8192.
 .TP
 .BI \-\-notes " file"
 Operator notes for
@@ -279,6 +365,11 @@ syntax, e.g.,
 Path to configuration file. Overridden by
 .BR \-f .
 .TP
+.B SIPNAB_VCON_FORWARD_AUTH
+The vCon forwarder's credential, as
+.B \-\-vcon\-forward\-auth
+takes it. A capture run ignores it.
+.TP
 .B XDG_CONFIG_HOME
 Directory holding the per-user configuration file
 .IR $XDG_CONFIG_HOME/sipnab/sipnab.toml .
@@ -312,6 +403,9 @@ be produced).
 .B 2
 Invalid usage (bad flag value or combination, or a flag whose feature is not
 compiled in).
+.TP
+.B 3
+The vCon forwarder stopped because the store answered 401 or 403.
 .SH LICENSE
 MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.
 .SH SEE ALSO

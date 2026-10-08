@@ -405,7 +405,7 @@ mod tests {
     type TestError = Box<dyn std::error::Error>;
 
     /// Build a BTF blob by hand, so the walk is tested against bytes rather
-    /// than against whatever kernel happens to be running the tests. thor-02
+    /// than against whatever kernel happens to be running the tests. The aarch64 development host
     /// has no BTF at all, so a test that needed a real one would be skipped
     /// exactly where it matters.
     struct BtfBuilder {
@@ -625,7 +625,7 @@ mod tests {
         Ok(())
     }
 
-    /// The real kernel, when there is one. thor-02 has no BTF, so this asserts
+    /// The real kernel, when there is one. The aarch64 development host has no BTF, so this asserts
     /// only that the two outcomes are the ones that exist: a full set, or the
     /// specific "no BTF here" refusal that sends the caller to tracefs.
     #[test]

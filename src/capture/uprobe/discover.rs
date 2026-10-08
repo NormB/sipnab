@@ -278,7 +278,7 @@ pub fn plan_targets(
                     None => classify(&library)
                         .ok_or_else(|| {
                             format!(
-                                "cannot tell which TLS library '{path}' is from its name, so \
+                                "cannot tell which TLS library --uprobe-library '{path}' is from its name, so \
                                  sipnab does not know which write symbol to probe. Name it \
                                  with --uprobe-symbol (SSL_write for OpenSSL, wolfSSL_write \
                                  for wolfSSL)"
@@ -295,7 +295,7 @@ pub fn plan_targets(
     let found = select(discovered, flavors);
     if found.is_empty() {
         return Err(
-            "no TLS library is mapped by any process sipnab can see. Either nothing \
+            "--uprobe-tls: no TLS library is mapped by any process sipnab can see. Either nothing \
              on this host is using OpenSSL or wolfSSL, or sipnab is not privileged \
              enough to read /proc/<pid>/maps — run as root, or name a library with \
              --uprobe-library"

@@ -317,6 +317,12 @@ pub struct ApiState {
     /// the flag) makes that route answer `not_configured` — a file-reading
     /// capability is opt-in, like [`Self::relay_query`].
     pub file_root: Option<std::path::PathBuf>,
+    /// The run's pipeline options, which `GET /v1/captures/compare` reads both
+    /// files with, so a file reads as it does given to `-I` on the same command
+    /// line (`--hep-parse`, `--portrange`, `--no-rtp`, `--no-dialog`,
+    /// `--rtpproxy-control`, `--quiet-bad-parse`). The default is a state built
+    /// without a run, as in a test.
+    pub pipeline_options: crate::pipeline::PipelineOptions,
     /// How this server treats archive passwords: which the operator
     /// configured, whether a remote peer may send one, and the wrong-password
     /// limiter.
@@ -2949,6 +2955,7 @@ async fn captures_compare(
     let (name_a, name_b) = (a.to_string(), b.to_string());
     let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
     let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
+    let options = state.pipeline_options;
 
     // A token past its wrong passwords for either archive is turned away
     // before anything is decrypted (CWE-307).
@@ -3009,6 +3016,7 @@ async fn captures_compare(
                     name: &name_b,
                 },
                 &dims,
+                &options,
                 max_dialogs,
                 max_streams,
                 top_n,
@@ -8782,6 +8790,46 @@ mod tests {
         Ok(())
     }
 
+    /// The run's `--hep-parse` reaches `GET /v1/captures/compare`: with it the
+    /// HEP copy's call is counted, and without it the copy holds no SIP.
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn captures_compare_reads_a_hep_copy_with_the_runs_hep_parse() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        let hep_time = chrono::DateTime::from_timestamp(1_718_000_000, 0).ok_or("a time")?;
+        std::fs::write(
+            root.path().join("hep.pcap"),
+            crate::test_utils::hep_invite_pcap("rest-compare-hep@x", hep_time),
+        )?;
+        std::fs::copy(
+            pcap_samples_root().join("sip-rtp-g711.pcap"),
+            root.path().join("plain.pcap"),
+        )?;
+
+        for (hep_parse, dialogs) in [(true, 1), (false, 0)] {
+            let state = ApiState {
+                file_root: Some(root.path().to_path_buf()),
+                pipeline_options: crate::pipeline::PipelineOptions {
+                    hep_parse,
+                    ..Default::default()
+                },
+                ..make_state()
+            };
+            let resp = build_router(state)
+                .oneshot(test_request(
+                    "/v1/captures/compare?a=hep.pcap&b=plain.pcap&dimensions=state",
+                )?)
+                .await?;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)?;
+            assert_eq!(
+                parsed["a"]["dialogs"], dialogs,
+                "hep_parse={hep_parse}: the HEP copy's call count: {parsed}"
+            );
+        }
+        Ok(())
+    }
+
     // ── lint (PAR3: lint_dialog) ──────────────────────────────────────
 
     /// `GET /v1/dialogs/{id}/lint` returns the dialog's RFC-conformance
@@ -8931,6 +8979,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
     }
@@ -9805,6 +9854,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
     }
@@ -11203,6 +11253,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
     }
@@ -12136,6 +12187,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         };
         populate_dialogs(&state)?;
@@ -14300,6 +14352,7 @@ mod archive_password_tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
     }

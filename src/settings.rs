@@ -649,18 +649,68 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("user", Link::Key("privilege", "user", Merge::Override)),
     ("vcon-digest", Link::Pending),
     // The forwarder is a mode of its own, like `--mint-token`: it captures
-    // nothing, so no capture config key applies to it.
+    // nothing, so no capture config key applies to it. Its standing settings
+    // are `[vcon_forward]` keys; the spool and `--vcon-forward-once` are this
+    // run's input and intent, and the credential's value is a secret.
     ("vcon-forward", Link::Action),
-    ("vcon-forward-auth-file", Link::Input),
-    ("vcon-forward-ca", Link::Input),
-    ("vcon-forward-compat", Link::PerRun),
-    ("vcon-forward-done", Link::Input),
-    ("vcon-forward-failed", Link::Input),
-    ("vcon-forward-interval", Link::PerRun),
+    ("vcon-forward-auth", Link::Secret),
+    (
+        "vcon-forward-auth-file",
+        Link::Key("vcon_forward", "auth_file", Merge::Override),
+    ),
+    (
+        "vcon-forward-backoff-cap",
+        Link::Key("vcon_forward", "backoff_cap", Merge::Override),
+    ),
+    (
+        "vcon-forward-backoff-first",
+        Link::Key("vcon_forward", "backoff_first", Merge::Override),
+    ),
+    (
+        "vcon-forward-ca",
+        Link::Key("vcon_forward", "ca", Merge::Override),
+    ),
+    (
+        "vcon-forward-compat",
+        Link::Key("vcon_forward", "compat", Merge::Override),
+    ),
+    (
+        "vcon-forward-done",
+        Link::Key("vcon_forward", "done", Merge::Override),
+    ),
+    (
+        "vcon-forward-failed",
+        Link::Key("vcon_forward", "failed", Merge::Override),
+    ),
+    (
+        "vcon-forward-interval",
+        Link::Key("vcon_forward", "interval", Merge::Override),
+    ),
+    (
+        "vcon-forward-kind",
+        Link::Key("vcon_forward", "kind", Merge::Override),
+    ),
+    (
+        "vcon-forward-max-error-body",
+        Link::Key("vcon_forward", "max_error_body", Merge::Override),
+    ),
+    (
+        "vcon-forward-max-response-head",
+        Link::Key("vcon_forward", "max_response_head", Merge::Override),
+    ),
     ("vcon-forward-once", Link::PerRun),
-    ("vcon-forward-replace-url", Link::Input),
-    ("vcon-forward-timeout", Link::PerRun),
-    ("vcon-forward-url", Link::Input),
+    (
+        "vcon-forward-replace-url",
+        Link::Key("vcon_forward", "replace_url", Merge::Override),
+    ),
+    (
+        "vcon-forward-timeout",
+        Link::Key("vcon_forward", "timeout", Merge::Override),
+    ),
+    (
+        "vcon-forward-url",
+        Link::Key("vcon_forward", "url", Merge::Override),
+    ),
     ("vcon-max-inline-media", Link::Pending),
     ("vcon-out", Link::Input),
     ("wireshark", Link::PerRun),

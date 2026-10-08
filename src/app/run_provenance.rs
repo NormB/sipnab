@@ -115,9 +115,11 @@ impl RunProvenance {
             // how the run was invoked, and refusing to record the line because
             // one byte was undecodable would lose the whole record over the
             // least interesting part of it.
-            argv: std::env::args_os()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect(),
+            argv: redact_argv(
+                std::env::args_os()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect(),
+            ),
             cwd: std::env::current_dir()
                 .map(|p| p.display().to_string())
                 // An unreadable cwd (deleted underneath the process) is a
@@ -308,12 +310,233 @@ pub fn write_record(cli: &Cli) -> Result<Option<PathBuf>, String> {
     Ok(Some(path.to_path_buf()))
 }
 
+/// What replaces a secret's value in the recorded argv.
+pub const REDACTED: &str = "[redacted]";
+
+/// `argv` with the value of every [`crate::cli::SECRET_FLAGS`] flag replaced
+/// by [`REDACTED`], in both the `--flag value` and the `--flag=value` form.
+/// Arguments after `--` are positionals and are kept as given, except that
+/// the userinfo of any argument holding a URL (`scheme://user:pass@host`) is
+/// replaced by [`redact_url_userinfo`], before or after `--`, in either form.
+#[must_use]
+pub fn redact_argv(argv: Vec<String>) -> Vec<String> {
+    let is_secret = |name: &str| crate::cli::SECRET_FLAGS.contains(&name);
+    let mut out = Vec::with_capacity(argv.len());
+    let mut options = true;
+    let mut redact_next = false;
+    for arg in argv {
+        let arg = if arg.contains("://") {
+            redact_url_userinfo(&arg)
+        } else {
+            arg
+        };
+        if redact_next {
+            redact_next = false;
+            out.push(REDACTED.to_string());
+            continue;
+        }
+        if !options {
+            out.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            options = false;
+            out.push(arg);
+            continue;
+        }
+        match arg.strip_prefix("--").map(|rest| rest.split_once('=')) {
+            Some(Some((name, _))) if is_secret(name) => out.push(format!("--{name}={REDACTED}")),
+            Some(None) if is_secret(&arg[2..]) => {
+                redact_next = true;
+                out.push(arg);
+            }
+            _ => out.push(arg),
+        }
+    }
+    out
+}
+
+/// `text` with the userinfo of the URL it holds (`user:password@`) replaced
+/// by [`REDACTED`]: `https://u:p@host/x` becomes `https://[redacted]@host/x`.
+///
+/// The authority starts after the first `://`, or at the start of `text` when
+/// there is none, and ends at the first `/`; everything in it up to its last
+/// `@` is the userinfo. A `?` or `#` does not end it here, as it does in a
+/// valid URL, so a password typed with one of them unescaped is still
+/// replaced, at the cost of also replacing an `@` in a query that follows no
+/// path. Text whose authority holds no `@` is returned as given. Every
+/// message or record that quotes a URL a person typed goes through this one
+/// function.
+#[must_use]
+pub fn redact_url_userinfo(text: &str) -> String {
+    let start = text.find("://").map_or(0, |i| i + 3);
+    let authority = &text[start..];
+    let authority = authority
+        .find('/')
+        .map_or(authority, |end| &authority[..end]);
+    match authority.rfind('@') {
+        Some(at) => format!("{}{REDACTED}{}", &text[..start], &text[start + at..]),
+        None => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// A secret given inline is not written to the record: the value after
+    /// `--hep-auth`, or after `--api-key=`, is replaced, and every other
+    /// argument is kept as given. Before 2026-10-07 the record held argv as
+    /// the shell passed it, so `--run-provenance-file` wrote the key to disk.
+    #[test]
+    fn inline_secrets_are_redacted_from_the_recorded_argv() {
+        let argv: Vec<String> = [
+            "sipnab",
+            "-I",
+            "calls.pcap",
+            "--hep-auth",
+            "k-one",
+            "--api-key=k-two",
+            "--archive-password",
+            "pw",
+            "--vcon-forward-auth=Authorization: Bearer k3",
+            "--hep-auth-file",
+            "/etc/sipnab/hep.key",
+        ]
+        .map(String::from)
+        .to_vec();
+        let out = redact_argv(argv);
+        assert_eq!(
+            out,
+            [
+                "sipnab",
+                "-I",
+                "calls.pcap",
+                "--hep-auth",
+                REDACTED,
+                "--api-key=[redacted]",
+                "--archive-password",
+                REDACTED,
+                "--vcon-forward-auth=[redacted]",
+                "--hep-auth-file",
+                "/etc/sipnab/hep.key",
+            ]
+        );
+        // Named `planted`, not `secret`: CodeQL's cleartext-logging rule reads
+        // variable names, and these are fixture strings.
+        for planted in ["k-one", "k-two", "pw", "k3"] {
+            assert!(
+                !out.iter().any(|a| a.contains(planted)),
+                "a planted value survived redaction: {out:?}"
+            );
+        }
+    }
+
+    /// A URL's userinfo (`user:password@`) is replaced by `[redacted]`; the
+    /// scheme, host, port and path stay, and text with no userinfo is
+    /// returned as given.
+    #[test]
+    fn url_userinfo_is_replaced_and_the_rest_of_the_url_kept() {
+        for (given, wanted) in [
+            (
+                "https://user:pw@store.example.com:8443/v1?x=1",
+                "https://[redacted]@store.example.com:8443/v1?x=1",
+            ),
+            (
+                "udp://tok@[2001:db8::1]:9060",
+                "udp://[redacted]@[2001:db8::1]:9060",
+            ),
+            (
+                "http://a@b@store.example.com/",
+                "http://[redacted]@store.example.com/",
+            ),
+            (
+                "user:pw@store.example.com/v1",
+                "[redacted]@store.example.com/v1",
+            ),
+            (
+                "https://user:pw#x@store.example.com/v1",
+                "https://[redacted]@store.example.com/v1",
+            ),
+            (
+                "https://user:pw?x@store.example.com/v1",
+                "https://[redacted]@store.example.com/v1",
+            ),
+            (
+                "--hep-send=tcp://user:pw@collector.example.com:9060",
+                "--hep-send=tcp://[redacted]@collector.example.com:9060",
+            ),
+            (
+                "https://store.example.com/v1?mail=a@b",
+                "https://store.example.com/v1?mail=a@b",
+            ),
+            (
+                "https://store.example.com/v1",
+                "https://store.example.com/v1",
+            ),
+            ("calls.pcap", "calls.pcap"),
+        ] {
+            assert_eq!(redact_url_userinfo(given), wanted, "{given}");
+        }
+    }
+
+    /// A URL with userinfo is not written to the record from any flag, in
+    /// either the `--flag value` or the `--flag=value` form, and an argument
+    /// that is not a URL keeps its `@`. Before 2026-10-07 a password in
+    /// `--vcon-forward-url` reached the record unchanged.
+    #[test]
+    fn url_userinfo_is_redacted_from_every_recorded_argument() {
+        let argv: Vec<String> = [
+            "sipnab",
+            "--vcon-forward-url",
+            "https://user:planted-a@store.example.com/v1",
+            "--hep-send=tcp://planted-b@collector.example.com:9060",
+            "--match",
+            "alice@example.com",
+            "--",
+            "http://user:planted-c@store.example.com/x",
+        ]
+        .map(String::from)
+        .to_vec();
+        let out = redact_argv(argv);
+        assert_eq!(
+            out,
+            [
+                "sipnab",
+                "--vcon-forward-url",
+                "https://[redacted]@store.example.com/v1",
+                "--hep-send=tcp://[redacted]@collector.example.com:9060",
+                "--match",
+                "alice@example.com",
+                "--",
+                "http://[redacted]@store.example.com/x",
+            ]
+        );
+        for planted in ["planted-a", "planted-b", "planted-c"] {
+            assert!(
+                !out.iter().any(|a| a.contains(planted)),
+                "a planted value survived redaction: {out:?}"
+            );
+        }
+    }
+
+    /// A secret flag as the last argument has no value to redact, and an
+    /// argument after `--` is a positional, not a flag.
+    #[test]
+    fn redaction_handles_a_trailing_flag_and_the_end_of_options() {
+        let argv: Vec<String> = ["sipnab", "--", "--hep-auth", "literal", "--mcp-token"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            redact_argv(argv.clone()),
+            ["sipnab", "--", "--hep-auth", "literal", "--mcp-token"]
+        );
+        let argv: Vec<String> = ["sipnab", "--mcp-token"].map(String::from).to_vec();
+        assert_eq!(redact_argv(argv), ["sipnab", "--mcp-token"]);
+    }
 
     /// The record carries the invocation, not a reconstruction of it.
     #[test]

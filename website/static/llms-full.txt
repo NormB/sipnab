@@ -3682,12 +3682,16 @@ sipnab -N -I capture.pcap --run-provenance-file runs.jsonl --report --no-cli-pri
 Under systemd, point it somewhere durable — `--run-provenance-file /var/log/sipnab/runs.jsonl` — and every restart appends rather than replaces.
 
 ```json
-{"record":"run","seq":1,"argv":["sipnab","-N","-I","capture.pcap","--report"],
- "cwd":"/var/captures","user":"sipnab","uid":993,
- "version":"0.5.142 (d2965454) features: native,tui,audio,tls,hep,api,mcp,metrics,plugins,vcon",
- "capture":{"instance":"3f9b0718d158c64087d09c-1","node":"capture-01"},
- "started":"2026-05-05T12:34:56Z"}
+{"argv":["sipnab","-N","-I","capture.pcap","--run-provenance-file","runs.jsonl","--report","--no-cli-print"],
+ "capture":{"dialog_generation":0,"instance":"3f9b0718d158c64087d09c-1","node":"capture-01","stream_generation":0},
+ "cwd":"/var/captures","features":["native","tui","audio","tls","hep","api","mcp","mcp-http","metrics","plugins","vcon","archive"],
+ "pid":41207,"record":"run","seq":1,
+ "started":"2026-05-05T12:34:56.095918671+00:00","ts":"2026-05-05T12:34:56.096437745+00:00",
+ "uid":993,"user":"sipnab",
+ "version":"0.5.142 (d2965454) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive"}
 ```
+
+sipnab records a secret given on the command line as `[redacted]`: the value of `--api-key`, `--api-signing-key`, `--archive-password`, `--hep-auth`, `--mcp-signing-key`, `--mcp-token`, `--metrics-auth` and `--vcon-forward-auth`, whether the value follows the flag after a space or after `=`, and the user name and password in a URL such as `--vcon-forward-url https://user:pass@store.example.com/`.
 
 **What to look for:**
 
@@ -8768,7 +8772,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.204 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.206 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -8966,11 +8970,11 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.204 for the
+it first, in the same shell, to the release you want, e.g. 0.5.206 for the
 latest:
 
 ```bash
-VERSION=0.5.204
+VERSION=0.5.206
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -9081,13 +9085,13 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.204, as in
+you want, e.g. 0.5.206, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 1. Set the version:
 
    ```bash
-   VERSION=0.5.204
+   VERSION=0.5.206
    ```
 
 2. Download the package:
@@ -9179,26 +9183,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.204-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.206-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.204-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.206-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.204-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.206-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.204-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.206-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -9634,7 +9638,7 @@ sipnab -D
 second line the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.205 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
+sipnab 0.5.206 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -13529,7 +13533,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes). Config: `[capture] snaplen` |
 | `--capture-profile` | `signaling\|full` | -- | Picks a `--snaplen` for you: `signaling` is 1500 bytes, which keeps every SIP header whole and drops most of each RTP payload, and `full` is 65535. An explicit `--snaplen` overrides it. More: [Tuning capture](tuning-capture.md#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity). Config: `[capture] snaplen` |
-| `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
+| `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation). At least 1: sipnab refuses `0` |
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of segment reassembly). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP **signaling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyze a fraction of the file — see the note below. HEP input (`-L`, `--hep-parse`) is never gated: the sender already chose what to send, and the ports in its HEP chunks are its claim, not something sipnab captured. Config: `[capture] portrange` |
@@ -13540,8 +13544,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode. Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous. Config: `[capture] promisc` |
 | `--bpf-file` | `<FILE>` | -- | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default because it is not a narrowing filter — BPF cannot walk a GTP-U extension-header chain to the inner port, so covering these means taking the whole port, which on a mobile core is the entire user plane. Ignored when you supply your own filter |
-| `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth) |
-| `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
+| `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
+| `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2` |
 | `--autostop` | `<CONDITION>` | -- | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
 | `--split` | `<CONDITION>` | -- | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
@@ -14182,7 +14186,7 @@ selects only problem calls from user 1001.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously. Config: `[limits] max_streams` |
+| `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously. At least 1: sipnab refuses `0`. Config: `[limits] max_streams` |
 | `--max-lost-sequences` | `<N>` | `1000` | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences` |
 | `--quality-interval` | `<SECONDS>` | `5` | Seconds between RTP quality snapshots — the resolution of the per-stream quality trend, which carries a MOS, an R-factor and an `acceptable`/`degraded`/`not_scorable` verdict per interval. The shipped five seconds averages away any burst shorter than itself, so three half-second dropouts read as a mild five-second average. The trend still covers an hour of call time whatever this is, so one second retains 3600 snapshots per stream instead of 720: resolution costs memory, never history. Accepts 1 to 300. Config: `[limits] quality_interval_secs` |
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
@@ -14229,12 +14233,12 @@ flag has a config key under `[diagnosis]`, and the flag wins.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--pdd-threshold` | `<SECS>` | `11.0` | Post-dial delay over which sipnab reports a call as slow. The default is the ITU-T E.721 Table 2 target that 95 percent of international connections must meet, because a capture does not say which kind of call it holds. Tighten it to 8.0 for toll or 6.0 for local traffic. Config: `[diagnosis] post_dial_delay_secs` |
-| `--ack-timeout` | `<SECS>` | `32.0` | Seconds a `2xx` may go unacknowledged before the missing `ACK` counts as a fault rather than as a capture that stopped early. The default is RFC 3261 Timer H. Config: `[diagnosis] ack_timeout_secs` |
-| `--no-final-response-timeout` | `<SECS>` | `180.0` | Seconds an `INVITE` may sit without a final response before the silence gets reported. The default is RFC 3261 Timer C. Below it, every call still ringing when the capture stopped gets reported. Config: `[diagnosis] no_final_response_secs` |
-| `--duration-asymmetry-pct` | `<PCT>` | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Config: `[diagnosis] duration_asymmetry_pct` |
-| `--duration-asymmetry-secs` | `<SECS>` | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric. A call has to clear both this and the percentage, so raising either one alone quiets the detection. Config: `[diagnosis] duration_asymmetry_secs` |
-| `--late-media-ms` | `<MS>` | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. Config: `[diagnosis] late_media_ms` |
+| `--pdd-threshold` | `<SECS>` | `11.0` | Post-dial delay over which sipnab reports a call as slow. The default is the ITU-T E.721 Table 2 target that 95 percent of international connections must meet, because a capture does not say which kind of call it holds. Tighten it to 8.0 for toll or 6.0 for local traffic. Must be a finite number greater than 0: sipnab refuses `0`, a negative number, `nan` and `inf`. Config: `[diagnosis] post_dial_delay_secs` |
+| `--ack-timeout` | `<SECS>` | `32.0` | Seconds a `2xx` may go unacknowledged before the missing `ACK` counts as a fault rather than as a capture that stopped early. The default is RFC 3261 Timer H. Must be a finite number greater than 0: sipnab refuses `0`, a negative number, `nan` and `inf`. Config: `[diagnosis] ack_timeout_secs` |
+| `--no-final-response-timeout` | `<SECS>` | `180.0` | Seconds an `INVITE` may sit without a final response before the silence gets reported. The default is RFC 3261 Timer C. Below it, every call still ringing when the capture stopped gets reported. Must be a finite number greater than 0: sipnab refuses `0`, a negative number, `nan` and `inf`. Config: `[diagnosis] no_final_response_secs` |
+| `--duration-asymmetry-pct` | `<PCT>` | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Greater than 0 and at most 100: sipnab refuses `0`, a negative number, a number over 100, `nan` and `inf`. Config: `[diagnosis] duration_asymmetry_pct` |
+| `--duration-asymmetry-secs` | `<SECS>` | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric. A call has to clear both this and the percentage, so raising either one alone quiets the detection. Must be a finite number greater than 0: sipnab refuses `0`, a negative number, `nan` and `inf`. Config: `[diagnosis] duration_asymmetry_secs` |
+| `--late-media-ms` | `<MS>` | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. A whole number of at least 1: sipnab refuses `0` and a negative number. Config: `[diagnosis] late_media_ms` |
 | `--cn-suppression-ratio` | `<RATIO>` | `0.3` | Share of a call's packets, as a fraction of 1, that must be comfort noise before sipnab accepts comfort noise as the explanation for one-directional media. **The one threshold here that withholds a finding instead of raising one**, so it fails as silence: a VoLTE or mobile trunk running aggressive voice-activity detection routinely passes 30 percent comfort noise, and above the ratio sipnab never reports one-way audio on that trunk. Must be greater than 0 and 1 or less. Config: `[diagnosis] cn_suppression_ratio` |
 
 **Examples**
@@ -14307,7 +14311,7 @@ report a healthy network in the middle of an outage.
 |------|-------|---------|-------------|
 | `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (the CLI matcher `-J`/`-j`). Config: `[security] kill_scanner` |
 | `--no-kill-scanner` | -- | off | Do not answer scanners even when `[security] kill_scanner = true`, so you can disarm, for one run, a response that a config file arms. The last of `--kill-scanner` / `--no-kill-scanner` typed wins. Config: `[security] kill_scanner` |
-| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path |
+| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path. sipnab refuses an empty or blank pattern, which would match every User-Agent, and a pattern that is not a valid regular expression |
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699). Config: `[security] kill_response` |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
@@ -14345,11 +14349,11 @@ report a healthy network in the middle of an outage.
 | `--tfps-ctl` | `<PATH>` | -- | Where the toll-fraud prevention system's `tfps_ctl` program is, for the `tfps_*` MCP tools and the `/v1/tfps/` REST routes. TFPS is optional peer software that condemns sources and enforces the decision in the firewall. sipnab reads its state; asking it to ban or unban a source is an action, refused unless [`--allow-action`](#security) enables it. Absent: sipnab looks for `tfps_ctl` on `PATH` only the moment a TFPS tool runs, and a machine without one answers `installed: false` rather than failing. Config: `[tfps] ctl`; the database goes in `[tfps] db` |
 | `--recommend-block` | `<DIALECT>` | -- | Print a firewall rule for every source the detectors accused: `fail2ban`, `nftables`, `iptables` or `all`. **sipnab recommends and does not apply** — the rule is text on stdout, and nothing here reaches a firewall or holds a credential. Each block carries its evidence (how many findings named the address, which rules they tripped, and when) and its COUNTER-evidence beside it: a source that also completed a registration or a call is one a block would disconnect, so the address-specific dialects comment their commands out for it and the fail2ban dialect puts it in `ignoreip`. Needs a detector armed beside it; with none, nothing is ever accused and the empty output says which silence that is rather than reading as an all-clear. Requires `-N` |
 | `--findings-history` | `<N>` | `1000` | Security findings kept in memory for later retrieval. `0` keeps none. Config: `[security] findings_history` |
-| `--alert` | `<CHANNEL>` | -- | Repeatable alert channel (`syslog`, `json`, `exec`) or rule (`<name>:<threshold>/<window>[:<cooldown>]`). Config: `[security] alert` |
+| `--alert` | `<CHANNEL>` | -- | Repeatable alert channel (`syslog`, `json`, `exec`) or rule (`<name>:<threshold>/<window>[:<cooldown>]`). sipnab refuses a channel other than these three, and a rule naming a finding kind no detector reports, with exit `2`. Config: `[security] alert` |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires. Config: `[security] alert_exec` |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line). Config: `[security] alert` |
 | `--stir-shaken` | -- | off | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
-| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before it loads the config and before it opens any capture device. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
+| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before it loads the config and before it opens any capture device. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. The record replaces the value of a flag that takes a secret inline, such as `--hep-auth` or `--api-key`, with `[redacted]`. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
 | `--tui-audit-file` | `<FILE>` | -- | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination — including one sipnab refused. A keystroke log of the TUI bindings would be mostly navigation, unreadable at review time, and a privacy hazard of its own, so **the search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI** — an operator holding a live capture that exists nowhere else must not lose it because a log partition filled; the lost record leaves a permanent hole in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
 > **`--alert` accepts a channel or a threshold rule.** Channels are `syslog`, `json` or `exec`.
@@ -14474,12 +14478,12 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--metrics-tls-cert` | `<FILE>` | -- | Serve the metrics endpoint over HTTPS with this PEM certificate chain, the server's certificate first. Needs `--metrics-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, no client certificates; scrapers still authenticate with `--metrics-auth`. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. Refused without `--metrics`. See [Metrics TLS](prometheus-metrics.md#metrics-tls). Feature: `metrics`. Config: `[metrics] tls_cert` |
 | `--metrics-tls-key` | `<FILE>` | -- | PEM private key for `--metrics-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. Refused without `--metrics`. Feature: `metrics`. Config: `[metrics] tls_key` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
-| `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` Feature: `api` |
+| `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY`. `--help` names the variable and never shows its value. Feature: `api` |
 | `--api-tls-cert` | `<FILE>` | -- | Serve the REST API over HTTPS with this PEM certificate chain, the server's certificate first. Needs `--api-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1` (no HTTP/2), no client certificates. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. A reverse proxy in front of a loopback bind remains an alternative. See [API TLS](rest-api.md#api-tls). Feature: `api`. Config: `[api] tls_cert` |
 | `--api-tls-key` | `<FILE>` | -- | PEM private key for `--api-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. Feature: `api`. Config: `[api] tls_key` |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections Feature: `api` |
 | `--api-allowed-host` | `<HOST>` | -- | Additional `Host` header values the REST API accepts (repeatable), against DNS rebinding: a web page that points its own name at `127.0.0.1` and reads a loopback API with no key from your browser. Accepted by default: `localhost`, `127.0.0.1`, `::1` and the address `--api` binds, on any port, and any IP address when `--api` binds `0.0.0.0` or `::`. Add the name clients use, such as a reverse proxy's public name; `name:port` accepts that port only. Any other `Host` gets `403`, and a request with no `Host` gets `400`. `*` disables the check (not recommended). See [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers). Config: `[api] allowed_hosts`, which the flag replaces Feature: `api` |
-| `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `api` |
+| `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
@@ -14498,13 +14502,13 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--hep-tls-cert` | `<FILE>` | -- | Server certificate chain (PEM, leaf first) a `--hep-listen-transport tls` listener presents to connecting agents. It must be an end-entity certificate: rustls refuses a CA certificate offered as a server certificate. sipnab refuses it unless `--hep-listen-transport tls` names the transport, and that transport requires it. Feature: `hep`. Config: `[hep] tls_cert` |
 | `--hep-tls-key` | `<FILE>` | -- | Private key (PEM) for `--hep-tls-cert`. sipnab **refuses a key any other user on the host can read** — `chmod 600` it. Group-readable stays allowed, because `root:sipnab 0640` is how a key is normally handed to a service account. sipnab refuses it unless `--hep-listen-transport tls` names the transport, and that transport requires it. Feature: `hep`. Config: `[hep] tls_key` |
 | `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
-| `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
+| `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`; `--help` names the variable and never shows its value. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
 | `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed), keeping it out of the process list. Takes precedence over `--hep-auth`. Feature: `hep` |
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode. `plain` sends/expects the shared secret verbatim in the 0x000e chunk (Homer-compatible, but replayable by an on-path sniffer). `hmac` sends/expects a per-message token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — **sipnab-to-sipnab only**; a stock Homer/Kamailio peer does not understand it. Feature: `hep` |
 | `--hep-hmac-window` | `<SECS>` | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and how far back the receiver's nonce cache must remember. Range 1-300. Config: `[security] hep_hmac_window_secs` Feature: `hep` |
 | `--hep-silence-warn` | `<SECS>` | `30` | Seconds a `--hep-listen` listener may go without **admitting** a packet before it logs a warning; `0` turns the warning off. Only an admitted packet counts as traffic. When packets keep arriving and sipnab refuses every one, the warning says `no packets admitted` and names the refusal most of them met (`auth_mismatch`, `allowlist`, `hmac_timestamp_out_of_window` and so on) and a peer that sent them: the sender is reaching the port and sipnab is turning it away, which is a key, mode or allowlist problem rather than a network one. When nothing arrives at all the warning keeps its `no packets for` wording. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
 | `--hep-senders` | -- | off | At the end of a headless (`-N`) run, print who fed the `--hep-listen` listener: each sender, keyed by the capture id it claims and the address it sent from, with its packet count, when sipnab last heard from it, how long it has been idle and whether it went silent past `--hep-silence-warn`; then every address the listener refused, with counts by reason, and the refusal totals. The capture id is the sender's claim, never proven. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return. The roster covers this run only and nothing persists it. Refused without `--hep-listen`, which is the side it describes. Feature: `hep` |
-| `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding): sipnab unwraps a HEP datagram on the wire or in a capture file and reads its message with the addresses the HEP chunks carry. The transport comes from the IP protocol chunk by the same rule `--hep-listen` uses, so a TLS, WS or WSS leg an OpenSIPS or Kamailio tracer sends reads the same from a file as from a socket, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to the HEP messages it unwraps. It still gates SIP that sipnab captures directly. It applies wherever sipnab reads packets: a headless run, `--cores N`, the TUI's own capture, and a capture opened or re-scanned inside the TUI. `--no-hep-parse` turns it off again when the config file sets `[capture] hep_parse = true`. Config: `[capture] hep_parse`. Feature: `hep` |
+| `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding): sipnab unwraps a HEP datagram on the wire or in a capture file and reads its message with the addresses the HEP chunks carry and the time the HEP packet carries, as `-L` does, not the time sipnab sniffed the wrapper. Sniffing a HEP port that no process listens on loses messages from some senders: see the note under [`[capture]` in the configuration reference](config-reference.md#capture). The transport comes from the IP protocol chunk by the same rule `--hep-listen` uses, so a TLS, WS or WSS leg an OpenSIPS or Kamailio tracer sends reads the same from a file as from a socket, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to the HEP messages it unwraps. It still gates SIP that sipnab captures directly. It applies wherever sipnab reads packets: a headless run, `--cores N`, the TUI's own capture, and a capture opened or re-scanned inside the TUI. `--no-hep-parse` turns it off again when the config file sets `[capture] hep_parse = true`. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--no-hep-parse` | -- | off | Do not unwrap HEP found in the capture, even when `[capture] hep_parse = true`. The last of `-E` / `--no-hep-parse` typed wins. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob Feature: `hep`. Config: `[limits] hep_rate_limit` |
@@ -14695,7 +14699,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). Feature: `mcp-http` |
 | `--mcp-tls-cert` | `<FILE>` | -- | Serve MCP over HTTP with HTTPS, using this PEM certificate chain, the server's certificate first. Needs `--mcp-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1`, no client certificates; clients still authenticate with the bearer token. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. sipnab refuses it without `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). Feature: `mcp-http`. Config: `[mcp] tls_cert` |
 | `--mcp-tls-key` | `<FILE>` | -- | PEM private key for `--mcp-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. Feature: `mcp-http`. Config: `[mcp] tls_key` |
-| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one. Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `mcp-http` |
+| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one. Also reads `$SIPNAB_MCP_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `mcp-http` |
 | `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed); it becomes the minting key. Feature: `mcp-http` |
 | `--mcp-revoked-file` | `<FILE>` | -- | MCP revocation denylist (one token `id` per line; reloaded on mtime change). Feature: `mcp-http` |
 | `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. Feature: `mcp-http` |
@@ -14704,7 +14708,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-tools` | `<LIST>` | `full` | Which tools the MCP server registers: a comma-separated list of bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool names, names from `[mcp.bundles]`, or `full`. Every registered tool's name, description and schema goes to the client on `tools/list` and then stays in the model's context for the whole session. That is a fixed cost paid before the agent asks anything, and it grows with the surface rather than with the question. `core` holds nine tools that still answer a whole call end to end: `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report`. [Choosing which tools load](mcp-tools.md#choosing-which-tools-load) lists every bundle and its size. An unknown or empty name refuses the run, exit 2. sipnab removes the tools you did not choose from the router rather than hiding them, so a call to one of them fails as an unknown tool. The handshake names the tools sipnab loaded and the bundles it left out. Replaces `[mcp] tools`. Feature: `mcp`. Config: `[mcp] tools` |
 | `--mcp-output-schemas` | `[=BOOL]` | off | Send each tool's output schema on `tools/list`. Off by default: MCP makes output schemas optional, and they are more than half the bytes the tools cost a client (78,920 bytes for every tool without them, 181,691 with them, measured on 0.5.196). Responses carry the same JSON, as text and as `structuredContent`, either way; only a client that validates responses against a schema needs them. `--mcp-output-schemas=false` turns them off over a config that turns them on. Config: `[mcp] output_schemas`. Feature: `mcp` |
 | `--one-way-delay` | `<MS>` | -- | One-way network path delay, in milliseconds — the single MOS input a passive tap cannot measure directly. Declared here it beats an RTCP-reported round trip, which an unauthenticated packet can move, and that in turn beats the round trip sipnab derives from a sender-report echo carried in a receiver report; with none of the three, sipnab assumes 100 ms and says so. Config: `[media] one_way_delay_ms` |
-| `--mcp-max-rows` | `<N>` | `1000` | Maximum rows in one list-style MCP response. The consumer decides the right value: a small-context agent wants fewer, a batch client wants more. Config: `[limits] mcp_max_rows`. Do not mistake this for `-l`/`--limit`, which bounds dialogs tracked over the run |
+| `--mcp-max-rows` | `<N>` | `1000` | Maximum rows in one list-style MCP response. The consumer decides the right value: a small-context agent wants fewer, a batch client wants more. Config: `[limits] mcp_max_rows`. Do not mistake this for `-l`/`--limit`, which bounds dialogs tracked over the run. At least 1: sipnab refuses `0` |
 | `--mcp-max-body-bytes` | `<N>` | `4096` | Maximum bytes of SIP body or matched snippet in one MCP response. `--mcp-max-rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. An SDP body with a dozen codecs and ICE candidates passes the default, and the agent reading the clipped half cannot tell a truncated answer from a short one. Config: `[limits] mcp_max_body_bytes` |
 | `--mcp-max-wait-seconds` | `<N>` | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `--mcp-max-rows` and `--mcp-max-body-bytes` bound how much an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. `await_condition` lets an agent wait for a condition on a live capture instead of re-asking `tail_dialogs` and paying a model turn per empty reply, and an unbounded wait is a held connection by another name. sipnab clamps a larger request to it and says so in the response. Config: `[limits] mcp_max_wait_seconds` |
 | `--mcp-max-findings` | `<N>` | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `--mcp-max-rows` and `--mcp-max-body-bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture. Config: `[limits] mcp_max_findings` |
@@ -14835,12 +14839,12 @@ CoreAudio the moment anything touches it.
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--max-capture-sources` | `<N>` | `65536` | Distinct capture sources sipnab remembers by name: input files, the device, HEP senders, traced processes. A packet from a new source past the limit is still analyzed but carries no `frame` pointer, so `--show-frame` cannot reach its bytes; sipnab counts it (`sipnab_capture_sources_refused_total`) and warns once. sipnab refuses to start, exit 2, when the limit cannot hold the input files or device plus `[limits] max_tracked_peers` HEP senders. Accepts 1 and up. Config: `[limits] max_capture_sources` |
-| `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions. Config: `[limits] max_reassembly` |
+| `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions. At least 1: sipnab refuses `0`. Config: `[limits] max_reassembly` |
 | `--reassembly-ttl` | `<SECS>` | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `--max-reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `--max-reassembly` caps the extra state either way. Config: `[limits] reassembly_ttl_secs` |
 | `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--lint-suppress-file` | `<FILE>` | discovered | Read lint suppressions from this file instead of discovering one. Without it the binary looks for a `.sipnablint` beside the capture and climbs toward the project root — the nearest ancestor holding a `.git` — which is exactly what the MCP lint tools already do. Until this shipped the two surfaces disagreed about the same file on disk: the MCP tools honored a `.sipnablint` checked in beside a capture while the binary silently ignored it, so the CI user was on the side that could not see it. A named file sipnab cannot open fails hard rather than falling back to a full-catalog run. sipnab names whatever applies on stderr, with a count of what it silenced. Needs `--lint` |
 | `--lint-no-suppress` | -- | off | Ignore any `.sipnablint`, including one named by `--lint-suppress-file`. The "show me everything, including what we have agreed to live with" switch; it wins over both the explicit file and discovery, so a wrapper script that always passes a suppression file can still be overridden from the command line. Needs `--lint` |
-| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At 2 or more cores sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead, exactly as before. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way. With `--retain-audio` the payload cap applies PER WORKER, so the run's ceiling is `[limits] max_audio_frames` times this number times `--max-streams` |
+| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At 2 or more cores sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead, exactly as before. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way. With `--retain-audio` the payload cap applies PER WORKER, so the run's ceiling is `[limits] max_audio_frames` times this number times `--max-streams` |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
 | `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes sipnab may inflate out of one gzip-compressed input: a `-I capture.pcap.gz`, every gzip layer of an archive summed across the layers of one input, the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM or disk. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
 | `--max-tcp-buffer` | `<BYTES>` | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
@@ -14873,27 +14877,46 @@ CoreAudio the moment anything touches it.
 `--vcon-forward` runs sipnab as the process that delivers an
 `--export-vcon-dir` spool to a vCon store. It captures nothing, and sipnab
 refuses it beside any capture source, listener or export flag. The other flags
-in this section need it. Needs the `vcon` Cargo feature. More:
+in this section need it. Each flag but `--vcon-forward`, `--vcon-forward-once`
+and `--vcon-forward-auth` has a `[vcon_forward]` key in the config file, which
+the flag overrides. Needs the `vcon` Cargo feature. More:
 [Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store).
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--vcon-forward` | `<SPOOL_DIR>` | -- | Deliver each container in this spool to `--vcon-forward-url`, byte for byte, and move it out of the spool by the store's answer: `2xx` to `--vcon-forward-done`, another `4xx` to `--vcon-forward-failed` beside a `<name>.error.json` record, `5xx`, a timeout or no connection left in place and retried after 2 s, doubling to at most 5 minutes. A `401` or `403` refuses the credentials or the client for every container, so the forwarder stops instead: it sends nothing more, moves no file, logs the status and the first 200 bytes of the answer, and exits `3`, in either mode. Skips dot-prefixed names and names that do not end in `.json`. A container sipnab rewrites under the same name goes again. A `2xx` means the store accepted the container, not that it stored it. Requires `--vcon-forward-url` and `--vcon-forward-auth-file` |
-| `--vcon-forward-url` | `<URL>` | -- | Where the forwarder POSTs each container, `http://` or `https://`, with its path and query. sipnab refuses credentials in the URL: they belong in the auth file. Plain `http://` to a host other than loopback logs a warning |
-| `--vcon-forward-auth-file` | `<FILE>` | -- | File holding one line, `Header-Name: value`, sent with every request: `Authorization: Bearer <token>`, or `x-conserver-api-token: <key>`. Refused when other users can read it (`chmod 600` it), by the rule sipnab applies to its other secret files. The value never appears in a log line, an error or a failure record |
-| `--vcon-forward-done` | `<DIR>` | `<SPOOL_DIR>/delivered` | Where a delivered container goes, under its own name. Created mode `0700` if missing. Must be on the spool's file system |
-| `--vcon-forward-failed` | `<DIR>` | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`: the status, the method and URL, and the first 8 KiB of the store's answer with the auth value removed, or the forwarder's own reason. Created mode `0700` if missing. Must be on the spool's file system |
-| `--vcon-forward-replace-url` | `<TEMPLATE>` | -- | When the POST answers `409`, PUT the same bytes to this URL with `{uuid}` replaced by the container's `uuid`. Without it a `409` is a refusal like any other `4xx` |
-| `--vcon-forward-once` | -- | off | Make one pass and exit: `0` when the store accepted every container or the spool held none, `1` when the store refused one or one is still waiting, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`. Without it the forwarder passes over the spool every `--vcon-forward-interval` seconds until SIGTERM or SIGINT, and sends nothing after the signal |
-| `--vcon-forward-interval` | `<SECS>` | `5` | Seconds between passes, 1 to 3600 |
-| `--vcon-forward-timeout` | `<SECS>` | `30` | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600 |
-| `--vcon-forward-ca` | `<FILE>` | host bundle | Trust only the CA certificates in this PEM file for an `https://` store. Without it the forwarder trusts the host's CA bundle |
-| `--vcon-forward-compat` | `<vcon-store>` | -- | Change the copy SENT for one store's known deviation from the drafts, and log each change. `vcon-store` sends `extensions` as an object of names mapped to `true`, because vcon.store refuses the array of strings section 4.1.3 of the drafts defines, and refuses a container whose Dialog Object lacks `type` or `parties`. The container on disk never changes. More: [Send sipnab's vCons to vcon.store](vcon-store.md) |
+| `--vcon-forward` | `<SPOOL_DIR>` | -- | Deliver each container in this spool to `--vcon-forward-url`, byte for byte, and move it out of the spool by the store's answer: `2xx` to `--vcon-forward-done`, another `4xx` to `--vcon-forward-failed` beside a `<name>.error.json` record, `5xx`, a timeout or no connection left in place and retried after `--vcon-forward-backoff-first` (2 s), doubling to at most `--vcon-forward-backoff-cap` (5 minutes). A `401` or `403` refuses the credentials or the client for every container, so the forwarder stops instead: it sends nothing more, moves no file, logs the status and the first 200 bytes of the answer, and exits `3`, in either mode. Skips dot-prefixed names and names that do not end in `.json`. A container sipnab rewrites under the same name goes again. A `2xx` means the store accepted the container, not that it stored it. Needs a URL and a credential, each from its flag or its `[vcon_forward]` key; without one sipnab refuses the run with exit `2`, naming both |
+| `--vcon-forward-kind` | `<KIND>` | `generic` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when the URL names no path, the header when the credential is a bare key, and the payload adaptation; an explicit setting overrides each. `generic` supplies nothing. The table: [Choose the store kind](vcon.md#choose-the-store-kind). Config: `[vcon_forward] kind` |
+| `--vcon-forward-url` | `<URL>` | -- | Where the forwarder POSTs each container, `http://` or `https://`, with its path and query. With a `--vcon-forward-kind` other than `generic`, a URL with no path is the store's base URL and the kind adds its ingest path. sipnab refuses credentials in the URL: they belong in the auth file. Plain `http://` to a host other than loopback logs a warning. Config: `[vcon_forward] url` |
+| `--vcon-forward-auth` | `<HEADER>` | -- | The credential itself, also read from `SIPNAB_VCON_FORWARD_AUTH`, as the auth file would hold it: one `Header-Name: value` line, or the bare key with a `--vcon-forward-kind` other than `generic`. A flag's value is visible in the process list to other users of the host: prefer the environment variable or `--vcon-forward-auth-file`. Refused when empty, beside `--vcon-forward-auth-file`, and beside `[vcon_forward] auth_file`. `--help` names the variable and never shows its value. The value never appears in a log line, an error or a failure record. A capture run ignores the variable |
+| `--vcon-forward-auth-file` | `<FILE>` | -- | File holding one line, `Header-Name: value`, sent with every request: `Authorization: Bearer <token>`, or `x-conserver-api-token: <key>`. With a `--vcon-forward-kind` other than `generic` it may hold the bare key instead. Refused when other users can read it (`chmod 600` it), by the rule sipnab applies to its other secret files. The value never appears in a log line, an error or a failure record. Config: `[vcon_forward] auth_file` |
+| `--vcon-forward-done` | `<DIR>` | `<SPOOL_DIR>/delivered` | Where a delivered container goes, under its own name. Created mode `0700` if missing. Must be on the spool's file system. Config: `[vcon_forward] done` |
+| `--vcon-forward-failed` | `<DIR>` | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`: the status, the method and URL, and the first `--vcon-forward-max-error-body` bytes (8 KiB) of the store's answer with the auth value removed, or the forwarder's own reason. Created mode `0700` if missing. Must be on the spool's file system. Config: `[vcon_forward] failed` |
+| `--vcon-forward-replace-url` | `<TEMPLATE>` | -- | When the POST answers `409`, PUT the same bytes to this URL with `{uuid}` replaced by the container's `uuid`. Without it a `409` is a refusal like any other `4xx`. Config: `[vcon_forward] replace_url` |
+| `--vcon-forward-once` | -- | off | Make one pass and exit: `0` when the store accepted every container or the spool held none, `1` when the store refused one or one is still waiting, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`. A config file sipnab cannot read, or one that holds a `[vcon_forward]` number, `kind` or `compat` outside its range or list or an empty path, exits `1` before the pass, as any run does; a refused `url` or `replace_url` exits `2`. Without it the forwarder passes over the spool every `--vcon-forward-interval` seconds until SIGTERM or SIGINT, and sends nothing after the signal |
+| `--vcon-forward-interval` | `<SECS>` | `5` | Seconds between passes, 1 to 3600. Config: `[vcon_forward] interval` |
+| `--vcon-forward-timeout` | `<SECS>` | `30` | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600. Config: `[vcon_forward] timeout` |
+| `--vcon-forward-ca` | `<FILE>` | host bundle | Trust only the CA certificates in this PEM file for an `https://` store. Without it the forwarder trusts the host's CA bundle. Config: `[vcon_forward] ca` |
+| `--vcon-forward-backoff-first` | `<SECS>` | `2` | Seconds a container waits after its first failed try (a `5xx`, a timeout or no connection); each failed try doubles the wait, up to `--vcon-forward-backoff-cap`. 1 to 4294967295, and no longer than the cap. Config: `[vcon_forward] backoff_first` |
+| `--vcon-forward-backoff-cap` | `<SECS>` | `300` | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
+| `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
+| `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
+| `--vcon-forward-compat` | `<none\|vcon-store>` | the kind's | Change the copy SENT for one store's known deviation from the drafts, and log each change. `none` sends every container byte for byte, the `generic` and `conserver` kinds' default. `vcon-store` sends `extensions` as an object of names mapped to `true`, because vcon.store refuses the array of strings section 4.1.3 of the drafts defines, and refuses a container whose Dialog Object lacks `type` or `parties`: the adaptation the `vcon-store` kind applies. The container on disk never changes. More: [Send sipnab's vCons to vcon.store](vcon-store.md). Config: `[vcon_forward] compat` |
 
 **Examples**
 
 - `sipnab --vcon-forward spool --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once` — deliver what is in `spool` to a self-hosted conserver's `sipnab` ingress list once, and exit `0` when the conserver accepted all of it
-- `sipnab --vcon-forward spool --vcon-forward-url https://api.vcon.store/v1/vcons --vcon-forward-auth-file vcon-store.auth --vcon-forward-compat vcon-store` — keep delivering to vcon.store, through the compat mode its validator needs, until stopped
+- `sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key` — keep delivering to vcon.store until stopped: the kind adds `/v1/vcons`, sends the key in the file as `Authorization: Bearer <key>`, and applies the adaptation its validator needs
+- `sipnab --vcon-forward spool --vcon-forward-kind conserver --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-auth-file conserver.key --vcon-forward-once` — deliver to a self-hosted conserver's `sipnab` ingress list once: the kind adds `/vcon/external-ingress?ingress_list=sipnab` and sends the key as `x-conserver-api-token`
+- `sipnab --vcon-forward spool --config /etc/sipnab/vcon-store.toml` — take every forwarder setting from a config file's `[vcon_forward]` section
+- `sipnab --vcon-forward spool --vcon-forward-url http://127.0.0.1:8000/v1/vcons --vcon-forward-auth 'Authorization: Bearer test-token' --vcon-forward-once` — a test against a store on this machine, with the credential on the command line, where every user of the host can read it in the process list; for anything else, export `SIPNAB_VCON_FORWARD_AUTH` instead
+- `sipnab --vcon-forward spool --vcon-forward-kind conserver --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-auth test-key --vcon-forward-once` — the same with a bare key, which the `conserver` kind sends as `x-conserver-api-token: test-key`
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-backoff-first 10 --vcon-forward-backoff-cap 600` — a store that recovers slowly: wait 10 s after the first failed try, doubling to at most 10 minutes
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-backoff-first 1 --vcon-forward-backoff-cap 30 --vcon-forward-once` — retry quickly, never waiting more than 30 s between tries
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-max-error-body 65536 --vcon-forward-once` — keep up to 64 KiB of each refusal's answer in its `<name>.error.json` record
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-max-error-body 512 --vcon-forward-max-response-head 16384` — keep 512 bytes of each refusal, and treat an answer whose headers exceed 16 KiB as no answer
+- `sipnab --vcon-forward spool --vcon-forward-url https://proxy.example.com/vcon --vcon-forward-auth-file vcon.auth --vcon-forward-max-response-head 131072 --vcon-forward-once` — a store behind a proxy that adds large headers: read up to 128 KiB of them
+- `sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key --vcon-forward-compat none --vcon-forward-once` — send containers to vcon.store unchanged, without the kind's adaptation, to see what the store answers for the form the drafts define
+- `sipnab --vcon-forward spool --vcon-forward-url https://api.vcon.store/v1/vcons --vcon-forward-auth-file vcon-store.auth --vcon-forward-compat vcon-store --vcon-forward-once` — the vcon.store adaptation with every other setting explicit, as before `--vcon-forward-kind` existed
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-timeout 10` — a store whose certificate a private CA issued: trust only that CA, and give up on a silent store after ten seconds rather than thirty
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-interval 60 --vcon-forward-timeout 120` — a store across a slow link: pass over the spool once a minute and wait up to two minutes for each answer
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
@@ -17478,7 +17501,7 @@ Packet capture defaults.
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
-| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does. For a proxy that mirrors HEP to a loopback port which every reader sniffs instead of binding (`device = "lo"`). `--no-hep-parse` turns it off for one run. Feature: `hep` |
+| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the note below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
@@ -17505,13 +17528,24 @@ hep_parse = true
 bpf_filter = "udp dst port 9063"
 ```
 
+sipnab reads the copies without any process listening on UDP/9063, but a port
+with no listener costs messages with some senders. The kernel answers each
+datagram sent to a closed port with an ICMP port-unreachable message, and a
+sender that uses a connected UDP socket then fails its next send. Measured on
+2026-10-07: `sipnab -H 127.0.0.1:19063` sent a 7-message call to a port with no
+listener, 3 of the 7 sends failed, and a reader on `lo` saw 4 messages. With a
+process bound to the port, the sender delivered all 7 and the reader saw 7. Keep a receiver bound to
+the port while you sniff it: `sipnab -L 127.0.0.1:9063` is one, and it reads the
+copies itself. Whether a proxy loses copies this way depends on whether its HEP
+sender uses a connected socket.
+
 ### [display]
 
 Output and TUI display settings.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. `--color` overrides it |
+| `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. sipnab refuses any other value, naming the key. `--color` overrides it |
 | `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
@@ -17670,8 +17704,8 @@ runs, and does nothing about TFPS at any other time.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs. On a machine with no `tfps_ctl` anywhere, every read answers `installed: false`, and sipnab refuses a ban that actions allow, as one it could not ask TFPS about (`502` over REST) |
-| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db <path>`: two arguments, which a wrapper script standing in for `tfps_ctl` receives as `"$@"`. Absent: `tfps_ctl` uses its own default |
+| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs. On a machine with no `tfps_ctl` anywhere, every read answers `installed: false`, and sipnab refuses a ban that actions allow, as one it could not ask TFPS about (`502` over REST). An empty string fails validation and names the key |
+| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db <path>`: two arguments, which a wrapper script standing in for `tfps_ctl` receives as `"$@"`. Absent: `tfps_ctl` uses its own default. An empty string fails validation and names the key |
 
 ```toml
 [tfps]
@@ -17740,7 +17774,7 @@ each limit it has spent. `sipnab --journal-show` prints what it holds, and
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `dir` | string | `/var/lib/sipnab/journal` | The journal directory. `--journal-dir` overrides it. sipnab creates it with mode 0700 if absent, and the packaged service gets `/var/lib/sipnab` from systemd. Each record reaches the disk before the action it describes runs, and the files hold no token or request body. Files close at 16 MiB, and sipnab deletes closed files more than 90 days old when the next one starts |
+| `dir` | string | `/var/lib/sipnab/journal` | The journal directory. `--journal-dir` overrides it. sipnab creates it with mode 0700 if absent, and the packaged service gets `/var/lib/sipnab` from systemd. Each record reaches the disk before the action it describes runs, and the files hold no token or request body. Files close at 16 MiB, and sipnab deletes closed files more than 90 days old when the next one starts. An empty string fails validation and names the key |
 
 ```toml
 [journal]
@@ -17753,8 +17787,10 @@ Thresholds the signaling and media checks compare against. A number here
 decides whether a call that is working gets reported as broken, so the defaults
 are standards figures and a network that knows its own numbers beats a
 recommendation written for the general case. Every value must be a finite
-number greater than zero, and a value that is not fails validation and names
-the key.
+number greater than zero: sipnab refuses `0`, a negative number, `nan` and
+`inf`, naming the key. `duration_asymmetry_pct` must also be 100 or less,
+`cn_suppression_ratio` 1 or less, and `late_media_ms` is a whole number of at
+least 1. The matching flags follow the same rules.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -17853,8 +17889,8 @@ Resource limits to prevent unbounded memory growth.
 |-----|------|---------|-------------|
 | `dialog_limit` | integer | `100000` | Maximum tracked dialogs. `--limit` overrides it |
 | `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key. `--mcp-max-rows` overrides it |
-| `max_streams` | integer | `50000` | Maximum RTP streams. `--max-streams` overrides it |
-| `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `--max-reassembly` overrides it |
+| `max_streams` | integer | `50000` | Maximum RTP streams. `0` fails validation and names the key. `--max-streams` overrides it |
+| `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `0` fails validation and names the key. `--max-reassembly` overrides it |
 | `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. `--hep-rate-limit` overrides it |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
@@ -17876,7 +17912,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run and this does not bound it. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. `--max-gunzip-bytes` overrides it |
 | `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message so both halves parse as malformed — the peer that sent a valid message is the one reported broken. Raise it on such a trunk. The floor is one SIP header line (8192); below that no message survives, and sipnab refuses the value by name. `--max-tcp-buffer` overrides it |
 | `api_max_rows` | integer | `1000` | Rows one list-style REST response returns. The REST counterpart of `mcp_max_rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. `--api-max-rows` overrides it. `0` fails validation and names the key |
-| `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. `--api-rate-limit-per-peer` overrides it |
+| `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. At most 4294967295; a larger value fails validation and names the key. `--api-rate-limit-per-peer` overrides it |
 | `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint, so raise it where several collectors share one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key: the gate would then refuse every scrape |
 | `max_tracked_peers` | integer | `4096` | Distinct peers one rate-limit window holds, across every surface sipnab meters: HEP source addresses and MCP callers. Past it sipnab REFUSES a peer it has not already seen this second rather than waving it through, so on a collector aggregating from more agents than this the surplus never enters the capture. Raise it there. The floor is 2, and sipnab refuses a smaller value by name: at 1 the first peer to send in a window takes the only slot and sipnab turns every other peer away for the rest of it |
 | `max_capture_sources` | integer | `65536` | Distinct capture sources sipnab remembers by name: each input file, the device, every HEP sender (`capture_id@address`) and every traced process. The table holds a name so a packet can point back at the bytes it came from: the `frame` field of `--json`, which `--show-frame` follows and `--mcp-evidence-ring` keys on. Past the limit a packet from a NEW source is still analyzed, but carries no `frame` pointer, and sipnab counts it in `sipnab_capture_sources_refused_total` and warns once. sipnab refuses to start when the limit cannot hold every source the run can have: the input files, or the device, plus `max_tracked_peers` senders on a HEP listener. Raise it, or lower `max_tracked_peers`. The floor is 1. Flag: `--max-capture-sources` |
@@ -17998,10 +18034,10 @@ collector's certificate against, and the certificate a TLS listener
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. `--hep-tls-ca` overrides it |
-| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. `--hep-tls-extra-ca` overrides it |
-| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. `--hep-tls-cert` overrides it |
-| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--hep-tls-key` overrides it |
+| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. An empty string fails validation and names the key. `--hep-tls-ca` overrides it |
+| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. `--hep-tls-extra-ca` overrides it |
+| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. `--hep-tls-cert` overrides it |
+| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--hep-tls-key` overrides it |
 
 The sender's trust is one setting. When the command line names
 `--hep-tls-ca` or `--hep-tls-extra-ca`, it replaces both `tls_ca` and
@@ -18011,6 +18047,43 @@ The sender's trust is one setting. When the command line names
 ```toml
 [hep]
 tls_extra_ca = "/etc/sipnab/collector-ca.pem"
+```
+
+### `[vcon_forward]`
+
+The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
+[Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store)). The
+spool and `--vcon-forward-once` stay on the command line. The credential's
+value has no key: `auth_file` names the file that holds it, and
+`--vcon-forward-auth` or the `SIPNAB_VCON_FORWARD_AUTH` environment variable
+carries it without a file. A flag replaces its key. With neither, a `kind`
+other than `generic` supplies the value, and then the default applies.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path, the header when the credential is a bare key, and the payload adaptation. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
+| `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows: sipnab refuses a URL with a user name or password in it, and the message shows that part as `[redacted]`. `--vcon-forward-url` overrides it |
+| `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. `--vcon-forward-replace-url` overrides it |
+| `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. `--vcon-forward-auth-file` overrides it |
+| `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
+| `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
+| `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
+| `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
+| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-forward-timeout` overrides it |
+| `compat` | string | the kind's | `none` or `vcon-store`: the adaptation of the copy sent. `vcon-store` is the adaptation the `vcon-store` kind applies. `--vcon-forward-compat` overrides it |
+| `backoff_first` | integer | `2` | Seconds a container waits after its first failed try, 1 to 4294967295; each failed try doubles the wait. No longer than `backoff_cap`. `--vcon-forward-backoff-first` overrides it |
+| `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
+| `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
+| `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
+
+```toml
+[vcon_forward]
+kind = "vcon-store"
+url = "https://api.vcon.store"
+auth_file = "/etc/sipnab/vcon-store.key"
+done = "/var/spool/sipnab-vcon-sent"
+failed = "/var/spool/sipnab-vcon-held"
+interval = 10
 ```
 
 ### [privilege]
@@ -18067,7 +18140,7 @@ or aborts so the OS can produce a core dump.
 |-----|------|---------|-------------|
 | `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
 | `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
-| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) land in |
+| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) land in. An empty string fails validation and names the key |
 | `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
 
 ```toml
@@ -18749,7 +18822,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.205 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.206 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -19965,7 +20038,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.205",
+  "version": "0.5.206",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -20633,7 +20706,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.205"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.206"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -23299,7 +23372,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.205",
+  "version": "0.5.206",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -31032,17 +31105,19 @@ lists what a container carries.
 
 ### Run it
 
-Put the one header that authenticates you in a file that only you can read.
-The forwarder refuses the file when your group or other users can read it, by
-the same rule sipnab applies to its other secret files. The file holds one
-line, `Header-Name: value`:
+The forwarder needs two things: where the store is, and the credential that
+authenticates you. Give the store's URL once, in a shell variable, and put the
+one header that authenticates you in a file that only you can read. The
+forwarder refuses the file when your group or other users can read it, by the
+same rule sipnab applies to its other secret files. The file holds one line,
+`Header-Name: value`:
 
 ```sh
 # Run all of these, in order.
+STORE_URL='http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab'
 umask 077
 printf 'x-conserver-api-token: %s\n' "$KEY" > vcon-forward.auth
-sipnab --vcon-forward ./spool \
-  --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' \
+sipnab --vcon-forward ./spool --vcon-forward-url "$STORE_URL" \
   --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once
 echo "exit $?"
 ```
@@ -31052,13 +31127,133 @@ the line is `Authorization: Bearer <token>` instead. The value never appears in
 a log line, an error message or a failure record: the forwarder removes it from
 any store answer it keeps, even one that echoes the request back.
 
+The credential can come from the environment instead of a file:
+`SIPNAB_VCON_FORWARD_AUTH` holds exactly what the file would hold. The
+`--vcon-forward-auth` flag takes the same value, but a flag's value is visible
+in the process list to other users of the host, so prefer the variable or the
+file. The credential has one source: sipnab refuses the variable or the flag
+beside `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, and refuses an
+empty one. A capture run ignores the variable.
+
+```sh
+# Run all of these, in order.
+export SIPNAB_VCON_FORWARD_AUTH="x-conserver-api-token: $KEY"
+sipnab --vcon-forward ./spool --vcon-forward-url "$STORE_URL" --vcon-forward-once
+```
+
 `--vcon-forward-once` makes one pass and exits: `0` when the store accepted
 every container, or the spool held none, `1` when the store refused one or
-one is still waiting, and `3` when the store refused the credentials or the
-client. Without it the forwarder makes a pass every `--vcon-forward-interval`
-seconds (default 5) until SIGTERM or SIGINT. Stopping it means stopping: it
-sends nothing more after the signal, and a container it had not reached stays
-in the spool for the next run.
+one is still waiting, `2` when sipnab refuses a setting, and `3` when the store
+refused the credentials or the client. A config file sipnab refuses exits `1`,
+as on any run. Without `--vcon-forward-once` the forwarder makes a pass every
+`--vcon-forward-interval` seconds (default 5) until SIGTERM or SIGINT. Stopping
+it means stopping: it sends nothing more after the signal, and a container it
+had not reached stays in the spool for the next run.
+
+### Choose the store kind
+
+Stores differ in where they take a container, how they authenticate, what they
+answer for a uuid they hold, and which parts of the drafts they accept.
+`--vcon-forward-kind` (or `[vcon_forward] kind`) names the kind of store, and
+the kind supplies those values, so you give the store's base URL and the bare
+key:
+
+| Kind | Ingest path added to a base URL | The header a bare key goes in | A uuid it holds | Copy sent |
+|---|---|---|---|---|
+| `generic` (default) | none: the URL is the endpoint | not accepted: give `Header-Name: value` | not measured | unchanged |
+| `vcon-store` | `/v1/vcons` | `Authorization: Bearer <key>` | `409`; set `--vcon-forward-replace-url` to PUT it instead | `extensions` as an object, as `--vcon-forward-compat vcon-store` does |
+| `conserver` | `/vcon/external-ingress?ingress_list=sipnab` | `x-conserver-api-token: <key>` | `204`, and the store replaces its copy | unchanged |
+
+Each value is what the store did when measured on 2026-10-07. vcon.store:
+the measurements in
+[Send sipnab's vCons to vcon.store](vcon-store.md#the-measurements). conserver:
+a self-hosted vCon server, sent a synthetic container from sipnab's test
+fixtures. It answered `204` for a new container, and `GET /vcon/{uuid}` then
+returned the container with an `amended` member added. It answered `204` for
+the same uuid sent again, and the read-back then showed the second copy. It
+answered `422` for a body that is not JSON and for one without `uuid`, and `403`
+with no key or a wrong one. Every kind counts any `2xx` as delivered. The
+`sipnab` ingress list is the one
+[Run sipnab with a vCon server](vcon-sipnab.md) creates.
+
+An explicit setting overrides each value the kind supplies:
+
+- A URL that names a path is the endpoint as written; the kind adds its path
+  only to a URL with none (`https://api.vcon.store`, not
+  `https://api.vcon.store/v1/vcons`).
+- The forwarder sends a credential that is a full `Header-Name: value` line as
+  written. The kind forms the header only from a bare key, so give a key that
+  itself holds a colon as the full line.
+- `--vcon-forward-compat` (or `[vcon_forward] compat`) replaces the kind's
+  adaptation: `none` sends the container unchanged to a `vcon-store` kind, and
+  `vcon-store` adapts it for a `generic` one. `--vcon-forward-compat vcon-store`
+  means what it meant before kinds existed.
+- `--vcon-forward-replace-url` applies to any kind. No kind sets one: nobody has
+  measured a `PUT` to vcon.store.
+
+```sh
+# Run all of these, in order.
+STORE_URL=http://127.0.0.1:8000
+umask 077
+printf '%s\n' "$KEY" > conserver.key
+sipnab --vcon-forward ./spool --vcon-forward-kind conserver \
+  --vcon-forward-url "$STORE_URL" --vcon-forward-auth-file conserver.key \
+  --vcon-forward-once
+```
+
+### Keep the settings in sipnab.toml
+
+Every forwarder flag but `--vcon-forward`, `--vcon-forward-once` and
+`--vcon-forward-auth` has a key in the `[vcon_forward]` section of the
+[config file](config-reference.md#vcon_forward). A flag overrides its key, so a
+file holds the standing settings and a command line changes one for one run:
+
+```toml
+[vcon_forward]
+kind = "conserver"
+url = "http://127.0.0.1:8000"
+auth_file = "/etc/sipnab/conserver.key"
+done = "/var/spool/sipnab-vcon-sent"
+failed = "/var/spool/sipnab-vcon-held"
+interval = 5
+```
+
+```sh
+sipnab --vcon-forward /var/spool/sipnab-vcon --config /etc/sipnab/vcon-forward.toml
+```
+
+sipnab checks each key by the rule its flag follows. A number out of range, an
+unknown kind or compat name, or a first back-off longer than the cap stops any
+run that loads the file. A URL or a credential the forwarder cannot use stops the
+forwarder at startup, naming the key.
+
+### Deliver to two stores
+
+One forwarder delivers to one store, and it moves each container out of the
+spool once the store accepts it, so two forwarders cannot share one spool: the
+first would take every container from the second. To deliver to two stores,
+chain them. The second forwarder's spool is the first one's delivered
+directory, and each has its own delivered directory. Run each as a process of
+its own, in two terminals or as two services. The first delivers to a
+conserver:
+
+```sh
+sipnab --vcon-forward ./spool --vcon-forward-kind conserver \
+  --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-auth-file conserver.key \
+  --vcon-forward-done ./spool/delivered
+```
+
+The second delivers what the first delivered to vcon.store:
+
+```sh
+sipnab --vcon-forward ./spool/delivered --vcon-forward-kind vcon-store \
+  --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key \
+  --vcon-forward-done ./spool/delivered/vcon-store
+```
+
+A container reaches the second store only after the first accepted it. A
+container the first refused stays in the first one's failed directory and
+never reaches the second.
 
 ### What it does with each container
 
@@ -31072,10 +31267,13 @@ from the file, and then moves the file by the answer:
 | `401` or `403` | stops. The answer refuses the credentials or the client, so every container would draw it: the forwarder sends nothing more, moves no file, logs one error line naming the status and the first 200 bytes of the answer, and exits `3`, with or without `--vcon-forward-once` |
 | `409`, with `--vcon-forward-replace-url` | PUTs the same bytes to that URL, with `{uuid}` replaced by the container's `uuid`, and acts on that answer |
 | any other `4xx`, `409` included without a replace URL | moves the file to `--vcon-forward-failed`, `failed/` in the spool by default, beside `<name>.error.json`, and logs one line naming the file and the status |
-| `5xx`, a timeout, or no connection | leaves the file in the spool and tries it again after 2 s, then 4 s, 8 s and so on up to 5 minutes. The other containers are not held up |
+| `5xx`, a timeout, or no connection | leaves the file in the spool and tries it again after `--vcon-forward-backoff-first` seconds (default 2), then twice that, and so on up to `--vcon-forward-backoff-cap` seconds (default 300). The other containers are not held up |
 
-`<name>.error.json` holds the status, the method and URL, and the first 8 KiB
-of the store's answer. The delivered and failed directories must be on the
+`<name>.error.json` holds the status, the method and URL, and the first
+`--vcon-forward-max-error-body` bytes (default 8192) of the store's answer. An
+answer whose status line and headers exceed `--vcon-forward-max-response-head`
+bytes (default 65536) counts as no answer, and the container waits for a
+retry. The delivered and failed directories must be on the
 spool's file system, so that every move is a rename.
 
 The forwarder reads the spool by the contract above. It skips dot-prefixed
@@ -31104,7 +31302,7 @@ sent, and leaves a newer one in the spool for the next pass.
   `401` or `403` for every container, so the forwarder stops at the first one
   and leaves the whole spool where it is. The log line quotes the start of the
   answer: a Cloudflare front that refuses the client answers `403` with
-  `error code: 1010`. Fix the auth file or the client, and start the
+  `error code: 1010`. Fix the credential or the client, and start the
   forwarder again.
 - **It does not delete anything.** The delivered directory keeps a copy of
   every container, and every copy is call data. Delete them on a schedule
@@ -34982,6 +35180,72 @@ container it cannot deliver because the server is down waits and goes again.
 everything it does with each answer. Remove the demo directory with
 `rm -r ~/vcon-forward-demo` when you finish: the delivered copy is call data.
 
+### The same delivery with the conserver kind
+
+`--vcon-forward-kind conserver` supplies the two values this server needs, so
+you give less: the kind adds the ingest path
+`/vcon/external-ingress?ingress_list=sipnab` to a base URL with no path, and
+sends a bare key as `x-conserver-api-token: <key>`. Run these in the demo
+directory, before you remove it.
+
+These three runs ran on 2026-10-07 against the same vCon server as the
+section above, with sipnab 0.5.206 built from source and that server's
+configuration file in place of `/opt/vcon/config.yml`.
+
+With the bare key in a file:
+
+```bash
+# Run all of these, in order.
+cd ~/vcon-forward-demo
+KEY=$(sed -n 's/^  sipnab: "\(.*\)"/\1/p' /opt/vcon/config.yml)
+(umask 077; printf '%s\n' "$KEY" > conserver.key)
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool --vcon-forward-kind conserver \
+  --vcon-forward-url http://127.0.0.1:8000 \
+  --vcon-forward-auth-file conserver.key --vcon-forward-once
+echo "exit $?"
+ls spool/delivered
+```
+
+With the bare key in the `SIPNAB_VCON_FORWARD_AUTH` environment variable
+instead of a file. sipnab refuses the variable beside an auth file, so the last
+line removes it from the shell:
+
+```bash
+# Run all of these, in order.
+cd ~/vcon-forward-demo
+export SIPNAB_VCON_FORWARD_AUTH="$(sed -n 's/^  sipnab: "\(.*\)"/\1/p' /opt/vcon/config.yml)"
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool --vcon-forward-kind conserver --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-once
+echo "exit $?"
+unset SIPNAB_VCON_FORWARD_AUTH
+```
+
+With the settings in a config file. The `[vcon_forward]` section holds every
+setting but the spool and `--vcon-forward-once`. This one names the key file
+from the first block:
+
+```toml
+[vcon_forward]
+kind = "conserver"
+url = "http://127.0.0.1:8000"
+auth_file = "/home/you/vcon-forward-demo/conserver.key"
+```
+
+```bash
+# Run all of these, in order.
+cd ~/vcon-forward-demo
+printf '[vcon_forward]\nkind = "conserver"\nurl = "http://127.0.0.1:8000"\nauth_file = "%s/vcon-forward-demo/conserver.key"\n' "$HOME" > forward.toml
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool --config forward.toml --vcon-forward-once
+echo "exit $?"
+```
+
+Each run logs one `delivered` line naming the file and the server's `204`, and
+exits `0`. The `conserver` kind sends the container unchanged, as the first
+command in this section does. Every forwarder setting and its key:
+[`[vcon_forward]` in the configuration reference](config-reference.md#vcon_forward).
+
 ## With Kamailio
 
 Set up the vCon server with the vCon server guide's first two steps,
@@ -35076,7 +35340,7 @@ describes.
 **Status on 2026-10-07: sipnab's containers work only through a compat
 mode, and only when they carry audio.** vcon.store refuses `extensions` in the
 form both vCon drafts define, so a sipnab container sent unchanged draws `400`.
-`--vcon-forward-compat vcon-store` sends a copy the store accepts, and leaves
+`--vcon-forward-kind vcon-store` sends a copy the store accepts, and leaves
 the container on disk unchanged. Even with it, the store refuses a container
 whose Dialog Object has no `type`, which is what sipnab writes for a call whose
 container carries no audio: the run kept none, or `--redact` withheld it. [The measurements](#the-measurements) are the evidence.
@@ -35117,26 +35381,41 @@ sipnab prints `Wrote N vCon container(s) to 'spool'.`
 
 ## 2. Put the token in a file
 
-vcon.store authenticates with a bearer token. Put it in a file only you can
-read. The forwarder refuses one that other users can read:
+vcon.store authenticates with a bearer token. Put the token alone in a file
+only you can read. The `vcon-store` kind sends it as
+`Authorization: Bearer <token>`. The forwarder refuses a file that other users
+can read:
 
 ```sh
 # Run all of these, in order.
 umask 077
-printf 'Authorization: Bearer %s\n' "$VCON_STORE_TOKEN" > vcon-store.auth
+printf '%s\n' "$VCON_STORE_TOKEN" > vcon-store.key
 ```
 
 `$VCON_STORE_TOKEN` is the token vcon.store issued you. The forwarder never
-prints it, and removes it from any answer it keeps.
+prints it, and removes it from any answer it keeps. Instead of a file, the
+`SIPNAB_VCON_FORWARD_AUTH` environment variable can hold the token.
 
 ## 3. Send them
 
 ```sh
 # Run all of these, in order.
-sipnab --vcon-forward spool --vcon-forward-url https://api.vcon.store/v1/vcons \
-  --vcon-forward-auth-file vcon-store.auth --vcon-forward-compat vcon-store \
+STORE_URL=https://api.vcon.store
+sipnab --vcon-forward spool --vcon-forward-kind vcon-store \
+  --vcon-forward-url "$STORE_URL" --vcon-forward-auth-file vcon-store.key \
   --vcon-forward-once
 echo "exit $?"
+```
+
+`--vcon-forward-kind vcon-store` adds `/v1/vcons` to the base URL, forms the
+header from the token, and applies the compat mode below. The same settings
+can live in `sipnab.toml`:
+
+```toml
+[vcon_forward]
+kind = "vcon-store"
+url = "https://api.vcon.store"
+auth_file = "/etc/sipnab/vcon-store.key"
 ```
 
 For each container the forwarder logs one line naming the change it made to
@@ -35148,15 +35427,15 @@ is different: it refuses the token or the client for every container, so the
 forwarder stops, moves nothing, logs the status and the start of the answer,
 and exits `3`.
 
-These commands ran on 2026-10-07 against a local stand-in that answers as
-the maintainer measured vcon.store answering, not against vcon.store itself. Without
-`--vcon-forward-compat vcon-store` the stand-in answered `400 extensions:
-Expected object, received array`, as the store does, and the forwarder moved
-the container to `spool/failed`.
+sipnab's tests run the `vcon-store` kind against a stand-in that answers as the
+maintainer measured vcon.store answering ([`tests/vcon_forward_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_forward_test.rs)), not
+against vcon.store itself.
 
 ## What the compat mode changes, and why
 
-`--vcon-forward-compat vcon-store` changes the copy the forwarder SENDS. The
+The `vcon-store` kind changes the copy the forwarder SENDS, as
+`--vcon-forward-compat vcon-store` does: the flag is the same adaptation for
+any kind, and `--vcon-forward-compat none` turns it off for this one. The
 file in the spool, and the copy in `spool/delivered`, keep the form the drafts
 define. The forwarder logs each change, one line per container.
 
@@ -35207,8 +35486,9 @@ says `form: unsigned`, `consentStatus: unknown` and `retentionAction: redact`.
 ## When something does not work
 
 - **Every container lands in `spool/failed` with status `400` and
-  `extensions: Expected object, received array`.** Add
-  `--vcon-forward-compat vcon-store`, move the files from `spool/failed` back
+  `extensions: Expected object, received array`.** Use
+  `--vcon-forward-kind vcon-store` (or `--vcon-forward-compat vcon-store`, and
+  no `--vcon-forward-compat none`), move the files from `spool/failed` back
   to `spool`, and run the forwarder again.
 - **A container lands in `spool/failed` with a reason about `type` and
   `parties`.** The container carries no audio: the run kept none for that
@@ -35218,7 +35498,7 @@ says `form: unsigned`, `consentStatus: unknown` and `retentionAction: redact`.
   Cloudflare front refused the request's client. The forwarder sends
   `User-Agent: sipnab/<version>`. Check that nothing between it and the store
   replaces that header. It moved no file, so run it again once you fix that.
-- **The forwarder exits `3` and logs `401`.** The token in `vcon-store.auth` is
+- **The forwarder exits `3` and logs `401`.** The token in `vcon-store.key` is
   wrong or expired. Every container is still in `spool`.
 
 ---
@@ -41006,6 +41286,639 @@ sudo apt-get purge -y sipnab
 
 ---
 
+<!-- source: CONTRIBUTING.md -->
+
+# Contributing to sipnab
+
+## Orientation
+
+Start with [docs/architecture.md](docs/architecture.md) — the module map, data flow,
+and the "where to add things" table. Then the
+**[developer index](docs/internals/README.md)**, which is the reading order
+for everything below the codemap: the SIP/RTP
+[domain primer](docs/internals/domain-primer.md), the
+[subsystem guide](docs/internals/subsystem-guide.md) (one packet, wire to
+screen), the [invariants](docs/internals/invariants.md) that must not break,
+the [test tiers](docs/internals/testing.md), ordered
+[walkthroughs](docs/internals/walkthroughs.md) for common changes, and
+[build/CI/release](docs/internals/build-ci-release.md). The threading topology
+and lock discipline live in
+[docs/internals/threading.md](docs/internals/threading.md).
+
+By participating in this project you agree to abide by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Contributor license agreement
+
+Sign the sipnab [Contributor License Agreement](CLA.md) before your first pull
+request merges. It is a one-time step covering all of your contributions, and
+you keep full ownership of your work. `CLA.md` holds the text;
+<https://sipnab.com/cla/> republishes it, and
+[CLA Assistant](https://cla-assistant.io/NormB/sipnab) shows the same words to
+signers. A gate keeps the first two copies identical, and
+[MAINTAINERS.md](MAINTAINERS.md#the-contributor-agreement) records who
+re-checks the third.
+
+Open your pull request as normal. If anyone who committed to it has not signed,
+the `CLAassistant` bot comments within a minute or so, and you have two ways to
+answer it: follow its link and authorize CLA Assistant with your GitHub account,
+or post this exact sentence as a pull request comment.
+
+> I have read the CLA Document and I hereby sign the CLA
+
+Post it verbatim -- the bot matches the whole sentence, so a reworded version
+reads as an ordinary comment and signs nothing. The bot then reports a
+`license/cla` status on the pull request, and turns it green once everyone who
+committed to that branch has signed.
+
+**A merge waits for it.** Branch protection on `main` requires `license/cla`
+alongside `CI success`, so a pull request cannot merge until everyone who
+committed to it has signed. Bot accounts such as Dependabot cannot sign an
+agreement. They are on the allowlist in the CLA Assistant settings, so their
+pull requests pass the check without one.
+
+## Prerequisites
+
+- Rust 1.99+ (edition 2024)
+- libpcap headers
+  - macOS: `xcode-select --install`
+  - Debian/Ubuntu: `apt install libpcap-dev`
+  - Fedora/RHEL: `dnf install libpcap-devel`
+- For fuzzing only: a nightly toolchain and `cargo-fuzz`
+  (`rustup toolchain install nightly && cargo install cargo-fuzz`).
+
+## Build from source
+
+```bash
+# Run all of these, in order.
+git clone https://github.com/NormB/sipnab.git
+cd sipnab
+cargo build
+```
+
+## Running tests
+
+The default feature set, which is the fast pass:
+
+```bash
+cargo test
+```
+
+Every feature-gated path, which is what CI gates on -- the default build leaves
+out `tls`, `hep`, `api`, `mcp`, and `wasm`, so their tests do not run above:
+
+```bash
+cargo test --all-features
+```
+
+These run the unit tests, the integration tests, the **property tests**
+(`tests/property_test.rs`, proptest — SIP/SDP build→parse round-trips and
+the filter-DSL total-function invariant), and the always-on smoke-fuzz
+gate (`tests/smoke_fuzz_test.rs`, no nightly needed). The TUI has three
+test tiers (insta snapshots, headless state-machine tests, and a PTY
+end-to-end suite) — see
+[docs/internals/tui-testing.md](docs/internals/tui-testing.md), including
+the `cargo insta test --accept` flow for updating snapshots.
+
+## Fuzzing
+
+The `fuzz/` crate holds 15 libFuzzer targets (nightly + `cargo-fuzz`).
+Run one from the repository root against its seed corpus — `cargo-fuzz`
+passes the corpus argument to the fuzz binary verbatim and never changes
+its directory, so from `fuzz/` it resolves to `fuzz/fuzz/corpus/sip_parser`
+and libFuzzer exits with `ERROR: The required directory ... does not
+exist` before it fuzzes anything:
+
+```bash
+cargo +nightly fuzz run fuzz_sip_parser fuzz/corpus/sip_parser
+```
+
+CI compile-checks every target on each push (`fuzz-check`), and the
+`.github/workflows/fuzz.yml` workflow runs the full 15-target matrix
+weekly (Mondays 05:17 UTC) and on demand
+(`gh workflow run Fuzz -f max_total_time=300`). Crash/timeout
+reproducers land in `fuzz/artifacts/` (git-ignored), and CI uploads them as
+artifacts. Minimize one into `fuzz/corpus/<parser>/` to turn it into a
+regression seed.
+
+## Running benchmarks
+
+```bash
+cargo bench --profile profiling
+```
+
+Pass `--profile profiling` every time, not as an option: plain `cargo bench`
+cannot build because the wasm `cdylib` crate-type forces the lib dependency
+unit onto `profile.release`'s `panic = "abort"` while bench harness units
+must unwind, so cargo compiles shared deps twice with incompatible type
+identities (see the `[lib]` notes in `Cargo.toml`). The profiling profile is
+release codegen with `panic = "unwind"`.
+
+## Git hooks
+
+This repo ships hooks in `.githooks/`. Enable them once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+**`pre-commit`** runs nine numbered gates, starting at 0: `cargo fmt --all --
+--check`, clippy (`--features full`, `-D warnings`), the full
+`cargo test --features full` suite, no `unwrap()`/`expect()` or abort macro
+(`panic!`, `unreachable!`, `todo!`, `unimplemented!`) in production code,
+WASM exports in sync with the site's JS, the homepage test count plus the
+site version matching `Cargo.toml`, no TODO stubs, and an advisory
+developer-docs coupling notice. Gates 0-5b block the commit. Gate 6 prints
+`WARN: N TODO/FIXME comments` and falls through — a count, not a veto — and
+gate 8 only prints `REVIEW` and a file list.
+
+Gate 0 runs first because it is the cheapest check in either hook (~1.4s), so
+an unformatted tree fails in seconds rather than after clippy and the whole
+suite. `pre-push` checks formatting again — that copy is what guarantees
+nothing unformatted reaches the remote — but it cannot catch the mistake early,
+and a formatting slip that only surfaces at push time costs a full
+commit-and-push cycle to undo.
+
+Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
+means adding a test obliges you to update the count in
+`website/templates/index.html` in the same commit.
+
+**`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
+which blocks the push:
+
+| Gate | Why it is not covered by `cargo test` |
+|---|---|
+| `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale at CI's pinned version, codespell, both site-mirror generators, the documentation ratchets, and whether a changed test count left the homepage tile behind. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
+| `cargo fmt --all -- --check` | Formatting is never checked by a build. |
+| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
+| `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
+| `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
+| `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
+| `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
+| `python3 scripts/check-yang.py` | A generator writes the `sipnab-diagnosis` YANG module from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) export every door writes. `NOT CHECKED` on a host with neither tool; CI installs both and fails without them. |
+| `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
+| `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
+| `scripts/tag-signature-check.sh` on every pushed `v*` tag | A release tag carries the name of the maintainer who publishes it. The tag must be an annotated tag with a good SSH signature from a key in `.github/allowed_signers`. Nothing in `cargo test` sees a tag. |
+
+CI's full feature matrix (every combination `.github/workflows/ci.yml` lists,
+with its `RUSTFLAGS=-Dwarnings`) is not in the hook: the Features job builds it
+on the project's aarch64 self-hosted runners within minutes of every push. To
+see it before you push, run `python3 scripts/check-feature-matrix.py`, which
+reads the combos and the flags out of `ci.yml` rather than restating them. The
+reduced combinations above still catch the commonest `#[cfg]` rot at the push.
+
+`SKIP_FMT_HOOK=1 git push` bypasses **all nine** — it is an emergency valve,
+not a clippy-only escape, and CI runs the same gates anyway. Verify the
+hooks themselves with `scripts/test-pre-commit.sh` and
+`scripts/test-pre-push.sh`.
+
+## Code style
+
+This project enforces consistent style through tooling and convention:
+
+- **Format:** `cargo fmt` before every commit. The project uses a `rustfmt.toml` config.
+- **Lint:** `cargo clippy -- -D warnings` must pass with zero warnings.
+- **No `.unwrap()` on external input.** The library surface returns typed
+  `thiserror` errors (`Error`, `ParseError`, `CaptureError` in
+  `src/error.rs`); `anyhow` is for binary/`app/` orchestration only.
+  `clippy::unwrap_used` bans `.unwrap()`/`.expect()` on library production
+  paths, and they are acceptable only on compile-time-known
+  values (regex literals) or in tests. `scripts/check-unwrap.py` bans
+  `panic!`, `unreachable!`, `todo!` and `unimplemented!` there too.
+  A site that no input can reach keeps the macro only with a
+  `// gate: <macro> because <reason>` comment directly above it; the
+  scanner reports a marker that names no reason.
+- **Rustdoc on public types.** Every `pub fn`, `pub struct`, and `pub enum` must have a `///` doc comment.
+- **No `unsafe` without justification.** Where code needs `unsafe`, add a `// SAFETY:` comment explaining the invariant.
+
+## Never publish a machine, an account, or a network
+
+This repository is public, and a private name that reaches `main` becomes
+public the moment someone pushes it -- removing it later leaves it in the history. It is
+also, every time, worse documentation: a reader cannot resolve your hostname or
+reach your LAN, so the example fails for them in a way that looks like a fault in
+the tool.
+
+Write what a reader can act on:
+
+| Instead of | Write | Why |
+|---|---|---|
+| a hostname (invented here: `buildbox-7`, `sbc-east-2`) | what the machine IS -- `the aarch64 self-hosted runner`, `Jetson AGX Thor, 14 cores` | A benchmark needs the hardware; it never needs the box's name. |
+| an address on your LAN (`192.0.2.40` stands in for one here) | [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) -- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | Reserved for documentation, and a reader can tell at a glance it is an example. |
+| a global IPv6 address | [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849) -- `2001:db8::/32` | Same reason. |
+| a real domain (`corp.example-isp.com`) | [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) -- `example.com`, or a `.test` / `.invalid` name | An address at a real domain reaches a real person. |
+| `/home/you/pcaps` | `$HOME`, `/srv/pcaps`, or a path relative to the repo | An absolute home path names your account and runs on one machine. |
+| a gate log or a scratch file | nothing -- do not commit it, and add the pattern to `.gitignore` | A transcript carries the paths of the machine that produced it. |
+
+`tests/private_identity_test.rs` enforces all of it and tells you exactly
+which line to change. One exception is allowlisted, and it is functional: the
+self-hosted runner's label on a `runs-on:` line in `.github/workflows/` is how a
+workflow reaches the one machine that can run it, and renaming it there would
+not rename it on the machine.
+
+Capture corpora are the same rule one layer down. The captures that prove this project
+carry real signaling. They live outside the tree, nobody commits them, and
+pages do not say where they are. A capture that IS in the tree is
+public, with a source and a license, or synthetic, with the generator that
+writes it, and says which: in `tests/pcap-samples/PROVENANCE.md` for that
+directory and in `tests/PROVENANCE.md` for everything else.
+`every_committed_capture_is_public_or_synthetic` finds captures by their
+leading bytes, not their names, and refuses a staged one with no entry.
+
+## Documentation
+**Prose is US English.** `behavior`, `normalize`, `recognize`, `analyze`.
+`the_tree_spells_in_us_english` checks whole words across every tracked file --
+including test files, which is where it usually catches one.
+
+
+**`docs/` is the source of truth. Edit there.** The generators build every operator page on
+[sipnab.com](https://sipnab.com) from it:
+
+| Tree | Source of truth for | Published by |
+|---|---|---|
+| `docs/` | The in-repo docs. Read directly on GitHub. | `scripts/build-wiki.py` → the GitHub wiki, via `wiki-sync.yml` on push to `main`. |
+| `website/content/docs/` | Zola content for the site. Mostly **generated** — do not hand-edit a page carrying the "Generated by" banner. | `pages.yml` on push to `main`. |
+
+Regenerate after any docs change, and commit the result:
+
+```bash
+# Run all of these, in order.
+python3 scripts/build-site-pages.py
+python3 scripts/build-site-internals.py
+```
+
+`site_pages_mirror_is_current` re-runs both and fails if a committed mirror is
+stale, so CI catches a forgotten regeneration rather than shipping it. It also
+fails if a page carrying the banner is no longer written by the generator —
+dropping a page from `PAGES` leaves its mirror on disk, still stamped
+"do not edit", quietly a hand-maintained copy again.
+
+**The filenames differ**, which is why two places declare the mapping, and
+they must agree — `PAGES` in `scripts/build-site-pages.py` (what the generator writes)
+and `DOCS_TO_SITE` in `scripts/build-site-internals.py` (how a link to that
+page is rewritten):
+
+| `docs/` | `website/content/docs/` |
+|---|---|
+| `cli-reference.md` | `cli.md` |
+| `examples.md` | `cookbook.md` |
+| `rest-api.md` | `api.md` |
+| `config-reference.md` | `config.md` |
+| `theme-guide.md` | `theme.md` |
+| `tui-walkthrough.md` | `tui.md` |
+
+The asymmetries are deliberate: `auth.md`, `library.md` and `fault-model.md`
+have **no site counterpart**, while `api-clients.md`, `build.md` and
+`integrations.md` are **site-only** and hand-maintained.
+
+Two pages outside `docs/` publish to the site the same way:
+`scripts/build-site-pages.py` writes `website/content/docs/contributing.md` from
+this file and `website/content/docs/contrib.md` from `contrib/README.md`, and
+`contributor_docs_are_generated_site_pages` fails if either page is missing.
+Edit the source, then regenerate.
+
+`docs/internals/` *does* publish to the site — ten pages under
+`website/content/docs/internals/`, rendered by
+[`scripts/build-site-internals.py`](scripts/build-site-internals.py) and gated by
+`every_internals_page_is_published_to_the_site` and `site_internals_mirror_is_current`
+in `tests/dev_docs_drift_test.rs`. (Corrected 2026-08-05: this paragraph used to
+list "all of `docs/internals/`" among the pages with no site counterpart and
+call the developer docs "wiki-only by design", contradicting the instruction
+twenty lines above it to run `build-site-internals.py`.)
+
+`benchmarks.md` is the one page that exists on both sides and is deliberately
+**not** generated: the two copies frame the numbers differently on purpose, and
+`benchmark_tables_match_between_docs_and_website` gates the part that must not
+differ — the measured tables.
+
+Both trees are in the flag-drift corpus in `tests/docs_drift_test.rs` and the
+link corpus in `tests/link_integrity_test.rs`, so the gates check each one *on its own*
+for phantom flags and dead links.
+
+They are also checked against **each other**, and the check is a byte
+comparison: `site_pages_mirror_is_current` in `tests/dev_docs_drift_test.rs`
+re-runs [`scripts/build-site-pages.py`](scripts/build-site-pages.py) into a
+temporary directory and fails on any page whose committed output differs from a
+fresh render. So the site copies in the table above are **generated artifacts** —
+edit the `docs/` source and re-run the generator. The next render
+reverts a hand edit to `website/content/docs/cli.md`, and forgetting
+to regenerate fails CI rather than passing it.
+
+*Corrected 2026-08-05: this section used to read "Nothing checks them against
+**each other** — documenting a new flag in `docs/cli-reference.md` and
+forgetting `website/content/docs/cli.md` passes every gate. That parity is yours
+to keep." Both sentences were false, and the advice they gave — hand-maintain
+the generated side — was the opposite of the workflow.*
+
+### Citing code from the developer docs
+
+Pages under `docs/internals/` link into the source tree, and
+`tests/dev_docs_drift_test.rs` enforces the form:
+
+```markdown
+the [`classify_packet()`](../../src/pipeline.rs) router
+```
+
+- **Relative paths only.** An absolute `github.com/NormB/sipnab/blob/main/…`
+  URL pins a branch and rots silently. `build-wiki.py` rewrites the relative
+  form into a blob URL when publishing.
+- **Never `file:line`.** Line numbers are stale within a commit. A path plus a
+  `()`-suffixed symbol in the link text survives a refactor, and the drift test
+  checks that the path exists *and* that the symbol still has a definition.
+- **Diagrams are mermaid `sequenceDiagram`, each preceded by a prose line**
+  carrying the same point, so the page still reads where mermaid does not
+  render. No markdown links inside a fence — `build-wiki.py` rewrites links
+  with no fence awareness and would corrupt the diagram.
+- **Register a new page** in `PAGES` *and* `GROUPS` in
+  `scripts/build-wiki.py`, or it never publishes to the wiki.
+- **Add a new top-level directory to `.config/code-trees.txt`.** That
+  file is the one list of trees a documentation link may point into: the wiki
+  and site generators build their link-rewriting pattern from it, the fixer
+  `scripts/link-repo-paths.py` decides from it what it may link under
+  `docs/internals/`, and the Rust gates read it with `include_str!`.
+  `code_tree_list_matches_the_repository` fails until the file names the new
+  directory, because a tree missing from it is one whose links nothing
+  rewrites and nothing checks.
+
+**The coupling rule: a change to linked code updates the page that links it, in
+the same pull request.** The pre-commit hook's gate 8 prints a `REVIEW` list
+when you stage a cited file without touching `docs/internals/`. It is advisory
+because only you can tell whether the prose is still true. The hard gate is
+`dev_docs_drift_test`, and it catches only the mechanical half — a link that no
+longer resolves. Nothing catches prose that has quietly become wrong.
+
+## Dependencies
+
+A dependency is a crate that sipnab's code pulls in from someone else. Each one
+is code that runs with sipnab's privileges, so adding one is a review decision,
+not a convenience.
+
+### Choosing a new crate
+
+Before you add a crate, check it against these rules. `cargo deny check`
+enforces the first three: it reads [`deny.toml`](deny.toml) and fails the pull
+request when a crate breaks one.
+
+- **Its license is on the allow list.** sipnab's own license is
+  `MIT OR Apache-2.0`. `[licenses]` in [`deny.toml`](deny.toml) lists the
+  licenses a dependency may carry. Adding a license to that list takes its
+  own reviewed change, with the reason written next to it.
+- **It comes from crates.io.** `[sources]` in [`deny.toml`](deny.toml)
+  rejects git dependencies and any other registry. That also rules out
+  swapping in a patched fork of a crate: fix the problem upstream instead.
+- **It has no open security advisory.** The advisories come from the
+  [RustSec database](https://rustsec.org/). The project accepts an advisory
+  that does not apply to sipnab only with a written reason, as the one `rsa`
+  exception in [`deny.toml`](deny.toml) shows.
+
+The reviewer checks the rest:
+
+- **Prefer what you already have.** Use the standard library or a crate
+  already in [`Cargo.lock`](Cargo.lock) before adding a new one.
+  `cargo deny check` warns when two versions of the same crate end up in the
+  build.
+- **Take only the features you need.** When a crate's default features bring
+  in more than sipnab uses, set `default-features = false` and list the
+  features you need, as several entries in [`Cargo.toml`](Cargo.toml) do. If
+  only one sipnab feature needs the crate, mark it `optional = true` and let
+  that feature turn it on.
+- **Someone still maintains it.** Look for recent releases and answered
+  issues. Say in the pull request why you chose this crate over the
+  alternatives.
+
+### Tracking the crates you have
+
+- **The repository commits its lock files.** [`Cargo.lock`](Cargo.lock) pins
+  the exact version of every crate in the build. The fuzz targets form a
+  separate workspace with their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock),
+  also committed.
+- **Dependabot opens update pull requests weekly** for both lock files, as
+  [`.github/dependabot.yml`](.github/dependabot.yml) sets up. It groups minor
+  and patch updates into one pull request.
+- **CI scans every pull request to `main`.** The `Security audit` job in
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `cargo audit` on
+  both lock files and `cargo deny check` on the build. A failure turns the
+  required `CI success` check red, which blocks the merge.
+- **OSV-Scanner checks every lock file** on each pull request, each push to
+  `main`, and every Wednesday, from
+  [`.github/workflows/osv-scanner.yml`](.github/workflows/osv-scanner.yml).
+  It uses the [osv.dev](https://osv.dev/) database, which covers more than
+  Rust crates, and reports findings as code scanning alerts.
+  [`osv-scanner.toml`](osv-scanner.toml) lists the accepted advisories, each
+  with its reason.
+
+When you add or update a dependency, run the same checks CI runs before you
+push. Install the tools once with `cargo install cargo-audit cargo-deny`.
+
+```bash
+# Run all of these, in order.
+cargo audit --ignore RUSTSEC-2023-0071
+cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
+cargo deny check
+```
+
+### Updating vendored files
+
+A few files come from other projects' releases, copied into the repository
+rather than fetched by a package manager. Dependabot and `cargo audit` do not
+see them, so nothing tells you when a new version comes out. Each one has a row in
+the "Vendored files" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) naming its version, where
+it came from, its license and its SHA-256.
+
+| File | What it is | Where a new version comes from |
+|---|---|---|
+| [`website/static/js/mermaid.min.js`](website/static/js/mermaid.min.js) | Mermaid, which draws the site's diagrams | `dist/mermaid.min.js` in the `mermaid` package on the `npm` registry |
+| [`website/static/js/scalar.min.js`](website/static/js/scalar.min.js) | Scalar, which renders the REST API reference | `dist/browser/standalone.js` in the `@scalar/api-reference` package on the `npm` registry |
+| [`tests/schemas/publisher/vcon_json_schema.json`](tests/schemas/publisher/vcon_json_schema.json) | The vCon working group's JSON schema, a test fixture | `vcon_json_schema.json` at a commit of [draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core) |
+
+To update one:
+
+1. Download the new release and copy the file over the old one unchanged. For
+   a package on the `npm` registry, `npm pack <package>@<version>` downloads the release
+   tarball without installing anything.
+2. In `VENDORED` in
+   [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+   change the file's version and SHA-256. `sha256sum <file>` prints the new
+   hash.
+3. Regenerate the notices with
+   `python3 scripts/build-third-party-notices.py` and commit both files.
+4. For the vCon schema, also change `VCON_PUBLISHER_COMMIT` and
+   `VCON_PUBLISHER_SHA256` in
+   [`tests/json_schema_test.rs`](tests/json_schema_test.rs). A test there then
+   checks that sipnab's own `tests/schemas/vcon.schema.json` still differs from
+   the new file only where it documents a deviation.
+
+`every_vendored_file_is_recorded_with_its_version` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file's
+hash is not the one recorded, or a script's recorded version is not the one
+the script itself contains. A new minified script under `website/static/js/`
+also fails it until it has a row.
+
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```text
+feat: add --nat-issues diagnostic alias
+fix: handle empty Contact header without panic
+docs: update CLI reference with new output flags
+refactor: extract SDP parser into its own module
+test: add pcap round-trip tests for IPv6
+```
+
+## Pull request process
+
+<!-- The OpenSSF badge answer for test_policy quotes item 4 verbatim, and
+tests/openssf_badge_test.rs holds the quote to this line, so its wording stays. -->
+<!-- vale sipnab.Substitutions = NO -->
+
+1. Fork the repository and create a feature branch from `main`.
+2. Keep changes focused -- one logical change per PR.
+3. Ensure the CI gate passes locally. Beyond `cargo fmt` and
+   `cargo test --all-features`, CI enforces:
+   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`
+   - a reduced-feature matrix that must compile (`native`, `tls`, `api`,
+     `mcp`, `hep`, `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
+     `native,hep,api,mcp,mcp-http`, `wasm`)
+   - a docs gate
+     (`RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features`)
+   - `cargo audit` + `cargo deny`
+   - `fuzz-check` (the fuzz targets must compile on nightly)
+4. Add or update tests for new functionality.
+5. Update documentation if you add or change CLI flags or config keys.
+6. Describe the "why" in the PR body, not just the "what".
+
+<!-- vale sipnab.Substitutions = YES -->
+
+## Code review
+
+A reviewer reads every change to `main` before it merges. This section says
+who reviews it, how, what the review checks, and what a change needs before it
+can merge. Where a setting or a file enforces a rule rather than a person, the
+rule names it.
+
+### Who reviews
+
+The maintainer listed in [MAINTAINERS.md](MAINTAINERS.md) reviews every pull
+request. [`.github/CODEOWNERS`](.github/CODEOWNERS) assigns the whole tree
+(`*  @NormB`), so GitHub requests that review automatically when a pull request
+opens.
+
+sipnab has one maintainer today, so nobody else can review changes the
+maintainer writes. Those changes go through the same pull request, the same
+checklist and the same required checks as a contribution from anyone, and the
+maintainer reviews the diff before merging. Branch protection on `main` therefore requires zero approving
+reviews: requiring one would block every change the only maintainer makes.
+When a second maintainer joins (see
+[Getting commit access](MAINTAINERS.md#getting-commit-access)), the
+requirement becomes one approving review from someone other than the author.
+
+### How a review works
+
+- **Through a pull request only.** Branch protection on `main` requires a pull
+  request and applies to administrators too, so nobody pushes to `main`
+  directly. `tests/branch_protection_drift_test.rs` fails if that setting and
+  this documentation disagree.
+- **Against the checklist.** The reviewer works through the checklist in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) and
+  the points below.
+- **In the pull request's conversation.** Questions and requested changes go
+  in review comments. Branch protection requires every conversation to be
+  resolved before the pull request merges. A new push dismisses an earlier
+  approval, so an approval always covers the code that merges.
+
+### What the reviewer checks
+
+- **Correctness, with tests.** The change does what its description says, and
+  it comes with a test that fails without the change and passes with it.
+- **Documentation.** The change updates the docs for any new or changed flag,
+  config key or behavior, as [Documentation](#documentation) describes.
+- **Security impact.** The reviewer asks which trust boundary in the
+  [threat model](docs/threat-model.md) the change touches, such as capture
+  input, HEP senders, API clients or plugins, and whether it weakens the
+  checks listed there. A change that moves a boundary updates that page.
+- **Dependencies.** A new or updated crate meets the rules in
+  [Dependencies](#dependencies). `cargo deny check` enforces some of them, and
+  the reviewer checks the rest.
+- **No secrets and no private names.** Nothing in the diff is a token, a
+  password, or a private hostname, address or path. The repository has
+  GitHub secret scanning with push protection turned on, and
+  `tests/private_identity_test.rs` enforces the rules in
+  [Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network).
+- **Public claims match the code.** Anything the change says in the README,
+  the site or the docs is true of the code as merged.
+- **A changelog entry.** A user-visible change adds an entry under
+  `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+- **The contributor agreement.** Everyone who committed to the branch has
+  signed the [CLA](#contributor-license-agreement).
+
+### What a change needs before it can merge
+
+A pull request is acceptable when all of these hold:
+
+1. **The required checks are green.** Branch protection on `main` requires
+   `CI success` and `license/cla`, and requires the branch to be up to date
+   with `main` before it merges. `CI success` passes only when every CI job it
+   depends on passes. `license/cla` passes when everyone who committed to the
+   branch has signed the CLA.
+2. **Every commit carries a signature.** Branch protection on `main` requires signed
+   commits, so GitHub refuses a merge that contains an unsigned or unverified
+   one.
+3. **No review conversation stays open.** Branch protection blocks the merge
+   until someone marks each one resolved.
+4. **The reviewer agrees** that the change meets the pull request template
+   checklist and the points under
+   [What the reviewer checks](#what-the-reviewer-checks). The contributor says so in the template checklist, and the
+   reviewer confirms it.
+
+## Reporting bugs
+
+Open a GitHub issue with:
+- sipnab version (`sipnab --version`)
+- OS and architecture
+- Steps to reproduce
+- Expected vs. actual behavior
+- A pcap or SIP trace if applicable (sanitize credentials first)
+
+## Security vulnerabilities
+
+Do **not** open a public issue. See [SECURITY.md](SECURITY.md) for responsible disclosure instructions.
+
+---
+
+<!-- source: contrib/README.md -->
+
+# contrib
+
+Optional integrations you can adopt if they suit your deployment. sipnab runs without
+any of it, and none of it ships inside the `.deb`, `.rpm`, or Homebrew formula —
+[`packaging/`](../packaging/README.md) builds those.
+
+Treat these as starting points to copy and adapt, not as configuration the
+project keeps in lockstep with your infrastructure.
+
+| Path | What it is |
+|------|------------|
+| `sipnabrc.example` | Annotated starter config. Parsed by `config_wiring_test.rs` with the real loader, so every key in it is one sipnab actually reads. |
+| `mcp/trace-call.py` | Follows one call across several sipnab MCP nodes without an interactive agent. Standard library only. Walked through in [the MCP deployment guide](../docs/mcp-deploy.md#drive-it-from-a-script). |
+| `observability/` | Docker Compose stack — Prometheus, Grafana, OTel Collector, Tempo — wired to sipnab's `--metrics` endpoint (`sipnab --metrics 0.0.0.0:9100`). Has its own [README](observability/README.md). |
+| `grafana/sipnab-dashboard.json` | Single importable Grafana dashboard, for an existing Grafana rather than the stack above. |
+| `prometheus/sipnab-alerts.yml` | Example alerting rules. |
+| `fail2ban/` | Filter and jail configuration that turns sipnab's scanner-detection output into bans. |
+
+## Where things live
+
+The split is by who maintains the contract, not by who wrote the file — all of
+this is first-party:
+
+- **`packaging/`** — release machinery. Runs on every tag, gated by CI, and a
+  broken path there breaks a published artifact.
+- **`contrib/`** — examples. Nothing here runs unless you choose to run it, and
+  the only automated check is that `sipnabrc.example` still parses.
+
+---
+
 <!-- source: docs/internals/domain-primer.md -->
 
 # SIP and RTP: the model the code assumes
@@ -45913,6 +46826,8 @@ nobody has loaded fails the suite:
 | 0.5.202 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-10-03 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.203 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-10-06 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.204 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-10-06 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.205 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-10-07 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.206 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.105+deb13-amd64 | 2026-10-07 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit, which
 the classifier deciding what a phase-two commit looks like has to agree with.

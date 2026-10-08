@@ -511,6 +511,33 @@ fn the_musl_build_s_omissions_are_named_where_the_site_describes_it() -> Result<
     Ok(())
 }
 
+/// The vcon.store guide's description, which search results and link previews
+/// show, describes redaction as the guide does: `--redact` is off unless the
+/// operator passes it, and today vcon.store refuses a redacted container. The
+/// description said "Forward sipnab's redacted vCons", which told a reader the
+/// forwarder redacts and named the one container the store refuses.
+#[test]
+fn the_vcon_store_description_leaves_redaction_to_the_operator() -> Result<(), TestError> {
+    let page = read("website/content/docs/vcon-store.md")?;
+    let description = page
+        .lines()
+        .find_map(|l| l.strip_prefix("description = "))
+        .ok_or("website/content/docs/vcon-store.md has no description")?;
+    assert!(
+        description.contains("--redact") && description.contains("choice"),
+        "the description does not say redacting is the operator's choice: {description}"
+    );
+    assert!(
+        !description.contains("redacted vCons"),
+        "the description says the forwarded containers are redacted: {description}"
+    );
+    assert!(
+        read("src/cli.rs")?.contains(r#"long = "redact")]"#),
+        "src/cli.rs has no --redact flag for the description to name"
+    );
+    Ok(())
+}
+
 /// The homepage's vCon tile ("Call records") says sipnab forwards vCons to
 /// third-party stores, names the flag that does it and links the vcon.store
 /// guide. Each part of that claim is held to the code: the flags exist with
@@ -529,9 +556,19 @@ fn the_homepage_vcon_forwarding_claim_is_backed_by_the_forwarder() -> Result<(),
     for flag in [
         r#"long = "vcon-forward","#,
         r#"long = "vcon-forward-compat","#,
-        r#"value_parser = ["vcon-store"]"#,
+        r#"long = "vcon-forward-kind","#,
+        "crate::config::FORWARD_COMPAT.iter()",
+        "crate::config::FORWARD_KINDS.iter()",
     ] {
         assert!(cli.contains(flag), "src/cli.rs has no {flag}");
+    }
+    // The names the two flags accept, declared once in src/config.rs.
+    let config = read("src/config.rs")?;
+    for names in [
+        r#"pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];"#,
+        r#"pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];"#,
+    ] {
+        assert!(config.contains(names), "src/config.rs has no {names}");
     }
     let tests = read("tests/vcon_forward_test.rs")?;
     for test in [

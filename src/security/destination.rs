@@ -133,6 +133,27 @@ pub fn resolve(digits: &InternationalDigits) -> Option<Country> {
     })
 }
 
+/// Whether `label` is a destination [`resolve`] can return, so a watch list
+/// entry naming it can ever match a call. Case-insensitive.
+#[must_use]
+pub fn is_known_label(label: &str) -> bool {
+    CODES.iter().any(|(_, iso)| iso.eq_ignore_ascii_case(label))
+}
+
+/// The first entry of a comma-separated destination list that is not a
+/// known label, so a watch naming it could never match a call: `US` (the
+/// plan's label is `NANP`), `USA`, `XX`. Empty entries are skipped, as
+/// `crate::cli::parse_destination_list` skips them. The one rule
+/// `--fraud-destination` and `[security] fraud_destination` are checked by.
+#[must_use]
+pub fn unknown_destination(raw: &str) -> Option<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .find(|part| !is_known_label(part))
+        .map(str::to_string)
+}
+
 /// Satellite and non-geographic network-service ranges. A signal, never a verdict on
 /// its own: most premium-rate numbers observed in the wild are ordinary fixed and
 /// mobile ranges.

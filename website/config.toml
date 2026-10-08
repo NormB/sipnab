@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.205"
+version = "0.5.206"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -48,7 +48,7 @@ version = "0.5.205"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.204"
+published_version = "0.5.206"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +57,7 @@ published_version = "0.5.204"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-10-06"
+release_date = "2026-10-07"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -155,6 +155,8 @@ macos_floor_intel = "10.12"
 #   0.5.202  18,393,280 bytes   (+4,096, leaving 481,088 bytes of headroom under 18 MB)
 #   0.5.203  18,475,264 bytes   (+81,984, leaving 399,104 bytes of headroom under 18 MB)
 #   0.5.204  18,471,296 bytes   (-3,968, leaving 403,072 bytes of headroom under 18 MB)
+#   0.5.205  18,387,904 bytes   (-83,392, leaving 486,464 bytes of headroom under 18 MB)
+#   0.5.206  18,469,824 bytes   (+81,920, leaving 404,544 bytes of headroom under 18 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -333,6 +335,7 @@ pages = [
   { path = "docs/integrations.md", menu = true },
   { path = "docs/metrics.md", menu = true },
   { path = "docs/vcon.md", menu = true },
+  { path = "docs/contrib.md", menu = true },
   { path = "api-reference.md", menu = false },
   { path = "docs/api-clients.md", menu = false },
   { path = "docs/auth.md", menu = false },
@@ -383,4 +386,5 @@ title = "Build and measure"
 pages = [
   { path = "docs/build.md", menu = true },
   { path = "docs/benchmarks.md", menu = true },
+  { path = "docs/contributing.md", menu = true },
 ]

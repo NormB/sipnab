@@ -307,6 +307,7 @@ impl SipnabMcp {
         let (name_a, name_b) = (params.a.clone(), params.b.clone());
         let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
         let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
+        let options = self.pipeline_options;
         // On a blocking thread: two whole captures inside a handler would hold
         // the single runtime thread the MCP server and the REST API share.
         let comparison = tokio::task::spawn_blocking(move || {
@@ -320,6 +321,7 @@ impl SipnabMcp {
                     name: &name_b,
                 },
                 &dims,
+                &options,
                 max_dialogs,
                 max_streams,
                 top_n,
@@ -624,8 +626,14 @@ mod tests {
         let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
         let progress = AtomicU64::new(0);
-        crate::mcp::load::read_into_stores(&fixture(name), &ds, &ss, &progress)
-            .map_err(|e| format!("the fixture must read cleanly: {e:?}"))?;
+        crate::mcp::load::read_into_stores(
+            &fixture(name),
+            &crate::pipeline::PipelineOptions::default(),
+            &ds,
+            &ss,
+            &progress,
+        )
+        .map_err(|e| format!("the fixture must read cleanly: {e:?}"))?;
         Ok(SipnabMcp::new(ds, ss))
     }
 
@@ -679,8 +687,14 @@ mod tests {
         let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
         let progress = AtomicU64::new(0);
-        crate::mcp::load::read_into_stores(&fixture(name), &ds, &ss, &progress)
-            .map_err(|e| format!("the fixture must read cleanly: {e:?}"))?;
+        crate::mcp::load::read_into_stores(
+            &fixture(name),
+            &crate::pipeline::PipelineOptions::default(),
+            &ds,
+            &ss,
+            &progress,
+        )
+        .map_err(|e| format!("the fixture must read cleanly: {e:?}"))?;
         let dsr = ds.read();
         let ssr = ss.read();
         let mut tally: std::collections::BTreeMap<String, usize> =
@@ -862,6 +876,57 @@ mod tests {
         assert_eq!(sum_a, dialogs_a, "buckets plus other must account for a");
         assert_eq!(sum_b, dialogs_b, "buckets plus other must account for b");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// The run's `--hep-parse` reaches `compare_captures`: a HEP copy compared
+    /// against a plain capture counts the call inside it with the option, and
+    /// nothing without it.
+    #[cfg(feature = "hep")]
+    #[tokio::test]
+    async fn compare_captures_reads_a_hep_copy_with_the_runs_hep_parse()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let hep_time = chrono::DateTime::from_timestamp(1_718_000_000, 0).ok_or("a time")?;
+        std::fs::write(
+            root.path().join("hep.pcap"),
+            crate::test_utils::hep_invite_pcap("mcp-compare-hep@x", hep_time),
+        )?;
+        std::fs::copy(fixture("sip-rtp-g711.pcap"), root.path().join("plain.pcap"))?;
+
+        let compare_with = |hep_parse: bool| {
+            let server = empty_server()
+                .with_file_root(root.path())
+                .with_pipeline_options(crate::pipeline::PipelineOptions {
+                    hep_parse,
+                    ..Default::default()
+                });
+            async move {
+                let result = server
+                    .compare_captures(Parameters(CompareCapturesParams {
+                        a: "hep.pcap".into(),
+                        b: "plain.pcap".into(),
+                        dimensions: Some(vec!["state".into()]),
+                        ..Default::default()
+                    }))
+                    .await
+                    .map_err(|e| format!("compare_captures refused: {e:?}"))?;
+                let text = payload_text(&result).ok_or("no payload block")?;
+                let v: serde_json::Value = serde_json::from_str(&text)?;
+                Ok::<_, Box<dyn std::error::Error>>(v)
+            }
+        };
+
+        let on = compare_with(true).await?;
+        assert_eq!(
+            on["a"]["dialogs"], 1,
+            "with the run's --hep-parse the HEP copy holds one call: {on}"
+        );
+        let off = compare_with(false).await?;
+        assert_eq!(
+            off["a"]["dialogs"], 0,
+            "without --hep-parse the HEP copy holds no SIP: {off}"
+        );
         Ok(())
     }
 

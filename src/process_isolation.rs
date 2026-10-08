@@ -1564,8 +1564,8 @@ pub(crate) fn worker_args(
 /// The variables the worker process may inherit from this one's environment.
 ///
 /// An allowlist, because the environment is where secrets arrive:
-/// `--api-key`, `--api-signing-key`, `--mcp-signing-key`, `--hep-auth` and the
-/// MCP token all read one. The worker needs none of them, and a process that
+/// `--api-key`, `--api-signing-key`, `--mcp-signing-key`, `--hep-auth`,
+/// `--vcon-forward-auth` and the MCP token all read one. The worker needs none of them, and a process that
 /// holds no secret cannot leak one. What crosses is what running the same
 /// binary the same way needs, and nothing that could be a credential:
 ///
@@ -3796,6 +3796,7 @@ mod tests {
             "SIPNAB_API_SIGNING_KEY",
             "SIPNAB_MCP_SIGNING_KEY",
             "SIPNAB_HEP_AUTH",
+            "SIPNAB_VCON_FORWARD_AUTH",
             "SIPNAB_MCP_TOKEN",
             "HOME",
             "PATH",

@@ -198,6 +198,7 @@ fn snapshot(
     path: &std::path::Path,
     filename: &str,
     dimensions: &[String],
+    opts: &crate::pipeline::PipelineOptions,
     max_dialogs: usize,
     max_streams: usize,
 ) -> Snapshot {
@@ -211,7 +212,7 @@ fn snapshot(
     )));
     let ss = Arc::new(parking_lot::RwLock::new(StreamStore::new(max_streams)));
     let progress = std::sync::atomic::AtomicU64::new(0);
-    let outcome = crate::capture::replay::read_into_stores(path, &ds, &ss, &progress);
+    let outcome = crate::capture::replay::read_into_stores(path, opts, &ds, &ss, &progress);
 
     let dialogs_read = ds.read();
     let streams_read = ss.read();
@@ -314,6 +315,11 @@ fn diff_dimension(
 /// `dimensions` must already have passed [`resolve_dimensions`]. One capture at
 /// a time, not two in parallel: the tallies are small and the stores are not.
 ///
+/// Both files are read with `opts`, the run's pipeline options, so a side
+/// reads as the same file given to `-I` with the run's flags reads: a HEP
+/// copy is unwrapped under `--hep-parse`, and `--portrange` gates its
+/// signaling.
+///
 /// # Errors
 ///
 /// [`CompareError::SameFile`] when the two paths are equal (a caller
@@ -323,6 +329,7 @@ pub fn compare(
     a: CaptureRef,
     b: CaptureRef,
     dimensions: &[String],
+    opts: &crate::pipeline::PipelineOptions,
     max_dialogs: usize,
     max_streams: usize,
     top_n: usize,
@@ -334,8 +341,8 @@ pub fn compare(
         });
     }
 
-    let snap_a = snapshot(a.path, a.name, dimensions, max_dialogs, max_streams);
-    let snap_b = snapshot(b.path, b.name, dimensions, max_dialogs, max_streams);
+    let snap_a = snapshot(a.path, a.name, dimensions, opts, max_dialogs, max_streams);
+    let snap_b = snapshot(b.path, b.name, dimensions, opts, max_dialogs, max_streams);
 
     for snap in [&snap_a, &snap_b] {
         if snap.side.dialogs == 0
@@ -446,6 +453,7 @@ mod tests {
                 name: "b.pcap",
             },
             &dims,
+            &crate::pipeline::PipelineOptions::default(),
             1000,
             1000,
             50,
@@ -474,6 +482,7 @@ mod tests {
                 name: "a.pcap",
             },
             &dims,
+            &crate::pipeline::PipelineOptions::default(),
             1000,
             1000,
             50,
@@ -499,6 +508,7 @@ mod tests {
                 name: "missing.pcap",
             },
             &dims,
+            &crate::pipeline::PipelineOptions::default(),
             1000,
             1000,
             50,
@@ -585,6 +595,7 @@ mod tests {
             &fixture("sip-problem-call.pcap"),
             "sip-problem-call.pcap",
             &["state".to_string()],
+            &crate::pipeline::PipelineOptions::default(),
             1,
             1000,
         );

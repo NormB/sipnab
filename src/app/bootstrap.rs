@@ -294,12 +294,23 @@ fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> 
 /// Uprobe capture is a Linux kernel facility, so everywhere else says so
 /// plainly rather than failing later with a missing-path error.
 #[cfg(not(all(target_os = "linux", feature = "native")))]
-fn plan_uprobe_targets(_cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
-    Err(
-        "--uprobe-tls needs Linux kernel uprobes and a sipnab built with the \
-         `native` feature"
-            .to_string(),
-    )
+fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
+    Err(uprobe_unavailable(
+        cli.tls_args.uprobe_tls,
+        !cli.tls_args.uprobe_library.is_empty(),
+    ))
+}
+
+/// The refusal for a uprobe source where uprobes do not exist, naming the
+/// flags that asked for one: `--uprobe-tls`, `--uprobe-library`, or both.
+#[cfg(any(test, not(all(target_os = "linux", feature = "native"))))]
+fn uprobe_unavailable(tls: bool, libraries: bool) -> String {
+    let (flags, verb) = match (tls, libraries) {
+        (true, true) => ("--uprobe-tls and --uprobe-library", "need"),
+        (false, true) => ("--uprobe-library", "needs"),
+        _ => ("--uprobe-tls", "needs"),
+    };
+    format!("{flags} {verb} Linux kernel uprobes and a sipnab built with the `native` feature")
 }
 
 /// Build the `-L/--hep-listen` source from the CLI and config.
@@ -404,14 +415,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     let mut capture_config = build_capture_config(cli, config)?;
 
     // Portrange: CLI > config file > default "5060-5061".
-    let portrange_str = cli
-        .capture_args
-        .portrange
-        .as_deref()
-        .or(config.capture.portrange.as_deref())
-        .unwrap_or("5060-5061");
+    let (portrange_str, portrange_source) = match (
+        cli.capture_args.portrange.as_deref(),
+        config.capture.portrange.as_deref(),
+    ) {
+        (Some(flag), _) => (flag, "--portrange"),
+        (None, Some(key)) => (key, "[capture] portrange"),
+        (None, None) => ("5060-5061", "the default port range"),
+    };
     let portrange = crate::config::parse_portrange(portrange_str)
-        .map_err(|e| PlanError::arg(format!("Invalid --portrange: {e}")))?;
+        .map_err(|e| PlanError::arg(format!("Invalid {portrange_source}: {e}")))?;
 
     apply_capture_filter(cli, config, source.as_ref(), portrange, &mut capture_config)?;
 
@@ -532,27 +545,54 @@ fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError>
     // An `[actions]` entry naming nothing sipnab knows is refused here, before
     // anything runs, rather than read as "nothing enabled".
     cli.action_policy(config).map_err(PlanError::arg)?;
-    let alert_sources = if cli.security_args.alert.is_empty() {
-        config.security.alert.as_deref().unwrap_or(&[])
+    let (alert_sources, from) = if cli.security_args.alert.is_empty() {
+        (
+            config.security.alert.as_deref().unwrap_or(&[]),
+            "[security] alert",
+        )
     } else {
-        &cli.security_args.alert
+        (cli.security_args.alert.as_slice(), "--alert")
     };
     for source in alert_sources {
-        check_alert_rule(source.trim())?;
+        check_alert_rule(source.trim(), from)?;
+    }
+    // A names file that cannot be read used to be warned about when names
+    // were loaded, and the run went on without the names it asked for.
+    for f in &cli.name_args.names {
+        if let Err(e) = crate::config::readable_file(std::path::Path::new(f)) {
+            return Err(PlanError::new(
+                1,
+                format!("--names {f:?} cannot be read: {e}"),
+            ));
+        }
     }
     Ok(())
 }
 
-/// Refuse an `--alert` rule naming a finding kind no detector fires under.
-/// A source without a `:` is not a rule and passes.
+/// Refuse an `--alert` rule naming a finding kind no detector fires under,
+/// and a channel (a source without a `:`) that is not one of
+/// [`crate::security::alerting::ALERT_CHANNELS`].
 ///
 /// # Errors
 ///
 /// A `PlanError` (exit code 2) for a rule that does not parse or names an
-/// unknown kind.
-fn check_alert_rule(source: &str) -> Result<(), PlanError> {
+/// unknown kind, or for an unknown channel; the message starts with `from`,
+/// the setting the value came from.
+fn check_alert_rule(source: &str, from: &str) -> Result<(), PlanError> {
     if !source.contains(':') {
-        return Ok(());
+        // A channel. An unknown one used to be a warning at run time, so a
+        // typo ran with no alert channel at all and exited 0.
+        return if crate::security::alerting::ALERT_CHANNELS
+            .contains(&source.to_ascii_lowercase().as_str())
+        {
+            Ok(())
+        } else {
+            Err(PlanError::arg(format!(
+                "{from}: Unknown alert channel '{source}': expected one of {}, or a \
+                 rule written name:threshold/window",
+                crate::security::alerting::ALERT_CHANNELS.join(", ")
+            )))
+        };
     }
     let rule =
         crate::security::AlertRule::parse(source).map_err(|e| PlanError::arg(e.to_string()))?;
@@ -758,7 +798,7 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
         Err(e) => {
             return Err(PlanError {
                 exit_code: 1,
-                message: format!("{e:#}"),
+                message: format!("-I/--input: {e:#}"),
             });
         }
     };
@@ -3845,32 +3885,44 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// exit code, or `None` when the flag is absent. The body is feature-swapped
 /// so the caller contains no `cfg`.
 ///
-/// Runs before any configuration is loaded or capture opened: the forwarder
-/// is a separate process that reads no packet, and clap has already refused
-/// every capture flag beside it.
+/// Loads the configuration for `[vcon_forward]` ([`load_config`], which also
+/// refuses forwarder settings that cannot be used), and opens no capture: the
+/// forwarder is a separate process that reads no packet, and clap has already
+/// refused every capture flag beside it.
 ///
 /// # Returns
 ///
-/// `Some` exit code from [`crate::app::vcon_forward::run`], `Some(2)` when the
-/// settings are refused or the `vcon` feature is not compiled in, `None` when
-/// `--vcon-forward` was not given.
+/// `Some` exit code from [`crate::app::vcon_forward::run`]; the exit code of
+/// [`load_config`]'s refusal (1 for the file, 2 for a setting); `Some(2)` when
+/// the credential cannot be read or the `vcon` feature is not compiled in;
+/// `None` when `--vcon-forward` was not given.
 ///
 /// # Side effects
 ///
-/// Reads the auth file, creates the delivered and failed directories,
-/// connects to the store, and moves files out of the spool, until SIGTERM or
-/// SIGINT (or after one pass with `--vcon-forward-once`).
+/// Reads the config file and the credential's file, creates the delivered
+/// and failed directories, connects to the store, and moves files out of the
+/// spool, until SIGTERM or SIGINT (or after one pass with
+/// `--vcon-forward-once`).
 pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     cli.vcon_forward_args.vcon_forward.as_ref()?;
     #[cfg(feature = "vcon")]
     {
-        use crate::app::vcon_forward::{ForwardSettings, run};
+        use crate::app::vcon_forward::{ForwardPlan, run};
+        let loaded = match load_config(cli) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                tracing::error!("{}", e.message);
+                return Some(e.exit_code);
+            }
+        };
         let args = &cli.vcon_forward_args;
-        match ForwardSettings::from_cli(args) {
-            Ok(settings) => Some(run(
+        match ForwardPlan::resolve(args, &loaded.config.vcon_forward)
+            .and_then(ForwardPlan::into_settings)
+        {
+            Ok((settings, interval)) => Some(run(
                 settings,
                 args.vcon_forward_once,
-                std::time::Duration::from_secs(args.vcon_forward_interval),
+                interval,
                 &crate::signals::shutdown_requested,
             )),
             Err(msg) => {
@@ -3883,6 +3935,24 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     {
         tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
         Some(2)
+    }
+}
+
+/// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
+/// when this is not a forwarder run). Feature-swapped: without the `vcon`
+/// feature [`run_vcon_forward`] refuses the run before the config is read.
+fn forwarder_settings_problem(cli: &Cli, config: &Config) -> Option<String> {
+    cli.vcon_forward_args.vcon_forward.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        crate::app::vcon_forward::ForwardPlan::resolve(&cli.vcon_forward_args, &config.vcon_forward)
+            .err()
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        // Nothing to resolve: no forwarder is compiled in.
+        let _ = config;
+        None
     }
 }
 
@@ -3962,10 +4032,37 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [vcon_forward] keys are held to the rules their flags follow: the
+    // ranges, the kind and compat names, and the back-off pair.
+    if let Err(e) = loaded.config.vcon_forward.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [names] carries dns_cache_entries, which --dns-cache-entries refuses at
     // 0; the file must too, and until now [names] was the one section with no
     // validator wired in here at all.
     if let Err(e) = loaded.config.names.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
+    // [display] color is refused for a spelling `--color` refuses, a
+    // [theme] color or [keybindings] key for one the TUI cannot parse, and
+    // every path-valued key for an empty path its flag refuses: the file must
+    // not be the lenient way in.
+    if let Err(e) = loaded
+        .config
+        .display
+        .validate()
+        .and_then(|()| loaded.config.theme.validate())
+        .and_then(|()| loaded.config.keybindings.validate())
+        .and_then(|()| loaded.config.validate_paths())
+    {
         return Err(PlanError {
             exit_code: 1,
             message: e.to_string(),
@@ -3978,10 +4075,8 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // the file alone would refuse a pair the flags go on to fix, and accept
     // the pair they go on to break.
     if let Err(msg) = cli.quality_bands(&loaded.config).validate() {
-        return Err(PlanError {
-            exit_code: 1,
-            message: format!("[quality] {msg}"),
-        });
+        let (exit_code, message) = cli.quality_band_refusal(&msg);
+        return Err(PlanError { exit_code, message });
     }
 
     // Every listener's TLS files, resolved from the flags and the file
@@ -3990,6 +4085,17 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // naming the flag and the key. Exit 2, as the flag-only check this
     // replaced used.
     if let Some(problem) = cli.tls_settings_problem(&loaded.config) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: problem,
+        });
+    }
+
+    // The forwarder's settings, resolved from its flags and [vcon_forward]
+    // together by the forwarder's own resolver: a URL or a credential from
+    // either source, refused here naming the flag or key, before the
+    // forwarder reads a file or connects. Exit 2, as a refused flag exits.
+    if let Some(problem) = forwarder_settings_problem(cli, &loaded.config) {
         return Err(PlanError {
             exit_code: 2,
             message: problem,
@@ -4089,8 +4195,14 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     match cli.ws_port_range(&loaded.config) {
         Ok(range) => crate::capture::websocket::set_ws_port_range(range),
         Err(e) => {
+            // A malformed flag is an argument error, exit 2, as a malformed
+            // `--portrange` is; a malformed key is a config error, exit 1.
             return Err(PlanError {
-                exit_code: 1,
+                exit_code: if cli.capture_args.ws_portrange.is_some() {
+                    2
+                } else {
+                    1
+                },
                 message: e.to_string(),
             });
         }
@@ -4246,7 +4358,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
         return match FilterExpr::parse(expr) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::arg(format!(
-                "Invalid config filter expression: {e}"
+                "Invalid config filter expression ([filter] expression): {e}"
             ))),
         };
     }
@@ -4329,7 +4441,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
             Ok(content) => Some(content.trim().to_string()),
             Err(e) => {
                 return Err(PlanError::arg(format!(
-                    "Failed to read BPF filter file '{bpf_file}': {e}"
+                    "Failed to read BPF filter file '{bpf_file}' (--bpf-file): {e}"
                 )));
             }
         }
@@ -4342,10 +4454,18 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
     let count = cli.capture_args.count;
 
     let duration = match cli.capture_args.duration.as_ref() {
-        Some(d) => Some(
-            capture::parse_duration(d)
-                .map_err(|e| PlanError::arg(format!("Invalid --duration: {e}")))?,
-        ),
+        Some(d) => {
+            let parsed = capture::parse_duration(d)
+                .map_err(|e| PlanError::arg(format!("Invalid --duration: {e}")))?;
+            // Zero would stop the capture before its first packet and exit 0,
+            // which reads as a quiet network rather than as a typo.
+            if parsed.is_zero() {
+                return Err(PlanError::arg(format!(
+                    "Invalid --duration: '{d}' is zero; give a positive duration"
+                )));
+            }
+            Some(parsed)
+        }
         None => None,
     };
 
@@ -5397,6 +5517,30 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 mod tests {
     use super::*;
     type TestError = Box<dyn std::error::Error>;
+
+    /// Off Linux, the refusal names the uprobe flags the user gave. It named
+    /// `--uprobe-tls` for `--uprobe-library=` alone, which macOS CI caught in
+    /// `blank_value_refusals_name_the_flag`; the platform stub that builds it
+    /// never compiles on Linux, so the wording is tested here.
+    #[test]
+    fn the_uprobe_platform_refusal_names_the_flags_given() {
+        let tls = uprobe_unavailable(true, false);
+        assert!(tls.starts_with("--uprobe-tls needs"), "{tls}");
+        let lib = uprobe_unavailable(false, true);
+        assert!(lib.starts_with("--uprobe-library needs"), "{lib}");
+        assert!(!lib.contains("--uprobe-tls"), "{lib}");
+        let both = uprobe_unavailable(true, true);
+        assert!(
+            both.starts_with("--uprobe-tls and --uprobe-library need"),
+            "{both}"
+        );
+        for m in [tls, lib, both] {
+            assert!(
+                m.contains("Linux kernel uprobes") && m.contains("`native` feature"),
+                "{m}"
+            );
+        }
+    }
 
     /// The forwarder draws no TUI, so it logs at `info` by default like a
     /// `-N` run: its delivery lines are what an operator reads. `-q` still

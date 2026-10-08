@@ -1,6 +1,6 @@
 name: Self-hosted smoke
 
-# Manual only. This proves the thor-02 self-hosted runner can build sipnab
+# Manual only. This proves the aarch64 self-hosted runner can build sipnab
 # before any production job is routed to it. It fires on nothing automatic, so
 # no pull request — least of all a fork's — can trigger execution on the box.
 on:
@@ -15,8 +15,8 @@ concurrency:
 
 jobs:
   smoke:
-    # Both labels required: a runner must be self-hosted AND be thor-02.
-    runs-on: [self-hosted, thor-02]
+    # Both labels required: a runner must be self-hosted AND carry the host label.
+    runs-on: [self-hosted, jetson]
     # Bounds how long a wedged job holds the runner (the #192 lesson applied to
     # a single-runner pool, where a hang starves everything behind it).
     timeout-minutes: 30

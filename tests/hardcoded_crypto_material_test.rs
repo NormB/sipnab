@@ -72,7 +72,11 @@ fn offending_lines_in(src: &str, seeds: bool) -> Vec<(usize, String)> {
             // Whole tokens of the name: `iv` must not match `derive` or `receive`.
             // ... and only a function that RETURNS a value: a `#[test] fn` binds
             // counters and timestamps; `fn nonce_for(..) -> String` returns material.
-            in_material_fn = l.contains("->") && name.split('_').any(|tok| MATERIAL.contains(&tok));
+            // A test that returns `Result<(), _>` returns no value either: its
+            // `Ok` carries the unit type, so its counters are not material.
+            in_material_fn = l.contains("->")
+                && !l.contains("-> Result<(),")
+                && name.split('_').any(|tok| MATERIAL.contains(&tok));
         }
         if seeds
             && in_material_fn
@@ -342,13 +346,27 @@ fn a_constant_seed_inside_a_material_function_is_reported() -> Result<(), TestEr
         .map(|(n, _)| n)
         .collect();
     assert_eq!(hits, [2], "the seed line");
+    // Wrapped in a `Result`, the returned value is still material.
+    let src = "fn key_for(label: &str) -> Result<String, TestError> {\n    let mut h: u64 = 0xcbf2_9ce4_8422_2325;\n    Ok(format!(\"{h:x}\"))\n}\n";
+    let hits: Vec<usize> = offending_lines_in(src, true)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        hits,
+        [2],
+        "the seed line of a Result-returning material function"
+    );
     Ok(())
 }
 
 /// The runtime-minted form is not: no constant, only the clock and a count.
+/// Nor is a function that returns no value: a test returning
+/// `Result<(), TestError>` binds counters, and its name (`..._exit_key_...`)
+/// does not make a counter material.
 #[test]
 fn a_runtime_minted_material_function_is_not_reported() -> Result<(), TestError> {
-    let src = "fn nonce_for(label: &str) -> String {\n    let nanos = now();\n    let distinct = minted.len() as u64;\n    format!(\"{:016x}\", nanos ^ distinct)\n}\nfn receive_frame() -> u64 {\n    let mut h: u64 = 0x1234;\n    tampered[last] ^= 0xff;\n    h\n}\n";
+    let src = "fn nonce_for(label: &str) -> String {\n    let nanos = now();\n    let distinct = minted.len() as u64;\n    format!(\"{:016x}\", nanos ^ distinct)\n}\nfn receive_frame() -> u64 {\n    let mut h: u64 = 0x1234;\n    tampered[last] ^= 0xff;\n    h\n}\nfn every_popup_renders_its_exit_key_in_full() -> Result<(), TestError> {\n    let mut checked = 0;\n    Ok(())\n}\nfn a_key_is_refused() -> Result<(), Box<dyn std::error::Error>> {\n    let mut seen = 0;\n    Ok(())\n}\n";
     assert!(
         offending_lines_in(src, true).is_empty(),
         "{:?}",
