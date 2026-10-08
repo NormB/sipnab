@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:383`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L383)), `capture_hep` ([`src/capture/hep.rs:2835`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2835)), the
+([`src/capture/file.rs:383`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L383)), `capture_hep` ([`src/capture/hep.rs:2880`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2880)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:631`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L631)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -263,10 +263,10 @@ clocks, no discipline between them. Every figure that subtracts a signaling time
 from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
-Two details soften this and one sharpens it. HEP v2 carries no timestamp at all,
-so `parse_hep_v2` ([`src/capture/hep.rs:1320`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1320)) stamps local receive time, and v3
-falls back the same way when the chunk pair is unrepresentable — a v2 mirror
-therefore has *one* clock, not two. And when the skew runs the wrong way,
+Two details soften this and one sharpens it. The HEP v2 header as `parse_hep_v2`
+([`src/capture/hep.rs:1327`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1327)) reads it has no time field, so the listener stamps local
+receive time, and a v3 packet without a `TS_SEC` chunk is stamped the same way — a
+v2 mirror therefore has *one* clock, not two. And when the skew runs the wrong way,
 `elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)) refuses a backwards pair rather than
 publishing it, so the visible symptom is a *missing* duration, not a negative
 one. Its own rustdoc names the cause: *"a merge of files whose clocks

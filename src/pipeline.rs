@@ -2054,7 +2054,11 @@ pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error
     // The time the HEP sender stamped, as `--hep-listen` uses it
     // (`hep_to_packet`), not the time the wrapper was sniffed: a feed sniffed
     // after a relay or a replay otherwise times every message by the sniffer.
-    unwrapped.timestamp = hep.timestamp;
+    // A packet that carries no time (a v3 packet without `TS_SEC`, or v2)
+    // keeps the sniffed time, as `--hep-listen` keeps the arrival time.
+    if let Some(carried) = hep.timestamp {
+        unwrapped.timestamp = carried;
+    }
     unwrapped.hep = Some(crate::capture::packet::HepOrigin {
         protocol: hep.protocol.to_byte(),
         correlation_id: hep.correlation_id.clone(),
@@ -2947,6 +2951,73 @@ mod quiet_bad_parse_tests {
         let inner = unwrap_hep(&wrapper).ok_or("not read as HEP")??;
         assert_eq!(inner.timestamp, carried);
         assert_eq!(inner.src_addr, ep.src_addr);
+        Ok(())
+    }
+
+    /// `-E` keeps the time the wrapper was sniffed for a HEP v3 packet that
+    /// carries no `TS_SEC`/`TS_USEC` chunks (HEP-TS2). The parser defaulted
+    /// the missing seconds to 0, so the message was timed 1970-01-01.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn hep_parse_keeps_the_sniff_time_when_the_hep_packet_carries_none() -> Result<(), TestError> {
+        use crate::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3, hep3_without_time};
+        use chrono::TimeZone as _;
+
+        let carried = Utc
+            .with_ymd_and_hms(2023, 11, 14, 22, 13, 20)
+            .single()
+            .ok_or("fixture time")?;
+        let ep = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        let timed = build_hep_v3(
+            &ep,
+            carried,
+            HepProtocol::Sip,
+            0,
+            None,
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        );
+        let mut wrapper = packet(&hep3_without_time(&timed)?);
+        // A sniff time distinct from both the carried time and the clock.
+        wrapper.timestamp = Utc
+            .with_ymd_and_hms(2020, 2, 3, 4, 5, 6)
+            .single()
+            .ok_or("sniff time")?;
+        let inner = unwrap_hep(&wrapper).ok_or("not read as HEP")??;
+        assert_eq!(
+            inner.timestamp, wrapper.timestamp,
+            "no time in the HEP packet: the sniffed time stands"
+        );
+        assert_eq!(inner.src_addr, ep.src_addr);
+        Ok(())
+    }
+
+    /// `-E` keeps the sniffed time for a HEP v2 packet, whose header (as
+    /// `parse_hep_v2` reads it) has no time field. It used the time the
+    /// packet was unwrapped instead, which for a capture file read later is
+    /// the time of the read.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn hep_parse_keeps_the_sniff_time_for_hep_v2() -> Result<(), TestError> {
+        // version 2, header length 16, ports 5060/5060, 192.0.2.1 ->
+        // 192.0.2.2, two bytes of padding, then the SIP payload.
+        let mut v2 = vec![
+            0x02, 16, 0x13, 0xc4, 0x13, 0xc4, 192, 0, 2, 1, 192, 0, 2, 2, 0, 0,
+        ];
+        v2.extend_from_slice(b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let mut wrapper = packet(&v2);
+        // A sniff time in the past, so the clock at unwrap cannot match it.
+        wrapper.timestamp = chrono::TimeZone::with_ymd_and_hms(&Utc, 2020, 2, 3, 4, 5, 6)
+            .single()
+            .ok_or("sniff time")?;
+        let inner = unwrap_hep(&wrapper).ok_or("not read as HEP")??;
+        assert_eq!(inner.timestamp, wrapper.timestamp);
+        assert_eq!(inner.src_addr, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
         Ok(())
     }
 

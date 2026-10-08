@@ -108,6 +108,14 @@ entry that carries them.
 
 ### Fixed
 
+- **A HEP packet that carries no time keeps the receive or capture time.**
+  A HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as
+  1970-01-01T00:00:00Z, and a HEP v2 packet took the time sipnab parsed it,
+  on both `-L` and `-E`. `HepPacket::timestamp` is now an `Option`, set only
+  when the packet carries a `TS_SEC` chunk. Without one, `-L` uses the time
+  the packet arrived and `-E` the time sipnab captured the wrapper, so a
+  capture file read later keeps its own times. The HMAC replay window reads
+  the token's own timestamp, not this one, and behaves as before.
 - **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits
   1.** A credential file named by the config key that sipnab could not read,
   or that held no credential, stopped `--vcon-forward` with exit 2, while
