@@ -1925,15 +1925,16 @@ pub const MAX_HEP_HMAC_WINDOW_SECS: u64 = 300;
 pub const MAX_MCP_SWEEP_MAX_FILES: u64 = u32::MAX as u64;
 
 /// Largest `[limits] mcp_sweep_deadline_ms` / `--mcp-sweep-deadline-ms`
-/// accepts: 3600000 ms, one hour.
+/// accepts: 43200000 ms, twelve hours.
 ///
-/// One `find_in_captures` call holds a `--mcp-max-concurrent` permit for the
-/// whole sweep, and the calling agent has no way to interrupt it. The sweep
-/// loop compares the elapsed milliseconds as a `u64`, so the type allows far
-/// more; the ceiling is one hour so that one call cannot hold a permit for
-/// longer than that. Refused by [`LimitsConfig::validate`] and by clap, from
-/// this one number.
-pub const MAX_MCP_SWEEP_DEADLINE_MS: u64 = 3_600_000;
+/// A `find_in_captures` sweep is a background job on its own thread: the tool
+/// call that starts it returns within `--mcp-max-wait-seconds`, the agent
+/// polls `find_in_captures_status`, and `cancel_find_in_captures` stops it.
+/// So a long deadline holds no MCP permit and blocks no other request, and
+/// the bound is the longest the operator chose to let one sweep keep a thread
+/// and a disk busy: twelve hours, a full rotated spool of large files. Refused
+/// by [`LimitsConfig::validate`] and by clap, from this one number.
+pub const MAX_MCP_SWEEP_DEADLINE_MS: u64 = 43_200_000;
 
 /// Resource limits.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -2003,7 +2004,8 @@ pub struct LimitsConfig {
     /// The only MCP limit here that bounds a DURATION rather than a size:
     /// `mcp_max_rows` and `mcp_max_body_bytes` bound what an answer carries,
     /// this bounds how long a caller may hold a `--mcp-max-concurrent` permit
-    /// while carrying nothing.
+    /// while carrying nothing. It also bounds `wait_seconds` on
+    /// `find_in_captures` and `find_in_captures_status`.
     pub mcp_max_wait_seconds: Option<u64>,
     /// Findings the MCP `save_findings` tool accepts before refusing further
     /// writes (default: 1000).
@@ -2026,7 +2028,8 @@ pub struct LimitsConfig {
     /// 30000, maximum [`MAX_MCP_SWEEP_DEADLINE_MS`]).
     ///
     /// The ceiling on the tool's per-call `deadline_ms`, applied the same way
-    /// as `mcp_sweep_max_files`. The sweep checks it before each file.
+    /// as `mcp_sweep_max_files`. The sweep checks it before each file and
+    /// before each packet.
     pub mcp_sweep_deadline_ms: Option<u64>,
     /// Lost RTP sequence numbers retained per stream (default: 1000).
     ///
@@ -2267,7 +2270,7 @@ impl LimitsConfig {
             return Err(crate::Error::ConfigInvalid(format!(
                 "[limits] mcp_sweep_deadline_ms must be 1-{MAX_MCP_SWEEP_DEADLINE_MS} \
                  (0 would stop before the first file; the maximum bounds how \
-                 long one call holds an MCP permit), got {v}"
+                 long one background sweep may run), got {v}"
             )));
         }
         if let Some(0) = self.max_lost_sequences {
@@ -4612,6 +4615,31 @@ column_selector = "F10"
                 "the refusal must name {key} and its maximum {max}, got: {err}"
             );
         }
+        Ok(())
+    }
+
+    /// The deadline key accepts twelve hours and refuses one millisecond more.
+    ///
+    /// Written as numbers rather than through the constant, so a change to
+    /// the constant is a change this test sees.
+    #[test]
+    fn the_sweep_deadline_key_accepts_twelve_hours_and_no_more() -> Result<(), TestError> {
+        let at: Config = toml::from_str("[limits]\nmcp_sweep_deadline_ms = 43200000\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
+        at.limits
+            .validate()
+            .map_err(|e| format!("43200000 ms is twelve hours and must validate: {e}"))?;
+        let over: Config = toml::from_str("[limits]\nmcp_sweep_deadline_ms = 43200001\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
+        let err = over
+            .limits
+            .validate()
+            .err()
+            .ok_or("43200001 ms is past twelve hours and must be refused")?;
+        assert!(
+            err.to_string().contains("mcp_sweep_deadline_ms"),
+            "the refusal names the key: {err}"
+        );
         Ok(())
     }
 

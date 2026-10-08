@@ -3394,6 +3394,10 @@ pub struct McpArgs {
     /// sipnab CLAMPS a larger request to it and says so in the response,
     /// which is what `--mcp-max-rows` does with an over-large `limit`.
     ///
+    /// It also bounds `wait_seconds` on `find_in_captures` and
+    /// `find_in_captures_status`: how long one of those calls waits for a
+    /// background sweep before it answers with the running job.
+    ///
     /// No clap `default_value`, for the reason given on
     /// [`Self::mcp_max_rows`]. The default lives in
     /// [`Cli::DEFAULT_MCP_MAX_WAIT_SECONDS`].
@@ -3446,11 +3450,12 @@ pub struct McpArgs {
     pub mcp_sweep_max_files: Option<u64>,
 
     /// Milliseconds one `find_in_captures` sweep may spend (default 30000,
-    /// maximum 3600000). Config: `[limits] mcp_sweep_deadline_ms`.
+    /// maximum 43200000). Config: `[limits] mcp_sweep_deadline_ms`.
     ///
     /// The ceiling on the tool's per-call `deadline_ms`, applied the same way
-    /// as `--mcp-sweep-max-files`. The sweep checks it before each file, and
-    /// one call holds a `--mcp-max-concurrent` permit until it ends.
+    /// as `--mcp-sweep-max-files`. The sweep runs on its own thread and checks
+    /// it before each file and before each packet; the tool call returns a job
+    /// to poll when the sweep outlasts its wait.
     ///
     /// No clap `default_value`, for the reason given on
     /// [`Self::mcp_max_rows`]. The default lives in
@@ -10956,6 +10961,22 @@ mod tests {
                 "{flag} {at} is the documented maximum and must be accepted"
             );
         }
+        Ok(())
+    }
+
+    /// `--mcp-sweep-deadline-ms` accepts twelve hours and refuses one
+    /// millisecond more. Numbers rather than the constant, so a change to the
+    /// constant is a change this test sees.
+    #[test]
+    fn the_sweep_deadline_flag_accepts_twelve_hours_and_no_more() -> Result<(), TestError> {
+        let flag = "--mcp-sweep-deadline-ms";
+        let at = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "43200000"])
+            .map_err(|e| format!("43200000 ms is twelve hours and must be accepted: {e}"))?;
+        assert_eq!(at.mcp_args.mcp_sweep_deadline_ms, Some(43_200_000));
+        assert!(
+            Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "43200001"]).is_err(),
+            "43200001 ms is past twelve hours and must be refused"
+        );
         Ok(())
     }
 

@@ -141,6 +141,9 @@ pub struct SipnabMcp {
     /// `--mcp-sweep-max-files` / `--mcp-sweep-deadline-ms` or their
     /// `[limits]` keys. A per-call request is clamped to them.
     sweep_limits: crate::cli::McpSweepLimits,
+    /// The `find_in_captures` sweeps this server is running or holding a
+    /// result for. Shared by every session clone; see [`super::sweep::SweepJobs`].
+    pub(crate) sweeps: Arc<super::sweep::SweepJobs>,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -362,6 +365,7 @@ impl SipnabMcp {
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             max_wait_seconds: super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS,
             sweep_limits: crate::cli::McpSweepLimits::default(),
+            sweeps: Arc::new(super::sweep::SweepJobs::default()),
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
@@ -1895,6 +1899,35 @@ pub struct FindInCapturesParams {
     /// `max_files` and a very different wait.
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    /// Seconds this call waits for the sweep to finish before it returns the
+    /// running job instead. Clamped to the operator's
+    /// `--mcp-max-wait-seconds` (default 60); absent means 30; `0` returns at
+    /// once.
+    #[serde(default)]
+    pub wait_seconds: Option<u32>,
+}
+
+/// Parameters for `find_in_captures_status`. Unknown arguments are refused.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct FindInCapturesStatusParams {
+    /// The `job_id` `find_in_captures` returned.
+    pub job_id: String,
+    /// Seconds to wait for the sweep to finish before answering with its
+    /// progress. Clamped to `--mcp-max-wait-seconds`; absent means 30; `0`
+    /// answers at once.
+    #[serde(default)]
+    pub wait_seconds: Option<u32>,
+}
+
+/// Parameters for `cancel_find_in_captures`. Unknown arguments are refused.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CancelFindInCapturesParams {
+    /// The `job_id` `find_in_captures` returned.
+    pub job_id: String,
 }
 
 /// Parameters for `get_sdp_timeline`.
@@ -7498,9 +7531,13 @@ impl SipnabMcp {
                        open_capture cannot: that tool replaces every dialog and \
                        stream and voids every cursor. max_files and \
                        deadline_ms are clamped to --mcp-sweep-max-files and \
-                       --mcp-sweep-deadline-ms; the response carries the \
-                       limits applied, files_examined, files_total, an \
-                       unreadable list and a complete flag. \
+                       --mcp-sweep-deadline-ms. The sweep runs in the \
+                       background: a sweep that outlasts wait_seconds returns \
+                       a job_id with status running; poll \
+                       find_in_captures_status, stop with \
+                       cancel_find_in_captures. A finished sweep carries \
+                       files_examined, files_total, an unreadable list and a \
+                       complete flag. \
                        READ complete BEFORE BELIEVING AN EMPTY RESULT: a sweep \
                        that stopped early, or that could not open a file, has \
                        not shown the call is absent.",
@@ -7524,8 +7561,9 @@ impl SipnabMcp {
         let limits = self
             .sweep_limits
             .clamp(params.max_files, params.deadline_ms);
-        let (max_files, deadline_ms) = (limits.max_files, limits.deadline_ms);
 
+        // Listing a directory is one syscall per entry and stays on this
+        // thread; reading the files is the sweep's job, on its own.
         let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(root)
             .map_err(|e| {
                 rmcp::ErrorData::internal_error(
@@ -7543,97 +7581,93 @@ impl SipnabMcp {
             })
             .collect();
         candidates.sort();
-        let files_total = candidates.len();
 
-        let started = std::time::Instant::now();
-        let mut matches = Vec::new();
-        let mut unreadable = Vec::new();
-        let mut examined = 0usize;
-        let mut stopped = None;
+        let job_id = self
+            .sweeps
+            .start(
+                crate::mcp::sweep::SweepPlan {
+                    candidates,
+                    filter: expr,
+                    limits,
+                    row_cap: self.row_cap,
+                    options: self.pipeline_options,
+                },
+                std::time::Instant::now(),
+            )
+            .map_err(|e| rmcp::ErrorData::invalid_request(e, None))?;
+        self.sweep_answer(&job_id, params.wait_seconds).await
+    }
 
-        for path in candidates {
-            if examined >= max_files {
-                stopped = Some(crate::mcp::sweep::StoppedBecause::MaxFiles);
-                break;
-            }
-            // Checked BEFORE each file rather than after: a deadline tested
-            // only afterwards is a deadline the last file can overrun by its
-            // whole read, and the last file is the 2 GB one often enough.
-            if started.elapsed().as_millis() as u64 >= deadline_ms {
-                stopped = Some(crate::mcp::sweep::StoppedBecause::Deadline);
-                break;
-            }
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
+    /// Wait for sweep `job_id` as the caller asked, then answer with its
+    /// result or its progress.
+    ///
+    /// The wait is `wait_seconds` (absent: await_condition's
+    /// `DEFAULT_TIMEOUT_SECONDS`, 30) clamped to `--mcp-max-wait-seconds`,
+    /// the operator's ceiling on any one call's wait. It is an async wait on
+    /// the job's done signal, so the runtime thread serves every other request
+    /// meanwhile.
+    async fn sweep_answer(
+        &self,
+        job_id: &str,
+        wait_seconds: Option<u32>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let wait = wait_seconds
+            .map_or(
+                super::tools::await_condition::DEFAULT_TIMEOUT_SECONDS,
+                u64::from,
+            )
+            .min(self.max_wait_seconds);
+        self.sweeps
+            .wait(job_id, std::time::Duration::from_secs(wait))
+            .await;
+        let report = self
+            .sweeps
+            .collect(job_id, std::time::Instant::now())
+            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+        Ok(CallToolResult::success(vec![ContentBlock::json(report)?]))
+    }
 
-            // A scratch pair per file. The active stores are never touched:
-            // that is the whole difference between this and `open_capture`,
-            // and it is what lets a caller keep every cursor it holds.
-            let scratch_dialogs = std::sync::Arc::new(parking_lot::RwLock::new(
-                crate::sip::dialog_store::DialogStore::new(self.row_cap, false),
-            ));
-            let scratch_streams = std::sync::Arc::new(parking_lot::RwLock::new(
-                crate::rtp::stream_store::StreamStore::new(self.row_cap),
-            ));
-            let progress = std::sync::atomic::AtomicU64::new(0);
+    /// Poll a `find_in_captures` job.
+    #[tool(
+        name = "find_in_captures_status",
+        description = "Polls a find_in_captures job by job_id: waits up to \
+                       wait_seconds (default 30, clamped to \
+                       --mcp-max-wait-seconds) for it to finish, then returns \
+                       status running with progress, or status done or \
+                       canceled with the sweep result. A finished result is \
+                       returned once; the job id is unknown after that, and \
+                       after 600 seconds uncollected.",
+        output_schema = schema_for_output::<crate::mcp::sweep::FindInCapturesResponse>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn find_in_captures_status(
+        &self,
+        Parameters(params): Parameters<FindInCapturesStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.sweep_answer(&params.job_id, params.wait_seconds).await
+    }
 
-            if let Err((_, e)) = crate::mcp::load::read_into_stores(
-                &path,
-                &self.pipeline_options,
-                &scratch_dialogs,
-                &scratch_streams,
-                &progress,
-            ) {
-                unreadable.push(crate::mcp::sweep::unreadable_file(&filename, &e));
-                continue;
-            }
-            examined += 1;
-
-            let ds = scratch_dialogs.read();
-            let ss = scratch_streams.read();
-            let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
-            // Built from the SCRATCH store, so a MOS filter reads this
-            // file's own RTCP rather than the loaded capture's -- the whole
-            // point being that the two are never mixed.
-            let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
-            let mut hits = 0usize;
-            let mut first_call_id = None;
-            for d in ds.iter() {
-                let streams: Vec<&crate::rtp::stream::RtpStream> =
-                    ss.streams_for(&d.call_id).collect();
-                if expr.matches_dialog(d, &streams, capture, delay) {
-                    hits += 1;
-                    if first_call_id.is_none() {
-                        first_call_id = Some(d.call_id.clone());
-                    }
-                }
-            }
-            if hits > 0 {
-                matches.push(crate::mcp::sweep::FileMatch {
-                    filename,
-                    dialogs_matched: hits,
-                    // A Call-ID is attacker-chosen text, and it is also the
-                    // handle the caller feeds straight to `open_capture` --
-                    // the same trade `MESSAGE_VERBATIM_FIELDS` records for
-                    // `call_id`, so it travels verbatim and the response-level
-                    // provenance note covers it.
-                    first_call_id,
-                });
-            }
-        }
-
-        let outcome =
-            crate::mcp::sweep::outcome(matches, examined, files_total, unreadable, stopped);
-        Ok(CallToolResult::success(vec![ContentBlock::json(
-            crate::mcp::sweep::FindInCapturesResponse {
-                schema_version: 1,
-                limits: limits.into(),
-                sweep: outcome,
-            },
-        )?]))
+    /// Stop a running `find_in_captures` job.
+    #[tool(
+        name = "cancel_find_in_captures",
+        description = "Stops a running find_in_captures job by job_id before \
+                       its next packet. Returns at once with cancel_requested \
+                       true; poll find_in_captures_status for status canceled \
+                       and the partial result, whose complete is false.",
+        output_schema = schema_for_output::<crate::mcp::sweep::FindInCapturesResponse>(),
+        // Read-only: it stops a read this tool family started, and changes no
+        // capture, store, file or other system. Starting the sweep is
+        // read-only for the same reason.
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    pub async fn cancel_find_in_captures(
+        &self,
+        Parameters(params): Parameters<CancelFindInCapturesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.sweeps
+            .cancel(&params.job_id, std::time::Instant::now())
+            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+        self.sweep_answer(&params.job_id, Some(0)).await
     }
 
     /// Write the retained packets to a capture file.
@@ -10215,6 +10249,7 @@ mod tests {
                 filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
                 max_files,
                 deadline_ms,
+                wait_seconds: None,
             }))
             .await
             .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
@@ -10338,6 +10373,441 @@ mod tests {
             format!("{err:?}").contains("filter"),
             "the refusal must name the parameter: {err:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A REST router over `srv`'s stores, built as the run builds it, with no
+    /// keys configured.
+    #[cfg(feature = "api")]
+    fn rest_router_over(srv: &SipnabMcp) -> axum::Router {
+        use crate::output::api::{ApiState, ArchivePasswordPolicy, RateLimiter};
+        crate::output::api::build_router(ApiState {
+            relay_query: Default::default(),
+            dialog_store: Arc::clone(&srv.dialog_store),
+            stream_store: Arc::clone(&srv.stream_store),
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig::default(),
+            )),
+            rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100, 1024))),
+            max_inline_media_bytes: None,
+            max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            capture: None,
+            source_exhausted: None,
+            capture_interfaces: Vec::new(),
+            capture_meter: None,
+            started_at: std::time::Instant::now(),
+            persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
+            tfps: Default::default(),
+            actions: Default::default(),
+            alert_engine: None,
+            armed_detections: Vec::new(),
+            file_root: None,
+            pipeline_options: Default::default(),
+            archive: ArchivePasswordPolicy::default(),
+        })
+    }
+
+    /// While a sweep is held mid-read, another MCP call and a REST request on
+    /// the same single-threaded runtime both answer.
+    ///
+    /// The run serves REST and MCP from ONE thread running one
+    /// `new_current_thread` runtime (`crate::app::servers`), and this test
+    /// builds exactly that: one thread, one such runtime, the sweep's tool
+    /// call and the two other requests as tasks on it. The sweep is held at
+    /// its reader's first look by a [`crate::mcp::sweep::TestHold`], so "mid-
+    /// read" is a fact the test waits for rather than a moment it races. A
+    /// sweep that reads on the runtime thread holds that thread inside the
+    /// hold, and neither answer can arrive until it is released.
+    #[cfg(feature = "api")]
+    #[test]
+    fn a_held_sweep_leaves_mcp_and_rest_answering() -> Result<(), TestError> {
+        use tower::ServiceExt;
+        let root = sweep_root(
+            "responsive",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let hold = crate::mcp::sweep::TestHold::at_look(1);
+        srv.sweeps.hold_next(Arc::clone(&hold));
+        let router = rest_router_over(&srv);
+        let mut request = axum::http::Request::builder()
+            .uri("/v1/dialogs")
+            .body(axum::body::Body::empty())
+            .map_err(|e| format!("build request: {e:?}"))?;
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                localhost(),
+                12345,
+            )));
+
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let (answer_tx, answer_rx) = std::sync::mpsc::channel::<(bool, u16)>();
+        let sweeper = srv.clone();
+        let servers = std::thread::Builder::new()
+            .name("servers-under-test".to_string())
+            .spawn(move || -> Result<(), String> {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("runtime: {e}"))?;
+                rt.block_on(async move {
+                    let sweep = tokio::spawn(async move {
+                        sweeper
+                            .find_in_captures(Parameters(FindInCapturesParams {
+                                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                                ..Default::default()
+                            }))
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| format!("the sweep: {e:?}"))
+                    });
+                    go_rx.await.map_err(|e| format!("go: {e}"))?;
+                    let mcp_answered = srv.server_capabilities().await.is_ok();
+                    let rest = router
+                        .oneshot(request)
+                        .await
+                        .map_err(|e| format!("REST: {e:?}"))?;
+                    let _ = answer_tx.send((mcp_answered, rest.status().as_u16()));
+                    sweep.await.map_err(|e| format!("join the sweep: {e}"))?
+                })
+            })
+            .map_err(|e| format!("spawn the server thread: {e}"))?;
+
+        let reached = hold.wait_reached();
+        let _ = go_tx.send(());
+        let answer = reached
+            .then(|| {
+                answer_rx
+                    .recv_timeout(crate::mcp::sweep::TestHold::LIVENESS)
+                    .ok()
+            })
+            .flatten();
+        // Released whatever happened, so the server thread always ends.
+        hold.release();
+        let joined = servers.join();
+        let _ = std::fs::remove_dir_all(&root);
+
+        if !reached {
+            return Err("the sweep never reached its hold".into());
+        }
+        let (mcp_answered, rest_status) = answer.ok_or(
+            "no MCP or REST answer arrived while the sweep was held mid-read: the \
+             sweep is reading on the shared server thread and blocks it",
+        )?;
+        joined.map_err(|_| "the server thread panicked")??;
+        assert!(mcp_answered, "server_capabilities answered with an error");
+        assert_eq!(rest_status, 200, "GET /v1/dialogs");
+        Ok(())
+    }
+
+    /// Releases a [`crate::mcp::sweep::TestHold`] when dropped, so a test that
+    /// returns early never leaves a sweep thread waiting on it.
+    struct ReleaseOnDrop(Arc<crate::mcp::sweep::TestHold>);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    /// Hold `srv`'s next sweep at its reader's `look`-th look.
+    fn hold_next_sweep(srv: &SipnabMcp, look: u64) -> ReleaseOnDrop {
+        let hold = crate::mcp::sweep::TestHold::at_look(look);
+        srv.sweeps.hold_next(Arc::clone(&hold));
+        ReleaseOnDrop(hold)
+    }
+
+    /// Start a sweep of `root` for the g711 fixture's Call-ID that returns at
+    /// once, and return the response's JSON.
+    async fn start_sweep(
+        srv: &SipnabMcp,
+        deadline_ms: Option<u64>,
+    ) -> Result<serde_json::Value, TestError> {
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                deadline_ms,
+                wait_seconds: Some(0),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("the sweep starts: {e:?}"))?;
+        Ok(serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?)
+    }
+
+    /// Poll job `id`, waiting up to thirty seconds for it to finish.
+    async fn poll_sweep(srv: &SipnabMcp, id: &str) -> Result<serde_json::Value, TestError> {
+        let r = srv
+            .find_in_captures_status(Parameters(FindInCapturesStatusParams {
+                job_id: id.to_string(),
+                wait_seconds: Some(30),
+            }))
+            .await
+            .map_err(|e| format!("poll {id}: {e:?}"))?;
+        Ok(serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?)
+    }
+
+    /// A sweep that outlasts its wait comes back as a running job with its
+    /// progress; a poll after it finishes hands over the result; a second
+    /// poll is refused, because a result is handed over once.
+    #[tokio::test]
+    async fn a_sweep_that_outlasts_its_wait_is_a_job_whose_result_is_polled_once()
+    -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-poll",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let hold = hold_next_sweep(&srv, 1);
+
+        let started = start_sweep(&srv, None).await?;
+        assert_eq!(started["status"], "running", "{started}");
+        assert_eq!(started["progress"]["files_total"], 1, "{started}");
+        assert_eq!(started["progress"]["files_examined"], 0, "{started}");
+        assert!(
+            started.get("sweep").is_none(),
+            "a running job carries no sweep result: {started}"
+        );
+        let id = started["job_id"].as_str().ok_or("a job id")?.to_string();
+
+        hold.0.release();
+        let done = poll_sweep(&srv, &id).await?;
+        assert_eq!(done["status"], "done", "{done}");
+        assert_eq!(done["job_id"], id.as_str(), "{done}");
+        assert_eq!(done["sweep"]["matches"][0]["filename"], "a.pcap", "{done}");
+        assert_eq!(done["sweep"]["complete"], true, "{done}");
+        assert_eq!(done["progress"]["files_examined"], 1, "{done}");
+
+        let again = srv
+            .find_in_captures_status(Parameters(FindInCapturesStatusParams {
+                job_id: id.clone(),
+                wait_seconds: Some(0),
+            }))
+            .await
+            .err()
+            .ok_or("a result already handed over is not handed over twice")?;
+        assert!(format!("{again:?}").contains(&id), "{again:?}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A poll for a job this server never started is refused and names it.
+    #[tokio::test]
+    async fn a_poll_of_an_unknown_job_is_refused() -> Result<(), TestError> {
+        let err = server_with_dialog("loaded@test")?
+            .find_in_captures_status(Parameters(FindInCapturesStatusParams {
+                job_id: "sweep-999999".to_string(),
+                wait_seconds: Some(0),
+            }))
+            .await
+            .err()
+            .ok_or("an unknown job id is invalid_params")?;
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("sweep-999999") && msg.contains("unknown"),
+            "the refusal names the id and says it is unknown: {msg}"
+        );
+        Ok(())
+    }
+
+    /// Cancel stops a running sweep between packets, and the poll says
+    /// canceled, with a partial result that is not complete.
+    #[tokio::test]
+    async fn cancel_stops_a_running_sweep_and_the_status_says_canceled() -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-cancel",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let hold = hold_next_sweep(&srv, 1);
+        let started = start_sweep(&srv, None).await?;
+        let id = started["job_id"].as_str().ok_or("a job id")?.to_string();
+        // Mid-read before the cancel, so the cancel is the thing that stops
+        // a read in progress rather than one that never began.
+        assert!(hold.0.wait_reached(), "the sweep never started reading");
+
+        let r = srv
+            .cancel_find_in_captures(Parameters(CancelFindInCapturesParams {
+                job_id: id.clone(),
+            }))
+            .await
+            .map_err(|e| format!("cancel: {e:?}"))?;
+        let canceling: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?;
+        assert_eq!(
+            canceling["progress"]["cancel_requested"], true,
+            "{canceling}"
+        );
+        assert_eq!(
+            canceling["status"], "running",
+            "the sweep is held mid-read, so the cancel finds it running: {canceling}"
+        );
+
+        hold.0.release();
+        let done = poll_sweep(&srv, &id).await?;
+        assert_eq!(done["status"], "canceled", "{done}");
+        assert_eq!(done["sweep"]["stopped_because"], "canceled", "{done}");
+        assert_eq!(done["sweep"]["complete"], false, "{done}");
+        assert_eq!(
+            done["sweep"]["files_examined"], 0,
+            "the one file was stopped mid-read, so it was not examined: {done}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// The deadline stops a sweep INSIDE a file, not only between files.
+    ///
+    /// One file, held after its first packet; the hold then moves the sweep's
+    /// clock past a 60 s deadline. A sweep that checked the deadline only
+    /// before each file would read the rest of the file and report it
+    /// examined and the sweep complete.
+    #[tokio::test]
+    async fn the_deadline_stops_a_sweep_inside_a_long_file() -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-deadline",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let hold = hold_next_sweep(&srv, 2);
+        let started = start_sweep(&srv, Some(60_000)).await?;
+        let id = started["job_id"].as_str().ok_or("a job id")?.to_string();
+        assert!(
+            hold.0.wait_reached(),
+            "the sweep never read its first packet"
+        );
+        hold.0.advance_clock_ms(60_000);
+        hold.0.release();
+
+        let done = poll_sweep(&srv, &id).await?;
+        assert_eq!(done["status"], "done", "{done}");
+        assert_eq!(done["sweep"]["stopped_because"], "deadline", "{done}");
+        assert_eq!(done["sweep"]["files_examined"], 0, "{done}");
+        assert_eq!(done["sweep"]["complete"], false, "{done}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// One sweep more than `MAX_RUNNING_SWEEPS` is refused with an error that
+    /// says how many run and what to do, and the running ones are untouched.
+    #[tokio::test]
+    async fn a_sweep_past_the_running_bound_is_refused() -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-bound",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let mut holds = Vec::new();
+        let mut ids = Vec::new();
+        for _ in 0..crate::mcp::sweep::MAX_RUNNING_SWEEPS {
+            holds.push(hold_next_sweep(&srv, 1));
+            let started = start_sweep(&srv, None).await?;
+            assert_eq!(started["status"], "running", "{started}");
+            ids.push(started["job_id"].as_str().ok_or("a job id")?.to_string());
+        }
+        let err = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "state == 'failed'".to_string(),
+                wait_seconds: Some(0),
+                ..Default::default()
+            }))
+            .await
+            .err()
+            .ok_or("a sweep past the bound must be refused")?;
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains(&crate::mcp::sweep::MAX_RUNNING_SWEEPS.to_string())
+                && msg.contains("cancel_find_in_captures"),
+            "the refusal names the bound and the way out: {msg}"
+        );
+        drop(holds);
+        for id in &ids {
+            let done = poll_sweep(&srv, id).await?;
+            assert_eq!(done["status"], "done", "{done}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A finished result nobody polled is kept for `RESULT_RETENTION` after
+    /// it finished and dropped after that; the job id is then unknown.
+    ///
+    /// Driven with the reap's own clock argument, so the test does not wait
+    /// out the retention.
+    #[tokio::test]
+    async fn a_finished_result_expires_after_its_retention() -> Result<(), TestError> {
+        let root = sweep_root(
+            "job-expiry",
+            &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let hold = hold_next_sweep(&srv, 1);
+        let started = start_sweep(&srv, None).await?;
+        let id = started["job_id"].as_str().ok_or("a job id")?.to_string();
+        hold.0.release();
+        srv.sweeps.wait_finished(&id).await;
+        let finished = srv.sweeps.finished_at(&id).ok_or("the job finished")?;
+
+        let retention = crate::mcp::sweep::RESULT_RETENTION;
+        srv.sweeps.reap(finished + retention);
+        assert!(
+            srv.sweeps.holds(&id),
+            "a result is kept for the whole retention"
+        );
+        srv.sweeps
+            .reap(finished + retention + std::time::Duration::from_millis(1));
+        assert!(!srv.sweeps.holds(&id), "and dropped after it");
+        let err = srv
+            .find_in_captures_status(Parameters(FindInCapturesStatusParams {
+                job_id: id.clone(),
+                wait_seconds: Some(0),
+            }))
+            .await
+            .err()
+            .ok_or("an expired job is unknown")?;
+        assert!(format!("{err:?}").contains(&id), "{err:?}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// At most `MAX_HELD_RESULTS` finished results wait for collection; past
+    /// that the oldest is dropped, so results nobody polls cannot accumulate.
+    #[tokio::test]
+    async fn finished_results_past_the_held_bound_drop_the_oldest() -> Result<(), TestError> {
+        let root = sweep_root("job-held", &[], &[])?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let mut ids = Vec::new();
+        for _ in 0..=crate::mcp::sweep::MAX_HELD_RESULTS {
+            let id = srv
+                .sweeps
+                .start(
+                    crate::mcp::sweep::SweepPlan {
+                        candidates: Vec::new(),
+                        filter: crate::sip::dsl::FilterExpr::parse("state == 'failed'")
+                            .map_err(|e| format!("filter: {e}"))?,
+                        limits: crate::cli::McpSweepLimits::default(),
+                        row_cap: 100,
+                        options: crate::pipeline::PipelineOptions::default(),
+                    },
+                    std::time::Instant::now(),
+                )
+                .map_err(|e| format!("start: {e}"))?;
+            srv.sweeps.wait_finished(&id).await;
+            ids.push(id);
+        }
+        srv.sweeps.reap(std::time::Instant::now());
+        assert!(!srv.sweeps.holds(&ids[0]), "the oldest result is dropped");
+        for id in &ids[1..] {
+            assert!(srv.sweeps.holds(id), "{id} is within the bound");
+        }
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
@@ -11057,7 +11527,11 @@ mod tests {
         const CEILINGS: &[(&str, usize)] = &[
             ("core", 11_000),
             ("signaling", 22_000),
-            ("captures", 11_000),
+            // 11_000 -> 13_000 and full 79_000 -> 81_000 by
+            // `find_in_captures_status` and `cancel_find_in_captures`, the
+            // poll and cancel of the background sweep job (captures measured
+            // 12,542, full 80,864).
+            ("captures", 13_000),
             ("security", 10_000),
             ("media", 3_500),
             ("relay", 4_500),
@@ -11065,7 +11539,7 @@ mod tests {
             ("server", 5_500),
             ("vcon", 5_000),
             ("tls", 3_000),
-            ("full", 79_000),
+            ("full", 81_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

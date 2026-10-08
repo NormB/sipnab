@@ -1640,7 +1640,10 @@ static SPECS: &[Spec] = &[
     ),
     (
         "mcp-sweep-deadline-ms",
-        Kind::Int { lo: 1, hi: 3600000 },
+        Kind::Int {
+            lo: 1,
+            hi: 43200000,
+        },
         &[],
     ),
     (

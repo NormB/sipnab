@@ -112,10 +112,12 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
         "captures",
         &[
             "build_evidence_package",
+            "cancel_find_in_captures",
             "compare_captures",
             "decode_evidence",
             "export_capture",
             "find_in_captures",
+            "find_in_captures_status",
             "list_captures",
             "open_capture",
             "save_findings",

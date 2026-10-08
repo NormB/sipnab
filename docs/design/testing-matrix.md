@@ -51,7 +51,7 @@ was driving all of them.
 |---|---|---|---|---|---|
 | CLI flags | 327 | 252 | 36 | 39 | 0 |
 | HTTP routes | 41 | 41 | -- | 0 | 0 |
-| MCP tools | 70 | 70 | -- | 0 | 0 |
+| MCP tools | 72 | 72 | -- | 0 | 0 |
 
 **No row can ever say `none`, and that is the point.** `flag_coverage_test` already requires every flag's `--name` token to appear somewhere in the test corpus, and it defines "referenced" as exactly that. A coverage metric built on mentions therefore reports 100% for this project no matter what is actually exercised -- which is what a yes/no "tested" column would have shown. The rows at `referenced` are the ones that gate passes and this document does not.
 
@@ -306,7 +306,7 @@ behind them.
 | `--mcp-output-schemas` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
 | `--mcp-max-rows` |  | `N` | MCP (Model Context Protocol) | parsed | `tests/mcp_row_cap_test.rs` |  |  |
 | `--mcp-max-body-bytes` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_body_bytes changes the search_messages snippet length |
-| `--mcp-max-wait-seconds` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/tools/await_condition.rs` | **behavior** | via config key: probe_mcp_max_wait_seconds changes the effective await_condition deadline |
+| `--mcp-max-wait-seconds` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` +1 | **behavior** | via config key: probe_mcp_max_wait_seconds changes the effective await_condition deadline |
 | `--mcp-max-findings` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_findings changes the remaining budget in save_findings |
 | `--mcp-sweep-max-files` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` | **behavior** | via config key: probe_mcp_sweep_max_files changes the files find_in_captures examines |
 | `--mcp-sweep-deadline-ms` |  | `MS` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/server.rs` | **behavior** | via config key: probe_mcp_sweep_deadline_ms changes the deadline find_in_captures reports |
@@ -465,6 +465,7 @@ behind them.
 | `aggregate_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `await_condition` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `build_evidence_package` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
+| `cancel_find_in_captures` | exercised | `tests/mcp_stdio_test.rs` |
 | `capture_health` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `capture_status` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_audit_sink_test.rs` +13 |
 | `check_codec_negotiation` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
@@ -483,6 +484,7 @@ behind them.
 | `export_vcon` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_completeness_test.rs` +5 |
 | `find_in_captures` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
+| `find_in_captures_status` | exercised | `tests/mcp_stdio_test.rs` |
 | `find_problems` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_completion_test.rs` +4 |
 | `generate_fail2ban_rule` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |
 | `generate_repro` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_expectations_test.rs` +1 |

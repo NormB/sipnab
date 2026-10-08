@@ -15,12 +15,25 @@ entry that carries them.
 - **The MCP `find_in_captures` limits are operator settings.**
   `--mcp-sweep-max-files` / `[limits] mcp_sweep_max_files` (default 20,
   accepted 1 to 4294967295) and `--mcp-sweep-deadline-ms` /
-  `[limits] mcp_sweep_deadline_ms` (default 30000, accepted 1 to 3600000)
-  set the ceilings the tool's per-call `max_files` and `deadline_ms` are
-  clamped to. Before this, the tool clamped both to fixed values of 20 files
-  and 30000 ms, so a sweep of a spool with more than 20 rotated files could not
-  reach the older ones. The flag overrides the key. The response carries a
-  new `limits` object with the values the sweep ran under.
+  `[limits] mcp_sweep_deadline_ms` (default 30000, accepted 1 to 43200000,
+  twelve hours) set the ceilings the tool clamps its per-call `max_files`
+  and `deadline_ms` to. Before this, the tool clamped both to fixed
+  values of 20 files and 30000 ms, so a sweep of a spool with more than 20
+  rotated files could not reach the older ones. The flag overrides the key.
+  The response carries a new `limits` object with the values the sweep ran
+  under.
+- **An MCP `find_in_captures` sweep is a background job.** The call waits up
+  to its new `wait_seconds` parameter (default 30, clamped to
+  `--mcp-max-wait-seconds`) and returns the result when the sweep finishes in
+  that time. Otherwise it returns a `job_id` with `status: "running"` and
+  `progress` (`files_examined`, `files_total`, `elapsed_ms`). The new
+  `find_in_captures_status` tool polls a job and hands over its finished
+  result once; the new `cancel_find_in_captures` tool stops one. A sweep stops
+  before its next packet when its deadline passes, when a cancel arrives, or on
+  SIGTERM, and `stopped_because` gains `canceled` and `shutdown`. At most four
+  sweeps run per server. sipnab keeps a finished result for 600 seconds, and
+  at most 16 results wait for a poll. The response is `schema_version` 2: it adds
+  `job_id`, `status` and `progress`, and leaves out `sweep` while the job runs.
 
 ### Changed
 
@@ -44,6 +57,13 @@ entry that carries them.
   a function with a material word in its name and a return type as one that
   returns material; a test returning `Result<(), TestError>` returns no value.
   A function returning material inside a `Result` is still reported.
+
+### Fixed
+
+- **`find_in_captures` no longer blocks every other MCP call and REST request
+  while it reads.** One thread serves REST and MCP, and the sweep read
+  its files on that thread inside the tool call, so no other request was
+  answered until the sweep ended. The sweep now reads on its own thread.
 
 ## [0.5.206] - 2026-10-07
 
