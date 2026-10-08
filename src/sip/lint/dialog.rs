@@ -900,14 +900,16 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed capture timestamp, advanced one second per message.
     fn ts(offset: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_718_452_800 + offset, 0).unwrap_or_default()
     }
 
     /// Parse one message of a dialog.
-    fn msg(raw: &str, offset: i64) -> SipMessage {
-        parse_sip(
+    fn msg(raw: &str, offset: i64) -> Result<SipMessage, TestError> {
+        Ok(parse_sip(
             raw.as_bytes(),
             ts(offset),
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
@@ -915,38 +917,37 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("test fixture must parse")
+        )?)
     }
 
     /// Build a store holding one dialog from raw messages, in order.
     ///
     /// `SipDialog` is not `Clone`, so the store outlives the borrow rather than
     /// the dialog being lifted out of it.
-    fn store_of(raws: &[&str]) -> DialogStore {
+    fn store_of(raws: &[&str]) -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(16, false);
         for (i, raw) in raws.iter().enumerate() {
-            store.process_message(msg(raw, i as i64));
+            store.process_message(msg(raw, i as i64)?);
         }
-        store
+        Ok(store)
     }
 
     /// The single dialog a fixture store holds.
-    fn only(store: &DialogStore) -> &SipDialog {
-        store
+    fn only(store: &DialogStore) -> Result<&SipDialog, TestError> {
+        Ok(store
             .iter()
             .next()
-            .expect("fixture must produce one dialog")
+            .ok_or("fixture must produce one dialog")?)
     }
 
     /// Rule identifiers raised for a dialog.
-    fn ids(raws: &[&str]) -> Vec<&'static str> {
-        let store = store_of(raws);
-        Linter::new(LintConfig::new())
-            .lint_dialog(only(&store))
+    fn ids(raws: &[&str]) -> Result<Vec<&'static str>, TestError> {
+        let store = store_of(raws)?;
+        Ok(Linter::new(LintConfig::new())
+            .lint_dialog(only(&store)?)
             .into_iter()
             .map(|f| f.rule_id)
-            .collect()
+            .collect())
     }
 
     /// An INVITE carrying `sdp`, or none when `sdp` is empty.
@@ -1056,27 +1057,29 @@ mod tests {
 
     /// A reliable provisional the dialog never acknowledged is reported.
     #[test]
-    fn a_reliable_provisional_without_a_prack_is_reported() {
+    fn a_reliable_provisional_without_a_prack_is_reported() -> Result<(), TestError> {
         let got = ids(&[
             &invite(1, "", ""),
             &reliable_183(1),
             &ok(1, "INVITE", ""),
             &ack(1),
-        ]);
+        ])?;
         assert!(got.contains(&PRACK_MISSING.id), "{got:?}");
+        Ok(())
     }
 
     /// A PRACK anywhere in the dialog settles it.
     #[test]
-    fn a_dialog_carrying_a_prack_is_silent() {
+    fn a_dialog_carrying_a_prack_is_silent() -> Result<(), TestError> {
         let got = ids(&[
             &invite(1, "", ""),
             &reliable_183(1),
             &prack(1),
             &ok(1, "INVITE", ""),
             &ack(1),
-        ]);
+        ])?;
         assert!(!got.contains(&PRACK_MISSING.id), "{got:?}");
+        Ok(())
     }
 
     /// A capture that stops before the final answer reports nothing.
@@ -1086,46 +1089,50 @@ mod tests {
     /// not shown that the PRACK is missing — only that the file ended. Without
     /// this the rule fires on a large share of any busy trunk.
     #[test]
-    fn a_truncated_dialog_is_not_accused_of_a_missing_prack() {
-        let got = ids(&[&invite(1, "", ""), &reliable_183(1)]);
+    fn a_truncated_dialog_is_not_accused_of_a_missing_prack() -> Result<(), TestError> {
+        let got = ids(&[&invite(1, "", ""), &reliable_183(1)])?;
         assert!(
             !got.contains(&PRACK_MISSING.id),
             "no final response means the capture never showed the rest: {got:?}"
         );
+        Ok(())
     }
 
     /// A provisional that never asked for reliability needs no PRACK.
     #[test]
-    fn an_ordinary_provisional_needs_no_prack() {
+    fn an_ordinary_provisional_needs_no_prack() -> Result<(), TestError> {
         let ringing = reliable_183(1)
             .replace("Require: 100rel\r\n", "")
             .replace("RSeq: 1\r\n", "")
             .replace("183 Session Progress", "180 Ringing");
-        let got = ids(&[&invite(1, "", ""), &ringing, &ok(1, "INVITE", ""), &ack(1)]);
+        let got = ids(&[&invite(1, "", ""), &ringing, &ok(1, "INVITE", ""), &ack(1)])?;
         assert!(!got.contains(&PRACK_MISSING.id), "{got:?}");
+        Ok(())
     }
 
     #[test]
-    fn a_conformant_call_raises_nothing() {
+    fn a_conformant_call_raises_nothing() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendrecv")),
             ack(1),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert_eq!(ids(&refs), Vec::<&str>::new());
+        assert_eq!(ids(&refs)?, Vec::<&str>::new());
+        Ok(())
     }
 
     /// An ACK whose CSeq does not match its INVITE is reported.
     #[test]
-    fn ack_with_the_wrong_cseq_is_reported() {
+    fn ack_with_the_wrong_cseq_is_reported() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendrecv")),
             ack(2),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(ids(&refs).contains(&ACK_CSEQ_MISMATCH.id));
+        assert!(ids(&refs)?.contains(&ACK_CSEQ_MISMATCH.id));
+        Ok(())
     }
 
     /// A dialog with no captured INVITE raises no ACK finding.
@@ -1133,28 +1140,30 @@ mod tests {
     /// A capture that starts mid-call is the common case, and a rule that
     /// treats a missing INVITE as a mismatch reports the capture, not the call.
     #[test]
-    fn ack_without_a_captured_invite_is_silent() {
+    fn ack_without_a_captured_invite_is_silent() -> Result<(), TestError> {
         let raws = [ok(7, "INVITE", ""), ack(7)];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(!ids(&refs).contains(&ACK_CSEQ_MISMATCH.id));
+        assert!(!ids(&refs)?.contains(&ACK_CSEQ_MISMATCH.id));
+        Ok(())
     }
 
     /// An answer sharing no format with the offer is a MUST violation.
     #[test]
-    fn answer_with_no_common_format_is_reported() {
+    fn answer_with_no_common_format_is_reported() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "8", "sendrecv")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let store = store_of(&refs);
-        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let store = store_of(&refs)?;
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store)?);
         let f = findings
             .iter()
             .find(|f| f.rule_id == ANSWER_NO_COMMON_FORMAT.id)
-            .expect("disjoint formats must be reported");
+            .ok_or("disjoint formats must be reported")?;
         assert_eq!(f.citation(), "RFC 3264 §6.1");
         assert_eq!(f.message_index, 1);
+        Ok(())
     }
 
     /// An answer adding a format the offer lacked is legal, and reports as
@@ -1163,7 +1172,7 @@ mod tests {
     /// [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) permits the extra listing outright. A tool that called this illegal
     /// would be citing a rule that says the opposite.
     #[test]
-    fn answer_with_an_extra_format_is_interop_not_must() {
+    fn answer_with_an_extra_format_is_interop_not_must() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(
@@ -1173,58 +1182,62 @@ mod tests {
             ),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let store = store_of(&refs);
-        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let store = store_of(&refs)?;
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store)?);
         let f = findings
             .iter()
             .find(|f| f.rule_id == ANSWER_EXTRA_FORMAT.id)
-            .expect("extra format must be reported");
+            .ok_or("extra format must be reported")?;
         assert_eq!(f.basis, crate::sip::lint::Basis::Interop);
         assert!(
             !findings
                 .iter()
                 .any(|f| f.rule_id == ANSWER_NO_COMMON_FORMAT.id)
         );
+        Ok(())
     }
 
     /// A stream declined with port zero raises no format finding.
     #[test]
-    fn a_declined_stream_raises_no_format_finding() {
+    fn a_declined_stream_raises_no_format_finding() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 0, "8", "sendrecv")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let raised = ids(&refs);
+        let raised = ids(&refs)?;
         assert!(!raised.contains(&ANSWER_NO_COMMON_FORMAT.id), "{raised:?}");
         assert!(!raised.contains(&ANSWER_EXTRA_FORMAT.id), "{raised:?}");
+        Ok(())
     }
 
     /// Answering a `sendonly` offer with `sendonly` is reported.
     #[test]
-    fn illegal_answer_direction_is_reported() {
+    fn illegal_answer_direction_is_reported() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendonly")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendonly")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(ids(&refs).contains(&ANSWER_DIRECTION_ILLEGAL.id));
+        assert!(ids(&refs)?.contains(&ANSWER_DIRECTION_ILLEGAL.id));
+        Ok(())
     }
 
     /// Answering a `sendonly` offer with `recvonly` is correct and silent.
     #[test]
-    fn legal_answer_direction_is_silent() {
+    fn legal_answer_direction_is_silent() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendonly")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "recvonly")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(!ids(&refs).contains(&ANSWER_DIRECTION_ILLEGAL.id));
+        assert!(!ids(&refs)?.contains(&ANSWER_DIRECTION_ILLEGAL.id));
+        Ok(())
     }
 
     /// A re-offer blanking the connection address is reported as a hold.
     #[test]
-    fn hold_by_blanked_address_is_reported() {
+    fn hold_by_blanked_address_is_reported() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendrecv")),
@@ -1236,14 +1249,15 @@ mod tests {
             ),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let store = store_of(&refs);
-        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let store = store_of(&refs)?;
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store)?);
         let f = findings
             .iter()
             .find(|f| f.rule_id == HOLD_CONNECTION_ZERO.id)
-            .expect("blanked re-offer must be reported");
+            .ok_or("blanked re-offer must be reported")?;
         assert_eq!(f.citation(), "RFC 3264 §8.4");
         assert_eq!(f.message_index, 3);
+        Ok(())
     }
 
     /// An *initial* offer with a blanked address is silent.
@@ -1251,18 +1265,19 @@ mod tests {
     /// [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) keeps that use: an agent that does not yet know its own address.
     /// Reporting it would fire on every third-party call control flow.
     #[test]
-    fn blanked_address_in_the_first_offer_is_silent() {
+    fn blanked_address_in_the_first_offer_is_silent() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("0.0.0.0", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendrecv")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(!ids(&refs).contains(&HOLD_CONNECTION_ZERO.id));
+        assert!(!ids(&refs)?.contains(&HOLD_CONNECTION_ZERO.id));
+        Ok(())
     }
 
     /// A REGISTER carrying a To tag is reported wherever the capture started.
     #[test]
-    fn register_with_a_to_tag_is_reported() {
+    fn register_with_a_to_tag_is_reported() -> Result<(), TestError> {
         let register = "REGISTER sip:example.com SIP/2.0\r\n\
                         Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                         Max-Forwards: 70\r\n\
@@ -1272,7 +1287,8 @@ mod tests {
                         CSeq: 1 REGISTER\r\n\
                         Content-Length: 0\r\n\
                         \r\n";
-        assert!(ids(&[register]).contains(&TO_TAG_IN_INITIAL_REQUEST.id));
+        assert!(ids(&[register])?.contains(&TO_TAG_IN_INITIAL_REQUEST.id));
+        Ok(())
     }
 
     /// A re-INVITE in a capture that began mid-call is silent.
@@ -1280,7 +1296,7 @@ mod tests {
     /// The message alone looks identical to the violation. Only the answer
     /// echoing the same tag settles it, and here it does.
     #[test]
-    fn mid_dialog_reinvite_is_silent() {
+    fn mid_dialog_reinvite_is_silent() -> Result<(), TestError> {
         let raws = [
             invite(
                 9,
@@ -1290,7 +1306,8 @@ mod tests {
             ok(9, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendrecv")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(!ids(&refs).contains(&TO_TAG_IN_INITIAL_REQUEST.id));
+        assert!(!ids(&refs)?.contains(&TO_TAG_IN_INITIAL_REQUEST.id));
+        Ok(())
     }
 
     /// A `SUBSCRIBE` dialog carrying reverse-direction `NOTIFY` traffic is
@@ -1303,7 +1320,7 @@ mod tests {
     /// conformance, not a violation, and that a rule comparing against every
     /// response in the dialog reads as a violation every single time.
     #[test]
-    fn a_subscribe_dialog_with_notifies_is_silent() {
+    fn a_subscribe_dialog_with_notifies_is_silent() -> Result<(), TestError> {
         let subscribe = "SUBSCRIBE sip:bob@example.net SIP/2.0\r\n\
                          Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKsub1\r\n\
                          Max-Forwards: 70\r\n\
@@ -1344,11 +1361,12 @@ mod tests {
                          CSeq: 1 NOTIFY\r\n\
                          Content-Length: 0\r\n\
                          \r\n";
-        let raised = ids(&[subscribe, sub_ok, notify, notify_ok]);
+        let raised = ids(&[subscribe, sub_ok, notify, notify_ok])?;
         assert!(
             !raised.contains(&TO_TAG_IN_INITIAL_REQUEST.id),
             "a conformant SUBSCRIBE/NOTIFY dialog must stay silent: {raised:?}"
         );
+        Ok(())
     }
 
     /// A request whose own transaction answers with a different tag is still
@@ -1358,19 +1376,20 @@ mod tests {
     /// *this* request, on *this* branch, choosing its own tag is the evidence
     /// the rule exists for.
     #[test]
-    fn a_tag_the_same_transaction_replaced_is_reported() {
+    fn a_tag_the_same_transaction_replaced_is_reported() -> Result<(), TestError> {
         let raws = [
             invite(1, ";tag=inventedbythecaller", ""),
             ok(1, "INVITE", ""),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        assert!(ids(&refs).contains(&TO_TAG_IN_INITIAL_REQUEST.id));
+        assert!(ids(&refs)?.contains(&TO_TAG_IN_INITIAL_REQUEST.id));
+        Ok(())
     }
 
     /// Offer and answer pair by position, and an unanswered offer pairs with
     /// nothing.
     #[test]
-    fn offers_pair_with_their_answers() {
+    fn offers_pair_with_their_answers() -> Result<(), TestError> {
         let raws = [
             invite(1, "", &sdp_body("192.0.2.1", 40000, "0", "sendrecv")),
             ok(1, "INVITE", &sdp_body("192.0.2.2", 41000, "0", "sendrecv")),
@@ -1382,11 +1401,12 @@ mod tests {
             ),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let store = store_of(&refs);
-        let pairs = offer_answer_pairs(only(&store));
+        let store = store_of(&refs)?;
+        let pairs = offer_answer_pairs(only(&store)?);
         assert_eq!(pairs.len(), 1, "the unanswered re-offer must not pair");
         assert_eq!(pairs[0].offer.index, 0);
         assert_eq!(pairs[0].answer.index, 1);
+        Ok(())
     }
 
     /// An answer with no offer before it pairs with nothing, and does not
@@ -1398,7 +1418,7 @@ mod tests {
     /// other, which reports the difference between them as a conformance
     /// defect. Mutation testing found this arm untested.
     #[test]
-    fn an_answer_with_no_offer_before_it_pairs_with_nothing() {
+    fn an_answer_with_no_offer_before_it_pairs_with_nothing() -> Result<(), TestError> {
         let answer_sdp = sdp_body("192.0.2.1", 40000, "0", "sendrecv");
         let orphan_ack = format!(
             "ACK sip:bob@example.net SIP/2.0\r\n\
@@ -1418,17 +1438,18 @@ mod tests {
             ok(2, "INVITE", &sdp_body("192.0.2.2", 41000, "8", "sendrecv")),
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let store = store_of(&refs);
-        let pairs = offer_answer_pairs(only(&store));
+        let store = store_of(&refs)?;
+        let pairs = offer_answer_pairs(only(&store)?);
         assert!(
             pairs.is_empty(),
             "an orphan answer must not become an offer for the next body"
         );
+        Ok(())
     }
 
     /// A delayed offer carried in the 2xx pairs with the ACK that answers it.
     #[test]
-    fn delayed_offers_pair_with_the_ack() {
+    fn delayed_offers_pair_with_the_ack() -> Result<(), TestError> {
         let invite_no_sdp = invite(1, "", "");
         let answer_sdp = sdp_body("192.0.2.1", 40000, "0", "sendrecv");
         let ack_with_sdp = format!(
@@ -1450,11 +1471,12 @@ mod tests {
             ack_with_sdp,
         ];
         let refs: Vec<&str> = raws.iter().map(String::as_str).collect();
-        let store = store_of(&refs);
-        let pairs = offer_answer_pairs(only(&store));
+        let store = store_of(&refs)?;
+        let pairs = offer_answer_pairs(only(&store)?);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].offer.index, 1, "the 2xx carried the delayed offer");
         assert_eq!(pairs[0].answer.index, 2);
+        Ok(())
     }
 
     // ── RFC 3261 §17.1.1.3 — the non-2xx ACK stays on the branch ────────
@@ -1490,24 +1512,26 @@ mod tests {
 
     /// An ACK to a 486 on a fresh branch is reported.
     #[test]
-    fn an_ack_to_a_non_2xx_on_a_new_branch_is_reported() {
+    fn an_ack_to_a_non_2xx_on_a_new_branch_is_reported() -> Result<(), TestError> {
         let got = ids(&[
             &invite(1, "", ""),
             &final_failure(1, 486),
             &ack_on_branch(1, "z9hG4bKfresh"),
-        ]);
+        ])?;
         assert!(got.contains(&ACK_BRANCH_MISMATCH.id), "{got:?}");
+        Ok(())
     }
 
     /// An ACK to a 486 reusing the INVITE's branch is silent.
     #[test]
-    fn an_ack_to_a_non_2xx_on_the_invite_branch_is_silent() {
+    fn an_ack_to_a_non_2xx_on_the_invite_branch_is_silent() -> Result<(), TestError> {
         let got = ids(&[
             &invite(1, "", ""),
             &final_failure(1, 486),
             &ack_on_branch(1, "z9hG4bK1"),
-        ]);
+        ])?;
         assert!(!got.contains(&ACK_BRANCH_MISMATCH.id), "{got:?}");
+        Ok(())
     }
 
     /// An ACK to a 2xx on a NEW branch is correct and must stay silent.
@@ -1517,13 +1541,14 @@ mod tests {
     /// a new branch — so dropping the non-2xx guard would report the correct
     /// behavior on every answered call in every capture.
     #[test]
-    fn an_ack_to_a_2xx_on_a_new_branch_is_silent() {
+    fn an_ack_to_a_2xx_on_a_new_branch_is_silent() -> Result<(), TestError> {
         let got = ids(&[
             &invite(1, "", ""),
             &ok(1, "INVITE", ""),
             &ack_on_branch(1, "z9hG4bKbrandnew"),
-        ]);
+        ])?;
         assert!(!got.contains(&ACK_BRANCH_MISMATCH.id), "{got:?}");
+        Ok(())
     }
 
     // ── RFC 3261 §12.1.1 — the response reproduces Record-Route ─────────
@@ -1540,7 +1565,7 @@ mod tests {
 
     /// A 2xx that drops a recorded route is reported.
     #[test]
-    fn a_2xx_dropping_a_record_route_is_reported() {
+    fn a_2xx_dropping_a_record_route_is_reported() -> Result<(), TestError> {
         let request = with_headers(
             &invite(1, "", ""),
             &[
@@ -1552,8 +1577,9 @@ mod tests {
             &ok(1, "INVITE", ""),
             &["Record-Route: <sip:p1.example.net;lr>"],
         );
-        let got = ids(&[&request, &response, &ack(1)]);
+        let got = ids(&[&request, &response, &ack(1)])?;
         assert!(got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+        Ok(())
     }
 
     /// A 2xx that reverses the order is reported.
@@ -1562,28 +1588,30 @@ mod tests {
     /// has the caller read the response's list in reverse — so a reversal
     /// silently sends every in-dialog request through the path backwards.
     #[test]
-    fn a_2xx_reordering_the_record_route_is_reported() {
+    fn a_2xx_reordering_the_record_route_is_reported() -> Result<(), TestError> {
         let routes = [
             "Record-Route: <sip:p2.example.net;lr>",
             "Record-Route: <sip:p1.example.net;lr>",
         ];
         let request = with_headers(&invite(1, "", ""), &routes);
         let response = with_headers(&ok(1, "INVITE", ""), &[routes[1], routes[0]]);
-        let got = ids(&[&request, &response, &ack(1)]);
+        let got = ids(&[&request, &response, &ack(1)])?;
         assert!(got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+        Ok(())
     }
 
     /// A 2xx reproducing the list exactly is silent.
     #[test]
-    fn a_2xx_copying_the_record_route_is_silent() {
+    fn a_2xx_copying_the_record_route_is_silent() -> Result<(), TestError> {
         let routes = [
             "Record-Route: <sip:p2.example.net;lr>",
             "Record-Route: <sip:p1.example.net;lr>",
         ];
         let request = with_headers(&invite(1, "", ""), &routes);
         let response = with_headers(&ok(1, "INVITE", ""), &routes);
-        let got = ids(&[&request, &response, &ack(1)]);
+        let got = ids(&[&request, &response, &ack(1)])?;
         assert!(!got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+        Ok(())
     }
 
     /// A 2xx carrying MORE routes than the request is silent.
@@ -1593,7 +1621,7 @@ mod tests {
     /// is ordinary at every point that is not the UAS, so a rule comparing for
     /// equality would fire on most proxy-side captures in existence.
     #[test]
-    fn a_2xx_carrying_an_extra_record_route_above_the_request_is_silent() {
+    fn a_2xx_carrying_an_extra_record_route_above_the_request_is_silent() -> Result<(), TestError> {
         let request = with_headers(
             &invite(1, "", ""),
             &["Record-Route: <sip:p1.example.net;lr>"],
@@ -1605,16 +1633,18 @@ mod tests {
                 "Record-Route: <sip:p1.example.net;lr>",
             ],
         );
-        let got = ids(&[&request, &response, &ack(1)]);
+        let got = ids(&[&request, &response, &ack(1)])?;
         assert!(!got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+        Ok(())
     }
 
     /// A dialog whose request recorded nothing is silent whatever the response
     /// says.
     #[test]
-    fn a_dialog_with_no_recorded_route_is_silent() {
-        let got = ids(&[&invite(1, "", ""), &ok(1, "INVITE", ""), &ack(1)]);
+    fn a_dialog_with_no_recorded_route_is_silent() -> Result<(), TestError> {
+        let got = ids(&[&invite(1, "", ""), &ok(1, "INVITE", ""), &ack(1)])?;
         assert!(!got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+        Ok(())
     }
 
     // ── RFC 3264 — the SDP rules ────────────────────────────────────────
@@ -1639,46 +1669,49 @@ mod tests {
 
     /// An offer declaring telephone-event that the answer omits is reported.
     #[test]
-    fn telephone_event_dropped_by_the_answer_is_reported() {
+    fn telephone_event_dropped_by_the_answer_is_reported() -> Result<(), TestError> {
         let offer = sdp_with(
             10000,
             "0 101",
             &["rtpmap:0 PCMU/8000", "rtpmap:101 telephone-event/8000"],
         );
         let answer = sdp_with(20000, "0", &["rtpmap:0 PCMU/8000"]);
-        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)])?;
         assert!(got.contains(&TELEPHONE_EVENT_ONE_WAY.id), "{got:?}");
+        Ok(())
     }
 
     /// An answer that keeps telephone-event is silent.
     #[test]
-    fn telephone_event_answered_is_silent() {
+    fn telephone_event_answered_is_silent() -> Result<(), TestError> {
         let body = sdp_with(
             10000,
             "0 101",
             &["rtpmap:0 PCMU/8000", "rtpmap:101 telephone-event/8000"],
         );
-        let got = ids(&[&invite(1, "", &body), &ok(1, "INVITE", &body), &ack(1)]);
+        let got = ids(&[&invite(1, "", &body), &ok(1, "INVITE", &body), &ack(1)])?;
         assert!(!got.contains(&TELEPHONE_EVENT_ONE_WAY.id), "{got:?}");
+        Ok(())
     }
 
     /// A stream the answer declined negotiated nothing, so it is silent.
     #[test]
-    fn telephone_event_on_a_declined_stream_is_silent() {
+    fn telephone_event_on_a_declined_stream_is_silent() -> Result<(), TestError> {
         let offer = sdp_with(
             10000,
             "0 101",
             &["rtpmap:0 PCMU/8000", "rtpmap:101 telephone-event/8000"],
         );
         let answer = sdp_with(0, "0", &[]);
-        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)])?;
         assert!(!got.contains(&TELEPHONE_EVENT_ONE_WAY.id), "{got:?}");
+        Ok(())
     }
 
     /// A declined stream that still carries its attributes is reported, and
     /// the finding names `a=crypto` where one is present.
     #[test]
-    fn a_declined_stream_keeping_its_attributes_is_reported() {
+    fn a_declined_stream_keeping_its_attributes_is_reported() -> Result<(), TestError> {
         let offer = sdp_with(10000, "0", &["rtpmap:0 PCMU/8000"]);
         let answer = sdp_with(
             0,
@@ -1688,22 +1721,24 @@ mod tests {
                 "crypto:1 AES_CM_128_HMAC_SHA1_80 inline:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj",
             ],
         );
-        let store = store_of(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
-        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let store = store_of(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)])?;
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store)?);
         let found = findings
             .iter()
             .find(|f| f.rule_id == REJECTED_STREAM_ATTRIBUTES.id)
-            .unwrap_or_else(|| panic!("{findings:?}"));
+            .ok_or_else(|| format!("{findings:?}"))?;
         assert!(found.observed.contains("a=crypto"), "{}", found.observed);
+        Ok(())
     }
 
     /// A declined stream stripped of its attributes is silent.
     #[test]
-    fn a_bare_declined_stream_is_silent() {
+    fn a_bare_declined_stream_is_silent() -> Result<(), TestError> {
         let offer = sdp_with(10000, "0", &["rtpmap:0 PCMU/8000"]);
         let answer = sdp_with(0, "0", &[]);
-        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)])?;
         assert!(!got.contains(&REJECTED_STREAM_ATTRIBUTES.id), "{got:?}");
+        Ok(())
     }
 
     /// A stream the OFFER already removed is not this rule's finding.
@@ -1712,19 +1747,20 @@ mod tests {
     /// answer then MUST mark it zero too. Reporting that pair would fire on
     /// every conformant stream teardown.
     #[test]
-    fn a_stream_the_offer_removed_is_silent() {
+    fn a_stream_the_offer_removed_is_silent() -> Result<(), TestError> {
         let removed = sdp_with(0, "0", &["rtpmap:0 PCMU/8000"]);
         let got = ids(&[
             &invite(1, "", &removed),
             &ok(1, "INVITE", &removed),
             &ack(1),
-        ]);
+        ])?;
         assert!(!got.contains(&REJECTED_STREAM_ATTRIBUTES.id), "{got:?}");
+        Ok(())
     }
 
     /// A dynamic payload type rebound to another codec mid-dialog is reported.
     #[test]
-    fn a_rebound_dynamic_payload_type_is_reported() {
+    fn a_rebound_dynamic_payload_type_is_reported() -> Result<(), TestError> {
         let first = sdp_with(10000, "96", &["rtpmap:96 opus/48000/2"]);
         let second = sdp_with(10000, "96", &["rtpmap:96 G729/8000"]);
         let got = ids(&[
@@ -1733,13 +1769,14 @@ mod tests {
             &ack(1),
             &invite(2, ";tag=a6c85cf", &second),
             &ok(2, "INVITE", &second),
-        ]);
+        ])?;
         assert!(got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+        Ok(())
     }
 
     /// A dynamic payload type that keeps its codec is silent.
     #[test]
-    fn a_stable_dynamic_payload_type_is_silent() {
+    fn a_stable_dynamic_payload_type_is_silent() -> Result<(), TestError> {
         let body = sdp_with(10000, "96", &["rtpmap:96 opus/48000/2"]);
         let got = ids(&[
             &invite(1, "", &body),
@@ -1747,8 +1784,9 @@ mod tests {
             &ack(1),
             &invite(2, ";tag=a6c85cf", &body),
             &ok(2, "INVITE", &body),
-        ]);
+        ])?;
         assert!(!got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+        Ok(())
     }
 
     /// Payload type 96 meaning different things in two different `m=` lines is
@@ -1758,7 +1796,7 @@ mod tests {
     /// table would report every call whose audio and video streams both start
     /// their dynamic numbering at 96, which is most of them.
     #[test]
-    fn one_number_in_two_streams_is_not_a_rebinding() {
+    fn one_number_in_two_streams_is_not_a_rebinding() -> Result<(), TestError> {
         let body = "v=0\r\n\
              o=- 1 1 IN IP4 192.0.2.1\r\n\
              s=-\r\n\
@@ -1768,8 +1806,9 @@ mod tests {
              a=rtpmap:96 opus/48000/2\r\n\
              m=video 10002 RTP/AVP 96\r\n\
              a=rtpmap:96 H264/90000\r\n";
-        let got = ids(&[&invite(1, "", body), &ok(1, "INVITE", body), &ack(1)]);
+        let got = ids(&[&invite(1, "", body), &ok(1, "INVITE", body), &ack(1)])?;
         assert!(!got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+        Ok(())
     }
 
     /// A static payload type is outside the rule's range.
@@ -1778,7 +1817,7 @@ mod tests {
     /// [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) about "a particular dynamic payload type number" does not
     /// reach them.
     #[test]
-    fn a_static_payload_type_is_outside_the_dynamic_range() {
+    fn a_static_payload_type_is_outside_the_dynamic_range() -> Result<(), TestError> {
         let first = sdp_with(10000, "8", &["rtpmap:8 PCMA/8000"]);
         let second = sdp_with(10000, "8", &["rtpmap:8 L8/8000"]);
         let got = ids(&[
@@ -1786,43 +1825,47 @@ mod tests {
             &ok(1, "INVITE", &first),
             &ack(1),
             &invite(2, ";tag=a6c85cf", &second),
-        ]);
+        ])?;
         assert!(!got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+        Ok(())
     }
 
     /// `opus/8000` is reported, and the expectation quotes the required form.
     #[test]
-    fn an_opus_rtpmap_at_the_wrong_clock_rate_is_reported() {
+    fn an_opus_rtpmap_at_the_wrong_clock_rate_is_reported() -> Result<(), TestError> {
         let body = sdp_with(10000, "96", &["rtpmap:96 opus/8000/2"]);
-        let store = store_of(&[&invite(1, "", &body)]);
-        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let store = store_of(&[&invite(1, "", &body)])?;
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store)?);
         let found = findings
             .iter()
             .find(|f| f.rule_id == OPUS_RTPMAP_RATE.id)
-            .unwrap_or_else(|| panic!("{findings:?}"));
+            .ok_or_else(|| format!("{findings:?}"))?;
         assert_eq!(found.expected, "opus/48000/2");
+        Ok(())
     }
 
     /// `opus/48000` with no channel count is the same declaration as
     /// `opus/48000/1`, and [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) admits neither.
     #[test]
-    fn an_opus_rtpmap_without_a_channel_count_is_reported() {
+    fn an_opus_rtpmap_without_a_channel_count_is_reported() -> Result<(), TestError> {
         for encoding in ["opus/48000", "opus/48000/1"] {
             let body = sdp_with(10000, "96", &[&format!("rtpmap:96 {encoding}")]);
-            let got = ids(&[&invite(1, "", &body)]);
+            let got = ids(&[&invite(1, "", &body)])?;
             assert!(got.contains(&OPUS_RTPMAP_RATE.id), "{encoding}: {got:?}");
         }
+        Ok(())
     }
 
     /// `opus/48000/2` is silent, whatever `a=fmtp` narrows it to.
     #[test]
-    fn a_conformant_opus_rtpmap_is_silent() {
+    fn a_conformant_opus_rtpmap_is_silent() -> Result<(), TestError> {
         let body = sdp_with(
             10000,
             "96",
             &["rtpmap:96 opus/48000/2", "fmtp:96 maxplaybackrate=16000"],
         );
-        let got = ids(&[&invite(1, "", &body)]);
+        let got = ids(&[&invite(1, "", &body)])?;
         assert!(!got.contains(&OPUS_RTPMAP_RATE.id), "{got:?}");
+        Ok(())
     }
 }

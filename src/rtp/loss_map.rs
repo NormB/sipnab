@@ -139,6 +139,8 @@ mod tests {
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::StreamKey;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed test StreamKey (SSRC 0x1234, 10.0.0.1:20000 → 10.0.0.2:30000).
     fn make_key() -> StreamKey {
         StreamKey {
@@ -165,8 +167,8 @@ mod tests {
     }
 
     /// Fixed epoch instant.
-    fn ts() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?)
     }
 
     /// Build a stream whose loss accounting is set directly, mirroring the
@@ -177,23 +179,23 @@ mod tests {
         losses: &[u16],
         packet_count: u64,
         lost_packets: u64,
-    ) -> RtpStream {
-        let mut s = RtpStream::new(make_key(), &make_header(0), ts());
+    ) -> Result<RtpStream, TestError> {
+        let mut s = RtpStream::new(make_key(), &make_header(0), ts()?);
         s.last_seq = last_seq;
         s.lost_sequences = losses.iter().copied().collect::<VecDeque<u16>>();
         s.packet_count = packet_count;
         s.lost_packets = lost_packets;
-        s
+        Ok(s)
     }
 
     /// Clustered loss (a contiguous run of sequence numbers) lands in a small
     /// number of adjacent cells — the bursty signature the view exists to show.
     #[test]
-    fn clustered_losses_land_in_adjacent_cells() {
+    fn clustered_losses_land_in_adjacent_cells() -> Result<(), TestError> {
         // 20 consecutive losses at seq 100..120, window ~1000 wide, 50 cells
         // (20 sequences per cell) → they fall in two adjacent cells.
         let losses: Vec<u16> = (100..120).collect();
-        let s = stream_with_losses(1000, &losses, 980, 20);
+        let s = stream_with_losses(1000, &losses, 980, 20)?;
         let map = build_loss_map(&s, 50);
 
         assert_eq!(map.cells.len(), 50);
@@ -219,16 +221,17 @@ mod tests {
         // Every loss was placed.
         let placed: u32 = map.cells.iter().map(|&c| c as u32).sum();
         assert_eq!(placed, 20);
+        Ok(())
     }
 
     /// Diffuse loss (every Nth sequence over the window) spreads across many
     /// cells — the scattered-congestion signature, distinct from a burst.
     #[test]
-    fn spread_losses_spread_across_cells() {
+    fn spread_losses_spread_across_cells() -> Result<(), TestError> {
         // 20 losses stepping by 40 over the same ~1000-wide, 50-cell window
         // (20 seq/cell) → each pair of losses is two cells apart.
         let losses: Vec<u16> = (0..20).map(|i| 100 + i * 40).collect();
-        let s = stream_with_losses(1000, &losses, 980, 20);
+        let s = stream_with_losses(1000, &losses, 980, 20)?;
         let map = build_loss_map(&s, 50);
 
         let nonzero = map.cells.iter().filter(|&&c| c > 0).count();
@@ -238,16 +241,17 @@ mod tests {
         );
         let placed: u32 = map.cells.iter().map(|&c| c as u32).sum();
         assert_eq!(placed, 20);
+        Ok(())
     }
 
     /// A window that crosses the 16-bit wrap (65535→0) bins every loss into a
     /// valid cell using serial arithmetic; the summed counts equal the
     /// retained losses (nothing fell outside the strip).
     #[test]
-    fn wraparound_window_bins_all_losses() {
+    fn wraparound_window_bins_all_losses() -> Result<(), TestError> {
         // last_seq=5; losses straddle the wrap: 65533, 65534, 65535, 0, 1, 2.
         let losses: [u16; 6] = [65533, 65534, 65535, 0, 1, 2];
-        let s = stream_with_losses(5, &losses, 4, 6);
+        let s = stream_with_losses(5, &losses, 4, 6)?;
         let map = build_loss_map(&s, 12);
 
         assert_eq!(map.cells.len(), 12);
@@ -257,13 +261,14 @@ mod tests {
         let placed: u32 = map.cells.iter().map(|&c| c as u32).sum();
         assert_eq!(placed, 6, "every wrapped loss must be binned");
         assert_eq!(map.retained_lost, 6);
+        Ok(())
     }
 
     /// A loss-free stream yields all-zero cells and no retained losses; the
     /// window still ends at last_seq.
     #[test]
-    fn zero_loss_yields_flat_map() {
-        let s = stream_with_losses(500, &[], 500, 0);
+    fn zero_loss_yields_flat_map() -> Result<(), TestError> {
+        let s = stream_with_losses(500, &[], 500, 0)?;
         let map = build_loss_map(&s, 40);
         assert_eq!(map.cells.len(), 40);
         assert!(map.cells.iter().all(|&c| c == 0));
@@ -271,52 +276,56 @@ mod tests {
         assert_eq!(map.total_lost, 0);
         assert!(!map.truncated);
         assert_eq!(map.span_end, 500);
+        Ok(())
     }
 
     /// `cell_count == 0` yields an empty strip without panicking, while the
     /// summary counters still report the retained losses.
     #[test]
-    fn cell_count_zero_is_empty() {
+    fn cell_count_zero_is_empty() -> Result<(), TestError> {
         let losses: Vec<u16> = (100..110).collect();
-        let s = stream_with_losses(1000, &losses, 990, 10);
+        let s = stream_with_losses(1000, &losses, 990, 10)?;
         let map = build_loss_map(&s, 0);
         assert!(map.cells.is_empty());
         assert_eq!(map.retained_lost, 10);
+        Ok(())
     }
 
     /// A single cell collects every retained loss (the whole window is one
     /// bucket).
     #[test]
-    fn cell_count_one_collects_all() {
+    fn cell_count_one_collects_all() -> Result<(), TestError> {
         let losses: Vec<u16> = (100..110).collect();
-        let s = stream_with_losses(1000, &losses, 990, 10);
+        let s = stream_with_losses(1000, &losses, 990, 10)?;
         let map = build_loss_map(&s, 1);
         assert_eq!(map.cells, vec![10]);
+        Ok(())
     }
 
     /// `truncated` is set exactly when the total loss count exceeds the
     /// retained log — the view then says "most recent N of M".
     #[test]
-    fn truncation_flag_reflects_evicted_log() {
+    fn truncation_flag_reflects_evicted_log() -> Result<(), TestError> {
         // 5 retained, but 2000 total lost → the log was capped.
         let losses: Vec<u16> = (0..5).collect();
-        let s = stream_with_losses(3000, &losses, 1000, 2000);
+        let s = stream_with_losses(3000, &losses, 1000, 2000)?;
         let map = build_loss_map(&s, 20);
         assert!(map.truncated);
         assert_eq!(map.total_lost, 2000);
         assert_eq!(map.retained_lost, 5);
 
         // Fully retained → not truncated.
-        let s2 = stream_with_losses(3000, &losses, 1000, 5);
+        let s2 = stream_with_losses(3000, &losses, 1000, 5)?;
         let map2 = build_loss_map(&s2, 20);
         assert!(!map2.truncated);
+        Ok(())
     }
 
     /// Invariant: every retained lost sequence lands in exactly one cell in
     /// `[0, cell_count)`, across a range of window shapes and cell counts —
     /// verified by the summed cell counts equaling the retained-loss count.
     #[test]
-    fn every_loss_lands_in_range() {
+    fn every_loss_lands_in_range() -> Result<(), TestError> {
         let cases: [(u16, Vec<u16>, u64, u64); 4] = [
             (1000, (100..130).collect(), 970, 30),
             (5, vec![65530, 65531, 65532, 0, 1, 2, 3], 3, 7),
@@ -329,7 +338,7 @@ mod tests {
             (0, vec![65535, 0], 1, 2),
         ];
         for (last_seq, losses, pkts, lost) in cases {
-            let s = stream_with_losses(last_seq, &losses, pkts, lost);
+            let s = stream_with_losses(last_seq, &losses, pkts, lost)?;
             for cell_count in [1usize, 3, 8, 50, 200] {
                 let map = build_loss_map(&s, cell_count);
                 assert_eq!(map.cells.len(), cell_count);
@@ -341,16 +350,18 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A summary-only stream (`packet_count <= 1`, no losses) yields a flat,
     /// empty map anchored at last_seq without panicking.
     #[test]
-    fn summary_only_stream_is_flat() {
-        let s = stream_with_losses(42, &[], 1, 0);
+    fn summary_only_stream_is_flat() -> Result<(), TestError> {
+        let s = stream_with_losses(42, &[], 1, 0)?;
         let map = build_loss_map(&s, 16);
         assert!(map.cells.iter().all(|&c| c == 0));
         assert_eq!(map.span_end, 42);
         assert_eq!(map.retained_lost, 0);
+        Ok(())
     }
 }

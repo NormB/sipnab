@@ -488,6 +488,9 @@ pub fn amr_wb_kbps_from_fmtp(fmtp: &str) -> Option<f64> {
 mod verdict_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A G.711 stream is not a stream that failed to score wideband.
     ///
     /// The distinction is the whole reason this returns three outcomes rather
@@ -518,11 +521,11 @@ mod verdict_tests {
 
     /// A published mode with no loss scores, and says which scale it is on.
     #[test]
-    fn a_published_mode_scores() {
+    fn a_published_mode_scores() -> Result<(), TestError> {
         let WidebandVerdict::Scored(score) =
             verdict_for_stream(Some("AMR-WB"), Some(12.65), 0.0, ListeningContext::Monotic)
         else {
-            panic!("12.65 kbit/s monotic is published");
+            return Err("12.65 kbit/s monotic is published".into());
         };
         assert_eq!(score.mode_kbps, 12.65);
         assert_eq!(score.context, ListeningContext::Monotic);
@@ -531,6 +534,7 @@ mod verdict_tests {
             "MOS_CQEW out of range: {}",
             score.mos
         );
+        Ok(())
     }
 
     /// A mode with no published value in this context is refused BY NAME.
@@ -587,6 +591,9 @@ mod verdict_tests {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Within half a thousandth of a MOS point.
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 5e-4
@@ -616,14 +623,15 @@ mod tests {
     /// 12.65 diotic under 2% loss, the one mode with a published Bpl,wb that
     /// is also common in the field.
     #[test]
-    fn packet_loss_vector_reproduces() {
+    fn packet_loss_vector_reproduces() -> Result<(), TestError> {
         let ie_eff = ie_eff_wb(20.0, 2.0, 4.3);
         assert!(
             (ie_eff - 43.8095).abs() < 1e-3,
             "Eq (7-15) with the 95 constant; got {ie_eff}"
         );
-        let mos = amr_wb_mos(12.65, ListeningContext::Diotic, 2.0).expect("published");
+        let mos = amr_wb_mos(12.65, ListeningContext::Diotic, 2.0).ok_or("published")?;
         assert!(close(mos, 3.4062), "got {mos}");
+        Ok(())
     }
 
     /// The process-wide declaration round-trips, and every score reads it.
@@ -663,9 +671,9 @@ mod tests {
     }
     /// A published mode with no loss scores, and the score carries its scale.
     #[test]
-    fn a_published_mode_scores_and_says_what_it_read() {
+    fn a_published_mode_scores_and_says_what_it_read() -> Result<(), TestError> {
         let s = score_amr_wb(12.65, ListeningContext::Monotic, 0.0)
-            .expect("12.65 monotic is published");
+            .map_err(|e| format!("12.65 monotic is published: {e:?}"))?;
         assert!(close(s.mos, 4.3371), "got {}", s.mos);
         assert!(
             (s.ie_wb - 13.0).abs() < f64::EPSILON,
@@ -674,6 +682,7 @@ mod tests {
         assert!(close(s.r_factor, r_wb(13.0)));
         assert_eq!(s.context, ListeningContext::Monotic);
         assert!((s.mode_kbps - 12.65).abs() < f64::EPSILON);
+        Ok(())
     }
 
     /// A mode G.113 does not publish in that context is refused BY NAME.
@@ -697,51 +706,55 @@ mod tests {
     /// collapse into one: the first says the tables are silent, the second
     /// says this particular stream cannot be scored.
     #[test]
-    fn loss_without_a_published_robustness_factor_is_its_own_answer() {
+    fn loss_without_a_published_robustness_factor_is_its_own_answer() -> Result<(), TestError> {
         assert!(score_amr_wb(6.6, ListeningContext::Monotic, 0.0).is_ok());
         assert_eq!(
             score_amr_wb(6.6, ListeningContext::Monotic, 2.0),
             Err(WidebandUnavailable::LossNotComputable)
         );
         // And the one mode that IS computable under loss still is.
-        let s =
-            score_amr_wb(12.65, ListeningContext::Diotic, 2.0).expect("Table IV.4 publishes it");
+        let s = score_amr_wb(12.65, ListeningContext::Diotic, 2.0)
+            .map_err(|e| format!("Table IV.4 publishes it: {e:?}"))?;
         assert!(close(s.mos, 3.4062), "got {}", s.mos);
+        Ok(())
     }
     /// The spread across modes is the whole reason a single placeholder was
     /// wrong. If this collapses, the table has stopped being consulted.
     #[test]
-    fn modes_span_roughly_a_full_mos_point() {
-        let best = amr_wb_mos(23.05, ListeningContext::Monotic, 0.0).expect("published");
-        let worst = amr_wb_mos(6.6, ListeningContext::Monotic, 0.0).expect("published");
+    fn modes_span_roughly_a_full_mos_point() -> Result<(), TestError> {
+        let best = amr_wb_mos(23.05, ListeningContext::Monotic, 0.0).ok_or("published")?;
+        let worst = amr_wb_mos(6.6, ListeningContext::Monotic, 0.0).ok_or("published")?;
         assert!(
             best - worst > 0.9,
             "AMR-WB modes must span about a full MOS point; got {best} to {worst}"
         );
+        Ok(())
     }
 
     /// Listening context changes the answer, so it cannot have a silent default.
     #[test]
-    fn listening_context_changes_the_score() {
-        let mono = amr_wb_mos(6.6, ListeningContext::Monotic, 0.0).expect("published");
-        let dio = amr_wb_mos(6.6, ListeningContext::Diotic, 0.0).expect("published");
+    fn listening_context_changes_the_score() -> Result<(), TestError> {
+        let mono = amr_wb_mos(6.6, ListeningContext::Monotic, 0.0).ok_or("published")?;
+        let dio = amr_wb_mos(6.6, ListeningContext::Diotic, 0.0).ok_or("published")?;
         assert!(
             mono - dio > 0.5,
             "Tables IV.1 and IV.3 differ by 15 R-points at 6.6 kbit/s; got \
              {mono} vs {dio}"
         );
+        Ok(())
     }
 
     /// The published inversion is preserved rather than smoothed.
     #[test]
-    fn the_published_bitrate_inversion_is_not_corrected() {
-        let fast = amr_wb_ie(23.85, ListeningContext::Monotic).expect("published");
-        let slower = amr_wb_ie(23.05, ListeningContext::Monotic).expect("published");
+    fn the_published_bitrate_inversion_is_not_corrected() -> Result<(), TestError> {
+        let fast = amr_wb_ie(23.85, ListeningContext::Monotic).ok_or("published")?;
+        let slower = amr_wb_ie(23.05, ListeningContext::Monotic).ok_or("published")?;
         assert!(
             fast > slower,
             "G.113 publishes 23.85 -> 8 and 23.05 -> 1; a monotonic table means \
              someone 'fixed' it"
         );
+        Ok(())
     }
 
     /// Unpublished combinations must refuse, not interpolate.
@@ -848,20 +861,21 @@ mod tests {
     /// infinity passes that test, so the guard has to be in the equation, not
     /// in each caller's opinion of whether to call it.
     #[test]
-    fn the_amr_wb_wrapper_inherits_the_loss_guard() {
+    fn the_amr_wb_wrapper_inherits_the_loss_guard() -> Result<(), TestError> {
         // 23.85 kbit/s diotic is one of the three modes G.113 Table IV.4
         // publishes a Bpl,wb for, so the loss branch is reachable here.
         let clean =
-            amr_wb_mos(23.85, ListeningContext::Diotic, 0.0).expect("23.85 diotic is published");
+            amr_wb_mos(23.85, ListeningContext::Diotic, 0.0).ok_or("23.85 diotic is published")?;
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -4.9] {
             let mos = amr_wb_mos(23.85, ListeningContext::Diotic, bad)
-                .expect("the mode is published; a bad loss must not change that");
+                .ok_or("the mode is published; a bad loss must not change that")?;
             assert!(mos.is_finite(), "loss {bad} produced MOS = {mos}");
             assert!(
                 (mos - clean).abs() < 1e-9,
                 "loss {bad} scored {mos}, not the no-loss {clean}"
             );
         }
+        Ok(())
     }
 
     /// The wideband pole is at `Ppl = -Bpl`, so it is only unreachable while

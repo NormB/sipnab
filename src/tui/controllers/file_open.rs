@@ -1045,6 +1045,8 @@ pub(in crate::tui) fn handle_paste(app: &mut App, text: &str) {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Drive a load to completion on the calling thread and return the final
     /// status message.
     ///
@@ -1088,7 +1090,7 @@ mod tests {
     /// while the status bar — which renders only `active_filter_text` — showed
     /// no active filter. The canonical `clear_active_filter` clears all four.
     #[test]
-    fn reset_for_load_clears_the_active_time_window() {
+    fn reset_for_load_clears_the_active_time_window() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_time_after = Some(chrono::Utc::now());
         app.active_time_before = Some(chrono::Utc::now());
@@ -1103,6 +1105,7 @@ mod tests {
             app.active_time_after,
             app.active_time_before
         );
+        Ok(())
     }
 
     /// A capture whose packet record carries an out-of-range microsecond
@@ -1111,38 +1114,39 @@ mod tests {
     /// while loading.
     #[test]
     #[serial_test::serial(invalid_timestamps, undecodable_tally)]
-    fn load_pcap_with_out_of_range_usec_does_not_panic() {
+    fn load_pcap_with_out_of_range_usec_does_not_panic() -> Result<(), TestError> {
         use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("bad_ts.pcap");
-        let mut f = std::fs::File::create(&path).unwrap();
+        let mut f = std::fs::File::create(&path)?;
         // Classic pcap global header: LE microsecond magic, v2.4, EN10MB.
-        f.write_all(&0xa1b2_c3d4u32.to_le_bytes()).unwrap();
-        f.write_all(&2u16.to_le_bytes()).unwrap();
-        f.write_all(&4u16.to_le_bytes()).unwrap();
-        f.write_all(&0i32.to_le_bytes()).unwrap();
-        f.write_all(&0u32.to_le_bytes()).unwrap();
-        f.write_all(&65535u32.to_le_bytes()).unwrap();
-        f.write_all(&1u32.to_le_bytes()).unwrap(); // LINKTYPE_ETHERNET
+        f.write_all(&0xa1b2_c3d4u32.to_le_bytes())?;
+        f.write_all(&2u16.to_le_bytes())?;
+        f.write_all(&4u16.to_le_bytes())?;
+        f.write_all(&0i32.to_le_bytes())?;
+        f.write_all(&0u32.to_le_bytes())?;
+        f.write_all(&65535u32.to_le_bytes())?;
+        f.write_all(&1u32.to_le_bytes())?; // LINKTYPE_ETHERNET
         // One record whose ts_usec is far outside [0, 1_000_000): the old
         // `(tv_usec as u32) * 1000` overflows u32 here.
         let payload = [0u8; 14];
-        f.write_all(&1_000u32.to_le_bytes()).unwrap(); // ts_sec
-        f.write_all(&2_000_000_000u32.to_le_bytes()).unwrap(); // ts_usec (corrupt)
-        f.write_all(&(payload.len() as u32).to_le_bytes()).unwrap(); // incl_len
-        f.write_all(&(payload.len() as u32).to_le_bytes()).unwrap(); // orig_len
-        f.write_all(&payload).unwrap();
+        f.write_all(&1_000u32.to_le_bytes())?; // ts_sec
+        f.write_all(&2_000_000_000u32.to_le_bytes())?; // ts_usec (corrupt)
+        f.write_all(&(payload.len() as u32).to_le_bytes())?; // incl_len
+        f.write_all(&(payload.len() as u32).to_le_bytes())?; // orig_len
+        f.write_all(&payload)?;
         drop(f);
 
         let mut app = App::new_test();
         // Must return an outcome message rather than panicking.
-        let _ = load_pcap_file(&mut app, path.to_str().unwrap());
+        let _ = load_pcap_file(&mut app, path.to_str().ok_or("the path is valid UTF-8")?);
+        Ok(())
     }
 
     /// Extension matrix for the browser filter: pcap/pcapng/cap in any
     /// case, optionally gzipped, are browsable; everything else is not.
     #[test]
-    fn is_browsable_capture_matrix() {
+    fn is_browsable_capture_matrix() -> Result<(), TestError> {
         // Plain captures, any case.
         assert!(is_browsable_capture("a.pcap"));
         assert!(is_browsable_capture("a.pcapng"));
@@ -1166,22 +1170,23 @@ mod tests {
         assert!(!is_browsable_capture("pcap")); // no extension
         assert!(!is_browsable_capture(""));
         assert!(!is_browsable_capture(".pcap")); // dotfile, extension-less stem
+        Ok(())
     }
 
     /// The browser lists every capture flavor (including dotted stems and
     /// gzipped files) plus directories, and hides non-capture files.
     #[test]
-    fn refresh_file_entries_repro() {
-        let dir = tempfile::tempdir().unwrap();
+    fn refresh_file_entries_repro() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let p = dir.path();
-        std::fs::write(p.join("9bbc7162-978d-4456-b81c-496ccb2b1200.pcap"), b"x").unwrap();
-        std::fs::write(p.join("plain.pcap"), b"x").unwrap();
-        std::fs::write(p.join("ng.pcapng"), b"x").unwrap();
-        std::fs::write(p.join("legacy.cap"), b"x").unwrap();
-        std::fs::write(p.join("gz.pcap.gz"), b"x").unwrap();
-        std::fs::write(p.join("upper.PCAP"), b"x").unwrap();
-        std::fs::write(p.join("notes.txt"), b"x").unwrap();
-        std::fs::create_dir(p.join("subdir")).unwrap();
+        std::fs::write(p.join("9bbc7162-978d-4456-b81c-496ccb2b1200.pcap"), b"x")?;
+        std::fs::write(p.join("plain.pcap"), b"x")?;
+        std::fs::write(p.join("ng.pcapng"), b"x")?;
+        std::fs::write(p.join("legacy.cap"), b"x")?;
+        std::fs::write(p.join("gz.pcap.gz"), b"x")?;
+        std::fs::write(p.join("upper.PCAP"), b"x")?;
+        std::fs::write(p.join("notes.txt"), b"x")?;
+        std::fs::create_dir(p.join("subdir"))?;
 
         let mut app = App::new_test();
         app.set_open_dir_for_test(p.to_path_buf());
@@ -1204,25 +1209,26 @@ mod tests {
         assert!(names.contains(&"gz.pcap.gz"), "listed: {names:?}");
         // A readable directory produces no error.
         assert!(app.file_open.error.is_none());
+        Ok(())
     }
 
     /// An unreadable directory surfaces a "Cannot read" error with the
     /// privilege-drop hint instead of a silently blank list.
     #[cfg(unix)]
     #[test]
-    fn refresh_file_entries_reports_unreadable_dir() {
+    fn refresh_file_entries_reports_unreadable_dir() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
         // Root bypasses directory permissions, so this scenario (the sudo /
         // privilege-drop case) only reproduces for an unprivileged user.
         if crate::privilege::is_root() {
-            return;
+            return Ok(());
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let locked = dir.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        std::fs::write(locked.join("a.pcap"), b"x").unwrap();
+        std::fs::create_dir(&locked)?;
+        std::fs::write(locked.join("a.pcap"), b"x")?;
         // Strip all permissions so read_dir fails with PermissionDenied.
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))?;
 
         let mut app = App::new_test();
         app.set_open_dir_for_test(locked.clone());
@@ -1232,20 +1238,21 @@ mod tests {
         // Restore perms so the tempdir can be cleaned up.
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
 
-        let err = err.expect("unreadable dir should set open_error");
+        let err = err.ok_or("unreadable dir should set open_error")?;
         assert!(err.contains("Cannot read"), "got: {err}");
         assert!(
             err.contains("without sudo"),
             "missing privilege-drop hint: {err}"
         );
+        Ok(())
     }
 
     /// Refreshing a readable directory clears a stale error from an
     /// earlier failed refresh.
     #[test]
-    fn refresh_file_entries_clears_stale_error() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+    fn refresh_file_entries_clears_stale_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.pcap"), b"x")?;
         let mut app = App::new_test();
         app.file_open.error = Some("stale".to_string());
         app.set_open_dir_for_test(dir.path().to_path_buf());
@@ -1255,12 +1262,13 @@ mod tests {
             "readable dir must clear the error"
         );
         assert!(app.file_open.entries.iter().any(|e| e.name == "a.pcap"));
+        Ok(())
     }
 
     /// The offline load path shares `pipeline::is_rtcp_packet` with live
     /// capture — spot-checks its port/version/payload-type gates.
     #[test]
-    fn offline_rtcp_detection_uses_the_pipeline_check() {
+    fn offline_rtcp_detection_uses_the_pipeline_check() -> Result<(), TestError> {
         // The offline TUI load path routes RTCP through the same
         // `pipeline::is_rtcp_packet` as live capture (no private copy).
         use crate::pipeline::is_rtcp_packet;
@@ -1274,13 +1282,14 @@ mod tests {
         assert!(!is_rtcp_packet(&[0x00, 200, 0, 0, 0, 0, 0, 0], 5001));
         // pt out of range -> false
         assert!(!is_rtcp_packet(&[0x80, 100, 0, 0, 0, 0, 0, 0], 5001));
+        Ok(())
     }
 
     /// Manual-path mode: Delete removes the char AT the cursor (leaving the
     /// cursor put), and Delete at end-of-line is a no-op — the forward-delete
     /// counterpart to Backspace that the filter dialog already had.
     #[test]
-    fn manual_path_delete_removes_char_at_cursor() {
+    fn manual_path_delete_removes_char_at_cursor() -> Result<(), TestError> {
         use crossterm::event::{KeyEvent, KeyModifiers};
         let del = || KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
 
@@ -1303,12 +1312,13 @@ mod tests {
         app.file_open.cursor = app.file_open.path.len();
         handle_file_open_manual_key(&mut app, del());
         assert_eq!(app.file_open.path, "tmp/x", "Delete at EOL is a no-op");
+        Ok(())
     }
 
     /// Manual-path Delete stays on char boundaries for multibyte input (no
     /// mid-character `String::remove` panic).
     #[test]
-    fn manual_path_delete_is_char_boundary_safe() {
+    fn manual_path_delete_is_char_boundary_safe() -> Result<(), TestError> {
         use crossterm::event::{KeyEvent, KeyModifiers};
         let mut app = App::new_test();
         app.file_open.manual_mode = true;
@@ -1316,25 +1326,28 @@ mod tests {
         app.file_open.cursor = 0; // before 'é' (2 bytes)
         handle_file_open_manual_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         assert_eq!(app.file_open.path, "x");
+        Ok(())
     }
 
     /// `~` expands to `$HOME`; absolute paths pass through unchanged.
     #[test]
-    fn expand_tilde_expands_home() {
+    fn expand_tilde_expands_home() -> Result<(), TestError> {
         // SAFETY: test-only env mutation
         unsafe {
             std::env::set_var("HOME", "/home/testuser");
         }
         assert_eq!(expand_tilde("~/foo"), "/home/testuser/foo");
         assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        Ok(())
     }
 
     /// Loading a nonexistent path returns "File not found" immediately.
     #[test]
-    fn load_pcap_file_missing_returns_error() {
+    fn load_pcap_file_missing_returns_error() -> Result<(), TestError> {
         let mut app = App::new_test();
         let msg = load_pcap_file(&mut app, "/nonexistent/path/file.pcap");
         assert!(msg.contains("File not found"), "got: {msg}");
+        Ok(())
     }
 
     /// Absolute path of the repo's `sip_call.pcap` test fixture.
@@ -1346,10 +1359,15 @@ mod tests {
     /// a large pcap froze the TUI for the whole load with no feedback.
     /// begin starts a worker; poll applies progress and the final outcome.
     #[test]
-    fn begin_pcap_load_populates_stores_in_background_and_poll_applies_result() {
+    fn begin_pcap_load_populates_stores_in_background_and_poll_applies_result()
+    -> Result<(), TestError> {
         let mut app = App::new_test();
         let fixture = fixture_pcap();
-        begin_pcap_load(&mut app, fixture.to_str().unwrap(), None);
+        begin_pcap_load(
+            &mut app,
+            fixture.to_str().ok_or("the path is valid UTF-8")?,
+            None,
+        );
         assert!(app.pcap_load.is_some(), "a load worker must be in flight");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while app.pcap_load.is_some() {
@@ -1371,12 +1389,13 @@ mod tests {
             "got: {}",
             app.capture_mode
         );
+        Ok(())
     }
 
     /// The re-scan applies its filter as the file is re-read: an expression
     /// matching nothing drops every SIP packet an unfiltered read would keep.
     #[test]
-    fn run_pcap_load_applies_the_rescan_filter() {
+    fn run_pcap_load_applies_the_rescan_filter() -> Result<(), TestError> {
         let fixture = fixture_pcap();
         let progress = PcapLoadProgress::new("t");
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -1406,12 +1425,13 @@ mod tests {
             ds.read().is_empty(),
             "no dialogs survive a filter that matches nothing"
         );
+        Ok(())
     }
 
     /// A filter that will not compile is reported and nothing is read, so a
     /// typo in the re-scan cannot silently reload the whole file unfiltered.
     #[test]
-    fn run_pcap_load_rejects_a_malformed_filter() {
+    fn run_pcap_load_rejects_a_malformed_filter() -> Result<(), TestError> {
         let fixture = fixture_pcap();
         let progress = PcapLoadProgress::new("t");
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -1431,12 +1451,13 @@ mod tests {
         );
         assert_eq!(out.sip_count, 0);
         assert!(ds.read().is_empty(), "a rejected filter reads nothing");
+        Ok(())
     }
 
     /// A missing file is reported on the status line without spawning a
     /// load worker.
     #[test]
-    fn begin_pcap_load_missing_file_reports_immediately() {
+    fn begin_pcap_load_missing_file_reports_immediately() -> Result<(), TestError> {
         let mut app = App::new_test();
         begin_pcap_load(&mut app, "/nonexistent/path/file.pcap", None);
         assert!(app.pcap_load.is_none(), "no worker for a missing file");
@@ -1452,16 +1473,21 @@ mod tests {
             app.status_is_error(),
             "a file that is not there is an error, whatever the words say"
         );
+        Ok(())
     }
 
     /// A second load while one is in flight is refused and the running
     /// load's progress handle is untouched.
     #[test]
-    fn begin_pcap_load_rejects_concurrent_load() {
+    fn begin_pcap_load_rejects_concurrent_load() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.pcap_load = Some(std::sync::Arc::new(PcapLoadProgress::new("other.pcap")));
         let fixture = fixture_pcap();
-        begin_pcap_load(&mut app, fixture.to_str().unwrap(), None);
+        begin_pcap_load(
+            &mut app,
+            fixture.to_str().ok_or("the path is valid UTF-8")?,
+            None,
+        );
         let msg = app.status_error.clone().unwrap_or_default();
         assert!(msg.contains("in progress"), "busy guard, got: {msg}");
         assert_eq!(
@@ -1469,26 +1495,25 @@ mod tests {
             Some("other.pcap"),
             "the in-flight load must not be replaced"
         );
+        Ok(())
     }
 
     /// Names from an embedded pcapng Name Resolution Block become
     /// resolvable after the load (libpcap itself ignores the block).
     #[test]
-    fn load_pcap_file_reads_embedded_nrb_names() {
+    fn load_pcap_file_reads_embedded_nrb_names() -> Result<(), TestError> {
         use crate::capture::{PcapExportMode, PcapWriter};
         use std::net::IpAddr;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("named.pcapng");
-        let ip: IpAddr = "10.0.0.2".parse().unwrap();
+        let ip: IpAddr = "10.0.0.2".parse()?;
         {
-            let mut w =
-                PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw).unwrap();
-            w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])
-                .unwrap();
-            w.finish().unwrap();
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+            w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])?;
+            w.finish()?;
         }
         let mut app = App::new_test();
-        load_pcap_file(&mut app, path.to_str().unwrap());
+        load_pcap_file(&mut app, path.to_str().ok_or("the path is valid UTF-8")?);
         // The embedded NRB name is now resolvable (libpcap ignores the block;
         // our metadata pass loads it).
         assert_eq!(
@@ -1497,16 +1522,17 @@ mod tests {
                 .as_deref(),
             Some("sbc-edge")
         );
+        Ok(())
     }
 
     /// A capture carrying a Decryption Secrets Block makes the final
     /// status message warn about the embedded secrets.
     #[test]
-    fn load_pcap_file_alerts_on_embedded_secrets() {
+    fn load_pcap_file_alerts_on_embedded_secrets() -> Result<(), TestError> {
         use crate::capture::{PcapExportMode, PcapWriter};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let keylog = dir.path().join("keys.txt");
-        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n")?;
         // Filename deliberately free of "secret" so the assertion can't pass
         // trivially on the path.
         let path = dir.path().join("withkeys.pcapng");
@@ -1518,24 +1544,24 @@ mod tests {
                 None,
                 true,
                 PcapExportMode::EncryptedWithDsb,
-            )
-            .unwrap();
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
-            w.finish().unwrap();
+            )?;
+            w.maybe_write_keylog_dsb(&keylog)?;
+            w.finish()?;
         }
         let mut app = App::new_test();
-        let msg = load_pcap_file(&mut app, path.to_str().unwrap());
+        let msg = load_pcap_file(&mut app, path.to_str().ok_or("the path is valid UTF-8")?);
         assert!(
             msg.to_lowercase().contains("decryption secret"),
             "status should warn about embedded secrets: {msg}"
         );
+        Ok(())
     }
 
     /// File-open must route through the same pipeline core as live capture:
     /// a SIP INVITE wrapped in a WebSocket data frame on a WS port (SIP over
     /// WS, RFC 7118) must be unwrapped and land in the dialog store.
     #[test]
-    fn load_pcap_file_unwraps_websocket_sip() {
+    fn load_pcap_file_unwraps_websocket_sip() -> Result<(), TestError> {
         use crate::capture::packet::Packet;
         use crate::capture::{PcapExportMode, PcapWriter};
 
@@ -1590,24 +1616,23 @@ mod tests {
                        CSeq: 1 INVITE\r\n\
                        Content-Length: 0\r\n\r\n";
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("ws-sip.pcap");
         {
-            let mut w =
-                PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw).unwrap();
+            let mut w = PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw)?;
             let frame = eth_ipv4_tcp(51000, 8080, &ws_frame(invite));
             let n = frame.len();
-            w.write(&Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .unwrap();
-            w.finish().unwrap();
+            w.write(&Packet::new(chrono::Utc::now(), frame, n, n, None, 1))?;
+            w.finish()?;
         }
 
         let mut app = App::new_test();
-        load_pcap_file(&mut app, path.to_str().unwrap());
+        load_pcap_file(&mut app, path.to_str().ok_or("the path is valid UTF-8")?);
         assert!(
             app.dialog_store.read().get("ws-open@test").is_some(),
             "WS-wrapped SIP must be unwrapped into the dialog store on file open"
         );
+        Ok(())
     }
 }
 
@@ -1621,6 +1646,8 @@ mod tests {
 mod browser_tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build an unmodified `KeyEvent` for `code`.
     fn key(code: KeyCode) -> KeyEvent {
@@ -1685,7 +1712,7 @@ mod browser_tests {
     /// the file holds keys, from inside an archive exactly as on its own. The
     /// metadata reader opens each member's own file, never the archive.
     #[test]
-    fn embedded_secrets_are_announced_from_inside_an_archive() {
+    fn embedded_secrets_are_announced_from_inside_an_archive() -> Result<(), TestError> {
         use crate::capture::archive::tar::testutil::{Spec, build};
         use std::io::Write;
         fn block(kind: u32, body: &[u8]) -> Vec<u8> {
@@ -1717,14 +1744,15 @@ mod browser_tests {
         pcapng.extend(block(0x0a, &dsb));
         pcapng.extend(block(6, &epb));
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let plain = dir.path().join("keys.pcapng");
-        std::fs::write(&plain, &pcapng).expect("pcapng");
+        std::fs::write(&plain, &pcapng).map_err(|e| format!("pcapng: {e:?}"))?;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         enc.write_all(&build(&[Spec::file("k/keys.pcapng", &pcapng)]))
-            .expect("gzip");
+            .map_err(|e| format!("gzip: {e:?}"))?;
         let tgz = dir.path().join("keys.tgz");
-        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+        std::fs::write(&tgz, enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
+            .map_err(|e| format!("tgz: {e:?}"))?;
 
         let (plain_out, _, _) = load_into_fresh_stores(&plain);
         let (tgz_out, _, _) = load_into_fresh_stores(&tgz);
@@ -1738,21 +1766,24 @@ mod browser_tests {
             "{}",
             tgz_out.message
         );
+        Ok(())
     }
 
     /// Opening an archive in the browser loads the set of captures it holds —
     /// the same dialogs and SIP count as loading each member in turn.
     #[test]
-    fn run_pcap_load_reads_an_archive_as_the_set_it_holds() {
+    fn run_pcap_load_reads_an_archive_as_the_set_it_holds() -> Result<(), TestError> {
         use crate::capture::archive::tar::testutil::{Spec, build};
         use std::io::Write;
         let samples =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
-        let a = std::fs::read(samples.join("sip-rtp-g711.pcap")).expect("a");
-        let b = std::fs::read(samples.join("sip-register.pcap")).expect("b");
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("a.pcap"), &a).expect("a");
-        std::fs::write(dir.path().join("b.pcap"), &b).expect("b");
+        let a =
+            std::fs::read(samples.join("sip-rtp-g711.pcap")).map_err(|e| format!("a: {e:?}"))?;
+        let b =
+            std::fs::read(samples.join("sip-register.pcap")).map_err(|e| format!("b: {e:?}"))?;
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("a.pcap"), &a).map_err(|e| format!("a: {e:?}"))?;
+        std::fs::write(dir.path().join("b.pcap"), &b).map_err(|e| format!("b: {e:?}"))?;
         let (oa, da, _) = load_into_fresh_stores(&dir.path().join("a.pcap"));
         let (ob, db, _) = load_into_fresh_stores(&dir.path().join("b.pcap"));
 
@@ -1762,9 +1793,10 @@ mod browser_tests {
             Spec::file("s/b.pcap", &b),
         ]);
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        enc.write_all(&tar).expect("gzip");
+        enc.write_all(&tar).map_err(|e| format!("gzip: {e:?}"))?;
         let tgz = dir.path().join("s.tgz");
-        std::fs::write(&tgz, enc.finish().expect("gzip")).expect("tgz");
+        std::fs::write(&tgz, enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
+            .map_err(|e| format!("tgz: {e:?}"))?;
 
         let (out, ds, _) = load_into_fresh_stores(&tgz);
         assert_eq!(
@@ -1776,14 +1808,15 @@ mod browser_tests {
         assert_eq!(ds.read().len(), da.read().len() + db.read().len());
         assert!(out.message.contains("2 capture"), "{}", out.message);
         assert!(out.message.contains("1 member not read"), "{}", out.message);
+        Ok(())
     }
 
     /// Opening the dialog clears the previous visit's filter, manual path and
     /// cursor, leaves manual mode, lists the directory, and opens the popup.
     #[test]
-    fn opening_the_dialog_resets_the_browser_and_lists_the_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+    fn opening_the_dialog_resets_the_browser_and_lists_the_directory() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.pcap"), b"x")?;
         let mut app = App::new_test();
         app.file_open.dir = dir.path().to_path_buf();
         app.file_open.filter = "zz".to_string();
@@ -1804,18 +1837,20 @@ mod browser_tests {
             "{:?}",
             names(&app)
         );
+        Ok(())
     }
 
     /// When the last-browsed directory no longer exists, the dialog opens on
     /// the working directory instead of an unreadable path.
     #[test]
-    fn opening_the_dialog_falls_back_to_the_working_directory() {
-        let dir = tempfile::tempdir().unwrap();
+    fn opening_the_dialog_falls_back_to_the_working_directory() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let mut app = App::new_test();
         app.file_open.dir = dir.path().join("gone");
         open_file_dialog(&mut app);
-        assert_eq!(app.file_open.dir, std::env::current_dir().unwrap());
+        assert_eq!(app.file_open.dir, std::env::current_dir()?);
         assert!(app.file_open.error.is_none(), "the working directory reads");
+        Ok(())
     }
 
     /// A directory that does not exist reports "Cannot read" WITHOUT the
@@ -1823,28 +1858,29 @@ mod browser_tests {
     /// listing is replaced by the parent entry alone, so the user can climb
     /// out rather than being shown a previous directory's files.
     #[test]
-    fn a_missing_directory_reports_why_and_offers_only_the_way_up() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+    fn a_missing_directory_reports_why_and_offers_only_the_way_up() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.pcap"), b"x")?;
         let mut app = browser_at(dir.path());
         assert!(names(&app).contains(&"a.pcap".to_string()));
 
         app.file_open.dir = dir.path().join("missing");
         refresh_file_entries(&mut app);
-        let err = app.file_open.error.clone().expect("an error is shown");
+        let err = app.file_open.error.clone().ok_or("an error is shown")?;
         assert!(err.contains("Cannot read"), "got: {err}");
         assert!(!err.contains("without sudo"), "no privilege hint: {err}");
         assert_eq!(names(&app), vec![".."], "only the way up is listed");
         assert_eq!(app.file_open.entries[0].path, dir.path());
+        Ok(())
     }
 
     /// Dotfiles are hidden unless the filter itself starts with a dot, and
     /// the filter is a case-insensitive substring match.
     #[test]
-    fn hidden_entries_are_listed_only_when_the_filter_starts_with_a_dot() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".hidden.pcap"), b"x").unwrap();
-        std::fs::write(dir.path().join("Shown.pcap"), b"x").unwrap();
+    fn hidden_entries_are_listed_only_when_the_filter_starts_with_a_dot() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".hidden.pcap"), b"x")?;
+        std::fs::write(dir.path().join("Shown.pcap"), b"x")?;
         let mut app = browser_at(dir.path());
         assert_eq!(names(&app), vec!["..", "Shown.pcap"]);
 
@@ -1855,67 +1891,72 @@ mod browser_tests {
         app.file_open.filter = "SHOWN".to_string();
         refresh_file_entries(&mut app);
         assert_eq!(names(&app), vec!["..", "Shown.pcap"], "case-insensitive");
+        Ok(())
     }
 
     /// The listing puts `..` first, then directories, then files, each group
     /// in case-insensitive alphabetical order.
     #[test]
-    fn the_listing_orders_parent_then_directories_then_files_case_insensitively() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("Zdir")).unwrap();
-        std::fs::create_dir(dir.path().join("adir")).unwrap();
-        std::fs::write(dir.path().join("B.pcap"), b"x").unwrap();
-        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+    fn the_listing_orders_parent_then_directories_then_files_case_insensitively()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("Zdir"))?;
+        std::fs::create_dir(dir.path().join("adir"))?;
+        std::fs::write(dir.path().join("B.pcap"), b"x")?;
+        std::fs::write(dir.path().join("a.pcap"), b"x")?;
         let app = browser_at(dir.path());
         assert_eq!(names(&app), vec!["..", "adir", "Zdir", "a.pcap", "B.pcap"]);
+        Ok(())
     }
 
     /// A symlink to a directory is listed AS a directory (it can be entered),
     /// and a dangling link falls through as a plain file entry.
     #[cfg(unix)]
     #[test]
-    fn a_directory_symlink_lists_as_a_directory_and_a_dangling_link_as_a_file() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("real")).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("linkdir")).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("dangling.pcap"))
-            .unwrap();
+    fn a_directory_symlink_lists_as_a_directory_and_a_dangling_link_as_a_file()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("real"))?;
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("linkdir"))?;
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("dangling.pcap"))?;
         let app = browser_at(dir.path());
         let entry = |n: &str| {
             app.file_open
                 .entries
                 .iter()
                 .find(|e| e.name == n)
-                .unwrap_or_else(|| panic!("{n} not listed: {:?}", names(&app)))
+                .ok_or_else(|| format!("{n} not listed: {:?}", names(&app)))
         };
         assert!(
-            entry("linkdir").is_dir,
+            entry("linkdir")?.is_dir,
             "a directory symlink is a directory"
         );
-        assert!(!entry("dangling.pcap").is_dir, "a dangling link is not");
+        assert!(!entry("dangling.pcap")?.is_dir, "a dangling link is not");
+        Ok(())
     }
 
     /// A selection past the end of a shrunken listing is pulled back to the
     /// last row.
     #[test]
-    fn the_selection_is_clamped_when_the_listing_shrinks() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
-        std::fs::write(dir.path().join("b.pcap"), b"x").unwrap();
+    fn the_selection_is_clamped_when_the_listing_shrinks() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.pcap"), b"x")?;
+        std::fs::write(dir.path().join("b.pcap"), b"x")?;
         let mut app = browser_at(dir.path());
         app.file_open.selected = 10;
         refresh_file_entries(&mut app);
         assert_eq!(app.file_open.selected, 2, "clamped to the last of 3 rows");
+        Ok(())
     }
 
     /// Up/Down move one row, PgUp/PgDn ten, Home/End to the ends — all kept
     /// inside the listing — and a key the browser does not bind changes
     /// nothing.
     #[test]
-    fn browser_navigation_keys_move_the_selection_within_the_listing() {
-        let dir = tempfile::tempdir().unwrap();
+    fn browser_navigation_keys_move_the_selection_within_the_listing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         for i in 0..15 {
-            std::fs::write(dir.path().join(format!("f{i:02}.pcap")), b"x").unwrap();
+            std::fs::write(dir.path().join(format!("f{i:02}.pcap")), b"x")?;
         }
         let mut app = browser_at(dir.path());
         assert_eq!(app.file_open.entries.len(), 16, "15 files and ..");
@@ -1940,15 +1981,16 @@ mod browser_tests {
         }
         assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
         assert_eq!(app.file_open.filter, "", "navigation does not type");
+        Ok(())
     }
 
     /// Enter on a directory descends into it: the filter is cleared, the
     /// selection returns to the top, and the new directory is listed.
     #[test]
-    fn enter_on_a_directory_descends_into_it_and_clears_the_filter() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        std::fs::write(dir.path().join("sub/x.pcap"), b"x").unwrap();
+    fn enter_on_a_directory_descends_into_it_and_clears_the_filter() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("sub"))?;
+        std::fs::write(dir.path().join("sub/x.pcap"), b"x")?;
         let mut app = browser_at(dir.path());
         handle_file_open_popup_key(&mut app, key(KeyCode::Char('s')));
         handle_file_open_popup_key(&mut app, key(KeyCode::Char('u')));
@@ -1965,16 +2007,17 @@ mod browser_tests {
             Some(Popup::FileOpenDialog),
             "still browsing"
         );
+        Ok(())
     }
 
     /// Enter on a capture closes the browser and loads that file in the
     /// background; once polled, its dialogs are in the store and the file is
     /// what a BPF re-scan will re-read.
     #[test]
-    fn enter_on_a_capture_loads_it_and_closes_the_browser() {
-        let dir = tempfile::tempdir().unwrap();
+    fn enter_on_a_capture_loads_it_and_closes_the_browser() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("call.pcap");
-        std::fs::copy(fixture("sip_call.pcap"), &path).unwrap();
+        std::fs::copy(fixture("sip_call.pcap"), &path)?;
         let mut app = browser_at(dir.path());
         app.file_open.selected = 1;
         assert_eq!(app.file_open.entries[1].name, "call.pcap");
@@ -1993,27 +2036,29 @@ mod browser_tests {
             "status: {:?}",
             app.status_error
         );
+        Ok(())
     }
 
     /// Enter with nothing listed does nothing: no load, the browser stays.
     #[test]
-    fn enter_with_nothing_listed_does_nothing() {
-        let dir = tempfile::tempdir().unwrap();
+    fn enter_with_nothing_listed_does_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let mut app = browser_at(dir.path());
         app.file_open.entries.clear();
         handle_file_open_popup_key(&mut app, key(KeyCode::Enter));
         assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
         assert!(app.pcap_load.is_none());
         assert_eq!(app.file_open.dir, dir.path());
+        Ok(())
     }
 
     /// Backspace trims the filter first; only with the filter empty does it
     /// climb to the parent directory, and each step returns the selection to
     /// the top.
     #[test]
-    fn backspace_trims_the_filter_before_climbing_to_the_parent() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
+    fn backspace_trims_the_filter_before_climbing_to_the_parent() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("sub"))?;
         let mut app = browser_at(&dir.path().join("sub"));
         app.file_open.filter = "ab".to_string();
 
@@ -2029,6 +2074,7 @@ mod browser_tests {
         assert_eq!(app.file_open.dir, dir.path(), "an empty filter climbs");
         assert_eq!(app.file_open.selected, 0, "the climb starts at the top");
         assert_eq!(names(&app), vec!["..", "sub"]);
+        Ok(())
     }
 
     /// Tab switches to manual entry seeded with the browsed directory and a
@@ -2036,8 +2082,8 @@ mod browser_tests {
     /// already typed is kept. Tab in manual mode returns to the browser, and
     /// Esc closes the dialog from either mode.
     #[test]
-    fn tab_toggles_manual_entry_seeded_with_the_directory() {
-        let dir = tempfile::tempdir().unwrap();
+    fn tab_toggles_manual_entry_seeded_with_the_directory() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let mut app = browser_at(dir.path());
         handle_file_open_popup_key(&mut app, key(KeyCode::Tab));
         let want = format!("{}{}", dir.path().display(), std::path::MAIN_SEPARATOR);
@@ -2063,13 +2109,14 @@ mod browser_tests {
         root.active_popup = Some(Popup::FileOpenDialog);
         handle_file_open_popup_key(&mut root, key(KeyCode::Tab));
         assert_eq!(root.file_open.path, "/", "the separator is not doubled");
+        Ok(())
     }
 
     /// In manual entry the cursor steps over whole characters, stops at both
     /// ends, and typing inserts at the cursor; Backspace at the start and an
     /// unbound key change nothing.
     #[test]
-    fn manual_entry_cursor_steps_whole_chars_and_stops_at_the_ends() {
+    fn manual_entry_cursor_steps_whole_chars_and_stops_at_the_ends() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = true;
@@ -2104,15 +2151,16 @@ mod browser_tests {
         assert_eq!(app.file_open.cursor, 0);
         assert!(app.file_open.manual_mode);
         assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+        Ok(())
     }
 
     /// A file that is not a capture reports why it could not be opened and
     /// reads nothing, still labeled with its own name.
     #[test]
-    fn a_file_that_is_not_a_capture_reports_why_it_failed_to_open() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_file_that_is_not_a_capture_reports_why_it_failed_to_open() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("garbage.pcap");
-        std::fs::write(&path, b"this is not a packet capture at all").unwrap();
+        std::fs::write(&path, b"this is not a packet capture at all")?;
         let (out, ds, ss) = load_into_fresh_stores(&path);
         // The message is not echoed on failure: it is built beside the
         // decryption-secrets summary, and CodeQL reads a panic message as a
@@ -2125,15 +2173,20 @@ mod browser_tests {
         assert_eq!(out.sip_count, 0);
         assert_eq!(out.capture_mode, "Offline (garbage.pcap)");
         assert!(ds.read().is_empty() && ss.read().is_empty());
+        Ok(())
     }
 
     /// A capture with RTP and RTCP but no SIP reports the RTCP count and
     /// opens on the stream list, where playback and export are.
     #[test]
-    fn a_media_only_capture_counts_rtcp_and_opens_on_the_stream_list() {
+    fn a_media_only_capture_counts_rtcp_and_opens_on_the_stream_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         let path = fixture("turn_relay.pcap");
-        begin_pcap_load(&mut app, path.to_str().unwrap(), None);
+        begin_pcap_load(
+            &mut app,
+            path.to_str().ok_or("the path is valid UTF-8")?,
+            None,
+        );
         drain(&mut app);
         let msg = app.status_error.clone().unwrap_or_default();
         assert!(
@@ -2142,27 +2195,29 @@ mod browser_tests {
         );
         assert!(!app.status_is_error(), "a load that worked is not an error");
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     /// With no load in flight, the tick hook changes nothing.
     #[test]
-    fn polling_with_no_load_in_flight_changes_nothing() {
+    fn polling_with_no_load_in_flight_changes_nothing() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.status_error = Some("unrelated".to_string());
         poll_pcap_load(&mut app);
         assert_eq!(app.status_error.as_deref(), Some("unrelated"));
         assert!(app.pcap_load.is_none());
+        Ok(())
     }
 
     /// Opening a capture in the TUI counts a snapped frame exactly as the
     /// headless run does, so the capture-quality view has something to show.
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn a_snapped_frame_is_counted_when_a_capture_is_opened() {
+    fn a_snapped_frame_is_counted_when_a_capture_is_opened() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("snapped.pcap");
-        std::fs::write(&path, crate::test_utils::one_record_pcap(64, 1500)).unwrap();
+        std::fs::write(&path, crate::test_utils::one_record_pcap(64, 1500))?;
 
         let _ = load_into_fresh_stores(&path);
 
@@ -2172,6 +2227,7 @@ mod browser_tests {
             "64 of 1500 bytes is a snapped frame"
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 }
 
@@ -2185,26 +2241,28 @@ mod archive_password_tests {
     use crate::tui::controllers::handle_popup_key;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
+    type TestError = Box<dyn std::error::Error>;
+
     fn secret(label: &str) -> &'static str {
         crate::test_material::key_str(label)
     }
 
     /// An AES ZIP of the repo's `sip_call.pcap`, locked with `password`.
-    fn locked_zip(dir: &std::path::Path, password: &str) -> std::path::PathBuf {
+    fn locked_zip(dir: &std::path::Path, password: &str) -> Result<std::path::PathBuf, TestError> {
         let pcap = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap"),
         )
-        .expect("fixture");
+        .map_err(|e| format!("fixture: {e:?}"))?;
         let path = dir.join("evidence.zip");
         std::fs::write(
             &path,
             build(
                 &[("calls/call.pcap", &pcap)],
                 Lock::Aes(zip::AesMode::Aes256, password.as_bytes()),
-            ),
+            )?,
         )
-        .expect("write");
-        path
+        .map_err(|e| format!("write: {e:?}"))?;
+        Ok(path)
     }
 
     /// Pump the event-loop hook until `done` says so.
@@ -2234,25 +2292,26 @@ mod archive_password_tests {
         handle_popup_key(app, KeyEvent::new(code, mods));
     }
 
-    fn screen(app: &mut App) -> String {
+    fn screen(app: &mut App) -> Result<String, TestError> {
         crate::tui::render::test_support::render_to_string(app, 110, 30)
     }
 
     #[test]
-    fn a_load_parks_on_a_locked_member_and_resumes_with_the_answer() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_load_parks_on_a_locked_member_and_resumes_with_the_answer() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let trail_path = tmp.path().join("trail.jsonl");
-        let zip = locked_zip(tmp.path(), secret("tui-right"));
+        let zip = locked_zip(tmp.path(), secret("tui-right"))?;
         let mut app = App::new_test();
         app.set_action_trail(Some(Arc::new(
-            crate::tui::action_trail::ActionTrail::open(&trail_path).expect("trail"),
+            crate::tui::action_trail::ActionTrail::open(&trail_path)
+                .map_err(|e| format!("trail: {e:?}"))?,
         )));
         begin_pcap_load_confirmed(&mut app, &zip.display().to_string(), None);
         pump_until(&mut app, "the popup", popup_open);
 
         // Masked, one dot per character, and the title does not say visible.
         type_in(&mut app, &secret("tui-wrong")[..10]);
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(text.contains(&"\u{2022}".repeat(10)), "{text}");
         assert!(text.contains("Attempt 1 of 3"), "{text}");
         assert!(!text.contains("password visible"), "{text}");
@@ -2260,7 +2319,7 @@ mod archive_password_tests {
 
         // Ctrl-R reveals, and says so.
         press(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(text.contains(&secret("tui-wrong")[..10]), "{text}");
         assert!(text.contains("password visible"), "{text}");
 
@@ -2271,7 +2330,7 @@ mod archive_password_tests {
                 .as_ref()
                 .is_some_and(|e| e.request().attempt == 2)
         });
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(text.contains("Wrong password"), "{text}");
         assert!(!text.contains("password visible"), "re-masked: {text}");
 
@@ -2285,7 +2344,7 @@ mod archive_password_tests {
         assert!(status.contains("from the archive"), "{status}");
 
         // The trail says the archive opened, and never what opened it.
-        let trail = std::fs::read_to_string(&trail_path).expect("trail");
+        let trail = std::fs::read_to_string(&trail_path).map_err(|e| format!("trail: {e:?}"))?;
         assert!(trail.contains("archive_password_accepted"), "{trail}");
         for label in ["tui-right", "tui-wrong"] {
             assert!(!trail.contains(&secret(label)[..10]), "{trail}");
@@ -2309,16 +2368,18 @@ mod archive_password_tests {
             .map_or(0, |k| k.remembered_count());
         assert_eq!(remembered, 0, "cleared on capture change");
         pump_until(&mut app, "the second load", |a| a.pcap_load.is_none());
+        Ok(())
     }
 
     #[test]
-    fn esc_skips_the_archive_and_the_load_finishes() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn esc_skips_the_archive_and_the_load_finishes() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let trail_path = tmp.path().join("trail.jsonl");
-        let zip = locked_zip(tmp.path(), secret("tui-esc"));
+        let zip = locked_zip(tmp.path(), secret("tui-esc"))?;
         let mut app = App::new_test();
         app.set_action_trail(Some(Arc::new(
-            crate::tui::action_trail::ActionTrail::open(&trail_path).expect("trail"),
+            crate::tui::action_trail::ActionTrail::open(&trail_path)
+                .map_err(|e| format!("trail: {e:?}"))?,
         )));
         begin_pcap_load_confirmed(&mut app, &zip.display().to_string(), None);
         pump_until(&mut app, "the popup", popup_open);
@@ -2327,7 +2388,8 @@ mod archive_password_tests {
         assert!(!popup_open(&app));
         let status = app.status_error.clone().unwrap_or_default();
         assert!(status.contains("encrypted_no_password"), "{status}");
-        let trail = std::fs::read_to_string(&trail_path).expect("trail");
+        let trail = std::fs::read_to_string(&trail_path).map_err(|e| format!("trail: {e:?}"))?;
         assert!(trail.contains("archive_locked_members_skipped"), "{trail}");
+        Ok(())
     }
 }

@@ -371,6 +371,7 @@ pub fn select(libs: Vec<TlsLibrary>, want: &[Flavor]) -> Vec<TlsLibrary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Verbatim shapes from `/proc/<pid>/maps` on the development host.
     const OPENSSL_MAPS: &str = "\
@@ -386,7 +387,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
 
     /// The requirement, stated as a test: a host running both gets both.
     #[test]
-    fn a_host_running_both_flavors_yields_both() {
+    fn a_host_running_both_flavors_yields_both() -> Result<(), TestError> {
         let mut found = BTreeMap::new();
         absorb(&mut found, 100, OPENSSL_MAPS);
         absorb(&mut found, 101, WOLFSSL_MAPS);
@@ -402,12 +403,14 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
                 .len(),
             2
         );
+        Ok(())
     }
 
     /// `libwolfssl` contains `libssl`, so a substring match claims it and then
     /// resolves `SSL_write` in a library that exports `wolfSSL_write`.
     #[test]
-    fn a_substring_match_would_misclassify_wolfssl_and_a_prefix_does_not() {
+    fn a_substring_match_would_misclassify_wolfssl_and_a_prefix_does_not() -> Result<(), TestError>
+    {
         assert_eq!(
             classify(Path::new("/usr/lib/libwolfssl.so.42.2.0")),
             Some(Flavor::WolfSsl)
@@ -433,11 +436,12 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             "wolfSSL_write",
             "the flavor decides the symbol, not the argument positions"
         );
+        Ok(())
     }
 
     /// 56 processes map `libssl.so.3` here. That is one probe target.
     #[test]
-    fn one_library_mapped_by_many_processes_is_one_target() {
+    fn one_library_mapped_by_many_processes_is_one_target() -> Result<(), TestError> {
         let mut found = BTreeMap::new();
         for pid in 1..=56 {
             absorb(&mut found, pid, OPENSSL_MAPS);
@@ -445,12 +449,13 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         let libs: Vec<_> = found.into_values().collect();
         assert_eq!(libs.len(), 1, "same device and inode is the same file");
         assert_eq!(libs[0].pids.len(), 56, "but every process is recorded");
+        Ok(())
     }
 
     /// Two builds of one flavor coexist here (GnuTLS 30.37.1 and 30.40.3 were
     /// both mapped). Their symbol offsets differ, so they are two targets.
     #[test]
-    fn two_builds_of_one_flavor_are_two_targets() {
+    fn two_builds_of_one_flavor_are_two_targets() -> Result<(), TestError> {
         let a = "a-b r-xp 0 fd:01 111 /usr/lib/libssl.so.3\n";
         let b = "a-b r-xp 0 fd:01 222 /usr/lib/libssl.so.1.1\n";
         let mut found = BTreeMap::new();
@@ -462,11 +467,12 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             "an offset computed from one and installed on the other reads the \
              wrong address"
         );
+        Ok(())
     }
 
     /// The same inode reached by a symlink and by its real name is one file.
     #[test]
-    fn one_inode_under_two_names_is_one_target() {
+    fn one_inode_under_two_names_is_one_target() -> Result<(), TestError> {
         let mut found = BTreeMap::new();
         absorb(&mut found, 1, "a-b r-xp 0 fd:01 777 /usr/lib/libssl.so.3\n");
         absorb(
@@ -475,22 +481,24 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             "a-b r-xp 0 fd:01 777 /usr/lib/libssl.so.3.0.17\n",
         );
         assert_eq!(found.len(), 1, "identity is device and inode, not the path");
+        Ok(())
     }
 
     #[test]
-    fn non_tls_and_anonymous_mappings_are_ignored() {
+    fn non_tls_and_anonymous_mappings_are_ignored() -> Result<(), TestError> {
         let mut found = BTreeMap::new();
         absorb(&mut found, 1, OPENSSL_MAPS);
         let libs: Vec<_> = found.into_values().collect();
         assert_eq!(libs.len(), 1, "libc and the anonymous mapping are not TLS");
         assert!(classify(Path::new("/usr/lib/libc.so.6")).is_none());
+        Ok(())
     }
 
     /// The kernel marks a replaced file `(deleted)`. The path now names the
     /// replacement, and a probe installed through it attaches to the wrong
     /// bytes — a package upgrade during a capture is exactly this.
     #[test]
-    fn a_deleted_mapping_is_not_probed() {
+    fn a_deleted_mapping_is_not_probed() -> Result<(), TestError> {
         let mut found = BTreeMap::new();
         absorb(
             &mut found,
@@ -498,10 +506,11 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             "a-b r-xp 0 fd:01 555 /usr/lib/libssl.so.3 (deleted)\n",
         );
         assert!(found.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn selection_narrows_and_an_empty_selection_keeps_everything() {
+    fn selection_narrows_and_an_empty_selection_keeps_everything() -> Result<(), TestError> {
         let mut found = BTreeMap::new();
         absorb(&mut found, 1, OPENSSL_MAPS);
         absorb(&mut found, 2, WOLFSSL_MAPS);
@@ -511,13 +520,15 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         let only = select(all, &[Flavor::WolfSsl]);
         assert_eq!(only.len(), 1);
         assert_eq!(only[0].flavor, Flavor::WolfSsl);
+        Ok(())
     }
 
     /// A `/proc` that yields nothing must yield nothing, not panic — an
     /// unprivileged sipnab reads no `maps` at all.
     #[test]
-    fn an_unreadable_proc_yields_nothing_rather_than_failing() {
+    fn an_unreadable_proc_yields_nothing_rather_than_failing() -> Result<(), TestError> {
         assert!(discover_in(Path::new("/nonexistent/proc")).is_empty());
+        Ok(())
     }
 
     /// The container case, which is the one that silently captures nothing.
@@ -525,15 +536,15 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     /// Two files, one path string. The probe must reach the one the process
     /// actually mapped, and the inode is what decides.
     #[test]
-    fn a_containerized_library_is_probed_through_the_process_root() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_containerized_library_is_probed_through_the_process_root() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let root = tmp.path();
 
         // The "container" copy, reachable only via /proc/4242/root.
         let inside = root.join("4242/root/usr/lib/libssl.so.3");
-        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
-        std::fs::write(&inside, b"container copy").unwrap();
-        let want = inode_of(&inside).expect("just written");
+        std::fs::create_dir_all(inside.parent().ok_or("the path has a parent")?)?;
+        std::fs::write(&inside, b"container copy")?;
+        let want = inode_of(&inside).ok_or("just written")?;
 
         let lib = TlsLibrary {
             path: PathBuf::from("/usr/lib/libssl.so.3"),
@@ -546,17 +557,18 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             Some(inside),
             "the bare path names the host's copy, which this process never mapped"
         );
+        Ok(())
     }
 
     /// The same file under a different inode is a different file, and probing
     /// it would report another process's TLS traffic as this one's.
     #[test]
-    fn a_path_whose_inode_disagrees_is_refused_rather_than_probed() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_path_whose_inode_disagrees_is_refused_rather_than_probed() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let root = tmp.path();
         let inside = root.join("4242/root/usr/lib/libssl.so.3");
-        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
-        std::fs::write(&inside, b"some other build").unwrap();
+        std::fs::create_dir_all(inside.parent().ok_or("the path has a parent")?)?;
+        std::fs::write(&inside, b"some other build")?;
 
         let lib = TlsLibrary {
             path: PathBuf::from("/usr/lib/libssl.so.3"),
@@ -570,63 +582,70 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             None,
             "refusing beats probing a file that merely has the right name"
         );
+        Ok(())
     }
 
     /// The default is both, because a host running both must capture both.
     #[test]
-    fn planning_with_no_flavor_filter_probes_every_library_found() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn planning_with_no_flavor_filter_probes_every_library_found() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let libs = vec![
-            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl),
-            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl),
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl)?,
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl)?,
         ];
-        let planned = plan_targets(&[], None, &[], libs).expect("both are reachable");
+        let planned =
+            plan_targets(&[], None, &[], libs).map_err(|e| format!("both are reachable: {e:?}"))?;
         assert_eq!(planned.len(), 2);
         let symbols: Vec<&str> = planned.iter().map(|t| t.symbol.as_str()).collect();
         assert!(
             symbols.contains(&"SSL_write") && symbols.contains(&"wolfSSL_write"),
             "each library gets the symbol ITS flavor exports: {symbols:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn planning_narrows_to_the_flavor_asked_for() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn planning_narrows_to_the_flavor_asked_for() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let libs = vec![
-            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl),
-            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl),
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl)?,
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl)?,
         ];
-        let planned = plan_targets(&[], None, &[Flavor::WolfSsl], libs).expect("one matches");
+        let planned = plan_targets(&[], None, &[Flavor::WolfSsl], libs)
+            .map_err(|e| format!("one matches: {e:?}"))?;
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].symbol, "wolfSSL_write");
+        Ok(())
     }
 
     /// An explicit path bypasses discovery, which is how an operator reaches a
     /// library nothing has mapped yet.
     #[test]
-    fn an_explicit_library_bypasses_discovery_and_infers_its_symbol() {
+    fn an_explicit_library_bypasses_discovery_and_infers_its_symbol() -> Result<(), TestError> {
         let planned = plan_targets(
             &["/opt/custom/libwolfssl.so.42".to_string()],
             None,
             &[],
             Vec::new(),
         )
-        .expect("explicit paths do not need discovery");
+        .map_err(|e| format!("explicit paths do not need discovery: {e:?}"))?;
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].symbol, "wolfSSL_write");
+        Ok(())
     }
 
     /// A name sipnab cannot classify is refused with the fix in the message,
     /// rather than probed with a guessed symbol.
     #[test]
-    fn an_unclassifiable_library_is_refused_and_says_how_to_proceed() {
+    fn an_unclassifiable_library_is_refused_and_says_how_to_proceed() -> Result<(), TestError> {
         let err = plan_targets(
             &["/opt/vendor/libcrypto-x.so".to_string()],
             None,
             &[],
             vec![],
         )
-        .expect_err("sipnab cannot know the symbol");
+        .err()
+        .ok_or("sipnab cannot know the symbol")?;
         assert!(err.contains("--uprobe-symbol"), "must say the fix: {err}");
 
         // ...and with the symbol supplied it proceeds.
@@ -636,60 +655,73 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             &[],
             vec![],
         )
-        .expect("an explicit symbol is enough");
+        .map_err(|e| format!("an explicit symbol is enough: {e:?}"))?;
         assert_eq!(ok[0].symbol, "vendor_send");
+        Ok(())
     }
 
     /// Finding nothing must be an error at startup. A capture attached to
     /// nothing looks exactly like a quiet trunk.
     #[test]
-    fn discovering_nothing_is_an_error_not_an_empty_capture() {
-        let err = plan_targets(&[], None, &[], Vec::new()).expect_err("nothing to probe");
+    fn discovering_nothing_is_an_error_not_an_empty_capture() -> Result<(), TestError> {
+        let err = plan_targets(&[], None, &[], Vec::new())
+            .err()
+            .ok_or("nothing to probe")?;
         assert!(err.contains("--uprobe-library"), "must say the fix: {err}");
         assert!(err.contains("root"), "the usual cause is privilege: {err}");
+        Ok(())
     }
 
     /// A library in use that sipnab cannot reach is named, not skipped — it is
     /// carrying traffic that will be missing from the capture.
     #[test]
-    fn an_unreachable_library_is_named_rather_than_silently_dropped() {
+    fn an_unreachable_library_is_named_rather_than_silently_dropped() -> Result<(), TestError> {
         let lib = TlsLibrary {
             path: PathBuf::from("/usr/lib/libssl.so.3"),
             inode: u64::MAX,
             flavor: Flavor::OpenSsl,
             pids: vec![999_999],
         };
-        let err = plan_targets(&[], None, &[], vec![lib]).expect_err("unreachable");
+        let err = plan_targets(&[], None, &[], vec![lib])
+            .err()
+            .ok_or("unreachable")?;
         assert!(
             err.contains("/usr/lib/libssl.so.3"),
             "the operator must be told WHICH library is missing: {err}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_flavor_name_is_parsed_or_refused() {
+    fn a_flavor_name_is_parsed_or_refused() -> Result<(), TestError> {
         assert_eq!(parse_flavor("OpenSSL"), Ok(Flavor::OpenSsl));
         assert_eq!(parse_flavor("wolfssl"), Ok(Flavor::WolfSsl));
         assert!(parse_flavor("gnutls").is_err());
+        Ok(())
     }
 
     /// Build a `TlsLibrary` that really is reachable under a fake `/proc`.
-    fn reachable(tmp: &tempfile::TempDir, pid: u32, path: &str, flavor: Flavor) -> TlsLibrary {
+    fn reachable(
+        tmp: &tempfile::TempDir,
+        pid: u32,
+        path: &str,
+        flavor: Flavor,
+    ) -> Result<TlsLibrary, TestError> {
         let on_disk = tmp
             .path()
             .join(pid.to_string())
             .join("root")
             .join(path.trim_start_matches('/'));
-        std::fs::create_dir_all(on_disk.parent().unwrap()).unwrap();
-        std::fs::write(&on_disk, b"so").unwrap();
+        std::fs::create_dir_all(on_disk.parent().ok_or("the path has a parent")?)?;
+        std::fs::write(&on_disk, b"so")?;
         // `probe_path` consults the real /proc, so the test library must be
         // reachable by its own path too.
-        TlsLibrary {
+        Ok(TlsLibrary {
             path: on_disk.clone(),
-            inode: inode_of(&on_disk).unwrap(),
+            inode: inode_of(&on_disk).ok_or("inode_of gives a value")?,
             flavor,
             pids: vec![pid],
-        }
+        })
     }
 
     /// The real `/proc` on whatever machine this runs on.
@@ -700,7 +732,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     /// genuine `maps` file: thousands of lines, spaces in paths, anonymous
     /// mappings, `[stack]` and `[vdso]` pseudo-entries.
     #[test]
-    fn the_real_proc_parses_without_inventing_anything() {
+    fn the_real_proc_parses_without_inventing_anything() -> Result<(), TestError> {
         for lib in discover() {
             assert!(
                 lib.path.is_absolute(),
@@ -717,5 +749,6 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
                 lib.path.display()
             );
         }
+        Ok(())
     }
 }

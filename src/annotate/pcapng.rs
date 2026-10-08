@@ -159,47 +159,55 @@ mod tests {
     #[cfg(feature = "tui")]
     use crate::capture::resolve::parse_pointer;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A validated note.
-    fn note(text: &str) -> NoteText {
-        NoteText::new(text).expect("a valid note")
+    fn note(text: &str) -> Result<NoteText, TestError> {
+        Ok(NoteText::new(text).map_err(|e| format!("a valid note: {e:?}"))?)
     }
 
     /// A copied frame's comment is the prefix and the note, nothing else.
     #[test]
-    fn a_note_on_an_original_frame_is_the_prefix_and_the_text() {
-        let c = EpbComment::on_original_frame(&note("the 183 with new SDP"));
+    fn a_note_on_an_original_frame_is_the_prefix_and_the_text() -> Result<(), TestError> {
+        let c = EpbComment::on_original_frame(&note("the 183 with new SDP")?);
         let EnhancedPacketOption::Comment(text) = c.option() else {
-            panic!("a note is written as opt_comment");
+            return Err("a note is written as opt_comment".into());
         };
         assert_eq!(text, "[operator note] the 183 with new SDP");
         assert_eq!(c.byte_len(), text.len());
+        Ok(())
     }
 
     /// A rebuilt frame's comment adds the pointer to the WHOLE original frame,
     /// the only link back to the evidence once the bytes are synthetic.
     #[cfg(feature = "tui")]
     #[test]
-    fn a_note_on_a_rebuilt_frame_names_the_original_frame() {
-        let original = parse_pointer("cap.pcap#3@00000000deadbeef+10-20").expect("pointer");
-        let c = EpbComment::on_rebuilt_frame(&note("here"), &original).expect("fits");
+    fn a_note_on_a_rebuilt_frame_names_the_original_frame() -> Result<(), TestError> {
+        let original = parse_pointer("cap.pcap#3@00000000deadbeef+10-20")
+            .map_err(|e| format!("pointer: {e:?}"))?;
+        let c = EpbComment::on_rebuilt_frame(&note("here")?, &original)
+            .map_err(|e| format!("fits: {e:?}"))?;
         let EnhancedPacketOption::Comment(text) = c.option() else {
-            panic!("a note is written as opt_comment");
+            return Err("a note is written as opt_comment".into());
         };
         assert_eq!(
             text,
             "[operator note] here\noriginal frame: cap.pcap#3@00000000deadbeef"
         );
+        Ok(())
     }
 
     /// A comment that would outgrow the 16-bit option length is refused, not
     /// cut: a cut note says something its author did not.
     #[cfg(feature = "tui")]
     #[test]
-    fn a_comment_past_the_option_length_is_refused() {
+    fn a_comment_past_the_option_length_is_refused() -> Result<(), TestError> {
         let long = format!("{}#0@00000000deadbeef", "d/".repeat(40_000));
-        let original = parse_pointer(&long).expect("pointer");
-        let err =
-            EpbComment::on_rebuilt_frame(&note("n"), &original).expect_err("over 65,535 bytes");
+        let original = parse_pointer(&long).map_err(|e| format!("pointer: {e:?}"))?;
+        let err = EpbComment::on_rebuilt_frame(&note("n")?, &original)
+            .err()
+            .ok_or("over 65,535 bytes")?;
         assert!(err.bytes > u16::MAX as usize, "{err}");
 
         // And one byte under the field is still written whole.
@@ -207,26 +215,32 @@ mod tests {
             "{}#0",
             "d".repeat(u16::MAX as usize - "[operator note] n\noriginal frame: #0".len())
         );
-        let c = EpbComment::on_rebuilt_frame(&note("n"), &parse_pointer(&fits).expect("pointer"))
-            .expect("exactly at the limit fits");
+        let c = EpbComment::on_rebuilt_frame(
+            &note("n")?,
+            &parse_pointer(&fits).map_err(|e| format!("pointer: {e:?}"))?,
+        )
+        .map_err(|e| format!("exactly at the limit fits: {e:?}"))?;
         assert_eq!(c.byte_len(), u16::MAX as usize);
+        Ok(())
     }
 
     /// `{:?}` carries the length and not the text.
     #[test]
-    fn debug_output_is_sealed() {
-        let shown = format!("{:?}", EpbComment::on_original_frame(&note("sentinel")));
+    fn debug_output_is_sealed() -> Result<(), TestError> {
+        let shown = format!("{:?}", EpbComment::on_original_frame(&note("sentinel")?));
         assert!(!shown.contains("sentinel"), "{shown}");
+        Ok(())
     }
 
     /// The section sentence says how many comments are notes and that sipnab
     /// never reads them.
     #[test]
-    fn the_section_sentence_counts_the_notes_and_disowns_them() {
+    fn the_section_sentence_counts_the_notes_and_disowns_them() -> Result<(), TestError> {
         let s = section_sentence(3);
         assert!(s.starts_with("3 packet comment(s)"), "{s}");
         assert!(s.contains("not sipnab analysis"), "{s}");
         assert!(s.contains("does not read them back"), "{s}");
         assert!(s.contains("[operator note]"), "{s}");
+        Ok(())
     }
 }

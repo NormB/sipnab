@@ -75,6 +75,9 @@ impl RsaKey {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// PEM-encoded PKCS#8 RSA private key fixture used across the tests.
     const KEY_PEM: &str = include_str!("../../tests/fixtures/tls_rsa/key.pem");
     /// The PKCS#1 v1.5 ciphertext of the fixture pre-master (from `openssl`).
@@ -91,35 +94,39 @@ mod tests {
     /// Malformed PEM is rejected with an error that names "RSA private key"
     /// but never echoes the offending key bytes.
     #[test]
-    fn rejects_garbage_pem_without_leaking() {
+    fn rejects_garbage_pem_without_leaking() -> Result<(), TestError> {
         let err = RsaKey::from_pem(
             "-----BEGIN PRIVATE KEY-----\nNOTBASE64!!!\n-----END PRIVATE KEY-----\n",
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         let msg = format!("{err:#}");
         assert!(msg.contains("RSA private key"), "got: {msg}");
         assert!(!msg.contains("NOTBASE64"), "must not echo key bytes: {msg}");
+        Ok(())
     }
 
     /// Known-answer test: decrypting the fixture ciphertext recovers the
     /// 48-byte pre-master, whose first two bytes carry the client version.
     #[test]
-    fn decrypts_known_premaster() {
+    fn decrypts_known_premaster() -> Result<(), TestError> {
         // KAT: the fixture ciphertext was produced by openssl pkeyutl
         // (PKCS#1 v1.5) over the 48-byte fixture premaster.
-        let key = RsaKey::from_pem(KEY_PEM).unwrap();
-        let pm = key.decrypt_premaster(PREMASTER_CT).unwrap();
+        let key = RsaKey::from_pem(KEY_PEM)?;
+        let pm = key.decrypt_premaster(PREMASTER_CT)?;
         assert_eq!(pm.len(), 48, "TLS pre-master is 48 bytes");
         assert_eq!(pm, PREMASTER, "decrypt must recover the known premaster");
         // The premaster begins with the offered client_version (0x0303).
         assert_eq!(&pm[..2], &[0x03, 0x03]);
+        Ok(())
     }
 
     /// A truncated ciphertext (not a full RSA block) errors rather than panics.
     #[test]
-    fn wrong_ciphertext_length_errors() {
-        let key = RsaKey::from_pem(KEY_PEM).unwrap();
+    fn wrong_ciphertext_length_errors() -> Result<(), TestError> {
+        let key = RsaKey::from_pem(KEY_PEM)?;
         // A truncated ciphertext (not a full RSA block) must error, not panic.
         assert!(key.decrypt_premaster(&PREMASTER_CT[..100]).is_err());
+        Ok(())
     }
 }

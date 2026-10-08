@@ -274,6 +274,9 @@ impl SessionId {
 
 #[cfg(test)]
 mod tests {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The `remote` parameter name is case-insensitive.
     ///
     /// [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1): "field values, parameter names, and parameter values
@@ -286,12 +289,12 @@ mod tests {
     /// lost its remote half from correlation — the identifier that exists
     /// precisely to survive a B2BUA.
     #[test]
-    fn the_remote_parameter_name_is_case_insensitive() {
+    fn the_remote_parameter_name_is_case_insensitive() -> Result<(), TestError> {
         for spelling in ["remote", "Remote", "REMOTE", "ReMoTe"] {
             let v = format!(
                 "ab30317f1a784dc48ff824d0d3715d86;{spelling}=47755a9de7794ba387653f2099600ef2"
             );
-            let sid = SessionId::parse(&v).expect("parses");
+            let sid = SessionId::parse(&v).ok_or("parses")?;
             assert!(
                 !sid.legacy_rfc7329_form,
                 "{spelling}= is a remote parameter, so this is not the legacy form"
@@ -302,6 +305,7 @@ mod tests {
                 "both halves correlate: {spelling}"
             );
         }
+        Ok(())
     }
 
     /// A `;` inside a quoted generic-param does not split the parameter list.
@@ -314,7 +318,7 @@ mod tests {
     /// append one conformant generic-param and overwrite the genuine remote
     /// half with a fabricated one, killing B2BUA correlation silently.
     #[test]
-    fn a_semicolon_inside_a_quoted_parameter_does_not_split_the_list() {
+    fn a_semicolon_inside_a_quoted_parameter_does_not_split_the_list() -> Result<(), TestError> {
         // The decoy comes FIRST, deliberately. With it second, the
         // first-wins rule alone would defeat it and this test would pass
         // against a naive `split(';')` — a mutation proved exactly that. Only
@@ -324,7 +328,7 @@ mod tests {
              foo=\"x;remote=deadbeefdeadbeefdeadbeefdeadbeef\";\
              remote=47755a9de7794ba387653f2099600ef2",
         )
-        .expect("parses");
+        .ok_or("parses")?;
         let correlatable = sid.correlatable();
         assert_eq!(
             correlatable.len(),
@@ -339,6 +343,7 @@ mod tests {
             !correlatable.iter().any(|h| h.contains("deadbeef")),
             "the decoy must not become the remote half: {correlatable:?}"
         );
+        Ok(())
     }
 
     /// A duplicate `remote` takes the FIRST, and the RFC forbids the second.
@@ -349,12 +354,12 @@ mod tests {
     /// first at least matches RFC 8489's rule for the analogous case and is
     /// the half an attacker cannot append to.
     #[test]
-    fn a_duplicate_remote_parameter_takes_the_first() {
+    fn a_duplicate_remote_parameter_takes_the_first() -> Result<(), TestError> {
         let sid = SessionId::parse(
             "ab30317f1a784dc48ff824d0d3715d86;remote=47755a9de7794ba387653f2099600ef2;\
              remote=11111111111111111111111111111111",
         )
-        .expect("parses");
+        .ok_or("parses")?;
         assert!(
             sid.correlatable()
                 .contains(&"47755a9de7794ba387653f2099600ef2"),
@@ -365,20 +370,22 @@ mod tests {
             !sid.correlatable().iter().any(|h| h.starts_with("1111")),
             "the second must not override it"
         );
+        Ok(())
     }
 
     /// Whitespace around the separators is legal and must not lose the half.
     ///
     /// `SEMI = SWS ";" SWS` and `EQUAL = SWS "=" SWS`.
     #[test]
-    fn conformant_whitespace_still_yields_both_halves() {
+    fn conformant_whitespace_still_yields_both_halves() -> Result<(), TestError> {
         for v in [
             "ab30317f1a784dc48ff824d0d3715d86 ; remote = 47755a9de7794ba387653f2099600ef2",
             "ab30317f1a784dc48ff824d0d3715d86;\tremote\t=\t47755a9de7794ba387653f2099600ef2",
         ] {
-            let sid = SessionId::parse(v).expect("parses");
+            let sid = SessionId::parse(v).ok_or("parses")?;
             assert_eq!(sid.correlatable().len(), 2, "{v:?}");
         }
+        Ok(())
     }
 
     use super::*;
@@ -388,19 +395,20 @@ mod tests {
     const NIL: &str = "00000000000000000000000000000000";
 
     #[test]
-    fn a_full_header_parses_both_halves() {
-        let s = SessionId::parse(&format!("{A};remote={B}")).expect("parses");
+    fn a_full_header_parses_both_halves() -> Result<(), TestError> {
+        let s = SessionId::parse(&format!("{A};remote={B}")).ok_or("parses")?;
         assert_eq!(s.local.uuid(), Some(A));
         assert_eq!(s.remote.as_ref().and_then(SessionIdHalf::uuid), Some(B));
         assert!(!s.legacy_rfc7329_form);
+        Ok(())
     }
 
     /// The whole point of the module: the SBC swaps the halves, and the two
     /// values must still be recognized as one session.
     #[test]
-    fn the_halves_swap_across_a_b2bua_and_still_correlate() {
-        let a_side = SessionId::parse(&format!("{A};remote={B}")).expect("parses");
-        let b_side = SessionId::parse(&format!("{B};remote={A}")).expect("parses");
+    fn the_halves_swap_across_a_b2bua_and_still_correlate() -> Result<(), TestError> {
+        let a_side = SessionId::parse(&format!("{A};remote={B}")).ok_or("parses")?;
+        let b_side = SessionId::parse(&format!("{B};remote={A}")).ok_or("parses")?;
         assert_ne!(
             format!("{A};remote={B}"),
             format!("{B};remote={A}"),
@@ -414,51 +422,55 @@ mod tests {
             b_side.same_session_as(&a_side),
             "and the relation is symmetric"
         );
+        Ok(())
     }
 
     #[test]
-    fn two_unrelated_sessions_do_not_correlate() {
+    fn two_unrelated_sessions_do_not_correlate() -> Result<(), TestError> {
         // The mutation guard for the test above: if `same_session_as` returned
         // true unconditionally, that test would pass and this one would fail.
-        let one = SessionId::parse(&format!("{A};remote={B}")).expect("parses");
+        let one = SessionId::parse(&format!("{A};remote={B}")).ok_or("parses")?;
         let other = SessionId::parse(
             "11111111111111111111111111111111;remote=22222222222222222222222222222222",
         )
-        .expect("parses");
+        .ok_or("parses")?;
         assert!(!one.same_session_as(&other));
+        Ok(())
     }
 
     #[test]
-    fn nil_is_absence_and_never_correlates() {
+    fn nil_is_absence_and_never_correlates() -> Result<(), TestError> {
         // Two different calls, each still establishing, both saying "remote
         // unknown". Correlating them would tie together every session in
         // setup at once.
-        let first = SessionId::parse(&format!("{A};remote={NIL}")).expect("parses");
-        let second = SessionId::parse(&format!("{B};remote={NIL}")).expect("parses");
+        let first = SessionId::parse(&format!("{A};remote={NIL}")).ok_or("parses")?;
+        let second = SessionId::parse(&format!("{B};remote={NIL}")).ok_or("parses")?;
         assert_eq!(first.remote, Some(SessionIdHalf::Nil));
         assert!(
             !first.same_session_as(&second),
             "a shared nil must not correlate two unrelated sessions"
         );
         // But the known half still works.
-        let same = SessionId::parse(&format!("{NIL};remote={A}")).expect("parses");
+        let same = SessionId::parse(&format!("{NIL};remote={A}")).ok_or("parses")?;
         assert!(
             first.same_session_as(&same),
             "the non-nil half still matches"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_wholly_nil_header_correlates_with_nothing_including_itself() {
-        let s = SessionId::parse(&format!("{NIL};remote={NIL}")).expect("parses");
+    fn a_wholly_nil_header_correlates_with_nothing_including_itself() -> Result<(), TestError> {
+        let s = SessionId::parse(&format!("{NIL};remote={NIL}")).ok_or("parses")?;
         assert!(s.correlatable().is_empty());
         assert!(!s.same_session_as(&s), "nil is absence, not identity");
+        Ok(())
     }
 
     #[test]
-    fn the_rfc7329_single_uuid_form_is_accepted_and_flagged() {
+    fn the_rfc7329_single_uuid_form_is_accepted_and_flagged() -> Result<(), TestError> {
         // RFC 7989 obsoletes 7329 and explicitly anticipates meeting it.
-        let s = SessionId::parse(A).expect("parses");
+        let s = SessionId::parse(A).ok_or("parses")?;
         assert_eq!(s.local.uuid(), Some(A));
         assert!(s.remote.is_none());
         assert!(
@@ -466,31 +478,35 @@ mod tests {
             "the older form is a fact about the peer"
         );
         assert_eq!(s.correlatable(), vec![A], "and it still correlates");
+        Ok(())
     }
 
     #[test]
-    fn uppercase_hex_is_recorded_as_a_deviation_and_still_matches() {
+    fn uppercase_hex_is_recorded_as_a_deviation_and_still_matches() -> Result<(), TestError> {
         // The ABNF says %x61-66. Non-conforming kit is common, and whether a
         // vendor conforms is itself a finding — so record it rather than
         // silently repairing the wire.
         let upper = A.to_ascii_uppercase();
-        let s = SessionId::parse(&upper).expect("parses");
+        let s = SessionId::parse(&upper).ok_or("parses")?;
         assert_eq!(s.deviations(), vec![SessionIdDeviation::UppercaseHex]);
         assert_eq!(s.local.uuid(), Some(A), "compared lowercase");
-        let lower = SessionId::parse(A).expect("parses");
+        let lower = SessionId::parse(A).ok_or("parses")?;
         assert!(s.same_session_as(&lower), "case must not split a session");
+        Ok(())
     }
 
     #[test]
-    fn a_conforming_header_reports_no_deviations() {
+    fn a_conforming_header_reports_no_deviations() -> Result<(), TestError> {
         // Mutation guard: a `deviations()` that always returned UppercaseHex
         // would pass the test above and fail this one.
-        let s = SessionId::parse(&format!("{A};remote={B}")).expect("parses");
+        let s = SessionId::parse(&format!("{A};remote={B}")).ok_or("parses")?;
         assert!(s.deviations().is_empty());
+        Ok(())
     }
 
     #[test]
-    fn malformed_halves_are_kept_for_reporting_and_excluded_from_matching() {
+    fn malformed_halves_are_kept_for_reporting_and_excluded_from_matching() -> Result<(), TestError>
+    {
         for (raw, want) in [
             ("tooshort", SessionIdDeviation::WrongLength),
             (
@@ -498,33 +514,37 @@ mod tests {
                 SessionIdDeviation::NonHex,
             ),
         ] {
-            let s = SessionId::parse(raw).expect("parses");
+            let s = SessionId::parse(raw).ok_or("parses")?;
             assert_eq!(s.deviations(), vec![want], "raw was {raw}");
             assert!(
                 s.correlatable().is_empty(),
                 "an unparseable half must not correlate"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn generic_params_are_ignored_rather_than_breaking_the_parse() {
+    fn generic_params_are_ignored_rather_than_breaking_the_parse() -> Result<(), TestError> {
         // `sess-id-param = remote-param / generic-param`, so unknown params
         // are legal and must not cost us the remote half.
-        let s = SessionId::parse(&format!("{A};foo=bar;remote={B};baz")).expect("parses");
+        let s = SessionId::parse(&format!("{A};foo=bar;remote={B};baz")).ok_or("parses")?;
         assert_eq!(s.remote.as_ref().and_then(SessionIdHalf::uuid), Some(B));
+        Ok(())
     }
 
     #[test]
-    fn whitespace_around_the_value_and_params_is_tolerated() {
-        let s = SessionId::parse(&format!("  {A} ; remote = {B}  ")).expect("parses");
+    fn whitespace_around_the_value_and_params_is_tolerated() -> Result<(), TestError> {
+        let s = SessionId::parse(&format!("  {A} ; remote = {B}  ")).ok_or("parses")?;
         assert_eq!(s.local.uuid(), Some(A));
         assert_eq!(s.remote.as_ref().and_then(SessionIdHalf::uuid), Some(B));
+        Ok(())
     }
 
     #[test]
-    fn an_empty_value_is_not_a_session_id() {
+    fn an_empty_value_is_not_a_session_id() -> Result<(), TestError> {
         assert!(SessionId::parse("").is_none());
         assert!(SessionId::parse("   ").is_none());
+        Ok(())
     }
 }

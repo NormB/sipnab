@@ -303,6 +303,9 @@ fn branch_parts(branch: &str) -> Option<(String, TokenShape)> {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build a fingerprint from `(branch, from_tag, call_id)` triples.
     fn fingerprint(rows: &[(&str, &str, &str)]) -> StackFingerprint {
         let mut acc = FingerprintAccumulator::default();
@@ -314,7 +317,7 @@ mod tests {
 
     /// The two populations one banner was hiding.
     #[test]
-    fn the_two_populations_are_told_apart_by_construction() {
+    fn the_two_populations_are_told_apart_by_construction() -> Result<(), TestError> {
         // Population A, measured in the private corpus on 2026-09-08: 42,475
         // branches carrying pjproject's cookie.
         let a = fingerprint(&[(
@@ -340,11 +343,12 @@ mod tests {
         assert_eq!(b.callid_has_host, Some(true));
         assert_eq!(b.inference, Some("chan_sip"));
         assert_eq!(b.confidence, 3);
+        Ok(())
     }
 
     /// A branch suffix of any length is still a hex suffix.
     #[test]
-    fn a_branch_suffix_of_any_length_is_hex() {
+    fn a_branch_suffix_of_any_length_is_hex() -> Result<(), TestError> {
         // 8, 9 and 10 hex digits all appear in the corpus. The backlog entry
         // that prompted this said "8 hex", and pinning that would have missed
         // the 12,550 branches carrying the other two lengths.
@@ -358,11 +362,12 @@ mod tests {
             );
             assert_eq!(f.branch_cookie.as_deref(), Some("z9hG4bK"));
         }
+        Ok(())
     }
 
     /// Partial agreement lowers the confidence, not the answer.
     #[test]
-    fn partial_agreement_lowers_the_confidence_rather_than_the_answer() {
+    fn partial_agreement_lowers_the_confidence_rather_than_the_answer() -> Result<(), TestError> {
         let f = fingerprint(&[(
             "z9hG4bKPjabc",
             "5f2c9e1a-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
@@ -374,22 +379,24 @@ mod tests {
             "two of three observations agree, and the field says so rather \
              than the answer being withheld or asserted whole"
         );
+        Ok(())
     }
 
     /// One agreeing observation is not evidence.
     #[test]
-    fn a_single_agreeing_observation_infers_nothing() {
+    fn a_single_agreeing_observation_infers_nothing() -> Result<(), TestError> {
         // `z9hG4bK` alone is mandatory for every compliant sender, so it
         // cannot distinguish anything; the tag and the Call-ID here match
         // neither population.
         let f = fingerprint(&[("z9hG4bK-opaque", "opaque.tag", "abc")]);
         assert_eq!(f.inference, None);
         assert_eq!(f.confidence, 0);
+        Ok(())
     }
 
     /// An unrecognized stack infers nothing, and still reports what was seen.
     #[test]
-    fn an_unrecognized_stack_infers_nothing() {
+    fn an_unrecognized_stack_infers_nothing() -> Result<(), TestError> {
         let f = fingerprint(&[("z9hG4bK-not-hex-at-all", "opaque.tag", "abc@x")]);
         assert_eq!(
             f.inference, None,
@@ -402,11 +409,12 @@ mod tests {
         assert_eq!(f.branch_cookie.as_deref(), Some("z9hG4bK"));
         assert_eq!(f.tag_shape, Some(TokenShape::Other));
         assert_eq!(f.callid_has_host, Some(true));
+        Ok(())
     }
 
     /// One address carrying two stacks says so.
     #[test]
-    fn one_address_carrying_two_stacks_is_reported_as_mixed() {
+    fn one_address_carrying_two_stacks_is_reported_as_mixed() -> Result<(), TestError> {
         // The case the whole fingerprint exists for: `tshark` found 18 source
         // IPs behind one banner, and an address several hosts share -- or a
         // proxy relaying for them -- carries both populations at once.
@@ -425,11 +433,12 @@ mod tests {
              machine running two"
         );
         assert_eq!(f.requests_read, 2, "the denominator is reported");
+        Ok(())
     }
 
     /// Nothing to read reports absence rather than a guess.
     #[test]
-    fn nothing_to_read_reports_absence_rather_than_a_guess() {
+    fn nothing_to_read_reports_absence_rather_than_a_guess() -> Result<(), TestError> {
         let f = fingerprint(&[]);
         assert_eq!(f.branch_cookie, None);
         assert_eq!(f.tag_shape, None);
@@ -438,24 +447,26 @@ mod tests {
         assert_eq!(f.confidence, 0);
         assert_eq!(f.requests_read, 0);
         assert!(!f.mixed);
+        Ok(())
     }
 
     /// A crafted branch cookie cannot spend the screen.
     #[test]
-    fn a_crafted_branch_cookie_cannot_spend_the_screen() {
+    fn a_crafted_branch_cookie_cannot_spend_the_screen() -> Result<(), TestError> {
         let long = format!("z9hG4bK{}", "A".repeat(4096));
         let f = fingerprint(&[(&long, "as1a2b", "abc@x")]);
-        let cookie = f.branch_cookie.expect("a cookie is reported");
+        let cookie = f.branch_cookie.ok_or("a cookie is reported")?;
         assert!(
             cookie.chars().count() <= MAX_FINGERPRINT_CHARS,
             "the echoed cookie is {} chars, over the {MAX_FINGERPRINT_CHARS} bound",
             cookie.chars().count()
         );
+        Ok(())
     }
 
     /// A branch with no magic cookie is not a branch this reads.
     #[test]
-    fn a_branch_without_the_magic_cookie_contributes_nothing() {
+    fn a_branch_without_the_magic_cookie_contributes_nothing() -> Result<(), TestError> {
         let f = fingerprint(&[("someOtherBranch", "as1a2b3c", "abc@x")]);
         assert_eq!(
             f.branch_cookie, None,
@@ -464,5 +475,6 @@ mod tests {
              inventing structure that is not there"
         );
         assert_eq!(f.requests_read, 1, "the request was still read");
+        Ok(())
     }
 }

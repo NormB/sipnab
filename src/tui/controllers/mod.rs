@@ -1814,8 +1814,11 @@ pub(crate) mod test_support {
     use crate::capture::parse::TransportProto;
     use crate::sip::SipMessage;
     use crate::sip::parser::parse_sip;
-    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
+
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
 
     /// Fixture "caller" endpoint address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
@@ -1829,7 +1832,7 @@ pub(crate) mod test_support {
 
     /// Fixed base timestamp all fixture messages are offset from.
     pub(crate) fn base_ts() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+        DateTime::UNIX_EPOCH + TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     /// Assemble a raw SIP message (CRLF line endings, empty body) from a
@@ -1853,7 +1856,7 @@ pub(crate) mod test_support {
         from: &str,
         to: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
             &[
@@ -1864,7 +1867,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -1873,7 +1876,7 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse INVITE")
+        .map_err(|e| format!("parse INVITE: {e:?}"))?)
     }
 
     /// Method-generic request builder (OPTIONS, REGISTER, ...) for tests
@@ -1884,7 +1887,7 @@ pub(crate) mod test_support {
         from: &str,
         to: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("{method} sip:{to}@example.com SIP/2.0"),
             &[
@@ -1895,7 +1898,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -1904,7 +1907,7 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse request")
+        .map_err(|e| format!("parse request: {e:?}"))?)
     }
 
     /// Response builder with an arbitrary status line (e.g. "180 Ringing")
@@ -1914,7 +1917,7 @@ pub(crate) mod test_support {
         call_id: &str,
         cseq_method: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("SIP/2.0 {status}"),
             &[
@@ -1925,7 +1928,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -1934,11 +1937,11 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse response")
+        .map_err(|e| format!("parse response: {e:?}"))?)
     }
 
     /// Parsed 200 OK answering `call_id`'s INVITE at `ts`, sent B→A.
-    pub(crate) fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    pub(crate) fn make_ok(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1949,7 +1952,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -1958,20 +1961,20 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse 200")
+        .map_err(|e| format!("parse 200: {e:?}"))?)
     }
 
     /// App pre-populated with three answered dialogs (call-1..call-3).
-    pub(crate) fn app_with_dialogs() -> App {
+    pub(crate) fn app_with_dialogs() -> Result<App, TestError> {
         let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_ok("call-1@test", t0 + TimeDelta::seconds(1)),
-            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_ok("call-2@test", t0 + TimeDelta::seconds(6)),
-            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
-            make_ok("call-3@test", t0 + TimeDelta::seconds(11)),
-        ])
+        Ok(App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_ok("call-1@test", t0 + TimeDelta::seconds(1))?,
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5))?,
+            make_ok("call-2@test", t0 + TimeDelta::seconds(6))?,
+            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10))?,
+            make_ok("call-3@test", t0 + TimeDelta::seconds(11))?,
+        ]))
     }
 
     /// Build an unmodified `KeyEvent` for `code`.
@@ -1999,10 +2002,13 @@ mod tests {
     use crate::tui::SaveFormat;
     use crate::tui::controllers::test_support::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Rebound quit/help keys map to `Close` in the help view; the old
     /// quit key unbinds and Esc always closes.
     #[test]
-    fn help_action_honors_remapped_quit_and_help() {
+    fn help_action_honors_remapped_quit_and_help() -> Result<(), TestError> {
         let km = Keymap {
             quit: KeyCode::Char('x'),
             help: KeyCode::Char('?'),
@@ -2018,12 +2024,13 @@ mod tests {
         );
         assert_eq!(help_action(&km, key(KeyCode::Char('q'))), None);
         assert_eq!(help_action(&km, key(KeyCode::Esc)), Some(HelpAction::Close));
+        Ok(())
     }
 
     /// A rebound quit key maps to `Close` in statistics; `s` still closes
     /// and the old quit key unbinds.
     #[test]
-    fn statistics_action_honors_remapped_quit() {
+    fn statistics_action_honors_remapped_quit() -> Result<(), TestError> {
         let km = Keymap {
             quit: KeyCode::Char('x'),
             ..Default::default()
@@ -2037,14 +2044,16 @@ mod tests {
             Some(StatisticsAction::Close)
         );
         assert_eq!(statistics_action(&km, key(KeyCode::Char('q'))), None);
+        Ok(())
     }
 
     /// Ctrl-C quits from anywhere.
     #[test]
-    fn key_event_ctrl_c_quits() {
+    fn key_event_ctrl_c_quits() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_key_event(&mut app, key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
+        Ok(())
     }
 
     /// Field report: cycling formats mutated the path into
@@ -2053,8 +2062,8 @@ mod tests {
     /// behind on every lap. The path must track the format exactly, in
     /// both directions, for any number of laps.
     #[test]
-    fn save_popup_extension_tracks_format_without_accumulating() {
-        let mut app = app_with_dialogs();
+    fn save_popup_extension_tracks_format_without_accumulating() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.save.format = SaveFormat::Pcap;
         app.set_save_path("/tmp/x.pcap");
@@ -2086,41 +2095,45 @@ mod tests {
         app.set_save_path("/tmp/custom.bin");
         handle_save_popup_key(&mut app, key(KeyCode::Tab));
         assert_eq!(app.save.path, "/tmp/custom.bin");
+        Ok(())
     }
 
     /// With a popup open, keys go to the popup handler before the view.
     #[test]
-    fn key_event_routes_to_popup_first() {
-        let mut app = app_with_dialogs();
+    fn key_event_routes_to_popup_first() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.active_popup = Some(Popup::SaveDialog);
         // Esc inside save popup closes it (handled by popup handler, not view)
         handle_key_event(&mut app, key(KeyCode::Esc));
         assert_eq!(app.active_popup, None);
+        Ok(())
     }
 
     /// With search active, characters extend the query instead of acting
     /// as view commands.
     #[test]
-    fn key_event_routes_to_search_when_active() {
+    fn key_event_routes_to_search_when_active() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.search_active = true;
         handle_key_event(&mut app, key(KeyCode::Char('z')));
         assert_eq!(app.search_query, "z");
         assert!(app.search_active);
+        Ok(())
     }
 
     /// Keys reach the current view's handler (Tab switches to streams).
     #[test]
-    fn key_event_dispatches_by_view() {
+    fn key_event_dispatches_by_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_key_event(&mut app, key(KeyCode::Tab));
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     /// The global `n` fallback cycles the name-resolution mode
     /// Off → Names → DNS → Off.
     #[test]
-    fn key_event_n_cycles_name_mode() {
+    fn key_event_n_cycles_name_mode() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert_eq!(app.name_mode(), crate::names::NameMode::Off);
         handle_key_event(&mut app, key(KeyCode::Char('n')));
@@ -2129,48 +2142,52 @@ mod tests {
         assert_eq!(app.name_mode(), crate::names::NameMode::Dns);
         handle_key_event(&mut app, key(KeyCode::Char('n')));
         assert_eq!(app.name_mode(), crate::names::NameMode::Off);
+        Ok(())
     }
 
     /// The global `v` fallback shows the version on the status line
     /// without changing the view.
     #[test]
-    fn key_event_v_shows_version_globally() {
+    fn key_event_v_shows_version_globally() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_key_event(&mut app, key(KeyCode::Char('v')));
-        let status = app.status_error.clone().expect("version status set");
+        let status = app.status_error.clone().ok_or("version status set")?;
         assert!(status.starts_with("sipnab"), "got: {status}");
         assert!(status.contains(env!("CARGO_PKG_VERSION")), "got: {status}");
         // Showing the version must not change the current view.
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// `V` shows the version from any view, view unchanged.
     #[test]
-    fn key_event_shift_v_shows_version_in_any_view() {
+    fn key_event_shift_v_shows_version_in_any_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
         handle_key_event(&mut app, key(KeyCode::Char('V')));
-        let status = app.status_error.clone().expect("version status set");
+        let status = app.status_error.clone().ok_or("version status set")?;
         assert!(status.contains(env!("CARGO_PKG_VERSION")), "got: {status}");
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     /// While searching, `v` is a query character, not the version command.
     #[test]
-    fn key_event_v_typed_into_search_not_version() {
+    fn key_event_v_typed_into_search_not_version() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.search_active = true;
         handle_key_event(&mut app, key(KeyCode::Char('v')));
         // Search input takes priority — 'v' is a search character, not a command.
         assert_eq!(app.search_query, "v");
         assert!(app.status_error.is_none());
+        Ok(())
     }
 
     // ── handle_search_input ──────────────────────────────────────────
 
     /// Characters append to the query and Backspace removes the last one.
     #[test]
-    fn search_input_char_and_backspace() {
+    fn search_input_char_and_backspace() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.search_active = true;
         handle_search_input(&mut app, key(KeyCode::Char('a')));
@@ -2178,68 +2195,72 @@ mod tests {
         assert_eq!(app.search_query, "ab");
         handle_search_input(&mut app, key(KeyCode::Backspace));
         assert_eq!(app.search_query, "a");
+        Ok(())
     }
 
     /// Esc leaves search mode and clears the query.
     #[test]
-    fn search_input_esc_clears() {
+    fn search_input_esc_clears() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.search_active = true;
         app.search_query = "foo".to_string();
         handle_search_input(&mut app, key(KeyCode::Esc));
         assert!(!app.search_active);
         assert_eq!(app.search_query, "");
+        Ok(())
     }
 
     /// Enter leaves search mode but retains the query for highlighting.
     #[test]
-    fn search_input_enter_commits() {
+    fn search_input_enter_commits() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.search_active = true;
         app.search_query = "bar".to_string();
         handle_search_input(&mut app, key(KeyCode::Enter));
         assert!(!app.search_active);
         assert_eq!(app.search_query, "bar"); // retained
+        Ok(())
     }
 
     /// An unhandled key neither edits the query nor leaves search mode.
     #[test]
-    fn search_input_unhandled_key_noop() {
+    fn search_input_unhandled_key_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.search_active = true;
         handle_search_input(&mut app, key(KeyCode::F(4)));
         assert_eq!(app.search_query, "");
         assert!(app.search_active);
+        Ok(())
     }
 
     /// Three dialogs of which exactly two match the query "5595" — the
     /// user's report: typing /5595 narrowed the list to two INVITE rows
     /// but the rows could neither be arrowed between nor starred.
-    fn app_with_5595_dialogs() -> App {
+    fn app_with_5595_dialogs() -> Result<App, TestError> {
         use chrono::TimeDelta;
         let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("inv-5595-a@test", "alice", "bob", t0),
+        Ok(App::with_processed_messages(vec![
+            make_invite("inv-5595-a@test", "alice", "bob", t0)?,
             make_invite(
                 "inv-5595-b@test",
                 "carol",
                 "dave",
                 t0 + TimeDelta::seconds(1),
-            ),
+            )?,
             make_invite(
                 "unrelated@test",
                 "erin",
                 "frank",
                 t0 + TimeDelta::seconds(2),
-            ),
-        ])
+            )?,
+        ]))
     }
 
     /// Arrow keys walk the narrowed list (clamping at both ends) without
     /// leaving search mode or editing the query.
     #[test]
-    fn search_input_arrows_navigate_narrowed_list() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_arrows_navigate_narrowed_list() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
         assert_eq!(
@@ -2280,12 +2301,13 @@ mod tests {
             get_selected_call_id(&app).as_deref(),
             Some("inv-5595-a@test")
         );
+        Ok(())
     }
 
     /// Home/End jump within the narrowed list while search stays active.
     #[test]
-    fn search_input_home_end_jump_in_narrowed_list() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_home_end_jump_in_narrowed_list() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
 
@@ -2301,13 +2323,14 @@ mod tests {
         );
         assert_eq!(app.search_query, "5595");
         assert!(app.search_active);
+        Ok(())
     }
 
     /// In the call list, Space stars the highlighted narrowed row and one
     /// Enter commits the query and opens the merged flow of both stars.
     #[test]
-    fn search_input_space_stars_highlighted_row() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_space_stars_highlighted_row() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
 
@@ -2326,14 +2349,15 @@ mod tests {
         assert!(!app.search_active);
         assert!(matches!(app.current_view, View::CallFlow(_)));
         assert_eq!(app.flow.merged_calls.len(), 2);
+        Ok(())
     }
 
     /// Enter during search with nothing starred opens the highlighted
     /// row's flow directly (same single-press semantics as normal mode),
     /// and the committed query survives for highlighting.
     #[test]
-    fn search_input_enter_opens_highlighted_row_flow() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_enter_opens_highlighted_row_flow() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
         handle_key_event(&mut app, key(KeyCode::Down));
@@ -2344,26 +2368,28 @@ mod tests {
             View::CallFlow("inv-5595-b@test".to_string())
         );
         assert_eq!(app.search_query, "5595", "query kept for highlighting");
+        Ok(())
     }
 
     /// Enter during stream-list search commits the query and hands Enter
     /// to the stream list; with nothing to open it must not panic or get
     /// stuck in search mode.
     #[test]
-    fn search_input_enter_in_stream_list_commits_and_delegates() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_enter_in_stream_list_commits_and_delegates() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.current_view = View::StreamList;
         app.search_active = true;
         app.search_query = "pcmu".to_string();
         handle_key_event(&mut app, key(KeyCode::Enter));
         assert!(!app.search_active);
         assert_eq!(app.search_query, "pcmu");
+        Ok(())
     }
 
     /// Space and navigation on an empty narrowed list are safe no-ops.
     #[test]
-    fn search_input_space_on_empty_narrowed_list_is_noop() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_space_on_empty_narrowed_list_is_noop() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "zzz-matches-nothing".to_string();
         handle_key_event(&mut app, key(KeyCode::Char(' ')));
@@ -2372,12 +2398,13 @@ mod tests {
         handle_key_event(&mut app, key(KeyCode::Down));
         handle_key_event(&mut app, key(KeyCode::End));
         assert!(app.search_active, "no panic, still searching");
+        Ok(())
     }
 
     /// In the call-flow search, Space stays a query character.
     #[test]
-    fn search_input_space_still_types_in_call_flow_search() {
-        let mut app = app_with_5595_dialogs();
+    fn search_input_space_still_types_in_call_flow_search() -> Result<(), TestError> {
+        let mut app = app_with_5595_dialogs()?;
         app.current_view = View::CallFlow("inv-5595-a@test".to_string());
         app.search_active = true;
         app.search_query = "180".to_string();
@@ -2385,28 +2412,30 @@ mod tests {
         // Message-content search legitimately contains spaces — only the
         // list views repurpose Space for row selection.
         assert_eq!(app.search_query, "180 ");
+        Ok(())
     }
 
     /// In the stream-list search, Space stays a query character (no row
     /// starring exists there).
     #[test]
-    fn search_input_space_types_in_stream_list() {
+    fn search_input_space_types_in_stream_list() -> Result<(), TestError> {
         // The stream list has no row starring, so Space must stay a query
         // character there — stealing it would make it a dead key.
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.current_view = View::StreamList;
         app.search_active = true;
         app.search_query = "pcmu".to_string();
         handle_key_event(&mut app, key(KeyCode::Char(' ')));
         assert_eq!(app.search_query, "pcmu ");
         assert!(app.search_active);
+        Ok(())
     }
 
     // ── small views: help / statistics / settings ────────────────────
 
     /// Esc and the help key both close the help view.
     #[test]
-    fn help_key_closes() {
+    fn help_key_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::Help;
         handle_help_key(&mut app, key(KeyCode::Esc));
@@ -2415,21 +2444,23 @@ mod tests {
         app.current_view = View::Help;
         handle_help_key(&mut app, key(KeyCode::F(1)));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// An unbound key leaves the help view open.
     #[test]
-    fn help_key_unhandled_noop() {
+    fn help_key_unhandled_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::Help;
         handle_help_key(&mut app, key(KeyCode::Char('z')));
         assert_eq!(app.current_view, View::Help);
+        Ok(())
     }
 
     /// The popup is a text input now: Esc closes it, and printable keys that
     /// used to close or scroll it (`B`, `q`, `j`, `k`) type instead.
     #[test]
-    fn bpf_filter_esc_closes_but_letters_type() {
+    fn bpf_filter_esc_closes_but_letters_type() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         for c in ['B', 'q', 'j', 'k'] {
@@ -2443,11 +2474,12 @@ mod tests {
         assert_eq!(app.bpf_editor.input(), "Bqjk", "the letters were typed");
         handle_bpf_filter_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.current_view, View::CallList, "Esc closes the popup");
+        Ok(())
     }
 
     /// Characters append to the expression; Backspace deletes the last one.
     #[test]
-    fn bpf_filter_typing_edits_the_expression() {
+    fn bpf_filter_typing_edits_the_expression() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         for c in "host".chars() {
@@ -2456,11 +2488,12 @@ mod tests {
         assert_eq!(app.bpf_editor.input(), "host");
         handle_bpf_filter_key(&mut app, key(KeyCode::Backspace));
         assert_eq!(app.bpf_editor.input(), "hos");
+        Ok(())
     }
 
     /// Tab flips the append mode between AND (narrow) and OR (widen).
     #[test]
-    fn bpf_filter_tab_toggles_and_or() {
+    fn bpf_filter_tab_toggles_and_or() -> Result<(), TestError> {
         use crate::tui::bpf_editor::AppendMode;
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
@@ -2469,12 +2502,13 @@ mod tests {
         assert_eq!(app.bpf_editor.mode(), AppendMode::Or, "Tab widens");
         handle_bpf_filter_key(&mut app, key(KeyCode::Tab));
         assert_eq!(app.bpf_editor.mode(), AppendMode::And, "Tab narrows again");
+        Ok(())
     }
 
     /// Arrows/PgUp/PgDn scroll the preview and saturate at the top; letters do
     /// not scroll any more (they type — see the test above).
     #[test]
-    fn bpf_filter_arrows_scroll_the_preview() {
+    fn bpf_filter_arrows_scroll_the_preview() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         handle_bpf_filter_key(&mut app, key(KeyCode::Down));
@@ -2487,11 +2521,12 @@ mod tests {
         handle_bpf_filter_key(&mut app, key(KeyCode::PageUp));
         handle_bpf_filter_key(&mut app, key(KeyCode::PageUp));
         assert_eq!(app.bpf_scroll, 0, "PageUp retreats ten and saturates");
+        Ok(())
     }
 
     /// Home returns to the top; End sets the bottom sentinel (render clamps it).
     #[test]
-    fn bpf_filter_home_and_end() {
+    fn bpf_filter_home_and_end() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         handle_bpf_filter_key(&mut app, key(KeyCode::PageDown));
@@ -2503,12 +2538,13 @@ mod tests {
             u16::MAX,
             "End sets the bottom sentinel; render clamps it to the content"
         );
+        Ok(())
     }
 
     /// Esc discards the typed expression and resets the scroll, so the next
     /// open starts clean at the top.
     #[test]
-    fn bpf_filter_esc_discards_input_and_resets_scroll() {
+    fn bpf_filter_esc_discards_input_and_resets_scroll() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         app.bpf_scroll = 7;
@@ -2523,13 +2559,14 @@ mod tests {
             "",
             "Esc discards the typed expression"
         );
+        Ok(())
     }
 
     /// Enter validates the composed effective filter and reports the outcome on
     /// the status line — success for a good expression, the compiler's message
     /// for a broken one — without changing the view.
     #[test]
-    fn bpf_filter_enter_validates_and_reports() {
+    fn bpf_filter_enter_validates_and_reports() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         app.bpf_filter = "udp port 5060".to_string();
@@ -2537,7 +2574,7 @@ mod tests {
             handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
         }
         handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
-        let msg = app.status_error.clone().expect("Enter sets a status");
+        let msg = app.status_error.clone().ok_or("Enter sets a status")?;
         assert!(
             msg.contains("OK") && msg.contains("host 192.0.2.5"),
             "reports success with the composed filter: {msg}"
@@ -2548,15 +2585,16 @@ mod tests {
             handle_bpf_filter_key(&mut app, key(KeyCode::Char(c)));
         }
         handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
-        let msg = app.status_error.clone().expect("Enter sets a status");
+        let msg = app.status_error.clone().ok_or("Enter sets a status")?;
         assert!(msg.contains("rejected"), "reports the rejection: {msg}");
+        Ok(())
     }
 
     /// On a live capture (a reconfigure control wired), Enter requests the
     /// re-apply and reports progress; the confirmed outcome promotes the
     /// composed append to the effective filter.
     #[test]
-    fn bpf_filter_enter_applies_on_a_live_capture() {
+    fn bpf_filter_enter_applies_on_a_live_capture() -> Result<(), TestError> {
         use crate::capture::reconfigure::{FilterApplyOutcome, FilterControl};
         let mut app = App::new_test();
         let control = std::sync::Arc::new(FilterControl::new());
@@ -2569,25 +2607,28 @@ mod tests {
         }
         handle_bpf_filter_key(&mut app, key(KeyCode::Enter));
         assert!(
-            app.status_error.as_deref().unwrap().contains("applying"),
+            app.status_error
+                .as_deref()
+                .ok_or("app.status_error.as_deref() is None")?
+                .contains("applying"),
             "Enter reports the apply is in flight: {:?}",
             app.status_error
         );
         // The capture loop confirms generation 1.
-        otx.send(FilterApplyOutcome::Applied { generation: 1 })
-            .unwrap();
+        otx.send(FilterApplyOutcome::Applied { generation: 1 })?;
         app.drain_filter_outcomes();
         assert_eq!(
             app.bpf_filter, "(udp port 5060) and (host 192.0.2.5)",
             "the composed append is now the effective filter"
         );
+        Ok(())
     }
 
     /// On an offline single-file session, Enter re-scans the file under the
     /// composed filter: a load starts, the composed filter becomes effective,
     /// and the editor is consumed.
     #[test]
-    fn bpf_filter_enter_rescans_an_offline_file() {
+    fn bpf_filter_enter_rescans_an_offline_file() -> Result<(), TestError> {
         let fixture =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap");
         let mut app = App::new_test();
@@ -2620,11 +2661,12 @@ mod tests {
             file_open::poll_pcap_load(&mut app);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        Ok(())
     }
 
     /// Esc and `s` both close the statistics view.
     #[test]
-    fn statistics_key_closes() {
+    fn statistics_key_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::Statistics;
         handle_statistics_key(&mut app, key(KeyCode::Esc));
@@ -2633,15 +2675,17 @@ mod tests {
         app.current_view = View::Statistics;
         handle_statistics_key(&mut app, key(KeyCode::Char('s')));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// An unbound key leaves the statistics view open.
     #[test]
-    fn statistics_key_unhandled_noop() {
+    fn statistics_key_unhandled_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::Statistics;
         handle_statistics_key(&mut app, key(KeyCode::Char('z')));
         assert_eq!(app.current_view, View::Statistics);
+        Ok(())
     }
 
     // ── handle_settings_popup_key ────────────────────────────────────
@@ -2649,7 +2693,7 @@ mod tests {
     /// Up/Down move the settings focus and Enter activates the focused
     /// item (item 0 cycles the color mode).
     #[test]
-    fn settings_popup_nav_and_toggle() {
+    fn settings_popup_nav_and_toggle() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::SettingsDialog);
         app.settings_dialog.focused_item = 0;
@@ -2662,13 +2706,14 @@ mod tests {
         let cm = app.color_mode;
         handle_settings_popup_key(&mut app, key(KeyCode::Enter));
         assert_ne!(app.color_mode, cm);
+        Ok(())
     }
 
     /// `SettingsItem::ALL` is the render-ordered source of truth: its length
     /// equals `SETTINGS_ITEM_COUNT` (compile-time), `from_index` maps each row
     /// to the matching variant, and out-of-range indexes are `None`.
     #[test]
-    fn settings_item_index_mapping_matches_render_order() {
+    fn settings_item_index_mapping_matches_render_order() -> Result<(), TestError> {
         assert_eq!(SettingsItem::ALL.len(), SETTINGS_ITEM_COUNT);
         assert_eq!(SettingsItem::from_index(0), Some(SettingsItem::ColorMode));
         assert_eq!(
@@ -2683,12 +2728,13 @@ mod tests {
             Some(SettingsItem::SyntaxHighlight)
         );
         assert_eq!(SettingsItem::from_index(SETTINGS_ITEM_COUNT), None);
+        Ok(())
     }
 
     /// Each settings row activates exactly its named toggle (via
     /// `SettingsItem`), row for row.
     #[test]
-    fn settings_popup_each_row_toggles_its_named_item() {
+    fn settings_popup_each_row_toggles_its_named_item() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::SettingsDialog);
 
@@ -2712,31 +2758,35 @@ mod tests {
             app.syntax_highlight, before,
             "row 5 toggles syntax highlight"
         );
+        Ok(())
     }
 
     /// Esc closes the settings popup.
     #[test]
-    fn settings_popup_esc_closes() {
+    fn settings_popup_esc_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::SettingsDialog);
         handle_settings_popup_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.active_popup, None);
+        Ok(())
     }
 
     // ── helpers ──────────────────────────────────────────────────────
 
     /// Without a filter, the displayed count equals the store size.
     #[test]
-    fn filtered_dialog_count_no_filter() {
-        let app = app_with_dialogs();
+    fn filtered_dialog_count_no_filter() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         assert_eq!(filtered_dialog_count(&app), 3);
+        Ok(())
     }
 
     /// With dialogs present, the initial selection resolves to a Call-ID.
     #[test]
-    fn get_selected_call_id_returns_first() {
-        let app = app_with_dialogs();
+    fn get_selected_call_id_returns_first() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         assert!(get_selected_call_id(&app).is_some());
+        Ok(())
     }
 }
 
@@ -2746,10 +2796,13 @@ mod tests {
 mod async_feedback_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Detached workers (clipboard export) report via `async_messages`;
     /// the event-loop tick drains them into the status line.
     #[test]
-    fn drain_async_messages_moves_worker_results_into_status() {
+    fn drain_async_messages_moves_worker_results_into_status() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.async_messages
             .lock()
@@ -2758,18 +2811,20 @@ mod async_feedback_tests {
         assert_eq!(app.status_error.as_deref(), Some("Copied!"));
         assert!(!app.status_is_error());
         assert!(app.async_messages.lock().is_empty());
+        Ok(())
     }
 
     /// A worker's failure keeps its severity across the thread: the drained
     /// message draws as an error because the worker said so.
     #[test]
-    fn a_drained_worker_error_stays_an_error() {
+    fn a_drained_worker_error_stays_an_error() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.async_messages
             .lock()
             .push(crate::tui::StatusMessage::error("Clipboard error: nope"));
         app.drain_async_messages();
         assert!(app.status_is_error(), "{:?}", app.status_error);
+        Ok(())
     }
 
     /// Released by the test below once it has checked the copy is still
@@ -2795,7 +2850,7 @@ mod async_feedback_tests {
     /// while the copy is still blocked, and the worker reports once it
     /// finishes.
     #[test]
-    fn clipboard_copy_runs_detached_and_reports_eventually() {
+    fn clipboard_copy_runs_detached_and_reports_eventually() -> Result<(), TestError> {
         let app = App::new_test();
         spawn_copy_worker(
             "graph TD;".to_string(),
@@ -2821,6 +2876,7 @@ mod async_feedback_tests {
             *app.async_messages.lock(),
             vec![crate::tui::StatusMessage::info("copied graph TD;")]
         );
+        Ok(())
     }
 }
 
@@ -2831,10 +2887,13 @@ mod mouse_capture_toggle_tests {
     use super::*;
     use crossterm::event::KeyModifiers;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// F12 flips the mouse-capture flag and announces both directions on
     /// the status line (the event loop reconciles the terminal state).
     #[test]
-    fn f12_toggles_mouse_capture_flag_and_status() {
+    fn f12_toggles_mouse_capture_flag_and_status() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(app.mouse_capture_enabled, "capture must start enabled");
         handle_key_event(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
@@ -2857,11 +2916,12 @@ mod mouse_capture_toggle_tests {
             "got status {:?}",
             app.status_error
         );
+        Ok(())
     }
 
     /// The toggle is global: it works outside the call list too.
     #[test]
-    fn f12_toggles_from_other_views() {
+    fn f12_toggles_from_other_views() -> Result<(), TestError> {
         for view in [
             View::StreamList,
             View::RawMessage {
@@ -2879,12 +2939,13 @@ mod mouse_capture_toggle_tests {
                 app.current_view
             );
         }
+        Ok(())
     }
 
     /// An F12 the user rebound in the keymap keeps its rebound meaning —
     /// same precedence rule as the other global fallbacks.
     #[test]
-    fn rebound_f12_wins_over_mouse_toggle() {
+    fn rebound_f12_wins_over_mouse_toggle() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.keymap.save = KeyCode::F(12);
         handle_key_event(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
@@ -2893,6 +2954,7 @@ mod mouse_capture_toggle_tests {
             app.mouse_capture_enabled,
             "rebound F12 must not also toggle mouse capture"
         );
+        Ok(())
     }
 }
 
@@ -2902,10 +2964,13 @@ mod question_mark_help_tests {
     use super::*;
     use crossterm::event::KeyModifiers;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A novice reflexively presses '?' for help; it must open the help
     /// view from anywhere (unless the user rebound '?' to something else).
     #[test]
-    fn question_mark_opens_help_from_call_list_and_stream_list() {
+    fn question_mark_opens_help_from_call_list_and_stream_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_key_event(
             &mut app,
@@ -2924,6 +2989,7 @@ mod question_mark_help_tests {
             KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
         );
         assert!(matches!(app.current_view, View::Help));
+        Ok(())
     }
 
     /// The analysis views (statistics, carrier metrics, conformance, ...)
@@ -2931,7 +2997,7 @@ mod question_mark_help_tests {
     /// to a view that ignored them: the help said "? works in every view" and
     /// in these views it did nothing. Both keys open help from all of them.
     #[test]
-    fn help_opens_from_the_views_that_do_not_bind_it() {
+    fn help_opens_from_the_views_that_do_not_bind_it() -> Result<(), TestError> {
         let views = [
             View::Statistics,
             View::Talkers,
@@ -2967,11 +3033,12 @@ mod question_mark_help_tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A '?' rebound by the user must keep its rebound meaning.
     #[test]
-    fn rebound_question_mark_wins_over_help_fallback() {
+    fn rebound_question_mark_wins_over_help_fallback() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.keymap.search = KeyCode::Char('?');
         handle_key_event(
@@ -2983,6 +3050,7 @@ mod question_mark_help_tests {
             "rebound '?' must trigger search, not help"
         );
         assert!(!matches!(app.current_view, View::Help));
+        Ok(())
     }
 }
 
@@ -2993,14 +3061,17 @@ mod search_match_nav_tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// App on the RawMessage view of call-1's first message.
-    fn raw_view_app() -> App {
-        let mut app = app_with_dialogs();
+    fn raw_view_app() -> Result<App, TestError> {
+        let mut app = app_with_dialogs()?;
         app.current_view = View::RawMessage {
             call_id: "call-1@test".to_string(),
             message_index: 0,
         };
-        app
+        Ok(app)
     }
 
     /// vim/less muscle memory: with an active search in the raw-message
@@ -3008,8 +3079,8 @@ mod search_match_nav_tests {
     /// highlighting. The INVITE fixture matches on the request line and the
     /// CSeq line.
     #[test]
-    fn n_and_shift_n_jump_between_matches_in_raw_view() {
-        let mut app = raw_view_app();
+    fn n_and_shift_n_jump_between_matches_in_raw_view() -> Result<(), TestError> {
+        let mut app = raw_view_app()?;
         app.search_query = "invite".to_string();
 
         handle_key_event(
@@ -3042,13 +3113,14 @@ mod search_match_nav_tests {
             KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE),
         );
         assert_eq!(app.raw_msg_scroll, second, "N wraps backward");
+        Ok(())
     }
 
     /// Without an active query, n keeps its global name-mode meaning even
     /// in the raw view.
     #[test]
-    fn n_still_cycles_name_mode_without_a_query() {
-        let mut app = raw_view_app();
+    fn n_still_cycles_name_mode_without_a_query() -> Result<(), TestError> {
+        let mut app = raw_view_app()?;
         assert_eq!(app.name_mode, crate::names::NameMode::Off);
         handle_key_event(
             &mut app,
@@ -3059,19 +3131,21 @@ mod search_match_nav_tests {
             crate::names::NameMode::Off,
             "no query ⇒ n cycles name mode"
         );
+        Ok(())
     }
 
     /// In non-pager views (call list), n cycles name mode even while a
     /// search query narrows the list.
     #[test]
-    fn n_cycles_name_mode_in_call_list_even_with_query() {
-        let mut app = app_with_dialogs();
+    fn n_cycles_name_mode_in_call_list_even_with_query() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.search_query = "invite".to_string();
         handle_key_event(
             &mut app,
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         );
         assert_ne!(app.name_mode, crate::names::NameMode::Off);
+        Ok(())
     }
 }
 
@@ -3086,6 +3160,9 @@ mod panel_view_tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
     use crossterm::event::MouseEventKind;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// One scroll-only panel: the view, the letter that closes it besides Esc
     /// and the quit key, and the scroll offset its keys move.
@@ -3187,7 +3264,7 @@ mod panel_view_tests {
     /// the render pass clamps, Home returns to the top — and none of it
     /// leaves the view.
     #[test]
-    fn every_panel_scrolls_by_line_and_by_page_and_saturates_at_the_top() {
+    fn every_panel_scrolls_by_line_and_by_page_and_saturates_at_the_top() -> Result<(), TestError> {
         for p in panels() {
             let mut app = App::new_test();
             app.current_view = p.view.clone();
@@ -3211,12 +3288,14 @@ mod panel_view_tests {
                 assert_eq!(app.current_view, p.view, "{code:?} must not leave the view");
             }
         }
+        Ok(())
     }
 
     /// Every panel closes back to the call list on Esc, on the quit key, and
     /// on its own letter; a key the panel does not bind changes nothing.
     #[test]
-    fn every_panel_closes_on_esc_quit_and_its_own_letter_and_ignores_the_rest() {
+    fn every_panel_closes_on_esc_quit_and_its_own_letter_and_ignores_the_rest()
+    -> Result<(), TestError> {
         for p in panels() {
             let quit = App::new_test().keymap.quit;
             for code in [KeyCode::Esc, quit, KeyCode::Char(p.close)] {
@@ -3237,6 +3316,7 @@ mod panel_view_tests {
             assert_eq!(app.current_view, p.view, "an unbound key keeps the view");
             assert_eq!((p.scroll)(&app), 0, "an unbound key does not scroll");
         }
+        Ok(())
     }
 
     /// Help scrolls one line on Down/`j` and Up/`k` and TEN on PgDn/PgUp (not
@@ -3244,7 +3324,7 @@ mod panel_view_tests {
     /// jump to the ends. Closing resets the offset so the next open starts at
     /// the top.
     #[test]
-    fn help_scrolls_ten_per_page_and_closing_resets_the_offset() {
+    fn help_scrolls_ten_per_page_and_closing_resets_the_offset() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::Help;
         let steps: [(KeyCode, u16); 9] = [
@@ -3267,6 +3347,7 @@ mod panel_view_tests {
         handle_help_key(&mut app, key(KeyCode::Char('q')));
         assert_eq!(app.current_view, View::CallList, "quit key closes help");
         assert_eq!(app.help_scroll, 0, "closing resets the scroll");
+        Ok(())
     }
 
     /// Relay stats, global scope: `?` shows the names and `?` again returns
@@ -3274,46 +3355,50 @@ mod panel_view_tests {
     /// the scroll. `K` is refused — a global view has no call to compare —
     /// and leaves both the mode and the scroll alone.
     #[test]
-    fn relay_stats_toggles_names_and_holdings_and_refuses_compare_without_a_call() {
+    fn relay_stats_toggles_names_and_holdings_and_refuses_compare_without_a_call()
+    -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::RelayStats {
             call_id: None,
             mode: RelayStatsMode::Counters,
         };
-        let mode = |app: &App| match &app.current_view {
-            View::RelayStats { mode, .. } => *mode,
-            other => panic!("left the relay-stats view: {other:?}"),
+        let mode = |app: &App| -> Result<_, TestError> {
+            match &app.current_view {
+                View::RelayStats { mode, .. } => Ok(*mode),
+                other => Err(format!("left the relay-stats view: {other:?}").into()),
+            }
         };
 
         app.relay_stats_scroll = 5;
         // '?' reaches the view (it is the global help key everywhere else).
         press(&mut app, KeyCode::Char('?'));
-        assert_eq!(mode(&app), RelayStatsMode::Names);
+        assert_eq!(mode(&app)?, RelayStatsMode::Names);
         assert_eq!(app.relay_stats_scroll, 0, "a new answer starts at the top");
         press(&mut app, KeyCode::Char('?'));
-        assert_eq!(mode(&app), RelayStatsMode::Counters, "? again returns");
+        assert_eq!(mode(&app)?, RelayStatsMode::Counters, "? again returns");
 
         app.relay_stats_scroll = 4;
         press(&mut app, KeyCode::Char('K'));
         assert_eq!(
-            mode(&app),
+            mode(&app)?,
             RelayStatsMode::Counters,
             "K is refused without a call"
         );
         assert_eq!(app.relay_stats_scroll, 4, "a refused K does not reset");
 
         press(&mut app, KeyCode::Char('H'));
-        assert_eq!(mode(&app), RelayStatsMode::Holdings);
+        assert_eq!(mode(&app)?, RelayStatsMode::Holdings);
         assert_eq!(app.relay_stats_scroll, 0);
         press(&mut app, KeyCode::Char('H'));
-        assert_eq!(mode(&app), RelayStatsMode::Counters, "H again returns");
+        assert_eq!(mode(&app)?, RelayStatsMode::Counters, "H again returns");
+        Ok(())
     }
 
     /// Relay stats scoped to a call: `K` compares and keeps the call; a
     /// different toggle from Compare goes straight to ITS mode rather than
     /// back to the counters; the same toggle twice returns to the counters.
     #[test]
-    fn relay_stats_compare_keeps_the_call_and_toggles_switch_directly() {
+    fn relay_stats_compare_keeps_the_call_and_toggles_switch_directly() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::RelayStats {
             call_id: Some("call-1@test".to_string()),
@@ -3346,24 +3431,26 @@ mod panel_view_tests {
             },
             "K twice returns to the counters"
         );
+        Ok(())
     }
 
     /// The relay-stats toggle is a no-op from any other view (the guard that
     /// lets it read the view's call and mode).
     #[test]
-    fn relay_stats_toggle_outside_the_view_changes_nothing() {
+    fn relay_stats_toggle_outside_the_view_changes_nothing() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.relay_stats_scroll = 3;
         toggle_relay_stats_mode(&mut app, RelayStatsMode::Names);
         assert_eq!(app.current_view, View::CallList);
         assert_eq!(app.relay_stats_scroll, 3);
+        Ok(())
     }
 
     /// TFPS observe: `d` switches to the drop counters and `b` back to the
     /// bans, each resetting the scroll; the mode setter is a no-op from any
     /// other view.
     #[test]
-    fn tfps_observe_switches_facets_and_resets_the_scroll() {
+    fn tfps_observe_switches_facets_and_resets_the_scroll() -> Result<(), TestError> {
         use crate::tui::tfps_observe::TfpsMode;
         let mut app = App::new_test();
         app.current_view = View::TfpsObserve {
@@ -3393,13 +3480,14 @@ mod panel_view_tests {
         set_tfps_mode(&mut elsewhere, TfpsMode::Dropped);
         assert_eq!(elsewhere.current_view, View::CallList);
         assert_eq!(elsewhere.tfps_scroll, 4);
+        Ok(())
     }
 
     /// Settings rows 1 and 4 cycle the timestamp and SDP display modes;
     /// focus stops at both ends of the list (arrows and `j`/`k` alike); an
     /// out-of-range focus activates nothing; an unbound key does nothing.
     #[test]
-    fn settings_rows_cycle_their_modes_and_focus_stops_at_both_ends() {
+    fn settings_rows_cycle_their_modes_and_focus_stops_at_both_ends() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::SettingsDialog);
 
@@ -3450,13 +3538,14 @@ mod panel_view_tests {
         handle_settings_popup_key(&mut app, key(KeyCode::Char('z')));
         assert_eq!(app.settings_dialog.focused_item, 2, "unbound key: no move");
         assert_eq!(app.active_popup, Some(Popup::SettingsDialog), "nor a close");
+        Ok(())
     }
 
     /// Each open popup receives the key — shown by an effect only ITS handler
     /// has: a filter-field character, a settings focus move, a file-browser
     /// filter character, a name-dialog cursor move, and a confirmed quit.
     #[test]
-    fn each_popup_receives_the_key_through_the_dispatcher() {
+    fn each_popup_receives_the_key_through_the_dispatcher() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::FilterDialog);
         press(&mut app, KeyCode::Char('z'));
@@ -3467,7 +3556,7 @@ mod panel_view_tests {
         press(&mut app, KeyCode::Down);
         assert_eq!(app.settings_dialog.focused_item, 1, "settings focus moved");
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let mut app = App::new_test();
         app.file_open.dir = dir.path().to_path_buf();
         app.active_popup = Some(Popup::FileOpenDialog);
@@ -3484,17 +3573,19 @@ mod panel_view_tests {
         app.active_popup = Some(Popup::QuitConfirm);
         press(&mut app, KeyCode::Char('y'));
         assert!(app.should_quit, "quit confirmation answered");
+        Ok(())
     }
 
     /// With no popup open the popup router does nothing, even for a key a
     /// popup would act on.
     #[test]
-    fn popup_router_without_a_popup_is_a_no_op() {
+    fn popup_router_without_a_popup_is_a_no_op() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_popup_key(&mut app, key(KeyCode::Char('y')));
         assert!(!app.should_quit);
         assert_eq!(app.active_popup, None);
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// The BPF-filter editor takes the global fallback keys as text: `v`
@@ -3502,7 +3593,7 @@ mod panel_view_tests {
     /// name mode. The view router reaches the editor too, and an unbound key
     /// there changes nothing.
     #[test]
-    fn bpf_filter_editor_takes_the_global_fallback_keys_as_text() {
+    fn bpf_filter_editor_takes_the_global_fallback_keys_as_text() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::BpfFilter;
         press(&mut app, KeyCode::Char('v'));
@@ -3522,6 +3613,7 @@ mod panel_view_tests {
         assert_eq!(app.bpf_editor.input(), "vnx");
         assert_eq!(app.bpf_scroll, 0);
         assert_eq!(app.current_view, View::BpfFilter);
+        Ok(())
     }
 
     /// One view with a free-scrolling offset the wheel moves three lines at a
@@ -3589,7 +3681,7 @@ mod panel_view_tests {
     /// In every free-scrolling view one wheel step is three lines, down and
     /// up, saturating at the top — and the view does not change.
     #[test]
-    fn the_wheel_scrolls_every_free_scrolling_view_three_lines_a_step() {
+    fn the_wheel_scrolls_every_free_scrolling_view_three_lines_a_step() -> Result<(), TestError> {
         for w in wheel_views() {
             let mut app = App::new_test();
             app.current_view = w.view.clone();
@@ -3603,12 +3695,14 @@ mod panel_view_tests {
             assert_eq!((w.offset)(&app), 0, "{:?} saturates at the top", w.view);
             assert_eq!(app.current_view, w.view);
         }
+        Ok(())
     }
 
     /// The wheel is ignored while a popup is open, and a mouse event that is
     /// not a wheel step (a move, a click) scrolls nothing.
     #[test]
-    fn the_wheel_is_ignored_under_a_popup_and_non_wheel_events_do_nothing() {
+    fn the_wheel_is_ignored_under_a_popup_and_non_wheel_events_do_nothing() -> Result<(), TestError>
+    {
         let mut app = App::new_test();
         app.current_view = View::Help;
         app.active_popup = Some(Popup::SettingsDialog);
@@ -3622,6 +3716,7 @@ mod panel_view_tests {
             MouseEventKind::Down(crossterm::event::MouseButton::Left),
         );
         assert_eq!(app.help_scroll, 0, "only wheel steps scroll");
+        Ok(())
     }
 
     /// In the list views the wheel moves the SELECTION one row, clamped to
@@ -3629,8 +3724,8 @@ mod panel_view_tests {
     /// list (sized off its per-tick cache), and the quality dashboard (via
     /// its own Up/Down so the clamp lives in one place).
     #[test]
-    fn the_wheel_moves_the_selection_one_row_in_the_list_views() {
-        let mut app = app_with_dialogs();
+    fn the_wheel_moves_the_selection_one_row_in_the_list_views() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         for want in [1, 2, 2] {
             handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
             assert_eq!(app.call_list.selected(), want, "call list down");
@@ -3674,13 +3769,15 @@ mod panel_view_tests {
         handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
         assert_eq!(app.dashboard_selected, 0, "dashboard up");
         assert_eq!(app.current_view, View::QualityDashboard);
+        Ok(())
     }
 
     /// In the call flow the wheel moves the selected message one arrow,
     /// clamped to the cached message count, and every move resets the detail
     /// pane's scroll; with no messages it does nothing.
     #[test]
-    fn the_wheel_steps_the_call_flow_selection_and_resets_the_detail_scroll() {
+    fn the_wheel_steps_the_call_flow_selection_and_resets_the_detail_scroll()
+    -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::CallFlow("call-1@test".to_string());
         handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
@@ -3706,12 +3803,13 @@ mod panel_view_tests {
         handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
         assert_eq!(app.flow.selected, 0, "saturates at the first message");
         assert_eq!(app.flow.detail_scroll, 5, "no move, no reset");
+        Ok(())
     }
 
     /// The single-screen views — the BPF editor and the loss map — have
     /// nothing to scroll, so the wheel leaves them exactly as they were.
     #[test]
-    fn the_wheel_does_nothing_in_the_single_screen_views() {
+    fn the_wheel_does_nothing_in_the_single_screen_views() -> Result<(), TestError> {
         for view in [View::BpfFilter, View::StreamLossMap(stream_key(1))] {
             let mut app = App::new_test();
             app.current_view = view.clone();
@@ -3722,15 +3820,17 @@ mod panel_view_tests {
             assert_eq!(app.stream_detail_scroll, 0, "{view:?}");
             assert_eq!(app.raw_msg_scroll, 0, "{view:?}");
         }
+        Ok(())
     }
 
     /// Esc in the loss map reaches the loss-map handler through the
     /// dispatcher and returns to that stream's detail view.
     #[test]
-    fn esc_in_the_loss_map_returns_to_the_stream_detail() {
+    fn esc_in_the_loss_map_returns_to_the_stream_detail() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamLossMap(stream_key(7));
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.current_view, View::StreamDetail(stream_key(7)));
+        Ok(())
     }
 }

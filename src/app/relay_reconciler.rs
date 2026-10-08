@@ -123,6 +123,9 @@ mod tests {
     use crate::relay::reconcile::orphan_channel;
     use crate::relay::types::{CallView, ControlReply, Enumeration, RelayStream, RelayTag};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A relay holding one call on one socket.
     struct OneCallRelay;
 
@@ -168,18 +171,20 @@ mod tests {
         }
     }
 
-    fn permit() -> TransmitPermit {
-        TransmitPermit::for_source(&CaptureSource::Live {
+    fn permit() -> Result<TransmitPermit, TestError> {
+        Ok(TransmitPermit::for_source(&CaptureSource::Live {
             device: "eth0".to_owned(),
         })
-        .expect("a live source grants a permit")
+        .ok_or("a live source grants a permit")?)
     }
 
     /// The loop drains the hand-off, asks about the socket, and applies what
     /// it learns to the store the capture path is writing to.
     #[test]
-    fn an_offered_socket_becomes_an_attribution_in_the_store() {
-        let relay: IpAddr = "10.0.0.2".parse().expect("a literal v4 address parses");
+    fn an_offered_socket_becomes_an_attribution_in_the_store() -> Result<(), TestError> {
+        let relay: IpAddr = "10.0.0.2"
+            .parse()
+            .map_err(|e| format!("a literal v4 address parses: {e:?}"))?;
         let store = Arc::new(RwLock::new(StreamStore::new(100)));
         let (sink, rx) = orphan_channel();
 
@@ -187,12 +192,12 @@ mod tests {
         // Dropping every sink is what ends the loop -- no flag, no timeout.
         drop(sink);
 
-        run(Reconciler::new(OneCallRelay), &permit(), &rx, &store);
+        run(Reconciler::new(OneCallRelay), &permit()?, &rx, &store);
 
         let provenance = store
             .read()
             .sdp_endpoint_provenance(relay, 30000)
-            .expect("the relay's answer must reach the store");
+            .ok_or("the relay's answer must reach the store")?;
         assert_eq!(
             provenance.asserted_by,
             crate::rtp::stream_store::EndpointAssertion::media_relay(
@@ -204,55 +209,70 @@ mod tests {
             provenance.origin, None,
             "asked for, not captured -- so no capture source to record"
         );
+        Ok(())
     }
 
     /// Closing the hand-off is what stops the thread. Nothing polls a flag and
     /// nothing waits out a timeout.
     #[test]
-    fn dropping_every_sink_ends_the_loop() {
+    fn dropping_every_sink_ends_the_loop() -> Result<(), TestError> {
         let store = Arc::new(RwLock::new(StreamStore::new(100)));
         let (sink, rx) = orphan_channel();
         drop(sink);
 
-        let joined = spawn(Reconciler::new(OneCallRelay), permit(), rx, store)
-            .expect("the thread spawns")
+        let joined = spawn(Reconciler::new(OneCallRelay), permit()?, rx, store)
+            .map_err(|e| format!("the thread spawns: {e:?}"))?
             .join();
 
         assert!(joined.is_ok(), "the loop must end when the queue closes");
+        Ok(())
     }
 
     /// A socket offered after the reconciler has stopped is COUNTED. It was
     /// never asked about, which is not the same as the relay disowning it.
     #[test]
-    fn a_socket_offered_after_the_queue_closes_is_counted() {
+    fn a_socket_offered_after_the_queue_closes_is_counted() -> Result<(), TestError> {
         let (sink, rx) = orphan_channel();
         drop(rx);
 
-        sink.offer("10.0.0.2".parse().expect("valid"), 30000);
+        sink.offer(
+            "10.0.0.2".parse().map_err(|e| format!("valid: {e:?}"))?,
+            30000,
+        );
 
         assert_eq!(
             sink.dropped(),
             1,
             "an unofferable socket must be counted, not silently discarded"
         );
+        Ok(())
     }
 
     /// Run the loop on this thread over `sockets` and return what it logged.
     ///
     /// The log IS the loop's output: it returns nothing, and the only other
     /// thing it touches is the store, which an unanswered socket leaves alone.
-    fn run_logged<R: ReadOnlyRelay>(reconciler: Reconciler<R>, sockets: &[u16]) -> String {
+    fn run_logged<R: ReadOnlyRelay>(
+        reconciler: Reconciler<R>,
+        sockets: &[u16],
+    ) -> Result<String, TestError> {
         let store = Arc::new(RwLock::new(StreamStore::new(100)));
         let (sink, rx) = orphan_channel();
-        let relay: IpAddr = "10.0.0.2".parse().expect("a literal v4 address parses");
+        let relay: IpAddr = "10.0.0.2"
+            .parse()
+            .map_err(|e| format!("a literal v4 address parses: {e:?}"))?;
         for port in sockets {
             sink.offer(relay, *port);
         }
         drop(sink);
 
-        crate::test_utils::capture_logs(tracing::Level::INFO, || {
-            run(reconciler, &permit(), &rx, &store);
-        })
+        let permit = permit()?;
+        Ok(crate::test_utils::capture_logs(
+            tracing::Level::INFO,
+            || {
+                run(reconciler, &permit, &rx, &store);
+            },
+        ))
     }
 
     /// A relay that attributes nothing: it cannot be reached, or it names
@@ -292,14 +312,14 @@ mod tests {
     /// loop says so ONCE. A line per orphan stream would bury the capture's
     /// own output under one fact repeated.
     #[test]
-    fn a_relay_that_is_down_is_reported_once_not_once_per_stream() {
+    fn a_relay_that_is_down_is_reported_once_not_once_per_stream() -> Result<(), TestError> {
         let logs = run_logged(
             Reconciler::new(UnhelpfulRelay {
                 down: true,
                 unreadable: Vec::new(),
             }),
             &[30000, 30002, 30004],
-        );
+        )?;
         assert_eq!(
             logs.matches("could not be asked (connection refused)")
                 .count(),
@@ -313,12 +333,13 @@ mod tests {
             ),
             "the closing line reports what the run did: {logs}"
         );
+        Ok(())
     }
 
     /// "Not mine" about traffic that is not the relay's is the expected
     /// answer, not news -- but a DIFFERENT reason arriving after it is.
     #[test]
-    fn not_mine_is_not_news_but_a_new_reason_after_it_is() {
+    fn not_mine_is_not_news_but_a_new_reason_after_it_is() -> Result<(), TestError> {
         let logs = run_logged(
             Reconciler::new(UnhelpfulRelay {
                 down: false,
@@ -326,7 +347,7 @@ mod tests {
             })
             .with_budget(2),
             &[30000, 30002, 30004],
-        );
+        )?;
         assert!(
             !logs.contains("does not hold this port"),
             "a relay disowning traffic it does not carry is not reported: {logs}"
@@ -342,13 +363,14 @@ mod tests {
             ),
             "{logs}"
         );
+        Ok(())
     }
 
     /// An answered socket is counted as attributed in the closing line, and
     /// raises no per-socket line at all.
     #[test]
-    fn an_attributed_socket_is_counted_in_the_closing_line() {
-        let logs = run_logged(Reconciler::new(OneCallRelay), &[30000]);
+    fn an_attributed_socket_is_counted_in_the_closing_line() -> Result<(), TestError> {
+        let logs = run_logged(Reconciler::new(OneCallRelay), &[30000])?;
         assert!(
             logs.contains(
                 "rtpengine at 10.0.0.2:22222: 1 unexplained stream(s) offered, 1 attributed, \
@@ -357,19 +379,20 @@ mod tests {
             "{logs}"
         );
         assert_eq!(logs.lines().count(), 1, "nothing else is news: {logs}");
+        Ok(())
     }
 
     /// A relay that named a call it then could not describe left a GAP, and
     /// a gap is news -- unlike "not mine" -- so it is said, once.
     #[test]
-    fn a_snapshot_with_an_unreadable_call_is_said_once_as_a_gap() {
+    fn a_snapshot_with_an_unreadable_call_is_said_once_as_a_gap() -> Result<(), TestError> {
         let logs = run_logged(
             Reconciler::new(UnhelpfulRelay {
                 down: false,
                 unreadable: vec!["mid-call"],
             }),
             &[30000, 30002],
-        );
+        )?;
         assert_eq!(
             logs.matches("named 1 call(s) that could not be read")
                 .count(),
@@ -382,5 +405,6 @@ mod tests {
             ),
             "each refresh retries the unread call rather than writing it off: {logs}"
         );
+        Ok(())
     }
 }

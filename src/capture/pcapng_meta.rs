@@ -447,70 +447,80 @@ mod tests {
     use super::*;
     use crate::capture::{PcapExportMode, PcapWriter};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Sizes at/under the cap pass; one byte over is `InvalidData`.
     #[test]
-    fn size_cap_rejects_oversized_and_allows_normal() {
+    fn size_cap_rejects_oversized_and_allows_normal() -> Result<(), TestError> {
         // At/under the cap is fine; over it is rejected as invalid data so a
         // multi-GB "pcapng" can't OOM the metadata reader / stripper.
         assert!(ensure_within_size_cap(100, 1024).is_ok());
         assert!(ensure_within_size_cap(1024, 1024).is_ok());
-        let err = ensure_within_size_cap(1025, 1024).unwrap_err();
+        let err = ensure_within_size_cap(1025, 1024)
+            .err()
+            .ok_or("expected an error")?;
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        Ok(())
     }
 
     /// Helper: write a pcapng carrying an NRB for the given entries.
-    fn write_pcapng_with_nrb(path: &Path, entries: &[(IpAddr, Vec<String>)]) {
-        let mut w =
-            PcapWriter::with_format(path, 1, None, None, true, PcapExportMode::Raw).unwrap();
-        w.write_name_resolution_block(entries).unwrap();
-        w.finish().unwrap();
+    fn write_pcapng_with_nrb(
+        path: &Path,
+        entries: &[(IpAddr, Vec<String>)],
+    ) -> Result<(), TestError> {
+        let mut w = PcapWriter::with_format(path, 1, None, None, true, PcapExportMode::Raw)?;
+        w.write_name_resolution_block(entries)?;
+        w.finish()?;
+        Ok(())
     }
 
     /// NRB names embedded in a gzip-compressed pcapng still read back (the
     /// file-open path hands over the original compressed file).
     #[test]
-    fn reads_nrb_names_from_gzip_compressed_pcapng() {
+    fn reads_nrb_names_from_gzip_compressed_pcapng() -> Result<(), TestError> {
         // The TUI file-open path hands this reader the ORIGINAL (possibly
         // gzip-compressed) file; embedded names must survive compression.
         use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let plain = dir.path().join("named.pcapng");
-        let ip: IpAddr = "10.0.0.2".parse().unwrap();
-        write_pcapng_with_nrb(&plain, &[(ip, vec!["sbc-edge".to_string()])]);
+        let ip: IpAddr = "10.0.0.2".parse()?;
+        write_pcapng_with_nrb(&plain, &[(ip, vec!["sbc-edge".to_string()])])?;
 
         let gz_path = dir.path().join("named.pcapng.gz");
         let mut enc = flate2::write::GzEncoder::new(
-            std::fs::File::create(&gz_path).unwrap(),
+            std::fs::File::create(&gz_path)?,
             flate2::Compression::default(),
         );
-        enc.write_all(&std::fs::read(&plain).unwrap()).unwrap();
-        enc.finish().unwrap();
+        enc.write_all(&std::fs::read(&plain)?)?;
+        enc.finish()?;
 
-        let meta = read_pcapng_metadata(&gz_path).unwrap();
+        let meta = read_pcapng_metadata(&gz_path)?;
         assert!(
             meta.names.contains(&(ip, "sbc-edge".to_string())),
             "gzipped pcapng must still yield NRB names, got: {:?}",
             meta.names
         );
+        Ok(())
     }
 
     /// IPv4 and IPv6 NRB records (with multiple names) read back from a
     /// written pcapng.
     #[test]
-    fn reads_nrb_names() {
-        let dir = tempfile::tempdir().unwrap();
+    fn reads_nrb_names() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("named.pcapng");
-        let v4: IpAddr = "10.0.0.2".parse().unwrap();
-        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let v4: IpAddr = "10.0.0.2".parse()?;
+        let v6: IpAddr = "2001:db8::1".parse()?;
         write_pcapng_with_nrb(
             &path,
             &[
                 (v4, vec!["sbc-edge".to_string()]),
                 (v6, vec!["v6".to_string(), "v6.example.com".to_string()]),
             ],
-        );
+        )?;
 
-        let meta = read_pcapng_metadata(&path).unwrap();
+        let meta = read_pcapng_metadata(&path)?;
         assert!(
             meta.names.contains(&(v4, "sbc-edge".to_string())),
             "names: {:?}",
@@ -518,16 +528,17 @@ mod tests {
         );
         assert!(meta.names.contains(&(v6, "v6".to_string())));
         assert!(meta.names.contains(&(v6, "v6.example.com".to_string())));
+        Ok(())
     }
 
     /// A DSB written from a keylog surfaces its TLS Key Log lines.
     #[test]
-    fn reads_dsb_tls_secret() {
+    fn reads_dsb_tls_secret() -> Result<(), TestError> {
         // A pcapng carrying a Decryption Secrets Block (TLS Key Log) should
         // surface its secret lines so the decryptor can use embedded keys.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let keylog = dir.path().join("keys.txt");
-        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n")?;
         let path = dir.path().join("withsecret.pcapng");
         {
             let mut w = PcapWriter::with_format(
@@ -537,13 +548,12 @@ mod tests {
                 None,
                 true,
                 PcapExportMode::EncryptedWithDsb,
-            )
-            .unwrap();
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
-            w.finish().unwrap();
+            )?;
+            w.maybe_write_keylog_dsb(&keylog)?;
+            w.finish()?;
         }
 
-        let meta = read_pcapng_metadata(&path).unwrap();
+        let meta = read_pcapng_metadata(&path)?;
         // No assertion here prints the key-log text. The fixture's key is fake,
         // but CodeQL's rust/cleartext-logging cannot tell, and the repository
         // keeps test code clean at the source rather than dismissing alerts.
@@ -555,17 +565,19 @@ mod tests {
             meta.tls_secrets[0].contains("CLIENT_RANDOM aabbccdd 00112233"),
             "the key-log line written was not read back intact"
         );
+        Ok(())
     }
 
     /// A non-pcapng file yields empty metadata, not an error.
     #[test]
-    fn non_pcapng_yields_empty_metadata() {
+    fn non_pcapng_yields_empty_metadata() -> Result<(), TestError> {
         // Failure/negative case: a file that isn't pcapng must not error.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("notpcapng.bin");
-        std::fs::write(&path, b"this is not a capture file").unwrap();
-        let meta = read_pcapng_metadata(&path).unwrap();
+        std::fs::write(&path, b"this is not a capture file")?;
+        let meta = read_pcapng_metadata(&path)?;
         assert_eq!(meta, PcapngMetadata::default());
+        Ok(())
     }
 
     /// A nonexistent path is a filesystem error.
@@ -576,36 +588,38 @@ mod tests {
     }
 
     /// Write a pcapng carrying an NRB and (optionally) a DSB.
-    fn write_pcapng_with(dir: &Path, name: &str, with_dsb: bool) -> std::path::PathBuf {
-        let ip: IpAddr = "10.0.0.2".parse().unwrap();
+    fn write_pcapng_with(
+        dir: &Path,
+        name: &str,
+        with_dsb: bool,
+    ) -> Result<std::path::PathBuf, TestError> {
+        let ip: IpAddr = "10.0.0.2".parse()?;
         let path = dir.join(name);
         let mut w =
-            PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::EncryptedWithDsb)
-                .unwrap();
-        w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])
-            .unwrap();
+            PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::EncryptedWithDsb)?;
+        w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])?;
         if with_dsb {
             let keylog = dir.join("k.txt");
-            std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
+            std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n")?;
+            w.maybe_write_keylog_dsb(&keylog)?;
         }
-        w.finish().unwrap();
-        path
+        w.finish()?;
+        Ok(path)
     }
 
     /// Stripping removes the DSB from the copy, keeps NRB names, and leaves
     /// the source file intact.
     #[test]
-    fn strip_secrets_removes_dsb_keeps_names_and_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let src = write_pcapng_with(dir.path(), "withsecret.pcapng", true);
+    fn strip_secrets_removes_dsb_keeps_names_and_source() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let src = write_pcapng_with(dir.path(), "withsecret.pcapng", true)?;
         let dst = dir.path().join("clean.pcapng");
 
-        let n = strip_secrets(&src, &dst).unwrap();
+        let n = strip_secrets(&src, &dst)?;
         assert_eq!(n, 1, "one DSB stripped");
 
         // Output: no secrets, names preserved.
-        let after = read_pcapng_metadata(&dst).unwrap();
+        let after = read_pcapng_metadata(&dst)?;
         assert!(after.tls_secrets.is_empty(), "secrets must be gone");
         assert!(
             after.names.iter().any(|(_, name)| name == "sbc-edge"),
@@ -613,100 +627,106 @@ mod tests {
             after.names
         );
         // Source untouched.
-        let src_meta = read_pcapng_metadata(&src).unwrap();
+        let src_meta = read_pcapng_metadata(&src)?;
         assert_eq!(
             src_meta.tls_secrets.len(),
             1,
             "source DSB must remain intact"
         );
+        Ok(())
     }
 
     /// A DSB-free input strips zero blocks and produces a faithful copy.
     #[test]
-    fn strip_secrets_no_dsb_returns_zero_and_copies() {
-        let dir = tempfile::tempdir().unwrap();
-        let src = write_pcapng_with(dir.path(), "nodsb.pcapng", false);
+    fn strip_secrets_no_dsb_returns_zero_and_copies() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let src = write_pcapng_with(dir.path(), "nodsb.pcapng", false)?;
         let dst = dir.path().join("copy.pcapng");
-        assert_eq!(strip_secrets(&src, &dst).unwrap(), 0);
+        assert_eq!(strip_secrets(&src, &dst)?, 0);
         // Faithful copy: names still present.
-        let after = read_pcapng_metadata(&dst).unwrap();
+        let after = read_pcapng_metadata(&dst)?;
         assert!(after.names.iter().any(|(_, name)| name == "sbc-edge"));
+        Ok(())
     }
 
     /// Stripping a non-pcapng file is an error (unlike metadata reading).
     #[test]
-    fn strip_secrets_non_pcapng_errors() {
-        let dir = tempfile::tempdir().unwrap();
+    fn strip_secrets_non_pcapng_errors() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let src = dir.path().join("notpcapng.bin");
-        std::fs::write(&src, b"definitely not a pcapng file").unwrap();
+        std::fs::write(&src, b"definitely not a pcapng file")?;
         let dst = dir.path().join("out.pcapng");
         assert!(strip_secrets(&src, &dst).is_err());
+        Ok(())
     }
 
     /// gzip-compress the file at `src` into `<src>.gz` and return that path.
-    fn gzip_file(src: &Path) -> std::path::PathBuf {
+    fn gzip_file(src: &Path) -> Result<std::path::PathBuf, TestError> {
         use std::io::Write;
         let gz = src.with_extension("pcapng.gz");
         let mut enc = flate2::write::GzEncoder::new(
-            std::fs::File::create(&gz).unwrap(),
+            std::fs::File::create(&gz)?,
             flate2::Compression::default(),
         );
-        enc.write_all(&std::fs::read(src).unwrap()).unwrap();
-        enc.finish().unwrap();
-        gz
+        enc.write_all(&std::fs::read(src)?)?;
+        enc.finish()?;
+        Ok(gz)
     }
 
     /// A `.pcapng.gz` strips transparently; the sanitized output is plain
     /// (uncompressed) pcapng.
     #[test]
-    fn strip_secrets_reads_gzip_compressed_input() {
+    fn strip_secrets_reads_gzip_compressed_input() -> Result<(), TestError> {
         // Every other read path gunzips transparently; the sanitizer must
         // too, or a .pcapng.gz can't be stripped without a manual gunzip.
-        let dir = tempfile::tempdir().unwrap();
-        let plain = write_pcapng_with(dir.path(), "withsecret.pcapng", true);
-        let gz = gzip_file(&plain);
+        let dir = tempfile::tempdir()?;
+        let plain = write_pcapng_with(dir.path(), "withsecret.pcapng", true)?;
+        let gz = gzip_file(&plain)?;
         let dst = dir.path().join("clean.pcapng");
 
-        let n = strip_secrets(&gz, &dst).unwrap();
+        let n = strip_secrets(&gz, &dst)?;
         assert_eq!(n, 1, "one DSB stripped from gzip input");
 
         // Output is a plain (uncompressed) sanitized pcapng.
-        let after = read_pcapng_metadata(&dst).unwrap();
+        let after = read_pcapng_metadata(&dst)?;
         assert!(after.tls_secrets.is_empty(), "secrets must be gone");
         assert!(
             after.names.iter().any(|(_, name)| name == "sbc-edge"),
             "names preserved: {:?}",
             after.names
         );
+        Ok(())
     }
 
     /// Gzip wrapping non-pcapng bytes still errors after inflation.
     #[test]
-    fn strip_secrets_gzip_wrapping_non_pcapng_errors() {
+    fn strip_secrets_gzip_wrapping_non_pcapng_errors() -> Result<(), TestError> {
         use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let src = dir.path().join("garbage.pcapng.gz");
         let mut enc = flate2::write::GzEncoder::new(
-            std::fs::File::create(&src).unwrap(),
+            std::fs::File::create(&src)?,
             flate2::Compression::default(),
         );
-        enc.write_all(b"definitely not a pcapng file").unwrap();
-        enc.finish().unwrap();
+        enc.write_all(b"definitely not a pcapng file")?;
+        enc.finish()?;
         let dst = dir.path().join("out.pcapng");
         assert!(strip_secrets(&src, &dst).is_err());
+        Ok(())
     }
 
     /// A truncated gzip stream errors cleanly, never panics.
     #[test]
-    fn strip_secrets_truncated_gzip_errors_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        let plain = write_pcapng_with(dir.path(), "withsecret.pcapng", true);
-        let gz = gzip_file(&plain);
-        let whole = std::fs::read(&gz).unwrap();
+    fn strip_secrets_truncated_gzip_errors_cleanly() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let plain = write_pcapng_with(dir.path(), "withsecret.pcapng", true)?;
+        let gz = gzip_file(&plain)?;
+        let whole = std::fs::read(&gz)?;
         let cut = dir.path().join("truncated.pcapng.gz");
-        std::fs::write(&cut, &whole[..whole.len() / 2]).unwrap();
+        std::fs::write(&cut, &whole[..whole.len() / 2])?;
         let dst = dir.path().join("out.pcapng");
         assert!(strip_secrets(&cut, &dst).is_err(), "no panic, clean error");
+        Ok(())
     }
 }
 
@@ -731,38 +751,35 @@ mod malformed_block_tests {
     const EPB: u32 = 0x0000_0006;
 
     /// A pcapng with an NRB naming `early`, one naming `late`, and a DSB.
-    fn fixture(dir: &Path) -> Vec<u8> {
+    fn fixture(dir: &Path) -> Result<Vec<u8>, TestError> {
         let path = dir.join("fixture.pcapng");
         let mut w =
-            PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::EncryptedWithDsb)
-                .unwrap();
-        let early: IpAddr = "10.0.0.1".parse().unwrap();
-        let late: IpAddr = "10.0.0.2".parse().unwrap();
-        w.write_name_resolution_block(&[(early, vec!["early".to_string()])])
-            .unwrap();
-        w.write_name_resolution_block(&[(late, vec!["late".to_string()])])
-            .unwrap();
+            PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::EncryptedWithDsb)?;
+        let early: IpAddr = "10.0.0.1".parse()?;
+        let late: IpAddr = "10.0.0.2".parse()?;
+        w.write_name_resolution_block(&[(early, vec!["early".to_string()])])?;
+        w.write_name_resolution_block(&[(late, vec!["late".to_string()])])?;
         let keylog = dir.join("keys.txt");
-        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
-        w.maybe_write_keylog_dsb(&keylog).unwrap();
-        w.finish().unwrap();
-        std::fs::read(&path).unwrap()
+        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n")?;
+        w.maybe_write_keylog_dsb(&keylog)?;
+        w.finish()?;
+        Ok(std::fs::read(&path)?)
     }
 
     /// Byte order of the first section, and the offset just past the first
     /// NRB, where a crafted block is spliced in.
-    fn after_first_nrb(bytes: &[u8]) -> (bool, usize) {
-        let be = byte_order_from_shb(&bytes[8..12]).expect("fixture has an SHB");
+    fn after_first_nrb(bytes: &[u8]) -> Result<(bool, usize), TestError> {
+        let be = byte_order_from_shb(&bytes[8..12]).ok_or("fixture has an SHB")?;
         let mut off = 0;
         while off + 8 <= bytes.len() {
             let kind = rd_u32(&bytes[off..off + 4], be);
             let len = rd_u32(&bytes[off + 4..off + 8], be) as usize;
             if kind == NRB {
-                return (be, off + len);
+                return Ok((be, off + len));
             }
             off += len;
         }
-        panic!("fixture has no NRB");
+        Err("fixture has no NRB".into())
     }
 
     /// A block of `kind` framed correctly around `body` (padded to 32 bits).
@@ -794,13 +811,18 @@ mod malformed_block_tests {
         !matches!(reader.next_block(), Some(Ok(_)))
     }
 
-    fn splice(bytes: &[u8], at: usize, block: &[u8], dir: &Path) -> std::path::PathBuf {
+    fn splice(
+        bytes: &[u8],
+        at: usize,
+        block: &[u8],
+        dir: &Path,
+    ) -> Result<std::path::PathBuf, TestError> {
         let mut out = bytes[..at].to_vec();
         out.extend_from_slice(block);
         out.extend_from_slice(&bytes[at..]);
         let path = dir.join("spliced.pcapng");
-        std::fs::write(&path, out).unwrap();
-        path
+        std::fs::write(&path, out)?;
+        Ok(path)
     }
 
     fn named(meta: &PcapngMetadata, name: &str) -> bool {
@@ -811,10 +833,10 @@ mod malformed_block_tests {
     /// the block does not hold is skipped, counted, and the NRB and DSB after
     /// it are still read.
     #[test]
-    fn a_malformed_name_block_is_skipped_and_what_follows_is_still_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = fixture(dir.path());
-        let (be, at) = after_first_nrb(&bytes);
+    fn a_malformed_name_block_is_skipped_and_what_follows_is_still_read() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let bytes = fixture(dir.path())?;
+        let (be, at) = after_first_nrb(&bytes)?;
         let w16 = |v: u16| if be { v.to_be_bytes() } else { v.to_le_bytes() };
         let mut body = Vec::new();
         body.extend_from_slice(&w16(1)); // record type: IPv4
@@ -826,7 +848,7 @@ mod malformed_block_tests {
             "fixture: the crafted NRB must not decode"
         );
 
-        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())).unwrap();
+        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())?)?;
         assert!(named(&meta, "early"), "{meta:?}");
         assert!(
             named(&meta, "late"),
@@ -840,50 +862,53 @@ mod malformed_block_tests {
         assert_eq!(meta.key_log_blocks, 1, "a skipped block is not a key log");
         assert_eq!(meta.malformed_blocks, 1);
         assert_eq!(meta.stopped_at, None);
+        Ok(())
     }
 
     /// A packet block with garbage in it is none of the metadata's business:
     /// it is not decoded, so it costs nothing and is not counted.
     #[test]
-    fn a_garbled_packet_block_costs_the_metadata_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = fixture(dir.path());
-        let (be, at) = after_first_nrb(&bytes);
+    fn a_garbled_packet_block_costs_the_metadata_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let bytes = fixture(dir.path())?;
+        let (be, at) = after_first_nrb(&bytes)?;
         let bad = framed(EPB, &[0xFF; 9], be);
         assert!(
             pcap_file_refuses(&bytes, &bad, be),
             "fixture: the crafted EPB must not decode"
         );
 
-        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())).unwrap();
+        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())?)?;
         assert!(named(&meta, "late"), "{meta:?}");
         assert_eq!(meta.tls_secrets.len(), 1);
         assert_eq!(
             meta.malformed_blocks, 0,
             "a packet block is never decoded here"
         );
+        Ok(())
     }
 
     /// A block whose length cannot be trusted leaves nothing after it
     /// findable, so reading stops there and says where.
     #[test]
-    fn an_untrustworthy_block_length_stops_reading_and_says_where() {
-        let dir = tempfile::tempdir().unwrap();
-        let bytes = fixture(dir.path());
-        let (be, at) = after_first_nrb(&bytes);
+    fn an_untrustworthy_block_length_stops_reading_and_says_where() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let bytes = fixture(dir.path())?;
+        let (be, at) = after_first_nrb(&bytes)?;
         let w32 = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
         let mut bad = Vec::new();
         bad.extend_from_slice(&w32(NRB));
         bad.extend_from_slice(&w32(0x7FFF_FFF0)); // past the end of any file here
         bad.extend_from_slice(&[0; 8]);
 
-        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())).unwrap();
+        let meta = read_pcapng_metadata(&splice(&bytes, at, &bad, dir.path())?)?;
         assert!(named(&meta, "early"), "what came before is kept: {meta:?}");
         assert!(
             !named(&meta, "late"),
             "nothing past an untrusted length can be found"
         );
         assert_eq!(meta.stopped_at, Some(at));
+        Ok(())
     }
 
     /// Reading a file whose walk stopped early logs where it stopped, so the
@@ -892,14 +917,14 @@ mod malformed_block_tests {
     #[test]
     fn reading_a_file_that_stops_early_logs_where() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
-        let bytes = fixture(dir.path());
-        let (be, at) = after_first_nrb(&bytes);
+        let bytes = fixture(dir.path())?;
+        let (be, at) = after_first_nrb(&bytes)?;
         let w32 = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
         let mut bad = Vec::new();
         bad.extend_from_slice(&w32(NRB));
         bad.extend_from_slice(&w32(0x7FFF_FFF0));
         bad.extend_from_slice(&[0; 8]);
-        let path = splice(&bytes, at, &bad, dir.path());
+        let path = splice(&bytes, at, &bad, dir.path())?;
 
         let mut read = None;
         let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {

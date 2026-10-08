@@ -8025,9 +8025,9 @@ mod tests {
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
     /// Build a `SipMessage` for `call_id` from the shared INVITE fixture.
-    fn invite_msg(call_id: &str) -> sip::message::SipMessage {
+    fn invite_msg(call_id: &str) -> Result<sip::message::SipMessage, TestError> {
         let data = bytes::Bytes::from(invite_bytes(call_id));
-        sip::parser::parse_sip_bytes(
+        Ok(sip::parser::parse_sip_bytes(
             &data,
             chrono::Utc::now(),
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -8036,13 +8036,17 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("fixture parses")
+        .map_err(|e| format!("fixture parses: {e:?}"))?)
     }
 
     /// A final response, so a fixture dialog can carry a status code the
     /// filter language can read.
     #[cfg(feature = "vcon")]
-    fn response_msg(call_id: &str, code: u16, reason: &str) -> sip::message::SipMessage {
+    fn response_msg(
+        call_id: &str,
+        code: u16,
+        reason: &str,
+    ) -> Result<sip::message::SipMessage, TestError> {
         let headers = [
             "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
             "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
@@ -8058,7 +8062,7 @@ mod tests {
         }
         msg.push_str("\r\n");
         let data = bytes::Bytes::from(msg.into_bytes());
-        sip::parser::parse_sip_bytes(
+        Ok(sip::parser::parse_sip_bytes(
             &data,
             chrono::Utc::now(),
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
@@ -8067,63 +8071,66 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("fixture parses")
+        .map_err(|e| format!("fixture parses: {e:?}"))?)
     }
 
     /// Two dialogs, one of which failed.
     #[cfg(feature = "vcon")]
-    fn two_dialogs_one_failed() -> DialogStore {
+    fn two_dialogs_one_failed() -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(16, true);
-        store.process_message(invite_msg("ok-call@example.com"));
-        store.process_message(response_msg("ok-call@example.com", 200, "OK"));
-        store.process_message(invite_msg("failed-call@example.com"));
-        store.process_message(response_msg("failed-call@example.com", 486, "Busy Here"));
-        store
+        store.process_message(invite_msg("ok-call@example.com")?);
+        store.process_message(response_msg("ok-call@example.com", 200, "OK")?);
+        store.process_message(invite_msg("failed-call@example.com")?);
+        store.process_message(response_msg("failed-call@example.com", 486, "Busy Here")?);
+        Ok(store)
     }
 
     // ── Live vCon export (LIVE-VCON-1) ─────────────────────────────
 
     /// The settle period the live export uses, as the predicate takes it.
     #[cfg(feature = "vcon")]
-    fn settle() -> chrono::TimeDelta {
-        chrono::TimeDelta::from_std(SWEEP_INTERVAL).expect("five seconds fits")
+    fn settle() -> Result<chrono::TimeDelta, TestError> {
+        Ok(chrono::TimeDelta::from_std(SWEEP_INTERVAL)
+            .map_err(|e| format!("five seconds fits: {e:?}"))?)
     }
 
     /// A final dialog quiet for the settle period, never written, is due.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_final_settled_unwritten_dialog_is_due() {
+    fn a_final_settled_unwritten_dialog_is_due() -> Result<(), TestError> {
         let t = chrono::Utc::now();
         assert!(live_vcon_due(
             &sip::dialog::DialogState::Completed,
             t,
-            t + settle(),
-            settle(),
+            t + settle()?,
+            settle()?,
             None
         ));
+        Ok(())
     }
 
     /// A final dialog still inside the settle period is not due yet: a
     /// retransmitted BYE or a late 200 may still arrive.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_final_dialog_inside_the_settle_period_is_not_due() {
+    fn a_final_dialog_inside_the_settle_period_is_not_due() -> Result<(), TestError> {
         let t = chrono::Utc::now();
-        let just_short = t + settle() - chrono::TimeDelta::milliseconds(1);
+        let just_short = t + settle()? - chrono::TimeDelta::milliseconds(1);
         assert!(!live_vcon_due(
             &sip::dialog::DialogState::Completed,
             t,
             just_short,
-            settle(),
+            settle()?,
             None
         ));
+        Ok(())
     }
 
     /// No running dialog is ever due, however long it has been quiet: a call
     /// on hold is quiet and not over. Walks every state `is_final` rejects.
     #[cfg(feature = "vcon")]
     #[test]
-    fn no_running_dialog_is_due_however_quiet() {
+    fn no_running_dialog_is_due_however_quiet() -> Result<(), TestError> {
         let t = chrono::Utc::now();
         let running: Vec<_> = sip::dialog::DialogState::ALL
             .into_iter()
@@ -8132,22 +8139,23 @@ mod tests {
         assert!(!running.is_empty(), "the walk must cover something");
         for state in running {
             assert!(
-                !live_vcon_due(&state, t, t + chrono::TimeDelta::hours(1), settle(), None),
+                !live_vcon_due(&state, t, t + chrono::TimeDelta::hours(1), settle()?, None),
                 "{state:?} is not an end state, so it must never be written live"
             );
         }
+        Ok(())
     }
 
     /// A dialog already written at its current `updated_at` is not written
     /// again; one that changed since is.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_dialog_is_written_again_only_when_it_changed() {
+    fn a_dialog_is_written_again_only_when_it_changed() -> Result<(), TestError> {
         let t = chrono::Utc::now();
-        let now = t + settle();
+        let now = t + settle()?;
         let state = sip::dialog::DialogState::Failed;
         assert!(
-            !live_vcon_due(&state, t, now, settle(), Some(t)),
+            !live_vcon_due(&state, t, now, settle()?, Some(t)),
             "written at this updated_at already"
         );
         assert!(
@@ -8155,11 +8163,12 @@ mod tests {
                 &state,
                 t,
                 now,
-                settle(),
+                settle()?,
                 Some(t - chrono::TimeDelta::seconds(1))
             ),
             "the dialog changed after it was written, so it is owed again"
         );
+        Ok(())
     }
 
     /// The tracker forgets dialogs the store no longer holds and keeps the
@@ -8180,13 +8189,13 @@ mod tests {
     /// running one, and does not write it twice.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_live_sweep_writes_ended_settled_calls_once() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_live_sweep_writes_ended_settled_calls_once() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
 
         let n = live_vcon_sweep(
             &cli,
@@ -8201,9 +8210,9 @@ mod tests {
             later,
         );
         assert_eq!(n, 1, "only the failed (ended) call is due");
-        let files = containers_in(tmp.path());
+        let files = containers_in(tmp.path())?;
         assert_eq!(files.len(), 1, "{files:?}");
-        let text = std::fs::read_to_string(&files[0]).expect("readable");
+        let text = std::fs::read_to_string(&files[0]).map_err(|e| format!("readable: {e:?}"))?;
         assert!(text.contains("failed-call@example.com"), "{text}");
         assert!(!tracker.failed());
 
@@ -8220,6 +8229,7 @@ mod tests {
             later,
         );
         assert_eq!(again, 0, "a written call is not written again unchanged");
+        Ok(())
     }
 
     /// A live sweep that owes a container and cannot create the directory
@@ -8231,10 +8241,10 @@ mod tests {
         let blocker = tmp.path().join("a-file");
         std::fs::write(&blocker, b"not a directory").map_err(|e| format!("write: {e:?}"))?;
         let cli = cli_exporting_to(&blocker.join("spool"), "response_code >= 200");
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
 
         let n = live_vcon_sweep(
             &cli,
@@ -8268,10 +8278,10 @@ mod tests {
     {
         let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
         let gate = crate::output::persistence::PersistenceGate::new(false);
 
         let n = live_vcon_sweep(
@@ -8302,8 +8312,8 @@ mod tests {
     /// directory: the analysis and the directory wait for a due dialog.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_live_sweep_before_the_settle_period_writes_nothing() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_live_sweep_before_the_settle_period_writes_nothing() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let spool = tmp.path().join("spool");
         let cli = cli_exporting_to(&spool, "response_code >= 200");
         let mut tracker = LiveVconTracker::default();
@@ -8311,7 +8321,7 @@ mod tests {
             &cli,
             None,
             CaptureRead {
-                dialogs: &two_dialogs_one_failed(),
+                dialogs: &two_dialogs_one_failed()?,
                 streams: &StreamStore::new(16),
                 frames_read: 4,
             },
@@ -8321,21 +8331,26 @@ mod tests {
         );
         assert_eq!(n, 0);
         assert!(!spool.exists(), "nothing was due, so nothing was created");
+        Ok(())
     }
 
     /// The deny header applies to the live export exactly as at the end of a
     /// run, because both select through `vcon_selection`.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_live_sweep_honors_the_deny_header() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_live_sweep_honors_the_deny_header() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
         let mut store = DialogStore::new(16, true);
-        store.process_message(invite_with_header("denied@example.com", "X-No-Record", "1"));
-        store.process_message(response_msg("denied@example.com", 486, "Busy Here"));
+        store.process_message(invite_with_header(
+            "denied@example.com",
+            "X-No-Record",
+            "1",
+        )?);
+        store.process_message(response_msg("denied@example.com", 486, "Busy Here")?);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
         let n = live_vcon_sweep(
             &cli,
             None,
@@ -8349,6 +8364,7 @@ mod tests {
             later,
         );
         assert_eq!(n, 0, "a denied call must not be written live");
+        Ok(())
     }
 
     /// A signal stop writes nothing at the end of a live run; a natural end
@@ -8373,31 +8389,32 @@ mod tests {
     /// it succeeded: the stop is what the operator asked for.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_stopped_live_run_writes_nothing_at_its_end() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_stopped_live_run_writes_nothing_at_its_end() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let spool = tmp.path().join("spool");
         assert!(export_vcon(
             &cli_exporting_to(&spool, "response_code >= 200"),
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             4,
             None,
             VconRunEnd::Stopped,
         ));
         assert!(!spool.exists(), "a stop is never a flush");
+        Ok(())
     }
 
     /// A live run that ends on its own skips what the sweeps already wrote at
     /// the same `updated_at`, and writes a dialog that changed since.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_natural_end_skips_what_the_live_sweeps_wrote() {
-        let dialogs = two_dialogs_one_failed();
-        let failed = dialogs.get("failed-call@example.com").expect("fixture");
-        let ok = dialogs.get("ok-call@example.com").expect("fixture");
+    fn a_natural_end_skips_what_the_live_sweeps_wrote() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
+        let failed = dialogs.get("failed-call@example.com").ok_or("fixture")?;
+        let ok = dialogs.get("ok-call@example.com").ok_or("fixture")?;
 
-        let tmp = tempfile::tempdir().expect("temp dir");
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut tracker = LiveVconTracker::default();
         tracker.record(&failed.call_id, failed.updated_at);
         assert!(export_vcon(
@@ -8409,14 +8426,14 @@ mod tests {
             None,
             VconRunEnd::AfterLive(&tracker),
         ));
-        let names: Vec<String> = containers_in(tmp.path())
+        let names: Vec<String> = containers_in(tmp.path())?
             .iter()
-            .map(|p| std::fs::read_to_string(p).expect("readable"))
-            .collect();
+            .map(|p| std::fs::read_to_string(p).map_err(|e| format!("readable: {e:?}")))
+            .collect::<Result<_, _>>()?;
         assert_eq!(names.len(), 1, "only the call the sweeps did not write");
         assert!(names[0].contains("ok-call@example.com"));
 
-        let changed = tempfile::tempdir().expect("temp dir");
+        let changed = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut stale = LiveVconTracker::default();
         stale.record(
             &failed.call_id,
@@ -8432,13 +8449,14 @@ mod tests {
             None,
             VconRunEnd::AfterLive(&stale),
         ));
-        let files = containers_in(changed.path());
+        let files = containers_in(changed.path())?;
         assert_eq!(files.len(), 1, "{files:?}");
-        let text = std::fs::read_to_string(&files[0]).expect("readable");
+        let text = std::fs::read_to_string(&files[0]).map_err(|e| format!("readable: {e:?}"))?;
         assert!(
             text.contains("failed-call@example.com"),
             "a call that changed after it was written is written again"
         );
+        Ok(())
     }
 
     /// A `Cli` exporting the one call `call_id` to `out`, as
@@ -8455,9 +8473,9 @@ mod tests {
     /// live; one it holds at an older one, or not at all, was not.
     #[cfg(feature = "vcon")]
     #[test]
-    fn written_live_means_written_at_the_current_updated_at() {
-        let dialogs = two_dialogs_one_failed();
-        let failed = dialogs.get("failed-call@example.com").expect("fixture");
+    fn written_live_means_written_at_the_current_updated_at() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
+        let failed = dialogs.get("failed-call@example.com").ok_or("fixture")?;
         assert!(
             !written_live(None, failed),
             "no live export, nothing written"
@@ -8474,6 +8492,7 @@ mod tests {
         );
         tracker.record(&failed.call_id, failed.updated_at);
         assert!(written_live(Some(&tracker), failed));
+        Ok(())
     }
 
     /// STOP-AUDIT-1: a live sweep writes the `--export-vcon` call to
@@ -8481,12 +8500,12 @@ mod tests {
     /// write it again unchanged. Before the settle period it writes nothing.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_live_sweep_writes_the_single_call_once_it_ends_and_settles() {
+    fn a_live_sweep_writes_the_single_call_once_it_ends_and_settles() -> Result<(), TestError> {
         const CALL: &str = "failed-call@example.com";
-        let tmp = tempfile::tempdir().expect("temp dir");
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let out = tmp.path().join("one.json");
         let cli = cli_exporting_one(&out, CALL);
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
 
@@ -8505,7 +8524,7 @@ mod tests {
         assert_eq!(early, 0, "inside the settle period nothing is due");
         assert!(!out.exists(), "a call that has not settled is not written");
 
-        let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
         let n = live_vcon_sweep(
             &cli,
             None,
@@ -8520,15 +8539,17 @@ mod tests {
         );
         assert_eq!(n, 1, "the ended, settled call is written");
         assert!(!tracker.failed());
-        let text = std::fs::read_to_string(&out).expect("the container was written");
-        let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let text = std::fs::read_to_string(&out)
+            .map_err(|e| format!("the container was written: {e:?}"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(json["uuid"].is_string(), "not a vCon: {json}");
         assert!(text.contains(CALL), "{text}");
         assert!(!text.contains("ok-call@example.com"), "only the named call");
-        let updated_at = dialogs.get(CALL).expect("fixture").updated_at;
+        let updated_at = dialogs.get(CALL).ok_or("fixture")?.updated_at;
         assert_eq!(tracker.written_at(CALL), Some(updated_at));
 
-        std::fs::remove_file(&out).expect("remove");
+        std::fs::remove_file(&out).map_err(|e| format!("remove: {e:?}"))?;
         let again = live_vcon_sweep(
             &cli,
             None,
@@ -8543,6 +8564,7 @@ mod tests {
         );
         assert_eq!(again, 0, "a written call is not written again unchanged");
         assert!(!out.exists());
+        Ok(())
     }
 
     /// STOP-AUDIT-1: a live sweep never writes the `--export-vcon` call while
@@ -8550,8 +8572,8 @@ mod tests {
     /// quiet and not over.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_live_sweep_does_not_write_a_running_single_call() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_live_sweep_does_not_write_a_running_single_call() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let out = tmp.path().join("one.json");
         let cli = cli_exporting_one(&out, "ok-call@example.com");
         let mut tracker = LiveVconTracker::default();
@@ -8559,7 +8581,7 @@ mod tests {
             &cli,
             None,
             CaptureRead {
-                dialogs: &two_dialogs_one_failed(),
+                dialogs: &two_dialogs_one_failed()?,
                 streams: &StreamStore::new(16),
                 frames_read: 4,
             },
@@ -8573,25 +8595,27 @@ mod tests {
             "an answered call that has not ended is not written"
         );
         assert!(!tracker.failed(), "nothing owed is not a failure");
+        Ok(())
     }
 
     /// STOP-AUDIT-1: the end of a signal-stopped live run writes no
     /// `--export-vcon` container, and answers success.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_stopped_live_run_writes_no_single_call_container() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_stopped_live_run_writes_no_single_call_container() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let out = tmp.path().join("one.json");
         assert!(export_vcon(
             &cli_exporting_one(&out, "failed-call@example.com"),
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             4,
             None,
             VconRunEnd::Stopped,
         ));
         assert!(!out.exists(), "a stop is never a flush");
+        Ok(())
     }
 
     /// STOP-AUDIT-1: a live run that ends on its own writes the
@@ -8600,10 +8624,10 @@ mod tests {
     /// appeared.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_natural_end_writes_the_single_call_only_if_the_sweeps_did_not() {
+    fn a_natural_end_writes_the_single_call_only_if_the_sweeps_did_not() -> Result<(), TestError> {
         const CALL: &str = "failed-call@example.com";
-        let dialogs = two_dialogs_one_failed();
-        let updated_at = dialogs.get(CALL).expect("fixture").updated_at;
+        let dialogs = two_dialogs_one_failed()?;
+        let updated_at = dialogs.get(CALL).ok_or("fixture")?.updated_at;
         let run = |tracker: &LiveVconTracker, call_id: &str, out: &std::path::Path| {
             export_vcon(
                 &cli_exporting_one(out, call_id),
@@ -8615,7 +8639,7 @@ mod tests {
                 VconRunEnd::AfterLive(tracker),
             )
         };
-        let tmp = tempfile::tempdir().expect("temp dir");
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
 
         let mut written = LiveVconTracker::default();
         written.record(CALL, updated_at);
@@ -8630,7 +8654,8 @@ mod tests {
         stale.record(CALL, updated_at - chrono::TimeDelta::seconds(1));
         let out = tmp.path().join("stale.json");
         assert!(run(&stale, CALL, &out));
-        let text = std::fs::read_to_string(&out).expect("changed since, so written");
+        let text = std::fs::read_to_string(&out)
+            .map_err(|e| format!("changed since, so written: {e:?}"))?;
         assert!(text.contains(CALL), "{text}");
 
         let out = tmp.path().join("never.json");
@@ -8646,6 +8671,7 @@ mod tests {
             "a call that never appeared is still an error"
         );
         assert!(!out.exists());
+        Ok(())
     }
 
     /// The live export sees a dialog BEFORE idle compaction trims it.
@@ -8658,30 +8684,32 @@ mod tests {
     /// the fixture is one compaction actually touches.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_sweep_exports_before_it_compacts() {
+    fn a_sweep_exports_before_it_compacts() -> Result<(), TestError> {
         const CALL: &str = "long-call@example.com";
         let store = RwLock::new(DialogStore::new(16, true));
         {
             let mut ds = store.write();
-            ds.process_message(invite_msg(CALL));
+            ds.process_message(invite_msg(CALL)?);
             for _ in 0..25 {
-                ds.process_message(response_msg(CALL, 180, "Ringing"));
+                ds.process_message(response_msg(CALL, 180, "Ringing")?);
             }
-            ds.process_message(response_msg(CALL, 486, "Busy Here"));
+            ds.process_message(response_msg(CALL, 486, "Busy Here")?);
         }
-        let before = store.read().get(CALL).expect("tracked").messages.len();
+        let before = store.read().get(CALL).ok_or("tracked")?.messages.len();
         assert!(before > 20, "the fixture must exceed the retention cap");
 
-        let mut seen = 0;
+        let mut seen = None;
         let now = chrono::Utc::now() + chrono::TimeDelta::minutes(11);
         sweep_dialog_store(&store, now, |ds| {
-            seen = ds.get(CALL).expect("tracked").messages.len();
+            seen = ds.get(CALL).map(|d| d.messages.len());
         });
+        let seen = seen.ok_or("tracked")?;
         assert_eq!(seen, before, "the export must see the untrimmed dialog");
         assert!(
-            store.read().get(CALL).expect("tracked").messages.len() < before,
+            store.read().get(CALL).ok_or("tracked")?.messages.len() < before,
             "compaction must have run after it, or this test proves nothing"
         );
+        Ok(())
     }
 
     /// `--export-vcon-when` selects the dialogs its expression matches.
@@ -8691,14 +8719,14 @@ mod tests {
     /// `response_code >= 400` without new code.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_predicate_selects_only_the_dialogs_that_match() {
-        let dialogs = two_dialogs_one_failed();
+    fn a_predicate_selects_only_the_dialogs_that_match() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 400".to_owned());
 
-        let (picked, _, _) =
-            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, None, &dialogs, &streams)
+            .map_err(|e| format!("a valid predicate: {e:?}"))?;
         let ids: Vec<&str> = picked
             .dialogs
             .iter()
@@ -8710,6 +8738,7 @@ mod tests {
             vec!["failed-call@example.com"],
             "only the failed dialog matches the predicate"
         );
+        Ok(())
     }
 
     /// A malformed predicate fails the run and names the flag.
@@ -8719,8 +8748,9 @@ mod tests {
     /// explain it. An operator reads that as "nothing matched".
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_malformed_predicate_fails_the_run_rather_than_selecting_nothing() {
-        let dialogs = two_dialogs_one_failed();
+    fn a_malformed_predicate_fails_the_run_rather_than_selecting_nothing() -> Result<(), TestError>
+    {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >>> 400".to_owned());
@@ -8729,13 +8759,14 @@ mod tests {
         // on `DialogSelection`, and widening a shared type's derives to suit
         // one test's ergonomics is a cost the type pays forever.
         let Err(err) = vcon_selection(&cli, None, &dialogs, &streams) else {
-            panic!("an unparseable expression is an error, not an empty result");
+            return Err("an unparseable expression is an error, not an empty result".into());
         };
 
         assert!(
             format!("{err:#}").contains("--export-vcon-when"),
             "the message has to name the flag the operator typed: {err:#}"
         );
+        Ok(())
     }
 
     /// A Call-ID cannot escape the export directory.
@@ -8869,14 +8900,14 @@ mod tests {
     /// is an answer about the capture, the other is an answer about the run.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_predicate_that_matches_nothing_selects_nothing() {
-        let dialogs = two_dialogs_one_failed();
+    fn a_predicate_that_matches_nothing_selects_nothing() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
 
-        let (picked, _, _) =
-            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, None, &dialogs, &streams)
+            .map_err(|e| format!("a valid predicate: {e:?}"))?;
 
         assert!(
             picked.dialogs.is_empty(),
@@ -8887,6 +8918,7 @@ mod tests {
                 .map(|(d, _)| &d.call_id)
                 .collect::<Vec<_>>()
         );
+        Ok(())
     }
 
     /// With no predicate the selection is every dialog.
@@ -8897,13 +8929,13 @@ mod tests {
     /// like a capture with no calls in it.
     #[cfg(feature = "vcon")]
     #[test]
-    fn no_predicate_selects_every_dialog() {
-        let dialogs = two_dialogs_one_failed();
+    fn no_predicate_selects_every_dialog() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let cli = Cli::parse_from_args(["sipnab"]);
 
         let picked = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("no predicate is not an error")
+            .map_err(|e| format!("no predicate is not an error: {e:?}"))?
             .0;
 
         assert_eq!(
@@ -8911,6 +8943,7 @@ mod tests {
             2,
             "an absent predicate narrows nothing"
         );
+        Ok(())
     }
 
     /// Two matching dialogs produce two distinct files.
@@ -8921,18 +8954,18 @@ mod tests {
     /// that collided both onto one name, would have passed everything.
     #[cfg(feature = "vcon")]
     #[test]
-    fn two_matching_dialogs_produce_two_distinct_files() {
+    fn two_matching_dialogs_produce_two_distinct_files() -> Result<(), TestError> {
         let a = vcon_file_name("first@example.com");
         let b = vcon_file_name("second@example.com");
         assert_ne!(a, b, "two Call-IDs must not collide onto one filename");
 
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
 
-        let (picked, _, _) =
-            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, None, &dialogs, &streams)
+            .map_err(|e| format!("a valid predicate: {e:?}"))?;
         let names: std::collections::HashSet<String> = picked
             .dialogs
             .iter()
@@ -8945,6 +8978,7 @@ mod tests {
             "every selected dialog needs its own file: {names:?}"
         );
         assert!(picked.dialogs.len() >= 2, "the fixture holds two calls");
+        Ok(())
     }
 
     /// A `Cli` wired for a predicate export into `dir`.
@@ -8971,7 +9005,8 @@ mod tests {
     /// decryption and must take nothing from it.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_hep_message_leaves_the_wire_tls_state_for_its_address_pair_alone() {
+    fn a_hep_message_leaves_the_wire_tls_state_for_its_address_pair_alone() -> Result<(), TestError>
+    {
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
         let src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 40000);
         let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 5061);
@@ -8995,8 +9030,10 @@ mod tests {
             input_origin: origin,
             hep: None,
         };
-        let mut decryptor =
-            Some(TlsDecryptor::new(None, crate::crypto::default_backend()).expect("a decryptor"));
+        let mut decryptor = Some(
+            TlsDecryptor::new(None, crate::crypto::default_backend())
+                .map_err(|e| format!("a decryptor: {e:?}"))?,
+        );
         let mut reassembler = tls::TlsRecordReassembler::new(16);
 
         // A 64-byte application-data record, split: the wire capture holds
@@ -9045,6 +9082,7 @@ mod tests {
              the plaintext was appended to the held ciphertext"
         );
         assert!(!reassembler.has_held(src, dst), "nothing is left over");
+        Ok(())
     }
 
     // ── Key recovery never costs the packet in hand ─────────────
@@ -9086,22 +9124,25 @@ mod tests {
     fn recovered_at(
         ts: chrono::DateTime<chrono::Utc>,
         call_id: &str,
-    ) -> crate::capture::decrypt::RecoveredRecord {
-        crate::capture::decrypt::RecoveredRecord {
+    ) -> Result<crate::capture::decrypt::RecoveredRecord, TestError> {
+        Ok(crate::capture::decrypt::RecoveredRecord {
             plaintext: format!(
                 "INVITE sip:bob@example.com SIP/2.0\r\nCall-ID: {call_id}\r\n\
                  CSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
             )
             .into_bytes(),
             timestamp: ts,
-            src: "198.51.100.1:5061".parse().unwrap(),
-            dst: "198.51.100.2:40001".parse().unwrap(),
-        }
+            src: "198.51.100.1:5061".parse()?,
+            dst: "198.51.100.2:40001".parse()?,
+        })
     }
 
     #[cfg(feature = "tls")]
-    fn t(ms: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp_millis(1_790_000_000_000 + ms).unwrap()
+    fn t(ms: i64) -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(
+            chrono::DateTime::from_timestamp_millis(1_790_000_000_000 + ms)
+                .ok_or("from_timestamp_millis returned None")?,
+        )
     }
 
     /// **The packet whose arrival triggers key recovery is still analyzed.**
@@ -9115,17 +9156,17 @@ mod tests {
     /// origin: wire records reported as HEP input.
     #[cfg(feature = "tls")]
     #[test]
-    fn key_recovery_keeps_the_hep_packet_in_hand_and_its_own_origin() {
+    fn key_recovery_keeps_the_hep_packet_in_hand_and_its_own_origin() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let bye = packet_at(
-            t(5),
+            t(5)?,
             b"BYE sip:bob@example.com SIP/2.0\r\nCall-ID: hep-bye\r\n\r\n",
             TransportProto::Tcp,
             InputOrigin::Hep,
         );
         let tls_yield = TlsYield {
             recovered: recovered_packets(
-                vec![recovered_at(t(1), "wire-invite")],
+                vec![recovered_at(t(1)?, "wire-invite")?],
                 &mut tls::TlsRecordReassembler::new(16),
             ),
             decrypted: capture::ParsedPackets::new(),
@@ -9155,22 +9196,23 @@ mod tests {
             "the HEP BYE passes through as it arrived"
         );
         assert_eq!(out[1].input_origin, InputOrigin::Hep);
+        Ok(())
     }
 
     /// The same for a wire packet that is not TLS at all.
     #[cfg(feature = "tls")]
     #[test]
-    fn key_recovery_keeps_a_plain_wire_packet_in_hand() {
+    fn key_recovery_keeps_a_plain_wire_packet_in_hand() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let options = packet_at(
-            t(5),
+            t(5)?,
             b"OPTIONS sip:x SIP/2.0\r\n\r\n",
             TransportProto::Udp,
             InputOrigin::Wire,
         );
         let tls_yield = TlsYield {
             recovered: recovered_packets(
-                vec![recovered_at(t(1), "wire-invite")],
+                vec![recovered_at(t(1)?, "wire-invite")?],
                 &mut tls::TlsRecordReassembler::new(16),
             ),
             decrypted: capture::ParsedPackets::new(),
@@ -9178,6 +9220,7 @@ mod tests {
         let out = packets_after_tls(&options, tls_yield);
         assert_eq!(out.len(), 2, "the recovered INVITE and the OPTIONS in hand");
         assert!(std::ptr::eq(out[1].as_ref(), &options));
+        Ok(())
     }
 
     /// Everything one packet yields is analyzed in capture-time order: held
@@ -9185,19 +9228,23 @@ mod tests {
     /// dialog rebuilt out of order would put the answer before the offer.
     #[cfg(feature = "tls")]
     #[test]
-    fn key_recovery_and_the_packet_in_hand_come_out_in_time_order() {
+    fn key_recovery_and_the_packet_in_hand_come_out_in_time_order() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
-        let in_hand = packet_at(t(5), b"x", TransportProto::Udp, InputOrigin::Wire);
+        let in_hand = packet_at(t(5)?, b"x", TransportProto::Udp, InputOrigin::Wire);
         let tls_yield = TlsYield {
             recovered: recovered_packets(
-                vec![recovered_at(t(3), "second"), recovered_at(t(1), "first")],
+                vec![
+                    recovered_at(t(3)?, "second")?,
+                    recovered_at(t(1)?, "first")?,
+                ],
                 &mut tls::TlsRecordReassembler::new(16),
             ),
             decrypted: capture::ParsedPackets::new(),
         };
         let out = packets_after_tls(&in_hand, tls_yield);
         let times: Vec<_> = out.iter().map(|p| p.timestamp).collect();
-        assert_eq!(times, vec![t(1), t(3), t(5)]);
+        assert_eq!(times, vec![t(1)?, t(3)?, t(5)?]);
+        Ok(())
     }
 
     /// A held WSS record opened by key recovery is SIP over WSS too. The lab's
@@ -9205,14 +9252,14 @@ mod tests {
     /// SIP), because keys arrive after the handshake.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_recovered_websocket_frame_is_sip_over_wss() {
+    fn a_recovered_websocket_frame_is_sip_over_wss() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let sip = b"INVITE sip:bob@x SIP/2.0\r\nCall-ID: wss-recovered\r\n\r\n";
         let mut frame = vec![0x81u8, sip.len() as u8];
         frame.extend_from_slice(sip);
-        let mut record = recovered_at(t(1), "unused");
+        let mut record = recovered_at(t(1)?, "unused")?;
         record.plaintext = frame;
-        let in_hand = packet_at(t(5), b"x", TransportProto::Udp, InputOrigin::Wire);
+        let in_hand = packet_at(t(5)?, b"x", TransportProto::Udp, InputOrigin::Wire);
         let tls_yield = TlsYield {
             recovered: recovered_packets(vec![record], &mut tls::TlsRecordReassembler::new(16)),
             decrypted: capture::ParsedPackets::new(),
@@ -9225,6 +9272,7 @@ mod tests {
             &sip[..],
             "the frame's payload, unwrapped"
         );
+        Ok(())
     }
 
     /// A WebSocket connection yields only its SIP messages, labeled WSS: not
@@ -9232,9 +9280,9 @@ mod tests {
     /// else. A TLS connection that never started WebSocket stays SIP over TLS.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_websocket_connection_yields_only_its_sip_messages() {
-        let a: std::net::SocketAddr = "192.0.2.1:40000".parse().unwrap();
-        let b: std::net::SocketAddr = "192.0.2.2:7443".parse().unwrap();
+    fn a_websocket_connection_yields_only_its_sip_messages() -> Result<(), TestError> {
+        let a: std::net::SocketAddr = "192.0.2.1:40000".parse()?;
+        let b: std::net::SocketAddr = "192.0.2.2:7443".parse()?;
         let mut r = tls::TlsRecordReassembler::new(16);
         let mut ping = vec![0x89u8, 4];
         ping.extend_from_slice(b"ping");
@@ -9258,36 +9306,39 @@ mod tests {
             vec![(options.to_vec(), TransportProto::Wss)]
         );
 
-        let c: std::net::SocketAddr = "192.0.2.3:40001".parse().unwrap();
+        let c: std::net::SocketAddr = "192.0.2.3:40001".parse()?;
         let invite = b"INVITE sip:x SIP/2.0\r\nContent-Length: 0\r\n\r\n";
         assert_eq!(
             sip_in_plaintext(c, b, invite, &mut r),
             vec![(invite.to_vec(), TransportProto::Tls)],
             "no WebSocket on this connection"
         );
+        Ok(())
     }
 
     // ── HEP unwrapping and the rtpengine control plane ──────────
 
     /// `unwrap_hep` for a datagram every test here expects to unwrap.
     #[cfg(feature = "hep")]
-    fn unwrapped(pp: &ParsedPacket) -> Option<ParsedPacket> {
-        crate::pipeline::unwrap_hep(pp).map(|r| r.expect("a transport the HEP rule names"))
+    fn unwrapped(pp: &ParsedPacket) -> Result<Option<ParsedPacket>, TestError> {
+        Ok(crate::pipeline::unwrap_hep(pp)
+            .transpose()
+            .map_err(|e| format!("a transport the HEP rule names: {e:?}"))?)
     }
 
     /// `hep_datagram` with its IP protocol chunk rewritten to `ip_proto`.
     #[cfg(feature = "hep")]
-    fn hep_datagram_with_ip_proto(ip_proto: u8, payload: &[u8]) -> ParsedPacket {
-        let mut pp = hep_datagram(1, payload, None);
+    fn hep_datagram_with_ip_proto(ip_proto: u8, payload: &[u8]) -> Result<ParsedPacket, TestError> {
+        let mut pp = hep_datagram(1, payload, None)?;
         let mut bytes = pp.payload.to_vec();
         let chunk = [0u8, 0, 0, 2, 0, 7];
         let at = bytes
             .windows(chunk.len())
             .position(|w| w == chunk)
-            .expect("the encoder writes an IP protocol chunk");
+            .ok_or("the encoder writes an IP protocol chunk")?;
         bytes[at + chunk.len()] = ip_proto;
         pp.payload = bytes.into();
-        pp
+        Ok(pp)
     }
 
     /// `--hep-parse` reads the transport by the rule `--hep-listen` uses
@@ -9295,7 +9346,7 @@ mod tests {
     /// or Kamailio feed read TLS through a socket and UDP from a file.
     #[cfg(feature = "hep")]
     #[test]
-    fn unwrapping_hep_takes_the_transport_from_the_hep_rule() {
+    fn unwrapping_hep_takes_the_transport_from_the_hep_rule() -> Result<(), TestError> {
         let invite = |via: &str| {
             format!("INVITE sip:b@x SIP/2.0\r\nVia: SIP/2.0/{via} x;branch=z9hG4bK1\r\n\r\n")
         };
@@ -9307,14 +9358,15 @@ mod tests {
             (6, "TCP", TransportProto::Tcp),
             (17, "UDP", TransportProto::Udp),
         ] {
-            let pp = hep_datagram_with_ip_proto(ip_proto, invite(via).as_bytes());
-            let out = unwrapped(&pp).expect("a HEP datagram unwraps");
+            let pp = hep_datagram_with_ip_proto(ip_proto, invite(via).as_bytes())?;
+            let out = unwrapped(&pp)?.ok_or("a HEP datagram unwraps")?;
             assert_eq!(out.transport, want, "HEP protocol {ip_proto}, Via {via}");
             assert_eq!(
                 out.ip_protocol, ip_proto,
                 "the number as the sender stated it"
             );
         }
+        Ok(())
     }
 
     /// A HEP datagram whose number no rule names is refused by that number,
@@ -9322,17 +9374,22 @@ mod tests {
     /// reading it as UDP.
     #[cfg(feature = "hep")]
     #[test]
-    fn unwrapping_hep_with_an_unknown_ip_protocol_is_refused_by_number() {
-        let pp = hep_datagram_with_ip_proto(99, b"INVITE sip:b@x SIP/2.0\r\n\r\n");
+    fn unwrapping_hep_with_an_unknown_ip_protocol_is_refused_by_number() -> Result<(), TestError> {
+        let pp = hep_datagram_with_ip_proto(99, b"INVITE sip:b@x SIP/2.0\r\n\r\n")?;
         match crate::pipeline::unwrap_hep(&pp) {
             Some(Err(crate::error::CaptureError::UnsupportedIpProtocol(99))) => {}
-            other => panic!("expected a refusal naming 99, got {other:?}"),
+            other => return Err(format!("expected a refusal naming 99, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A HEP datagram carrying `payload`, announced as `proto`.
     #[cfg(feature = "hep")]
-    fn hep_datagram(proto: u8, payload: &[u8], correlation: Option<&str>) -> ParsedPacket {
+    fn hep_datagram(
+        proto: u8,
+        payload: &[u8],
+        correlation: Option<&str>,
+    ) -> Result<ParsedPacket, TestError> {
         use std::net::{IpAddr, Ipv4Addr};
         let endpoint = crate::capture::hep::HepEndpoint {
             src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
@@ -9361,10 +9418,11 @@ mod tests {
             chunk.extend_from_slice(&len.to_be_bytes());
             chunk.extend_from_slice(body);
             bytes.extend_from_slice(&chunk);
-            let total = u16::try_from(bytes.len()).expect("test datagram fits");
+            let total =
+                u16::try_from(bytes.len()).map_err(|e| format!("test datagram fits: {e:?}"))?;
             bytes[4..6].copy_from_slice(&total.to_be_bytes());
         }
-        ParsedPacket {
+        Ok(ParsedPacket {
             frame_bytes: None,
             frame: None,
             timestamp: chrono::Utc::now(),
@@ -9383,7 +9441,7 @@ mod tests {
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
-        }
+        })
     }
 
     /// Unwrapping keeps what the wrapper said.
@@ -9395,18 +9453,19 @@ mod tests {
     /// discarded in silence and every relay stream stayed unnamed.
     #[cfg(feature = "hep")]
     #[test]
-    fn unwrapping_hep_carries_the_wrappers_protocol_onto_the_packet() {
+    fn unwrapping_hep_carries_the_wrappers_protocol_onto_the_packet() -> Result<(), TestError> {
         let pp = hep_datagram(
             crate::rtpengine::NG_HEP_CAPTURE_PROTO,
             b"d3:foo3:bare",
             None,
-        );
-        let out = unwrapped(&pp).expect("a HEP datagram unwraps");
-        let origin = out.hep.expect(
+        )?;
+        let out = unwrapped(&pp)?.ok_or("a HEP datagram unwraps")?;
+        let origin = out.hep.ok_or(
             "the wrapper's metadata must survive: without it nothing downstream \
              can tell mirrored ng from any other UDP payload",
-        );
+        )?;
         assert_eq!(origin.protocol, crate::rtpengine::NG_HEP_CAPTURE_PROTO);
+        Ok(())
     }
 
     /// The correlation id survives, because a reply has nothing else.
@@ -9416,17 +9475,18 @@ mod tests {
     /// reply into control traffic about an unknown call.
     #[cfg(feature = "hep")]
     #[test]
-    fn unwrapping_hep_keeps_the_correlation_id() {
+    fn unwrapping_hep_keeps_the_correlation_id() -> Result<(), TestError> {
         let pp = hep_datagram(
             crate::rtpengine::NG_HEP_CAPTURE_PROTO,
             b"d3:foo3:bare",
             Some("corr-42"),
-        );
-        let out = unwrapped(&pp).expect("unwraps");
+        )?;
+        let out = unwrapped(&pp)?.ok_or("unwraps")?;
         assert_eq!(
             out.hep.and_then(|h| h.correlation_id).as_deref(),
             Some("corr-42")
         );
+        Ok(())
     }
 
     /// An unwrapped HEP packet's addressing is sender-asserted, so it must carry
@@ -9441,35 +9501,37 @@ mod tests {
     /// hole the origin gate closes for `--hep-listen`, open on the parse path.
     #[cfg(feature = "hep")]
     #[test]
-    fn unwrapping_hep_marks_the_addressing_as_sender_asserted() {
+    fn unwrapping_hep_marks_the_addressing_as_sender_asserted() -> Result<(), TestError> {
         let pp = hep_datagram(
             crate::rtpengine::NG_HEP_CAPTURE_PROTO,
             b"d3:foo3:bare",
             None,
-        );
+        )?;
         assert_eq!(
             pp.input_origin,
             crate::capture::parse::InputOrigin::Wire,
             "the wrapper itself arrives off the wire under --hep-parse",
         );
-        let out = unwrapped(&pp).expect("a HEP datagram unwraps");
+        let out = unwrapped(&pp)?.ok_or("a HEP datagram unwraps")?;
         assert_eq!(
             out.input_origin,
             crate::capture::parse::InputOrigin::Hep,
             "the inner addressing is the sender's assertion, not observed; leaving \
              it Wire lets a forged inner source pass the kill/jail origin gate",
         );
+        Ok(())
     }
 
     /// The inner payload replaces the outer one, which is the point.
     #[cfg(feature = "hep")]
     #[test]
-    fn unwrapping_hep_yields_the_inner_payload_and_its_addresses() {
+    fn unwrapping_hep_yields_the_inner_payload_and_its_addresses() -> Result<(), TestError> {
         let inner = b"OPTIONS sip:a@b SIP/2.0\r\n\r\n";
-        let pp = hep_datagram(1, inner, None);
-        let out = unwrapped(&pp).expect("unwraps");
+        let pp = hep_datagram(1, inner, None)?;
+        let out = unwrapped(&pp)?.ok_or("unwraps")?;
         assert_eq!(out.payload.as_ref(), inner, "the SIP inside is what parses");
         assert_eq!(out.dst_port, 5060, "and the addressing is the inner call's");
+        Ok(())
     }
 
     /// A datagram that is not HEP is left alone.
@@ -9479,10 +9541,11 @@ mod tests {
     /// ordinary traffic.
     #[cfg(feature = "hep")]
     #[test]
-    fn a_packet_that_is_not_hep_is_not_unwrapped() {
-        let mut pp = hep_datagram(1, b"x", None);
+    fn a_packet_that_is_not_hep_is_not_unwrapped() -> Result<(), TestError> {
+        let mut pp = hep_datagram(1, b"x", None)?;
         pp.payload = bytes::Bytes::from_static(b"not a hep datagram at all");
         assert!(crate::pipeline::unwrap_hep(&pp).is_none());
+        Ok(())
     }
 
     /// Only UDP is considered.
@@ -9492,10 +9555,11 @@ mod tests {
     /// segment boundary.
     #[cfg(feature = "hep")]
     #[test]
-    fn hep_unwrapping_ignores_non_udp() {
-        let mut pp = hep_datagram(1, b"OPTIONS sip:a@b SIP/2.0\r\n\r\n", None);
+    fn hep_unwrapping_ignores_non_udp() -> Result<(), TestError> {
+        let mut pp = hep_datagram(1, b"OPTIONS sip:a@b SIP/2.0\r\n\r\n", None)?;
         pp.transport = TransportProto::Tcp;
         assert!(crate::pipeline::unwrap_hep(&pp).is_none());
+        Ok(())
     }
 
     /// Unwrapped mirrored ng is still recognizable as control traffic.
@@ -9507,19 +9571,20 @@ mod tests {
     /// nothing, because this one fact did not survive the unwrap.
     #[cfg(feature = "hep")]
     #[test]
-    fn mirrored_ng_survives_unwrapping_as_control_traffic() {
+    fn mirrored_ng_survives_unwrapping_as_control_traffic() -> Result<(), TestError> {
         let pp = hep_datagram(
             crate::rtpengine::NG_HEP_CAPTURE_PROTO,
             b"d7:command5:offere",
             Some("c1"),
-        );
-        let out = unwrapped(&pp).expect("unwraps");
-        let origin = out.hep.as_ref().expect("metadata survives");
+        )?;
+        let out = unwrapped(&pp)?.ok_or("unwraps")?;
+        let origin = out.hep.as_ref().ok_or("metadata survives")?;
         assert!(
             crate::rtpengine::is_ng_over_hep(origin.protocol, &out.payload),
             "an unwrapped mirrored ng message must still identify as ng, or \
              the relay names no media at all"
         );
+        Ok(())
     }
 
     // ── What the run records about its own suppression ──────────
@@ -9537,29 +9602,31 @@ mod tests {
     /// both. `no_test_judges_an_export_from_one_arbitrary_directory_entry`
     /// keeps the shape from coming back.
     #[cfg(feature = "vcon")]
-    fn containers_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn containers_in(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, TestError> {
         let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-            .expect("readable")
+            .map_err(|e| format!("readable: {e:?}"))?
             .flatten()
             .map(|e| e.path())
             .collect();
         paths.sort();
         assert!(!paths.is_empty(), "no container was written to {dir:?}");
-        paths
+        Ok(paths)
     }
 
     /// Read the `capture_completeness` block out of the first container in a
     /// directory. The containers are what a consumer actually gets.
     #[cfg(feature = "vcon")]
-    fn first_completeness(dir: &std::path::Path) -> serde_json::Value {
-        let text = std::fs::read_to_string(&containers_in(dir)[0]).expect("readable");
-        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    fn first_completeness(dir: &std::path::Path) -> Result<serde_json::Value, TestError> {
+        let text = std::fs::read_to_string(&containers_in(dir)?[0])
+            .map_err(|e| format!("readable: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
         let body = v["analysis"][0]["body"]
             .as_str()
-            .unwrap_or_else(|| panic!("an analysis body is a string: {v}"));
+            .ok_or_else(|| format!("an analysis body is a string: {v}"))?;
         let parsed: serde_json::Value =
-            serde_json::from_str(body).expect("the analysis body parses");
-        parsed["capture_completeness"].clone()
+            serde_json::from_str(body).map_err(|e| format!("the analysis body parses: {e:?}"))?;
+        Ok(parsed["capture_completeness"].clone())
     }
 
     /// The suppressed count reaches the container a consumer reads.
@@ -9570,21 +9637,21 @@ mod tests {
     /// same container a reader would get if the deny flag had never fired.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_suppressed_count_reaches_the_written_container() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn the_suppressed_count_reaches_the_written_container() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &two_dialogs_first_flagged("X-No-Record", "1")?,
             &StreamStore::new(16),
             7,
             None,
         ));
 
-        let completeness = first_completeness(tmp.path());
+        let completeness = first_completeness(tmp.path())?;
         assert_eq!(
             completeness["dialogs_suppressed_by_deny"], 1,
             "the container must carry what the run suppressed: {completeness}"
@@ -9595,25 +9662,26 @@ mod tests {
                 .is_some_and(|n| n.contains("1 dialog(s) carried a deny flag")),
             "and say it in the note: {completeness}"
         );
+        Ok(())
     }
 
     /// A run with no deny flag writes containers that claim no suppression.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_run_with_no_deny_flag_writes_a_zero() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_run_with_no_deny_flag_writes_a_zero() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
 
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &two_dialogs_first_flagged("X-No-Record", "1")?,
             &StreamStore::new(16),
             7,
             None,
         ));
 
-        let completeness = first_completeness(tmp.path());
+        let completeness = first_completeness(tmp.path())?;
         assert_eq!(
             completeness["dialogs_suppressed_by_deny"], 0,
             "no header was named, so nothing was suppressed: {completeness}"
@@ -9622,6 +9690,7 @@ mod tests {
             completeness["gate_closed_during_run"], false,
             "and no gate was moved: {completeness}"
         );
+        Ok(())
     }
 
     /// A gate closed and reopened mid-run reaches the container too.
@@ -9632,8 +9701,8 @@ mod tests {
     /// of a hole, and nothing else in them says the hole is there.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_gate_closed_and_reopened_is_recorded_in_the_container() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_gate_closed_and_reopened_is_recorded_in_the_container() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let gate = crate::output::persistence::PersistenceGate::new(true);
         gate.set(false);
@@ -9642,13 +9711,13 @@ mod tests {
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
         ));
 
-        let completeness = first_completeness(tmp.path());
+        let completeness = first_completeness(tmp.path())?;
         assert_eq!(
             completeness["gate_closed_during_run"], true,
             "recording stopped partway and the container must say so: {completeness}"
@@ -9659,26 +9728,27 @@ mod tests {
                 .is_some_and(|n| n.contains("closed the persistence gate")),
             "and say it in the note: {completeness}"
         );
+        Ok(())
     }
 
     /// An untouched gate leaves the container claiming a clean run.
     #[cfg(feature = "vcon")]
     #[test]
-    fn an_untouched_gate_writes_a_container_that_claims_nothing() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn an_untouched_gate_writes_a_container_that_claims_nothing() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let gate = crate::output::persistence::PersistenceGate::new(true);
 
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
         ));
 
-        let completeness = first_completeness(tmp.path());
+        let completeness = first_completeness(tmp.path())?;
         assert_eq!(completeness["gate_closed_during_run"], false);
         assert!(
             completeness["note"]
@@ -9686,6 +9756,7 @@ mod tests {
                 .is_some_and(|n| !n.contains("persistence gate")),
             "a gate nobody touched must not be mentioned: {completeness}"
         );
+        Ok(())
     }
 
     /// Both new fields are always present, and never null.
@@ -9701,20 +9772,20 @@ mod tests {
     /// success, which is what a filter matching nothing always does.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_new_completeness_fields_are_present_and_never_null() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn the_new_completeness_fields_are_present_and_never_null() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
 
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         ));
 
-        let completeness = first_completeness(tmp.path());
+        let completeness = first_completeness(tmp.path())?;
         for key in ["gate_closed_during_run", "dialogs_suppressed_by_deny"] {
             assert!(
                 completeness.get(key).is_some(),
@@ -9725,6 +9796,7 @@ mod tests {
                 "{key} must never serialize as null: {completeness}"
             );
         }
+        Ok(())
     }
 
     /// The deny filter reports how many dialogs it removed.
@@ -9735,11 +9807,14 @@ mod tests {
     /// predicate rejected for entirely different reasons.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_deny_filter_reports_what_it_removed() {
-        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+    fn the_deny_filter_reports_what_it_removed() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1")?;
         let streams = StreamStore::new(16);
         let selection = crate::sip::dsl::select_dialogs(
-            Some(&crate::sip::dsl::FilterExpr::parse("response_code >= 100").expect("parses")),
+            Some(
+                &crate::sip::dsl::FilterExpr::parse("response_code >= 100")
+                    .map_err(|e| format!("parses: {e:?}"))?,
+            ),
             &dialogs,
             &streams,
         );
@@ -9753,16 +9828,20 @@ mod tests {
             before as u64,
             "every dialog is either kept or counted; none may vanish unrecorded"
         );
+        Ok(())
     }
 
     /// With no deny flag configured, nothing is reported as suppressed.
     #[cfg(feature = "vcon")]
     #[test]
-    fn no_deny_flag_suppresses_nothing_and_reports_nothing() {
-        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+    fn no_deny_flag_suppresses_nothing_and_reports_nothing() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1")?;
         let streams = StreamStore::new(16);
         let selection = crate::sip::dsl::select_dialogs(
-            Some(&crate::sip::dsl::FilterExpr::parse("response_code >= 100").expect("parses")),
+            Some(
+                &crate::sip::dsl::FilterExpr::parse("response_code >= 100")
+                    .map_err(|e| format!("parses: {e:?}"))?,
+            ),
             &dialogs,
             &streams,
         );
@@ -9772,6 +9851,7 @@ mod tests {
 
         assert_eq!(suppressed, 0, "no header was named, so none was honored");
         assert_eq!(kept.dialogs.len(), before, "and nothing was removed");
+        Ok(())
     }
 
     /// A header nobody sent suppresses nothing.
@@ -9780,11 +9860,14 @@ mod tests {
     /// ran": both keep every dialog, and only the count tells them apart.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_deny_header_nobody_sent_reports_zero() {
-        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+    fn a_deny_header_nobody_sent_reports_zero() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1")?;
         let streams = StreamStore::new(16);
         let selection = crate::sip::dsl::select_dialogs(
-            Some(&crate::sip::dsl::FilterExpr::parse("response_code >= 100").expect("parses")),
+            Some(
+                &crate::sip::dsl::FilterExpr::parse("response_code >= 100")
+                    .map_err(|e| format!("parses: {e:?}"))?,
+            ),
             &dialogs,
             &streams,
         );
@@ -9794,6 +9877,7 @@ mod tests {
 
         assert_eq!(suppressed, 0);
         assert_eq!(kept.dialogs.len(), before);
+        Ok(())
     }
 
     // ── The runtime persistence gate ────────────────────────────
@@ -9805,8 +9889,8 @@ mod tests {
     /// on disk, so a file appearing here means the exporter never asked.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_closed_gate_writes_no_container() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_closed_gate_writes_no_container() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let gate = crate::output::persistence::PersistenceGate::new(true);
         gate.set(false);
@@ -9814,7 +9898,7 @@ mod tests {
         let ok = export_vcon(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
@@ -9826,7 +9910,7 @@ mod tests {
             "an operator who closed the gate got what they asked for; that is              not a failure and must not become a non-zero exit code"
         );
         let written: Vec<_> = std::fs::read_dir(tmp.path())
-            .expect("readable")
+            .map_err(|e| format!("readable: {e:?}"))?
             .filter_map(Result::ok)
             .collect();
         assert!(
@@ -9834,6 +9918,7 @@ mod tests {
             "the gate was closed and {} container(s) were written anyway",
             written.len()
         );
+        Ok(())
     }
 
     /// The single-call form is gated too.
@@ -9844,8 +9929,8 @@ mod tests {
     /// more-used flag.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_closed_gate_stops_the_single_call_form_too() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_closed_gate_stops_the_single_call_form_too() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let out = tmp.path().join("one.vcon.json");
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon = Some("failed@test".to_owned());
@@ -9856,7 +9941,7 @@ mod tests {
         assert!(export_vcon(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
@@ -9867,6 +9952,7 @@ mod tests {
             "--export-vcon wrote through a closed gate: {}",
             out.display()
         );
+        Ok(())
     }
 
     /// A gate the command line never authorized writes nothing, whatever the
@@ -9878,8 +9964,8 @@ mod tests {
     /// writes nothing rather than falling back to the flags.
     #[cfg(feature = "vcon")]
     #[test]
-    fn an_unauthorized_gate_overrides_the_flags() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn an_unauthorized_gate_overrides_the_flags() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let gate = crate::output::persistence::PersistenceGate::new(false);
         gate.set(true);
@@ -9887,7 +9973,7 @@ mod tests {
         assert!(export_vcon(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
@@ -9895,12 +9981,13 @@ mod tests {
         ));
         assert_eq!(
             std::fs::read_dir(tmp.path())
-                .expect("readable")
+                .map_err(|e| format!("readable: {e:?}"))?
                 .filter_map(Result::ok)
                 .count(),
             0,
             "the gate is the authority, not the flags it was built from"
         );
+        Ok(())
     }
 
     /// An open gate exports exactly what no gate does.
@@ -9911,49 +9998,50 @@ mod tests {
     /// later fixture change would have to chase.
     #[cfg(feature = "vcon")]
     #[test]
-    fn an_open_gate_exports_exactly_what_no_gate_does() {
-        let names = |dir: &std::path::Path| {
+    fn an_open_gate_exports_exactly_what_no_gate_does() -> Result<(), TestError> {
+        let names = |dir: &std::path::Path| -> Result<Vec<_>, TestError> {
             let mut v: Vec<_> = std::fs::read_dir(dir)
-                .expect("readable")
+                .map_err(|e| format!("readable: {e:?}"))?
                 .filter_map(Result::ok)
                 .map(|e| e.file_name())
                 .collect();
             v.sort_unstable();
-            v
+            Ok(v)
         };
 
-        let ungated = tempfile::tempdir().expect("temp dir");
+        let ungated = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         assert!(export_vcon(
             &cli_exporting_to(ungated.path(), "response_code >= 200"),
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
             VconRunEnd::Whole,
         ));
 
-        let gated = tempfile::tempdir().expect("temp dir");
+        let gated = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         assert!(export_vcon(
             &cli_exporting_to(gated.path(), "response_code >= 200"),
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&crate::output::persistence::PersistenceGate::new(true)),
             VconRunEnd::Whole,
         ));
 
-        let ungated_names = names(ungated.path());
+        let ungated_names = names(ungated.path())?;
         assert!(
             !ungated_names.is_empty(),
             "the fixture must write something, or this test compares two              empty directories and proves nothing"
         );
         assert_eq!(
             ungated_names,
-            names(gated.path()),
+            names(gated.path())?,
             "an open gate changed what a run wrote"
         );
+        Ok(())
     }
 
     /// Closing and reopening restores the export.
@@ -9963,8 +10051,8 @@ mod tests {
     /// latched shut would be safe and useless.
     #[cfg(feature = "vcon")]
     #[test]
-    fn reopening_the_gate_restores_the_export() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn reopening_the_gate_restores_the_export() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let gate = crate::output::persistence::PersistenceGate::new(true);
 
@@ -9972,7 +10060,7 @@ mod tests {
         assert!(export_vcon(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
@@ -9980,7 +10068,7 @@ mod tests {
         ));
         assert_eq!(
             std::fs::read_dir(tmp.path())
-                .expect("readable")
+                .map_err(|e| format!("readable: {e:?}"))?
                 .filter_map(Result::ok)
                 .count(),
             0,
@@ -9991,7 +10079,7 @@ mod tests {
         assert!(export_vcon(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
@@ -9999,12 +10087,13 @@ mod tests {
         ));
         assert!(
             std::fs::read_dir(tmp.path())
-                .expect("readable")
+                .map_err(|e| format!("readable: {e:?}"))?
                 .filter_map(Result::ok)
                 .count()
                 > 0,
             "reopening the gate must let the next export through"
         );
+        Ok(())
     }
 
     /// A run with no persistence flags is not stopped by the gate check.
@@ -10015,18 +10104,19 @@ mod tests {
     /// capture into a non-zero exit.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_run_that_exports_nothing_is_unaffected_by_a_closed_gate() {
+    fn a_run_that_exports_nothing_is_unaffected_by_a_closed_gate() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab"]);
         let gate = crate::output::persistence::PersistenceGate::new(false);
         assert!(export_vcon(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             Some(&gate),
             VconRunEnd::Whole,
         ));
+        Ok(())
     }
 
     /// The export directory is created when it does not exist.
@@ -10037,8 +10127,8 @@ mod tests {
     /// command the page tells them to run.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_missing_export_directory_is_created() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_missing_export_directory_is_created() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let dir = tmp.path().join("does/not/exist/yet");
         assert!(!dir.exists(), "the fixture starts with no directory");
 
@@ -10046,7 +10136,7 @@ mod tests {
         let ok = export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
@@ -10054,6 +10144,7 @@ mod tests {
 
         assert!(ok, "creating the directory is part of the job");
         assert!(dir.is_dir(), "the run must create what it was pointed at");
+        Ok(())
     }
 
     /// Every selected dialog gets its own file on disk.
@@ -10063,14 +10154,14 @@ mod tests {
     /// wrote the first dialog and returned would pass that one and fail this.
     #[cfg(feature = "vcon")]
     #[test]
-    fn every_selected_dialog_is_written_to_its_own_file() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn every_selected_dialog_is_written_to_its_own_file() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
 
         let expected = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("a valid predicate")
+            .map_err(|e| format!("a valid predicate: {e:?}"))?
             .0
             .dialogs
             .len();
@@ -10081,7 +10172,7 @@ mod tests {
         ));
 
         let written: Vec<_> = std::fs::read_dir(tmp.path())
-            .expect("readable")
+            .map_err(|e| format!("readable: {e:?}"))?
             .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
@@ -10091,6 +10182,7 @@ mod tests {
             "{expected} dialog(s) selected, {} file(s) written: {written:?}",
             written.len()
         );
+        Ok(())
     }
 
     /// What lands on disk is a vCon a consumer can read.
@@ -10099,21 +10191,22 @@ mod tests {
     /// every other test here. This reads one back.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_written_container_is_valid_vcon_json() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_written_container_is_valid_vcon_json() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        let first = containers_in(tmp.path())[0].clone();
-        let text = std::fs::read_to_string(&first).expect("readable file");
-        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let first = containers_in(tmp.path())?[0].clone();
+        let text = std::fs::read_to_string(&first).map_err(|e| format!("readable file: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
 
         assert_eq!(v["vcon"], "0.4.0", "syntax version: {text}");
         assert!(v["uuid"].is_string(), "a container needs a uuid: {text}");
@@ -10121,6 +10214,7 @@ mod tests {
             v["parties"].as_array().is_some_and(|p| !p.is_empty()),
             "a container names its parties: {text}"
         );
+        Ok(())
     }
 
     /// A directory that cannot be written fails the run out loud.
@@ -10131,25 +10225,27 @@ mod tests {
     /// outcome available.
     #[cfg(feature = "vcon")]
     #[test]
-    fn an_unwritable_export_directory_fails_the_run() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn an_unwritable_export_directory_fails_the_run() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         // A FILE where the directory should be: `create_dir_all` cannot make a
         // directory over it, and this works without depending on running as a
         // non-root user, which a permission-bit fixture would.
         let blocked = tmp.path().join("blocked");
-        std::fs::write(&blocked, b"not a directory").expect("write the blocker");
+        std::fs::write(&blocked, b"not a directory")
+            .map_err(|e| format!("write the blocker: {e:?}"))?;
 
         let cli = cli_exporting_to(&blocked, "response_code >= 200");
         let ok = export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         );
 
         assert!(!ok, "a directory that cannot exist must fail the run");
+        Ok(())
     }
 
     /// A predicate with no directory is refused before anything is written.
@@ -10160,19 +10256,20 @@ mod tests {
     /// panic or, worse, pick a default directory nobody asked for.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_predicate_without_a_directory_is_refused() {
+    fn a_predicate_without_a_directory_is_refused() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         // deliberately no export_vcon_dir
         let ok = export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         );
         assert!(!ok, "a destination nobody named is not a destination");
+        Ok(())
     }
 
     /// Each file holds the dialog it is named for.
@@ -10183,25 +10280,30 @@ mod tests {
     /// failure this whole feature exists to avoid.
     #[cfg(feature = "vcon")]
     #[test]
-    fn each_file_holds_the_dialog_it_is_named_for() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn each_file_holds_the_dialog_it_is_named_for() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
+        for entry in std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .flatten()
+        {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let text = std::fs::read_to_string(entry.path()).expect("readable");
-            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            let text =
+                std::fs::read_to_string(entry.path()).map_err(|e| format!("readable: {e:?}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
             let call_id = v["dialog"][0]["sip_call_id"]
                 .as_str()
-                .expect("the dialog names its call")
+                .ok_or("the dialog names its call")?
                 .to_owned();
             assert_eq!(
                 name,
@@ -10209,6 +10311,7 @@ mod tests {
                 "{name} holds {call_id}, which belongs in a differently named file"
             );
         }
+        Ok(())
     }
 
     /// A capture where nothing matches writes no files and still succeeds.
@@ -10218,21 +10321,24 @@ mod tests {
     /// morning as a broken tool.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_capture_with_no_match_writes_nothing_and_still_succeeds() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_capture_with_no_match_writes_nothing_and_still_succeeds() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 599");
         let ok = export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         );
 
         assert!(ok, "an empty answer is an answer, not an error");
-        let n = std::fs::read_dir(tmp.path()).expect("readable").count();
+        let n = std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .count();
         assert_eq!(n, 0, "nothing matched, so nothing should be on disk");
+        Ok(())
     }
 
     /// Re-running over the same directory overwrites rather than accumulating.
@@ -10242,25 +10348,31 @@ mod tests {
     /// would turn a re-run into a directory nobody can reason about.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_second_run_over_one_directory_overwrites_rather_than_accumulating() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_second_run_over_one_directory_overwrites_rather_than_accumulating() -> Result<(), TestError>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
 
         assert!(export_vcon_selection(
             &cli, None, &dialogs, &streams, 7, None
         ));
-        let first = std::fs::read_dir(tmp.path()).expect("readable").count();
+        let first = std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .count();
         assert!(export_vcon_selection(
             &cli, None, &dialogs, &streams, 7, None
         ));
-        let second = std::fs::read_dir(tmp.path()).expect("readable").count();
+        let second = std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .count();
 
         assert_eq!(
             first, second,
             "a second run produced {second} files where the first produced {first}"
         );
+        Ok(())
     }
 
     /// The containers carry this capture's completeness facts, not defaults.
@@ -10272,23 +10384,25 @@ mod tests {
     /// is built against.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_written_container_carries_this_captures_frame_count() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_written_container_carries_this_captures_frame_count() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             4242,
             None,
         ));
 
-        let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
+        let text = std::fs::read_to_string(&containers_in(tmp.path())?[0])
+            .map_err(|e| format!("readable: {e:?}"))?;
         assert!(
             text.contains("4242"),
             "the container must carry this run's frame count, not a default: {text}"
         );
+        Ok(())
     }
 
     /// The directory preparation creates what is missing, and says so.
@@ -10299,15 +10413,17 @@ mod tests {
     /// are distinguishable, so a test can hold them apart.
     #[cfg(feature = "vcon")]
     #[test]
-    fn preparing_the_export_directory_creates_a_missing_one() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn preparing_the_export_directory_creates_a_missing_one() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let dir = tmp.path().join("a/b/c");
         let cli = cli_exporting_to(&dir, "response_code >= 200");
 
-        let got = prepare_export_dir(&cli).expect("a creatable path is not an error");
+        let got = prepare_export_dir(&cli)
+            .map_err(|e| format!("a creatable path is not an error: {e:?}"))?;
 
         assert_eq!(got, dir.as_path(), "it returns the directory it prepared");
         assert!(dir.is_dir(), "and the directory now exists");
+        Ok(())
     }
 
     /// ...and refuses a path it cannot make a directory, naming it.
@@ -10317,14 +10433,15 @@ mod tests {
     /// them to the flag they typed rather than the thing in the way.
     #[cfg(feature = "vcon")]
     #[test]
-    fn preparing_the_export_directory_refuses_a_path_that_is_a_file() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn preparing_the_export_directory_refuses_a_path_that_is_a_file() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let blocked = tmp.path().join("blocked");
-        std::fs::write(&blocked, b"not a directory").expect("write the blocker");
+        std::fs::write(&blocked, b"not a directory")
+            .map_err(|e| format!("write the blocker: {e:?}"))?;
         let cli = cli_exporting_to(&blocked, "response_code >= 200");
 
         let Err(message) = prepare_export_dir(&cli) else {
-            panic!("a file where a directory belongs is an error");
+            return Err("a file where a directory belongs is an error".into());
         };
 
         assert!(
@@ -10335,6 +10452,7 @@ mod tests {
             message.contains("Nothing was exported"),
             "and say that nothing was written: {message}"
         );
+        Ok(())
     }
 
     /// Two Call-IDs that sanitize to the same stem get different filenames.
@@ -10464,14 +10582,14 @@ mod tests {
     /// sees without changing any count.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_selection_follows_capture_order() {
-        let dialogs = two_dialogs_one_failed();
+    fn the_selection_follows_capture_order() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
 
         let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("a valid predicate")
+            .map_err(|e| format!("a valid predicate: {e:?}"))?
             .0
             .dialogs
             .iter()
@@ -10481,24 +10599,26 @@ mod tests {
         let expected: Vec<String> = store_ids.into_iter().filter(|c| ids.contains(c)).collect();
 
         assert_eq!(ids, expected, "the selection must not reorder the capture");
+        Ok(())
     }
 
     /// A predicate naming a field the language does not have is refused.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_predicate_naming_an_unknown_field_is_refused() {
-        let dialogs = two_dialogs_one_failed();
+    fn a_predicate_naming_an_unknown_field_is_refused() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("nonexistent_field == 'x'".to_owned());
 
         let Err(err) = vcon_selection(&cli, None, &dialogs, &streams) else {
-            panic!("a field the DSL does not define is not a valid expression");
+            return Err("a field the DSL does not define is not a valid expression".into());
         };
         assert!(
             format!("{err:#}").contains("--export-vcon-when"),
             "the refusal names the flag the operator typed: {err:#}"
         );
+        Ok(())
     }
 
     /// A relative export directory works.
@@ -10507,12 +10627,14 @@ mod tests {
     /// wrong base would fail on the very command the page prints.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_relative_export_directory_is_prepared() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_relative_export_directory_is_prepared() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let nested = tmp.path().join("rel");
         let cli = cli_exporting_to(&nested, "response_code >= 200");
-        let got = prepare_export_dir(&cli).expect("a relative-style path is usable");
+        let got = prepare_export_dir(&cli)
+            .map_err(|e| format!("a relative-style path is usable: {e:?}"))?;
         assert!(got.is_dir(), "the directory exists after preparation");
+        Ok(())
     }
 
     /// One dialog keeps one uuid across two runs of the same capture.
@@ -10522,16 +10644,18 @@ mod tests {
     /// conversations where there is one.
     #[cfg(feature = "vcon")]
     #[test]
-    fn one_dialog_keeps_one_uuid_across_runs() {
-        let read_uuid = |dir: &std::path::Path| -> String {
-            let text = std::fs::read_to_string(&containers_in(dir)[0]).expect("readable");
-            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-            v["uuid"].as_str().expect("a uuid").to_owned()
+    fn one_dialog_keeps_one_uuid_across_runs() -> Result<(), TestError> {
+        let read_uuid = |dir: &std::path::Path| -> Result<String, TestError> {
+            let text = std::fs::read_to_string(&containers_in(dir)?[0])
+                .map_err(|e| format!("readable: {e:?}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
+            Ok(v["uuid"].as_str().ok_or("a uuid")?.to_owned())
         };
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
 
-        let a = tempfile::tempdir().expect("temp dir");
+        let a = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         assert!(export_vcon_selection(
             &cli_exporting_to(a.path(), "response_code >= 486"),
             None,
@@ -10540,7 +10664,7 @@ mod tests {
             7,
             None,
         ));
-        let b = tempfile::tempdir().expect("temp dir");
+        let b = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         assert!(export_vcon_selection(
             &cli_exporting_to(b.path(), "response_code >= 486"),
             None,
@@ -10551,10 +10675,11 @@ mod tests {
         ));
 
         assert_eq!(
-            read_uuid(a.path()),
-            read_uuid(b.path()),
+            read_uuid(a.path())?,
+            read_uuid(b.path())?,
             "one dialog from one capture is one conversation, run twice"
         );
+        Ok(())
     }
 
     /// Every container in one run carries the same capture-level facts.
@@ -10564,29 +10689,33 @@ mod tests {
     /// could then disagree about how many frames that capture held.
     #[cfg(feature = "vcon")]
     #[test]
-    fn every_container_in_a_run_agrees_about_the_capture() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn every_container_in_a_run_agrees_about_the_capture() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             4242,
             None,
         ));
 
         let counts: std::collections::HashSet<String> = std::fs::read_dir(tmp.path())
-            .expect("readable")
+            .map_err(|e| format!("readable: {e:?}"))?
             .flatten()
-            .map(|e| {
-                let text = std::fs::read_to_string(e.path()).expect("readable");
-                let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-                v["analysis"][0]["body"]
+            .map(|e| -> Result<String, TestError> {
+                let text =
+                    std::fs::read_to_string(e.path()).map_err(|e| format!("readable: {e:?}"))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
+                Ok(v["analysis"][0]["body"]
                     .as_str()
                     .unwrap_or_default()
-                    .to_owned()
+                    .to_owned())
             })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .map(|b| {
                 b.split("frames_read")
                     .nth(1)
@@ -10598,6 +10727,7 @@ mod tests {
             })
             .collect();
         assert_eq!(counts.len(), 1, "one capture, one frame count: {counts:?}");
+        Ok(())
     }
 
     /// A predicate reading a media field selects without a stream store.
@@ -10607,18 +10737,19 @@ mod tests {
     /// panic here would take out every `-I` run over a capture with no RTP.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_media_predicate_survives_an_empty_stream_store() {
-        let dialogs = two_dialogs_one_failed();
+    fn a_media_predicate_survives_an_empty_stream_store() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("rtp.codec == 'PCMU'".to_owned());
 
-        let (picked, _, _) =
-            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, None, &dialogs, &streams)
+            .map_err(|e| format!("a valid predicate: {e:?}"))?;
         assert!(
             picked.dialogs.is_empty(),
             "no streams means no dialog carries PCMU"
         );
+        Ok(())
     }
 
     /// An empty predicate string is refused rather than matching everything.
@@ -10628,8 +10759,8 @@ mod tests {
     /// every call in the capture when the operator meant to write none.
     #[cfg(feature = "vcon")]
     #[test]
-    fn an_empty_predicate_is_refused_rather_than_matching_everything() {
-        let dialogs = two_dialogs_one_failed();
+    fn an_empty_predicate_is_refused_rather_than_matching_everything() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some(String::new());
@@ -10642,32 +10773,36 @@ mod tests {
                 sel.dialogs.len()
             ),
         }
+        Ok(())
     }
 
     /// Containers land in the directory given, not the working directory.
     #[cfg(feature = "vcon")]
     #[test]
-    fn containers_land_only_in_the_directory_given() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn containers_land_only_in_the_directory_given() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let target = tmp.path().join("target");
         let cli = cli_exporting_to(&target, "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        let inside = std::fs::read_dir(&target).expect("readable").count();
+        let inside = std::fs::read_dir(&target)
+            .map_err(|e| format!("readable: {e:?}"))?
+            .count();
         let stray = std::fs::read_dir(tmp.path())
-            .expect("readable")
+            .map_err(|e| format!("readable: {e:?}"))?
             .flatten()
             .filter(|e| e.path() != target)
             .count();
         assert!(inside > 0, "the containers went somewhere");
         assert_eq!(stray, 0, "and nothing landed beside the directory");
+        Ok(())
     }
 
     /// The written file is named exactly as `vcon_file_name` renders it.
@@ -10676,10 +10811,10 @@ mod tests {
     /// would pass every content test while making the sanitizer decorative.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_writer_uses_the_sanitizer_for_every_name() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn the_writer_uses_the_sanitizer_for_every_name() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
-        let dialogs = two_dialogs_one_failed();
+        let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         assert!(export_vcon_selection(
             &cli, None, &dialogs, &streams, 7, None
@@ -10687,14 +10822,14 @@ mod tests {
 
         let expected: std::collections::HashSet<String> =
             vcon_selection(&cli, None, &dialogs, &streams)
-                .expect("valid")
+                .map_err(|e| format!("valid: {e:?}"))?
                 .0
                 .dialogs
                 .iter()
                 .map(|(d, _)| vcon_file_name(&d.call_id))
                 .collect();
         let actual: std::collections::HashSet<String> = std::fs::read_dir(tmp.path())
-            .expect("readable")
+            .map_err(|e| format!("readable: {e:?}"))?
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
@@ -10703,6 +10838,7 @@ mod tests {
             actual, expected,
             "the writer must name files the way the sanitizer does"
         );
+        Ok(())
     }
 
     /// A container carries the observer party, never a display name.
@@ -10718,13 +10854,13 @@ mod tests {
     /// digest claims only what sipnab wrote.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_digest_line_is_in_the_format_sha256sum_reads() {
+    fn a_digest_line_is_in_the_format_sha256sum_reads() -> Result<(), TestError> {
         let line = digest_line(std::path::Path::new("/spool/call-id.vcon.json"), b"{}");
 
         // Known-answer: SHA-256 of the two bytes `{}`.
         let (hex, name) = line
             .split_once("  ")
-            .expect("two spaces separate digest from name, as `sha256sum -c` requires");
+            .ok_or("two spaces separate digest from name, as `sha256sum -c` requires")?;
         assert_eq!(
             hex, "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
             "the digest must be over the CONTAINER bytes and nothing else"
@@ -10740,6 +10876,7 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "`sha256sum` writes lowercase hex: {hex}"
         );
+        Ok(())
     }
 
     /// Different bytes, different digest — and identical bytes agree.
@@ -10748,7 +10885,7 @@ mod tests {
     /// the format test above on every call.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_digest_follows_the_bytes_not_the_name() {
+    fn a_digest_follows_the_bytes_not_the_name() -> Result<(), TestError> {
         let p = std::path::Path::new("a.json");
         let q = std::path::Path::new("b.json");
 
@@ -10762,11 +10899,12 @@ mod tests {
 
         let same_bytes_other_name = digest_line(q, br#"{"vcon":"0.4.0"}"#);
         assert_eq!(
-            a.split_once("  ").expect("split").0,
-            same_bytes_other_name.split_once("  ").expect("split").0,
+            a.split_once("  ").ok_or("split")?.0,
+            same_bytes_other_name.split_once("  ").ok_or("split")?.0,
             "the digest covers the bytes; renaming a container does not \
              change what it contains"
         );
+        Ok(())
     }
 
     /// PV13: a container appears in the spool whole or not at all.
@@ -10779,8 +10917,8 @@ mod tests {
     /// old container or the new one, never to half of either.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_spool_stages_beside_its_destination_so_the_rename_is_atomic() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn the_spool_stages_beside_its_destination_so_the_rename_is_atomic() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let dest = dir.path().join("call-id.vcon.json");
         let staged = spool_staging_path(&dest);
 
@@ -10804,21 +10942,24 @@ mod tests {
              will try to read: {}",
             staged.display()
         );
+        Ok(())
     }
 
     /// A completed write leaves the container and nothing else.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_completed_spool_write_leaves_no_staging_file_behind() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn a_completed_spool_write_leaves_no_staging_file_behind() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let dest = dir.path().join("call-id.vcon.json");
 
-        write_container_atomically(&dest, br#"{"vcon":"0.4.0"}"#).expect("writes");
+        write_container_atomically(&dest, br#"{"vcon":"0.4.0"}"#)
+            .map_err(|e| format!("writes: {e:?}"))?;
 
         let entries: Vec<String> = std::fs::read_dir(dir.path())
-            .expect("readable")
-            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-            .collect();
+            .map_err(|e| format!("readable: {e:?}"))?
+            .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("entry: {e:?}"))?;
         assert_eq!(
             entries,
             vec!["call-id.vcon.json".to_string()],
@@ -10826,9 +10967,10 @@ mod tests {
              picks up as a container: {entries:?}"
         );
         assert_eq!(
-            std::fs::read_to_string(&dest).expect("readable"),
+            std::fs::read_to_string(&dest).map_err(|e| format!("readable: {e:?}"))?,
             r#"{"vcon":"0.4.0"}"#
         );
+        Ok(())
     }
 
     /// A failed write leaves the PREVIOUS container intact.
@@ -10839,44 +10981,48 @@ mod tests {
     /// — and the bridge has no way to tell.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_failed_spool_write_does_not_destroy_what_was_already_there() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn a_failed_spool_write_does_not_destroy_what_was_already_there() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let dest = dir.path().join("call-id.vcon.json");
-        std::fs::write(&dest, r#"{"vcon":"0.4.0","uuid":"the-old-one"}"#).expect("seed");
+        std::fs::write(&dest, r#"{"vcon":"0.4.0","uuid":"the-old-one"}"#)
+            .map_err(|e| format!("seed: {e:?}"))?;
 
         // A directory where the staging file needs to be is a write that
         // cannot succeed, and it fails at the same point a full disk would.
         let staged = spool_staging_path(&dest);
-        std::fs::create_dir(&staged).expect("occupy the staging name");
+        std::fs::create_dir(&staged).map_err(|e| format!("occupy the staging name: {e:?}"))?;
 
         assert!(
             write_container_atomically(&dest, br#"{"vcon":"0.4.0","uuid":"the-new-one"}"#).is_err(),
             "the write must report the failure rather than half-performing it"
         );
         assert_eq!(
-            std::fs::read_to_string(&dest).expect("readable"),
+            std::fs::read_to_string(&dest).map_err(|e| format!("readable: {e:?}"))?,
             r#"{"vcon":"0.4.0","uuid":"the-old-one"}"#,
             "the previous container must survive a failed replacement"
         );
+        Ok(())
     }
 
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_written_container_names_no_party() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_written_container_names_no_party() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
-        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        for party in v["parties"].as_array().expect("parties") {
+        let text = std::fs::read_to_string(&containers_in(tmp.path())?[0])
+            .map_err(|e| format!("readable: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
+        for party in v["parties"].as_array().ok_or("parties")? {
             assert_eq!(
                 party["validation"], "none",
                 "every party says it is unverified: {party}"
@@ -10892,28 +11038,31 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A container from the predicate path carries no by-reference url.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_written_container_carries_no_url() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_written_container_carries_no_url() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
+        let text = std::fs::read_to_string(&containers_in(tmp.path())?[0])
+            .map_err(|e| format!("readable: {e:?}"))?;
         assert!(
             !text.contains("\"url\""),
             "sipnab hosts nothing, so a container never points elsewhere: {text}"
         );
+        Ok(())
     }
 
     /// No container emits an explicit null.
@@ -10924,13 +11073,13 @@ mod tests {
     /// on the path this task added.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_written_container_emits_no_explicit_null() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_written_container_emits_no_explicit_null() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None
@@ -10943,9 +11092,14 @@ mod tests {
         // assertion fired. A test whose verdict depends on directory order
         // is not testing what it claims to.
         let mut checked = 0;
-        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
-            let text = std::fs::read_to_string(entry.path()).expect("readable");
-            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        for entry in std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .flatten()
+        {
+            let text =
+                std::fs::read_to_string(entry.path()).map_err(|e| format!("readable: {e:?}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
             assert_no_null_in_container(&v, &text);
             checked += 1;
         }
@@ -10953,6 +11107,7 @@ mod tests {
             checked, 2,
             "the fixture writes two containers and both must be checked"
         );
+        Ok(())
     }
 
     /// Assert the vCon container's OWN fields carry no explicit null.
@@ -11026,28 +11181,34 @@ mod tests {
     /// JSON a test author wrote.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_failed_dialogs_container_really_does_carry_the_deliberate_nulls() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_failed_dialogs_container_really_does_carry_the_deliberate_nulls() -> Result<(), TestError>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         ));
 
         let mut saw_deliberate_nulls = false;
-        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
-            let text = std::fs::read_to_string(entry.path()).expect("readable");
-            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        for entry in std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .flatten()
+        {
+            let text =
+                std::fs::read_to_string(entry.path()).map_err(|e| format!("readable: {e:?}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
             let body: serde_json::Value = serde_json::from_str(
                 v["analysis"][0]["body"]
                     .as_str()
-                    .unwrap_or_else(|| panic!("an analysis body is a string: {v}")),
+                    .ok_or_else(|| format!("an analysis body is a string: {v}"))?,
             )
-            .expect("the analysis body parses");
+            .map_err(|e| format!("the analysis body parses: {e:?}"))?;
             if body["signaling_diagnosis"]["abandoned"].is_null()
                 && !body["signaling_diagnosis"]["final_failure"].is_null()
             {
@@ -11059,6 +11220,7 @@ mod tests {
             "the fixture must write a container whose diagnosis carries the \
              deliberate nulls, or the exclusion is calibrated against nothing"
         );
+        Ok(())
     }
 
     /// Both containers carry the completeness block, whatever the read order.
@@ -11068,25 +11230,31 @@ mod tests {
     /// yields first cannot change the answer.
     #[cfg(feature = "vcon")]
     #[test]
-    fn every_container_carries_the_completeness_block_not_just_the_first() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn every_container_carries_the_completeness_block_not_just_the_first() -> Result<(), TestError>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         ));
 
         let mut seen = 0;
-        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
-            let text = std::fs::read_to_string(entry.path()).expect("readable");
-            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        for entry in std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .flatten()
+        {
+            let text =
+                std::fs::read_to_string(entry.path()).map_err(|e| format!("readable: {e:?}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
             let body: serde_json::Value =
-                serde_json::from_str(v["analysis"][0]["body"].as_str().expect("a string body"))
-                    .expect("parses");
+                serde_json::from_str(v["analysis"][0]["body"].as_str().ok_or("a string body")?)
+                    .map_err(|e| format!("parses: {e:?}"))?;
             let c = &body["capture_completeness"];
             for key in ["gate_closed_during_run", "dialogs_suppressed_by_deny"] {
                 assert!(
@@ -11097,6 +11265,7 @@ mod tests {
             seen += 1;
         }
         assert_eq!(seen, 2, "both containers were read");
+        Ok(())
     }
 
     /// The null verdict is the same whichever end of the directory you start.
@@ -11108,35 +11277,38 @@ mod tests {
     /// not, and both were the same correct export.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_null_verdict_is_the_same_in_either_direction() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn the_null_verdict_is_the_same_in_either_direction() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_one_failed(),
+            &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
             None,
         ));
 
-        let paths = containers_in(tmp.path());
+        let paths = containers_in(tmp.path())?;
         assert!(
             paths.len() > 1,
             "one container cannot have an order; the fixture must write two"
         );
 
-        let verdict = |ps: &[std::path::PathBuf]| {
+        let verdict = |ps: &[std::path::PathBuf]| -> Result<(), TestError> {
             for path in ps {
-                let text = std::fs::read_to_string(path).expect("readable");
-                let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+                let text = std::fs::read_to_string(path).map_err(|e| format!("readable: {e:?}"))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
                 assert_no_null_in_container(&v, &text);
             }
+            Ok(())
         };
-        verdict(&paths);
+        verdict(&paths)?;
         let mut reversed = paths.clone();
         reversed.reverse();
-        verdict(&reversed);
+        verdict(&reversed)?;
+        Ok(())
     }
 
     /// The exclusion above is narrow: a null the vCon module itself emits is
@@ -11202,7 +11374,11 @@ mod tests {
 
     /// An INVITE carrying one extra header, for the deny/permit fixtures.
     #[cfg(feature = "vcon")]
-    fn invite_with_header(call_id: &str, name: &str, value: &str) -> sip::message::SipMessage {
+    fn invite_with_header(
+        call_id: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<sip::message::SipMessage, TestError> {
         let headers = [
             "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
             "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
@@ -11220,7 +11396,7 @@ mod tests {
         }
         msg.push_str("\r\n");
         let data = bytes::Bytes::from(msg.into_bytes());
-        sip::parser::parse_sip_bytes(
+        Ok(sip::parser::parse_sip_bytes(
             &data,
             chrono::Utc::now(),
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -11229,18 +11405,18 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("fixture parses")
+        .map_err(|e| format!("fixture parses: {e:?}"))?)
     }
 
     /// Two dialogs, both answered, the first carrying `name: value`.
     #[cfg(feature = "vcon")]
-    fn two_dialogs_first_flagged(name: &str, value: &str) -> DialogStore {
+    fn two_dialogs_first_flagged(name: &str, value: &str) -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(16, true);
-        store.process_message(invite_with_header("flagged@example.com", name, value));
-        store.process_message(response_msg("flagged@example.com", 200, "OK"));
-        store.process_message(invite_msg("plain@example.com"));
-        store.process_message(response_msg("plain@example.com", 200, "OK"));
-        store
+        store.process_message(invite_with_header("flagged@example.com", name, value)?);
+        store.process_message(response_msg("flagged@example.com", 200, "OK")?);
+        store.process_message(invite_msg("plain@example.com")?);
+        store.process_message(response_msg("plain@example.com", 200, "OK")?);
+        Ok(store)
     }
 
     /// Without the flag, a denied dialog leaves no file at all.
@@ -11250,8 +11426,8 @@ mod tests {
     /// operator's decision rather than sipnab's.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_denied_dialog_writes_nothing_unless_a_tombstone_is_asked_for() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_denied_dialog_writes_nothing_unless_a_tombstone_is_asked_for() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
         assert!(
@@ -11262,30 +11438,31 @@ mod tests {
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &two_dialogs_first_flagged("X-No-Record", "1")?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        let files = containers_in(tmp.path());
+        let files = containers_in(tmp.path())?;
         assert_eq!(
             files.len(),
             1,
             "only the undenied dialog may produce a file: {files:?}"
         );
-        let text = std::fs::read_to_string(&files[0]).expect("readable");
+        let text = std::fs::read_to_string(&files[0]).map_err(|e| format!("readable: {e:?}"))?;
         assert!(
             !text.contains("flagged@example.com"),
             "the denied dialog must not appear anywhere: {text}"
         );
+        Ok(())
     }
 
     /// With the flag, the denied dialog gets an identity-only container.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_tombstone_declares_the_redaction_and_carries_no_trace() {
-        let tmp = tempfile::tempdir().expect("temp dir");
+    fn a_tombstone_declares_the_redaction_and_carries_no_trace() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
         cli.output_args.content_deny_tombstone = true;
@@ -11293,21 +11470,24 @@ mod tests {
         assert!(export_vcon_selection(
             &cli,
             None,
-            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &two_dialogs_first_flagged("X-No-Record", "1")?,
             &StreamStore::new(16),
             7,
             None
         ));
 
-        let files = containers_in(tmp.path());
+        let files = containers_in(tmp.path())?;
         assert_eq!(files.len(), 2, "one kept, one tombstone: {files:?}");
 
         let tombstone = files
             .iter()
-            .map(|p| std::fs::read_to_string(p).expect("readable"))
+            .map(|p| std::fs::read_to_string(p).map_err(|e| format!("readable: {e:?}")))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .find(|t| t.contains("flagged@example.com"))
-            .expect("the denied dialog has a container");
-        let v: serde_json::Value = serde_json::from_str(&tombstone).expect("valid JSON");
+            .ok_or("the denied dialog has a container")?;
+        let v: serde_json::Value =
+            serde_json::from_str(&tombstone).map_err(|e| format!("valid JSON: {e:?}"))?;
 
         assert_eq!(
             v["redacted"]["type"], "content-withheld",
@@ -11324,7 +11504,7 @@ mod tests {
         );
         let purposes: Vec<&str> = v["attachments"]
             .as_array()
-            .expect("attachments")
+            .ok_or("attachments")?
             .iter()
             .filter_map(|a| a["purpose"].as_str())
             .collect();
@@ -11332,20 +11512,21 @@ mod tests {
             !purposes.contains(&"sip-message-trace"),
             "the trace is exactly what was withheld: {purposes:?}"
         );
+        Ok(())
     }
 
     /// A deny header suppresses a dialog the predicate selected.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_deny_header_suppresses_a_dialog_the_predicate_selected() {
-        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+    fn a_deny_header_suppresses_a_dialog_the_predicate_selected() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1")?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
         let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("valid")
+            .map_err(|e| format!("valid: {e:?}"))?
             .0
             .dialogs
             .iter()
@@ -11360,6 +11541,7 @@ mod tests {
             ids.iter().any(|c| c == "plain@example.com"),
             "the unflagged dialog is untouched: {ids:?}"
         );
+        Ok(())
     }
 
     /// A permit header NEVER causes a container to exist.
@@ -11373,16 +11555,17 @@ mod tests {
     /// header.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_permit_header_never_causes_a_container_to_exist() {
+    fn a_permit_header_never_causes_a_container_to_exist() -> Result<(), TestError> {
         // The predicate selects NOTHING. The permit header sits on a dialog
         // it rejected.
-        let dialogs = two_dialogs_first_flagged("X-Record-Session", "yes");
+        let dialogs = two_dialogs_first_flagged("X-Record-Session", "yes")?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let (picked, _, _) = vcon_selection(&cli, None, &dialogs, &streams).expect("valid");
+        let (picked, _, _) =
+            vcon_selection(&cli, None, &dialogs, &streams).map_err(|e| format!("valid: {e:?}"))?;
 
         assert!(
             picked.dialogs.is_empty(),
@@ -11395,20 +11578,21 @@ mod tests {
                 .map(|(d, _)| &d.call_id)
                 .collect::<Vec<_>>()
         );
+        Ok(())
     }
 
     /// The deny match is case-insensitive, as SIP header names are.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_deny_header_matches_regardless_of_case() {
-        let dialogs = two_dialogs_first_flagged("x-no-record", "1");
+    fn the_deny_header_matches_regardless_of_case() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("x-no-record", "1")?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
         let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("valid")
+            .map_err(|e| format!("valid: {e:?}"))?
             .0
             .dialogs
             .iter()
@@ -11420,6 +11604,7 @@ mod tests {
             "RFC 3261 7.3.1 makes header names case-insensitive, so a filter \
              keyed on exact case is one an ordinary peer walks through: {ids:?}"
         );
+        Ok(())
     }
 
     /// Presence suppresses, whatever the value says.
@@ -11429,16 +11614,16 @@ mod tests {
     /// flag" is to deny.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_deny_header_suppresses_on_presence_not_value() {
+    fn the_deny_header_suppresses_on_presence_not_value() -> Result<(), TestError> {
         for value in ["", "0", "false", "no", "anything at all"] {
-            let dialogs = two_dialogs_first_flagged("X-No-Record", value);
+            let dialogs = two_dialogs_first_flagged("X-No-Record", value)?;
             let streams = StreamStore::new(16);
             let mut cli = Cli::parse_from_args(["sipnab"]);
             cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
             cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
             let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
-                .expect("valid")
+                .map_err(|e| format!("valid: {e:?}"))?
                 .0
                 .dialogs
                 .iter()
@@ -11450,24 +11635,26 @@ mod tests {
                 "value {value:?} must not re-enable the dialog: {ids:?}"
             );
         }
+        Ok(())
     }
 
     /// With no header named, the feature is inert.
     #[cfg(feature = "vcon")]
     #[test]
-    fn no_deny_header_named_means_nothing_is_suppressed() {
-        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+    fn no_deny_header_named_means_nothing_is_suppressed() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1")?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         // no content_deny_header
 
         let n = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("valid")
+            .map_err(|e| format!("valid: {e:?}"))?
             .0
             .dialogs
             .len();
         assert_eq!(n, 2, "sipnab ships no opinion about which header you use");
+        Ok(())
     }
 
     /// An RtpStream fixture, so the deny filter can be given media to drop.
@@ -11507,8 +11694,8 @@ mod tests {
     /// touching the behavior. This one hands the filter real media.
     #[cfg(feature = "vcon")]
     #[test]
-    fn suppressing_a_dialog_suppresses_its_media_too() {
-        let store = two_dialogs_first_flagged("X-No-Record", "1");
+    fn suppressing_a_dialog_suppresses_its_media_too() -> Result<(), TestError> {
+        let store = two_dialogs_first_flagged("X-No-Record", "1")?;
         let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
         let flagged_media = rtp_stream_fixture(20000);
         let plain_media = rtp_stream_fixture(20010);
@@ -11541,6 +11728,7 @@ mod tests {
             std::ptr::eq(filtered.streams[0], &plain_media),
             "the surviving stream belongs to the surviving dialog"
         );
+        Ok(())
     }
 
     /// With no header named the filter returns the selection untouched.
@@ -11550,8 +11738,8 @@ mod tests {
     /// would break every run that does not use it.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_deny_filter_with_no_header_changes_nothing() {
-        let store = two_dialogs_first_flagged("X-No-Record", "1");
+    fn the_deny_filter_with_no_header_changes_nothing() -> Result<(), TestError> {
+        let store = two_dialogs_first_flagged("X-No-Record", "1")?;
         let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
         let media = rtp_stream_fixture(20000);
         let selection = crate::sip::dsl::DialogSelection {
@@ -11563,6 +11751,7 @@ mod tests {
 
         assert_eq!(out.dialogs.len(), 2, "no header named, nothing suppressed");
         assert_eq!(out.streams.len(), 1, "and no media dropped");
+        Ok(())
     }
 
     /// The filter never grows the selection, whatever the header.
@@ -11574,8 +11763,8 @@ mod tests {
     /// to be imagined first.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_deny_filter_never_grows_the_selection() {
-        let store = two_dialogs_first_flagged("X-Record-Session", "yes");
+    fn the_deny_filter_never_grows_the_selection() -> Result<(), TestError> {
+        let store = two_dialogs_first_flagged("X-Record-Session", "yes")?;
         let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
         let media = rtp_stream_fixture(20000);
         for header in [
@@ -11595,6 +11784,7 @@ mod tests {
                 "{header} grew the selection from {before} to {after}"
             );
         }
+        Ok(())
     }
 
     /// A deny header on a later message suppresses the dialog.
@@ -11604,23 +11794,23 @@ mod tests {
     /// would miss every one of those.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_deny_header_on_a_later_message_still_suppresses() {
+    fn a_deny_header_on_a_later_message_still_suppresses() -> Result<(), TestError> {
         let mut store = DialogStore::new(16, true);
-        store.process_message(invite_msg("late@example.com"));
+        store.process_message(invite_msg("late@example.com")?);
         store.process_message(response_msg_with_header(
             "late@example.com",
             200,
             "OK",
             "X-No-Record",
             "1",
-        ));
+        )?);
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
         let n = vcon_selection(&cli, None, &store, &streams)
-            .expect("valid")
+            .map_err(|e| format!("valid: {e:?}"))?
             .0
             .dialogs
             .len();
@@ -11628,6 +11818,7 @@ mod tests {
             n, 0,
             "a flag on the answer counts as much as one on the INVITE"
         );
+        Ok(())
     }
 
     /// The FLAG's case does not have to match the header's.
@@ -11637,15 +11828,15 @@ mod tests {
     /// would break.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_deny_flag_name_may_differ_in_case_from_the_header() {
-        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+    fn the_deny_flag_name_may_differ_in_case_from_the_header() -> Result<(), TestError> {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1")?;
         let streams = StreamStore::new(16);
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("x-NO-record".to_owned());
 
         let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
-            .expect("valid")
+            .map_err(|e| format!("valid: {e:?}"))?
             .0
             .dialogs
             .iter()
@@ -11655,6 +11846,7 @@ mod tests {
             !ids.iter().any(|c| c == "flagged@example.com"),
             "what the operator typed is case-insensitive too: {ids:?}"
         );
+        Ok(())
     }
 
     /// Both deny headers this project documents are usable as written.
@@ -11664,16 +11856,16 @@ mod tests {
     /// to run.
     #[cfg(feature = "vcon")]
     #[test]
-    fn every_documented_deny_header_is_usable() {
+    fn every_documented_deny_header_is_usable() -> Result<(), TestError> {
         for header in ["X-No-Record", "Privacy"] {
-            let dialogs = two_dialogs_first_flagged(header, "id");
+            let dialogs = two_dialogs_first_flagged(header, "id")?;
             let streams = StreamStore::new(16);
             let mut cli = Cli::parse_from_args(["sipnab"]);
             cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
             cli.output_args.content_deny_header = Some(header.to_owned());
 
             let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
-                .expect("valid")
+                .map_err(|e| format!("valid: {e:?}"))?
                 .0
                 .dialogs
                 .iter()
@@ -11684,6 +11876,7 @@ mod tests {
                 "{header} is documented, so it has to work: {ids:?}"
             );
         }
+        Ok(())
     }
 
     /// A response carrying one extra header.
@@ -11694,7 +11887,7 @@ mod tests {
         reason: &str,
         name: &str,
         value: &str,
-    ) -> sip::message::SipMessage {
+    ) -> Result<sip::message::SipMessage, TestError> {
         let headers = [
             "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
             "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
@@ -11711,7 +11904,7 @@ mod tests {
         }
         msg.push_str("\r\n");
         let data = bytes::Bytes::from(msg.into_bytes());
-        sip::parser::parse_sip_bytes(
+        Ok(sip::parser::parse_sip_bytes(
             &data,
             chrono::Utc::now(),
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
@@ -11720,7 +11913,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("fixture parses")
+        .map_err(|e| format!("fixture parses: {e:?}"))?)
     }
 
     // ── Capture-quality reporting (CT1/G1) ───────────────────────────────
@@ -11792,7 +11985,7 @@ mod tests {
     /// number. "Unsupported link type" without the "0" names no capture
     /// format, and an operator cannot act on it.
     #[test]
-    fn the_notice_names_the_count_the_share_and_the_numbers() {
+    fn the_notice_names_the_count_the_share_and_the_numbers() -> Result<(), TestError> {
         let msg = undecodable_summary(
             &undecodable_of(
                 49,
@@ -11803,7 +11996,7 @@ mod tests {
             ),
             49,
         )
-        .expect("49 undecodable frames must be reported");
+        .ok_or("49 undecodable frames must be reported")?;
         assert!(msg.starts_with("NOT DECODED:"), "wrong prefix: {msg}");
         assert!(msg.contains("49 of 49 frame(s)"), "counts missing: {msg}");
         assert!(msg.contains("100.0%"), "share missing: {msg}");
@@ -11811,13 +12004,14 @@ mod tests {
             msg.contains("unsupported link type 0 (49)"),
             "the DLT NUMBER must appear with its count: {msg}"
         );
+        Ok(())
     }
 
     /// A high share must be EMPHATIC. Getting zero from a capture that was
     /// almost entirely unreadable is a different statement from getting zero
     /// from a clean read, and the notice has to say which one happened.
     #[test]
-    fn a_high_undecodable_share_is_emphatic() {
+    fn a_high_undecodable_share_is_emphatic() -> Result<(), TestError> {
         // Half the capture: mostly blind, but something was read.
         let mostly = undecodable_summary(
             &undecodable_of(
@@ -11829,7 +12023,7 @@ mod tests {
             ),
             100,
         )
-        .expect("reported");
+        .ok_or("reported")?;
         assert!(
             mostly.contains("THIS ANALYSIS IS MOSTLY BLIND"),
             "half a capture unread must be emphatic: {mostly}"
@@ -11851,7 +12045,7 @@ mod tests {
             ),
             49,
         )
-        .expect("reported");
+        .ok_or("reported")?;
         assert!(
             nothing.contains("NOTHING IN THIS CAPTURE WAS READ"),
             "100% unread is not 'mostly': {nothing}"
@@ -11867,7 +12061,7 @@ mod tests {
             &undecodable_of(1, &[(crate::capture::UndecodableReason::NotIp(None), 1)]),
             10_000,
         )
-        .expect("still reported");
+        .ok_or("still reported")?;
         assert!(
             !noise.contains("not evidence of absence"),
             "ordinary non-IP background must not be alarming: {noise}"
@@ -11876,12 +12070,13 @@ mod tests {
             noise.contains("1 of 10000 frame(s)"),
             "it is still reported, with its numbers: {noise}"
         );
+        Ok(())
     }
 
     /// Reasons the tally could not keep are declared, so the breakdown never
     /// silently fails to add up to the total.
     #[test]
-    fn dropped_reasons_are_declared_not_hidden() {
+    fn dropped_reasons_are_declared_not_hidden() -> Result<(), TestError> {
         let mut report = undecodable_of(
             30,
             &[(
@@ -11890,11 +12085,12 @@ mod tests {
             )],
         );
         report.reasons_dropped = 4;
-        let msg = undecodable_summary(&report, 30).expect("reported");
+        let msg = undecodable_summary(&report, 30).ok_or("reported")?;
         assert!(
             msg.contains("4 further frame(s) whose reason was not retained"),
             "the unnamed frames must be declared: {msg}"
         );
+        Ok(())
     }
 
     /// A capture sipnab decoded none of is a QUALITY finding. Before this,
@@ -11902,7 +12098,7 @@ mod tests {
     /// had dropped something, so a run that understood 0% reported "fine".
     #[test]
     #[serial_test::serial(kernel_drop_counts, undecodable_tally)]
-    fn undecodable_frames_are_a_capture_quality_signal() {
+    fn undecodable_frames_are_a_capture_quality_signal() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
         assert!(
             !capture_quality_summary().is_some_and(|s| s.contains("could not be decoded")),
@@ -11923,7 +12119,7 @@ mod tests {
         ));
 
         let msg = capture_quality_summary()
-            .expect("a frame sipnab could not decode is a quality finding");
+            .ok_or("a frame sipnab could not decode is a quality finding")?;
         assert!(
             msg.contains("1 frame(s) reached sipnab intact and could not be decoded"),
             "the count must be named: {msg}"
@@ -11936,6 +12132,7 @@ mod tests {
             "the quality line must point at the breakdown: {msg}"
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 
     /// A TLS report with `sessions` keyed sessions, `seen` ApplicationData
@@ -12242,14 +12439,14 @@ mod tests {
     /// single most common wrong response to a drop counter.
     #[test]
     #[serial_test::serial(kernel_drop_counts)]
-    fn kernel_and_interface_drops_are_reported_separately_with_remedies() {
+    fn kernel_and_interface_drops_are_reported_separately_with_remedies() -> Result<(), TestError> {
         use std::sync::atomic::Ordering::Relaxed;
         let before_k = crate::capture::live::KERNEL_DROPPED.load(Relaxed);
         let before_i = crate::capture::live::IFACE_DROPPED.load(Relaxed);
         crate::capture::live::KERNEL_DROPPED.fetch_add(7, Relaxed);
         crate::capture::live::IFACE_DROPPED.fetch_add(3, Relaxed);
 
-        let msg = capture_quality_summary().expect("drops must be reported");
+        let msg = capture_quality_summary().ok_or("drops must be reported")?;
 
         assert!(
             msg.contains(&format!("{} packet(s) dropped by the kernel", before_k + 7)),
@@ -12277,6 +12474,7 @@ mod tests {
 
         crate::capture::live::KERNEL_DROPPED.fetch_sub(7, Relaxed);
         crate::capture::live::IFACE_DROPPED.fetch_sub(3, Relaxed);
+        Ok(())
     }
 
     /// A run that shed nothing must stay quiet.
@@ -12285,15 +12483,16 @@ mod tests {
     /// would pass the other test while adding a line to every clean run, and a
     /// warning that fires constantly is one operators learn to skim past.
     #[test]
-    fn a_run_that_kept_everything_reports_no_retention_loss() {
+    fn a_run_that_kept_everything_reports_no_retention_loss() -> Result<(), TestError> {
         let mut store = DialogStore::new(16, true);
-        store.process_message(invite_msg("kept-1@example.com"));
+        store.process_message(invite_msg("kept-1@example.com")?);
 
         assert_eq!(
             retention_summary(&store),
             None,
             "nothing was shed, so there is nothing to warn about"
         );
+        Ok(())
     }
 
     /// A dialog discarded at capacity must be named, with its count.
@@ -12304,11 +12503,11 @@ mod tests {
     /// 103,234 SIP messages and said nothing, because the packet counters sit
     /// upstream of the store — they count what arrived, not what was kept.
     #[test]
-    fn a_dialog_discarded_at_capacity_is_named_with_its_count() {
+    fn a_dialog_discarded_at_capacity_is_named_with_its_count() -> Result<(), TestError> {
         // Capacity one, rotating: the second dialog displaces the first.
         let mut store = DialogStore::new(1, true);
-        store.process_message(invite_msg("first@example.com"));
-        store.process_message(invite_msg("second@example.com"));
+        store.process_message(invite_msg("first@example.com")?);
+        store.process_message(invite_msg("second@example.com")?);
 
         assert_eq!(
             store.total_capacity_dialogs_evicted(),
@@ -12316,7 +12515,7 @@ mod tests {
             "the fixture must actually evict, or this test proves nothing"
         );
 
-        let msg = retention_summary(&store).expect("an eviction must be reported");
+        let msg = retention_summary(&store).ok_or("an eviction must be reported")?;
         assert!(
             msg.contains('1') && msg.contains("discarded at capacity"),
             "the warning must carry the count and the cause: {msg}"
@@ -12325,6 +12524,7 @@ mod tests {
             msg.contains("what sipnab READ"),
             "it must say the totals above are not what was kept: {msg}"
         );
+        Ok(())
     }
 
     /// Retention follows the operator's consent, and NOTHING else.
@@ -12391,7 +12591,7 @@ mod tests {
     /// Both halves are asserted: that it parses, and that the run it produces
     /// actually retains. Parsing alone would be the `--alert` defect again.
     #[test]
-    fn retain_audio_stands_alone_now_that_a_batch_run_reads_it() {
+    fn retain_audio_stands_alone_now_that_a_batch_run_reads_it() -> Result<(), TestError> {
         use clap::Parser as _;
         let cli = Cli::try_parse_from([
             "sipnab",
@@ -12400,12 +12600,13 @@ mod tests {
             "tests/pcap-samples/sip-rtp-g711.pcap",
             "--retain-audio",
         ])
-        .expect("--retain-audio must parse without --mcp");
+        .map_err(|e| format!("--retain-audio must parse without --mcp: {e:?}"))?;
         assert!(
             audio_retention_wanted(&cli),
             "it parsed and then retained nothing, which is a flag that does \
              nothing wearing a different hat"
         );
+        Ok(())
     }
 
     /// The store a run configures must end up in the state the predicate asked
@@ -12472,7 +12673,7 @@ mod tests {
     /// and leave the identical call an orphan under `-N`, which is the harder
     /// bug to see: nothing errors, the run just attributes less.
     #[test]
-    fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+    fn the_relay_snapshot_reaches_the_store_this_mode_builds() -> Result<(), TestError> {
         use crate::relay::reconcile::{RelayLink, RelaySnapshot};
         use crate::rtp::stream_store::EndpointAssertion;
         use std::net::{IpAddr, Ipv4Addr};
@@ -12492,7 +12693,7 @@ mod tests {
 
         let provenance = ss
             .sdp_endpoint_provenance(relay, 30000)
-            .expect("the snapshot must be registered on this mode's store");
+            .ok_or("the snapshot must be registered on this mode's store")?;
         assert_eq!(
             provenance.asserted_by,
             EndpointAssertion::media_relay(
@@ -12501,6 +12702,7 @@ mod tests {
             ),
             "the relay asserted this allocation; no party's SDP did"
         );
+        Ok(())
     }
 
     /// A run that never asked registers nothing, rather than registering an
@@ -12671,8 +12873,12 @@ mod tests {
     /// Drive an ordered sequence of packets through one shared set of stores
     /// (so an SDP offer seen in packet N informs stream resolution for a later
     /// RTP packet) and return the number of DTMF digits decoded.
-    fn drive_packets_dtmf(cli: &Cli, packets: &[ParsedPacket], portrange: (u16, u16)) -> u64 {
-        let matcher = SipMatcher::new(cli, None).expect("matcher");
+    fn drive_packets_dtmf(
+        cli: &Cli,
+        packets: &[ParsedPacket],
+        portrange: (u16, u16),
+    ) -> Result<u64, TestError> {
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions::default();
         let mut dialog_store = DialogStore::new(100, false);
@@ -12740,7 +12946,7 @@ mod tests {
             // Same drain the receive loop performs once the guards drop.
             effects.drain(&mut sink, &engines.alerts, &mut event_exec);
         }
-        counters.dtmf_count
+        Ok(counters.dtmf_count)
     }
 
     /// A telephone-event stream negotiated at a non-101 payload type must be
@@ -12748,15 +12954,16 @@ mod tests {
     /// the SDP offer (PT 96) then an RTP DTMF packet with PT 96 yields one
     /// decoded digit; the pre-fix code (expecting PT 101) decoded zero.
     #[test]
-    fn dtmf_honors_negotiated_non_101_payload_type() {
+    fn dtmf_honors_negotiated_non_101_payload_type() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.mode_args.telephone_event = true;
         let packets = [
             parsed_sip_packet(invite_with_te_sdp("dtmf-96@x", 40000, 96, 8000), 5060, 5060),
             rtp_dtmf_packet(40000, 96, 0x1111_2222, 5, 800),
         ];
-        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
+        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061))?;
         assert_eq!(dtmf, 1, "negotiated PT 96 telephone-event must decode");
+        Ok(())
     }
 
     /// The negotiated telephone-event clock rate is plumbed through alongside
@@ -12764,7 +12971,7 @@ mod tests {
     /// (Both PT and clock come from the same resolved-stream lookup, so a
     /// non-default clock also exercises the clock-rate wiring.)
     #[test]
-    fn dtmf_honors_negotiated_wideband_clock() {
+    fn dtmf_honors_negotiated_wideband_clock() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.mode_args.telephone_event = true;
         let packets = [
@@ -12775,19 +12982,21 @@ mod tests {
             ),
             rtp_dtmf_packet(40000, 100, 0x3333_4444, 7, 320),
         ];
-        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
+        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061))?;
         assert_eq!(dtmf, 1, "negotiated 16 kHz telephone-event must decode");
+        Ok(())
     }
 
     /// With no SDP telephone-event negotiation seen, the PT 101 convention is
     /// the fallback: a PT-101 DTMF packet still decodes.
     #[test]
-    fn dtmf_falls_back_to_pt_101_without_sdp() {
+    fn dtmf_falls_back_to_pt_101_without_sdp() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.mode_args.telephone_event = true;
         let packets = [rtp_dtmf_packet(40000, 101, 0x5555_6666, 9, 800)];
-        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
+        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061))?;
         assert_eq!(dtmf, 1, "PT 101 fallback must decode when no SDP is seen");
+        Ok(())
     }
 
     /// What [`drive_packets_kept`] leaves behind: the counters, the stream
@@ -12993,32 +13202,33 @@ mod tests {
 
     /// The input file (`-I`) is preferred, and wins over any output file.
     #[test]
-    fn tshark_input_file_prefers_input() {
+    fn tshark_input_file_prefers_input() -> Result<(), TestError> {
         let one = [PathBuf::from("in.pcap")];
-        assert_eq!(
-            tshark_input_file(&one, Some("out.pcap")).unwrap(),
-            "in.pcap"
-        );
-        assert_eq!(tshark_input_file(&one, None).unwrap(), "in.pcap");
+        assert_eq!(tshark_input_file(&one, Some("out.pcap"))?, "in.pcap");
+        assert_eq!(tshark_input_file(&one, None)?, "in.pcap");
+        Ok(())
     }
 
     /// A custom `--tshark-filter` on a live capture WITHOUT `-I` references
     /// the real saved pcap (`-O`) instead of the old `capture.pcap` placeholder.
     #[test]
-    fn tshark_input_file_custom_filter_without_input_uses_output() {
+    fn tshark_input_file_custom_filter_without_input_uses_output() -> Result<(), TestError> {
         let f = tshark_input_file(&[], Some("saved.pcap"))
-            .expect("a saved output file is a valid tshark source");
+            .map_err(|e| format!("a saved output file is a valid tshark source: {e:?}"))?;
         assert_eq!(f, "saved.pcap");
+        Ok(())
     }
 
     /// A live capture with neither `-I` nor `-O` has no pcap for tshark to
     /// read: error clearly rather than emitting a bogus `capture.pcap`.
     #[test]
-    fn tshark_input_file_no_input_no_output_errors() {
+    fn tshark_input_file_no_input_no_output_errors() -> Result<(), TestError> {
         let err = tshark_input_file(&[], None)
-            .expect_err("no pcap source must be an error, not a placeholder");
+            .err()
+            .ok_or("no pcap source must be an error, not a placeholder")?;
         assert!(!err.contains("capture.pcap"), "must not name a placeholder");
         assert!(err.contains("-I") && err.contains("-O"), "got: {err}");
+        Ok(())
     }
 
     /// A multi-file set REFUSES rather than naming one file (#48).
@@ -13034,14 +13244,15 @@ mod tests {
     /// the operator cannot tell which half. The refusal names every file so
     /// they can run one per file deliberately.
     #[test]
-    fn tshark_input_file_refuses_a_multi_file_set_and_names_them_all() {
+    fn tshark_input_file_refuses_a_multi_file_set_and_names_them_all() -> Result<(), TestError> {
         let set = [
             PathBuf::from("first.pcap"),
             PathBuf::from("second.pcap"),
             PathBuf::from("third.pcap"),
         ];
         let err = tshark_input_file(&set, None)
-            .expect_err("a set tshark cannot read in one command must be refused");
+            .err()
+            .ok_or("a set tshark cannot read in one command must be refused")?;
         for f in ["first.pcap", "second.pcap", "third.pcap"] {
             assert!(
                 err.contains(f),
@@ -13056,6 +13267,7 @@ mod tests {
             tshark_input_file(&set, Some("saved.pcap")).is_err(),
             "-O must not paper over a multi-file input set"
         );
+        Ok(())
     }
 
     // ── dispatch_sip_output ────────────────────────────────────────────
@@ -13247,9 +13459,9 @@ mod tests {
         cli: &Cli,
         engines: &mut DetectionEngines,
         packets: &[ParsedPacket],
-    ) -> (String, usize) {
+    ) -> Result<(String, usize), TestError> {
         let portrange = (5060, 5061);
-        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions {
             color: output::ColorMode::Never,
@@ -13305,10 +13517,10 @@ mod tests {
             effects.drain(&mut sink, &engines.alerts, &mut event_exec);
         }
         sink.flush();
-        (
-            String::from_utf8(sink.into_inner()).expect("output is utf-8"),
+        Ok((
+            String::from_utf8(sink.into_inner()).map_err(|e| format!("output is utf-8: {e:?}"))?,
             queued,
-        )
+        ))
     }
 
     /// A registration flood carried by HEP never reaches the jail log
@@ -13322,7 +13534,7 @@ mod tests {
     /// the line unconditionally, and a firewall rule outlives the process
     /// that asked for it.
     #[test]
-    fn hep_origin_reg_flood_never_reaches_the_jail_log() {
+    fn hep_origin_reg_flood_never_reaches_the_jail_log() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let mut cli = fail2ban_cli();
         let armed = || {
@@ -13332,7 +13544,7 @@ mod tests {
         };
 
         let (out, queued) =
-            drive_detections(&cli, &mut armed(), &refused_registrations(InputOrigin::Hep));
+            drive_detections(&cli, &mut armed(), &refused_registrations(InputOrigin::Hep))?;
         assert!(
             queued >= 1,
             "the detection must still reach the alert path -- tier 1 is not origin-gated \
@@ -13349,7 +13561,7 @@ mod tests {
             &cli,
             &mut armed(),
             &refused_registrations(InputOrigin::Wire),
-        );
+        )?;
         assert!(
             out.contains("reg_flood src=10.0.0.1 count=3"),
             "control: a wire-origin flood must reach the jail log, else the gate above is \
@@ -13360,16 +13572,17 @@ mod tests {
         // same way it admits them to the wire.
         cli.security_args.hep_allow_kill = true;
         let (out, _) =
-            drive_detections(&cli, &mut armed(), &refused_registrations(InputOrigin::Hep));
+            drive_detections(&cli, &mut armed(), &refused_registrations(InputOrigin::Hep))?;
         assert!(
             out.contains("reg_flood src=10.0.0.1 count=3"),
             "--hep-allow-kill must admit a HEP-origin flood to the jail log:\n{out}"
         );
+        Ok(())
     }
 
     /// The scanner-signature site: same rule.
     #[test]
-    fn hep_origin_scanner_detection_never_reaches_the_jail_log() {
+    fn hep_origin_scanner_detection_never_reaches_the_jail_log() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let cli = fail2ban_cli();
         let armed = || {
@@ -13386,7 +13599,7 @@ mod tests {
             )]
         };
 
-        let (out, queued) = drive_detections(&cli, &mut armed(), &probe(InputOrigin::Hep));
+        let (out, queued) = drive_detections(&cli, &mut armed(), &probe(InputOrigin::Hep))?;
         assert_eq!(
             queued, 1,
             "the signature match must still be queued as an alert"
@@ -13397,11 +13610,12 @@ mod tests {
              log:\n{out}"
         );
 
-        let (out, _) = drive_detections(&cli, &mut armed(), &probe(InputOrigin::Wire));
+        let (out, _) = drive_detections(&cli, &mut armed(), &probe(InputOrigin::Wire))?;
         assert!(
             out.contains("scanner_detected src=10.0.0.1"),
             "control: a wire-origin detection must reach the jail log:\n{out}"
         );
+        Ok(())
     }
 
     /// The `-K/--kill-target` site: same rule. The operator named the
@@ -13409,14 +13623,16 @@ mod tests {
     /// address a packet claims to come from is still the sender's word, and
     /// a jail line names that claim.
     #[test]
-    fn hep_origin_kill_target_match_never_reaches_the_jail_log() {
+    fn hep_origin_kill_target_match_never_reaches_the_jail_log() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let cli = fail2ban_cli();
-        let armed = || {
+        let armed = || -> Result<_, TestError> {
             let mut engines = unarmed_engines();
-            engines.kill_targets =
-                vec![sec::scanner_kill::KillTarget::parse("10.0.0.1").expect("target")];
-            engines
+            engines.kill_targets = vec![
+                sec::scanner_kill::KillTarget::parse("10.0.0.1")
+                    .map_err(|e| format!("target: {e:?}"))?,
+            ];
+            Ok(engines)
         };
         let request = |origin| {
             vec![parsed_sip_from(
@@ -13427,7 +13643,7 @@ mod tests {
             )]
         };
 
-        let (out, queued) = drive_detections(&cli, &mut armed(), &request(InputOrigin::Hep));
+        let (out, queued) = drive_detections(&cli, &mut armed()?, &request(InputOrigin::Hep))?;
         assert_eq!(
             queued, 1,
             "the kill-target match must still be queued as an alert"
@@ -13438,18 +13654,19 @@ mod tests {
              log:\n{out}"
         );
 
-        let (out, _) = drive_detections(&cli, &mut armed(), &request(InputOrigin::Wire));
+        let (out, _) = drive_detections(&cli, &mut armed()?, &request(InputOrigin::Wire))?;
         assert!(
             out.contains("scanner_detected src=10.0.0.1"),
             "control: a wire-origin match must reach the jail log:\n{out}"
         );
+        Ok(())
     }
 
     /// A uprobe read carries no addressing at all, and no opt-in reaches it:
     /// `--hep-allow-kill` is about HEP, and bytes lifted out of a process
     /// name no socket a firewall could ban.
     #[test]
-    fn uprobe_origin_never_reaches_the_jail_log_even_with_the_opt_in() {
+    fn uprobe_origin_never_reaches_the_jail_log_even_with_the_opt_in() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let mut cli = fail2ban_cli();
         cli.security_args.hep_allow_kill = true;
@@ -13460,19 +13677,20 @@ mod tests {
             &cli,
             &mut engines,
             &refused_registrations(InputOrigin::Uprobe),
-        );
+        )?;
         assert!(queued >= 1, "the detection must still reach the alert path");
         assert!(
             !out.contains("reg_flood src="),
             "a uprobe-origin flood reached the jail log under --hep-allow-kill, which is an \
              opt-in about HEP and must not reach input that has no address at all:\n{out}"
         );
+        Ok(())
     }
 
     /// Every output backend (default text, JSON, pretty JSON, fail2ban, raw
     /// dump, suppressed, line-buffered) produces its expected bytes.
     #[test]
-    fn dispatch_sip_output_all_modes() {
+    fn dispatch_sip_output_all_modes() -> Result<(), TestError> {
         let data = bytes::Bytes::from(invite_bytes("disp-1@example.com"));
         let msg = sip::parser::parse_sip_bytes(
             &data,
@@ -13483,7 +13701,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("invite should parse");
+        .map_err(|e| format!("invite should parse: {e:?}"))?;
         // Force color OFF so the expected text output is deterministic even
         // when the test runner is attached to a TTY.
         let opts = OutputOptions {
@@ -13504,7 +13722,7 @@ mod tests {
         // Default plain print: byte-identical to format_sip_message.
         let out = sink_bytes(&base_cli(), None);
         assert_eq!(
-            String::from_utf8(out).expect("utf8"),
+            String::from_utf8(out).map_err(|e| format!("utf8: {e:?}"))?,
             crate::output::cli_print::format_sip_message(&msg, &opts, None),
         );
 
@@ -13512,7 +13730,7 @@ mod tests {
         let mut cli = base_cli();
         cli.output_args.json = true;
         assert_eq!(
-            String::from_utf8(sink_bytes(&cli, None)).expect("utf8"),
+            String::from_utf8(sink_bytes(&cli, None)).map_err(|e| format!("utf8: {e:?}"))?,
             output::json::message_to_json(&msg),
         );
 
@@ -13520,7 +13738,7 @@ mod tests {
         let mut cli = base_cli();
         cli.output_args.json_pretty = true;
         assert_eq!(
-            String::from_utf8(sink_bytes(&cli, None)).expect("utf8"),
+            String::from_utf8(sink_bytes(&cli, None)).map_err(|e| format!("utf8: {e:?}"))?,
             output::json::message_to_json_pretty(&msg),
         );
 
@@ -13531,7 +13749,7 @@ mod tests {
         // detector paths, not from here.
         let mut cli = base_cli();
         cli.output_args.fail2ban = true;
-        let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
+        let out = String::from_utf8(sink_bytes(&cli, None)).map_err(|e| format!("utf8: {e:?}"))?;
         assert!(
             out.is_empty(),
             "an ordinary request must produce no fail2ban output, got {out:?}"
@@ -13540,7 +13758,7 @@ mod tests {
         // raw text dump: raw message + newline.
         let mut cli = base_cli();
         cli.output_args.text_dump = true;
-        let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
+        let out = String::from_utf8(sink_bytes(&cli, None)).map_err(|e| format!("utf8: {e:?}"))?;
         assert!(out.starts_with("INVITE sip:bob@example.com SIP/2.0"));
         assert!(out.ends_with('\n'));
 
@@ -13553,6 +13771,7 @@ mod tests {
         let mut cli = base_cli();
         cli.output_args.line_buffer = true;
         assert!(!sink_bytes(&cli, Some(chrono::Utc::now())).is_empty());
+        Ok(())
     }
 
     // ── generate_reports ───────────────────────────────────────────────
@@ -13560,7 +13779,7 @@ mod tests {
     /// `--report` and `--call-report` run without panicking on empty stores,
     /// unknown Call-IDs, and a tracked dialog across all report formats.
     #[test]
-    fn generate_reports_summary_and_call_report() {
+    fn generate_reports_summary_and_call_report() -> Result<(), TestError> {
         let mut dialog_store = DialogStore::new(100, false);
         let stream_store = StreamStore::new(100);
 
@@ -13607,8 +13826,7 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .unwrap();
+        )?;
         dialog_store.process_message(msg);
         assert!(dialog_store.get(call_id).is_some());
 
@@ -13634,14 +13852,19 @@ mod tests {
                 VconRunEnd::Whole,
             );
         }
+        Ok(())
     }
 
     // ── process_parsed_packet ──────────────────────────────────────────
 
     /// Build the engine/state/context scaffolding and drive a single packet,
     /// returning the resulting (sip_count, rtp_count).
-    fn drive_packet(cli: &Cli, pp: &ParsedPacket, portrange: (u16, u16)) -> (u64, u64) {
-        let matcher = SipMatcher::new(cli, None).expect("matcher");
+    fn drive_packet(
+        cli: &Cli,
+        pp: &ParsedPacket,
+        portrange: (u16, u16),
+    ) -> Result<(u64, u64), TestError> {
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions::default();
 
@@ -13713,15 +13936,19 @@ mod tests {
         }
         let mut sink = output::BatchSink::new(Vec::new(), false);
         effects.drain(&mut sink, &engines.alerts, &mut event_exec);
-        (counters.sip_count, counters.rtp_count)
+        Ok((counters.sip_count, counters.rtp_count))
     }
 
     /// Drive one packet with `--kill-target` directives active and return the
     /// detail lines of any "scanner" findings the alert engine recorded. Uses
     /// `kill_handle: None`, so no socket send is attempted — the targeted-kill
     /// alert still fires before the (absent) worker handoff.
-    fn drive_kill_targets(cli: &Cli, pp: &ParsedPacket, targets: &[&str]) -> Vec<String> {
-        let matcher = SipMatcher::new(cli, None).expect("matcher");
+    fn drive_kill_targets(
+        cli: &Cli,
+        pp: &ParsedPacket,
+        targets: &[&str],
+    ) -> Result<Vec<String>, TestError> {
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions::default();
         let mut dialog_store = DialogStore::new(100, false);
@@ -13737,8 +13964,10 @@ mod tests {
 
         let kill_targets = targets
             .iter()
-            .map(|s| sec::scanner_kill::KillTarget::parse(s).expect("valid target"))
-            .collect();
+            .map(|s| {
+                sec::scanner_kill::KillTarget::parse(s).map_err(|e| format!("valid target: {e:?}"))
+            })
+            .collect::<Result<_, _>>()?;
         let alerts = Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None)));
         let mut engines = DetectionEngines {
             scanner: None,
@@ -13799,56 +14028,59 @@ mod tests {
         let mut sink = output::BatchSink::new(Vec::new(), false);
         effects.drain(&mut sink, &engines.alerts, &mut event_exec);
 
-        alerts
+        Ok(alerts
             .read()
             .iter_findings(&["scanner"], None, 16)
             .into_iter()
             .map(|f| f.detail.clone())
-            .collect()
+            .collect())
     }
 
     /// A request whose source IP:port falls inside a `--kill-target` range
     /// fires a kill-target scanner alert.
     #[test]
-    fn kill_target_matching_request_fires_kill_alert() {
+    fn kill_target_matching_request_fires_kill_alert() -> Result<(), TestError> {
         // parsed_sip_packet sources from 10.0.0.1; src_port 5075 is inside the
         // target's 5060-5090 range → the targeted kill must fire.
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true;
         let pp = parsed_sip_packet(invite_bytes("kt-hit@example.com"), 5075, 5060);
-        let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"]);
+        let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"])?;
         assert!(
             details.iter().any(|d| d.contains("detection=kill-target")),
             "expected a kill-target alert, got {details:?}"
         );
+        Ok(())
     }
 
     /// A source port outside the target's range must not trigger a kill.
     #[test]
-    fn kill_target_out_of_range_port_does_not_fire() {
+    fn kill_target_out_of_range_port_does_not_fire() -> Result<(), TestError> {
         // src_port 6000 is outside 5060-5090 → no targeted kill.
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true;
         let pp = parsed_sip_packet(invite_bytes("kt-miss@example.com"), 6000, 5060);
-        let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"]);
+        let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"])?;
         assert!(
             !details.iter().any(|d| d.contains("kill-target")),
             "should not kill a source outside the port range, got {details:?}"
         );
+        Ok(())
     }
 
     /// A source IP different from the target's must not trigger a kill.
     #[test]
-    fn kill_target_wrong_ip_does_not_fire() {
+    fn kill_target_wrong_ip_does_not_fire() -> Result<(), TestError> {
         // Target a different IP than the packet's source (10.0.0.1) → no kill.
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true;
         let pp = parsed_sip_packet(invite_bytes("kt-ip@example.com"), 5075, 5060);
-        let details = drive_kill_targets(&cli, &pp, &["10.0.0.99:5060-5090"]);
+        let details = drive_kill_targets(&cli, &pp, &["10.0.0.99:5060-5090"])?;
         assert!(
             !details.iter().any(|d| d.contains("kill-target")),
             "should not kill a non-targeted source IP, got {details:?}"
         );
+        Ok(())
     }
 
     // ── Deferred side effects (LK1) ────────────────────────────────────
@@ -13882,8 +14114,9 @@ mod tests {
     /// Nothing about a capture's OUTPUT changes if that regresses, which is
     /// why every assertion here is about WHEN, not about what.
     #[test]
-    fn side_effects_are_raised_under_the_guards_and_performed_after_them() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn side_effects_are_raised_under_the_guards_and_performed_after_them() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let marker = dir.path().join("hook-ran");
         // `>>` opens with O_APPEND, so the file's existence and length are
         // evidence the shell command itself ran.
@@ -13892,7 +14125,7 @@ mod tests {
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true;
 
-        let matcher = SipMatcher::new(&cli, None).expect("matcher");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions::default();
         let ctx = BatchContext {
@@ -13929,7 +14162,8 @@ mod tests {
             // Matches the fixture's 10.0.0.1:5075 source, so one packet raises
             // both a hook command and an alert.
             kill_targets: vec![
-                sec::scanner_kill::KillTarget::parse("10.0.0.1:5060-5090").expect("valid target"),
+                sec::scanner_kill::KillTarget::parse("10.0.0.1:5060-5090")
+                    .map_err(|e| format!("valid target: {e:?}"))?,
             ],
         };
         let mut counters = PacketCounters {
@@ -14039,6 +14273,7 @@ mod tests {
             wait_for_marker(&marker),
             "the hook command itself must run, not just be spawned"
         );
+        Ok(())
     }
 
     /// Deferring output must not reorder it: within a packet the emitters land
@@ -14050,7 +14285,7 @@ mod tests {
     /// capture produces byte-identical output" rests on that buffer being
     /// FIFO and drained per packet rather than per batch.
     #[test]
-    fn deferred_output_preserves_emission_order() {
+    fn deferred_output_preserves_emission_order() -> Result<(), TestError> {
         let mut cli = base_cli();
         // Two emitters in one packet: the hexdump block first, then the raw
         // message dump. Their relative order is the intra-packet assertion.
@@ -14059,16 +14294,16 @@ mod tests {
 
         let first = parsed_sip_packet(invite_bytes("ord-1@example.com"), 5060, 5060);
         let second = parsed_sip_packet(invite_bytes("ord-2@example.com"), 5060, 5060);
-        let out = drive_packets_output(&cli, &[first.clone(), second.clone()], (5060, 5061));
+        let out = drive_packets_output(&cli, &[first.clone(), second.clone()], (5060, 5061))?;
 
         // Intra-packet: the hexdump of the first packet precedes its raw dump.
         let hex_at = out
             .find(&output::hexdump(&first.payload))
-            .expect("the first packet's hexdump block must be present");
+            .ok_or("the first packet's hexdump block must be present")?;
         let raw = String::from_utf8_lossy(&first.payload).into_owned();
         let raw_at = out
             .rfind(&raw)
-            .expect("the first packet's raw dump must be present");
+            .ok_or("the first packet's raw dump must be present")?;
         assert!(
             hex_at < raw_at,
             "hexdump must precede the message it dumps (hex at {hex_at}, raw at {raw_at})"
@@ -14078,7 +14313,7 @@ mod tests {
         // the second emitted.
         let second_at = out
             .find(&output::hexdump(&second.payload))
-            .expect("the second packet's hexdump block must be present");
+            .ok_or("the second packet's hexdump block must be present")?;
         assert!(
             raw_at < second_at,
             "packet 1's output must land entirely before packet 2's \
@@ -14089,12 +14324,17 @@ mod tests {
             out.matches("ord-2@example.com").count(),
             "both packets must emit the same shape of output"
         );
+        Ok(())
     }
 
     /// Drive packets through the real lock-then-drain shape and return every
     /// byte that reached the sink, as the operator's stdout would have seen it.
-    fn drive_packets_output(cli: &Cli, packets: &[ParsedPacket], portrange: (u16, u16)) -> String {
-        let matcher = SipMatcher::new(cli, None).expect("matcher");
+    fn drive_packets_output(
+        cli: &Cli,
+        packets: &[ParsedPacket],
+        portrange: (u16, u16),
+    ) -> Result<String, TestError> {
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions {
             color: output::ColorMode::Never,
@@ -14169,7 +14409,7 @@ mod tests {
             effects.drain(&mut sink, &engines.alerts, &mut event_exec);
         }
         sink.flush();
-        String::from_utf8(sink.into_inner()).expect("output is utf-8")
+        Ok(String::from_utf8(sink.into_inner()).map_err(|e| format!("output is utf-8: {e:?}"))?)
     }
 
     /// A writer that counts flushes and can be told to fail, so the deferred
@@ -14257,8 +14497,8 @@ mod tests {
         pp: &ParsedPacket,
         portrange: (u16, u16),
         srtp: &mut crate::rtp::srtp::SrtpContext,
-    ) -> u64 {
-        let matcher = SipMatcher::new(cli, None).expect("matcher");
+    ) -> Result<u64, TestError> {
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions::default();
         let mut dialog_store = DialogStore::new(100, false);
@@ -14325,7 +14565,7 @@ mod tests {
         }
         let mut sink = output::BatchSink::new(Vec::new(), false);
         effects.drain(&mut sink, &engines.alerts, &mut event_exec);
-        counters.rtp_count
+        Ok(counters.rtp_count)
     }
 
     /// A plaintext (non-SRTP) RTP packet must pass through an active SRTP
@@ -14334,7 +14574,7 @@ mod tests {
     /// wiring's safety property at the binary layer.
     #[cfg(feature = "tls")]
     #[test]
-    fn srtp_context_never_false_decrypts_plain_rtp() {
+    fn srtp_context_never_false_decrypts_plain_rtp() -> Result<(), TestError> {
         use crate::rtp::srtp::{SrtpContext, SrtpKeyMaterial, SrtpSuite};
 
         // A loaded context with one master key.
@@ -14360,40 +14600,43 @@ mod tests {
 
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true;
-        let rtp = drive_packet_with_srtp(&cli, &pp, (5060, 5061), &mut srtp);
+        let rtp = drive_packet_with_srtp(&cli, &pp, (5060, 5061), &mut srtp)?;
         assert_eq!(rtp, 1, "the RTP packet must still be counted/processed");
         assert_eq!(
             srtp.decrypted_count, 0,
             "ordinary RTP must never be falsely decrypted (auth-tag gate)"
         );
+        Ok(())
     }
 
     /// A valid INVITE on the SIP port increments the SIP counter.
     #[test]
-    fn process_parsed_packet_counts_sip() {
+    fn process_parsed_packet_counts_sip() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true; // keep test output quiet
         let pp = parsed_sip_packet(invite_bytes("ppp-1@example.com"), 5060, 5060);
-        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
+        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061))?;
         assert_eq!(sip, 1, "one SIP message should be counted");
+        Ok(())
     }
 
     /// Garbage payloads and SIP messages outside the port range are not
     /// counted as SIP.
     #[test]
-    fn process_parsed_packet_ignores_non_sip_and_out_of_range() {
+    fn process_parsed_packet_ignores_non_sip_and_out_of_range() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.output_args.no_cli_print = true;
 
         // Garbage payload on the SIP port: not a SIP message -> no count.
         let pp = parsed_sip_packet(b"\x00\x01\x02not-sip-at-all".to_vec(), 5060, 5060);
-        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
+        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061))?;
         assert_eq!(sip, 0);
 
         // A valid SIP message but on a port outside the SIP range -> skipped.
         let pp = parsed_sip_packet(invite_bytes("oor-1@example.com"), 40000, 40001);
-        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
+        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061))?;
         assert_eq!(sip, 0);
+        Ok(())
     }
 
     // ── decide_emit: dialog-following (`-e`) + trailing context (`-A`) ────
@@ -14563,8 +14806,8 @@ mod tests {
 
     /// A fixed capture epoch years behind wall time, so any wall-clock
     /// contamination of the offline path is unmissable.
-    fn cap_ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+    fn cap_ts(secs: i64) -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).ok_or("valid timestamp")?)
     }
 
     /// Five seconds, the sweep interval the receive loops use.
@@ -14573,77 +14816,81 @@ mod tests {
     /// Offline, the sweep is paced by the capture's timeline: no packets means
     /// no sweep, however long the process has been running.
     #[test]
-    fn capture_clock_does_not_sweep_without_packets() {
+    fn capture_clock_does_not_sweep_without_packets() -> Result<(), TestError> {
         let mut clock = SweepClock::new(true);
         assert_eq!(clock.take_due(FIVE), None);
         // The first packet only starts the clock.
-        clock.observe(cap_ts(0));
+        clock.observe(cap_ts(0)?);
         assert_eq!(clock.take_due(FIVE), None);
+        Ok(())
     }
 
     /// Offline, a sweep is due once the CAPTURE has advanced by the interval,
     /// and its "now" is the packet time — not `Utc::now()`.
     #[test]
-    fn capture_clock_sweeps_on_packet_time() {
+    fn capture_clock_sweeps_on_packet_time() -> Result<(), TestError> {
         let mut clock = SweepClock::new(true);
-        clock.observe(cap_ts(0));
+        clock.observe(cap_ts(0)?);
         assert_eq!(clock.take_due(FIVE), None);
 
-        clock.observe(cap_ts(4));
+        clock.observe(cap_ts(4)?);
         assert_eq!(clock.take_due(FIVE), None, "4 s of capture is not 5");
 
-        clock.observe(cap_ts(5));
+        clock.observe(cap_ts(5)?);
         assert_eq!(
             clock.take_due(FIVE),
-            Some(CaptureNow(cap_ts(5))),
+            Some(CaptureNow(cap_ts(5)?)),
             "sweep must run at the packet's time, not the wall clock's"
         );
         // ...and not again until another interval of capture time passes.
         assert_eq!(clock.take_due(FIVE), None);
-        clock.observe(cap_ts(9));
+        clock.observe(cap_ts(9)?);
         assert_eq!(clock.take_due(FIVE), None);
-        clock.observe(cap_ts(10));
-        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(10))));
+        clock.observe(cap_ts(10)?);
+        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(10)?)));
+        Ok(())
     }
 
     /// The whole point: how long the read takes cannot change the offline
     /// sweep schedule. Two clocks fed the same timestamps agree even though
     /// one of them has real time passing between the calls.
     #[test]
-    fn capture_clock_is_independent_of_wall_time() {
+    fn capture_clock_is_independent_of_wall_time() -> Result<(), TestError> {
         let stamps = [0, 2, 4, 6, 8, 10, 12];
-        let sweep = |pause: std::time::Duration| {
+        let sweep = |pause: std::time::Duration| -> Result<Vec<_>, TestError> {
             let mut clock = SweepClock::new(true);
             let mut fired = Vec::new();
             for s in stamps {
-                clock.observe(cap_ts(s));
+                clock.observe(cap_ts(s)?);
                 if let Some(now) = clock.take_due(FIVE) {
                     fired.push(now.get());
                 }
                 std::thread::sleep(pause);
             }
-            fired
+            Ok(fired)
         };
-        let fast = sweep(std::time::Duration::ZERO);
-        let slow = sweep(std::time::Duration::from_millis(20));
+        let fast = sweep(std::time::Duration::ZERO)?;
+        let slow = sweep(std::time::Duration::from_millis(20))?;
         assert_eq!(fast, slow, "offline sweep schedule moved with wall time");
-        assert_eq!(fast, vec![cap_ts(6), cap_ts(12)]);
+        assert_eq!(fast, vec![cap_ts(6)?, cap_ts(12)?]);
+        Ok(())
     }
 
     /// An out-of-order packet must not rewind the capture clock: a stale
     /// timestamp would otherwise postpone every later sweep.
     #[test]
-    fn capture_clock_never_moves_backwards() {
+    fn capture_clock_never_moves_backwards() -> Result<(), TestError> {
         let mut clock = SweepClock::new(true);
-        clock.observe(cap_ts(0));
+        clock.observe(cap_ts(0)?);
         assert_eq!(clock.take_due(FIVE), None);
-        clock.observe(cap_ts(10));
-        clock.observe(cap_ts(3)); // reordered arrival
+        clock.observe(cap_ts(10)?);
+        clock.observe(cap_ts(3)?); // reordered arrival
         assert_eq!(
             clock.take_due(FIVE),
-            Some(CaptureNow(cap_ts(10))),
+            Some(CaptureNow(cap_ts(10)?)),
             "a reordered packet rewound the capture clock, postponing the sweep"
         );
+        Ok(())
     }
 
     /// The end-of-run sweep's "now" is the capture's LAST timestamp, whatever
@@ -14651,61 +14898,64 @@ mod tests {
     /// sweep its merged stores once, so a value short of the final packet
     /// would leave the last stretch of the capture unswept.
     #[test]
-    fn final_now_is_the_captures_last_timestamp() {
+    fn final_now_is_the_captures_last_timestamp() -> Result<(), TestError> {
         let mut clock = SweepClock::new(true);
         assert_eq!(clock.final_now(), None, "nothing read, nothing to sweep");
-        clock.observe(cap_ts(0));
-        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(0))));
+        clock.observe(cap_ts(0)?);
+        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(0)?)));
         assert_eq!(
             clock.take_due(FIVE),
             None,
             "the first packet only starts the periodic clock"
         );
-        clock.observe(cap_ts(900));
+        clock.observe(cap_ts(900)?);
         assert_eq!(
             clock.final_now(),
-            Some(CaptureNow(cap_ts(900))),
+            Some(CaptureNow(cap_ts(900)?)),
             "the final sweep must measure against the last packet"
         );
         // A periodic sweep in between must not move it, and reading it must
         // not consume anything: the two questions are independent.
-        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(900))));
-        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900))));
-        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900))));
+        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(900)?)));
+        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900)?)));
+        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900)?)));
+        Ok(())
     }
 
     /// Live, the end-of-run sweep is wall time — the same split `take_due`
     /// makes. A live run's packets carry arrival times, so the two clocks
     /// agree there and only the offline path needs the capture's own.
     #[test]
-    fn final_now_is_wall_time_on_a_live_run() {
+    fn final_now_is_wall_time_on_a_live_run() -> Result<(), TestError> {
         let mut clock = SweepClock::new(false);
-        clock.observe(cap_ts(0)); // years in the past, must be ignored
-        let now = clock.final_now().expect("a live clock always has a now");
+        clock.observe(cap_ts(0)?); // years in the past, must be ignored
+        let now = clock.final_now().ok_or("a live clock always has a now")?;
         assert!(
             chrono::Utc::now().signed_duration_since(now.get()) < chrono::TimeDelta::seconds(5),
             "a live final sweep's now must be wall time, got {:?}",
             now.get()
         );
+        Ok(())
     }
 
     /// Live capture keeps wall time, where it is correct: packet timestamps
     /// are ignored and the sweep is due after the interval really elapses.
     #[test]
-    fn live_clock_uses_wall_time_and_ignores_packet_time() {
+    fn live_clock_uses_wall_time_and_ignores_packet_time() -> Result<(), TestError> {
         let mut clock = SweepClock::new(false);
         // A packet from the distant past cannot make a live sweep due.
-        clock.observe(cap_ts(0));
+        clock.observe(cap_ts(0)?);
         assert_eq!(clock.take_due(FIVE), None);
         // ...and a zero interval makes one due immediately, on wall time.
         let now = clock
             .take_due(std::time::Duration::ZERO)
-            .expect("elapsed >= 0 always");
+            .ok_or("elapsed >= 0 always")?;
         assert!(
             chrono::Utc::now().signed_duration_since(now.get()) < chrono::TimeDelta::seconds(5),
             "a live sweep's now must be wall time, got {:?}",
             now.get()
         );
+        Ok(())
     }
 
     // ── Operator-set thresholds reach the things that enforce them ───────
@@ -14728,17 +14978,17 @@ mod tests {
     /// so an admitted request reports that it had nothing to send on -- which
     /// is exactly how it shows it got past both limiters.
     #[test]
-    fn the_configured_kill_rate_limit_bounds_what_the_worker_sends() {
+    fn the_configured_kill_rate_limit_bounds_what_the_worker_sends() -> Result<(), TestError> {
         use crate::process_isolation::worker_process::{FdPlan, decisions_for_argv};
         use crate::process_isolation::{KillResponse, worker_args};
 
         /// Run `n` kill requests to `n` distinct destinations through the
         /// decision loop a worker started for `args` would run, and return
         /// `(admitted, rate_limited)`.
-        fn admitted_under(args: &[&str], n: u8) -> (usize, usize) {
+        fn admitted_under(args: &[&str], n: u8) -> Result<(usize, usize), TestError> {
             let cli = Cli::parse_from_args(args.iter().copied());
             let spawn = crate::app::bootstrap::kill_worker_spawn(&cli, &Config::default())
-                .expect("this test binary can read its own path");
+                .map_err(|e| format!("this test binary can read its own path: {e:?}"))?;
             let argv = worker_args(&spawn, FdPlan::new([])).to_args();
             let requests = (0..n)
                 .map(|i| KillRequest::SendResponse {
@@ -14749,7 +14999,7 @@ mod tests {
                     response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
                 })
                 .collect();
-            let outcomes = decisions_for_argv(&argv, requests);
+            let outcomes = decisions_for_argv(&argv, requests)?;
             assert_eq!(
                 outcomes.len(),
                 usize::from(n),
@@ -14763,10 +15013,10 @@ mod tests {
                 .iter()
                 .filter(|o| matches!(o, KillResponse::RateLimited))
                 .count();
-            (admitted, limited)
+            Ok((admitted, limited))
         }
 
-        let (admitted, limited) = admitted_under(&["sipnab", "--kill-rate-limit", "1"], 20);
+        let (admitted, limited) = admitted_under(&["sipnab", "--kill-rate-limit", "1"], 20)?;
         assert_eq!(
             admitted, 1,
             "--kill-rate-limit 1 must let exactly one response through in the \
@@ -14779,11 +15029,12 @@ mod tests {
 
         // And a ceiling ABOVE the built-in 10 is honored, or the setting can
         // only ever tighten — half a knob.
-        let (_, limited) = admitted_under(&["sipnab", "--kill-rate-limit", "100"], 20);
+        let (_, limited) = admitted_under(&["sipnab", "--kill-rate-limit", "100"], 20)?;
         assert_eq!(
             limited, 0,
             "--kill-rate-limit 100 must not suppress 20 responses; got {limited} suppressed"
         );
+        Ok(())
     }
 
     /// `--findings-history` bounds what the findings buffer actually retains.
@@ -14849,6 +15100,9 @@ mod notice_helper_tests {
     use super::*;
     use clap::Parser as _;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A list within the cap is joined whole, with nothing said about a rest.
     #[test]
     fn a_list_within_the_cap_is_joined_whole() {
@@ -14895,7 +15149,7 @@ mod notice_helper_tests {
     /// the partition is asserted from both sides.
     #[test]
     #[serial_test::serial(invalid_timestamps, kernel_drop_counts, undecodable_tally)]
-    fn a_snapped_frame_is_never_said_to_have_reached_sipnab_intact() {
+    fn a_snapped_frame_is_never_said_to_have_reached_sipnab_intact() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
         let mut proc = crate::capture::PacketProcessor::new();
         // Intact, on a link type with no decoder.
@@ -14925,7 +15179,7 @@ mod notice_helper_tests {
             1,
         ));
 
-        let msg = capture_quality_summary().expect("both frames are quality findings");
+        let msg = capture_quality_summary().ok_or("both frames are quality findings")?;
         assert!(
             msg.contains("1 frame(s) reached sipnab intact and could not be decoded"),
             "only the intact frame arrived intact: {msg}"
@@ -14938,6 +15192,7 @@ mod notice_helper_tests {
             "the snapped frame is reported as snapped, and as producing nothing: {msg}"
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 }
 

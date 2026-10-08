@@ -287,10 +287,13 @@ impl GroupBuffer {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every documented field name parses, and the aliases resolve to the same
     /// variant as their canonical spelling.
     #[test]
-    fn documented_field_names_parse() {
+    fn documented_field_names_parse() -> Result<(), TestError> {
         for name in GROUP_FIELD_NAMES {
             assert!(
                 GroupField::parse(name).is_ok(),
@@ -301,33 +304,38 @@ mod tests {
         assert_eq!(GroupField::parse("call_id"), Ok(GroupField::CallId));
         assert_eq!(GroupField::parse(" from "), Ok(GroupField::From));
         assert_eq!(GroupField::parse("source"), Ok(GroupField::Src));
+        Ok(())
     }
 
     /// An unknown field is rejected with the accepted list — the old behavior
     /// silently accepted anything and produced ungrouped output.
     #[test]
-    fn unknown_field_is_rejected_with_the_accepted_list() {
-        let err = GroupField::parse("bogus-nonsense").expect_err("must reject");
+    fn unknown_field_is_rejected_with_the_accepted_list() -> Result<(), TestError> {
+        let err = GroupField::parse("bogus-nonsense")
+            .err()
+            .ok_or("must reject")?;
         assert!(err.contains("bogus-nonsense"), "names the bad value: {err}");
         for name in GROUP_FIELD_NAMES {
             assert!(err.contains(name), "lists accepted field '{name}': {err}");
         }
+        Ok(())
     }
 
     /// Round-trip every canonical name through `as_str`.
     #[test]
-    fn as_str_round_trips_every_field() {
+    fn as_str_round_trips_every_field() -> Result<(), TestError> {
         for name in GROUP_FIELD_NAMES {
-            let f = GroupField::parse(name).expect("parses");
+            let f = GroupField::parse(name).map_err(|e| format!("parses: {e:?}"))?;
             assert_eq!(f.as_str(), *name);
             assert_eq!(GroupField::parse(f.as_str()), Ok(f));
         }
+        Ok(())
     }
 
     /// The group cap refuses new keys and reports the drop rather than growing
     /// without bound on attacker-supplied Call-IDs.
     #[test]
-    fn group_cap_refuses_new_keys_and_reports() {
+    fn group_cap_refuses_new_keys_and_reports() -> Result<(), TestError> {
         let mut b = GroupBuffer::new(GroupField::Method, GroupCaps::default());
         // Drive the cap directly: the buffer is what is under test, not the
         // parser, so synthesize keys by filling `order`/`groups`.
@@ -349,6 +357,7 @@ mod tests {
             note.contains("incomplete"),
             "note must say the output is incomplete, not merely capped: {note}"
         );
+        Ok(())
     }
 
     /// A raised group cap accepts keys the shipped one refuses, and the note
@@ -358,7 +367,7 @@ mod tests {
     /// that computed the right number and a buffer that ignored it read the
     /// same way through the accessor alone.
     #[test]
-    fn a_raised_group_cap_accepts_what_the_shipped_one_refuses() {
+    fn a_raised_group_cap_accepts_what_the_shipped_one_refuses() -> Result<(), TestError> {
         let caps = GroupCaps {
             groups: 3,
             buffered: 5,
@@ -384,12 +393,13 @@ mod tests {
             note.contains("--max-groups") && note.contains("--max-grouped-messages"),
             "the note must name what raises them: {note}"
         );
+        Ok(())
     }
 
     /// The message cap refuses a push once the buffer is full, whatever the
     /// group cap allows.
     #[test]
-    fn the_message_cap_refuses_a_push_at_its_configured_value() {
+    fn the_message_cap_refuses_a_push_at_its_configured_value() -> Result<(), TestError> {
         let mut b = GroupBuffer::new(
             GroupField::Method,
             GroupCaps {
@@ -408,12 +418,13 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("fixture parses");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
         assert!(
             !b.push(&msg, "rendered".into()),
             "a buffer at its configured message cap must refuse the push"
         );
         assert!(b.truncated(), "and report it rather than dropping silently");
+        Ok(())
     }
 
     /// At the SHIPPED caps a run holding more keys than the old 10,000-key
@@ -431,7 +442,7 @@ mod tests {
     /// is cloned with a fresh source address per key, which `GroupField::Src`
     /// reads.
     #[test]
-    fn the_shipped_caps_group_a_capture_the_store_would_hold_whole() {
+    fn the_shipped_caps_group_a_capture_the_store_would_hold_whole() -> Result<(), TestError> {
         const KEYS: u32 = 20_000;
         assert!(
             KEYS as usize > 10_000,
@@ -447,7 +458,7 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("fixture parses");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
 
         let mut b = GroupBuffer::new(GroupField::Src, GroupCaps::default());
         for i in 0..KEYS {
@@ -465,11 +476,12 @@ mod tests {
              capture the shipped store holds whole: {}",
             b.truncation_note()
         );
+        Ok(())
     }
 
     /// Drain yields groups in first-seen order with the ungrouped tail last.
     #[test]
-    fn drain_preserves_first_seen_group_order() {
+    fn drain_preserves_first_seen_group_order() -> Result<(), TestError> {
         let mut b = GroupBuffer::new(GroupField::Method, GroupCaps::default());
         b.order = vec!["INVITE".into(), "BYE".into()];
         b.groups
@@ -486,5 +498,6 @@ mod tests {
         assert_eq!(drained[2].0, None, "ungrouped tail carries no header");
         assert_eq!(drained[2].1, vec!["u1"]);
         assert_eq!(b.group_count(), 0, "drain empties the buffer");
+        Ok(())
     }
 }

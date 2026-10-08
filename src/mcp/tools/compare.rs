@@ -587,6 +587,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A fixture shipped in `tests/pcap-samples/`.
     fn fixture(name: &str) -> PathBuf {
@@ -600,14 +601,15 @@ mod tests {
     /// Named per test rather than shared: two tests writing one root would
     /// each see the other's leftovers, and the name-already-taken rule these
     /// tests exercise would then depend on execution order.
-    fn root_with(tag: &str, names: &[&str]) -> PathBuf {
+    fn root_with(tag: &str, names: &[&str]) -> Result<PathBuf, TestError> {
         let root = std::env::temp_dir().join(format!("sipnab-cmp-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("create the file root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("create the file root: {e:?}"))?;
         for name in names {
-            std::fs::copy(fixture(name), root.join(name)).expect("stage a fixture");
+            std::fs::copy(fixture(name), root.join(name))
+                .map_err(|e| format!("stage a fixture: {e:?}"))?;
         }
-        root
+        Ok(root)
     }
 
     /// A server over empty stores.
@@ -620,7 +622,7 @@ mod tests {
 
     /// A server whose stores hold a real capture, read through the same path
     /// `open_capture` uses.
-    fn server_from_fixture(name: &str) -> SipnabMcp {
+    fn server_from_fixture(name: &str) -> Result<SipnabMcp, TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
         let progress = AtomicU64::new(0);
@@ -631,12 +633,12 @@ mod tests {
             &ss,
             &progress,
         )
-        .expect("the fixture must read cleanly");
-        SipnabMcp::new(ds, ss)
+        .map_err(|e| format!("the fixture must read cleanly: {e:?}"))?;
+        Ok(SipnabMcp::new(ds, ss))
     }
 
     /// A server holding one dialog whose Call-ID is `call_id`, verbatim.
-    fn server_with_call_id(call_id: &str) -> SipnabMcp {
+    fn server_with_call_id(call_id: &str) -> Result<SipnabMcp, TestError> {
         let raw = crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -649,7 +651,7 @@ mod tests {
             ],
             b"",
         );
-        let ts = chrono::DateTime::from_timestamp(1_718_000_000, 0).expect("a valid timestamp");
+        let ts = chrono::DateTime::from_timestamp(1_718_000_000, 0).ok_or("a valid timestamp")?;
         let msg = crate::sip::parser::parse_sip(
             &raw,
             ts,
@@ -659,19 +661,19 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("the fixture INVITE must parse");
+        .map_err(|e| format!("the fixture INVITE must parse: {e:?}"))?;
         let mut ds = DialogStore::new(1000, false);
         ds.process_message(msg);
-        SipnabMcp::new(
+        Ok(SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
             Arc::new(RwLock::new(StreamStore::new(1000))),
-        )
+        ))
     }
 
     /// The payload block of a result, as parsed JSON.
-    fn json_of(result: &CallToolResult) -> serde_json::Value {
-        let text = payload_text(result).expect("a payload block");
-        serde_json::from_str(&text).expect("the payload must be JSON")
+    fn json_of(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
+        let text = payload_text(result).ok_or("a payload block")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload must be JSON: {e:?}"))?)
     }
 
     /// Dialogs and their `state` tally for one fixture, computed here rather
@@ -679,7 +681,9 @@ mod tests {
     /// INDEPENDENT read of the same file — reimplemented here on purpose rather
     /// than routed through `crate::capture::compare`, so the cross-check does
     /// not lean on the code it is checking.
-    fn states_of(name: &str) -> (usize, std::collections::BTreeMap<String, usize>) {
+    fn states_of(
+        name: &str,
+    ) -> Result<(usize, std::collections::BTreeMap<String, usize>), TestError> {
         let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
         let progress = AtomicU64::new(0);
@@ -690,7 +694,7 @@ mod tests {
             &ss,
             &progress,
         )
-        .expect("the fixture must read cleanly");
+        .map_err(|e| format!("the fixture must read cleanly: {e:?}"))?;
         let dsr = ds.read();
         let ssr = ss.read();
         let mut tally: std::collections::BTreeMap<String, usize> =
@@ -702,7 +706,7 @@ mod tests {
                 *tally.entry(v).or_insert(0) += 1;
             }
         }
-        (dsr.len(), tally)
+        Ok((dsr.len(), tally))
     }
 
     // ── compare_captures ────────────────────────────────────────────────
@@ -710,7 +714,7 @@ mod tests {
     /// Without `--mcp-file-root` the tool refuses and names the flag, so an
     /// agent learns what to ask the operator for.
     #[tokio::test]
-    async fn compare_captures_needs_a_file_root() {
+    async fn compare_captures_needs_a_file_root() -> Result<(), TestError> {
         let err = empty_server()
             .compare_captures(Parameters(CompareCapturesParams {
                 a: "yesterday.pcap".into(),
@@ -718,19 +722,21 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("must refuse without a root");
+            .err()
+            .ok_or("must refuse without a root")?;
         assert!(
             err.message.contains("--mcp-file-root"),
             "the refusal must name the flag; got {err:?}"
         );
+        Ok(())
     }
 
     /// A traversal is refused for what it is, by the same resolver every other
     /// file tool uses. Both sides are checked: a guard on `a` alone would let
     /// `b` walk out of the root.
     #[tokio::test]
-    async fn compare_captures_refuses_a_path_traversal() {
-        let root = root_with("traversal", &["sip-rtp-g711.pcap"]);
+    async fn compare_captures_refuses_a_path_traversal() -> Result<(), TestError> {
+        let root = root_with("traversal", &["sip-rtp-g711.pcap"])?;
         let server = empty_server().with_file_root(&root);
         for (a, b) in [
             ("../escape.pcap", "sip-rtp-g711.pcap"),
@@ -745,13 +751,15 @@ mod tests {
                     ..Default::default()
                 }))
                 .await
-                .expect_err("must refuse a path");
+                .err()
+                .ok_or("must refuse a path")?;
             assert!(
                 err.message.contains("bare filename") || err.message.contains("resolves outside"),
                 "'{a}' vs '{b}' must be refused for what it is; got {err:?}"
             );
         }
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The dimension check runs BEFORE either file is touched. Reading two
@@ -759,8 +767,8 @@ mod tests {
     /// cost it — proved by naming files that do not exist and still getting
     /// the dimension error.
     #[tokio::test]
-    async fn compare_captures_checks_dimensions_before_reading_anything() {
-        let root = root_with("dimension", &[]);
+    async fn compare_captures_checks_dimensions_before_reading_anything() -> Result<(), TestError> {
+        let root = root_with("dimension", &[])?;
         let err = empty_server()
             .with_file_root(&root)
             .compare_captures(Parameters(CompareCapturesParams {
@@ -770,19 +778,21 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("must refuse an ungroupable dimension");
+            .err()
+            .ok_or("must refuse an ungroupable dimension")?;
         assert!(
             err.message.contains("cannot compare on 'hour'"),
             "the refusal must name the dimension, not the missing file; got {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// Two names for one file are refused. The comparison would be all zeros,
     /// which reads as "nothing changed" rather than "you asked nothing".
     #[tokio::test]
-    async fn compare_captures_refuses_a_capture_against_itself() {
-        let root = root_with("selfdiff", &["sip-rtp-g711.pcap"]);
+    async fn compare_captures_refuses_a_capture_against_itself() -> Result<(), TestError> {
+        let root = root_with("selfdiff", &["sip-rtp-g711.pcap"])?;
         let err = empty_server()
             .with_file_root(&root)
             .compare_captures(Parameters(CompareCapturesParams {
@@ -791,12 +801,14 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("must refuse a self comparison");
+            .err()
+            .ok_or("must refuse a self comparison")?;
         assert!(
             err.message.contains("same file"),
             "the refusal must say why; got {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The counts describe the two files, and each side's `state` buckets sum
@@ -804,10 +816,10 @@ mod tests {
     /// fixture, so reading one file twice — or crossing the two sides — is
     /// visible rather than plausible.
     #[tokio::test]
-    async fn compare_captures_reports_each_capture_separately() {
-        let root = root_with("counts", &["sip-rtp-g711.pcap", "sip-auth-failure.pcapng"]);
-        let (dialogs_a, states_a) = states_of("sip-rtp-g711.pcap");
-        let (dialogs_b, states_b) = states_of("sip-auth-failure.pcapng");
+    async fn compare_captures_reports_each_capture_separately() -> Result<(), TestError> {
+        let root = root_with("counts", &["sip-rtp-g711.pcap", "sip-auth-failure.pcapng"])?;
+        let (dialogs_a, states_a) = states_of("sip-rtp-g711.pcap")?;
+        let (dialogs_b, states_b) = states_of("sip-auth-failure.pcapng")?;
         assert!(
             dialogs_a > 0 && dialogs_b > 0,
             "both fixtures must hold dialogs for this test to mean anything"
@@ -822,8 +834,8 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("the comparison should succeed");
-        let v = json_of(&result);
+            .map_err(|e| format!("the comparison should succeed: {e:?}"))?;
+        let v = json_of(&result)?;
 
         assert_eq!(v["a"]["dialogs"], dialogs_a, "side a must describe file a");
         assert_eq!(v["b"]["dialogs"], dialogs_b, "side b must describe file b");
@@ -832,13 +844,13 @@ mod tests {
 
         let buckets = v["dimensions"][0]["buckets"]
             .as_array()
-            .expect("state buckets");
+            .ok_or("state buckets")?;
         let (mut sum_a, mut sum_b) = (0usize, 0usize);
         for bucket in buckets {
-            let value = bucket["value"].as_str().expect("a bucket value");
+            let value = bucket["value"].as_str().ok_or("a bucket value")?;
             let (ca, cb) = (
-                bucket["a"].as_u64().expect("a count") as usize,
-                bucket["b"].as_u64().expect("b count") as usize,
+                bucket["a"].as_u64().ok_or("a count")? as usize,
+                bucket["b"].as_u64().ok_or("b count")? as usize,
             );
             assert_eq!(
                 ca,
@@ -851,7 +863,7 @@ mod tests {
                 "bucket '{value}' must carry file b's own count"
             );
             assert_eq!(
-                bucket["delta"].as_i64().expect("a delta"),
+                bucket["delta"].as_i64().ok_or("a delta")?,
                 cb as i64 - ca as i64,
                 "delta must be b minus a"
             );
@@ -864,6 +876,7 @@ mod tests {
         assert_eq!(sum_a, dialogs_a, "buckets plus other must account for a");
         assert_eq!(sum_b, dialogs_b, "buckets plus other must account for b");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The run's `--hep-parse` reaches `compare_captures`: a HEP copy compared
@@ -921,12 +934,12 @@ mod tests {
     /// has must still be true afterwards, which means the stores must hold
     /// exactly what they held.
     #[tokio::test]
-    async fn compare_captures_leaves_the_loaded_capture_untouched() {
+    async fn compare_captures_leaves_the_loaded_capture_untouched() -> Result<(), TestError> {
         let root = root_with(
             "untouched",
             &["sip-rtp-g711.pcap", "sip-auth-failure.pcapng"],
-        );
-        let server = server_from_fixture("sip-problem-call.pcap").with_file_root(&root);
+        )?;
+        let server = server_from_fixture("sip-problem-call.pcap")?.with_file_root(&root);
         let before: Vec<String> = server
             .dialog_store
             .read()
@@ -942,7 +955,7 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("the comparison should succeed");
+            .map_err(|e| format!("the comparison should succeed: {e:?}"))?;
 
         let after: Vec<String> = server
             .dialog_store
@@ -955,16 +968,17 @@ mod tests {
             "comparing two files must not add, drop or reorder a loaded dialog"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A file that yields nothing and reports why is refused rather than
     /// diffed: every bucket would appear to have collapsed to zero, which is a
     /// finding that is not there.
     #[tokio::test]
-    async fn compare_captures_refuses_a_file_that_would_not_read() {
-        let root = root_with("unreadable", &["sip-rtp-g711.pcap"]);
+    async fn compare_captures_refuses_a_file_that_would_not_read() -> Result<(), TestError> {
+        let root = root_with("unreadable", &["sip-rtp-g711.pcap"])?;
         std::fs::write(root.join("notes.pcap"), b"this is not a capture\n")
-            .expect("stage a non-capture");
+            .map_err(|e| format!("stage a non-capture: {e:?}"))?;
         let err = empty_server()
             .with_file_root(&root)
             .compare_captures(Parameters(CompareCapturesParams {
@@ -973,12 +987,14 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("must refuse a file that yielded nothing");
+            .err()
+            .ok_or("must refuse a file that yielded nothing")?;
         assert!(
             err.message.contains("notes.pcap") && err.message.contains("no dialogs"),
             "the refusal must name the file and why; got {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     // ── build_evidence_package ──────────────────────────────────────────
@@ -986,26 +1002,28 @@ mod tests {
     /// Without `--mcp-file-root` the tool refuses and names the flag — the
     /// same gate `export_capture` applies, not a rule of its own.
     #[tokio::test]
-    async fn build_evidence_package_needs_a_file_root() {
-        let server = server_from_fixture("sip-rtp-g711.pcap");
+    async fn build_evidence_package_needs_a_file_root() -> Result<(), TestError> {
+        let server = server_from_fixture("sip-rtp-g711.pcap")?;
         let call_id = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
         let err = server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
                 call_ids: vec![call_id],
                 filename: "evidence".into(),
             }))
             .await
-            .expect_err("must refuse without a root");
+            .err()
+            .ok_or("must refuse without a root")?;
         assert!(
             err.message.contains("--mcp-file-root"),
             "the refusal must name the flag; got {err:?}"
         );
+        Ok(())
     }
 
     /// A traversal is refused and NOTHING is created outside the root. The
@@ -1013,18 +1031,18 @@ mod tests {
     /// with the right words and still wrote the directory would pass a
     /// message-only test.
     #[tokio::test]
-    async fn build_evidence_package_refuses_a_path_traversal() {
-        let root = root_with("pkg-traversal", &[]);
+    async fn build_evidence_package_refuses_a_path_traversal() -> Result<(), TestError> {
+        let root = root_with("pkg-traversal", &[])?;
         let outside = root.join("..").join("sipnab-cmp-escape-package");
         let _ = std::fs::remove_dir_all(&outside);
-        let server = server_from_fixture("sip-rtp-g711.pcap").with_file_root(&root);
+        let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let call_id = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
 
         for bad in [
             "../sipnab-cmp-escape-package",
@@ -1038,7 +1056,8 @@ mod tests {
                     filename: bad.to_string(),
                 }))
                 .await
-                .expect_err("must refuse a path");
+                .err()
+                .ok_or("must refuse a path")?;
             assert!(
                 err.message.contains("bare filename") || err.message.contains("resolves outside"),
                 "'{bad}' must be refused for what it is; got {err:?}"
@@ -1050,88 +1069,98 @@ mod tests {
             outside.display()
         );
         assert_eq!(
-            std::fs::read_dir(&root).expect("read the root").count(),
+            std::fs::read_dir(&root)
+                .map_err(|e| format!("read the root: {e:?}"))?
+                .count(),
             0,
             "a refused traversal must leave nothing in the root either"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A symlink inside the root that points out of it is refused too: the
     /// escape is not in the string, and the kernel would follow it at `open`.
     #[cfg(unix)]
     #[tokio::test]
-    async fn build_evidence_package_refuses_a_symlink_out_of_the_root() {
-        let root = root_with("pkg-symlink", &[]);
+    async fn build_evidence_package_refuses_a_symlink_out_of_the_root() -> Result<(), TestError> {
+        let root = root_with("pkg-symlink", &[])?;
         let outside =
             std::env::temp_dir().join(format!("sipnab-cmp-symlink-target-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&outside);
-        std::fs::create_dir_all(&outside).expect("create the target directory");
-        std::os::unix::fs::symlink(&outside, root.join("evidence")).expect("stage the symlink");
+        std::fs::create_dir_all(&outside)
+            .map_err(|e| format!("create the target directory: {e:?}"))?;
+        std::os::unix::fs::symlink(&outside, root.join("evidence"))
+            .map_err(|e| format!("stage the symlink: {e:?}"))?;
 
-        let server = server_from_fixture("sip-rtp-g711.pcap").with_file_root(&root);
+        let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let call_id = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
         let err = server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
                 call_ids: vec![call_id],
                 filename: "evidence".into(),
             }))
             .await
-            .expect_err("must refuse a symlink out of the root");
+            .err()
+            .ok_or("must refuse a symlink out of the root")?;
         assert!(
             err.message.contains("resolves outside") || err.message.contains("already exists"),
             "the refusal must be about the link; got {err:?}"
         );
         assert_eq!(
             std::fs::read_dir(&outside)
-                .expect("read the target")
+                .map_err(|e| format!("read the target: {e:?}"))?
                 .count(),
             0,
             "nothing may be written through the link"
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+        Ok(())
     }
 
     /// A name already taken is refused rather than written over: that file may
     /// be the only copy of a capture.
     #[tokio::test]
-    async fn build_evidence_package_refuses_a_name_already_taken() {
-        let root = root_with("pkg-taken", &[]);
-        std::fs::create_dir(root.join("evidence")).expect("stage the collision");
-        let server = server_from_fixture("sip-rtp-g711.pcap").with_file_root(&root);
+    async fn build_evidence_package_refuses_a_name_already_taken() -> Result<(), TestError> {
+        let root = root_with("pkg-taken", &[])?;
+        std::fs::create_dir(root.join("evidence"))
+            .map_err(|e| format!("stage the collision: {e:?}"))?;
+        let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let call_id = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
         let err = server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
                 call_ids: vec![call_id],
                 filename: "evidence".into(),
             }))
             .await
-            .expect_err("must refuse a taken name");
+            .err()
+            .ok_or("must refuse a taken name")?;
         assert!(
             err.message.contains("already exists"),
             "the refusal must say the name is taken; got {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// An empty request is refused: a package of nothing is a directory of
     /// disclaimers.
     #[tokio::test]
-    async fn build_evidence_package_refuses_an_empty_call_list() {
-        let root = root_with("pkg-empty", &[]);
+    async fn build_evidence_package_refuses_an_empty_call_list() -> Result<(), TestError> {
+        let root = root_with("pkg-empty", &[])?;
         let err = empty_server()
             .with_file_root(&root)
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
@@ -1139,34 +1168,37 @@ mod tests {
                 filename: "evidence".into(),
             }))
             .await
-            .expect_err("must refuse an empty package");
+            .err()
+            .ok_or("must refuse an empty package")?;
         assert!(
             err.message.contains("at least one call"),
             "the refusal must say what is missing; got {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// An unknown Call-ID is caught BEFORE anything is created, so a bad
     /// request leaves no half-package holding the name against a retry.
     #[tokio::test]
-    async fn an_unknown_call_id_leaves_no_directory_behind() {
-        let root = root_with("pkg-unknown", &[]);
-        let server = server_from_fixture("sip-rtp-g711.pcap").with_file_root(&root);
+    async fn an_unknown_call_id_leaves_no_directory_behind() -> Result<(), TestError> {
+        let root = root_with("pkg-unknown", &[])?;
+        let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let known = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
         let err = server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
                 call_ids: vec![known, "no-such-call@example.com".into()],
                 filename: "evidence".into(),
             }))
             .await
-            .expect_err("must refuse an unknown call");
+            .err()
+            .ok_or("must refuse an unknown call")?;
         assert!(
             err.message.contains("no-such-call@example.com"),
             "the refusal must name the call; got {err:?}"
@@ -1176,6 +1208,7 @@ mod tests {
             "a refused package must not exist on disk"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The package holds the pcapng, a ladder and RTP stats per call, a
@@ -1183,16 +1216,16 @@ mod tests {
     /// disclaimer is the point: the directory is what gets forwarded, and the
     /// person who opens it never saw the tool description.
     #[tokio::test]
-    async fn a_package_carries_the_artifacts_and_the_disclaimer() {
-        let root = root_with("pkg-contents", &[]);
-        let server = server_from_fixture("sip-rtp-g711.pcap").with_file_root(&root);
+    async fn a_package_carries_the_artifacts_and_the_disclaimer() -> Result<(), TestError> {
+        let root = root_with("pkg-contents", &[])?;
+        let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let call_id = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
 
         let result = server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
@@ -1200,8 +1233,8 @@ mod tests {
                 filename: "evidence".into(),
             }))
             .await
-            .expect("the package should be written");
-        let v = json_of(&result);
+            .map_err(|e| format!("the package should be written: {e:?}"))?;
+        let v = json_of(&result)?;
         assert_eq!(v["calls"], 1);
 
         let dir = root.join("evidence");
@@ -1214,11 +1247,12 @@ mod tests {
         ] {
             let path = dir.join(name);
             let meta = std::fs::metadata(&path)
-                .unwrap_or_else(|e| panic!("{} must exist: {e}", path.display()));
+                .map_err(|e| format!("{} must exist: {e}", path.display()))?;
             assert!(meta.len() > 0, "{name} must not be empty");
         }
 
-        let readme = std::fs::read_to_string(dir.join("README.md")).expect("read the README");
+        let readme = std::fs::read_to_string(dir.join("README.md"))
+            .map_err(|e| format!("read the README: {e:?}"))?;
         assert!(
             readme.contains("REBUILT, NOT COPIED"),
             "the README must state that the frames were rebuilt; got:\n{readme}"
@@ -1229,50 +1263,53 @@ mod tests {
         );
 
         let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("manifest.json")).expect("read"),
+            &std::fs::read_to_string(dir.join("manifest.json"))
+                .map_err(|e| format!("read: {e:?}"))?,
         )
-        .expect("the manifest must be JSON");
+        .map_err(|e| format!("the manifest must be JSON: {e:?}"))?;
         assert_eq!(manifest["calls"][0]["call_id"], call_id.as_str());
         assert_eq!(manifest["calls"][0]["ladder"], "call-01-ladder.md");
         assert_eq!(manifest["signaling_frames_rebuilt"], true);
 
         // The ladder must be the one `render_ladder` produces, not a second
         // rendering that could disagree with what the agent was shown.
-        let ladder = std::fs::read_to_string(dir.join("call-01-ladder.md")).expect("read");
+        let ladder = std::fs::read_to_string(dir.join("call-01-ladder.md"))
+            .map_err(|e| format!("read: {e:?}"))?;
         let over_the_wire = server
             .render_ladder(Parameters(crate::mcp::server::RenderLadderParams {
                 call_id: call_id.clone(),
                 format: Some("markdown".into()),
             }))
             .await
-            .expect("render_ladder should succeed");
+            .map_err(|e| format!("render_ladder should succeed: {e:?}"))?;
         assert_eq!(
             ladder,
-            payload_text(&over_the_wire).expect("a ladder"),
+            payload_text(&over_the_wire).ok_or("a ladder")?,
             "the packaged ladder must be byte-identical to the tool's"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// Filenames are ordinals, never the Call-ID. A Call-ID is arbitrary
     /// sender-chosen text; one shaped like a path must not steer where a byte
     /// lands.
     #[tokio::test]
-    async fn a_call_id_shaped_like_a_path_never_becomes_a_filename() {
-        let root = root_with("pkg-evilid", &[]);
+    async fn a_call_id_shaped_like_a_path_never_becomes_a_filename() -> Result<(), TestError> {
+        let root = root_with("pkg-evilid", &[])?;
         let evil = "../../escaped/a b c.md";
-        let server = server_with_call_id(evil).with_file_root(&root);
+        let server = server_with_call_id(evil)?.with_file_root(&root);
         server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
                 call_ids: vec![evil.to_string()],
                 filename: "evidence".into(),
             }))
             .await
-            .expect("a hostile Call-ID must be packaged, not refused");
+            .map_err(|e| format!("a hostile Call-ID must be packaged, not refused: {e:?}"))?;
 
         let dir = root.join("evidence");
         let names: Vec<String> = std::fs::read_dir(&dir)
-            .expect("read the package")
+            .map_err(|e| format!("read the package: {e:?}"))?
             .filter_map(|e| e.ok())
             .filter_map(|e| e.file_name().into_string().ok())
             .collect();
@@ -1292,38 +1329,41 @@ mod tests {
         );
         // The manifest is where the correlation lives, verbatim.
         let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("manifest.json")).expect("read"),
+            &std::fs::read_to_string(dir.join("manifest.json"))
+                .map_err(|e| format!("read: {e:?}"))?,
         )
-        .expect("the manifest must be JSON");
+        .map_err(|e| format!("the manifest must be JSON: {e:?}"))?;
         assert_eq!(manifest["calls"][0]["call_id"], evil);
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A Call-ID named twice is packaged once: two ordinals for one call would
     /// make the manifest claim two calls where there is one.
     #[tokio::test]
-    async fn a_repeated_call_id_is_packaged_once() {
-        let root = root_with("pkg-dedupe", &[]);
-        let server = server_from_fixture("sip-rtp-g711.pcap").with_file_root(&root);
+    async fn a_repeated_call_id_is_packaged_once() -> Result<(), TestError> {
+        let root = root_with("pkg-dedupe", &[])?;
+        let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let call_id = server
             .dialog_store
             .read()
             .iter()
             .next()
             .map(|d| d.call_id.clone())
-            .expect("the fixture must hold a dialog");
+            .ok_or("the fixture must hold a dialog")?;
         let result = server
             .build_evidence_package(Parameters(BuildEvidencePackageParams {
                 call_ids: vec![call_id.clone(), call_id],
                 filename: "evidence".into(),
             }))
             .await
-            .expect("the package should be written");
-        assert_eq!(json_of(&result)["calls"], 1, "the repeat must collapse");
+            .map_err(|e| format!("the package should be written: {e:?}"))?;
+        assert_eq!(json_of(&result)?["calls"], 1, "the repeat must collapse");
         assert!(
             !root.join("evidence").join("call-02-ladder.md").exists(),
             "a second ordinal must not exist for one call"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 }

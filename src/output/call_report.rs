@@ -756,6 +756,9 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
@@ -763,14 +766,14 @@ mod tests {
 
     /// Fixed base timestamp (2024-06-15 12:00:00 UTC) for determinism.
     fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build a dialog holding INVITE -> 180 (+1.23 s) -> 200 (+5.79 s) with
     /// timing updated at each step.
-    fn make_dialog_with_messages() -> SipDialog {
+    fn make_dialog_with_messages() -> Result<SipDialog, TestError> {
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(1230);
         let t2 = t0 + TimeDelta::milliseconds(5790);
@@ -795,7 +798,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let raw_ringing = build_sip(
             "SIP/2.0 180 Ringing",
@@ -817,7 +820,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let raw_ok = build_sip(
             "SIP/2.0 200 OK",
@@ -839,9 +842,9 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
-        let mut d = SipDialog::new(&invite).expect("should create");
+        let mut d = SipDialog::new(&invite).ok_or("should create")?;
         crate::sip::timing::update_timing(&mut d.timing, &invite, &crate::sip::SipMethod::Invite);
 
         dialog::update_state(&mut d, &ringing);
@@ -854,7 +857,7 @@ mod tests {
         d.messages.push(ok.clone());
         d.updated_at = ok.timestamp;
 
-        d
+        Ok(d)
     }
 
     /// Build a fresh single-packet PCMU RTP stream with SSRC 0x12345678.
@@ -884,53 +887,55 @@ mod tests {
         crate::output::model::StreamSummary::of(stream, crate::rtp::quality::MosDelay::unknown())
     }
 
-    fn report_for(stream: &RtpStream, format: ReportFormat) -> String {
-        generate_call_report(
-            &make_dialog_with_messages(),
+    fn report_for(stream: &RtpStream, format: ReportFormat) -> Result<String, TestError> {
+        Ok(generate_call_report(
+            &make_dialog_with_messages()?,
             &[stream],
             &MediaDiagnosis::default(),
             format,
             crate::rtp::quality::MosDelay::unknown(),
-        )
+        ))
     }
 
     /// A stream whose MOS rests on a published impairment value reports it,
     /// with its R-factor, in both human formats: the same number REST carries.
     #[test]
-    fn a_grounded_mos_is_reported_in_text_and_markdown() {
+    fn a_grounded_mos_is_reported_in_text_and_markdown() -> Result<(), TestError> {
         let mut stream = make_stream();
         stream.codec = Some("PCMU".to_string());
         let s = summary(&stream);
         assert!(s.mos_grounded, "precondition: PCMU is published");
-        let text = report_for(&stream, ReportFormat::Text);
+        let text = report_for(&stream, ReportFormat::Text)?;
         assert!(
             text.contains(&format!("mos={:.2} R={:.1}", s.mos, s.r_factor)),
             "{text}"
         );
-        let md = report_for(&stream, ReportFormat::Markdown);
+        let md = report_for(&stream, ReportFormat::Markdown)?;
         assert!(md.contains("| MOS |"), "no MOS column:\n{md}");
         assert!(md.contains(&format!("| {:.2} |", s.mos)), "{md}");
+        Ok(())
     }
 
     /// A MOS sipnab has no published basis for is reported as unknown, never
     /// as the placeholder number, which reads as a measurement.
     #[test]
-    fn an_ungrounded_mos_is_reported_as_unknown() {
+    fn an_ungrounded_mos_is_reported_as_unknown() -> Result<(), TestError> {
         let mut stream = make_stream();
         stream.codec = Some("EVS".to_string());
         let s = summary(&stream);
         assert!(!s.mos_grounded, "precondition: EVS has no published Ie");
-        let text = report_for(&stream, ReportFormat::Text);
+        let text = report_for(&stream, ReportFormat::Text)?;
         assert!(text.contains("mos=unknown"), "{text}");
         assert!(!text.contains(&format!("mos={:.2}", s.mos)), "{text}");
-        let md = report_for(&stream, ReportFormat::Markdown);
+        let md = report_for(&stream, ReportFormat::Markdown)?;
         assert!(md.contains("| unknown |"), "{md}");
+        Ok(())
     }
 
     /// An AMR-WB stream carries its wideband score beside the narrowband one.
     #[test]
     #[serial_test::serial(listening_context)]
-    fn an_amr_wb_stream_reports_its_wideband_score() {
+    fn an_amr_wb_stream_reports_its_wideband_score() -> Result<(), TestError> {
         let mut stream = make_stream();
         stream.codec = Some("AMR-WB".to_string());
         stream.amr_frame_types_seen = 1u16 << 2;
@@ -938,20 +943,21 @@ mod tests {
         let s = summary(&stream);
         let wb = s
             .mos_wideband
-            .expect("precondition: 12.65 kbit/s is published");
-        let text = report_for(&stream, ReportFormat::Text);
+            .ok_or("precondition: 12.65 kbit/s is published")?;
+        let text = report_for(&stream, ReportFormat::Text)?;
         assert!(
             text.contains(&format!("MOS_CQEW={wb:.2} (monotic)")),
             "{text}"
         );
-        let md = report_for(&stream, ReportFormat::Markdown);
+        let md = report_for(&stream, ReportFormat::Markdown)?;
         assert!(md.contains(&format!("{wb:.2} (monotic)")), "{md}");
+        Ok(())
     }
 
     /// The text report renders every section header plus PDD/setup lines.
     #[test]
-    fn text_report_contains_all_sections() {
-        let dialog = make_dialog_with_messages();
+    fn text_report_contains_all_sections() -> Result<(), TestError> {
+        let dialog = make_dialog_with_messages()?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
@@ -980,6 +986,7 @@ mod tests {
         );
         assert!(report.contains("PDD:"), "should have PDD");
         assert!(report.contains("Setup:"), "should have setup time");
+        Ok(())
     }
 
     /// The text report carries the dialog's opening frame pointer, so a human
@@ -988,12 +995,12 @@ mod tests {
     /// blank one) when the dialog has no frame, the last surface where packet
     /// provenance was missing.
     #[test]
-    fn the_text_report_carries_the_frame_pointer_only_when_present() {
+    fn the_text_report_carries_the_frame_pointer_only_when_present() -> Result<(), TestError> {
         use crate::capture::packet::{FrameOrigin, FrameRef};
         let streams: Vec<&RtpStream> = vec![];
         let diagnosis = MediaDiagnosis::default();
 
-        let mut dialog = make_dialog_with_messages();
+        let mut dialog = make_dialog_with_messages()?;
         dialog.first_frame = None;
         let without = generate_call_report(
             &dialog,
@@ -1030,13 +1037,14 @@ mod tests {
             "the report must carry the resolvable <source>#<ordinal>@<digest> \
              pointer that --show-frame accepts:\n{with}"
         );
+        Ok(())
     }
 
     /// The JSON report parses as JSON with `schema_version` 1 and a
     /// `timing` object.
     #[test]
-    fn json_report_valid() {
-        let dialog = make_dialog_with_messages();
+    fn json_report_valid() -> Result<(), TestError> {
+        let dialog = make_dialog_with_messages()?;
         let streams: Vec<&RtpStream> = vec![];
         let diagnosis = MediaDiagnosis::default();
 
@@ -1049,15 +1057,16 @@ mod tests {
         );
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&report).expect("should be valid JSON");
+            serde_json::from_str(&report).map_err(|e| format!("should be valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert!(parsed["timing"].is_object());
+        Ok(())
     }
 
     /// The Markdown report renders h1/h2 headers and pipe tables.
     #[test]
-    fn markdown_report_contains_headers() {
-        let dialog = make_dialog_with_messages();
+    fn markdown_report_contains_headers() -> Result<(), TestError> {
+        let dialog = make_dialog_with_messages()?;
         let streams: Vec<&RtpStream> = vec![];
         let diagnosis = MediaDiagnosis::default();
 
@@ -1080,12 +1089,13 @@ mod tests {
         // Markdown tables
         assert!(report.contains("|"), "should have table pipes");
         assert!(report.contains("---"), "should have table separators");
+        Ok(())
     }
 
     /// Diagnosis hints appear in the issues section, replacing "None".
     #[test]
-    fn text_report_with_issues() {
-        let dialog = make_dialog_with_messages();
+    fn text_report_with_issues() -> Result<(), TestError> {
+        let dialog = make_dialog_with_messages()?;
         let streams: Vec<&RtpStream> = vec![];
         let diagnosis = MediaDiagnosis {
             one_way_audio: true,
@@ -1109,13 +1119,14 @@ mod tests {
             !report.contains("Issues Detected: None"),
             "should not say None when there are issues"
         );
+        Ok(())
     }
 
     // ── Signaling diagnosis rendering ───────────────────────────────
 
     /// A dialog that failed on a 503 carrying a `Reason:` header.
-    fn make_failed_dialog() -> SipDialog {
-        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+    fn make_failed_dialog() -> Result<SipDialog, TestError> {
+        let t0 = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
         let raw_invite = build_sip(
             "INVITE sip:1002@carrier.example SIP/2.0",
             &[
@@ -1137,7 +1148,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let raw_fail = build_sip(
             "SIP/2.0 503 Service Unavailable",
@@ -1161,15 +1172,15 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
-        let mut d = SipDialog::new(&invite).expect("should create");
+        let mut d = SipDialog::new(&invite).ok_or("should create")?;
         d.messages.push(fail);
-        d
+        Ok(d)
     }
 
     /// A dialog cleared by a `BYE` that says why.
-    fn make_cleared_dialog(bye_headers: &[&str]) -> SipDialog {
+    fn make_cleared_dialog(bye_headers: &[&str]) -> Result<SipDialog, TestError> {
         let t0 = base_ts();
         let raw_invite = build_sip(
             "INVITE sip:1002@carrier.example SIP/2.0",
@@ -1192,7 +1203,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let mut headers = vec![
             "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKbye",
@@ -1213,11 +1224,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
-        let mut d = SipDialog::new(&invite).expect("should create");
+        let mut d = SipDialog::new(&invite).ok_or("should create")?;
         d.messages.push(bye);
-        d
+        Ok(d)
     }
 
     /// The human report says why the call ended, not only that it did.
@@ -1226,8 +1237,9 @@ mod tests {
     /// is the same line for a call that cleared normally and one the far end
     /// dropped because it was out of order.
     #[test]
-    fn the_text_report_says_why_the_call_ended() {
-        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=38;text=\"Network out of order\""]);
+    fn the_text_report_says_why_the_call_ended() -> Result<(), TestError> {
+        let dialog =
+            make_cleared_dialog(&["Reason: Q.850;cause=38;text=\"Network out of order\""])?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1245,14 +1257,16 @@ mod tests {
             report.contains("Q.850") && report.contains("38"),
             "the scale and the code are both needed to read the cause:\n{report}"
         );
+        Ok(())
     }
 
     /// Markdown says the same thing as text. Two renderings of one report
     /// that disagree about whether a call named a cause is the drift this
     /// repository keeps removing.
     #[test]
-    fn the_markdown_report_says_why_the_call_ended() {
-        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=38;text=\"Network out of order\""]);
+    fn the_markdown_report_says_why_the_call_ended() -> Result<(), TestError> {
+        let dialog =
+            make_cleared_dialog(&["Reason: Q.850;cause=38;text=\"Network out of order\""])?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1266,14 +1280,15 @@ mod tests {
             report.contains("Network out of order"),
             "the cause text belongs in the markdown report too:\n{report}"
         );
+        Ok(())
     }
 
     /// A call that named no cause gains no line, in either rendering. A
     /// `Cause: -` on every call is a column of dashes that trains a reader to
     /// skip the one row that is filled in.
     #[test]
-    fn a_call_with_no_stated_cause_gains_no_line() {
-        let dialog = make_cleared_dialog(&[]);
+    fn a_call_with_no_stated_cause_gains_no_line() -> Result<(), TestError> {
+        let dialog = make_cleared_dialog(&[])?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         for format in [ReportFormat::Text, ReportFormat::Markdown] {
@@ -1289,6 +1304,7 @@ mod tests {
                 "{format:?} invented a cause line:\n{report}"
             );
         }
+        Ok(())
     }
 
     /// A `|` in the cause text cannot split the Markdown row.
@@ -1298,8 +1314,8 @@ mod tests {
     /// that does not exist, which renders as a broken table rather than as an
     /// obvious defect.
     #[test]
-    fn a_pipe_in_the_cause_text_cannot_break_the_markdown_table() {
-        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=16;text=\"a | b | c\""]);
+    fn a_pipe_in_the_cause_text_cannot_break_the_markdown_table() -> Result<(), TestError> {
+        let dialog = make_cleared_dialog(&["Reason: Q.850;cause=16;text=\"a | b | c\""])?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1312,7 +1328,7 @@ mod tests {
         let row = report
             .lines()
             .find(|l| l.starts_with("| Cause |"))
-            .expect("the cause row is rendered");
+            .ok_or("the cause row is rendered")?;
         assert!(
             row.contains(r"a \| b \| c"),
             "the pipes must be escaped, got {row:?}"
@@ -1326,17 +1342,18 @@ mod tests {
             unescaped, 3,
             "a two-cell row has three delimiters; got {unescaped} in {row:?}"
         );
+        Ok(())
     }
 
     /// The vendor pair renders like the standard header, and names where the
     /// number came from — what Asterisk asserts and what RFC 3326 asserts are
     /// not the same claim.
     #[test]
-    fn the_text_report_names_the_header_a_vendor_cause_came_from() {
+    fn the_text_report_names_the_header_a_vendor_cause_came_from() -> Result<(), TestError> {
         let dialog = make_cleared_dialog(&[
             "X-Asterisk-HangupCauseCode: 17",
             "X-Asterisk-HangupCause: User busy",
-        ]);
+        ])?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1351,11 +1368,12 @@ mod tests {
             report.contains("X-Asterisk-HangupCauseCode"),
             "the report must say which header asserted this:\n{report}"
         );
+        Ok(())
     }
 
     #[test]
-    fn text_report_carries_the_signaling_section_with_evidence() {
-        let dialog = make_failed_dialog();
+    fn text_report_carries_the_signaling_section_with_evidence() -> Result<(), TestError> {
+        let dialog = make_failed_dialog()?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1381,11 +1399,12 @@ mod tests {
             report.contains("evidence: #1 503 Service Unavailable"),
             "evidence should label the message:\n{report}"
         );
+        Ok(())
     }
 
     #[test]
-    fn markdown_report_carries_the_signaling_section() {
-        let dialog = make_failed_dialog();
+    fn markdown_report_carries_the_signaling_section() -> Result<(), TestError> {
+        let dialog = make_failed_dialog()?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1402,12 +1421,13 @@ mod tests {
         );
         assert!(report.contains("**Final failure: 503 Service Unavailable"));
         assert!(report.contains("- evidence: #1 503 Service Unavailable"));
+        Ok(())
     }
 
     #[test]
-    fn a_healthy_dialog_gets_no_signaling_section() {
+    fn a_healthy_dialog_gets_no_signaling_section() -> Result<(), TestError> {
         // make_dialog_with_messages ends on a 200 OK.
-        let dialog = make_dialog_with_messages();
+        let dialog = make_dialog_with_messages()?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
 
@@ -1424,23 +1444,26 @@ mod tests {
                 "a successful call must not get a signaling section ({format:?}):\n{report}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn evidence_label_reports_an_out_of_range_index_rather_than_dropping_it() {
+    fn evidence_label_reports_an_out_of_range_index_rather_than_dropping_it()
+    -> Result<(), TestError> {
         // A silent drop here would mean the report claims fewer messages of
         // evidence than the diagnosis found, which is the failure mode the
         // evidence principle exists to prevent.
-        let dialog = make_failed_dialog();
+        let dialog = make_failed_dialog()?;
         let label = evidence_label(&dialog, &[0, 99]);
         assert!(label.contains("#0 INVITE"), "got {label}");
         assert!(label.contains("#99 (out of range)"), "got {label}");
+        Ok(())
     }
 
     /// A ringing call the capture watched for five minutes without an answer.
     /// Past Timer C, so detection 5 reports it — as *unknown*.
-    fn make_unanswered_dialog() -> SipDialog {
-        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+    fn make_unanswered_dialog() -> Result<SipDialog, TestError> {
+        let t0 = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
         let raw_invite = build_sip(
             "INVITE sip:1002@carrier.example SIP/2.0",
             &[
@@ -1462,7 +1485,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let raw_ring = build_sip(
             "SIP/2.0 180 Ringing",
@@ -1485,19 +1508,19 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
-        let mut d = SipDialog::new(&invite).expect("should create");
+        let mut d = SipDialog::new(&invite).ok_or("should create")?;
         d.messages.push(ring);
-        d
+        Ok(d)
     }
 
     /// The report must not turn a capture that stopped early into a failure.
     /// This is the one detection the spec singles out as most likely to lie,
     /// and the lie would live in the wording rather than in the data.
     #[test]
-    fn an_unanswered_call_is_reported_as_unknown_not_failed() {
-        let dialog = make_unanswered_dialog();
+    fn an_unanswered_call_is_reported_as_unknown_not_failed() -> Result<(), TestError> {
+        let dialog = make_unanswered_dialog()?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1515,11 +1538,12 @@ mod tests {
             !report.contains("Final failure"),
             "a call with no final response has not failed:\n{report}"
         );
+        Ok(())
     }
 
     #[test]
-    fn markdown_report_renders_the_same_unknown_finding() {
-        let dialog = make_unanswered_dialog();
+    fn markdown_report_renders_the_same_unknown_finding() -> Result<(), TestError> {
+        let dialog = make_unanswered_dialog()?;
         let stream = make_stream();
         let streams: Vec<&RtpStream> = vec![&stream];
         let report = generate_call_report(
@@ -1531,14 +1555,15 @@ mod tests {
         );
         assert!(report.contains("## Signaling"), "got:\n{report}");
         assert!(report.contains("OUTCOME UNKNOWN"), "got:\n{report}");
+        Ok(())
     }
 
     /// A `REGISTER` challenged `401`, answered with credentials, and refused
     /// `403` — the shape the corpus keeps, and the one this report used to
     /// summarize as an offline endpoint.
-    fn make_rejected_registration_dialog() -> SipDialog {
+    fn make_rejected_registration_dialog() -> Result<SipDialog, TestError> {
         let t0 = base_ts();
-        let build = |first_line: &str, extra: &[&str], offset: i64| {
+        let build = |first_line: &str, extra: &[&str], offset: i64| -> Result<_, TestError> {
             let mut headers = vec![
                 "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg",
                 "From: <sip:1001@example.com>;tag=t1",
@@ -1549,7 +1574,7 @@ mod tests {
             headers.extend_from_slice(extra);
             headers.push("Content-Length: 0");
             let raw = build_sip(first_line, &headers, b"");
-            parse_sip(
+            Ok(parse_sip(
                 &raw,
                 t0 + TimeDelta::milliseconds(offset),
                 localhost(),
@@ -1558,15 +1583,15 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse")
+            .map_err(|e| format!("should parse: {e:?}"))?)
         };
 
         let register = build(
             "REGISTER sip:example.com SIP/2.0",
             &["Contact: <sip:1001@127.0.0.1>", "Expires: 3600"],
             0,
-        );
-        let challenge = build("SIP/2.0 401 Unauthorized", &[], 10);
+        )?;
+        let challenge = build("SIP/2.0 401 Unauthorized", &[], 10)?;
         let authed = build(
             "REGISTER sip:example.com SIP/2.0",
             &[
@@ -1576,14 +1601,14 @@ mod tests {
                  nonce=\"abc\", uri=\"sip:example.com\", response=\"deadbeef\"",
             ],
             20,
-        );
-        let refused = build("SIP/2.0 403 Forbidden", &[], 30);
+        )?;
+        let refused = build("SIP/2.0 403 Forbidden", &[], 30)?;
 
-        let mut d = SipDialog::new(&register).expect("should create");
+        let mut d = SipDialog::new(&register).ok_or("should create")?;
         d.messages.push(challenge);
         d.messages.push(authed);
         d.messages.push(refused);
-        d
+        Ok(d)
     }
 
     /// The report renders exactly what the diagnosis says, character for
@@ -1594,12 +1619,12 @@ mod tests {
     /// the wording alone would let the two drift apart again as long as each
     /// stayed individually plausible, so this pins them to one string.
     #[test]
-    fn the_report_renders_the_shared_registration_headline() {
-        let dialog = make_rejected_registration_dialog();
+    fn the_report_renders_the_shared_registration_headline() -> Result<(), TestError> {
+        let dialog = make_rejected_registration_dialog()?;
         let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
         let failure = diag
             .registration_failure
-            .expect("403 rejects the registration");
+            .ok_or("403 rejects the registration")?;
         let expected =
             crate::sip::diagnosis::registration_rejection_headline(&failure, &dialog.messages);
 
@@ -1617,6 +1642,7 @@ mod tests {
                  expected: {expected}\ngot:\n{report}"
             );
         }
+        Ok(())
     }
 
     /// The claim itself, asserted on the rendered report rather than on the
@@ -1624,8 +1650,8 @@ mod tests {
     /// sent to check connectivity for a phone that answered a challenge in
     /// the same four messages.
     #[test]
-    fn the_report_never_calls_a_rejected_registration_offline() {
-        let dialog = make_rejected_registration_dialog();
+    fn the_report_never_calls_a_rejected_registration_offline() -> Result<(), TestError> {
+        let dialog = make_rejected_registration_dialog()?;
         let report = generate_call_report(
             &dialog,
             &[],
@@ -1641,5 +1667,6 @@ mod tests {
             report.contains("credentials"),
             "403 after an answered challenge is a credential rejection:\n{report}"
         );
+        Ok(())
     }
 }

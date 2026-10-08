@@ -2371,6 +2371,10 @@ pub(crate) mod test_support {
     pub(crate) use ratatui::backend::TestBackend;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a fixture builder or render can fail with; `?` converts
+    /// into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// Fixture caller address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
@@ -2382,8 +2386,11 @@ pub(crate) mod test_support {
     }
 
     /// Fixed fixture timestamp (2024-06-15 12:00:00 UTC).
-    pub(crate) fn base_ts() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    pub(crate) fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("2024-06-15 12:00:00 is one unambiguous UTC instant")?)
     }
 
     /// Assemble raw SIP bytes from a start line and header lines, with
@@ -2407,7 +2414,7 @@ pub(crate) mod test_support {
         from: &str,
         to: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
             &[
@@ -2418,7 +2425,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -2427,7 +2434,7 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse INVITE")
+        .map_err(|e| format!("parse INVITE: {e:?}"))?)
     }
 
     /// Build and parse a fixture response (B → A) to the INVITE with the
@@ -2437,7 +2444,7 @@ pub(crate) mod test_support {
         status: u16,
         reason: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -2448,7 +2455,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -2457,11 +2464,11 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse response")
+        .map_err(|e| format!("parse response: {e:?}"))?)
     }
 
     /// Build and parse a fixture BYE (A → B) ending the dialog.
-    pub(crate) fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    pub(crate) fn make_bye(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
             &[
@@ -2472,7 +2479,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -2481,39 +2488,40 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse BYE")
+        .map_err(|e| format!("parse BYE: {e:?}"))?)
     }
 
     /// App with one populated, completed dialog (INVITE/180/200/BYE).
-    pub(crate) fn app_with_dialog() -> App {
-        let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_response("call-1@test", 180, "Ringing", t0 + TimeDelta::seconds(1)),
-            make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2)),
-            make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
-        ])
+    pub(crate) fn app_with_dialog() -> Result<App, TestError> {
+        let t0 = base_ts()?;
+        Ok(App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_response("call-1@test", 180, "Ringing", t0 + TimeDelta::seconds(1))?,
+            make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2))?,
+            make_bye("call-1@test", t0 + TimeDelta::seconds(62))?,
+        ]))
     }
 
     /// Below the minimum size the layout collapses to nothing usable; the
     /// user must get an explicit notice instead of a blank/garbled screen.
     #[test]
-    fn tiny_terminal_shows_min_size_notice() {
+    fn tiny_terminal_shows_min_size_notice() -> Result<(), TestError> {
         let mut app = App::new_test();
-        let text = render_to_string(&mut app, 30, 4);
+        let text = render_to_string(&mut app, 30, 4)?;
         assert!(
             text.contains("too small"),
             "expected a terminal-too-small notice, got: {text}"
         );
+        Ok(())
     }
 
     /// The empty-state hint must match the capture source: "may not
     /// contain SIP traffic" only makes sense for a pcap file, not for a
     /// live capture waiting for its first packet.
     #[test]
-    fn empty_state_hint_matches_capture_source() {
+    fn empty_state_hint_matches_capture_source() -> Result<(), TestError> {
         let mut app = App::new_test(); // capture mode defaults to Online
-        let text = render_to_string(&mut app, 80, 20);
+        let text = render_to_string(&mut app, 80, 20)?;
         assert!(
             text.contains("Waiting for SIP traffic"),
             "live empty state must say it is waiting: {text}"
@@ -2524,18 +2532,20 @@ pub(crate) mod test_support {
         );
 
         app.set_capture_mode("Offline (foo.pcap)".to_string());
-        let text = render_to_string(&mut app, 80, 20);
+        let text = render_to_string(&mut app, 80, 20)?;
         assert!(
             text.contains("may not contain SIP traffic"),
             "offline empty state keeps the pcap hint: {text}"
         );
+        Ok(())
     }
 
     /// Render one full tick of `app` (cache sync, render, feedback
     /// write-back — the event loop's sequence) at the given size and
     /// return the buffer as a string.
-    pub(crate) fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    pub(crate) fn render_to_string(app: &mut App, w: u16, h: u16) -> Result<String, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h))
+            .map_err(|e| format!("create the test terminal: {e}"))?;
         app.sync_caches();
         let mut fb = RenderFeedback::default();
         let dialogs = app.dialog_store.clone();
@@ -2543,7 +2553,7 @@ pub(crate) mod test_support {
         let (ds, ss) = (dialogs.read(), streams.read());
         terminal
             .draw(|frame| fb = render_app(frame, app, &ds, &ss))
-            .unwrap();
+            .map_err(|e| format!("draw the frame: {e}"))?;
         drop((ds, ss));
         app.apply_render_feedback(fb);
         let buf = terminal.backend().buffer();
@@ -2551,11 +2561,14 @@ pub(crate) mod test_support {
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                let cell = buf
+                    .cell((x, y))
+                    .ok_or_else(|| format!("cell ({x}, {y}) is inside the buffer area"))?;
+                out.push_str(cell.symbol());
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     // ── render_app dispatch across views & widths ──────────────────
@@ -2568,33 +2581,38 @@ mod tests {
     use super::*;
     use crate::tui::SaveFormat;
     use crate::tui::render::test_support::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Empty app renders the chrome; a populated one shows "Dialogs: 1".
     #[test]
-    fn render_app_call_list_empty_and_populated() {
+    fn render_app_call_list_empty_and_populated() -> Result<(), TestError> {
         let mut empty = App::new_test();
-        let out = render_to_string(&mut empty, 80, 24);
+        let out = render_to_string(&mut empty, 80, 24)?;
         assert!(out.contains("Live capture:"));
         assert!(out.contains("Dialogs:"));
 
-        let mut app = app_with_dialog();
-        let out = render_to_string(&mut app, 80, 24);
+        let mut app = app_with_dialog()?;
+        let out = render_to_string(&mut app, 80, 24)?;
         // The dialog count should reflect one dialog.
         assert!(out.contains("Dialogs: 1"));
+        Ok(())
     }
 
     /// The talkers ranking puts the busiest sender first. A discriminating
     /// fixture (one IP sends two dialogs, the other one), because the shared
     /// snapshot fixture's talkers tie and would not reveal a broken sort.
     #[test]
-    fn talkers_text_ranks_the_busiest_first() {
+    fn talkers_text_ranks_the_busiest_first() -> Result<(), TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use crate::test_utils::build_sip_message as build_sip;
         use chrono::TimeZone;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let busy = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let quiet = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
@@ -2614,17 +2632,19 @@ mod tests {
                 b"",
             );
             ds.process_message(
-                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                    .map_err(|e| format!("parse: {e:?}"))?,
             );
         }
 
         let text = talkers_text(&ds);
-        let busy_pos = text.find("10.0.0.1").expect("the busy talker is listed");
-        let quiet_pos = text.find("10.0.0.2").expect("the quiet talker is listed");
+        let busy_pos = text.find("10.0.0.1").ok_or("the busy talker is listed")?;
+        let quiet_pos = text.find("10.0.0.2").ok_or("the quiet talker is listed")?;
         assert!(
             busy_pos < quiet_pos,
             "the busier sender (2 dialogs) must rank above the quieter (1):\n{text}"
         );
+        Ok(())
     }
 
     /// The carrier-metrics table groups by destination IP, ranks the busiest
@@ -2632,14 +2652,17 @@ mod tests {
     /// fixture (two calls to one destination, one to another), because the
     /// shared snapshot fixture's routes tie.
     #[test]
-    fn carrier_metrics_text_ranks_the_busiest_destination_first() {
+    fn carrier_metrics_text_ranks_the_busiest_destination_first() -> Result<(), TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use crate::test_utils::build_sip_message as build_sip;
         use chrono::TimeZone;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let busy_dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
         let quiet_dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
@@ -2658,17 +2681,18 @@ mod tests {
                 b"",
             );
             ds.process_message(
-                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                    .map_err(|e| format!("parse: {e:?}"))?,
             );
         }
 
         let text = carrier_metrics_text(&ds, &ss);
         let busy_pos = text
             .find("10.0.0.9")
-            .expect("the busy destination is listed");
+            .ok_or("the busy destination is listed")?;
         let quiet_pos = text
             .find("10.0.0.8")
-            .expect("the quiet destination is listed");
+            .ok_or("the quiet destination is listed")?;
         assert!(
             busy_pos < quiet_pos,
             "the busier route (2 calls) must rank above the quieter (1):\n{text}"
@@ -2677,6 +2701,7 @@ mod tests {
             text.contains("ASR"),
             "the table carries the ASR column:\n{text}"
         );
+        Ok(())
     }
 
     /// The comparison view names exactly the fields that differ. One call is
@@ -2686,14 +2711,17 @@ mod tests {
     /// and must not claim a methods difference. This exercises the formatter's
     /// own field→row marker mapping, not just the shared `compare_dialogs` rule.
     #[test]
-    fn compare_dialogs_text_marks_the_differing_fields() {
+    fn compare_dialogs_text_marks_the_differing_fields() -> Result<(), TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use crate::test_utils::build_sip_message as build_sip;
         use chrono::TimeZone;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
         let mut ds = DialogStore::new(1000, true);
@@ -2711,7 +2739,8 @@ mod tests {
             b"",
         );
         ds.process_message(
-            parse_sip(&invite_a, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+            parse_sip(&invite_a, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
         );
         let ok_a = build_sip(
             "SIP/2.0 200 OK",
@@ -2725,7 +2754,8 @@ mod tests {
             b"",
         );
         ds.process_message(
-            parse_sip(&ok_a, ts, dst, src, 5060, 5060, TransportProto::Udp).expect("parse"),
+            parse_sip(&ok_a, ts, dst, src, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
         );
 
         // Call B: INVITE only (never answered).
@@ -2741,7 +2771,8 @@ mod tests {
             b"",
         );
         ds.process_message(
-            parse_sip(&invite_b, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+            parse_sip(&invite_b, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
         );
 
         let text = compare_dialogs_text(&ds, "cmp-a@h", "cmp-b@h");
@@ -2757,7 +2788,7 @@ mod tests {
         let diff_line = text
             .lines()
             .find(|l| l.contains("Differences:"))
-            .expect("a differences line");
+            .ok_or("a differences line")?;
         assert!(
             diff_line.contains("final status") && !diff_line.contains("final_status_code"),
             "differences names the final status in words, not its JSON key: {diff_line}"
@@ -2772,7 +2803,7 @@ mod tests {
         let fs_row = text
             .lines()
             .find(|l| l.contains("Final status"))
-            .expect("a final-status row");
+            .ok_or("a final-status row")?;
         assert!(
             fs_row.contains("(differs)"),
             "the differing final-status row is flagged: {fs_row}"
@@ -2780,11 +2811,12 @@ mod tests {
         let methods_row = text
             .lines()
             .find(|l| l.trim_start().starts_with("Methods"))
-            .expect("a methods row");
+            .ok_or("a methods row")?;
         assert!(
             !methods_row.contains("(differs)"),
             "the matching methods row is not flagged: {methods_row}"
         );
+        Ok(())
     }
 
     /// The SDP timeline renders each offer and answer with its codecs and media
@@ -2792,14 +2824,19 @@ mod tests {
     /// its answer, then a re-offer that puts the call on hold — exercises the
     /// direction labels, the codec and anchor columns, and the event marker.
     #[test]
-    fn sdp_timeline_text_shows_offers_answers_and_mid_call_events() {
+    fn sdp_timeline_text_shows_offers_answers_and_mid_call_events() -> Result<(), TestError> {
         use crate::sip::sdp_timeline::{OfferAnswer, SdpEvent, SdpExchange};
         use chrono::TimeZone;
 
-        let t = |s: u32| chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, s).unwrap();
+        let t = |s: u32| {
+            chrono::Utc
+                .with_ymd_and_hms(2024, 6, 15, 12, 0, s)
+                .single()
+                .ok_or("a valid UTC time")
+        };
         let exchanges = vec![
             SdpExchange {
-                timestamp: t(0),
+                timestamp: t(0)?,
                 direction: OfferAnswer::Offer,
                 codecs: vec!["PCMU".to_string(), "PCMA".to_string()],
                 media_addr: Some("10.0.0.1".to_string()),
@@ -2809,7 +2846,7 @@ mod tests {
                 event: None,
             },
             SdpExchange {
-                timestamp: t(1),
+                timestamp: t(1)?,
                 direction: OfferAnswer::Answer,
                 codecs: vec!["PCMU".to_string()],
                 media_addr: Some("10.0.0.9".to_string()),
@@ -2819,7 +2856,7 @@ mod tests {
                 event: None,
             },
             SdpExchange {
-                timestamp: t(30),
+                timestamp: t(30)?,
                 direction: OfferAnswer::Offer,
                 codecs: vec!["PCMU".to_string()],
                 media_addr: Some("10.0.0.1".to_string()),
@@ -2847,6 +2884,7 @@ mod tests {
             text.contains("on hold"),
             "the mid-call hold event is flagged:\n{text}"
         );
+        Ok(())
     }
 
     /// The conformance panel renders each finding's severity, RFC citation, rule
@@ -2854,7 +2892,7 @@ mod tests {
     /// SHOULD warning — exercises the severity labels, the citation formatting
     /// and the evidence lines.
     #[test]
-    fn conformance_text_lists_findings_with_severity_and_citation() {
+    fn conformance_text_lists_findings_with_severity_and_citation() -> Result<(), TestError> {
         use crate::sip::lint::{Basis, Finding, LintOutcome, Severity, WithheldCounts};
 
         let outcome = LintOutcome {
@@ -2911,28 +2949,32 @@ mod tests {
             text.contains("Via has no branch parameter"),
             "the observed evidence renders:\n{text}"
         );
+        Ok(())
     }
 
     /// The security-findings panel lists each finding's detector, source and
     /// evidence, and — when no detector is armed — shows the note that tells
     /// "nothing tripped" apart from "nothing was watching".
     #[test]
-    fn findings_text_lists_findings_and_flags_no_detectors() {
+    fn findings_text_lists_findings_and_flags_no_detectors() -> Result<(), TestError> {
         use crate::security::findings::{FindingRow, FindingsReport, NO_DETECTOR_NOTE};
         use chrono::TimeZone;
 
-        let t = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let t = chrono::Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let armed = FindingsReport {
             rows: vec![
                 FindingRow {
                     rule_name: "scanner".to_string(),
-                    src_ip: "10.0.0.1".parse().unwrap(),
+                    src_ip: "10.0.0.1".parse()?,
                     detail: "ua=sipvicious".to_string(),
                     timestamp: t,
                 },
                 FindingRow {
                     rule_name: "fraud".to_string(),
-                    src_ip: "10.0.0.2".parse().unwrap(),
+                    src_ip: "10.0.0.2".parse()?,
                     detail: "dest=+19005551212".to_string(),
                     timestamp: t,
                 },
@@ -2972,6 +3014,7 @@ mod tests {
             idle_text.contains(NO_DETECTOR_NOTE),
             "the no-detector note distinguishes idle from clean:\n{idle_text}"
         );
+        Ok(())
     }
 
     /// The endpoint rollup renders the shared `describe` report: the endpoint's
@@ -2981,14 +3024,17 @@ mod tests {
     /// and distinguishable, exercising the formatter's rendering of the report's
     /// fields (not just `describe`, which owns the scan).
     #[test]
-    fn endpoint_text_reports_the_dialogs_and_invite_outcomes() {
+    fn endpoint_text_reports_the_dialogs_and_invite_outcomes() -> Result<(), TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use crate::test_utils::build_sip_message as build_sip;
         use chrono::TimeZone;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let ua = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
         let mut ds = DialogStore::new(1000, true);
@@ -3008,7 +3054,8 @@ mod tests {
                 b"",
             );
             ds.process_message(
-                parse_sip(&invite, ts, ua, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+                parse_sip(&invite, ts, ua, dst, 5060, 5060, TransportProto::Udp)
+                    .map_err(|e| format!("parse: {e:?}"))?,
             );
             let resp = build_sip(
                 &format!("SIP/2.0 {code} {reason}"),
@@ -3022,7 +3069,8 @@ mod tests {
                 b"",
             );
             ds.process_message(
-                parse_sip(&resp, ts, dst, ua, 5060, 5060, TransportProto::Udp).expect("parse"),
+                parse_sip(&resp, ts, dst, ua, 5060, 5060, TransportProto::Udp)
+                    .map_err(|e| format!("parse: {e:?}"))?,
             );
         }
 
@@ -3044,6 +3092,7 @@ mod tests {
             text.contains("failed: 1"),
             "exactly one of the two INVITEs failed (503):\n{text}"
         );
+        Ok(())
     }
 
     /// The capture-health panel marks a degraded capture and renders each loss
@@ -3052,7 +3101,7 @@ mod tests {
     /// process globals another test could move, so the formatter is exercised
     /// on a value of the test's own.
     #[test]
-    fn capture_health_text_reports_degradation_and_the_loss_counters() {
+    fn capture_health_text_reports_degradation_and_the_loss_counters() -> Result<(), TestError> {
         use crate::output::prometheus::CaptureQuality;
 
         let degraded = CaptureQuality {
@@ -3080,6 +3129,7 @@ mod tests {
             !clean.contains("DEGRADED"),
             "a clean capture is not marked degraded:\n{clean}"
         );
+        Ok(())
     }
 
     /// The call-volume histogram scales each bucket's bar against the busiest
@@ -3087,7 +3137,7 @@ mod tests {
     /// none in the next and two in the third: the busy bar fills the width, the
     /// quiet bar is shorter, and the empty middle bucket is still a row.
     #[test]
-    fn volume_histogram_text_scales_bars_and_keeps_empty_buckets() {
+    fn volume_histogram_text_scales_bars_and_keeps_empty_buckets() -> Result<(), TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use crate::test_utils::build_sip_message as build_sip;
@@ -3096,7 +3146,10 @@ mod tests {
 
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
-        let base = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let base = chrono::Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let mut ds = DialogStore::new(1000, true);
         // 5 in bucket 0 (12:00), 2 in bucket 2 (12:02) — bucket 1 (12:01) empty.
         let mut i = 0u32;
@@ -3115,7 +3168,8 @@ mod tests {
                 );
                 let ts = base + chrono::TimeDelta::seconds(offset_secs);
                 ds.process_message(
-                    parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+                    parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                        .map_err(|e| format!("parse: {e:?}"))?,
                 );
                 i += 1;
             }
@@ -3131,11 +3185,11 @@ mod tests {
         let busy = rows
             .iter()
             .find(|l| l.trim_end().ends_with(" 5"))
-            .expect("the busy bucket row");
+            .ok_or("the busy bucket row")?;
         let quiet = rows
             .iter()
             .find(|l| l.trim_end().ends_with(" 2"))
-            .expect("the quiet bucket row");
+            .ok_or("the quiet bucket row")?;
         assert_eq!(
             busy.matches('█').count(),
             VOLUME_BAR_WIDTH,
@@ -3145,161 +3199,175 @@ mod tests {
             quiet.matches('█').count() < busy.matches('█').count(),
             "a quieter bucket's bar is shorter:\n{text}"
         );
+        Ok(())
     }
 
     /// The call-list f-key bar drops low-priority items when narrow and
     /// advertises the Open hotkey when wide.
     #[test]
-    fn render_app_call_list_narrow_and_wide() {
-        let mut app = app_with_dialog();
-        let narrow = render_to_string(&mut app, 60, 12);
+    fn render_app_call_list_narrow_and_wide() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
+        let narrow = render_to_string(&mut app, 60, 12)?;
         assert!(narrow.contains("Esc"));
-        let wide = render_to_string(&mut app, 130, 40);
+        let wide = render_to_string(&mut app, 130, 40)?;
         // Wide call list f-key bar advertises the Open hotkey.
         assert!(wide.contains("Open"));
+        Ok(())
     }
 
     /// The stream-list view renders with its Tab-to-Calls f-key hint.
     #[test]
-    fn render_app_stream_list_view() {
+    fn render_app_stream_list_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         // Stream-list f-key bar advertises Calls (Tab to switch back).
         assert!(out.contains("Calls"));
+        Ok(())
     }
 
     /// Call flow renders in both split (raw preview) and full-width
     /// layouts, with the mode hints on status line 3.
     #[test]
-    fn render_app_call_flow_view_split_and_nosplit() {
-        let mut app = app_with_dialog();
+    fn render_app_call_flow_view_split_and_nosplit() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.current_view = View::CallFlow("call-1@test".to_string());
         // Default raw_preview = true → split layout; renders detail panel.
-        let split = render_to_string(&mut app, 120, 30);
+        let split = render_to_string(&mut app, 120, 30)?;
         assert!(split.contains("Back"));
         // status line 3 shows the call-flow mode hints
         assert!(split.contains("Time:") || split.contains("SDP:"));
 
         // No split.
         app.flow.raw_preview = false;
-        let nosplit = render_to_string(&mut app, 120, 30);
+        let nosplit = render_to_string(&mut app, 120, 30)?;
         assert!(nosplit.contains("Back"));
+        Ok(())
     }
 
     /// Extended (merged multi-dialog) call flow renders without panic.
     #[test]
-    fn render_app_call_flow_extended_flow() {
-        let mut app = app_with_dialog();
+    fn render_app_call_flow_extended_flow() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.current_view = View::CallFlow("call-1@test".to_string());
         app.flow.extended = true;
-        let out = render_to_string(&mut app, 120, 30);
+        let out = render_to_string(&mut app, 120, 30)?;
         assert!(out.contains("Back"));
+        Ok(())
     }
 
     /// The raw-message view renders with its Highlight f-key hint.
     #[test]
-    fn render_app_raw_message_view() {
-        let mut app = app_with_dialog();
+    fn render_app_raw_message_view() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.current_view = View::RawMessage {
             call_id: "call-1@test".to_string(),
             message_index: 0,
         };
-        let out = render_to_string(&mut app, 90, 30);
+        let out = render_to_string(&mut app, 90, 30)?;
         // Raw message f-key bar advertises Highlight.
         assert!(out.contains("Highlight"));
+        Ok(())
     }
 
     /// The diff view shows both message panes with their index titles.
     #[test]
-    fn render_app_message_diff_view() {
-        let mut app = app_with_dialog();
+    fn render_app_message_diff_view() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.current_view = View::MessageDiff {
             call_id: "call-1@test".to_string(),
             msg1_idx: 0,
             msg2_idx: 1,
         };
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Message 1"));
         assert!(out.contains("Message 2"));
+        Ok(())
     }
 
     /// Help renders non-empty; statistics shows its title and counts.
     #[test]
-    fn render_app_help_and_statistics_views() {
-        let mut app = app_with_dialog();
+    fn render_app_help_and_statistics_views() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.current_view = View::Help;
-        let help = render_to_string(&mut app, 80, 30);
+        let help = render_to_string(&mut app, 80, 30)?;
         assert!(!help.is_empty());
 
         app.current_view = View::Statistics;
-        let stats = render_to_string(&mut app, 80, 30);
+        let stats = render_to_string(&mut app, 80, 30)?;
         assert!(stats.contains("Statistics"));
         assert!(stats.contains("Dialogs:"));
+        Ok(())
     }
 
     // ── Status line variants ───────────────────────────────────────
 
     /// Status line 1 shows PAUSED and says autoscroll is on.
     #[test]
-    fn render_app_status_line1_paused_and_autoscroll() {
-        let mut app = app_with_dialog();
+    fn render_app_status_line1_paused_and_autoscroll() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.paused = true;
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("PAUSED"));
         // Autoscroll defaults to on for the call list, and says so in words.
         assert!(out.contains("Autoscroll: on"));
+        Ok(())
     }
 
     /// Status line 1 shows the Offline capture mode text.
     #[test]
-    fn render_app_status_line1_offline_mode() {
-        let mut app = app_with_dialog();
+    fn render_app_status_line1_offline_mode() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.capture_mode = "Offline (capture.pcap)".to_string();
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("File: capture.pcap"));
+        Ok(())
     }
 
     /// With search active, status line 3 shows the `/query` overlay.
     #[test]
-    fn render_app_status_line3_search_active() {
-        let mut app = app_with_dialog();
+    fn render_app_status_line3_search_active() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.search_active = true;
         app.search_query = "invite".to_string();
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("/invite"));
+        Ok(())
     }
 
     /// A message raised as an error renders on line 3 via the error color
     /// path.
     #[test]
-    fn render_app_status_line3_error_message() {
-        let mut app = app_with_dialog();
+    fn render_app_status_line3_error_message() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.set_status_error("save failed: disk full");
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("save failed"));
+        Ok(())
     }
 
     /// A neutral status message renders on line 3 via the info
     /// (foreground) color path.
     #[test]
-    fn render_app_status_line3_info_message() {
-        let mut app = app_with_dialog();
+    fn render_app_status_line3_info_message() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         // Written directly, not raised: the information color path.
         app.status_error = Some("saved 3 dialogs".to_string());
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("saved 3 dialogs"));
+        Ok(())
     }
 
     /// Line 2 shows the capture filter and line 3 the view filter.
     #[test]
-    fn render_app_status_line2_filter_and_bpf() {
-        let mut app = app_with_dialog();
+    fn render_app_status_line2_filter_and_bpf() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_filter_text = "method == 'INVITE'".to_string();
         app.bpf_filter = "udp port 5060".to_string();
-        let out = render_to_string(&mut app, 120, 24);
+        let out = render_to_string(&mut app, 120, 24)?;
         assert!(out.contains("Capture filter (BPF): udp port 5060"));
         assert!(out.contains("View filter: method == 'INVITE'"));
+        Ok(())
     }
 
     /// An analysis paragraph that overflows continues under its own first
@@ -3307,17 +3375,18 @@ mod tests {
     /// of being cut at the right border (the old unwrapped panels lost the
     /// tail of every sentence past 80 columns).
     #[test]
-    fn wrap_hanging_keeps_a_continuation_under_its_first_word() {
+    fn wrap_hanging_keeps_a_continuation_under_its_first_word() -> Result<(), TestError> {
         assert_eq!(
             wrap_hanging("    alpha beta gamma", 14),
             vec!["    alpha beta".to_string(), "    gamma".to_string()]
         );
+        Ok(())
     }
 
     /// A definition line hangs its continuation under the definition, not
     /// under the term, so the term stays alone in its column.
     #[test]
-    fn wrap_hanging_hangs_a_definition_under_its_text() {
+    fn wrap_hanging_hangs_a_definition_under_its_text() -> Result<(), TestError> {
         assert_eq!(
             wrap_hanging("  ASR  answered share of attempts", 22),
             vec![
@@ -3325,22 +3394,24 @@ mod tests {
                 "       of attempts".to_string()
             ]
         );
+        Ok(())
     }
 
     /// A line that fits is left exactly as written, internal spacing (a
     /// table's column gaps) included.
     #[test]
-    fn wrap_hanging_leaves_a_fitting_line_untouched() {
+    fn wrap_hanging_leaves_a_fitting_line_untouched() -> Result<(), TestError> {
         assert_eq!(
             wrap_hanging("  10.0.0.2      3    66.7%", 40),
             vec!["  10.0.0.2      3    66.7%".to_string()]
         );
+        Ok(())
     }
 
     /// No wrapped row is ever wider than the panel, even when the indent
     /// leaves almost no room for text.
     #[test]
-    fn wrap_hanging_never_exceeds_the_width() {
+    fn wrap_hanging_never_exceeds_the_width() -> Result<(), TestError> {
         let text = "          Via is one of the six fields calls mandatory in all requests";
         for width in [4u16, 8, 12, 20, 40, 80] {
             for row in wrap_hanging(text, width) {
@@ -3350,11 +3421,12 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Each logical line wraps on its own; blank lines survive.
     #[test]
-    fn wrap_hanging_splits_on_newlines() {
+    fn wrap_hanging_splits_on_newlines() -> Result<(), TestError> {
         assert_eq!(
             wrap_hanging("a\n\n  bbbb cccc dddd", 12),
             vec![
@@ -3364,60 +3436,63 @@ mod tests {
                 "  dddd".to_string()
             ]
         );
+        Ok(())
     }
 
     /// The text panel clamps its scroll against the WRAPPED row count, so the
     /// last wrapped row of a long paragraph is reachable.
     #[test]
-    fn text_panel_scroll_clamps_to_the_wrapped_rows() {
+    fn text_panel_scroll_clamps_to_the_wrapped_rows() -> Result<(), TestError> {
         let app = App::new_test();
         let text = "word ".repeat(40); // 200 columns, one logical line
-        let mut terminal = Terminal::new(TestBackend::new(22, 6)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(22, 6))?;
         let mut clamped = 0;
-        terminal
-            .draw(|frame| {
-                clamped =
-                    render_text_panel(frame, Rect::new(0, 0, 22, 6), &app, " T ", &text, u16::MAX);
-            })
-            .unwrap();
+        terminal.draw(|frame| {
+            clamped =
+                render_text_panel(frame, Rect::new(0, 0, 22, 6), &app, " T ", &text, u16::MAX);
+        })?;
         // 20 inner columns hold four "word" tokens per row: 10 rows, 4 visible.
         let rows = wrap_hanging(&text, 20).len() as u16;
         assert_eq!(rows, 10, "fixture assumption");
         assert_eq!(clamped, rows - 4, "scroll must reach the last wrapped row");
+        Ok(())
     }
 
     /// A short filter that fits stays on one row, unchanged.
     #[test]
-    fn wrap_to_width_keeps_short_text_on_one_row() {
+    fn wrap_to_width_keeps_short_text_on_one_row() -> Result<(), TestError> {
         assert_eq!(
             wrap_to_width("udp port 5060", 40),
             vec!["udp port 5060".to_string()]
         );
+        Ok(())
     }
 
     /// Words break at spaces: "aaaa bbbb" (9) fills a width-9 row, and "cccc"
     /// starts the next.
     #[test]
-    fn wrap_to_width_breaks_at_spaces() {
+    fn wrap_to_width_breaks_at_spaces() -> Result<(), TestError> {
         assert_eq!(
             wrap_to_width("aaaa bbbb cccc", 9),
             vec!["aaaa bbbb".to_string(), "cccc".to_string()]
         );
+        Ok(())
     }
 
     /// A single token wider than the row is hard-broken so no row overflows.
     #[test]
-    fn wrap_to_width_hard_breaks_an_overlong_token() {
+    fn wrap_to_width_hard_breaks_an_overlong_token() -> Result<(), TestError> {
         assert_eq!(
             wrap_to_width("aaaaaaaa", 3),
             vec!["aaa".to_string(), "aaa".to_string(), "aa".to_string()]
         );
+        Ok(())
     }
 
     /// Property: no wrapped row ever exceeds the width, across a real slice of a
     /// generated filter at several widths.
     #[test]
-    fn wrap_to_width_never_exceeds_the_width() {
+    fn wrap_to_width_never_exceeds_the_width() -> Result<(), TestError> {
         use unicode_width::UnicodeWidthStr;
         let filter = "portrange 10000-20000 or ((ether proto 0x0800) and \
              (ip[9]==17 and (udp[0:2]>=10000 or udp[2:2]<=20000))) or udp port 5060";
@@ -3429,29 +3504,31 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Embedded newlines split logical lines before wrapping.
     #[test]
-    fn wrap_to_width_splits_on_newlines() {
+    fn wrap_to_width_splits_on_newlines() -> Result<(), TestError> {
         assert_eq!(
             wrap_to_width("ab\ncd", 10),
             vec!["ab".to_string(), "cd".to_string()]
         );
+        Ok(())
     }
 
     /// The full-BPF popup clamps its scroll to the wrapped content height, so an
     /// over-eager `End` lands with the LAST wrapped row on screen — the point of
     /// the view is to read the whole filter, tail included.
     #[test]
-    fn render_bpf_filter_scroll_reaches_the_wrapped_bottom() {
+    fn render_bpf_filter_scroll_reaches_the_wrapped_bottom() -> Result<(), TestError> {
         // A filter far taller than a short popup once wrapped. The tail token
         // is unique so its presence on screen is unambiguous.
         let filter = (0..40)
             .map(|i| format!("udp port {}", 5000 + i))
             .collect::<Vec<_>>()
             .join(" or ");
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.bpf_filter = filter.clone();
 
         // Narrow + short: 40 columns, 12 rows. The input box takes the bottom
@@ -3468,11 +3545,9 @@ mod tests {
         // End sets the sentinel; render clamps it to the true bottom and
         // returns the clamped offset.
         app.bpf_scroll = u16::MAX;
-        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
         let mut clamped = 0u16;
-        terminal
-            .draw(|frame| clamped = render_bpf_filter(frame, frame.area(), &app))
-            .unwrap();
+        terminal.draw(|frame| clamped = render_bpf_filter(frame, frame.area(), &app))?;
         assert_eq!(
             clamped as usize,
             total - viewport,
@@ -3480,41 +3555,53 @@ mod tests {
         );
 
         // The last wrapped row's final token must be on screen at that offset.
-        let last_row = wrap_to_width(&filter, inner_w).pop().unwrap();
-        let tail_token = last_row.trim().split(' ').next_back().unwrap().to_string();
+        let last_row = wrap_to_width(&filter, inner_w).pop().ok_or("a last row")?;
+        let tail_token = last_row
+            .trim()
+            .split(' ')
+            .next_back()
+            .ok_or("a last token")?
+            .to_string();
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
         }
         assert!(
             text.contains(&tail_token),
             "the tail token {tail_token:?} must be visible at the clamped bottom;\n{text}"
         );
+        Ok(())
     }
 
     /// The editor popup previews the COMPOSED effective filter (current AND/OR
     /// typed), echoes the typed expression in the input box, and shows the mode.
     #[test]
-    fn render_bpf_filter_shows_the_composed_preview_and_the_input() {
-        let mut app = app_with_dialog();
+    fn render_bpf_filter_shows_the_composed_preview_and_the_input() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.bpf_filter = "udp port 5060".to_string();
         for c in "host 192.0.2.5".chars() {
             app.bpf_editor.insert(c);
         }
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_bpf_filter(frame, frame.area(), &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 16))?;
+        terminal.draw(|frame| {
+            render_bpf_filter(frame, frame.area(), &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut out = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                out.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
         }
         assert!(
@@ -3526,19 +3613,21 @@ mod tests {
             "the input box echoes the typed expression:\n{out}"
         );
         assert!(out.contains("AND"), "the append mode is shown:\n{out}");
+        Ok(())
     }
 
     // ── Popups via render_app overlay ──────────────────────────────
 
     /// The save popup overlays the frame with title and typed path.
     #[test]
-    fn render_app_save_popup_overlay() {
-        let mut app = app_with_dialog();
+    fn render_app_save_popup_overlay() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.set_save_path("/tmp/out.pcap");
-        let out = render_to_string(&mut app, 90, 30);
+        let out = render_to_string(&mut app, 90, 30)?;
         assert!(out.contains("Save capture"));
         assert!(out.contains("/tmp/out.pcap"));
+        Ok(())
     }
 
     /// Field report: the save popup was fixed at 20 rows, so the last
@@ -3546,11 +3635,11 @@ mod tests {
     /// "save the stream as a WAV file" hint pointed at an option the
     /// popup never showed. On a tall terminal every format must render.
     #[test]
-    fn render_app_save_popup_shows_every_format() {
-        let mut app = app_with_dialog();
+    fn render_app_save_popup_shows_every_format() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.set_save_path("/tmp/out.pcap");
-        let out = render_to_string(&mut app, 90, 40);
+        let out = render_to_string(&mut app, 90, 40)?;
         for label in [
             "PCAP", "TXT", "SIPp", "JSON", "CSV", "HTML", "Markdown", "WAV", "RTP JSON",
         ] {
@@ -3558,101 +3647,110 @@ mod tests {
         }
         // The Enter/Tab/Esc controls line must also survive.
         assert!(out.contains("Cancel"), "controls line missing:\n{out}");
+        Ok(())
     }
 
     /// On a terminal too short for the whole list, the SELECTED format
     /// must be scrolled into view — stream views default to WAV, which
     /// lived in the clipped tail.
     #[test]
-    fn render_app_save_popup_selected_format_visible_when_short() {
-        let mut app = app_with_dialog();
+    fn render_app_save_popup_selected_format_visible_when_short() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.save.format = SaveFormat::Wav;
         app.set_save_path("/tmp/out.wav");
-        let out = render_to_string(&mut app, 90, 18);
+        let out = render_to_string(&mut app, 90, 18)?;
         assert!(
             out.contains("WAV"),
             "selected WAV must be scrolled into view:\n{out}"
         );
+        Ok(())
     }
 
     /// The file-open popup in browser mode shows the directory header.
     #[test]
-    fn render_app_file_open_browser_overlay() {
-        let mut app = app_with_dialog();
+    fn render_app_file_open_browser_overlay() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = false;
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Open capture file"));
         assert!(out.contains("Dir:"));
+        Ok(())
     }
 
     /// The file-open popup in manual mode shows the Path input.
     #[test]
-    fn render_app_file_open_manual_overlay() {
-        let mut app = app_with_dialog();
+    fn render_app_file_open_manual_overlay() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = true;
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Open capture file"));
         assert!(out.contains("Path:"));
+        Ok(())
     }
 
     /// The settings popup overlays with its title and first setting row.
     #[test]
-    fn render_app_settings_popup_overlay() {
-        let mut app = app_with_dialog();
+    fn render_app_settings_popup_overlay() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SettingsDialog);
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Settings"));
         assert!(out.contains("Colors:"));
+        Ok(())
     }
 
     /// The filter popup overlays with its title and From user field.
     #[test]
-    fn render_app_filter_popup_overlay() {
+    fn render_app_filter_popup_overlay() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::FilterDialog);
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Filter"));
         assert!(out.contains("From user:"));
+        Ok(())
     }
 
     // ── Direct popup function tests ────────────────────────────────
 
     /// A missing Call-ID renders the "Dialog not found" placeholder.
     #[test]
-    fn render_message_diff_dialog_not_found() {
+    fn render_message_diff_dialog_not_found() -> Result<(), TestError> {
         let app = App::new_test();
         let store = app.dialog_store.read();
         let theme = Theme::default();
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_message_diff(
-                    frame,
-                    area,
-                    &store,
-                    &MessageDiffView {
-                        call_id: "missing",
-                        msg1_idx: 0,
-                        msg2_idx: 1,
-                        scroll: 0,
-                        header_form: header_form::HeaderFormMode::AsCaptured,
-                        theme: &theme,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_message_diff(
+                frame,
+                area,
+                &store,
+                &MessageDiffView {
+                    call_id: "missing",
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                    scroll: 0,
+                    header_form: header_form::HeaderFormMode::AsCaptured,
+                    theme: &theme,
+                },
+            );
+        })?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
         }
         assert!(text.contains("Dialog not found"));
+        Ok(())
     }
 
     /// The diff panes wrap long lines (`Wrap { trim: false }`), but the
@@ -3660,11 +3758,11 @@ mod tests {
     /// caller's scroll clamp could never reach the true (wrapped) bottom
     /// when a long header wraps to multiple rows.
     #[test]
-    fn render_message_diff_scroll_reaches_the_wrapped_bottom() {
+    fn render_message_diff_scroll_reaches_the_wrapped_bottom() -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;
         use crate::sip::parser::parse_sip;
 
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         // The long header is one unbroken token so word-wrap and the
         // ceil-of-width row estimate agree exactly.
         let long = format!("X-Long:{}ZZZEND", "a".repeat(120));
@@ -3701,7 +3799,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse INVITE");
+        .map_err(|e| format!("parse INVITE: {e:?}"))?;
         let msg2 = parse_sip(
             &raw2,
             t0 + chrono::TimeDelta::seconds(1),
@@ -3711,14 +3809,14 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse 200 OK");
+        .map_err(|e| format!("parse 200 OK: {e:?}"))?;
         let app = App::with_processed_messages(vec![msg1, msg2]);
         let store = app.dialog_store.read();
         let theme = Theme::default();
 
         // 64 cols → 32-wide panes (30 inner): the long header wraps to 5
         // rows, so the content is taller than its unwrapped line count.
-        let mut terminal = Terminal::new(TestBackend::new(64, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(64, 12))?;
         let view = |scroll| MessageDiffView {
             call_id: "wrap@test",
             msg1_idx: 0,
@@ -3728,11 +3826,9 @@ mod tests {
             theme: &theme,
         };
         let mut total_rows = 0;
-        terminal
-            .draw(|frame| {
-                total_rows = render_message_diff(frame, frame.area(), &store, &view(0));
-            })
-            .unwrap();
+        terminal.draw(|frame| {
+            total_rows = render_message_diff(frame, frame.area(), &store, &view(0));
+        })?;
         assert!(
             total_rows > unwrapped_max + 1,
             "content height must count wrapped rows: got {total_rows}, \
@@ -3744,58 +3840,64 @@ mod tests {
         // tail of the wrapped long header must actually be on screen.
         let viewport = 12u16.saturating_sub(2);
         let clamped = total_rows.saturating_sub(viewport);
-        terminal
-            .draw(|frame| {
-                render_message_diff(frame, frame.area(), &store, &view(clamped));
-            })
-            .unwrap();
+        terminal.draw(|frame| {
+            render_message_diff(frame, frame.area(), &store, &view(clamped));
+        })?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
         }
         assert!(
             text.contains("ZZZEND"),
             "clamped scroll must reach the wrapped bottom:\n{text}"
         );
+        Ok(())
     }
 
     /// An out-of-range message index renders "Message not found".
     #[test]
-    fn render_message_diff_message_index_out_of_range() {
-        let app = app_with_dialog();
+    fn render_message_diff_message_index_out_of_range() -> Result<(), TestError> {
+        let app = app_with_dialog()?;
         let store = app.dialog_store.read();
         let theme = Theme::default();
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                // msg index way past the end.
-                render_message_diff(
-                    frame,
-                    area,
-                    &store,
-                    &MessageDiffView {
-                        call_id: "call-1@test",
-                        msg1_idx: 0,
-                        msg2_idx: 999,
-                        scroll: 0,
-                        header_form: header_form::HeaderFormMode::AsCaptured,
-                        theme: &theme,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            // msg index way past the end.
+            render_message_diff(
+                frame,
+                area,
+                &store,
+                &MessageDiffView {
+                    call_id: "call-1@test",
+                    msg1_idx: 0,
+                    msg2_idx: 999,
+                    scroll: 0,
+                    header_form: header_form::HeaderFormMode::AsCaptured,
+                    theme: &theme,
+                },
+            );
+        })?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
         }
         assert!(text.contains("Message not found"));
+        Ok(())
     }
 
     /// A positional diff highlights every line after a single inserted
@@ -3803,11 +3905,11 @@ mod tests {
     /// inserted line actually changed. An LCS-based diff aligns the shared
     /// lines so the lone insertion is the ONLY highlighted row.
     #[test]
-    fn render_message_diff_single_insert_highlights_only_that_line() {
+    fn render_message_diff_single_insert_highlights_only_that_line() -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;
         use crate::sip::parser::parse_sip;
 
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         // msg2 is msg1 with one extra header inserted after Via; every
         // other line is byte-identical so an LCS diff isolates the insert.
         let common_tail: &[&str] = &[
@@ -3833,7 +3935,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse msg1");
+        .map_err(|e| format!("parse msg1: {e:?}"))?;
         let msg2 = parse_sip(
             &raw2,
             t0 + chrono::TimeDelta::seconds(1),
@@ -3843,30 +3945,28 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse msg2");
+        .map_err(|e| format!("parse msg2: {e:?}"))?;
         let app = App::with_processed_messages(vec![msg1, msg2]);
         let store = app.dialog_store.read();
         let theme = Theme::default();
 
         // Wide enough that no line wraps (one row per display line).
-        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_message_diff(
-                    frame,
-                    frame.area(),
-                    &store,
-                    &MessageDiffView {
-                        call_id: "diffins@test",
-                        msg1_idx: 0,
-                        msg2_idx: 1,
-                        scroll: 0,
-                        header_form: header_form::HeaderFormMode::AsCaptured,
-                        theme: &theme,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 20))?;
+        terminal.draw(|frame| {
+            render_message_diff(
+                frame,
+                frame.area(),
+                &store,
+                &MessageDiffView {
+                    call_id: "diffins@test",
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                    scroll: 0,
+                    header_form: header_form::HeaderFormMode::AsCaptured,
+                    theme: &theme,
+                },
+            );
+        })?;
 
         // A diff-highlighted content row carries the warning fg + BOLD; the
         // pane-title rows use the (cyan) header fg, so they don't count.
@@ -3877,7 +3977,7 @@ mod tests {
             let mut row_highlighted = false;
             let mut row_text = String::new();
             for x in 0..buf.area.width {
-                let cell = buf.cell((x, y)).unwrap();
+                let cell = buf.cell((x, y)).ok_or("the cell is inside the buffer")?;
                 row_text.push_str(cell.symbol());
                 if cell.fg == theme.warning && cell.modifier.contains(Modifier::BOLD) {
                     row_highlighted = true;
@@ -3899,5 +3999,6 @@ mod tests {
             marker_row_highlighted,
             "the highlighted row must be the inserted X-Inserted header"
         );
+        Ok(())
     }
 }

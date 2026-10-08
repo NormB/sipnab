@@ -7397,13 +7397,16 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// PV11: an error carries an RFC 9457 body, not a bare status code.
     ///
     /// The previous behavior returned a [`StatusCode`] and no body at all, so
     /// a client got a number and had to guess which of a handler's several
     /// 400s it had hit.
     #[tokio::test]
-    async fn an_error_response_is_rfc_9457_problem_json() {
+    async fn an_error_response_is_rfc_9457_problem_json() -> Result<(), TestError> {
         use axum::response::IntoResponse as _;
         use http_body_util::BodyExt as _;
 
@@ -7428,9 +7431,10 @@ mod tests {
             .into_body()
             .collect()
             .await
-            .expect("body collects")
+            .map_err(|e| format!("body collects: {e:?}"))?
             .to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        let body: Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("valid JSON: {e:?}"))?;
 
         assert_eq!(
             body["type"], "https://sipnab.com/problems/bad-request",
@@ -7454,11 +7458,13 @@ mod tests {
              URI to give; inventing one that resolves to nothing is worse than \
              omitting it: {body}"
         );
+        Ok(())
     }
 
     /// A problem with no detail still carries the three required members.
     #[tokio::test]
-    async fn a_problem_without_detail_omits_it_rather_than_sending_a_placeholder() {
+    async fn a_problem_without_detail_omits_it_rather_than_sending_a_placeholder()
+    -> Result<(), TestError> {
         use axum::response::IntoResponse as _;
         use http_body_util::BodyExt as _;
 
@@ -7467,9 +7473,10 @@ mod tests {
             .into_body()
             .collect()
             .await
-            .expect("body collects")
+            .map_err(|e| format!("body collects: {e:?}"))?
             .to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        let body: Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("valid JSON: {e:?}"))?;
 
         assert_eq!(body["type"], "https://sipnab.com/problems/not-found");
         assert_eq!(body["title"], "Not Found");
@@ -7479,6 +7486,7 @@ mod tests {
             "an empty-string detail reads as `we have nothing to say about \
              this`, which is different from having nothing to add: {body}"
         );
+        Ok(())
     }
 
     /// One kind of failure has ONE `type` URI across every handler.
@@ -7487,7 +7495,7 @@ mod tests {
     /// site, because a client branching on `type` is the entire point and two
     /// handlers spelling one problem differently would defeat it.
     #[test]
-    fn every_status_maps_to_a_stable_problem_slug() {
+    fn every_status_maps_to_a_stable_problem_slug() -> Result<(), TestError> {
         for (status, slug) in [
             (StatusCode::BAD_REQUEST, "bad-request"),
             (StatusCode::UNAUTHORIZED, "unauthorized"),
@@ -7511,15 +7519,18 @@ mod tests {
                  a client branches on"
             );
         }
+        Ok(())
     }
 
     /// Build an `ApiState` with empty stores and no auth configured.
     /// Two dialogs sharing one RFC 7989 Session-ID, so `find_correlated` links
     /// them by the `session_id` strategy (an identifier match). `leg-0@test`
     /// and `leg-1@test`.
-    fn populate_correlated_dialogs(state: &ApiState) {
+    fn populate_correlated_dialogs(state: &ApiState) -> Result<(), TestError> {
         let mut ds = state.dialog_store.write();
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
         let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         let session = "ab30317f1a784dc48ff97d6dd1a2b3c4";
         for i in 0..2 {
@@ -7544,62 +7555,67 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("parse");
+            .map_err(|e| format!("parse: {e:?}"))?;
             ds.process_message(msg);
         }
+        Ok(())
     }
 
     /// `GET /v1/dialogs/{id}/correlated` names the other legs of a call and the
     /// strategy that matched each. Closes the find_correlated REST gap.
     #[tokio::test]
-    async fn correlated_returns_the_linked_leg() {
+    async fn correlated_returns_the_linked_leg() -> Result<(), TestError> {
         let state = make_state();
-        populate_correlated_dialogs(&state);
+        populate_correlated_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/leg-0%40test/correlated"))
+            .oneshot(test_request("/v1/dialogs/leg-0%40test/correlated")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["source_call_id"], "leg-0@test");
-        let legs = parsed["legs"].as_array().expect("legs array");
+        let legs = parsed["legs"].as_array().ok_or("legs array")?;
         assert_eq!(legs.len(), 1);
         assert_eq!(legs[0]["call_id"], "leg-1@test");
         assert_eq!(legs[0]["strategy"], "session_id");
         assert_eq!(legs[0]["identifier_match"], true);
         assert_eq!(parsed["total_matched"], 1);
+        Ok(())
     }
 
     /// An unknown Call-ID is a 404, the same answer `GET /v1/dialogs/{id}`
     /// gives, rather than an empty-legs 200 that reads as "this call has no
     /// other legs" when the truth is "this call is not here".
     #[tokio::test]
-    async fn correlated_unknown_call_id_is_404() {
+    async fn correlated_unknown_call_id_is_404() -> Result<(), TestError> {
         let state = make_state();
-        populate_correlated_dialogs(&state);
+        populate_correlated_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/nope%40nowhere/correlated"))
+            .oneshot(test_request("/v1/dialogs/nope%40nowhere/correlated")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
     }
 
     /// A known dialog with no correlated legs is an empty list, not a 404: the
     /// call exists, it simply stands alone. Built as the only dialog in the
     /// store, so nothing — not even the timing heuristic — can match it.
     #[tokio::test]
-    async fn correlated_uncorrelated_dialog_is_empty() {
+    async fn correlated_uncorrelated_dialog_is_empty() -> Result<(), TestError> {
         let state = make_state();
         {
             let mut ds = state.dialog_store.write();
-            let ts =
-                chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+            let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("valid fixture timestamp")?;
             let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
             let raw = build_sip(
                 "INVITE sip:bob@example.com SIP/2.0",
@@ -7621,37 +7637,40 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("parse");
+            .map_err(|e| format!("parse: {e:?}"))?;
             ds.process_message(msg);
         }
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/lonely%40test/correlated"))
+            .oneshot(test_request("/v1/dialogs/lonely%40test/correlated")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["legs"].as_array().expect("array").len(), 0);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["legs"].as_array().ok_or("array")?.len(), 0);
         assert_eq!(parsed["total_matched"], 0);
+        Ok(())
     }
 
     /// `GET /v1/dialogs/{id}/tree` walks the whole correlation tree, root first.
     /// Closes the get_call_tree REST gap.
     #[tokio::test]
-    async fn tree_walks_from_the_root() {
+    async fn tree_walks_from_the_root() -> Result<(), TestError> {
         let state = make_state();
-        populate_correlated_dialogs(&state);
+        populate_correlated_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/leg-0%40test/tree"))
+            .oneshot(test_request("/v1/dialogs/leg-0%40test/tree")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["root_call_id"], "leg-0@test");
         assert_eq!(parsed["total_legs"], 2);
@@ -7659,27 +7678,29 @@ mod tests {
         // Both legs are joined by session_id, an identifier match, so no edge is
         // a guess.
         assert_eq!(parsed["heuristic_edges"], 0);
-        let legs = parsed["legs"].as_array().expect("legs");
+        let legs = parsed["legs"].as_array().ok_or("legs")?;
         assert_eq!(legs[0]["call_id"], "leg-0@test");
         assert_eq!(legs[0]["depth"], 0);
         assert_eq!(legs[1]["call_id"], "leg-1@test");
         assert_eq!(legs[1]["depth"], 1);
         assert_eq!(legs[1]["strategy"], "session_id");
         assert_eq!(legs[1]["identifier_match"], true);
+        Ok(())
     }
 
     /// An unknown Call-ID is a 404, matching the sibling dialog routes.
     #[tokio::test]
-    async fn tree_unknown_call_id_is_404() {
+    async fn tree_unknown_call_id_is_404() -> Result<(), TestError> {
         let state = make_state();
-        populate_correlated_dialogs(&state);
+        populate_correlated_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/nope%40nowhere/tree"))
+            .oneshot(test_request("/v1/dialogs/nope%40nowhere/tree")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
     }
 
     // ── aggregate (PAR3: aggregate_dialogs) ───────────────────────────
@@ -7687,76 +7708,82 @@ mod tests {
     /// `GET /v1/aggregate?by=from.user` counts each distinct user once. Closes
     /// the aggregate_dialogs REST gap.
     #[tokio::test]
-    async fn aggregate_groups_by_from_user() {
+    async fn aggregate_groups_by_from_user() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // from users user0/user1/user2
+        populate_dialogs(&state)?; // from users user0/user1/user2
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/aggregate?by=from.user"))
+            .oneshot(test_request("/v1/aggregate?by=from.user")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["group_by"], "from.user");
         assert_eq!(parsed["distinct_values"], 3);
         assert_eq!(parsed["total_matched"], 3);
-        let buckets = parsed["buckets"].as_array().expect("buckets");
+        let buckets = parsed["buckets"].as_array().ok_or("buckets")?;
         assert_eq!(buckets.len(), 3);
         // Each user appears once; ties broken by value, so user0/1/2 in order.
         for (i, b) in buckets.iter().enumerate() {
             assert_eq!(b["value"], format!("user{i}"));
             assert_eq!(b["count"], 1);
         }
+        Ok(())
     }
 
     /// Grouping by `state` puts all three seeded dialogs in one bucket.
     #[tokio::test]
-    async fn aggregate_by_state_is_one_bucket() {
+    async fn aggregate_by_state_is_one_bucket() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/aggregate?by=state"))
+            .oneshot(test_request("/v1/aggregate?by=state")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["distinct_values"], 1);
         assert_eq!(parsed["total_matched"], 3);
         assert_eq!(parsed["buckets"][0]["count"], 3);
+        Ok(())
     }
 
     /// A dimension outside the groupable set is a 400 that lists the real ones.
     #[tokio::test]
-    async fn aggregate_unknown_dimension_is_400() {
+    async fn aggregate_unknown_dimension_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/aggregate?by=bogus"))
+            .oneshot(test_request("/v1/aggregate?by=bogus")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     /// A missing dimension is a 400: `by` is required.
     #[tokio::test]
-    async fn aggregate_missing_dimension_is_400() {
+    async fn aggregate_missing_dimension_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/aggregate"))
+            .oneshot(test_request("/v1/aggregate")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── timeline (PAR3: timeline) ─────────────────────────────────────
@@ -7764,57 +7791,62 @@ mod tests {
     /// `GET /v1/timeline` buckets calls by time. The three seeded dialogs share
     /// one second, so they fall in one bucket. Closes the timeline REST gap.
     #[tokio::test]
-    async fn timeline_buckets_the_calls() {
+    async fn timeline_buckets_the_calls() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // all open at 2024-06-15T12:00:00Z
+        populate_dialogs(&state)?; // all open at 2024-06-15T12:00:00Z
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/timeline"))
+            .oneshot(test_request("/v1/timeline")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["bucket_seconds"], 60);
         assert_eq!(parsed["returned"], 1);
-        let buckets = parsed["buckets"].as_array().expect("buckets");
+        let buckets = parsed["buckets"].as_array().ok_or("buckets")?;
         assert_eq!(buckets.len(), 1);
         assert_eq!(buckets[0]["dialogs"], 3);
         assert_eq!(buckets[0]["bucket_seconds"], 60);
+        Ok(())
     }
 
     /// The requested bucket width is honored and echoed on the answer.
     #[tokio::test]
-    async fn timeline_honors_the_requested_width() {
+    async fn timeline_honors_the_requested_width() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/timeline?bucket_seconds=3600"))
+            .oneshot(test_request("/v1/timeline?bucket_seconds=3600")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["bucket_seconds"], 3600);
         assert_eq!(parsed["buckets"][0]["dialogs"], 3);
+        Ok(())
     }
 
     /// A zero bucket width is a 400, not an answer: it describes no interval.
     #[tokio::test]
-    async fn timeline_zero_width_is_400() {
+    async fn timeline_zero_width_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/timeline?bucket_seconds=0"))
+            .oneshot(test_request("/v1/timeline?bucket_seconds=0")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── compare (PAR3: compare_dialogs) ───────────────────────────────
@@ -7822,11 +7854,13 @@ mod tests {
     /// Seed one answered call (`answered@test`, INVITE→200) and one busy call
     /// (`busy@test`, INVITE→486), so a comparison has both a difference (state
     /// and outcome code) and a match (one INVITE each, two messages each).
-    fn seed_compare_pair(state: &ApiState) {
+    fn seed_compare_pair(state: &ApiState) -> Result<(), TestError> {
         let mut ds = state.dialog_store.write();
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
         let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        let mut feed = |start: &str, call_id: &str, to_tag: bool| {
+        let mut feed = |start: &str, call_id: &str, to_tag: bool| -> Result<(), TestError> {
             let to = if to_tag {
                 "To: <sip:bob@example.com>;tag=t2"
             } else {
@@ -7852,32 +7886,35 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("parse");
+            .map_err(|e| format!("parse: {e:?}"))?;
             ds.process_message(msg);
+            Ok(())
         };
-        feed("INVITE sip:bob@example.com SIP/2.0", "answered@test", false);
-        feed("SIP/2.0 200 OK", "answered@test", true);
-        feed("INVITE sip:bob@example.com SIP/2.0", "busy@test", false);
-        feed("SIP/2.0 486 Busy Here", "busy@test", true);
+        feed("INVITE sip:bob@example.com SIP/2.0", "answered@test", false)?;
+        feed("SIP/2.0 200 OK", "answered@test", true)?;
+        feed("INVITE sip:bob@example.com SIP/2.0", "busy@test", false)?;
+        feed("SIP/2.0 486 Busy Here", "busy@test", true)?;
+        Ok(())
     }
 
     /// `GET /v1/dialogs/compare` names the fields that differ and stays silent
     /// on the ones that match. Closes the compare_dialogs REST gap.
     #[tokio::test]
-    async fn compare_names_the_fields_that_differ() {
+    async fn compare_names_the_fields_that_differ() -> Result<(), TestError> {
         let state = make_state();
-        seed_compare_pair(&state);
+        seed_compare_pair(&state)?;
         let app = build_router(state);
 
         let resp = app
             .oneshot(test_request(
                 "/v1/dialogs/compare?a=answered@test&b=busy@test",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["a"]["state"], "InCall");
         assert_eq!(parsed["a"]["final_status_code"], 200);
@@ -7888,37 +7925,40 @@ mod tests {
             parsed["differences"],
             serde_json::json!(["state", "final_status_code"])
         );
+        Ok(())
     }
 
     /// A Call-ID with no dialog is a 404 that names which of the two is missing.
     #[tokio::test]
-    async fn compare_unknown_call_id_is_404() {
+    async fn compare_unknown_call_id_is_404() -> Result<(), TestError> {
         let state = make_state();
-        seed_compare_pair(&state);
+        seed_compare_pair(&state)?;
         let app = build_router(state);
 
         let resp = app
             .oneshot(test_request(
                 "/v1/dialogs/compare?a=answered@test&b=ghost@test",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
     }
 
     /// A comparison with no second call is a 400: the route needs two Call-IDs,
     /// and a request naming one is a mistake, not an empty answer.
     #[tokio::test]
-    async fn compare_missing_b_is_400() {
+    async fn compare_missing_b_is_400() -> Result<(), TestError> {
         let state = make_state();
-        seed_compare_pair(&state);
+        seed_compare_pair(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/compare?a=answered@test"))
+            .oneshot(test_request("/v1/dialogs/compare?a=answered@test")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── tail (PAR3: tail_dialogs) ─────────────────────────────────────
@@ -7927,94 +7967,106 @@ mod tests {
     /// last row — and that cursor is URL-safe (Zulu, no `+`), because a client
     /// passes it straight back in the `since` query. Closes the tail REST gap.
     #[tokio::test]
-    async fn tail_without_a_cursor_returns_every_dialog_and_a_url_safe_cursor() {
+    async fn tail_without_a_cursor_returns_every_dialog_and_a_url_safe_cursor()
+    -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // call-0/1/2@test, all at 2024-06-15T12:00:00Z
+        populate_dialogs(&state)?; // call-0/1/2@test, all at 2024-06-15T12:00:00Z
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/tail"))
+            .oneshot(test_request("/v1/dialogs/tail")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["returned"], 3);
-        assert_eq!(parsed["dialogs"].as_array().expect("dialogs").len(), 3);
-        let cursor = parsed["next_cursor"].as_str().expect("a cursor");
+        assert_eq!(parsed["dialogs"].as_array().ok_or("dialogs")?.len(), 3);
+        let cursor = parsed["next_cursor"].as_str().ok_or("a cursor")?;
         assert!(
             !cursor.contains('+'),
             "the cursor rides back in a URL query, where `+` becomes a space: {cursor}"
         );
+        Ok(())
     }
 
     /// A cursor at the first row returns only what sorts strictly after it — the
     /// identity tie-break, since all three share an update instant.
     #[tokio::test]
-    async fn tail_since_a_cursor_returns_only_later_rows() {
+    async fn tail_since_a_cursor_returns_only_later_rows() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         // `%7C` is the `|` separator, percent-encoded for the query.
         let resp = app
             .oneshot(test_request(
                 "/v1/dialogs/tail?since=2024-06-15T12:00:00Z%7Ccall-0@test",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["returned"], 2, "call-1 and call-2, not call-0");
+        Ok(())
     }
 
     /// Re-polling with the response's own `next_cursor` returns nothing new: the
     /// client has seen everything up to that position. Proves the cursor round-
     /// trips through the query unencoded-corrupted.
     #[tokio::test]
-    async fn tail_re_poll_with_its_cursor_sees_nothing_new() {
+    async fn tail_re_poll_with_its_cursor_sees_nothing_new() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let first = app
             .clone()
-            .oneshot(test_request("/v1/dialogs/tail"))
+            .oneshot(test_request("/v1/dialogs/tail")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(first.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        let cursor = parsed["next_cursor"].as_str().expect("a cursor");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(first.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        let cursor = parsed["next_cursor"].as_str().ok_or("a cursor")?;
 
         // Pass it back verbatim, percent-encoding only the `|` separator the
         // query grammar reserves — the client's job, and the Zulu timestamp
         // needs nothing more.
         let uri = format!("/v1/dialogs/tail?since={}", cursor.replace('|', "%7C"));
-        let again = app.oneshot(test_request(&uri)).await.expect("oneshot");
+        let again = app
+            .oneshot(test_request(&uri)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(again.status(), StatusCode::OK);
-        let body = body_to_string(again.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(again.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
             parsed["returned"], 0,
             "nothing updated after the last cursor"
         );
+        Ok(())
     }
 
     /// A `since` whose timestamp half is not RFC 3339 is a 400, not a silent
     /// reset to the beginning that would loop a poller forever.
     #[tokio::test]
-    async fn tail_bad_cursor_is_400() {
+    async fn tail_bad_cursor_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/tail?since=not-a-timestamp"))
+            .oneshot(test_request("/v1/dialogs/tail?since=not-a-timestamp")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── rates (PAR3: group_dialogs) ───────────────────────────────────
@@ -8024,18 +8076,19 @@ mod tests {
     /// busy (486 is a far-end decline) so all seizures were network-effective.
     /// Closes the group_dialogs REST gap.
     #[tokio::test]
-    async fn rates_report_asr_and_ner_per_group() {
+    async fn rates_report_asr_and_ner_per_group() -> Result<(), TestError> {
         let state = make_state();
-        seed_compare_pair(&state); // answered@test INVITE→200, busy@test INVITE→486
+        seed_compare_pair(&state)?; // answered@test INVITE→200, busy@test INVITE→486
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/rates?by=method"))
+            .oneshot(test_request("/v1/dialogs/rates?by=method")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["group_by"], "method");
         let g = &parsed["groups"][0];
@@ -8044,24 +8097,26 @@ mod tests {
         assert_eq!(g["metrics"]["asr"], 50.0);
         assert_eq!(g["metrics"]["ner"], 100.0);
         assert_eq!(g["population"]["seizures"], 2);
+        Ok(())
     }
 
     /// A group whose INVITEs never reached a final response has no seizures, so
     /// ASR comes back null with the reason in `not_grounded` — not a zero that
     /// reads as a failing trunk.
     #[tokio::test]
-    async fn rates_refuse_asr_over_a_group_with_no_seizures() {
+    async fn rates_refuse_asr_over_a_group_with_no_seizures() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // three bare INVITEs, no final response
+        populate_dialogs(&state)?; // three bare INVITEs, no final response
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/rates?by=method&metrics=asr"))
+            .oneshot(test_request("/v1/dialogs/rates?by=method&metrics=asr")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         let g = &parsed["groups"][0];
         assert!(
             g["metrics"]["asr"].is_null(),
@@ -8073,36 +8128,39 @@ mod tests {
                 .is_some_and(|s| s.contains("final response")),
             "the refusal names the missing population: {g}"
         );
+        Ok(())
     }
 
     /// A dimension outside the offered set is a 400 that names the set.
     #[tokio::test]
-    async fn rates_unknown_dimension_is_400() {
+    async fn rates_unknown_dimension_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/rates?by=phase_of_moon"))
+            .oneshot(test_request("/v1/dialogs/rates?by=phase_of_moon")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     /// An unknown metric name is a 400, not a silently dropped column.
     #[tokio::test]
-    async fn rates_unknown_metric_is_400() {
+    async fn rates_unknown_metric_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
             .oneshot(test_request(
                 "/v1/dialogs/rates?by=method&metrics=throughput",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── talkers (PAR3: top_talkers) ───────────────────────────────────
@@ -8110,11 +8168,13 @@ mod tests {
     /// Seed three INVITEs: two from 192.0.2.1 (banner `Phone/A`) and one from
     /// 192.0.2.2 (banner `Phone/B`), all dialing 1-555, so a ranking has a clear
     /// busiest talker and a tie-break below it.
-    fn seed_talkers(state: &ApiState) {
+    fn seed_talkers(state: &ApiState) -> Result<(), TestError> {
         let mut ds = state.dialog_store.write();
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
         let dst = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        let mut feed = |call_id: &str, src_last: u8, ua: &str| {
+        let mut feed = |call_id: &str, src_last: u8, ua: &str| -> Result<(), TestError> {
             let raw = build_sip(
                 "INVITE sip:15551234000@example.com SIP/2.0",
                 &[
@@ -8130,29 +8190,32 @@ mod tests {
             let src = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, src_last));
             let msg =
                 crate::sip::parser::parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
-                    .expect("parse");
+                    .map_err(|e| format!("parse: {e:?}"))?;
             ds.process_message(msg);
+            Ok(())
         };
-        feed("tk1@test", 1, "Phone/A");
-        feed("tk2@test", 1, "Phone/A");
-        feed("tk3@test", 2, "Phone/B");
+        feed("tk1@test", 1, "Phone/A")?;
+        feed("tk2@test", 1, "Phone/A")?;
+        feed("tk3@test", 2, "Phone/B")?;
+        Ok(())
     }
 
     /// By ip, the busiest sender ranks first with its share of matched dialogs,
     /// and `distinct_talkers` counts every sender. Closes the top_talkers gap.
     #[tokio::test]
-    async fn talkers_by_ip_ranks_the_busiest_first() {
+    async fn talkers_by_ip_ranks_the_busiest_first() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/talkers?by=ip"))
+            .oneshot(test_request("/v1/talkers?by=ip")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["by"], "ip");
         assert_eq!(parsed["distinct_talkers"], 2);
@@ -8162,59 +8225,66 @@ mod tests {
         assert_eq!(parsed["talkers"][1]["key"], "192.0.2.2");
         assert_eq!(parsed["talkers"][1]["dialogs"], 1);
         // 2 of 3 matched dialogs.
-        let share = parsed["talkers"][0]["share_pct"].as_f64().expect("a share");
+        let share = parsed["talkers"][0]["share_pct"]
+            .as_f64()
+            .ok_or("a share")?;
         assert!((share - 200.0 / 3.0).abs() < 1e-9, "share was {share}");
+        Ok(())
     }
 
     /// By ua, the key is the banner the sender wrote, returned RAW — REST hands
     /// a program the value it can key on, unlike the MCP surface which fences it.
     #[tokio::test]
-    async fn talkers_by_ua_returns_the_raw_banner() {
+    async fn talkers_by_ua_returns_the_raw_banner() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/talkers?by=ua"))
+            .oneshot(test_request("/v1/talkers?by=ua")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["talkers"][0]["key"], "Phone/A");
         assert!(
             !body.contains('\u{2066}') && !body.contains("untrusted"),
             "REST returns the banner raw, unfenced: {body}"
         );
+        Ok(())
     }
 
     /// A dimension outside `ip`/`ua`/`prefix` is a 400 that names the set.
     #[tokio::test]
-    async fn talkers_unknown_dimension_is_400() {
+    async fn talkers_unknown_dimension_is_400() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/talkers?by=pairs"))
+            .oneshot(test_request("/v1/talkers?by=pairs")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     /// A zero-width prefix is a 400: it puts every destination in one bucket, a
     /// ranking of one row that says nothing.
     #[tokio::test]
-    async fn talkers_zero_width_prefix_is_400() {
+    async fn talkers_zero_width_prefix_is_400() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/talkers?by=prefix&prefix_digits=0"))
+            .oneshot(test_request("/v1/talkers?by=prefix&prefix_digits=0")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── endpoints (PAR3: describe_endpoint) ───────────────────────────
@@ -8224,18 +8294,19 @@ mod tests {
     /// RAW — REST hands a program the value it keys on, and the recent dialogs
     /// are rendered. Closes the describe_endpoint gap.
     #[tokio::test]
-    async fn endpoints_by_ip_describes_the_sender() {
+    async fn endpoints_by_ip_describes_the_sender() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/endpoints?ip=192.0.2.1"))
+            .oneshot(test_request("/v1/endpoints?ip=192.0.2.1")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["endpoint_kind"], "ip");
         assert_eq!(parsed["endpoint"], "192.0.2.1");
@@ -8245,105 +8316,103 @@ mod tests {
         assert_eq!(parsed["user_agents"][0]["value"], "Phone/A");
         assert_eq!(parsed["user_agents"][0]["count"], 2);
         assert_eq!(
-            parsed["recent_dialogs"].as_array().expect("an array").len(),
+            parsed["recent_dialogs"].as_array().ok_or("an array")?.len(),
             2
         );
         assert!(
             !body.contains('\u{2066}') && !body.contains("untrusted"),
             "REST returns the banner raw, unfenced: {body}"
         );
+        Ok(())
     }
 
     /// By user, the selector matches on the URI user part, not a socket: it
     /// finds the dialogs `alice` took part in but reports no messages sent, a
     /// count a user selector cannot honestly derive.
     #[tokio::test]
-    async fn endpoints_by_user_selects_on_the_uri_user() {
+    async fn endpoints_by_user_selects_on_the_uri_user() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/endpoints?user=alice"))
+            .oneshot(test_request("/v1/endpoints?user=alice")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["endpoint_kind"], "user");
         assert_eq!(parsed["dialogs"], 3, "alice is the From user of all three");
         assert_eq!(parsed["messages_sent"], 0, "a user has no socket side");
+        Ok(())
     }
 
     /// Neither `ip` nor `user` is a 400: an endpoint is one or the other, and
     /// neither can be inferred from the other.
     #[tokio::test]
-    async fn endpoints_missing_selector_is_400() {
+    async fn endpoints_missing_selector_is_400() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/endpoints"))
+            .oneshot(test_request("/v1/endpoints")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     /// Both `ip` and `user` is a 400: the two select different sets, and which
     /// combination was meant changes the answer.
     #[tokio::test]
-    async fn endpoints_both_selectors_is_400() {
+    async fn endpoints_both_selectors_is_400() -> Result<(), TestError> {
         let state = make_state();
-        seed_talkers(&state);
+        seed_talkers(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/endpoints?ip=192.0.2.1&user=alice"))
+            .oneshot(test_request("/v1/endpoints?ip=192.0.2.1&user=alice")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── security findings (PAR3: security_findings) ───────────────────
 
     /// A state whose alert engine has recorded `scanner` and `fraud` findings,
     /// with the `scanner` detector armed.
-    fn state_with_findings() -> ApiState {
+    fn state_with_findings() -> Result<ApiState, TestError> {
         let mut engine = crate::security::AlertEngine::new(Vec::new(), None);
-        let at = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
-        engine.fire(
-            "scanner",
-            "203.0.113.9".parse().unwrap(),
-            "ua=sipvicious",
-            at,
-        );
-        engine.fire(
-            "fraud",
-            "203.0.113.10".parse().unwrap(),
-            "irsf destination",
-            at,
-        );
-        ApiState {
+        let at = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
+        engine.fire("scanner", "203.0.113.9".parse()?, "ua=sipvicious", at);
+        engine.fire("fraud", "203.0.113.10".parse()?, "irsf destination", at);
+        Ok(ApiState {
             alert_engine: Some(Arc::new(RwLock::new(engine))),
             armed_detections: vec!["scanner".to_string()],
             ..make_state()
-        }
+        })
     }
 
     /// The route returns the recorded findings with the RAW detail — REST hands
     /// a SOC pipeline the value it keys on, unlike the MCP tool which fences it.
     /// Closes the security_findings REST gap.
     #[tokio::test]
-    async fn security_findings_returns_recorded_findings_raw() {
-        let app = build_router(state_with_findings());
+    async fn security_findings_returns_recorded_findings_raw() -> Result<(), TestError> {
+        let app = build_router(state_with_findings()?);
         let resp = app
-            .oneshot(test_request("/v1/security/findings"))
+            .oneshot(test_request("/v1/security/findings")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["total_matched"], 2);
         assert_eq!(parsed["detection_armed"], true);
@@ -8352,7 +8421,7 @@ mod tests {
         // Detail comes back raw and unfenced.
         let details: Vec<String> = parsed["findings"]
             .as_array()
-            .expect("findings array")
+            .ok_or("findings array")?
             .iter()
             .map(|f| f["detail"].as_str().unwrap_or_default().to_string())
             .collect();
@@ -8364,13 +8433,14 @@ mod tests {
             !body.contains('\u{2066}') && !body.contains("untrusted"),
             "REST returns the detail unfenced: {body}"
         );
+        Ok(())
     }
 
     /// A detector that cannot establish its evidence says so on the page: the
     /// `observation_gaps` array carries the reason, the counts and the
     /// sentence, and is present (empty) when there is nothing to say.
     #[tokio::test]
-    async fn security_findings_carries_the_observation_gaps() {
+    async fn security_findings_carries_the_observation_gaps() -> Result<(), TestError> {
         let mut engine = crate::security::AlertEngine::new(Vec::new(), None);
         engine.set_observation_gap(
             "reg_flood",
@@ -8388,62 +8458,65 @@ mod tests {
             ..make_state()
         };
         let resp = build_router(state)
-            .oneshot(test_request("/v1/security/findings"))
+            .oneshot(test_request("/v1/security/findings")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         let gaps = parsed["observation_gaps"]
             .as_array()
-            .expect("observation_gaps array");
+            .ok_or("observation_gaps array")?;
         assert_eq!(gaps.len(), 1, "{parsed}");
         assert_eq!(gaps[0]["rule_name"], "reg_flood");
         assert_eq!(gaps[0]["reason"], "no_answers");
         assert_eq!(gaps[0]["seen"], 9);
         assert_eq!(gaps[0]["unestablished"], 9);
 
-        let resp = build_router(state_with_findings())
-            .oneshot(test_request("/v1/security/findings"))
+        let resp = build_router(state_with_findings()?)
+            .oneshot(test_request("/v1/security/findings")?)
             .await
-            .expect("oneshot");
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
             parsed["observation_gaps"],
             serde_json::json!([]),
             "nothing to say is an empty array, never an absent field"
         );
+        Ok(())
     }
 
     /// A comma-separated `kinds` filter narrows the ring.
     #[tokio::test]
-    async fn security_findings_filters_by_kind() {
-        let app = build_router(state_with_findings());
+    async fn security_findings_filters_by_kind() -> Result<(), TestError> {
+        let app = build_router(state_with_findings()?);
         let resp = app
-            .oneshot(test_request("/v1/security/findings?kinds=fraud"))
+            .oneshot(test_request("/v1/security/findings?kinds=fraud")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["total_matched"], 1);
         assert_eq!(parsed["findings"][0]["rule_name"], "fraud");
+        Ok(())
     }
 
     /// With no detector armed, the route answers 200 with an empty list AND the
     /// note that says so — the distinction a SOC dashboard needs, which a bare
     /// `[]` cannot draw.
     #[tokio::test]
-    async fn security_findings_without_a_detector_explains_the_empty_list() {
+    async fn security_findings_without_a_detector_explains_the_empty_list() -> Result<(), TestError>
+    {
         let app = build_router(make_state());
         let resp = app
-            .oneshot(test_request("/v1/security/findings"))
+            .oneshot(test_request("/v1/security/findings")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["returned"], 0);
         assert_eq!(parsed["detection_armed"], false);
         assert!(
@@ -8452,17 +8525,19 @@ mod tests {
                 .is_some_and(|n| n.contains("nothing was watching")),
             "the empty list is explained"
         );
+        Ok(())
     }
 
     /// A kind outside the four is a 400 that names the vocabulary.
     #[tokio::test]
-    async fn security_findings_unknown_kind_is_400() {
-        let app = build_router(state_with_findings());
+    async fn security_findings_unknown_kind_is_400() -> Result<(), TestError> {
+        let app = build_router(state_with_findings()?);
         let resp = app
-            .oneshot(test_request("/v1/security/findings?kinds=bogus"))
+            .oneshot(test_request("/v1/security/findings?kinds=bogus")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── audio (PAR3: export_audio) ────────────────────────────────────
@@ -8470,16 +8545,16 @@ mod tests {
     /// A Call-ID no dialog carries is a 404 — the audio resource of a call that
     /// is not here cannot exist.
     #[tokio::test]
-    async fn audio_unknown_call_is_404() {
+    async fn audio_unknown_call_is_404() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
         let resp = app
-            .oneshot(test_request("/v1/dialogs/does-not-exist@nowhere/audio"))
+            .oneshot(test_request("/v1/dialogs/does-not-exist@nowhere/audio")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let body = body_to_string(resp.into_body()).await;
+        let body = body_to_string(resp.into_body()).await?;
         assert!(
             body.contains(
                 "no SIP dialog and no RTP stream associated with call_id \
@@ -8488,16 +8563,17 @@ mod tests {
             "the 404 says what was searched, so a host that never carried the \
              call reads apart from a lookup bug: {body}"
         );
+        Ok(())
     }
 
     /// A media-relay host holds no dialog -- it never sees the SIP -- but its
     /// RTP carries the Call-ID the relay named. The audio is the relay's to
     /// export, and the answer says the dialog was not seen here.
     #[tokio::test]
-    async fn audio_on_a_relay_host_answers_from_the_streams() {
+    async fn audio_on_a_relay_host_answers_from_the_streams() -> Result<(), TestError> {
         let state = make_state();
         state.stream_store.write().set_audio_capture(true);
-        add_stream(&state, 0x5151, 40000, 30000);
+        add_stream(&state, 0x5151, 40000, 30000)?;
         state.stream_store.write().link_to_dialog(
             IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
             30000,
@@ -8505,9 +8581,9 @@ mod tests {
         );
         let app = build_router(state);
         let resp = app
-            .oneshot(test_request("/v1/dialogs/relay-only@test/audio"))
+            .oneshot(test_request("/v1/dialogs/relay-only@test/audio")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
             resp.headers()
@@ -8515,15 +8591,16 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("false")
         );
+        Ok(())
     }
 
     /// With the dialog held, the header says so.
     #[tokio::test]
-    async fn audio_with_the_dialog_says_it_was_seen() {
+    async fn audio_with_the_dialog_says_it_was_seen() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         state.stream_store.write().set_audio_capture(true);
-        add_stream(&state, 0x5151, 40000, 30000);
+        add_stream(&state, 0x5151, 40000, 30000)?;
         state.stream_store.write().link_to_dialog(
             IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
             30000,
@@ -8531,9 +8608,9 @@ mod tests {
         );
         let app = build_router(state);
         let resp = app
-            .oneshot(test_request("/v1/dialogs/call-0@test/audio"))
+            .oneshot(test_request("/v1/dialogs/call-0@test/audio")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
             resp.headers()
@@ -8541,26 +8618,28 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("true")
         );
+        Ok(())
     }
 
     /// A dialog that exists but carries no exportable audio is a 422, not a
     /// silent empty file — the body names why (here: no RTP streams at all).
     /// Closes the export_audio REST gap's error path.
     #[tokio::test]
-    async fn audio_with_no_streams_is_422() {
+    async fn audio_with_no_streams_is_422() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
         let resp = app
-            .oneshot(test_request("/v1/dialogs/call-0@test/audio"))
+            .oneshot(test_request("/v1/dialogs/call-0@test/audio")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_to_string(resp.into_body()).await;
+        let body = body_to_string(resp.into_body()).await?;
         assert!(
             body.contains("RTP stream") || body.contains("decode"),
             "the 422 explains what is missing: {body}"
         );
+        Ok(())
     }
 
     /// The Call-ID becomes the download filename, so it is sanitized: a stranger
@@ -8568,7 +8647,7 @@ mod tests {
     /// into a `Content-Disposition`. An id with nothing usable falls back to a
     /// name rather than a nameless download.
     #[test]
-    fn wav_filename_stem_sanitizes() {
+    fn wav_filename_stem_sanitizes() -> Result<(), TestError> {
         assert_eq!(wav_filename_stem("call-1@10.0.0.1"), "call-1_10.0.0.1");
         let injected = wav_filename_stem("x\r\nSet-Cookie: y");
         assert!(
@@ -8580,6 +8659,7 @@ mod tests {
         );
         assert_eq!(wav_filename_stem(""), "audio");
         assert_eq!(wav_filename_stem("..."), "audio");
+        Ok(())
     }
 
     // ── captures compare (PAR3: compare_captures) ─────────────────────
@@ -8598,31 +8678,33 @@ mod tests {
     /// Without `--api-file-root` the route answers 503: reading files off disk
     /// is an opt-in capability, off by default.
     #[tokio::test]
-    async fn captures_compare_not_configured_is_503() {
+    async fn captures_compare_not_configured_is_503() -> Result<(), TestError> {
         let app = build_router(make_state());
         let resp = app
-            .oneshot(test_request("/v1/captures/compare?a=x.pcap&b=y.pcap"))
+            .oneshot(test_request("/v1/captures/compare?a=x.pcap&b=y.pcap")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        Ok(())
     }
 
     /// A missing baseline is a 400, checked before any file is touched.
     #[tokio::test]
-    async fn captures_compare_missing_selector_is_400() {
+    async fn captures_compare_missing_selector_is_400() -> Result<(), TestError> {
         let app = build_router(state_with_file_root());
         let resp = app
-            .oneshot(test_request("/v1/captures/compare?b=sip-rtp-g711.pcap"))
+            .oneshot(test_request("/v1/captures/compare?b=sip-rtp-g711.pcap")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     /// A name that is not a bare filename is refused — `--api-file-root` takes a
     /// name, never a path, so a separator, a `..` or an absolute prefix cannot
     /// escape the root. Both sides are checked.
     #[tokio::test]
-    async fn captures_compare_path_traversal_is_400() {
+    async fn captures_compare_path_traversal_is_400() -> Result<(), TestError> {
         let state = state_with_file_root();
         for pair in [
             "a=../escape.pcap&b=sip-rtp-g711.pcap",
@@ -8631,11 +8713,12 @@ mod tests {
         ] {
             let app = build_router(state.clone());
             let resp = app
-                .oneshot(test_request(&format!("/v1/captures/compare?{pair}")))
+                .oneshot(test_request(&format!("/v1/captures/compare?{pair}"))?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{pair}");
         }
+        Ok(())
     }
 
     /// A symlink INSIDE the root that points out of it is refused at resolution:
@@ -8643,18 +8726,18 @@ mod tests {
     /// it. This is the confinement's load-bearing case.
     #[tokio::test]
     #[cfg(unix)]
-    async fn captures_compare_symlink_out_of_root_is_400() {
-        let root = tempfile::tempdir().expect("tempdir");
+    async fn captures_compare_symlink_out_of_root_is_400() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         // A real capture inside the root, and a symlink beside it pointing at a
         // file OUTSIDE the root.
         std::fs::copy(
             pcap_samples_root().join("sip-rtp-g711.pcap"),
             root.path().join("inside.pcap"),
         )
-        .expect("stage an in-root capture");
+        .map_err(|e| format!("stage an in-root capture: {e:?}"))?;
         let outside = pcap_samples_root().join("b2bua-asterisk.pcapng");
         std::os::unix::fs::symlink(&outside, root.path().join("escape.pcap"))
-            .expect("stage a symlink out of the root");
+            .map_err(|e| format!("stage a symlink out of the root: {e:?}"))?;
 
         let state = ApiState {
             file_root: Some(root.path().to_path_buf()),
@@ -8664,53 +8747,54 @@ mod tests {
         let resp = app
             .oneshot(test_request(
                 "/v1/captures/compare?a=escape.pcap&b=inside.pcap",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(
             resp.status(),
             StatusCode::BAD_REQUEST,
             "a symlink out of the root must be refused"
         );
+        Ok(())
     }
 
     /// Two real files diff by state: each bucket carries both sides and their
     /// signed delta, and the sides are not crossed. Closes the compare_captures
     /// REST gap.
     #[tokio::test]
-    async fn captures_compare_diffs_two_files() {
+    async fn captures_compare_diffs_two_files() -> Result<(), TestError> {
         let app = build_router(state_with_file_root());
         let resp = app
             .oneshot(test_request(
                 "/v1/captures/compare?a=b2bua-asterisk.pcapng&b=sip-rtp-g711.pcap&dimensions=state",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["a"]["filename"], "b2bua-asterisk.pcapng");
         assert_eq!(parsed["b"]["filename"], "sip-rtp-g711.pcap");
         assert_eq!(parsed["dimensions"][0]["dimension"], "state");
         let buckets = parsed["dimensions"][0]["buckets"]
             .as_array()
-            .expect("state buckets");
+            .ok_or("state buckets")?;
         for bucket in buckets {
             assert_eq!(
-                bucket["delta"].as_i64().expect("delta"),
-                bucket["b"].as_i64().expect("b") - bucket["a"].as_i64().expect("a"),
+                bucket["delta"].as_i64().ok_or("delta")?,
+                bucket["b"].as_i64().ok_or("b")? - bucket["a"].as_i64().ok_or("a")?,
                 "delta is b minus a"
             );
         }
+        Ok(())
     }
 
     /// The run's `--hep-parse` reaches `GET /v1/captures/compare`: with it the
     /// HEP copy's call is counted, and without it the copy holds no SIP.
     #[cfg(feature = "hep")]
     #[tokio::test]
-    async fn captures_compare_reads_a_hep_copy_with_the_runs_hep_parse()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn captures_compare_reads_a_hep_copy_with_the_runs_hep_parse() -> Result<(), TestError> {
         let root = tempfile::tempdir()?;
         let hep_time = chrono::DateTime::from_timestamp(1_718_000_000, 0).ok_or("a time")?;
         std::fs::write(
@@ -8734,10 +8818,10 @@ mod tests {
             let resp = build_router(state)
                 .oneshot(test_request(
                     "/v1/captures/compare?a=hep.pcap&b=plain.pcap&dimensions=state",
-                ))
+                )?)
                 .await?;
             assert_eq!(resp.status(), StatusCode::OK);
-            let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await)?;
+            let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)?;
             assert_eq!(
                 parsed["a"]["dialogs"], dialogs,
                 "hep_parse={hep_parse}: the HEP copy's call count: {parsed}"
@@ -8751,23 +8835,24 @@ mod tests {
     /// `GET /v1/dialogs/{id}/lint` returns the dialog's RFC-conformance
     /// findings. Closes the lint_dialog REST gap.
     #[tokio::test]
-    async fn lint_returns_conformance_findings() {
+    async fn lint_returns_conformance_findings() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/call-0%40test/lint"))
+            .oneshot(test_request("/v1/dialogs/call-0%40test/lint")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["call_id"], "call-0@test");
-        let findings = parsed["findings"].as_array().expect("findings array");
+        let findings = parsed["findings"].as_array().ok_or("findings array")?;
         assert_eq!(
-            parsed["finding_count"].as_u64().expect("count") as usize,
+            parsed["finding_count"].as_u64().ok_or("count")? as usize,
             findings.len(),
             "finding_count must match the findings it counts"
         );
@@ -8782,20 +8867,22 @@ mod tests {
         assert!(f["severity"].is_string());
         assert!(f["rfc"].is_number());
         assert!(f["section"].is_string());
+        Ok(())
     }
 
     /// An unknown Call-ID is a 404, matching the sibling dialog routes.
     #[tokio::test]
-    async fn lint_unknown_call_id_is_404() {
+    async fn lint_unknown_call_id_is_404() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/nope%40nowhere/lint"))
+            .oneshot(test_request("/v1/dialogs/nope%40nowhere/lint")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
     }
 
     // ── vcon validate (PAR3: validate_vcon) ───────────────────────────
@@ -8809,23 +8896,25 @@ mod tests {
     /// test would fail in the no-vcon feature combos CI runs.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn vcon_validate_reports_an_invalid_container() {
+    async fn vcon_validate_reports_an_invalid_container() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_post("/v1/vcon/validate", "{}"))
+            .oneshot(test_post("/v1/vcon/validate", "{}")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["verdict"], "invalid");
         assert!(
-            !parsed["errors"].as_array().expect("errors").is_empty(),
+            !parsed["errors"].as_array().ok_or("errors")?.is_empty(),
             "an empty object trips the schema's required fields"
         );
+        Ok(())
     }
 
     /// A body that is not a JSON object is a 400, not a verdict: a vCon
@@ -8833,29 +8922,31 @@ mod tests {
     /// mistake worth naming rather than validating.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn vcon_validate_non_object_is_400() {
+    async fn vcon_validate_non_object_is_400() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_post("/v1/vcon/validate", "[1, 2, 3]"))
+            .oneshot(test_post("/v1/vcon/validate", "[1, 2, 3]")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     /// A body that is not JSON at all is a 400.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn vcon_validate_malformed_body_is_400() {
+    async fn vcon_validate_malformed_body_is_400() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_post("/v1/vcon/validate", "not json at all"))
+            .oneshot(test_post("/v1/vcon/validate", "not json at all")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     fn make_state() -> ApiState {
@@ -8932,7 +9023,7 @@ mod tests {
     /// No relay configured (`addr: None`) is `not_configured`, whose problem is
     /// the invocation -- on every one of the four routes.
     #[test]
-    fn relay_rest_no_relay_is_not_configured() {
+    fn relay_rest_no_relay_is_not_configured() -> Result<(), TestError> {
         let rq = RelayRestConfig::default();
         let ss = empty_streams();
         for ask in [
@@ -8954,6 +9045,7 @@ mod tests {
                 "a refusal carries no counters"
             );
         }
+        Ok(())
     }
 
     /// A relay configured but no permit (a file-backed run, or the flag off) is
@@ -8961,7 +9053,7 @@ mod tests {
     /// transmit. `permit: None` is the only field that differs from a run that
     /// would transmit.
     #[test]
-    fn relay_rest_no_permit_is_not_permitted() {
+    fn relay_rest_no_permit_is_not_permitted() -> Result<(), TestError> {
         let rq = RelayRestConfig {
             relay: Some(Arc::new(StubRelay)),
             permit: None,
@@ -8970,6 +9062,7 @@ mod tests {
         assert_eq!(v["outcome"], "not_permitted");
         assert_ne!(v["outcome"], "unreachable", "the two must not collapse");
         assert_eq!(v["responsibility"], "invocation");
+        Ok(())
     }
 
     /// A relay stand-in that answers the holdings asks with fixed replies, so
@@ -9023,25 +9116,26 @@ mod tests {
     /// The holdings LIST route returns the relay's Call-IDs and its truncation
     /// flag, wrapped `outcome: ok`. Closes the query_relay REST gap (list).
     #[test]
-    fn relay_rest_holdings_lists_the_call_ids() {
+    fn relay_rest_holdings_lists_the_call_ids() -> Result<(), TestError> {
         let rq = RelayRestConfig {
             relay: Some(Arc::new(HoldsRelay)),
-            permit: Some(live_permit()),
+            permit: Some(live_permit()?),
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls: 10 }, &empty_streams());
         assert_eq!(v["outcome"], "ok");
         assert_eq!(v["call_ids"][0], "call-a");
         assert_eq!(v["call_ids"][1], "call-b");
         assert_eq!(v["truncated"], true, "the relay held more than it returned");
+        Ok(())
     }
 
     /// The holdings PER-CALL route returns the call's tags, ports and SSRCs,
     /// wrapped `outcome: ok`. Closes the query_relay REST gap (per-call).
     #[test]
-    fn relay_rest_holding_shows_one_calls_tags() {
+    fn relay_rest_holding_shows_one_calls_tags() -> Result<(), TestError> {
         let rq = RelayRestConfig {
             relay: Some(Arc::new(HoldsRelay)),
-            permit: Some(live_permit()),
+            permit: Some(live_permit()?),
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holding("call-x".into()), &empty_streams());
         assert_eq!(v["outcome"], "ok");
@@ -9050,12 +9144,13 @@ mod tests {
         assert_eq!(v["tags"][0]["codec"], "PCMU");
         assert_eq!(v["tags"][0]["streams"][0]["local_port"], 30000);
         assert_eq!(v["tags"][0]["streams"][0]["ssrcs"][0], 0x1234);
+        Ok(())
     }
 
     /// A relay reply carrying `result: error` is a refusal, and its
     /// `error-reason` travels verbatim; a clean reply is not a refusal.
     #[test]
-    fn relay_reply_refusal_reads_the_relays_own_no() {
+    fn relay_reply_refusal_reads_the_relays_own_no() -> Result<(), TestError> {
         let refused = [
             ("result".to_string(), "error".to_string()),
             ("error-reason".to_string(), "Unknown call-id".to_string()),
@@ -9073,6 +9168,7 @@ mod tests {
             crate::stats_vocab::relay_reply_refusal(&clean).is_none(),
             "a clean reply is not a refusal"
         );
+        Ok(())
     }
 
     // ── ST5: relay-statistics REST failure paths and edge cases (ST-S4) ───────
@@ -9177,21 +9273,21 @@ mod tests {
     /// A permit only a live source grants -- the property that keeps a
     /// file-backed run from ever transmitting to an address it read out of a
     /// capture.
-    fn live_permit() -> crate::security::transmit_guard::TransmitPermit {
-        crate::security::transmit_guard::TransmitPermit::for_source(
+    fn live_permit() -> Result<crate::security::transmit_guard::TransmitPermit, TestError> {
+        Ok(crate::security::transmit_guard::TransmitPermit::for_source(
             &crate::capture::CaptureSource::Live {
                 device: "eth0".to_owned(),
             },
         )
-        .expect("a live source grants a permit")
+        .ok_or("a live source grants a permit")?)
     }
 
     /// A relay config that WILL transmit: a scripted relay behind a live permit.
-    fn transmitting(wide: Scripted, per_call: Scripted) -> RelayRestConfig {
-        RelayRestConfig {
+    fn transmitting(wide: Scripted, per_call: Scripted) -> Result<RelayRestConfig, TestError> {
+        Ok(RelayRestConfig {
             relay: Some(Arc::new(ScriptedRelay { wide, per_call })),
-            permit: Some(live_permit()),
-        }
+            permit: Some(live_permit()?),
+        })
     }
 
     /// A stream store holding `n` measured RTP packets linked to `call_id`, so
@@ -9199,7 +9295,7 @@ mod tests {
     /// of a C4 comparison. Built by driving the real correlation path (record
     /// packets, link the endpoint) rather than hand-setting a field, so it is
     /// the count a live run would measure.
-    fn streams_with_call(call_id: &str, n: u16) -> Arc<RwLock<StreamStore>> {
+    fn streams_with_call(call_id: &str, n: u16) -> Result<Arc<RwLock<StreamStore>>, TestError> {
         use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
         let src = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10));
         let dst = std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1));
@@ -9235,7 +9331,7 @@ mod tests {
                 hep: None,
             };
             let hdr = crate::rtp::parser::parse_rtp_header(&parsed.payload)
-                .expect("synthetic RTP header parses");
+                .map_err(|e| format!("synthetic RTP header parses: {e:?}"))?;
             ss.process_rtp(&parsed, &hdr, chrono::Utc::now());
         }
         ss.link_endpoint(src, src_port, call_id, &[]);
@@ -9245,7 +9341,7 @@ mod tests {
             "the fixture must actually link {n} packets, or the compare test is \
              asserting against a side it did not build"
         );
-        Arc::new(RwLock::new(ss))
+        Ok(Arc::new(RwLock::new(ss)))
     }
 
     /// Condition 3: a relay that does not answer is `unreachable` on every route
@@ -9253,10 +9349,10 @@ mod tests {
     /// says the weaker true thing, never "the relay is down": over UDP a wrong
     /// port, a filtered port and a lost reply are indistinguishable.
     #[test]
-    fn relay_rest_no_answer_is_unreachable_told_the_weaker_way() {
+    fn relay_rest_no_answer_is_unreachable_told_the_weaker_way() -> Result<(), TestError> {
         let ss = empty_streams();
         for ask in [RelayAsk::Wide, RelayAsk::Names, RelayAsk::Call("c".into())] {
-            let rq = transmitting(Scripted::Timeout, Scripted::Timeout);
+            let rq = transmitting(Scripted::Timeout, Scripted::Timeout)?;
             let v = relay_rest_answer(&rq, &ask, &ss);
             assert_eq!(v["outcome"], "unreachable", "asked, nothing came back");
             assert_eq!(v["responsibility"], "relay_or_network");
@@ -9273,25 +9369,27 @@ mod tests {
                 "an unreachable relay yields no counters"
             );
         }
+        Ok(())
     }
 
     /// Condition 3 on the compare route too: no answer is `unreachable`, not a
     /// comparison against an absent relay side.
     #[test]
-    fn relay_rest_compare_no_answer_is_unreachable() {
-        let rq = transmitting(Scripted::Timeout, Scripted::Timeout);
+    fn relay_rest_compare_no_answer_is_unreachable() -> Result<(), TestError> {
+        let rq = transmitting(Scripted::Timeout, Scripted::Timeout)?;
         let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
         assert_eq!(v["outcome"], "unreachable");
         assert_eq!(v["responsibility"], "relay_or_network");
+        Ok(())
     }
 
     /// Condition 7: a reply that arrived but cannot be trusted (a mismatched
     /// cookie) is `suspect` -- the answer's own problem -- and never smoothed
     /// into `unreachable`. The two send an operator to different places.
     #[test]
-    fn relay_rest_untrusted_reply_is_suspect_not_unreachable() {
+    fn relay_rest_untrusted_reply_is_suspect_not_unreachable() -> Result<(), TestError> {
         for ask in [RelayAsk::Wide, RelayAsk::Call("c".into())] {
-            let rq = transmitting(Scripted::Untrusted, Scripted::Untrusted);
+            let rq = transmitting(Scripted::Untrusted, Scripted::Untrusted)?;
             let v = relay_rest_answer(&rq, &ask, &empty_streams());
             assert_eq!(v["outcome"], "suspect", "a reply that cannot be trusted");
             assert_ne!(v["outcome"], "unreachable", "the two must not collapse");
@@ -9302,14 +9400,15 @@ mod tests {
                 "a suspect reply says it was discarded, not interpreted: {detail}"
             );
         }
+        Ok(())
     }
 
     /// A well-formed reply of the WRONG kind (a `list` where statistics were
     /// asked) is `suspect`, never rendered as if it were counters.
     #[test]
-    fn relay_rest_wrong_reply_shape_is_suspect() {
+    fn relay_rest_wrong_reply_shape_is_suspect() -> Result<(), TestError> {
         for ask in [RelayAsk::Wide, RelayAsk::Names, RelayAsk::Call("c".into())] {
-            let rq = transmitting(Scripted::WrongShape, Scripted::WrongShape);
+            let rq = transmitting(Scripted::WrongShape, Scripted::WrongShape)?;
             let v = relay_rest_answer(&rq, &ask, &empty_streams());
             assert_eq!(
                 v["outcome"], "suspect",
@@ -9317,13 +9416,14 @@ mod tests {
             );
             assert!(v.get("statistics").is_none());
         }
+        Ok(())
     }
 
     /// Condition 4: a per-call reply of `result: error` is a REFUSAL carrying
     /// the relay's own words verbatim -- the request's problem -- never rendered
     /// as counter rows. Each of the four rtpengine reasons travels unchanged.
     #[test]
-    fn relay_rest_per_call_refusal_carries_the_relays_own_words() {
+    fn relay_rest_per_call_refusal_carries_the_relays_own_words() -> Result<(), TestError> {
         // Three of the four documented reasons. The fourth ("could not decode
         // the ... dictionary") is left out here on purpose: its real wording
         // names the relay's wire format, and `relay_seam_test` forbids a vendor
@@ -9336,7 +9436,7 @@ mod tests {
             "Unknown call-id",
         ] {
             let per_call = Scripted::Stats(vec![("result", "error"), ("error-reason", reason)]);
-            let rq = transmitting(Scripted::Timeout, per_call);
+            let rq = transmitting(Scripted::Timeout, per_call)?;
             let v = relay_rest_answer(&rq, &RelayAsk::Call("1-7@h".into()), &empty_streams());
             assert_eq!(v["outcome"], "refused", "the relay reached, and said no");
             assert_eq!(v["responsibility"], "request");
@@ -9346,6 +9446,7 @@ mod tests {
                 "the relay's own reason must travel verbatim: {reason:?} not in {detail:?}"
             );
         }
+        Ok(())
     }
 
     /// Condition 4's core: "the vocabulary" and "their call" are never the same
@@ -9353,21 +9454,21 @@ mod tests {
     /// `Unknown call-id` (this call is not held) reach the caller as DIFFERENT
     /// details, the rtpengine analogue of rtpproxy's `E68`/`E50` split.
     #[test]
-    fn relay_rest_two_refusal_reasons_do_not_share_a_message() {
+    fn relay_rest_two_refusal_reasons_do_not_share_a_message() -> Result<(), TestError> {
         let vocab = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![
                 ("result", "error"),
                 ("error-reason", "Unrecognized command"),
             ]),
-        );
+        )?;
         let call = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![
                 ("result", "error"),
                 ("error-reason", "Unknown call-id"),
             ]),
-        );
+        )?;
         let vocab_detail = relay_rest_answer(&vocab, &RelayAsk::Call("c".into()), &empty_streams())
             ["detail"]
             .as_str()
@@ -9382,18 +9483,19 @@ mod tests {
             vocab_detail, call_detail,
             "a misspelled command and a missing call must not read as one refusal"
         );
+        Ok(())
     }
 
     /// The compare route reads a `result: error` reply through the SAME refusal
     /// rule as the per-call route, so the two surfaces cannot classify one reply
     /// as a refusal and the other as counters.
     #[test]
-    fn relay_rest_compare_refusal_uses_the_one_rule() {
+    fn relay_rest_compare_refusal_uses_the_one_rule() -> Result<(), TestError> {
         let per_call = Scripted::Stats(vec![
             ("result", "error"),
             ("error-reason", "Unknown call-id"),
         ]);
-        let rq = transmitting(Scripted::Timeout, per_call);
+        let rq = transmitting(Scripted::Timeout, per_call)?;
         let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
         assert_eq!(v["outcome"], "refused");
         assert!(
@@ -9403,34 +9505,36 @@ mod tests {
                 .contains("Unknown call-id"),
             "the compare route carries the relay's own reason too: {v}"
         );
+        Ok(())
     }
 
     /// A clean wide answer is `ok`, tiered `relay_reported`, and every value
     /// survives EXACTLY as the relay sent it: an integer counter stays its
     /// digits and rtpengine's string `uptime` stays a string, never coerced.
     #[test]
-    fn relay_rest_wide_ok_carries_values_uncoerced() {
+    fn relay_rest_wide_ok_carries_values_uncoerced() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Stats(vec![("npkts_relayed", "9000"), ("uptime", "134")]),
             Scripted::Timeout,
-        );
+        )?;
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(v["outcome"], "ok");
         assert_eq!(v["origin"], "asked");
-        let stats = v["statistics"].as_array().expect("statistics array");
+        let stats = v["statistics"].as_array().ok_or("statistics array")?;
         let find = |name: &str| {
             stats
                 .iter()
                 .find(|s| s["name"] == name)
-                .unwrap_or_else(|| panic!("{name} present: {v}"))
+                .ok_or_else(|| format!("{name} present: {v}"))
         };
-        assert_eq!(find("npkts_relayed")["value"], "9000");
-        assert_eq!(find("npkts_relayed")["tier"], "relay_reported");
+        assert_eq!(find("npkts_relayed")?["value"], "9000");
+        assert_eq!(find("npkts_relayed")?["tier"], "relay_reported");
         assert_eq!(
-            find("uptime")["value"],
+            find("uptime")?["value"],
             "134",
             "a value the relay sent as a string stays a string"
         );
+        Ok(())
     }
 
     /// Conditions 6 and 9: after a relay restart every counter reads `0`, and a
@@ -9440,26 +9544,27 @@ mod tests {
     /// detection that would flag a restart as suspect lives in the polled path,
     /// not here; a lone post-restart sample is a legitimate zero.
     #[test]
-    fn relay_rest_a_post_restart_zero_is_a_value_not_absent() {
+    fn relay_rest_a_post_restart_zero_is_a_value_not_absent() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Stats(vec![("nsess_created", "0"), ("npkts_rcvd", "0")]),
             Scripted::Timeout,
-        );
+        )?;
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(v["outcome"], "ok", "a relay that restarted still answered");
-        let stats = v["statistics"].as_array().expect("statistics array");
+        let stats = v["statistics"].as_array().ok_or("statistics array")?;
         let zero = stats
             .iter()
             .find(|s| s["name"] == "npkts_rcvd")
-            .expect("the zero counter occupies a key");
+            .ok_or("the zero counter occupies a key")?;
         assert_eq!(zero["value"], "0", "a counted zero is carried, not omitted");
+        Ok(())
     }
 
     /// C3: the names route reports exactly the keys the relay listed, sorted,
     /// with `source: listed` -- the answer comes from asking, never a table
     /// compiled into sipnab.
     #[test]
-    fn relay_rest_names_are_the_relays_listed_keys() {
+    fn relay_rest_names_are_the_relays_listed_keys() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Stats(vec![
                 ("uptime", "5"),
@@ -9467,13 +9572,13 @@ mod tests {
                 ("nsess", "2"),
             ]),
             Scripted::Timeout,
-        );
+        )?;
         let v = relay_rest_answer(&rq, &RelayAsk::Names, &empty_streams());
         assert_eq!(v["outcome"], "ok");
         assert_eq!(v["source"], "listed", "the relay enumerated its own set");
         let names: Vec<&str> = v["names"]
             .as_array()
-            .expect("names array")
+            .ok_or("names array")?
             .iter()
             .map(|n| n.as_str().unwrap_or_default())
             .collect();
@@ -9482,6 +9587,7 @@ mod tests {
             vec!["npkts_relayed", "nsess", "uptime"],
             "the names are the keys the relay reported, sorted: {v}"
         );
+        Ok(())
     }
 
     /// Condition 8: a key present in one relay version and absent in the next.
@@ -9490,45 +9596,48 @@ mod tests {
     /// not -- the surface offers no fixed menu, and a caller can discover the
     /// difference before a request fails on the missing name.
     #[test]
-    fn relay_rest_names_track_the_relay_version() {
+    fn relay_rest_names_track_the_relay_version() -> Result<(), TestError> {
         let has = transmitting(
             Scripted::Stats(vec![("rtpa_nlost", "3"), ("npkts_relayed", "9")]),
             Scripted::Timeout,
-        );
+        )?;
         let lacks = transmitting(
             Scripted::Stats(vec![("npkts_relayed", "9")]),
             Scripted::Timeout,
-        );
-        let names = |rq: &RelayRestConfig| -> Vec<String> {
-            relay_rest_answer(rq, &RelayAsk::Names, &empty_streams())["names"]
-                .as_array()
-                .expect("names array")
-                .iter()
-                .map(|n| n.as_str().unwrap_or_default().to_owned())
-                .collect()
+        )?;
+        let names = |rq: &RelayRestConfig| -> Result<Vec<String>, TestError> {
+            Ok(
+                relay_rest_answer(rq, &RelayAsk::Names, &empty_streams())["names"]
+                    .as_array()
+                    .ok_or("names array")?
+                    .iter()
+                    .map(|n| n.as_str().unwrap_or_default().to_owned())
+                    .collect(),
+            )
         };
         assert!(
-            names(&has).iter().any(|n| n == "rtpa_nlost"),
+            names(&has)?.iter().any(|n| n == "rtpa_nlost"),
             "the version that lists rtpa_nlost offers it"
         );
         assert!(
-            !names(&lacks).iter().any(|n| n == "rtpa_nlost"),
+            !names(&lacks)?.iter().any(|n| n == "rtpa_nlost"),
             "the version that does not list it does not invent it"
         );
+        Ok(())
     }
 
     /// C2 success: a clean per-call reply is `ok`, the relay's counters tiered
     /// `relay_reported`, and the label names the call so a two-relay estate
     /// keeps the answer attributed.
     #[test]
-    fn relay_rest_call_ok_carries_per_call_counters() {
+    fn relay_rest_call_ok_carries_per_call_counters() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![("totals.RTP.packets", "8994"), ("result", "ok")]),
-        );
+        )?;
         let v = relay_rest_answer(&rq, &RelayAsk::Call("1-7@h".into()), &empty_streams());
         assert_eq!(v["outcome"], "ok");
-        let stats = v["statistics"].as_array().expect("statistics array");
+        let stats = v["statistics"].as_array().ok_or("statistics array")?;
         assert!(
             stats
                 .iter()
@@ -9539,6 +9648,7 @@ mod tests {
             v["relay"].as_str().unwrap_or_default().contains("1-7@h"),
             "the label names the call: {v}"
         );
+        Ok(())
     }
 
     /// Condition 11: a per-call total too large for `u64` is `suspect`, carrying
@@ -9548,16 +9658,16 @@ mod tests {
     /// in reach has run long enough -- so the OVERSIZED VALUE is manufactured and
     /// the conversion it forces is what is driven.
     #[test]
-    fn relay_rest_compare_overflow_is_suspect_carrying_its_digits() {
+    fn relay_rest_compare_overflow_is_suspect_carrying_its_digits() -> Result<(), TestError> {
         let huge = "99999999999999999999999999"; // 26 nines, past u64::MAX
         let rq = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![("totals.RTP.packets", huge)]),
-        );
+        )?;
         let v = relay_rest_answer(
             &rq,
             &RelayAsk::Compare("c".into()),
-            &streams_with_call("c", 5),
+            &streams_with_call("c", 5)?,
         );
         assert_eq!(
             v["outcome"], "suspect",
@@ -9568,6 +9678,7 @@ mod tests {
             v["detail"].as_str().unwrap_or_default().contains(huge),
             "the digits are carried as received, not truncated: {v}"
         );
+        Ok(())
     }
 
     /// Condition 12: C4 on a call this capture measured no RTP for is
@@ -9575,11 +9686,11 @@ mod tests {
     /// not sent to debug a relay that is working. The relay holds the call
     /// (a real count), sipnab simply did not see its media.
     #[test]
-    fn relay_rest_compare_with_no_capture_side_names_the_capture() {
+    fn relay_rest_compare_with_no_capture_side_names_the_capture() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![("totals.RTP.packets", "9000")]),
-        );
+        )?;
         // Empty store: sipnab measured nothing for this call.
         let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
         assert_eq!(v["outcome"], "not_configured");
@@ -9589,6 +9700,7 @@ mod tests {
             detail.contains("capture"),
             "the message points at the capture, not the relay: {detail}"
         );
+        Ok(())
     }
 
     /// C4 when the relay does not hold the call either: the relay side is absent
@@ -9596,19 +9708,20 @@ mod tests {
     /// compare -- `refused`, never a zero-versus-zero match invented from two
     /// absences.
     #[test]
-    fn relay_rest_compare_with_neither_side_is_refused() {
+    fn relay_rest_compare_with_neither_side_is_refused() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Timeout,
             // A clean reply that simply lacks totals.RTP.packets: the relay does
             // not hold this call, but did not error.
             Scripted::Stats(vec![("result", "ok")]),
-        );
+        )?;
         let v = relay_rest_answer(&rq, &RelayAsk::Compare("c".into()), &empty_streams());
         assert_eq!(v["outcome"], "refused");
         assert!(
             v["detail"].as_str().unwrap_or_default().contains("neither"),
             "neither side had RTP for the call: {v}"
         );
+        Ok(())
     }
 
     /// C4 when sipnab measured the call but the relay's reply lacks the key: the
@@ -9616,12 +9729,12 @@ mod tests {
     /// the call -- `refused`. sipnab's figure is not rendered against an invented
     /// relay zero.
     #[test]
-    fn relay_rest_compare_relay_absent_capture_present_is_refused() {
-        let rq = transmitting(Scripted::Timeout, Scripted::Stats(vec![("result", "ok")]));
+    fn relay_rest_compare_relay_absent_capture_present_is_refused() -> Result<(), TestError> {
+        let rq = transmitting(Scripted::Timeout, Scripted::Stats(vec![("result", "ok")]))?;
         let v = relay_rest_answer(
             &rq,
             &RelayAsk::Compare("c".into()),
-            &streams_with_call("c", 8),
+            &streams_with_call("c", 8)?,
         );
         assert_eq!(v["outcome"], "refused");
         assert!(
@@ -9631,6 +9744,7 @@ mod tests {
                 .contains("does not hold"),
             "the relay does not hold the call sipnab measured: {v}"
         );
+        Ok(())
     }
 
     /// C4 with both sides: `ok`, both figures shown, both tiers named, a word
@@ -9638,15 +9752,15 @@ mod tests {
     /// differenced field, which the cross-tier arithmetic rule forbids. Equal
     /// counts read `match`.
     #[test]
-    fn relay_rest_compare_both_sides_present_is_ok_and_names_both_tiers() {
+    fn relay_rest_compare_both_sides_present_is_ok_and_names_both_tiers() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![("totals.RTP.packets", "10")]),
-        );
+        )?;
         let v = relay_rest_answer(
             &rq,
             &RelayAsk::Compare("c".into()),
-            &streams_with_call("c", 10),
+            &streams_with_call("c", 10)?,
         );
         assert_eq!(v["outcome"], "ok");
         let packets = &v["packets"];
@@ -9661,21 +9775,22 @@ mod tests {
             packets.get("difference").is_none() && packets.get("total").is_none(),
             "a comparison never carries a summed or differenced field: {v}"
         );
+        Ok(())
     }
 
     /// C4 when the two sides disagree: `differ`, and BOTH figures survive so an
     /// operator reads the gap rather than a single reconciled number. The note
     /// stays, because a bare "differ" sends an operator to the relay first.
     #[test]
-    fn relay_rest_compare_differing_sides_keep_both_figures() {
+    fn relay_rest_compare_differing_sides_keep_both_figures() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Timeout,
             Scripted::Stats(vec![("totals.RTP.packets", "12")]),
-        );
+        )?;
         let v = relay_rest_answer(
             &rq,
             &RelayAsk::Compare("c".into()),
-            &streams_with_call("c", 10),
+            &streams_with_call("c", 10)?,
         );
         assert_eq!(v["outcome"], "ok");
         assert_eq!(v["packets"]["verdict"], "differ");
@@ -9685,22 +9800,24 @@ mod tests {
             v["packets"]["note"].as_str().is_some_and(|n| !n.is_empty()),
             "a differ verdict must carry its note: {v}"
         );
+        Ok(())
     }
 
     /// Condition 12's other half: C1/C2/C3 do NOT need a capture -- the relay is
     /// asked directly. A wide ask answers `ok` against an empty stream store,
     /// so an operator querying a relay on a run with no capture is not refused.
     #[test]
-    fn relay_rest_global_stats_answer_without_a_capture() {
+    fn relay_rest_global_stats_answer_without_a_capture() -> Result<(), TestError> {
         let rq = transmitting(
             Scripted::Stats(vec![("npkts_relayed", "1")]),
             Scripted::Timeout,
-        );
+        )?;
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(
             v["outcome"], "ok",
             "global relay stats need no capture; the relay answers directly"
         );
+        Ok(())
     }
 
     /// Build an `ApiState` whose verifier accepts only the given static key.
@@ -9745,7 +9862,7 @@ mod tests {
     /// Bind-auth policy: public bind without auth refused, loopback and
     /// authenticated public binds allowed.
     #[test]
-    fn refuses_non_loopback_bind_without_auth() {
+    fn refuses_non_loopback_bind_without_auth() -> Result<(), TestError> {
         use std::net::{IpAddr, Ipv4Addr};
         let public: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 8080);
         let loopback: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
@@ -9758,6 +9875,7 @@ mod tests {
         // Public bind WITH auth → allowed.
         let configured = make_state_with_key("supersecret");
         assert!(enforce_bind_auth_policy(&public, &configured.verifier).is_ok());
+        Ok(())
     }
 
     // ── HTTPS (--api-tls-cert / --api-tls-key) ───────────────────────
@@ -9772,16 +9890,19 @@ mod tests {
     fn tls_pki(
         dir: &std::path::Path,
         tag: &str,
-    ) -> (
-        rustls::pki_types::CertificateDer<'static>,
-        std::path::PathBuf,
-        std::path::PathBuf,
-    ) {
+    ) -> Result<
+        (
+            rustls::pki_types::CertificateDer<'static>,
+            std::path::PathBuf,
+            std::path::PathBuf,
+        ),
+        TestError,
+    > {
         use rcgen::{
             BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
             KeyPair, KeyUsagePurpose, SanType,
         };
-        let ca_key = KeyPair::generate().expect("CA key");
+        let ca_key = KeyPair::generate().map_err(|e| format!("CA key: {e:?}"))?;
         let mut ca_params = CertificateParams::default();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
         ca_params.key_usages = vec![
@@ -9794,9 +9915,9 @@ mod tests {
         let ca_cert = ca_params
             .clone()
             .self_signed(&ca_key)
-            .expect("self-signed CA");
+            .map_err(|e| format!("self-signed CA: {e:?}"))?;
         let issuer = Issuer::new(ca_params, &ca_key);
-        let leaf_key = KeyPair::generate().expect("server key");
+        let leaf_key = KeyPair::generate().map_err(|e| format!("server key: {e:?}"))?;
         let mut leaf = CertificateParams::default();
         leaf.is_ca = IsCa::ExplicitNoCa;
         leaf.subject_alt_names = vec![SanType::IpAddress(std::net::IpAddr::V4(
@@ -9805,18 +9926,20 @@ mod tests {
         leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         leaf.distinguished_name
             .push(DnType::CommonName, "sipnab API unit-test server");
-        let leaf_cert = leaf.signed_by(&leaf_key, &issuer).expect("issue the leaf");
+        let leaf_cert = leaf
+            .signed_by(&leaf_key, &issuer)
+            .map_err(|e| format!("issue the leaf: {e:?}"))?;
         let cert = dir.join(format!("{tag}.pem"));
         let key = dir.join(format!("{tag}.key"));
-        std::fs::write(&cert, leaf_cert.pem()).expect("write cert");
-        std::fs::write(&key, leaf_key.serialize_pem()).expect("write key");
+        std::fs::write(&cert, leaf_cert.pem()).map_err(|e| format!("write cert: {e:?}"))?;
+        std::fs::write(&key, leaf_key.serialize_pem()).map_err(|e| format!("write key: {e:?}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
-                .expect("chmod the key");
+                .map_err(|e| format!("chmod the key: {e:?}"))?;
         }
-        (ca_cert.der().clone(), cert, key)
+        Ok((ca_cert.der().clone(), cert, key))
     }
 
     /// An [`ApiServerConfig`] naming the given TLS files.
@@ -9833,12 +9956,12 @@ mod tests {
     }
 
     /// The text of the startup error `prepare_listener` returns for `config`
-    /// on a loopback bind, panicking if it starts instead.
-    fn tls_startup_error(config: &ApiServerConfig) -> String {
-        let bind: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+    /// on a loopback bind, or an error if it starts instead.
+    fn tls_startup_error(config: &ApiServerConfig) -> Result<String, TestError> {
+        let bind: SocketAddr = "127.0.0.1:0".parse().map_err(|e| format!("addr: {e:?}"))?;
         match prepare_listener(bind, &make_state().verifier, config) {
-            Ok(_) => panic!("a bad TLS configuration must not start: {config:?}"),
-            Err(e) => format!("{e:#}"),
+            Ok(_) => Err(format!("a bad TLS configuration must not start: {config:?}").into()),
+            Err(e) => Ok(format!("{e:#}")),
         }
     }
 
@@ -9849,7 +9972,7 @@ mod tests {
     /// listener and is skipped at once; anything else (EMFILE above all) would
     /// spin hot if retried immediately, so it waits a second first.
     #[test]
-    fn only_per_connection_accept_errors_skip_the_backoff() {
+    fn only_per_connection_accept_errors_skip_the_backoff() -> Result<(), TestError> {
         use std::io::{Error, ErrorKind};
         for kind in [
             ErrorKind::ConnectionRefused,
@@ -9872,33 +9995,42 @@ mod tests {
                 "{e} is a listener error and must back off"
             );
         }
+        Ok(())
     }
 
     /// `local_addr` reports the address the TLS listener actually bound, so a
     /// port-0 bind can be discovered through axum like a plain TCP listener.
     #[tokio::test]
-    async fn the_tls_listener_reports_the_address_it_bound() {
+    async fn the_tls_listener_reports_the_address_it_bound() -> Result<(), TestError> {
         use axum::serve::Listener as _;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_ca, cert, key) = tls_pki(dir.path(), "addr");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_ca, cert, key) = tls_pki(dir.path(), "addr")?;
         let config = api_tls_config(&tls_server_config(Some(&cert), Some(&key)))
-            .expect("a matching pair loads")
-            .expect("TLS is configured");
+            .map_err(|e| format!("a matching pair loads: {e:?}"))?
+            .ok_or("TLS is configured")?;
         let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("bind");
-        let bound = tcp.local_addr().expect("bound address");
+            .map_err(|e| format!("bind: {e:?}"))?;
+        let bound = tcp
+            .local_addr()
+            .map_err(|e| format!("bound address: {e:?}"))?;
         let listener = TlsListener::new("API TLS", tcp, config, Duration::from_secs(1), 4)
-            .expect("the listener starts");
-        assert_eq!(listener.local_addr().expect("local_addr"), bound);
+            .map_err(|e| format!("the listener starts: {e:?}"))?;
+        assert_eq!(
+            listener
+                .local_addr()
+                .map_err(|e| format!("local_addr: {e:?}"))?,
+            bound
+        );
         assert_ne!(bound.port(), 0, "port 0 must resolve to the real port");
+        Ok(())
     }
 
     #[test]
-    fn api_tls_refuses_a_cert_without_a_key() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, cert, _) = tls_pki(dir.path(), "only-cert");
-        let err = tls_startup_error(&tls_server_config(Some(&cert), None));
+    fn api_tls_refuses_a_cert_without_a_key() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, _) = tls_pki(dir.path(), "only-cert")?;
+        let err = tls_startup_error(&tls_server_config(Some(&cert), None))?;
         assert!(
             err.contains(&*cert.to_string_lossy()),
             "names the file: {err}"
@@ -9907,14 +10039,15 @@ mod tests {
             err.contains("--api-tls-key"),
             "names the missing flag: {err}"
         );
+        Ok(())
     }
 
     /// `--api-tls-key` without `--api-tls-cert` is refused the same way.
     #[test]
-    fn api_tls_refuses_a_key_without_a_cert() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, _, key) = tls_pki(dir.path(), "only-key");
-        let err = tls_startup_error(&tls_server_config(None, Some(&key)));
+    fn api_tls_refuses_a_key_without_a_cert() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, _, key) = tls_pki(dir.path(), "only-key")?;
+        let err = tls_startup_error(&tls_server_config(None, Some(&key)))?;
         assert!(
             err.contains(&*key.to_string_lossy()),
             "names the file: {err}"
@@ -9923,41 +10056,44 @@ mod tests {
             err.contains("--api-tls-cert"),
             "names the missing flag: {err}"
         );
+        Ok(())
     }
 
     /// A certificate file that does not exist is refused, naming it.
     #[test]
-    fn api_tls_refuses_a_missing_cert_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, _, key) = tls_pki(dir.path(), "missing-cert");
+    fn api_tls_refuses_a_missing_cert_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, _, key) = tls_pki(dir.path(), "missing-cert")?;
         let absent = dir.path().join("absent.pem");
-        let err = tls_startup_error(&tls_server_config(Some(&absent), Some(&key)));
+        let err = tls_startup_error(&tls_server_config(Some(&absent), Some(&key)))?;
         assert!(
             err.contains(&*absent.to_string_lossy()),
             "names the file: {err}"
         );
+        Ok(())
     }
 
     /// A key file that does not exist is refused, naming it.
     #[test]
-    fn api_tls_refuses_a_missing_key_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, cert, _) = tls_pki(dir.path(), "missing-key");
+    fn api_tls_refuses_a_missing_key_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, _) = tls_pki(dir.path(), "missing-key")?;
         let absent = dir.path().join("absent.key");
-        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&absent)));
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&absent)))?;
         assert!(
             err.contains(&*absent.to_string_lossy()),
             "names the file: {err}"
         );
+        Ok(())
     }
 
     /// A certificate file holding no certificate (here: the key, passed by
     /// mistake) is refused, naming it and saying what is missing.
     #[test]
-    fn api_tls_refuses_a_cert_file_with_no_certificate() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, _, key) = tls_pki(dir.path(), "no-cert");
-        let err = tls_startup_error(&tls_server_config(Some(&key), Some(&key)));
+    fn api_tls_refuses_a_cert_file_with_no_certificate() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, _, key) = tls_pki(dir.path(), "no-cert")?;
+        let err = tls_startup_error(&tls_server_config(Some(&key), Some(&key)))?;
         assert!(
             err.contains(&*key.to_string_lossy()),
             "names the file: {err}"
@@ -9966,21 +10102,23 @@ mod tests {
             err.contains("no certificate"),
             "says what is missing: {err}"
         );
+        Ok(())
     }
 
     /// A key file holding no private key (here: the certificate, passed by
     /// mistake) is refused, naming it and saying what is missing.
     #[test]
-    fn api_tls_refuses_a_key_file_with_no_private_key() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, cert, _) = tls_pki(dir.path(), "no-key");
+    fn api_tls_refuses_a_key_file_with_no_private_key() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, _) = tls_pki(dir.path(), "no-key")?;
         // The world-readable check runs first; keep it out of the way.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&cert, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+            std::fs::set_permissions(&cert, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("chmod: {e:?}"))?;
         }
-        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&cert)));
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&cert)))?;
         assert!(
             err.contains(&*cert.to_string_lossy()),
             "names the file: {err}"
@@ -9989,15 +10127,16 @@ mod tests {
             err.contains("no PRIVATE KEY"),
             "says what is missing: {err}"
         );
+        Ok(())
     }
 
     /// A key that is not the certificate's is refused, naming both files.
     #[test]
-    fn api_tls_refuses_a_key_that_does_not_match_the_cert() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, cert, _) = tls_pki(dir.path(), "one");
-        let (_, _, other_key) = tls_pki(dir.path(), "two");
-        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&other_key)));
+    fn api_tls_refuses_a_key_that_does_not_match_the_cert() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, _) = tls_pki(dir.path(), "one")?;
+        let (_, _, other_key) = tls_pki(dir.path(), "two")?;
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&other_key)))?;
         assert!(
             err.contains(&*cert.to_string_lossy()),
             "names the cert: {err}"
@@ -10010,23 +10149,26 @@ mod tests {
             err.contains("does not go with"),
             "says they do not match: {err}"
         );
+        Ok(())
     }
 
     /// A private key any local account can read is refused, as it is for
     /// the HEP listener: it is not private.
     #[cfg(unix)]
     #[test]
-    fn api_tls_refuses_a_world_readable_key() {
+    fn api_tls_refuses_a_world_readable_key() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, cert, key) = tls_pki(dir.path(), "world");
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).expect("chmod");
-        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&key)));
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, key) = tls_pki(dir.path(), "world")?;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&key)))?;
         assert!(
             err.contains(&*key.to_string_lossy()),
             "names the file: {err}"
         );
         assert!(err.contains("world-readable"), "says what is wrong: {err}");
+        Ok(())
     }
 
     /// One HTTPS `GET` over a fresh connection, trusting only `ca`.
@@ -10048,7 +10190,8 @@ mod tests {
             .map_err(|e| e.to_string())?
             .with_root_certificates(roots)
             .with_no_client_auth();
-        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("IP name");
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1")
+            .map_err(|e| format!("IP name: {e:?}"))?;
         let conn =
             rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
         let sock = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
@@ -10082,16 +10225,16 @@ mod tests {
     /// A bound HTTPS listener for a fresh certificate, and the CA to trust.
     fn tls_listener_for_test(
         dir: &std::path::Path,
-    ) -> (ApiListener, rustls::pki_types::CertificateDer<'static>) {
-        let (ca, cert, key) = tls_pki(dir, "serve");
-        let bind: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+    ) -> Result<(ApiListener, rustls::pki_types::CertificateDer<'static>), TestError> {
+        let (ca, cert, key) = tls_pki(dir, "serve")?;
+        let bind: SocketAddr = "127.0.0.1:0".parse().map_err(|e| format!("addr: {e:?}"))?;
         let listener = prepare_listener(
             bind,
             &make_state().verifier,
             &tls_server_config(Some(&cert), Some(&key)),
         )
-        .expect("a matching pair must start");
-        (listener, ca)
+        .map_err(|e| format!("a matching pair must start: {e:?}"))?;
+        Ok((listener, ca))
     }
 
     /// A handler behind the HTTPS listener sees the client's real address —
@@ -10099,11 +10242,11 @@ mod tests {
     /// and the loopback checks key on. A placeholder such as `0.0.0.0:0`, or
     /// the server's own address, fails the equality.
     #[tokio::test(flavor = "multi_thread")]
-    async fn api_tls_hands_handlers_the_real_peer_address() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (listener, ca) = tls_listener_for_test(dir.path());
+    async fn api_tls_hands_handlers_the_real_peer_address() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (listener, ca) = tls_listener_for_test(dir.path())?;
         assert!(listener.is_tls());
-        let addr = listener.local_addr().expect("bound");
+        let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
         // A fallback rather than a route: the route inventories (the
         // coverage and capability matrices, and their tests) read every
         // route registered in this file as one the API serves, and this
@@ -10114,8 +10257,8 @@ mod tests {
         let (status, body, me) =
             tokio::task::spawn_blocking(move || https_exchange(addr, "/peer", &ca))
                 .await
-                .expect("client task")
-                .expect("HTTPS exchange");
+                .map_err(|e| format!("client task: {e:?}"))?
+                .map_err(|e| format!("HTTPS exchange: {e:?}"))?;
         server.abort();
         assert_eq!(status, 200);
         assert_eq!(
@@ -10123,38 +10266,43 @@ mod tests {
             me.to_string(),
             "the handler must see this client's address"
         );
+        Ok(())
     }
 
     /// Plain HTTP on the HTTPS port is not served, and the listener still
     /// serves a TLS client afterwards.
     #[tokio::test(flavor = "multi_thread")]
-    async fn api_tls_refuses_plain_http_and_keeps_serving() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (listener, ca) = tls_listener_for_test(dir.path());
-        let addr = listener.local_addr().expect("bound");
+    async fn api_tls_refuses_plain_http_and_keeps_serving() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (listener, ca) = tls_listener_for_test(dir.path())?;
+        let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
         let router = Router::new().fallback(|| async { "ok" });
         let server = tokio::spawn(serve_router(listener, router));
-        let (plain, (status, body, _)) = tokio::task::spawn_blocking(move || {
-            use std::io::{Read, Write};
-            let mut sock = std::net::TcpStream::connect(addr).expect("connect");
-            sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
-            sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
-                .expect("write");
-            let mut raw = Vec::new();
-            let _ = sock.read_to_end(&mut raw);
-            (
-                String::from_utf8_lossy(&raw).into_owned(),
-                https_exchange(addr, "/health", &ca).expect("HTTPS after plain HTTP"),
-            )
-        })
-        .await
-        .expect("client task");
+        let (plain, (status, body, _)) =
+            tokio::task::spawn_blocking(move || -> Result<_, String> {
+                use std::io::{Read, Write};
+                let mut sock =
+                    std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
+                sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
+                sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+                    .map_err(|e| format!("write: {e:?}"))?;
+                let mut raw = Vec::new();
+                let _ = sock.read_to_end(&mut raw);
+                Ok((
+                    String::from_utf8_lossy(&raw).into_owned(),
+                    https_exchange(addr, "/health", &ca)
+                        .map_err(|e| format!("HTTPS after plain HTTP: {e:?}"))?,
+                ))
+            })
+            .await
+            .map_err(|e| format!("client task: {e:?}"))??;
         server.abort();
         assert!(
             !plain.contains(" 200 "),
             "plain HTTP must not be served: {plain}"
         );
         assert_eq!((status, body.as_str()), (200, "ok"));
+        Ok(())
     }
 
     /// Slowloris: a client that connects and never sends a ClientHello does
@@ -10162,82 +10310,90 @@ mod tests {
     /// client connecting after it completes within 2 s — which fails if the
     /// handshake runs inside `accept`, where the silent peer holds it.
     #[tokio::test(flavor = "multi_thread")]
-    async fn api_tls_a_silent_client_does_not_stall_the_listener() {
+    async fn api_tls_a_silent_client_does_not_stall_the_listener() -> Result<(), TestError> {
         use axum::serve::Listener as _;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (listener, ca) = tls_listener_for_test(dir.path());
-        let addr = listener.local_addr().expect("bound");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (listener, ca) = tls_listener_for_test(dir.path())?;
+        let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
         let ApiListener { tcp, tls } = listener;
-        let tcp = tokio::net::TcpListener::from_std(tcp).expect("register");
+        let tcp = tokio::net::TcpListener::from_std(tcp).map_err(|e| format!("register: {e:?}"))?;
         let mut tls_listener = TlsListener::new(
             "API TLS",
             tcp,
-            tls.expect("TLS configured"),
+            tls.ok_or("TLS configured")?,
             Duration::from_secs(10),
             API_TLS_MAX_HANDSHAKES,
         )
-        .expect("listener");
-        let _silent = std::net::TcpStream::connect(addr).expect("silent connect");
+        .map_err(|e| format!("listener: {e:?}"))?;
+        let _silent =
+            std::net::TcpStream::connect(addr).map_err(|e| format!("silent connect: {e:?}"))?;
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let client = tokio::task::spawn_blocking(move || {
+        let client = tokio::task::spawn_blocking(move || -> Result<_, String> {
             use std::io::Write;
             let mut roots = rustls::RootCertStore::empty();
-            roots.add(ca).expect("root");
+            roots.add(ca).map_err(|e| format!("root: {e:?}"))?;
             let config = rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
                 .with_safe_default_protocol_versions()
-                .expect("versions")
+                .map_err(|e| format!("versions: {e:?}"))?
                 .with_root_certificates(roots)
                 .with_no_client_auth();
-            let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("name");
-            let conn = rustls::ClientConnection::new(Arc::new(config), name).expect("client");
-            let sock = std::net::TcpStream::connect(addr).expect("connect");
+            let name = rustls::pki_types::ServerName::try_from("127.0.0.1")
+                .map_err(|e| format!("name: {e:?}"))?;
+            let conn = rustls::ClientConnection::new(Arc::new(config), name)
+                .map_err(|e| format!("client: {e:?}"))?;
+            let sock = std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
             let mut tls = rustls::StreamOwned::new(conn, sock);
             // Completing the write completes the handshake.
-            tls.write_all(b"x").expect("handshake");
-            tls
+            tls.write_all(b"x")
+                .map_err(|e| format!("handshake: {e:?}"))?;
+            Ok(tls)
         });
         let accepted = tokio::time::timeout(Duration::from_secs(2), tls_listener.accept()).await;
-        let (_, peer) = accepted.expect("a well-behaved client must be accepted within 2 s");
+        let (_, peer) = accepted
+            .map_err(|e| format!("a well-behaved client must be accepted within 2 s: {e:?}"))?;
         assert_eq!(
             peer.ip(),
             std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
         );
         drop(client.await);
+        Ok(())
     }
 
     /// A client that never finishes its handshake is dropped once the
     /// handshake timeout passes, rather than holding its task forever.
     #[tokio::test(flavor = "multi_thread")]
-    async fn api_tls_a_silent_client_is_dropped_after_the_handshake_timeout() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (listener, _ca) = tls_listener_for_test(dir.path());
-        let addr = listener.local_addr().expect("bound");
+    async fn api_tls_a_silent_client_is_dropped_after_the_handshake_timeout()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (listener, _ca) = tls_listener_for_test(dir.path())?;
+        let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
         let ApiListener { tcp, tls } = listener;
-        let tcp = tokio::net::TcpListener::from_std(tcp).expect("register");
+        let tcp = tokio::net::TcpListener::from_std(tcp).map_err(|e| format!("register: {e:?}"))?;
         let _tls_listener = TlsListener::new(
             "API TLS",
             tcp,
-            tls.expect("TLS configured"),
+            tls.ok_or("TLS configured")?,
             Duration::from_millis(300),
             API_TLS_MAX_HANDSHAKES,
         )
-        .expect("listener");
+        .map_err(|e| format!("listener: {e:?}"))?;
         let started = std::time::Instant::now();
-        let outcome = tokio::task::spawn_blocking(move || {
+        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
             use std::io::Read;
-            let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+            let mut sock =
+                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
             sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
             // A signal meant for another test in this binary interrupts the
             // read without saying anything about the connection: retry it.
-            loop {
+            Ok(loop {
                 match sock.read(&mut [0u8; 16]) {
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     other => break other,
                 }
-            }
+            })
         })
         .await
-        .expect("client task");
+        .map_err(|e| format!("client task: {e:?}"))??;
         let closed = match &outcome {
             Ok(0) => true,
             Ok(_) => false,
@@ -10252,43 +10408,46 @@ mod tests {
             "closed after {:?}, not at the 300 ms timeout",
             started.elapsed()
         );
+        Ok(())
     }
 
     /// Past the handshake cap a new connection is closed at once, while the
     /// connection holding the slot is still waiting out its (long) timeout.
     #[tokio::test(flavor = "multi_thread")]
-    async fn api_tls_sheds_connections_past_the_handshake_cap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (listener, _ca) = tls_listener_for_test(dir.path());
-        let addr = listener.local_addr().expect("bound");
+    async fn api_tls_sheds_connections_past_the_handshake_cap() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (listener, _ca) = tls_listener_for_test(dir.path())?;
+        let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
         let ApiListener { tcp, tls } = listener;
-        let tcp = tokio::net::TcpListener::from_std(tcp).expect("register");
+        let tcp = tokio::net::TcpListener::from_std(tcp).map_err(|e| format!("register: {e:?}"))?;
         let _tls_listener = TlsListener::new(
             "API TLS",
             tcp,
-            tls.expect("TLS configured"),
+            tls.ok_or("TLS configured")?,
             Duration::from_secs(30),
             1,
         )
-        .expect("listener");
-        let holder = std::net::TcpStream::connect(addr).expect("holder connect");
+        .map_err(|e| format!("listener: {e:?}"))?;
+        let holder =
+            std::net::TcpStream::connect(addr).map_err(|e| format!("holder connect: {e:?}"))?;
         tokio::time::sleep(Duration::from_millis(200)).await;
         let started = std::time::Instant::now();
-        let outcome = tokio::task::spawn_blocking(move || {
+        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
             use std::io::Read;
-            let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+            let mut sock =
+                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
             sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
             // A signal meant for another test in this binary interrupts the
             // read without saying anything about the connection: retry it.
-            loop {
+            Ok(loop {
                 match sock.read(&mut [0u8; 16]) {
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     other => break other,
                 }
-            }
+            })
         })
         .await
-        .expect("client task");
+        .map_err(|e| format!("client task: {e:?}"))??;
         let closed = match &outcome {
             Ok(0) => true,
             Ok(_) => false,
@@ -10300,30 +10459,40 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(3));
         drop(holder);
+        Ok(())
     }
 
     /// A matching pair starts: the listener binds and reports its address.
     #[test]
-    fn api_tls_accepts_a_matching_pair() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, cert, key) = tls_pki(dir.path(), "good");
-        let bind: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+    fn api_tls_accepts_a_matching_pair() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, key) = tls_pki(dir.path(), "good")?;
+        let bind: SocketAddr = "127.0.0.1:0".parse().map_err(|e| format!("addr: {e:?}"))?;
         let listener = prepare_listener(
             bind,
             &make_state().verifier,
             &tls_server_config(Some(&cert), Some(&key)),
         )
-        .expect("a matching pair must start");
-        assert_ne!(listener.local_addr().expect("bound").port(), 0);
+        .map_err(|e| format!("a matching pair must start: {e:?}"))?;
+        assert_ne!(
+            listener
+                .local_addr()
+                .map_err(|e| format!("bound: {e:?}"))?
+                .port(),
+            0
+        );
+        Ok(())
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Insert three INVITE dialogs (`call-0..2@test`, users `user0..2`)
     /// into the state's dialog store.
-    fn populate_dialogs(state: &ApiState) {
+    fn populate_dialogs(state: &ApiState) -> Result<(), TestError> {
         let mut ds = state.dialog_store.write();
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
         let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 
         for i in 0..3 {
@@ -10347,42 +10516,51 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("parse");
+            .map_err(|e| format!("parse: {e:?}"))?;
             ds.process_message(msg);
         }
+        Ok(())
     }
 
     /// Build a test request with the ConnectInfo extension set to localhost.
-    fn test_request(uri: &str) -> Request<Body> {
+    fn test_request(uri: &str) -> Result<Request<Body>, TestError> {
         let mut req = Request::builder()
             .uri(uri)
             .body(Body::empty())
-            .expect("build request");
+            .map_err(|e| format!("build request: {e:?}"))?;
         req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
             IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             12345,
         )));
-        req
+        Ok(req)
     }
 
     /// Build a test request with custom headers and ConnectInfo.
-    fn test_request_with_header(uri: &str, header_name: &str, header_value: &str) -> Request<Body> {
+    fn test_request_with_header(
+        uri: &str,
+        header_name: &str,
+        header_value: &str,
+    ) -> Result<Request<Body>, TestError> {
         let mut req = Request::builder()
             .uri(uri)
             .header(header_name, header_value)
             .body(Body::empty())
-            .expect("build request");
+            .map_err(|e| format!("build request: {e:?}"))?;
         req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
             IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             12345,
         )));
-        req
+        Ok(req)
     }
 
     /// Collect a response `Body` into a UTF-8 `String`.
-    async fn body_to_string(body: Body) -> String {
-        let bytes = body.collect().await.expect("collect body").to_bytes();
-        String::from_utf8(bytes.to_vec()).expect("utf8")
+    async fn body_to_string(body: Body) -> Result<String, TestError> {
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|e| format!("collect body: {e:?}"))?
+            .to_bytes();
+        Ok(String::from_utf8(bytes.to_vec()).map_err(|e| format!("utf8: {e:?}"))?)
     }
 
     // ── GET /v1/hep/senders ──────────────────────────────────────────────
@@ -10390,7 +10568,7 @@ mod tests {
     /// A listener's roster on a frozen clock: senders 7 and 9 admitted, one
     /// address refused for a wrong key.
     #[cfg(feature = "hep")]
-    fn hep_roster_fixture() -> crate::capture::hep_roster::HepRoster {
+    fn hep_roster_fixture() -> Result<crate::capture::hep_roster::HepRoster, TestError> {
         use crate::capture::hep_roster::{
             HepRefusal, HepRoster, RosterState, SenderTrust, hep_source_label,
         };
@@ -10406,15 +10584,17 @@ mod tests {
             wall,
         );
         for (id, peer, n) in [(7, "192.0.2.7", 3), (9, "192.0.2.9", 2)] {
-            let peer: IpAddr = peer.parse().expect("literal");
+            let peer: IpAddr = peer.parse().map_err(|e| format!("literal: {e:?}"))?;
             for _ in 0..n {
                 state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
             }
         }
-        let bad: IpAddr = "203.0.113.66".parse().expect("literal");
+        let bad: IpAddr = "203.0.113.66"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         state.refused(HepRefusal::AuthMismatch, bad, t);
         let frozen = t + std::time::Duration::from_secs(40);
-        HepRoster::with_clock(state, Arc::new(move || frozen))
+        Ok(HepRoster::with_clock(state, Arc::new(move || frozen)))
     }
 
     /// A state whose capture meter carries `roster`, as a live `-L` run's does.
@@ -10432,15 +10612,15 @@ mod tests {
     /// The route answers with the roster the listener hung on the meter.
     #[cfg(feature = "hep")]
     #[tokio::test]
-    async fn hep_senders_returns_the_listeners_roster() {
-        let app = build_router(state_with_roster(hep_roster_fixture()));
+    async fn hep_senders_returns_the_listeners_roster() -> Result<(), TestError> {
+        let app = build_router(state_with_roster(hep_roster_fixture()?));
         let resp = app
-            .oneshot(test_request("/v1/hep/senders"))
+            .oneshot(test_request("/v1/hep/senders")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("json");
+        let body: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(body["listening"], true);
         assert_eq!(body["trust"], "shared_secret_plain");
         assert_eq!(body["senders"][0]["source"], "hep:7@192.0.2.7");
@@ -10452,37 +10632,39 @@ mod tests {
         assert_eq!(body["senders"][1]["source"], "hep:9@192.0.2.9");
         assert_eq!(body["refused_sources"][0]["peer"], "203.0.113.66");
         assert_eq!(body["refused_by_reason"]["auth_mismatch"], 1);
+        Ok(())
     }
 
     /// `?limit=` caps each list, never the totals beside it.
     #[cfg(feature = "hep")]
     #[tokio::test]
-    async fn hep_senders_limit_caps_the_rows_and_not_the_totals() {
-        let app = build_router(state_with_roster(hep_roster_fixture()));
+    async fn hep_senders_limit_caps_the_rows_and_not_the_totals() -> Result<(), TestError> {
+        let app = build_router(state_with_roster(hep_roster_fixture()?));
         let resp = app
-            .oneshot(test_request("/v1/hep/senders?limit=1"))
+            .oneshot(test_request("/v1/hep/senders?limit=1")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("json");
+        let body: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(body["senders"].as_array().map(Vec::len), Some(1));
         assert_eq!(body["senders_tracked"], 2);
+        Ok(())
     }
 
     /// A run with no HEP listener answers 200 with `listening: false` and a
     /// note, rather than an empty roster that reads as "nobody is sending".
     #[cfg(feature = "hep")]
     #[tokio::test]
-    async fn hep_senders_without_a_listener_says_nothing_is_listening() {
+    async fn hep_senders_without_a_listener_says_nothing_is_listening() -> Result<(), TestError> {
         let app = build_router(make_state());
         let resp = app
-            .oneshot(test_request("/v1/hep/senders"))
+            .oneshot(test_request("/v1/hep/senders")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("json");
+        let body: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(body["listening"], false);
         assert!(
             body["note"]
@@ -10490,21 +10672,26 @@ mod tests {
                 .is_some_and(|n| n.contains("no HEP listener")),
             "{body}"
         );
+        Ok(())
     }
 
     /// `GET /health` returns 200 with the literal body "ok".
     #[tokio::test]
-    async fn health_check_returns_ok() {
+    async fn health_check_returns_ok() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
-        let req = test_request("/health");
+        let req = test_request("/health")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
+        let body = body_to_string(resp.into_body()).await?;
         assert_eq!(body, "ok");
+        Ok(())
     }
 
     // ── capabilities (PAR3: server_capabilities on REST) ──────────────
@@ -10513,49 +10700,52 @@ mod tests {
     /// program can discover what this sipnab can do before it asks and reads a
     /// mid-integration refusal as a dead end.
     #[tokio::test]
-    async fn capabilities_reports_the_compiled_feature_set() {
+    async fn capabilities_reports_the_compiled_feature_set() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/capabilities"))
+            .oneshot(test_request("/v1/capabilities")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
         let features: Vec<String> = parsed["features"]
             .as_array()
-            .expect("features array")
+            .ok_or("features array")?
             .iter()
-            .map(|v| v.as_str().expect("string").to_string())
-            .collect();
+            .map(|v| v.as_str().map(str::to_string).ok_or("string"))
+            .collect::<Result<_, _>>()?;
         // The `api` feature is on in the build that serves this route.
         assert!(features.contains(&"api".to_string()));
+        Ok(())
     }
 
     /// The feature list REST reports IS the one canonical `compiled_features()`
     /// the CLI `--version` and the MCP `server_capabilities` also derive from,
     /// so no two surfaces can claim different builds of the same binary.
     #[tokio::test]
-    async fn capabilities_features_are_the_canonical_list() {
+    async fn capabilities_features_are_the_canonical_list() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/capabilities"))
+            .oneshot(test_request("/v1/capabilities")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         let mut got: Vec<String> = parsed["features"]
             .as_array()
-            .expect("array")
+            .ok_or("array")?
             .iter()
-            .map(|v| v.as_str().expect("string").to_string())
-            .collect();
+            .map(|v| v.as_str().map(str::to_string).ok_or("string"))
+            .collect::<Result<_, _>>()?;
         got.sort();
         let mut want: Vec<String> = crate::cli::compiled_features()
             .iter()
@@ -10563,6 +10753,7 @@ mod tests {
             .collect();
         want.sort();
         assert_eq!(got, want);
+        Ok(())
     }
 
     /// `GET /v1/capabilities` names the libpcap this process runs — the same
@@ -10570,16 +10761,17 @@ mod tests {
     /// `capture::libpcap::running` — so a client can learn whether the library
     /// behind this server names netmap without shell access to run `strings`.
     #[tokio::test]
-    async fn capabilities_reports_the_running_libpcap() {
+    async fn capabilities_reports_the_running_libpcap() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/capabilities"))
+            .oneshot(test_request("/v1/capabilities")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         let want = crate::capture::libpcap::running();
         assert_eq!(parsed["libpcap"]["banner"], want.banner.as_str());
         assert_eq!(
@@ -10590,6 +10782,7 @@ mod tests {
             parsed["libpcap"]["named_backends"],
             serde_json::json!(want.named_backends)
         );
+        Ok(())
     }
 
     /// The conversion carries every field, driven by the published musl
@@ -10597,87 +10790,105 @@ mod tests {
     /// links a distribution libpcap that names none, and a conversion that
     /// dropped the list would pass against it.
     #[test]
-    fn the_libpcap_component_carries_what_the_banner_names() {
+    fn the_libpcap_component_carries_what_the_banner_names() -> Result<(), TestError> {
         let report = crate::capture::libpcap::parse_banner(
             "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
         );
         assert_eq!(
-            serde_json::to_value(schema::Libpcap::from(&report)).expect("serializes"),
+            serde_json::to_value(schema::Libpcap::from(&report))
+                .map_err(|e| format!("serializes: {e:?}"))?,
             serde_json::json!({
                 "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
                 "version": "1.10.6",
                 "named_backends": ["netmap"],
             })
         );
+        Ok(())
     }
 
     /// The response carries the REST opt-ins the operator set, so a client can
     /// tell a capability this build lacks from one this run did not turn on. A
     /// state built without `--api-allow-relay-query` reports it off.
     #[tokio::test]
-    async fn capabilities_reports_the_relay_opt_in() {
+    async fn capabilities_reports_the_relay_opt_in() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/capabilities"))
+            .oneshot(test_request("/v1/capabilities")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["runtime"]["api_allow_relay_query"], false);
+        Ok(())
     }
 
     /// `GET /v1/dialogs` returns 200 with all three seeded dialogs and the
     /// pagination envelope.
     #[tokio::test]
-    async fn list_dialogs_returns_json_array() {
+    async fn list_dialogs_returns_json_array() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request("/v1/dialogs");
+        let req = test_request("/v1/dialogs")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert!(parsed["dialogs"].is_array());
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 3);
         assert_eq!(parsed["total"], 3);
+        Ok(())
     }
 
     /// `GET /v1/dialogs/:call_id` returns 200 with the matching dialog's
     /// full JSON.
     #[tokio::test]
-    async fn get_dialog_by_call_id() {
+    async fn get_dialog_by_call_id() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request("/v1/dialogs/call-1@test");
+        let req = test_request("/v1/dialogs/call-1@test")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["call_id"], "call-1@test");
+        Ok(())
     }
 
     /// An unknown Call-ID yields 404 Not Found.
     #[tokio::test]
-    async fn get_nonexistent_dialog_returns_404() {
+    async fn get_nonexistent_dialog_returns_404() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
-        let req = test_request("/v1/dialogs/does-not-exist");
+        let req = test_request("/v1/dialogs/does-not-exist")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
     }
 
     /// SIP the port gate excluded is on `/v1/stats`, under the SAME names MCP
@@ -10700,7 +10911,7 @@ mod tests {
     /// other test in this binary.
     #[tokio::test]
     #[serial_test::serial(portrange_skips)]
-    async fn stats_reports_sip_the_port_gate_excluded_and_where_it_was() {
+    async fn stats_reports_sip_the_port_gate_excluded_and_where_it_was() -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;
 
         crate::pipeline::reset_portrange_skips();
@@ -10708,16 +10919,18 @@ mod tests {
         let app = build_router(make_state());
         let stats = |app: axum::Router| async move {
             let body = body_to_string(
-                app.oneshot(test_request("/v1/stats"))
+                app.oneshot(test_request("/v1/stats")?)
                     .await
-                    .expect("oneshot")
+                    .map_err(|e| format!("oneshot: {e:?}"))?
                     .into_body(),
             )
-            .await;
-            serde_json::from_str::<Value>(&body).expect("valid JSON")
+            .await?;
+            Ok::<Value, TestError>(
+                serde_json::from_str::<Value>(&body).map_err(|e| format!("valid JSON: {e:?}"))?,
+            )
         };
 
-        let v = stats(app.clone()).await;
+        let v = stats(app.clone()).await?;
         // Present at ZERO. A key that shows up only on a bad capture is a key
         // no client learns exists, and a dashboard cannot ask for a field it
         // has never seen.
@@ -10733,7 +10946,7 @@ mod tests {
         assert!(
             v["unanalysed_busiest_ports"]
                 .as_array()
-                .expect("array")
+                .ok_or("array")?
                 .is_empty()
         );
 
@@ -10743,7 +10956,7 @@ mod tests {
         let pp = crate::capture::ParsedPacket {
             frame_bytes: None,
             frame: None,
-            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("ts")?,
             src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
             src_port: 41000,
@@ -10772,7 +10985,7 @@ mod tests {
             "the gate must still skip -- --portrange means what it says"
         );
 
-        let v = stats(app).await;
+        let v = stats(app).await?;
         assert_eq!(
             v["unanalysed_sip_messages"], 1,
             "the skipped SIP did not reach the response: {v}"
@@ -10785,6 +10998,7 @@ mod tests {
         assert_eq!(v["unanalysed_busiest_ports"][0]["messages"], 1);
 
         crate::pipeline::reset_portrange_skips();
+        Ok(())
     }
 
     /// The declined-work count is on `/v1/stats`, present at zero, and moves
@@ -10796,21 +11010,21 @@ mod tests {
     /// then proves the key is wired to the tally rather than to the literal 0
     /// that would satisfy the first half on its own.
     #[tokio::test]
-    async fn stats_reports_declined_work_at_zero_and_when_it_happens() {
+    async fn stats_reports_declined_work_at_zero_and_when_it_happens() -> Result<(), TestError> {
         let before = crate::relay::media_creating_commands_seen();
 
         let app = build_router(make_state());
         let parsed: Value = serde_json::from_str(
             &body_to_string(
                 app.clone()
-                    .oneshot(test_request("/v1/stats"))
+                    .oneshot(test_request("/v1/stats")?)
                     .await
-                    .expect("oneshot")
+                    .map_err(|e| format!("oneshot: {e:?}"))?
                     .into_body(),
             )
-            .await,
+            .await?,
         )
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         // `>= before`, not `== before`: the tally is process-global and only
         // grows (no test resets it), so a concurrent note between reading
         // `before` and the handler reading it again can only raise it. An
@@ -10818,7 +11032,7 @@ mod tests {
         // The second half below proves the key is WIRED, not a literal zero.
         let at_rest = parsed["caveats"]["media_creating_commands"]
             .as_u64()
-            .expect("declined work is a number on every response");
+            .ok_or("declined work is a number on every response")?;
         assert!(
             at_rest >= before,
             "the count must be present on an ordinary response and cannot have \
@@ -10833,39 +11047,44 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(
             &body_to_string(
-                app.oneshot(test_request("/v1/stats"))
+                app.oneshot(test_request("/v1/stats")?)
                     .await
-                    .expect("oneshot")
+                    .map_err(|e| format!("oneshot: {e:?}"))?
                     .into_body(),
             )
-            .await,
+            .await?,
         )
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         let after = parsed["caveats"]["media_creating_commands"]
             .as_u64()
-            .expect("the count is a number");
+            .ok_or("the count is a number")?;
         assert!(
             after > before,
             "a media-creating command went past and the count did not move \
              ({before} -> {after}); the key is wired to nothing"
         );
+        Ok(())
     }
 
     /// `GET /v1/stats` returns 200 with dialogs/streams/timing objects and
     /// correct dialog totals.
     #[tokio::test]
-    async fn stats_endpoint_returns_expected_fields() {
+    async fn stats_endpoint_returns_expected_fields() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request("/v1/stats");
+        let req = test_request("/v1/stats")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["schema_version"], 2);
         assert!(parsed["dialogs"].is_object());
         assert!(parsed["streams"].is_object());
@@ -10878,6 +11097,7 @@ mod tests {
              inferred from dialogs.active: {parsed}"
         );
         assert!(parsed["streams"]["orphaned"].is_number());
+        Ok(())
     }
 
     /// `/v1/stats` carries a capture-quality block naming the three losses
@@ -10889,18 +11109,19 @@ mod tests {
     /// client learns exists, and the client here is frequently an agent that
     /// cannot ask a follow-up question.
     #[tokio::test]
-    async fn stats_reports_capture_quality_separately() {
+    async fn stats_reports_capture_quality_separately() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/stats"))
+            .oneshot(test_request("/v1/stats")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         let q = &parsed["capture_quality"];
         assert!(q.is_object(), "capture_quality missing from {body}");
         for field in [
@@ -10940,31 +11161,40 @@ mod tests {
             "capture_quality.degraded must be a boolean, got {:?}",
             q["degraded"]
         );
+        Ok(())
     }
 
     /// With a static key configured, a request without credentials gets 401.
     #[tokio::test]
-    async fn auth_missing_key_returns_401() {
+    async fn auth_missing_key_returns_401() -> Result<(), TestError> {
         let state = make_state_with_key("secret-key");
         let app = build_router(state);
 
-        let req = test_request("/v1/dialogs");
+        let req = test_request("/v1/dialogs")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
     }
 
     /// The correct static Bearer key authenticates and gets 200.
     #[tokio::test]
-    async fn auth_correct_key_returns_200() {
+    async fn auth_correct_key_returns_200() -> Result<(), TestError> {
         let state = make_state_with_key("secret-key");
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer secret-key");
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer secret-key")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
+        Ok(())
     }
 
     /// The auth-scheme is case-insensitive ([RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235#section-2.1)), so a
@@ -10973,15 +11203,19 @@ mod tests {
     /// `bearer <token>` client (the standalone metrics server's Basic check is
     /// already case-insensitive) was rejected with 401.
     #[tokio::test]
-    async fn auth_lowercase_bearer_scheme_returns_200() {
+    async fn auth_lowercase_bearer_scheme_returns_200() -> Result<(), TestError> {
         let state = make_state_with_key("secret-key");
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request_with_header("/v1/dialogs", "Authorization", "bearer secret-key");
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "bearer secret-key")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
+        Ok(())
     }
 
     /// Build an `ApiState` whose verifier accepts tokens signed with `key`.
@@ -11026,10 +11260,10 @@ mod tests {
 
     /// A signed token with a future expiry authenticates and gets 200.
     #[tokio::test]
-    async fn auth_valid_signed_token_returns_200() {
+    async fn auth_valid_signed_token_returns_200() -> Result<(), TestError> {
         let key = crate::test_material::key_bytes("rest-router-signing");
         let state = make_state_with_signing_key(key);
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
         // exp far in the future.
         let token = crate::auth::mint(
@@ -11040,14 +11274,18 @@ mod tests {
             crate::auth::SCOPE_FULL,
         );
         let req =
-            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
-        let resp = app.oneshot(req).await.expect("oneshot");
+            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"))?;
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
+        Ok(())
     }
 
     /// A signed token whose expiry is in the past is rejected with 401.
     #[tokio::test]
-    async fn auth_expired_signed_token_returns_401() {
+    async fn auth_expired_signed_token_returns_401() -> Result<(), TestError> {
         let key = crate::test_material::key_bytes("rest-router-signing");
         let state = make_state_with_signing_key(key);
         let app = build_router(state);
@@ -11060,14 +11298,18 @@ mod tests {
             crate::auth::SCOPE_FULL,
         );
         let req =
-            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
-        let resp = app.oneshot(req).await.expect("oneshot");
+            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"))?;
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
     }
 
     /// A token signed with the wrong key is rejected with 401.
     #[tokio::test]
-    async fn auth_forged_signed_token_returns_401() {
+    async fn auth_forged_signed_token_returns_401() -> Result<(), TestError> {
         let key = crate::test_material::key_bytes("rest-router-signing");
         let state = make_state_with_signing_key(key);
         let app = build_router(state);
@@ -11080,64 +11322,77 @@ mod tests {
             crate::auth::SCOPE_FULL,
         );
         let req =
-            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
-        let resp = app.oneshot(req).await.expect("oneshot");
+            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"))?;
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
     }
 
     /// `offset`/`limit` query params page the dialog list (1 of 3 returned).
     #[tokio::test]
-    async fn pagination_offset_and_limit() {
+    async fn pagination_offset_and_limit() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // 3 dialogs
+        populate_dialogs(&state)?; // 3 dialogs
         let app = build_router(state);
 
-        let req = test_request("/v1/dialogs?offset=1&limit=1");
+        let req = test_request("/v1/dialogs?offset=1&limit=1")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 1);
         assert_eq!(parsed["offset"], 1);
         assert_eq!(parsed["limit"], 1);
+        Ok(())
     }
 
     /// A bare port string binds to `127.0.0.1:<port>`.
     #[test]
-    fn parse_bind_addr_port_only() {
-        let addr = parse_bind_addr("8080").expect("parse");
+    fn parse_bind_addr_port_only() -> Result<(), TestError> {
+        let addr = parse_bind_addr("8080").map_err(|e| format!("parse: {e:?}"))?;
         assert_eq!(
             addr,
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8080)
         );
+        Ok(())
     }
 
     /// The `:port` shorthand binds to `127.0.0.1:<port>`.
     #[test]
-    fn parse_bind_addr_colon_port() {
-        let addr = parse_bind_addr(":9090").expect("parse");
+    fn parse_bind_addr_colon_port() -> Result<(), TestError> {
+        let addr = parse_bind_addr(":9090").map_err(|e| format!("parse: {e:?}"))?;
         assert_eq!(
             addr,
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 9090)
         );
+        Ok(())
     }
 
     /// A full `addr:port` pair parses verbatim.
     #[test]
-    fn parse_bind_addr_full() {
-        let addr = parse_bind_addr("0.0.0.0:8080").expect("parse");
+    fn parse_bind_addr_full() -> Result<(), TestError> {
+        let addr = parse_bind_addr("0.0.0.0:8080").map_err(|e| format!("parse: {e:?}"))?;
         assert_eq!(
             addr,
             SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), 8080)
         );
+        Ok(())
     }
 
     /// A non-address string is rejected.
     #[test]
-    fn parse_bind_addr_invalid() {
+    fn parse_bind_addr_invalid() -> Result<(), TestError> {
         assert!(parse_bind_addr("not-an-address").is_err());
+        Ok(())
     }
 
     /// A cap of `0` disables the limiter rather than refusing everything.
@@ -11147,7 +11402,7 @@ mod tests {
     /// became `--api-rate-limit-per-peer`: an operator who spells "unlimited"
     /// the way sipnab taught them must not lock themselves out of the API.
     #[test]
-    fn a_zero_cap_disables_the_limiter_rather_than_refusing_everything() {
+    fn a_zero_cap_disables_the_limiter_rather_than_refusing_everything() -> Result<(), TestError> {
         let mut limiter = RateLimiter::new(0, 1024);
         let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         for i in 0..10_000 {
@@ -11156,6 +11411,7 @@ mod tests {
                 "request {i} must pass an uncapped limiter"
             );
         }
+        Ok(())
     }
 
     /// `GET /v1/dialogs` returns at most the configured row ceiling, whatever
@@ -11167,30 +11423,37 @@ mod tests {
     /// the echoed `limit`, because a wiring that only moved the echo would
     /// still hand back a thousand rows.
     #[tokio::test]
-    async fn the_row_ceiling_bounds_a_list_response_however_much_is_asked_for() {
+    async fn the_row_ceiling_bounds_a_list_response_however_much_is_asked_for()
+    -> Result<(), TestError> {
         let mut state = make_state();
         state.max_rows = 2;
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?limit=1000"))
+            .oneshot(test_request("/v1/dialogs?limit=1000")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp.into_body().collect().await.expect("body").to_bytes();
-        let json: Value = serde_json::from_slice(&body).expect("json");
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| format!("body: {e:?}"))?
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(
             json["total"], 3,
             "the fixture must hold more dialogs than the ceiling, or the case \
              proves nothing"
         );
         assert_eq!(
-            json["dialogs"].as_array().expect("dialogs array").len(),
+            json["dialogs"].as_array().ok_or("dialogs array")?.len(),
             2,
             "the configured ceiling must bound the rows returned"
         );
         assert_eq!(json["limit"], 2, "and the response must report it");
+        Ok(())
     }
 
     /// `limit=0` means the default page, the same as it does on MCP.
@@ -11202,7 +11465,7 @@ mod tests {
     /// successful response with no rows, which reads as "there is nothing
     /// here" rather than as a mistake.
     #[test]
-    fn a_zero_limit_is_the_default_page_not_an_empty_one() {
+    fn a_zero_limit_is_the_default_page_not_an_empty_one() -> Result<(), TestError> {
         assert_eq!(
             resolve_page_limit(Some(0), 1000),
             DEFAULT_PAGE_ROWS,
@@ -11213,11 +11476,12 @@ mod tests {
             DEFAULT_PAGE_ROWS,
             "and so is an absent limit"
         );
+        Ok(())
     }
 
     /// The server's ceiling still wins over anything the caller asks for.
     #[test]
-    fn the_row_cap_bounds_every_reading_of_limit() {
+    fn the_row_cap_bounds_every_reading_of_limit() -> Result<(), TestError> {
         assert_eq!(resolve_page_limit(Some(10_000), 25), 25, "an explicit ask");
         assert_eq!(
             resolve_page_limit(Some(0), 5),
@@ -11225,6 +11489,7 @@ mod tests {
             "and the default, on a server whose cap is below it"
         );
         assert_eq!(resolve_page_limit(Some(7), 25), 7, "an ask under the cap");
+        Ok(())
     }
 
     /// REST honors `max_tracked_peers`, like every other listener.
@@ -11235,7 +11500,7 @@ mod tests {
     /// `rate_limit.rs` exists because this rule was written twice before, and
     /// says so in its own module doc.
     #[test]
-    fn the_rest_limiter_bounds_its_peer_map() {
+    fn the_rest_limiter_bounds_its_peer_map() -> Result<(), TestError> {
         let mut limiter = RateLimiter::new(1_000_000, 2);
         let t0 = std::time::Instant::now();
         // Two peers fit. The third is refused rather than tracked, which is
@@ -11250,6 +11515,7 @@ mod tests {
             "a peer past max_tracked_peers must be refused, not admitted \
              untracked"
         );
+        Ok(())
     }
 
     /// One window for every peer, as on the other listeners.
@@ -11259,7 +11525,7 @@ mod tests {
     /// resets a single window, which is what `--mcp-rate-limit-per-peer` and
     /// `--hep-rate-limit-per-peer` have always meant.
     #[test]
-    fn the_rest_limiter_shares_one_window_with_the_other_listeners() {
+    fn the_rest_limiter_shares_one_window_with_the_other_listeners() -> Result<(), TestError> {
         let mut limiter = RateLimiter::new(2, 64);
         let t0 = std::time::Instant::now();
         let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
@@ -11272,11 +11538,12 @@ mod tests {
             limiter.check_at(ip, next),
             "the window resets and the peer is served again"
         );
+        Ok(())
     }
 
     /// A limiter with max 5 allows exactly 5 requests, then rejects the 6th.
     #[test]
-    fn rate_limiter_allows_under_limit() {
+    fn rate_limiter_allows_under_limit() -> Result<(), TestError> {
         let mut limiter = RateLimiter::new(5, 1024);
         let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 
@@ -11285,6 +11552,7 @@ mod tests {
         }
         // 6th should fail
         assert!(!limiter.check(ip));
+        Ok(())
     }
 
     /// `/v1/stats` names WHICH capture its counts came from, and says
@@ -11304,18 +11572,18 @@ mod tests {
     /// stopping a capture is destructive, and a wrong `"live"` would be worse
     /// than an admission of ignorance.
     #[tokio::test]
-    async fn stats_names_the_capture_or_admits_it_does_not_know() {
+    async fn stats_names_the_capture_or_admits_it_does_not_know() -> Result<(), TestError> {
         let app = build_router(make_state());
         let v: Value = serde_json::from_str(
             &body_to_string(
-                app.oneshot(test_request("/v1/stats"))
+                app.oneshot(test_request("/v1/stats")?)
                     .await
-                    .expect("oneshot")
+                    .map_err(|e| format!("oneshot: {e:?}"))?
                     .into_body(),
             )
-            .await,
+            .await?,
         )
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
 
         assert_eq!(
             v["source"], "unknown",
@@ -11342,6 +11610,7 @@ mod tests {
         ] {
             assert!(v.get(key).is_some(), "`{key}` missing from /v1/stats: {v}");
         }
+        Ok(())
     }
 
     /// With a capture, `/v1/stats` reports the identity from the SHARED object
@@ -11356,7 +11625,7 @@ mod tests {
     /// So the test rotates the shared state and requires the endpoint to
     /// follow. Reading the identity once proves only that a field exists.
     #[tokio::test]
-    async fn stats_follows_a_rotation_of_the_shared_capture() {
+    async fn stats_follows_a_rotation_of_the_shared_capture() -> Result<(), TestError> {
         use crate::capture::session::{CaptureContext, CaptureState};
 
         let capture = Arc::new(RwLock::new(CaptureState::describing(CaptureContext {
@@ -11371,16 +11640,18 @@ mod tests {
 
         let read = |app: axum::Router| async move {
             let body = body_to_string(
-                app.oneshot(test_request("/v1/stats"))
+                app.oneshot(test_request("/v1/stats")?)
                     .await
-                    .expect("oneshot")
+                    .map_err(|e| format!("oneshot: {e:?}"))?
                     .into_body(),
             )
-            .await;
-            serde_json::from_str::<Value>(&body).expect("valid JSON")
+            .await?;
+            Ok::<Value, TestError>(
+                serde_json::from_str::<Value>(&body).map_err(|e| format!("valid JSON: {e:?}"))?,
+            )
         };
 
-        let before = read(app.clone()).await;
+        let before = read(app.clone()).await?;
         assert_eq!(before["source"], "live");
         assert_eq!(before["capture_name"], "eth0");
         assert_eq!(
@@ -11401,7 +11672,7 @@ mod tests {
         }
         let first = before["capture_identity"]["instance"]
             .as_str()
-            .expect("a described capture has an instance")
+            .ok_or("a described capture has an instance")?
             .to_string();
 
         // STABILITY FIRST, and this is the assertion that does the work.
@@ -11414,7 +11685,7 @@ mod tests {
         //
         // Found by mutation. The rotation assertion alone passed against a
         // handler calling `CaptureIdentity::new()` on every request.
-        let again = read(app.clone()).await;
+        let again = read(app.clone()).await?;
         assert_eq!(
             again["capture_identity"]["instance"], first,
             "two reads with no swap between them returned different instances, \
@@ -11425,10 +11696,10 @@ mod tests {
         // What `open_capture` does: a different capture is now loaded.
         capture.write().identity.rotate();
 
-        let after = read(app).await;
+        let after = read(app).await?;
         let second = after["capture_identity"]["instance"]
             .as_str()
-            .expect("still identified")
+            .ok_or("still identified")?
             .to_string();
         assert_ne!(
             first, second,
@@ -11436,6 +11707,7 @@ mod tests {
              MCP performed would be invisible here and the two doors would \
              disagree about which capture they describe"
         );
+        Ok(())
     }
 
     /// `GET /v1/report` answers for the whole capture, and says what it could
@@ -11451,19 +11723,20 @@ mod tests {
     /// still return 200 with a body that looks like JSON to a human and is a
     /// quoted blob to a parser.
     #[tokio::test]
-    async fn the_capture_report_is_answerable_over_rest() {
+    async fn the_capture_report_is_answerable_over_rest() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/report"))
+            .oneshot(test_request("/v1/report")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK, "/v1/report status");
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(
             parsed.is_object(),
             "the report must be an object a client can read fields out of, not \
@@ -11484,28 +11757,34 @@ mod tests {
             parsed["dialogs_examined"], 3,
             "the report must describe the store it was built from: {parsed}"
         );
+        Ok(())
     }
 
     /// `GET /v1/dialogs/:call_id/report` returns 200 with a JSON report
     /// object referencing the call.
     #[tokio::test]
-    async fn get_dialog_report_returns_report() {
+    async fn get_dialog_report_returns_report() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request("/v1/dialogs/call-1@test/report");
+        let req = test_request("/v1/dialogs/call-1@test/report")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(
             body.contains("call_id") || body.contains("call-1@test"),
             "report should contain call_id, got: {body}"
         );
         assert!(parsed.is_object(), "report should be a JSON object");
+        Ok(())
     }
 
     /// `GET /v1/dialogs/:call_id/vcon` returns the container as an OBJECT,
@@ -11518,19 +11797,20 @@ mod tests {
     /// MCP had been serving text under a `format: "json"` default.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn dialog_vcon_returns_a_container_object() {
+    async fn dialog_vcon_returns_a_container_object() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/call-1@test/vcon"))
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(
             parsed.is_object(),
             "the container must be an object a client reads fields out of, \
@@ -11546,6 +11826,7 @@ mod tests {
             parsed["dialog"][0]["sip_call_id"], "call-1@test",
             "the container must name the Call-ID it was built from: {parsed}"
         );
+        Ok(())
     }
 
     /// The completeness caveat reaches BOTH surfaces through this door.
@@ -11558,45 +11839,46 @@ mod tests {
     /// as a complete record of the call.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn dialog_vcon_carries_the_completeness_caveat_on_both_surfaces() {
+    async fn dialog_vcon_carries_the_completeness_caveat_on_both_surfaces() -> Result<(), TestError>
+    {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/call-1@test/vcon"))
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
 
         let attachment = parsed["attachments"]
             .as_array()
-            .expect("attachments array")
+            .ok_or("attachments array")?
             .iter()
             .find(|a| a["purpose"] == crate::output::vcon::COMPLETENESS_PURPOSE)
-            .unwrap_or_else(|| panic!("no completeness attachment: {parsed}"));
+            .ok_or_else(|| format!("no completeness attachment: {parsed}"))?;
         // §2.3.2 makes `body` a String, so both reads parse it rather than
         // indexing a `Value` that is not an object.
         let attachment_body: serde_json::Value = serde_json::from_str(
             attachment["body"]
                 .as_str()
-                .expect("a json body is a string"),
+                .ok_or("a json body is a string")?,
         )
-        .expect("the attachment body parses");
+        .map_err(|e| format!("the attachment body parses: {e:?}"))?;
         let from_attachment = attachment_body["note"]
             .as_str()
-            .unwrap_or_else(|| panic!("attachment note is not a string: {parsed}"));
+            .ok_or_else(|| format!("attachment note is not a string: {parsed}"))?;
         let analysis_body: serde_json::Value = serde_json::from_str(
             parsed["analysis"][0]["body"]
                 .as_str()
-                .expect("a json body is a string"),
+                .ok_or("a json body is a string")?,
         )
-        .expect("the analysis body parses");
+        .map_err(|e| format!("the analysis body parses: {e:?}"))?;
         let from_analysis = analysis_body["capture_completeness"]["note"]
             .as_str()
-            .unwrap_or_else(|| panic!("analysis note is not a string: {parsed}"));
+            .ok_or_else(|| format!("analysis note is not a string: {parsed}"))?;
 
         assert_eq!(
             from_attachment, from_analysis,
@@ -11628,6 +11910,7 @@ mod tests {
              list and not absent — absent means NOBODY LOOKED, and an export \
              that skipped the analysis would then read as a clean one: {parsed}"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID is a 404, matching every other per-call route.
@@ -11637,20 +11920,21 @@ mod tests {
     /// of a call that had no messages.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn unknown_call_id_has_no_vcon() {
+    async fn unknown_call_id_has_no_vcon() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/does-not-exist@nowhere/vcon"))
+            .oneshot(test_request("/v1/dialogs/does-not-exist@nowhere/vcon")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(
             resp.status(),
             StatusCode::NOT_FOUND,
             "an unknown Call-ID must 404 rather than return an empty container"
         );
+        Ok(())
     }
 
     /// Two different dialogs export two different containers.
@@ -11661,20 +11945,20 @@ mod tests {
     /// other call's URL.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn two_dialogs_export_two_different_containers() {
+    async fn two_dialogs_export_two_different_containers() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
 
         let mut seen = Vec::new();
         for call_id in ["call-0@test", "call-1@test"] {
             let app = build_router(state.clone());
             let resp = app
-                .oneshot(test_request(&format!("/v1/dialogs/{call_id}/vcon")))
+                .oneshot(test_request(&format!("/v1/dialogs/{call_id}/vcon"))?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK, "{call_id} status");
-            let parsed: Value =
-                serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+                .map_err(|e| format!("valid JSON: {e:?}"))?;
             seen.push((
                 parsed["dialog"][0]["sip_call_id"].clone(),
                 parsed["uuid"].clone(),
@@ -11688,6 +11972,7 @@ mod tests {
             "two conversations must not share a uuid — a consumer keyed on it \
              would keep one and discard the other: {seen:?}"
         );
+        Ok(())
     }
 
     /// Re-exporting ONE dialog returns the SAME uuid.
@@ -11701,20 +11986,20 @@ mod tests {
     /// written and legitimately moves.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn re_exporting_one_dialog_keeps_its_uuid() {
+    async fn re_exporting_one_dialog_keeps_its_uuid() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
 
         let mut uuids = Vec::new();
         for _ in 0..2 {
             let app = build_router(state.clone());
             let resp = app
-                .oneshot(test_request("/v1/dialogs/call-1@test/vcon"))
+                .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK);
-            let parsed: Value =
-                serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+                .map_err(|e| format!("valid JSON: {e:?}"))?;
             uuids.push(parsed["uuid"].clone());
         }
 
@@ -11723,48 +12008,59 @@ mod tests {
             "one dialog out of one capture is one container, however many \
              times it is asked for: {uuids:?}"
         );
+        Ok(())
     }
 
     /// `GET /v1/streams` on an empty store returns 200 with an empty array
     /// and total 0.
     #[tokio::test]
-    async fn list_streams_returns_empty() {
+    async fn list_streams_returns_empty() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
-        let req = test_request("/v1/streams");
+        let req = test_request("/v1/streams")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(parsed["streams"].is_array());
-        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+        assert_eq!(parsed["streams"].as_array().ok_or("array")?.len(), 0);
         assert_eq!(parsed["total"], 0);
+        Ok(())
     }
 
     /// A valid-hex but unknown SSRC yields 404 Not Found.
     #[tokio::test]
-    async fn get_stream_not_found() {
+    async fn get_stream_not_found() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
-        let req = test_request("/v1/streams/0x12345678");
+        let req = test_request("/v1/streams/0x12345678")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        Ok(())
     }
 
     /// `sipnab_messages_total` counts SIP messages (matching the standalone
     /// metrics server), not dialogs: one dialog with two messages reports 2.
     #[tokio::test]
-    async fn metrics_messages_total_counts_messages_not_dialogs() {
+    async fn metrics_messages_total_counts_messages_not_dialogs() -> Result<(), TestError> {
         let state = make_state();
         {
             let mut ds = state.dialog_store.write();
-            let ts =
-                chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+            let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("valid fixture timestamp")?;
             let lo = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
             let msgs = [
                 build_sip(
@@ -11800,58 +12096,67 @@ mod tests {
                     5060,
                     TransportProto::Udp,
                 )
-                .expect("parse");
+                .map_err(|e| format!("parse: {e:?}"))?;
                 ds.process_message(msg);
             }
         }
 
         let app = build_router(state);
         let resp = app
-            .oneshot(test_request("/metrics"))
+            .oneshot(test_request("/metrics")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
         assert!(
             body.contains("sipnab_messages_total{method=\"INVITE\"} 2"),
             "expected 2 messages, got:\n{body}"
         );
+        Ok(())
     }
 
     /// `GET /metrics` returns 200 with `sipnab_`-prefixed exposition text.
     #[tokio::test]
-    async fn get_metrics_returns_prometheus_format() {
+    async fn get_metrics_returns_prometheus_format() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
-        let req = test_request("/metrics");
+        let req = test_request("/metrics")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
+        let body = body_to_string(resp.into_body()).await?;
         assert!(
             body.contains("sipnab_"),
             "metrics should contain sipnab_ prefix, got: {body}"
         );
+        Ok(())
     }
 
     /// A wrong static Bearer key is rejected with 401.
     #[tokio::test]
-    async fn auth_wrong_key_returns_401() {
+    async fn auth_wrong_key_returns_401() -> Result<(), TestError> {
         let state = make_state_with_key("correct-key");
         let app = build_router(state);
 
-        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer wrong-key");
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer wrong-key")?;
 
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
     }
 
     /// With max 1 request/second, the second request from the same IP gets
     /// 503 Service Unavailable.
     #[tokio::test]
-    async fn rate_limit_exceeded_returns_503() {
+    async fn rate_limit_exceeded_returns_503() -> Result<(), TestError> {
         // Create state with rate_limiter max_rps = 1
         let state = ApiState {
             relay_query: Default::default(),
@@ -11885,19 +12190,26 @@ mod tests {
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         };
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
 
         // First request should succeed
         let app = build_router(state.clone());
-        let req1 = test_request("/v1/dialogs");
-        let resp1 = app.oneshot(req1).await.expect("oneshot");
+        let req1 = test_request("/v1/dialogs")?;
+        let resp1 = app
+            .oneshot(req1)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp1.status(), StatusCode::OK);
 
         // Second request from same IP should be rate-limited (503)
         let app2 = build_router(state);
-        let req2 = test_request("/v1/dialogs");
-        let resp2 = app2.oneshot(req2).await.expect("oneshot");
+        let req2 = test_request("/v1/dialogs")?;
+        let resp2 = app2
+            .oneshot(req2)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp2.status(), StatusCode::SERVICE_UNAVAILABLE);
+        Ok(())
     }
 
     /// A flood of requests bearing a wrong token must eventually be
@@ -11905,14 +12217,14 @@ mod tests {
     /// otherwise the Bearer token can be brute-forced at unlimited speed
     /// because failed auth never consumes the per-IP budget.
     #[test]
-    fn guard_rate_limits_failed_auth_flood() {
+    fn guard_rate_limits_failed_auth_flood() -> Result<(), TestError> {
         let mut state = make_state_with_key("correct-secret");
         // Tiny per-IP budget so the flood trips the limiter quickly.
         state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(3, 1024)));
 
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip: IpAddr = "10.0.0.1".parse()?;
         let mut headers = HeaderMap::new();
-        headers.insert("authorization", "Bearer wrong-token".parse().unwrap());
+        headers.insert("authorization", "Bearer wrong-token".parse()?);
 
         let mut saw_rate_limit = false;
         for _ in 0..25 {
@@ -11922,19 +12234,20 @@ mod tests {
                     break;
                 }
                 Err(p) if p.status == StatusCode::UNAUTHORIZED => {} // still under budget
-                other => panic!("unexpected guard result: {other:?}"),
+                other => return Err(format!("unexpected guard result: {other:?}").into()),
             }
         }
         assert!(
             saw_rate_limit,
             "failed-auth flood must eventually be throttled with 503"
         );
+        Ok(())
     }
 
     /// Percentile picks the rounded nearest-rank index for even- and
     /// odd-length inputs, and `None` for empty.
     #[test]
-    fn percentile_computation() {
+    fn percentile_computation() -> Result<(), TestError> {
         let values = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
         // Nearest rank, no interpolation: p50 of 10 elements is rank
         // ceil(0.50 * 10) = 5, i.e. the 5th sample -> 50.
@@ -11952,6 +12265,7 @@ mod tests {
         // which quote `group_metrics::percentile_nearest_rank` for the same
         // sample. Before, `[10,20,30,40]` p50 was 30 here and 20 there.
         assert_eq!(percentile(&[10, 20, 30, 40], 50), Some(20));
+        Ok(())
     }
 
     // ── Stream-store helpers ──────────────────────────────────────────
@@ -11960,11 +12274,17 @@ mod tests {
     ///
     /// Returns after a single packet so the stream exists with `packet_count`
     /// of at least 1 and no loss/jitter (MOS near the codec ceiling).
-    fn add_stream(state: &ApiState, ssrc: u32, src_port: u16, dst_port: u16) {
+    fn add_stream(
+        state: &ApiState,
+        ssrc: u32,
+        src_port: u16,
+        dst_port: u16,
+    ) -> Result<(), TestError> {
         // PT 0 is PCMU, which G.113 publishes an impairment value for -- so
         // every stream built by this helper carries a GROUNDED MOS. Tests that
         // need the other case say so by naming a payload type.
-        add_stream_with_pt(state, ssrc, src_port, dst_port, 0);
+        add_stream_with_pt(state, ssrc, src_port, dst_port, 0)?;
+        Ok(())
     }
 
     /// `add_stream`, with the RTP payload type spelled out.
@@ -11973,14 +12293,20 @@ mod tests {
     /// dynamic payload type with no SDP to name it leaves `codec` unknown, and
     /// an unknown codec scores the placeholder. That is the stream a
     /// `mos_below` bound must refuse to select.
-    fn add_stream_with_pt(state: &ApiState, ssrc: u32, src_port: u16, dst_port: u16, pt: u8) {
+    fn add_stream_with_pt(
+        state: &ApiState,
+        ssrc: u32,
+        src_port: u16,
+        dst_port: u16,
+        pt: u8,
+    ) -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;
         use crate::rtp::parser::RtpHeader;
 
         let parsed = crate::capture::ParsedPacket {
             frame_bytes: None,
             frame: None,
-            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("ts")?,
             src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
             src_port,
@@ -12011,6 +12337,7 @@ mod tests {
         };
         let mut ss = state.stream_store.write();
         ss.process_rtp(&parsed, &rtp, parsed.timestamp);
+        Ok(())
     }
 
     // ── list_streams branches ─────────────────────────────────────────
@@ -12018,27 +12345,29 @@ mod tests {
     /// `GET /v1/streams` returns both inserted streams with summary fields
     /// (`ssrc`, `mos`, `loss_pct`).
     #[tokio::test]
-    async fn list_streams_returns_populated() {
+    async fn list_streams_returns_populated() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x1111_1111, 20000, 30000);
-        add_stream(&state, 0x2222_2222, 20002, 30002);
+        add_stream(&state, 0x1111_1111, 20000, 30000)?;
+        add_stream(&state, 0x2222_2222, 20002, 30002)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/streams"))
+            .oneshot(test_request("/v1/streams")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["total"], 2);
-        assert_eq!(parsed["streams"].as_array().expect("array").len(), 2);
+        assert_eq!(parsed["streams"].as_array().ok_or("array")?.len(), 2);
         // stream_summary fields
         let first = &parsed["streams"][0];
-        assert!(first["ssrc"].as_str().expect("ssrc").starts_with("0x"));
+        assert!(first["ssrc"].as_str().ok_or("ssrc")?.starts_with("0x"));
         assert!(first["mos"].is_number());
         assert!(first["loss_pct"].is_number());
+        Ok(())
     }
 
     /// `orphaned=` selects on whether a dialog claims the stream, in both
@@ -12051,10 +12380,10 @@ mod tests {
     /// with an empty list. Orphan status is now `associated_dialog.is_none()`,
     /// so the two arms below are a real partition of the store.
     #[tokio::test]
-    async fn list_streams_orphaned_filter_selects_by_dialog_association() {
+    async fn list_streams_orphaned_filter_selects_by_dialog_association() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x3333_3333, 21000, 31000);
-        add_stream(&state, 0x4444_4444, 21002, 31002);
+        add_stream(&state, 0x3333_3333, 21000, 31000)?;
+        add_stream(&state, 0x4444_4444, 21002, 31002)?;
         // One of the two is claimed by a dialog; the other never is.
         state.stream_store.write().link_to_dialog(
             IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
@@ -12069,19 +12398,21 @@ mod tests {
         ] {
             let resp = app
                 .clone()
-                .oneshot(test_request(query))
+                .oneshot(test_request(query)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK);
 
-            let body = body_to_string(resp.into_body()).await;
-            let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-            let rows = parsed["streams"].as_array().expect("array");
+            let body = body_to_string(resp.into_body()).await?;
+            let parsed: Value =
+                serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+            let rows = parsed["streams"].as_array().ok_or("array")?;
             assert_eq!(rows.len(), 1, "{query} returned {}", parsed["streams"]);
             assert_eq!(rows[0]["ssrc"], expected_ssrc, "{query} selected wrongly");
             // total reflects the filtered result-set (1), not the store's 2.
             assert_eq!(parsed["total"], 1, "{query} reported the store size");
         }
+        Ok(())
     }
 
     /// A `mos_below` bound selects only streams whose MOS is a MEASUREMENT,
@@ -12104,22 +12435,23 @@ mod tests {
     /// unknown and the score is the placeholder. A bound generous enough to
     /// admit both on the number alone must admit exactly one.
     #[tokio::test]
-    async fn mos_below_refuses_to_select_on_a_placeholder_and_counts_what_it_held_back() {
+    async fn mos_below_refuses_to_select_on_a_placeholder_and_counts_what_it_held_back()
+    -> Result<(), TestError> {
         let state = make_state();
-        add_stream_with_pt(&state, 0x5555_5555, 23000, 33000, 0);
-        add_stream_with_pt(&state, 0x6666_6666, 23002, 33002, 96);
+        add_stream_with_pt(&state, 0x5555_5555, 23000, 33000, 0)?;
+        add_stream_with_pt(&state, 0x6666_6666, 23002, 33002, 96)?;
         let app = build_router(state);
 
         let resp = app
             .clone()
-            .oneshot(test_request("/v1/streams?mos_below=5.0"))
+            .oneshot(test_request("/v1/streams?mos_below=5.0")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
 
-        let rows = parsed["streams"].as_array().expect("array");
+        let rows = parsed["streams"].as_array().ok_or("array")?;
         assert_eq!(
             rows.len(),
             1,
@@ -12131,7 +12463,7 @@ mod tests {
             "the wrong stream survived the bound"
         );
         assert!(
-            rows[0]["mos_grounded"].as_bool().expect("mos_grounded"),
+            rows[0]["mos_grounded"].as_bool().ok_or("mos_grounded")?,
             "a row a MOS bound admitted must carry a grounded MOS"
         );
         assert_eq!(rows[0]["mos_grounding"], "published");
@@ -12147,6 +12479,7 @@ mod tests {
              dropped -- four rows out of a store where sixty were unscoreable is \
              a different answer from four out of four"
         );
+        Ok(())
     }
 
     /// Without a bound there is nothing to hold back, and every row still says
@@ -12157,17 +12490,18 @@ mod tests {
     /// regardless of whether anything was filtered would report a store's
     /// codec mix as an exclusion, on a request that excluded nothing.
     #[tokio::test]
-    async fn an_unbounded_list_holds_nothing_back_and_still_grounds_every_row() {
+    async fn an_unbounded_list_holds_nothing_back_and_still_grounds_every_row()
+    -> Result<(), TestError> {
         let state = make_state();
-        add_stream_with_pt(&state, 0x7777_7777, 24000, 34000, 96);
+        add_stream_with_pt(&state, 0x7777_7777, 24000, 34000, 96)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/streams"))
+            .oneshot(test_request("/v1/streams")?)
             .await
-            .expect("oneshot");
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
 
         assert_eq!(parsed["schema_version"], 2);
         assert_eq!(
@@ -12184,73 +12518,79 @@ mod tests {
         assert!(
             row["mos_note"]
                 .as_str()
-                .expect("an ungrounded score owes the reader a sentence")
+                .ok_or("an ungrounded score owes the reader a sentence")?
                 .contains("placeholder"),
             "the note must say the number is a placeholder: {row}"
         );
+        Ok(())
     }
 
     /// `mos_below` excludes a clean high-MOS stream at 1.0 and includes it
     /// at 5.0.
     #[tokio::test]
-    async fn list_streams_mos_below_filter() {
+    async fn list_streams_mos_below_filter() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x4444_4444, 22000, 32000);
+        add_stream(&state, 0x4444_4444, 22000, 32000)?;
         let app = build_router(state);
 
         // A clean stream has high MOS; mos_below=1.0 should exclude it.
         let resp = app
-            .oneshot(test_request("/v1/streams?mos_below=1.0"))
+            .oneshot(test_request("/v1/streams?mos_below=1.0")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["streams"].as_array().ok_or("array")?.len(), 0);
 
         // A generous threshold should include it.
         let state2 = make_state();
-        add_stream(&state2, 0x4444_4444, 22000, 32000);
+        add_stream(&state2, 0x4444_4444, 22000, 32000)?;
         let app2 = build_router(state2);
         let resp2 = app2
-            .oneshot(test_request("/v1/streams?mos_below=5.0"))
+            .oneshot(test_request("/v1/streams?mos_below=5.0")?)
             .await
-            .expect("oneshot");
-        let body2 = body_to_string(resp2.into_body()).await;
-        let parsed2: Value = serde_json::from_str(&body2).expect("valid JSON");
-        assert_eq!(parsed2["streams"].as_array().expect("array").len(), 1);
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body2 = body_to_string(resp2.into_body()).await?;
+        let parsed2: Value =
+            serde_json::from_str(&body2).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed2["streams"].as_array().ok_or("array")?.len(), 1);
+        Ok(())
     }
 
     // ── get_stream branches ───────────────────────────────────────────
 
     /// A `0x`-prefixed SSRC hex id resolves to its stream (200).
     #[tokio::test]
-    async fn get_stream_found_by_hex() {
+    async fn get_stream_found_by_hex() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x1234_5678, 23000, 33000);
+        add_stream(&state, 0x1234_5678, 23000, 33000)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/streams/0x12345678"))
+            .oneshot(test_request("/v1/streams/0x12345678")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(parsed.is_object());
+        Ok(())
     }
 
     /// When several streams share an SSRC (endpoint collision), the detail
     /// endpoint returns the most-active one deterministically, not the
     /// arbitrary first-inserted stream.
     #[tokio::test]
-    async fn get_stream_ssrc_collision_returns_most_active() {
+    async fn get_stream_ssrc_collision_returns_most_active() -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;
         use crate::rtp::parser::RtpHeader;
 
         let state = make_state();
         // Stream A: same SSRC, one packet, inserted first.
-        add_stream(&state, 0x1234, 20000, 30000);
+        add_stream(&state, 0x1234, 20000, 30000)?;
         // Stream B: same SSRC, different endpoint, five packets.
         {
             let mut ss = state.stream_store.write();
@@ -12258,7 +12598,8 @@ mod tests {
                 let parsed = crate::capture::ParsedPacket {
                     frame_bytes: None,
                     frame: None,
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .ok_or("from_timestamp() returned None")?,
                     src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                     src_port: 20001,
@@ -12293,44 +12634,47 @@ mod tests {
 
         let app = build_router(state);
         let resp = app
-            .oneshot(test_request("/v1/streams/0x1234"))
+            .oneshot(test_request("/v1/streams/0x1234")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let v: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let v: Value = serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
-            v["packets"].as_u64().expect("packets"),
+            v["packets"].as_u64().ok_or("packets")?,
             5,
             "collision must resolve to the most-active (5-packet) stream, not the 1-packet one"
         );
+        Ok(())
     }
 
     /// A bare hex SSRC (no `0x` prefix) also resolves (200).
     #[tokio::test]
-    async fn get_stream_found_without_0x_prefix() {
+    async fn get_stream_found_without_0x_prefix() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x0000_ABCD, 24000, 34000);
+        add_stream(&state, 0x0000_ABCD, 24000, 34000)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/streams/0000abcd"))
+            .oneshot(test_request("/v1/streams/0000abcd")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
+        Ok(())
     }
 
     /// A non-hex stream id yields 400 Bad Request.
     #[tokio::test]
-    async fn get_stream_invalid_hex_returns_400() {
+    async fn get_stream_invalid_hex_returns_400() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/streams/not-hex-zz"))
+            .oneshot(test_request("/v1/streams/not-hex-zz")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── get_dialog with associated streams (full detail path) ─────────
@@ -12338,11 +12682,11 @@ mod tests {
     /// `GET /v1/dialogs/:call_id` still returns 200 when a linked RTP
     /// stream exercises the full-detail (streams + diagnosis) path.
     #[tokio::test]
-    async fn get_dialog_includes_associated_streams() {
+    async fn get_dialog_includes_associated_streams() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         // Associate a stream with call-1@test by linking on its media address.
-        add_stream(&state, 0x5555_5555, 25000, 35000);
+        add_stream(&state, 0x5555_5555, 25000, 35000)?;
         {
             let mut ss = state.stream_store.write();
             ss.link_to_dialog(
@@ -12354,89 +12698,99 @@ mod tests {
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs/call-1@test"))
+            .oneshot(test_request("/v1/dialogs/call-1@test")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["call_id"], "call-1@test");
+        Ok(())
     }
 
     // ── list_dialogs filters ──────────────────────────────────────────
 
     /// A case-insensitive `state` filter matching all dialogs returns all 3.
     #[tokio::test]
-    async fn list_dialogs_state_filter_matches() {
+    async fn list_dialogs_state_filter_matches() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // all INVITE dialogs are in "Trying" state
+        populate_dialogs(&state)?; // all INVITE dialogs are in "Trying" state
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?state=trying"))
+            .oneshot(test_request("/v1/dialogs?state=trying")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 3);
+        Ok(())
     }
 
     /// A `state` filter matching nothing returns an empty page and a filtered
     /// total of 0 (so a client paging by `total` stops immediately).
     #[tokio::test]
-    async fn list_dialogs_state_filter_excludes() {
+    async fn list_dialogs_state_filter_excludes() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?state=Completed"))
+            .oneshot(test_request("/v1/dialogs?state=Completed")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 0);
         // total reflects the filtered result-set (0), not the store's 3.
         assert_eq!(parsed["total"], 0);
+        Ok(())
     }
 
     /// A `from` regex filter selects the single matching dialog and the
     /// canonical `from_user` key carries the user part.
     #[tokio::test]
-    async fn list_dialogs_from_regex_filter() {
+    async fn list_dialogs_from_regex_filter() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // from users: user0, user1, user2
+        populate_dialogs(&state)?; // from users: user0, user1, user2
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?from=user1"))
+            .oneshot(test_request("/v1/dialogs?from=user1")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 1);
         // WS3 canonical key (was "from" before the projection unification).
         assert_eq!(parsed["dialogs"][0]["from_user"], "user1");
+        Ok(())
     }
 
     /// An uncompilable `from` regex is ignored (no filtering, still 200).
     #[tokio::test]
-    async fn list_dialogs_invalid_from_regex_is_ignored() {
+    async fn list_dialogs_invalid_from_regex_is_ignored() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         // An invalid regex fails to compile -> from_regex is None -> no filtering.
         let resp = app
-            .oneshot(test_request("/v1/dialogs?from=%5B"))
+            .oneshot(test_request("/v1/dialogs?from=%5B")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 3);
+        Ok(())
     }
 
     // ── list_dialogs DSL filter (PAR3: find_problems, search_messages) ─
@@ -12446,48 +12800,52 @@ mod tests {
     /// Closes the find_problems REST gap: a program can now poll by any DSL
     /// field or alias, not only `state` and a `from` regex.
     #[tokio::test]
-    async fn list_dialogs_dsl_filter_narrows() {
+    async fn list_dialogs_dsl_filter_narrows() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // from users user0/user1/user2
+        populate_dialogs(&state)?; // from users user0/user1/user2
         let app = build_router(state);
 
         // filter=from.user == 'user1'
         let resp = app
             .oneshot(test_request(
                 "/v1/dialogs?filter=from.user%20%3D%3D%20%27user1%27",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 1);
         assert_eq!(parsed["dialogs"][0]["from_user"], "user1");
         // total reflects the filtered set, so a client paging by it terminates.
         assert_eq!(parsed["total"], 1);
+        Ok(())
     }
 
     /// A DSL `payload` regex searches the full raw message text. Closes the
     /// search_messages REST gap: a substring in any header or body was
     /// unreachable over REST, which filtered only by state and a `from` regex.
     #[tokio::test]
-    async fn list_dialogs_dsl_payload_search() {
+    async fn list_dialogs_dsl_payload_search() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         // filter=payload =~ 'user2'  (the From header of dialog 2)
         let resp = app
             .oneshot(test_request(
                 "/v1/dialogs?filter=payload%20%3D~%20%27user2%27",
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 1);
         assert_eq!(parsed["dialogs"][0]["from_user"], "user2");
+        Ok(())
     }
 
     /// An unparseable DSL `filter` is a 400 that says so, not a silent
@@ -12495,17 +12853,18 @@ mod tests {
     /// so it learns the expression was rejected rather than acting on every row
     /// (the deliberate difference from the `from` regex, which is best-effort).
     #[tokio::test]
-    async fn list_dialogs_dsl_invalid_filter_is_400() {
+    async fn list_dialogs_dsl_invalid_filter_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         // filter=from.user ==   (no value: does not parse)
         let resp = app
-            .oneshot(test_request("/v1/dialogs?filter=from.user%20%3D%3D"))
+            .oneshot(test_request("/v1/dialogs?filter=from.user%20%3D%3D")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── list_dialogs time window (PAR3: search_by_time) ───────────────
@@ -12514,54 +12873,60 @@ mod tests {
     /// dialogs open at 12:00, so an `after` of 13:00 admits none. Closes the
     /// search_by_time REST gap: a wall-clock window was unreachable over REST.
     #[tokio::test]
-    async fn list_dialogs_after_excludes_earlier_dialogs() {
+    async fn list_dialogs_after_excludes_earlier_dialogs() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // all open at 2024-06-15T12:00:00Z
+        populate_dialogs(&state)?; // all open at 2024-06-15T12:00:00Z
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?after=2024-06-15T13:00:00Z"))
+            .oneshot(test_request("/v1/dialogs?after=2024-06-15T13:00:00Z")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 0);
         assert_eq!(parsed["total"], 0);
+        Ok(())
     }
 
     /// `after` admits dialogs that opened at or after it.
     #[tokio::test]
-    async fn list_dialogs_after_admits_later_dialogs() {
+    async fn list_dialogs_after_admits_later_dialogs() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?after=2024-06-15T11:00:00Z"))
+            .oneshot(test_request("/v1/dialogs?after=2024-06-15T11:00:00Z")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 3);
+        Ok(())
     }
 
     /// `before` excludes dialogs that opened after it.
     #[tokio::test]
-    async fn list_dialogs_before_excludes_later_dialogs() {
+    async fn list_dialogs_before_excludes_later_dialogs() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?before=2024-06-15T11:00:00Z"))
+            .oneshot(test_request("/v1/dialogs?before=2024-06-15T11:00:00Z")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 0);
+        Ok(())
     }
 
     /// `before` is EXCLUSIVE at the boundary: a dialog at exactly `before` is
@@ -12571,18 +12936,18 @@ mod tests {
     /// unification `before` was inclusive here, so a boundary dialog fell into
     /// two adjacent windows at once.
     #[tokio::test]
-    async fn list_dialogs_before_is_exclusive_at_the_boundary() {
+    async fn list_dialogs_before_is_exclusive_at_the_boundary() -> Result<(), TestError> {
         // `before` == the dialogs' own instant -> excluded (exclusive upper).
         let state = make_state();
-        populate_dialogs(&state); // all open at 2024-06-15T12:00:00Z
+        populate_dialogs(&state)?; // all open at 2024-06-15T12:00:00Z
         let resp = build_router(state)
-            .oneshot(test_request("/v1/dialogs?before=2024-06-15T12:00:00Z"))
+            .oneshot(test_request("/v1/dialogs?before=2024-06-15T12:00:00Z")?)
             .await
-            .expect("oneshot");
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
-            parsed["dialogs"].as_array().expect("array").len(),
+            parsed["dialogs"].as_array().ok_or("array")?.len(),
             0,
             "a dialog at exactly `before` is outside the half-open window"
         );
@@ -12590,34 +12955,36 @@ mod tests {
         // `after` == the same instant -> included (inclusive lower): the shared
         // boundary belongs to the next window, counted exactly once.
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let resp = build_router(state)
-            .oneshot(test_request("/v1/dialogs?after=2024-06-15T12:00:00Z"))
+            .oneshot(test_request("/v1/dialogs?after=2024-06-15T12:00:00Z")?)
             .await
-            .expect("oneshot");
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)
+            .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
-            parsed["dialogs"].as_array().expect("array").len(),
+            parsed["dialogs"].as_array().ok_or("array")?.len(),
             3,
             "a dialog at exactly `after` is inside the window"
         );
+        Ok(())
     }
 
     /// A timestamp that is not RFC 3339 is a 400, not a silently ignored
     /// window, so a client learns its query was malformed rather than reading
     /// an unfiltered page as the answer to its question.
     #[tokio::test]
-    async fn list_dialogs_invalid_timestamp_is_400() {
+    async fn list_dialogs_invalid_timestamp_is_400() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs?after=notatimestamp"))
+            .oneshot(test_request("/v1/dialogs?after=notatimestamp")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 
     // ── list_* filtered-total (pagination correctness) ────────────────
@@ -12626,68 +12993,72 @@ mod tests {
     /// (what the returned rows are drawn from), not the unfiltered store, so
     /// a client paging by `total` terminates instead of over-paging.
     #[tokio::test]
-    async fn list_dialogs_total_reflects_filtered_count() {
+    async fn list_dialogs_total_reflects_filtered_count() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // 3 dialogs: user0, user1, user2
+        populate_dialogs(&state)?; // 3 dialogs: user0, user1, user2
         let app = build_router(state);
 
         // from=user1 matches exactly one dialog.
         let resp = app
-            .oneshot(test_request("/v1/dialogs?from=user1"))
+            .oneshot(test_request("/v1/dialogs?from=user1")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["dialogs"].as_array().ok_or("array")?.len(), 1);
         assert_eq!(
             parsed["total"], 1,
             "total must be the filtered count, not 3"
         );
+        Ok(())
     }
 
     /// An `orphaned` filter that excludes every stream yields `total` 0, so a
     /// client paging by `total` stops immediately rather than requesting
     /// empty pages up to the unfiltered store size.
     #[tokio::test]
-    async fn list_streams_total_reflects_filtered_count() {
+    async fn list_streams_total_reflects_filtered_count() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x9999_0001, 40000, 50000);
-        add_stream(&state, 0x9999_0002, 40002, 50002);
+        add_stream(&state, 0x9999_0001, 40000, 50000)?;
+        add_stream(&state, 0x9999_0002, 40002, 50002)?;
         let app = build_router(state);
 
         // No SDP named either stream, so no dialog claims them and
         // `orphaned=false` excludes both.
         let resp = app
-            .oneshot(test_request("/v1/streams?orphaned=false"))
+            .oneshot(test_request("/v1/streams?orphaned=false")?)
             .await
-            .expect("oneshot");
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["streams"].as_array().ok_or("array")?.len(), 0);
         assert_eq!(
             parsed["total"], 0,
             "total must be the filtered count, not 2"
         );
+        Ok(())
     }
 
     /// Paging by `total`/`limit` over a filtered dialog list visits exactly
     /// the filtered rows once and then terminates (no over-paging past the
     /// filtered set).
     #[tokio::test]
-    async fn list_dialogs_filtered_paging_terminates() {
+    async fn list_dialogs_filtered_paging_terminates() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state); // user0, user1, user2
+        populate_dialogs(&state)?; // user0, user1, user2
 
         // Filter "user[12]" (URL-encoded) matches user1 and user2 => 2 rows.
         let filter = "/v1/dialogs?from=user%5B12%5D";
         let first = build_router(state.clone())
-            .oneshot(test_request(&format!("{filter}&offset=0&limit=1")))
+            .oneshot(test_request(&format!("{filter}&offset=0&limit=1"))?)
             .await
-            .expect("oneshot");
-        let parsed: Value =
-            serde_json::from_str(&body_to_string(first.into_body()).await).expect("json");
-        let total = parsed["total"].as_u64().expect("total");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let parsed: Value = serde_json::from_str(&body_to_string(first.into_body()).await?)
+            .map_err(|e| format!("json: {e:?}"))?;
+        let total = parsed["total"].as_u64().ok_or("total")?;
         assert_eq!(total, 2, "filtered total should be 2, not the store's 3");
 
         // Walk pages of size 1 by `total` and collect exactly `total` rows.
@@ -12697,18 +13068,19 @@ mod tests {
         while offset < total {
             let uri = format!("{filter}&offset={offset}&limit={limit}");
             let r = build_router(state.clone())
-                .oneshot(test_request(&uri))
+                .oneshot(test_request(&uri)?)
                 .await
-                .expect("oneshot");
-            let p: Value =
-                serde_json::from_str(&body_to_string(r.into_body()).await).expect("json");
-            collected += p["dialogs"].as_array().expect("array").len() as u64;
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            let p: Value = serde_json::from_str(&body_to_string(r.into_body()).await?)
+                .map_err(|e| format!("json: {e:?}"))?;
+            collected += p["dialogs"].as_array().ok_or("array")?.len() as u64;
             offset += limit;
         }
         assert_eq!(
             collected, total,
             "paging by total must visit exactly the filtered rows"
         );
+        Ok(())
     }
 
     // ── metrics with stream data ──────────────────────────────────────
@@ -12716,16 +13088,16 @@ mod tests {
     /// `/metrics` with stream data returns 200, the Prometheus content
     /// type, and `sipnab_` metrics.
     #[tokio::test]
-    async fn get_metrics_with_streams_populates_rtp() {
+    async fn get_metrics_with_streams_populates_rtp() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
-        add_stream(&state, 0x6666_6666, 26000, 36000);
+        populate_dialogs(&state)?;
+        add_stream(&state, 0x6666_6666, 26000, 36000)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/metrics"))
+            .oneshot(test_request("/metrics")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
         // content-type header set by the handler
         let ct = resp
@@ -12735,8 +13107,9 @@ mod tests {
             .unwrap_or("");
         assert!(ct.contains("text/plain"), "got content-type: {ct}");
 
-        let body = body_to_string(resp.into_body()).await;
+        let body = body_to_string(resp.into_body()).await?;
         assert!(body.contains("sipnab_"));
+        Ok(())
     }
 
     // ── stats with empty stores ───────────────────────────────────────
@@ -12744,120 +13117,139 @@ mod tests {
     /// `/v1/stats` on empty stores reports total 0 and `null` PDD
     /// percentiles.
     #[tokio::test]
-    async fn stats_empty_store_has_null_percentiles() {
+    async fn stats_empty_store_has_null_percentiles() -> Result<(), TestError> {
         let state = make_state();
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/stats"))
+            .oneshot(test_request("/v1/stats")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(parsed["dialogs"]["total"], 0);
         // percentile(&[], _) is None -> serialized as null
         assert!(parsed["timing"]["pdd_p50_ms"].is_null());
+        Ok(())
     }
 
     // ── auth guard arms ───────────────────────────────────────────────
 
     /// With no credential configured, auth is disabled and requests pass.
     #[tokio::test]
-    async fn auth_no_key_configured_allows_request() {
+    async fn auth_no_key_configured_allows_request() -> Result<(), TestError> {
         // make_state has api_key = None -> check_auth short-circuits to Ok.
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let app = build_router(state);
 
         let resp = app
-            .oneshot(test_request("/v1/dialogs"))
+            .oneshot(test_request("/v1/dialogs")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
+        Ok(())
     }
 
     /// A non-Bearer scheme (`Basic ...`) is rejected with 401.
     #[tokio::test]
-    async fn auth_non_bearer_scheme_returns_401() {
+    async fn auth_non_bearer_scheme_returns_401() -> Result<(), TestError> {
         let state = make_state_with_key("secret-key");
         let app = build_router(state);
 
         // "Basic ..." does not start with "Bearer " -> 401.
-        let req = test_request_with_header("/v1/dialogs", "Authorization", "Basic secret-key");
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Basic secret-key")?;
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
     }
 
     /// An Authorization value that fails `to_str()` (non-visible-ASCII) is
     /// rejected with 401.
     #[tokio::test]
-    async fn auth_non_ascii_header_returns_401() {
+    async fn auth_non_ascii_header_returns_401() -> Result<(), TestError> {
         let state = make_state_with_key("secret-key");
         let app = build_router(state);
 
         // A non-visible-ASCII header value makes to_str() fail -> 401.
-        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer \u{00ff}key");
-        let resp = app.oneshot(req).await.expect("oneshot");
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer \u{00ff}key")?;
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
     }
 
     /// `/health` bypasses the guard: 200 "ok" even with a key configured.
     #[tokio::test]
-    async fn health_check_ignores_rate_limit_and_auth() {
+    async fn health_check_ignores_rate_limit_and_auth() -> Result<(), TestError> {
         // /health is not guarded; works even with a key configured.
         let state = make_state_with_key("secret-key");
         let app = build_router(state);
 
-        let resp = app.oneshot(test_request("/health")).await.expect("oneshot");
+        let resp = app
+            .oneshot(test_request("/health")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(body_to_string(resp.into_body()).await, "ok");
+        assert_eq!(body_to_string(resp.into_body()).await?, "ok");
+        Ok(())
     }
 
     // ── helper unit tests ─────────────────────────────────────────────
 
     /// Any percentile of a single-element slice is that element.
     #[test]
-    fn percentile_single_element() {
+    fn percentile_single_element() -> Result<(), TestError> {
         let one = vec![42];
         assert_eq!(percentile(&one, 0), Some(42));
         assert_eq!(percentile(&one, 50), Some(42));
         assert_eq!(percentile(&one, 100), Some(42));
+        Ok(())
     }
 
     /// Percentiles of an empty slice are `None`.
     #[test]
-    fn percentile_empty_is_none() {
+    fn percentile_empty_is_none() -> Result<(), TestError> {
         assert_eq!(percentile(&[], 50), None);
         assert_eq!(percentile(&[], 99), None);
+        Ok(())
     }
 
     /// A loss-free, jitter-free PCMU stream scores between 3.0 and 5.0.
     #[test]
-    fn approximate_mos_clean_stream_is_high() {
+    fn approximate_mos_clean_stream_is_high() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x7777_7777, 27000, 37000);
+        add_stream(&state, 0x7777_7777, 27000, 37000)?;
         let ss = state.stream_store.read();
-        let s = ss.iter().next().expect("one stream");
+        let s = ss.iter().next().ok_or("one stream")?;
         let mos = approximate_mos(s, quality::MosDelay::from_capture(&ss));
         // A loss-free, jitter-free PCMU stream should score well above 3.0.
         assert!(mos > 3.0, "expected good MOS, got {mos}");
         assert!(mos <= 5.0, "MOS should not exceed ceiling, got {mos}");
+        Ok(())
     }
 
     /// `dialog_summary` emits the canonical projection keys (`call_id`,
     /// `method`, `timing`, `created_at`).
     #[test]
-    fn dialog_summary_shape() {
+    fn dialog_summary_shape() -> Result<(), TestError> {
         let state = make_state();
-        populate_dialogs(&state);
+        populate_dialogs(&state)?;
         let ds = state.dialog_store.read();
-        let d = ds.iter().next().expect("one dialog");
+        let d = ds.iter().next().ok_or("one dialog")?;
         let summary = dialog_summary(d);
         assert!(summary["call_id"].is_string());
         assert_eq!(summary["method"], "INVITE");
         assert!(summary["timing"].is_object());
         assert!(summary["created_at"].is_string());
+        Ok(())
     }
 
     /// The REST stream row CARRIES a round trip when the store has one, and
@@ -12872,13 +13264,13 @@ mod tests {
     ///
     /// A text scan cannot express "the handler fills this in". This can.
     #[test]
-    fn stream_summary_carries_a_round_trip_when_one_was_reported() {
+    fn stream_summary_carries_a_round_trip_when_one_was_reported() -> Result<(), TestError> {
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport, RtcpPacket};
 
         let state = make_state();
-        add_stream(&state, 0x7777_7777, 29000, 39000);
+        add_stream(&state, 0x7777_7777, 29000, 39000)?;
 
-        let seen_at = chrono::DateTime::from_timestamp(1_700_000_100, 0).expect("ts");
+        let seen_at = chrono::DateTime::from_timestamp(1_700_000_100, 0).ok_or("ts")?;
         {
             let mut ss = state.stream_store.write();
             ss.process_rtcp(
@@ -12902,26 +13294,27 @@ mod tests {
         }
 
         let ss = state.stream_store.read();
-        let s = ss.iter().next().expect("one stream");
+        let s = ss.iter().next().ok_or("one stream")?;
         let v = stream_summary(s, &ss);
 
-        let ms = v["round_trip_ms"].as_f64().unwrap_or_else(|| {
-            panic!("the REST row must carry the round trip the store resolved: {v}")
-        });
+        let ms = v["round_trip_ms"].as_f64().ok_or_else(|| {
+            format!("the REST row must carry the round trip the store resolved: {v}")
+        })?;
         assert!(
             (ms - 120.0).abs() < 2.0,
             "expected ~120 ms from the SR echo, got {ms}"
         );
         assert_eq!(v["round_trip_source"], "sender_report_echo");
+        Ok(())
     }
 
     /// A stream nobody reported on omits the key rather than reporting 0 ms.
     #[test]
-    fn stream_summary_omits_the_round_trip_when_nothing_measured_one() {
+    fn stream_summary_omits_the_round_trip_when_nothing_measured_one() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x6666_6666, 27000, 37000);
+        add_stream(&state, 0x6666_6666, 27000, 37000)?;
         let ss = state.stream_store.read();
-        let s = ss.iter().next().expect("one stream");
+        let s = ss.iter().next().ok_or("one stream")?;
         let v = stream_summary(s, &ss);
 
         assert!(
@@ -12931,16 +13324,17 @@ mod tests {
         // Anti-vacuity: the row is otherwise populated, so the absence above is
         // about the round trip and not about an empty summary.
         assert!(v["jitter_ms"].is_number() && v["mos"].is_number());
+        Ok(())
     }
 
     /// `stream_summary` emits `0x`-prefixed SSRC, numeric MOS, and
     /// `orphaned`.
     #[test]
-    fn stream_summary_shape() {
+    fn stream_summary_shape() -> Result<(), TestError> {
         let state = make_state();
-        add_stream(&state, 0x8888_8888, 28000, 38000);
+        add_stream(&state, 0x8888_8888, 28000, 38000)?;
         let ss = state.stream_store.read();
-        let s = ss.iter().next().expect("one stream");
+        let s = ss.iter().next().ok_or("one stream")?;
         let summary = stream_summary(s, &ss);
         assert_eq!(summary["ssrc"], "0x88888888");
         assert!(summary["mos"].is_number());
@@ -12948,41 +13342,46 @@ mod tests {
         // `orphaned` reports. It read `false` here while the flag waited out a
         // 30-second timeout that a test never advances past.
         assert_eq!(summary["orphaned"], true);
+        Ok(())
     }
 
     /// Port 0 (OS-assigned ephemeral) parses to loopback:0.
     #[test]
-    fn parse_bind_addr_port_zero() {
-        let addr = parse_bind_addr("0").expect("parse");
+    fn parse_bind_addr_port_zero() -> Result<(), TestError> {
+        let addr = parse_bind_addr("0").map_err(|e| format!("parse: {e:?}"))?;
         assert_eq!(addr.port(), 0);
         assert!(addr.ip().is_loopback());
+        Ok(())
     }
 
     /// A bare ":" is rejected (empty port).
     #[test]
-    fn parse_bind_addr_colon_only_is_invalid() {
+    fn parse_bind_addr_colon_only_is_invalid() -> Result<(), TestError> {
         // ":" strips to empty, which is not a valid u16 and not a SocketAddr.
         assert!(parse_bind_addr(":").is_err());
+        Ok(())
     }
 
     /// A port above `u16::MAX` is rejected on every parse branch.
     #[test]
-    fn parse_bind_addr_out_of_range_port_is_invalid() {
+    fn parse_bind_addr_out_of_range_port_is_invalid() -> Result<(), TestError> {
         // 70000 > u16::MAX so the bare-port branch fails, then SocketAddr parse fails.
         assert!(parse_bind_addr("70000").is_err());
+        Ok(())
     }
 
     /// A bracketed IPv6 `[::1]:port` address parses.
     #[test]
-    fn parse_bind_addr_ipv6_full() {
-        let addr = parse_bind_addr("[::1]:8080").expect("parse");
+    fn parse_bind_addr_ipv6_full() -> Result<(), TestError> {
+        let addr = parse_bind_addr("[::1]:8080").map_err(|e| format!("parse: {e:?}"))?;
         assert_eq!(addr.port(), 8080);
         assert!(addr.ip().is_loopback());
+        Ok(())
     }
 
     /// Each source IP gets its own rate-limit bucket.
     #[test]
-    fn rate_limiter_separate_ips_independent() {
+    fn rate_limiter_separate_ips_independent() -> Result<(), TestError> {
         let mut limiter = RateLimiter::new(1, 1024);
         let ip_a = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
         let ip_b = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
@@ -12991,6 +13390,7 @@ mod tests {
         assert!(limiter.check(ip_b));
         // ip_a is now over its limit.
         assert!(!limiter.check(ip_a));
+        Ok(())
     }
 
     // ── The persistence runtime gate ────────────────────────────────
@@ -13007,51 +13407,57 @@ mod tests {
     /// The bearer key every persistence test authenticates with.
     const GATE_KEY: &str = "gate-test-key";
 
-    fn test_post(uri: &str, body: &str) -> Request<Body> {
+    fn test_post(uri: &str, body: &str) -> Result<Request<Body>, TestError> {
         let mut req = Request::builder()
             .method("POST")
             .uri(uri)
             .header("content-type", "application/json")
             .body(Body::from(body.to_owned()))
-            .expect("build request");
+            .map_err(|e| format!("build request: {e:?}"))?;
         req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
             IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             12345,
         )));
-        req
+        Ok(req)
     }
 
-    fn test_post_with_key(uri: &str, body: &str, key: &str) -> Request<Body> {
-        let mut req = test_post(uri, body);
+    fn test_post_with_key(uri: &str, body: &str, key: &str) -> Result<Request<Body>, TestError> {
+        let mut req = test_post(uri, body)?;
         req.headers_mut().insert(
             "authorization",
-            format!("Bearer {key}").parse().expect("header value"),
+            format!("Bearer {key}")
+                .parse()
+                .map_err(|e| format!("header value: {e:?}"))?,
         );
-        req
+        Ok(req)
     }
 
-    fn test_get_with_key(uri: &str, key: &str) -> Request<Body> {
+    fn test_get_with_key(uri: &str, key: &str) -> Result<Request<Body>, TestError> {
         test_request_with_header(uri, "authorization", &format!("Bearer {key}"))
     }
 
-    async fn json_of(resp: axum::response::Response) -> Value {
-        serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON")
+    async fn json_of(resp: axum::response::Response) -> Result<Value, TestError> {
+        Ok(
+            serde_json::from_str(&body_to_string(resp.into_body()).await?)
+                .map_err(|e| format!("valid JSON: {e:?}"))?,
+        )
     }
 
     // ── The TFPS routes ──────────────────────────────────────────────
 
     /// A `tfps_ctl` that prints `text`, in its own directory.
-    fn fake_tfps(text: &str) -> tempfile::TempDir {
+    fn fake_tfps(text: &str) -> Result<tempfile::TempDir, TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("tfps_ctl");
         std::fs::write(
             &path,
             format!("#!/bin/sh\ncat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE\n"),
         )
-        .expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        dir
+        .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        Ok(dir)
     }
 
     /// The static key the TFPS tests read with. Static keys are `full`, so
@@ -13088,9 +13494,11 @@ mod tests {
     }
 
     /// TFPS actions enabled for REST, as `--allow-action tfps:rest` does.
-    fn tfps_rest_actions() -> crate::security::actions::ActionPolicy {
-        crate::security::actions::ActionPolicy::from_settings(&["tfps:rest".to_string()], &[])
-            .expect("a valid value")
+    fn tfps_rest_actions() -> Result<crate::security::actions::ActionPolicy, TestError> {
+        Ok(
+            crate::security::actions::ActionPolicy::from_settings(&["tfps:rest".to_string()], &[])
+                .map_err(|e| format!("a valid value: {e:?}"))?,
+        )
     }
     /// Every outcome `ban` can answer with, one per line.
     const BAN: &str = include_str!("../../tests/fixtures/tfps-ban-golden.jsonl");
@@ -13100,45 +13508,48 @@ mod tests {
     fn tfps_rest_service(
         dir: &tempfile::TempDir,
         locator: &crate::security::tfps::TfpsLocator,
-    ) -> crate::security::actions::Actions {
+    ) -> Result<crate::security::actions::Actions, TestError> {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let journal = dir.path().join(format!("journal-for-state-{n}"));
         let (service, _) = crate::security::actions::ActionService::start(
-            tfps_rest_actions(),
+            tfps_rest_actions()?,
             crate::security::actions::ActionLimits::default(),
             &journal,
             Arc::new(crate::security::actions::TfpsCtl::new(locator.clone())),
             1_756_900_000,
             std::time::Instant::now(),
         )
-        .expect("a journal in a fresh directory");
-        crate::security::actions::Actions::with_service(tfps_rest_actions(), Arc::new(service))
+        .map_err(|e| format!("a journal in a fresh directory: {e:?}"))?;
+        Ok(crate::security::actions::Actions::with_service(
+            tfps_rest_actions()?,
+            Arc::new(service),
+        ))
     }
 
     /// State whose locator names the fake in `dir`.
-    fn state_with_tfps(dir: &tempfile::TempDir) -> ApiState {
+    fn state_with_tfps(dir: &tempfile::TempDir) -> Result<ApiState, TestError> {
         let tfps = crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None);
-        ApiState {
+        Ok(ApiState {
             relay_query: Default::default(),
-            actions: tfps_rest_service(dir, &tfps),
+            actions: tfps_rest_service(dir, &tfps)?,
             tfps,
             verifier: tfps_verifier(),
             ..make_state_with_key(TFPS_KEY)
-        }
+        })
     }
 
     /// State on a machine with no TFPS: the search path is an empty dir.
-    fn state_without_tfps(dir: &tempfile::TempDir) -> ApiState {
+    fn state_without_tfps(dir: &tempfile::TempDir) -> Result<ApiState, TestError> {
         let tfps = crate::security::tfps::TfpsLocator::new(None, None)
             .with_search_path(dir.path().as_os_str());
-        ApiState {
+        Ok(ApiState {
             relay_query: Default::default(),
-            actions: tfps_rest_service(dir, &tfps),
+            actions: tfps_rest_service(dir, &tfps)?,
             tfps,
             verifier: tfps_verifier(),
             ..make_state_with_key(TFPS_KEY)
-        }
+        })
     }
 
     /// The ordinary case: no TFPS, and every read says so with `200`.
@@ -13147,32 +13558,32 @@ mod tests {
     /// not run, so a ban is `502` naming what is missing. An unban is refused
     /// before TFPS is asked at all, because sipnab placed no ban to lift.
     #[tokio::test]
-    async fn every_tfps_route_answers_installed_false_on_a_bare_machine() {
-        let empty = tempfile::tempdir().expect("tempdir");
-        let resp = build_router(state_without_tfps(&empty))
+    async fn every_tfps_route_answers_installed_false_on_a_bare_machine() -> Result<(), TestError> {
+        let empty = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let resp = build_router(state_without_tfps(&empty)?)
             .oneshot(test_post_with_key(
                 "/v1/tfps/ban",
                 r#"{"ip":"198.51.100.20"}"#,
                 &tfps_action_token(),
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
-        let v = json_of(resp).await;
+        let v = json_of(resp).await?;
         assert!(
             v["detail"]
                 .as_str()
                 .is_some_and(|d| d.contains(crate::security::tfps::NOT_INSTALLED_REASON)),
             "{v}"
         );
-        let resp = build_router(state_without_tfps(&empty))
+        let resp = build_router(state_without_tfps(&empty)?)
             .oneshot(test_post_with_key(
                 "/v1/tfps/unban",
                 r#"{"ip":"198.51.100.20"}"#,
                 &tfps_action_token(),
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         for uri in [
             "/v1/tfps/status",
@@ -13181,13 +13592,13 @@ mod tests {
             "/v1/tfps/labels",
         ] {
             let method = "GET";
-            let app = build_router(state_without_tfps(&empty));
+            let app = build_router(state_without_tfps(&empty)?);
             let resp = app
-                .oneshot(test_get_with_key(uri, TFPS_KEY))
+                .oneshot(test_get_with_key(uri, TFPS_KEY)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
-            let v = json_of(resp).await;
+            let v = json_of(resp).await?;
             assert_eq!(
                 v,
                 json!({
@@ -13197,20 +13608,21 @@ mod tests {
                 "{method} {uri}"
             );
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn the_tfps_routes_answer_the_contract_when_the_peer_is_there() {
+    async fn the_tfps_routes_answer_the_contract_when_the_peer_is_there() -> Result<(), TestError> {
         const STATUS: &str = include_str!("../../tests/fixtures/tfps-status-golden.json");
         const BANNED: &str = include_str!("../../tests/fixtures/tfps-banned-golden.jsonl");
 
-        let dir = fake_tfps(STATUS);
-        let resp = build_router(state_with_tfps(&dir))
-            .oneshot(test_get_with_key("/v1/tfps/status", TFPS_KEY))
+        let dir = fake_tfps(STATUS)?;
+        let resp = build_router(state_with_tfps(&dir)?)
+            .oneshot(test_get_with_key("/v1/tfps/status", TFPS_KEY)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let v = json_of(resp).await;
+        let v = json_of(resp).await?;
         assert_eq!(v["installed"], true);
         assert_eq!(v["status"]["blocked_now"], 3);
         assert_eq!(
@@ -13218,14 +13630,14 @@ mod tests {
             dir.path().join("tfps_ctl").display().to_string()
         );
 
-        let dir = fake_tfps(BANNED);
+        let dir = fake_tfps(BANNED)?;
         let v = json_of(
-            build_router(state_with_tfps(&dir))
-                .oneshot(test_get_with_key("/v1/tfps/banned", TFPS_KEY))
+            build_router(state_with_tfps(&dir)?)
+                .oneshot(test_get_with_key("/v1/tfps/banned", TFPS_KEY)?)
                 .await
-                .expect("oneshot"),
+                .map_err(|e| format!("oneshot: {e:?}"))?,
         )
-        .await;
+        .await?;
         assert_eq!(v["total"], 3);
         assert_eq!(v["returned"], 3);
         assert_eq!(v["truncated"], false);
@@ -13239,32 +13651,33 @@ mod tests {
             "null survives the round trip"
         );
 
-        let dir = fake_tfps(BAN.lines().next().expect("a line"));
+        let dir = fake_tfps(BAN.lines().next().ok_or("a line")?)?;
         let v = json_of(
-            build_router(state_with_tfps(&dir))
+            build_router(state_with_tfps(&dir)?)
                 .oneshot(test_post_with_key(
                     "/v1/tfps/ban",
                     r#"{"ip":"198.51.100.20","ttl_secs":60}"#,
                     &tfps_action_token(),
-                ))
+                )?)
                 .await
-                .expect("oneshot"),
+                .map_err(|e| format!("oneshot: {e:?}"))?,
         )
-        .await;
+        .await?;
         assert_eq!(v["applied"], true, "{v}");
         assert!(
             v["id"].as_str().is_some_and(|id| id.starts_with("a-")),
             "{v}"
         );
+        Ok(())
     }
 
     /// The labels route asks TFPS for no more than a page: the page and one
     /// row when no limit fits in it, the caller's limit when one does.
     #[tokio::test]
-    async fn the_labels_route_asks_tfps_for_no_more_than_a_page() {
+    async fn the_labels_route_asks_tfps_for_no_more_than_a_page() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
         const LABELS: &str = include_str!("../../tests/fixtures/tfps-labels-golden.jsonl");
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let log = dir.path().join("argv");
         let path = dir.path().join("tfps_ctl");
         std::fs::write(
@@ -13274,83 +13687,89 @@ mod tests {
                 log.display()
             ),
         )
-        .expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e:?}"))?;
         for (query, sent) in [
             ("", "log --json --limit 3"),
             ("?limit=0", "log --json --limit 3"),
             ("?limit=1", "log --json --limit 1"),
             ("?limit=99", "log --json --limit 3"),
         ] {
-            let mut state = state_with_tfps(&dir);
+            let mut state = state_with_tfps(&dir)?;
             state.max_rows = 2;
             let resp = build_router(state)
                 .oneshot(test_get_with_key(
                     &format!("/v1/tfps/labels{query}"),
                     TFPS_KEY,
-                ))
+                )?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK, "{query}");
-            let argv = std::fs::read_to_string(&log).expect("the fake recorded its argv");
+            let argv = std::fs::read_to_string(&log)
+                .map_err(|e| format!("the fake recorded its argv: {e:?}"))?;
             assert_eq!(argv.trim(), sent, "{query}");
         }
+        Ok(())
     }
 
     /// The row cap applies here as it does to every list route.
     #[tokio::test]
-    async fn a_tfps_list_is_bounded_by_the_api_row_cap() {
+    async fn a_tfps_list_is_bounded_by_the_api_row_cap() -> Result<(), TestError> {
         const LABELS: &str = include_str!("../../tests/fixtures/tfps-labels-golden.jsonl");
-        let dir = fake_tfps(LABELS);
-        let mut state = state_with_tfps(&dir);
+        let dir = fake_tfps(LABELS)?;
+        let mut state = state_with_tfps(&dir)?;
         state.max_rows = 2;
         let v = json_of(
             build_router(state)
-                .oneshot(test_get_with_key("/v1/tfps/labels?limit=0", TFPS_KEY))
+                .oneshot(test_get_with_key("/v1/tfps/labels?limit=0", TFPS_KEY)?)
                 .await
-                .expect("oneshot"),
+                .map_err(|e| format!("oneshot: {e:?}"))?,
         )
-        .await;
+        .await?;
         assert_eq!(v["total"], 3);
         assert_eq!(v["returned"], 2);
         assert_eq!(v["truncated"], true);
+        Ok(())
     }
 
     /// A refusal TFPS signals with exit 1 is `200` with `applied: false` and
     /// the reason: TFPS's answer, reported as given.
     #[tokio::test]
-    async fn a_refused_ban_is_reported_not_raised() {
+    async fn a_refused_ban_is_reported_not_raised() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("tfps_ctl");
-        let refused = BAN.lines().nth(2).expect("the self refusal");
+        let refused = BAN.lines().nth(2).ok_or("the self refusal")?;
         std::fs::write(
             &path,
             format!(
                 "#!/bin/sh\ncat <<'SIPNAB_FIXTURE'\n{refused}\nSIPNAB_FIXTURE\necho 'error: 1 of 1 refused' >&2\nexit 1\n"
             ),
         )
-        .expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let resp = build_router(state_with_tfps(&dir))
+        .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let resp = build_router(state_with_tfps(&dir)?)
             .oneshot(test_post_with_key(
                 "/v1/tfps/ban",
                 r#"{"ip":"192.0.2.1"}"#,
                 &tfps_action_token(),
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let v = json_of(resp).await;
+        let v = json_of(resp).await?;
         assert_eq!(v["applied"], false);
         assert_eq!(v["refused"], "local");
+        Ok(())
     }
 
     /// An address that is not one, or a body with a key the route does not
     /// know, is `400` -- and the peer is never asked.
     #[tokio::test]
-    async fn a_ban_with_a_bad_address_or_an_unknown_key_is_refused() {
-        let dir = fake_tfps(BAN.lines().next().expect("a line"));
+    async fn a_ban_with_a_bad_address_or_an_unknown_key_is_refused() -> Result<(), TestError> {
+        let dir = fake_tfps(BAN.lines().next().ok_or("a line")?)?;
         for body in [
             r#"{"ip":"not-an-address"}"#,
             r#"{"ip":"198.51.100.20","ttl":60}"#,
@@ -13363,32 +13782,34 @@ mod tests {
             r#"{"ip":"2001:db8::1"}"#,
         ] {
             for route in ["/v1/tfps/ban", "/v1/tfps/unban"] {
-                let resp = build_router(state_with_tfps(&dir))
-                    .oneshot(test_post_with_key(route, body, &tfps_action_token()))
+                let resp = build_router(state_with_tfps(&dir)?)
+                    .oneshot(test_post_with_key(route, body, &tfps_action_token())?)
                     .await
-                    .expect("oneshot");
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
                 assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{route} {body}");
             }
         }
+        Ok(())
     }
 
     /// The peer failing is `502`, as `application/problem+json`, with its
     /// standard error verbatim in `detail`.
     #[tokio::test]
-    async fn a_failing_peer_is_a_502_problem_carrying_its_stderr() {
+    async fn a_failing_peer_is_a_502_problem_carrying_its_stderr() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("tfps_ctl");
         std::fs::write(
             &path,
             "#!/bin/sh\necho 'tfps.db: database is locked' >&2\nexit 3\n",
         )
-        .expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let resp = build_router(state_with_tfps(&dir))
-            .oneshot(test_get_with_key("/v1/tfps/status", TFPS_KEY))
+        .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let resp = build_router(state_with_tfps(&dir)?)
+            .oneshot(test_get_with_key("/v1/tfps/status", TFPS_KEY)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
             resp.headers()
@@ -13396,7 +13817,7 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("application/problem+json")
         );
-        let v = json_of(resp).await;
+        let v = json_of(resp).await?;
         assert_eq!(v["type"], "https://sipnab.com/problems/bad-gateway");
         assert_eq!(v["status"], 502);
         assert!(
@@ -13405,6 +13826,7 @@ mod tests {
                 .is_some_and(|d| d.contains("tfps.db: database is locked")),
             "{v}"
         );
+        Ok(())
     }
 
     /// A control that stops call content reaching disk is not public.
@@ -13414,15 +13836,15 @@ mod tests {
     /// unauthenticated caller able to switch recording off on a production
     /// capture.
     #[tokio::test]
-    async fn the_persistence_route_requires_the_api_key() {
+    async fn the_persistence_route_requires_the_api_key() -> Result<(), TestError> {
         let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
         let app = build_router(make_state_with_gate(&gate));
 
         let resp = app
             .clone()
-            .oneshot(test_post("/v1/persistence", r#"{"enabled":false}"#))
+            .oneshot(test_post("/v1/persistence", r#"{"enabled":false}"#)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(
             gate.writes_permitted(),
@@ -13430,15 +13852,16 @@ mod tests {
         );
 
         let resp = app
-            .oneshot(test_request("/v1/persistence"))
+            .oneshot(test_request("/v1/persistence")?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "reading the gate is as guarded as moving it: it reports whether \
              this capture is writing content"
         );
+        Ok(())
     }
 
     /// A request body past the documented 1 MiB is a 413 on every route
@@ -13452,7 +13875,7 @@ mod tests {
     /// limit is read and obeyed, which proves the limit sits at the documented
     /// 1 MiB and not below it.
     #[tokio::test]
-    async fn oversized_request_body_is_rejected_with_413() {
+    async fn oversized_request_body_is_rejected_with_413() -> Result<(), TestError> {
         let padded = |len: usize| {
             let json = r#"{"enabled":false}"#;
             format!("{json}{}", " ".repeat(len - json.len()))
@@ -13466,9 +13889,9 @@ mod tests {
 
         let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
         let resp = build_router(make_state_with_gate(&gate))
-            .oneshot(test_post_with_key("/v1/persistence", &over, GATE_KEY))
+            .oneshot(test_post_with_key("/v1/persistence", &over, GATE_KEY)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(
             resp.status(),
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -13479,36 +13902,37 @@ mod tests {
             "a refused body must not move the gate"
         );
         let resp = build_router(make_state_with_gate(&gate))
-            .oneshot(test_post_with_key("/v1/persistence", &under, GATE_KEY))
+            .oneshot(test_post_with_key("/v1/persistence", &under, GATE_KEY)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(
             resp.status(),
             StatusCode::OK,
             "a body at the limit is read, and this one closes the gate"
         );
 
-        let empty = tempfile::tempdir().expect("tempdir");
+        let empty = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         for uri in ["/v1/tfps/ban", "/v1/tfps/unban"] {
-            let resp = build_router(state_without_tfps(&empty))
-                .oneshot(test_post_with_key(uri, &over, &tfps_action_token()))
+            let resp = build_router(state_without_tfps(&empty)?)
+                .oneshot(test_post_with_key(uri, &over, &tfps_action_token())?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
         }
 
         #[cfg(feature = "vcon")]
         {
             let resp = build_router(make_state())
-                .oneshot(test_post("/v1/vcon/validate", &over))
+                .oneshot(test_post("/v1/vcon/validate", &over)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(
                 resp.status(),
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "/v1/vcon/validate"
             );
         }
+        Ok(())
     }
 
     /// Closing over REST is visible to the next read, and to the exporter.
@@ -13517,7 +13941,7 @@ mod tests {
     /// exporter hold `Arc` clones of one gate; a state that had copied it
     /// would pass the round-trip and still write containers.
     #[tokio::test]
-    async fn closing_the_gate_over_rest_reaches_the_exporter() {
+    async fn closing_the_gate_over_rest_reaches_the_exporter() -> Result<(), TestError> {
         let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
         let app = build_router(make_state_with_gate(&gate));
 
@@ -13527,11 +13951,11 @@ mod tests {
                 "/v1/persistence",
                 r#"{"enabled":false}"#,
                 GATE_KEY,
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = json_of(resp).await;
+        let body = json_of(resp).await?;
         assert_eq!(body["enabled"], false);
         assert_eq!(body["authorized"], true);
 
@@ -13541,13 +13965,14 @@ mod tests {
         );
 
         let resp = app
-            .oneshot(test_get_with_key("/v1/persistence", GATE_KEY))
+            .oneshot(test_get_with_key("/v1/persistence", GATE_KEY)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = json_of(resp).await;
+        let body = json_of(resp).await?;
         assert_eq!(body["enabled"], false, "the next read agrees");
         assert_eq!(body["authorized"], true);
+        Ok(())
     }
 
     /// Enabling on a run the command line never authorized says so.
@@ -13555,7 +13980,8 @@ mod tests {
     /// A bare 200 would read as success to a client that asked to enable, and
     /// the client would go on believing content was being written.
     #[tokio::test]
-    async fn enabling_persistence_on_an_unauthorized_run_reports_that_it_did_nothing() {
+    async fn enabling_persistence_on_an_unauthorized_run_reports_that_it_did_nothing()
+    -> Result<(), TestError> {
         let gate = Arc::new(crate::output::persistence::PersistenceGate::new(false));
         let app = build_router(make_state_with_gate(&gate));
 
@@ -13564,11 +13990,11 @@ mod tests {
                 "/v1/persistence",
                 r#"{"enabled":true}"#,
                 GATE_KEY,
-            ))
+            )?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = json_of(resp).await;
+        let body = json_of(resp).await?;
         assert_eq!(body["enabled"], false, "nothing was enabled");
         assert_eq!(
             body["authorized"], false,
@@ -13576,6 +14002,7 @@ mod tests {
              is a different answer from an operator having closed the gate"
         );
         assert!(!gate.writes_permitted());
+        Ok(())
     }
 
     /// A body the handler cannot read never opens the gate.
@@ -13583,7 +14010,7 @@ mod tests {
     /// The dangerous direction for a parse failure is a default of `true`.
     /// Each of these is rejected with the gate left where it was.
     #[tokio::test]
-    async fn a_body_the_handler_cannot_read_never_opens_the_gate() {
+    async fn a_body_the_handler_cannot_read_never_opens_the_gate() -> Result<(), TestError> {
         for body in [
             "",
             "not json",
@@ -13599,9 +14026,9 @@ mod tests {
             let app = build_router(make_state_with_gate(&gate));
 
             let resp = app
-                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert!(
                 resp.status().is_client_error(),
                 "body {body:?} was accepted; a body the handler cannot read \
@@ -13612,6 +14039,7 @@ mod tests {
                 "body {body:?} reopened a closed gate"
             );
         }
+        Ok(())
     }
 
     /// A JSON sequence never reaches the gate.
@@ -13622,16 +14050,16 @@ mod tests {
     /// arrived as `enabled: true` and reopened a gate an operator had closed.
     /// A one-field struct makes the array that does it a single token long.
     #[tokio::test]
-    async fn a_json_sequence_never_reaches_the_gate() {
+    async fn a_json_sequence_never_reaches_the_gate() -> Result<(), TestError> {
         for body in ["[true]", "[false]", "[]", r#"[true,"ignored"]"#, "[[true]]"] {
             let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
             gate.set(false);
             let app = build_router(make_state_with_gate(&gate));
 
             let resp = app
-                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(
                 resp.status(),
                 StatusCode::BAD_REQUEST,
@@ -13642,6 +14070,7 @@ mod tests {
                 "sequence body {body:?} reopened a closed gate"
             );
         }
+        Ok(())
     }
 
     /// A sequence cannot close the gate either.
@@ -13651,19 +14080,20 @@ mod tests {
     /// array, and the next field added to the request struct would decide
     /// which array position meant what.
     #[tokio::test]
-    async fn a_sequence_cannot_move_the_gate_in_either_direction() {
+    async fn a_sequence_cannot_move_the_gate_in_either_direction() -> Result<(), TestError> {
         let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
         let app = build_router(make_state_with_gate(&gate));
 
         let resp = app
-            .oneshot(test_post_with_key("/v1/persistence", "[false]", GATE_KEY))
+            .oneshot(test_post_with_key("/v1/persistence", "[false]", GATE_KEY)?)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert!(
             gate.writes_permitted(),
             "a sequence closed the gate; the shape is refused, not the value"
         );
+        Ok(())
     }
 
     /// An object with an unknown key is refused rather than half-read.
@@ -13673,7 +14103,7 @@ mod tests {
     /// things and meant one, and guessing which is the reading that ends with
     /// content on disk nobody asked for.
     #[tokio::test]
-    async fn an_object_with_an_unknown_key_is_refused() {
+    async fn an_object_with_an_unknown_key_is_refused() -> Result<(), TestError> {
         for body in [
             r#"{"enabled":true,"enable":false}"#,
             r#"{"enabled":true,"forever":true}"#,
@@ -13683,9 +14113,9 @@ mod tests {
             let app = build_router(make_state_with_gate(&gate));
 
             let resp = app
-                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(
                 resp.status(),
                 StatusCode::BAD_REQUEST,
@@ -13693,6 +14123,7 @@ mod tests {
             );
             assert!(!gate.writes_permitted(), "body {body:?} moved the gate");
         }
+        Ok(())
     }
 
     /// Exactly one body shape moves the gate.
@@ -13701,7 +14132,7 @@ mod tests {
     /// of has to be added to the accepted list deliberately. The two accepted
     /// rows are the whole documented surface of this route.
     #[tokio::test]
-    async fn exactly_one_body_shape_moves_the_gate() {
+    async fn exactly_one_body_shape_moves_the_gate() -> Result<(), TestError> {
         let accepted = [
             (r#"{"enabled":true}"#, true),
             (r#"{"enabled":false}"#, false),
@@ -13723,9 +14154,9 @@ mod tests {
             gate.set(!want);
             let app = build_router(make_state_with_gate(&gate));
             let resp = app
-                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK, "body {body:?} was refused");
             assert_eq!(gate.writes_permitted(), want, "body {body:?} did not land");
         }
@@ -13736,9 +14167,9 @@ mod tests {
                 gate.set(start);
                 let app = build_router(make_state_with_gate(&gate));
                 let resp = app
-                    .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                    .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
                     .await
-                    .expect("oneshot");
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
                 assert!(
                     resp.status().is_client_error(),
                     "body {body:?} was accepted"
@@ -13750,11 +14181,12 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Reading the gate does not move it.
     #[tokio::test]
-    async fn reading_the_gate_leaves_it_where_it_was() {
+    async fn reading_the_gate_leaves_it_where_it_was() -> Result<(), TestError> {
         for start_open in [true, false] {
             let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
             gate.set(start_open);
@@ -13763,14 +14195,15 @@ mod tests {
             for _ in 0..3 {
                 let resp = app
                     .clone()
-                    .oneshot(test_get_with_key("/v1/persistence", GATE_KEY))
+                    .oneshot(test_get_with_key("/v1/persistence", GATE_KEY)?)
                     .await
-                    .expect("oneshot");
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
                 assert_eq!(resp.status(), StatusCode::OK);
-                assert_eq!(json_of(resp).await["enabled"], start_open);
+                assert_eq!(json_of(resp).await?["enabled"], start_open);
             }
             assert_eq!(gate.writes_permitted(), start_open, "reads are reads");
         }
+        Ok(())
     }
 
     /// Both doors of the route report the same shape.
@@ -13778,7 +14211,7 @@ mod tests {
     /// A client polls `GET` and acts on `POST`; two shapes would make it parse
     /// twice and eventually parse one of them wrong.
     #[tokio::test]
-    async fn both_doors_report_the_same_shape() {
+    async fn both_doors_report_the_same_shape() -> Result<(), TestError> {
         let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
         let app = build_router(make_state_with_gate(&gate));
 
@@ -13788,18 +14221,19 @@ mod tests {
                     "/v1/persistence",
                     r#"{"enabled":true}"#,
                     GATE_KEY,
-                ))
+                )?)
                 .await
-                .expect("oneshot"),
+                .map_err(|e| format!("oneshot: {e:?}"))?,
         )
-        .await;
+        .await?;
         let got = json_of(
-            app.oneshot(test_get_with_key("/v1/persistence", GATE_KEY))
+            app.oneshot(test_get_with_key("/v1/persistence", GATE_KEY)?)
                 .await
-                .expect("oneshot"),
+                .map_err(|e| format!("oneshot: {e:?}"))?,
         )
-        .await;
+        .await?;
         assert_eq!(posted, got, "POST and GET answer with one shape");
+        Ok(())
     }
     /// A window past what the transport can hold is narrowed, not refused.
     ///
@@ -13807,7 +14241,7 @@ mod tests {
     /// the window that was applied, so the narrowing is visible rather than
     /// silent.
     #[test]
-    fn a_rest_window_past_the_transport_budget_is_narrowed() {
+    fn a_rest_window_past_the_transport_budget_is_narrowed() -> Result<(), TestError> {
         for requested in [crate::output::runtime::MAX_SAMPLE_SECONDS, 600, u32::MAX] {
             assert_eq!(
                 rest_sample_seconds(requested),
@@ -13816,24 +14250,27 @@ mod tests {
                  actually wait out"
             );
         }
+        Ok(())
     }
 
     /// A window the route can wait out survives intact.
     #[test]
-    fn a_rest_window_inside_the_budget_is_returned_unchanged() {
+    fn a_rest_window_inside_the_budget_is_returned_unchanged() -> Result<(), TestError> {
         for requested in [1u32, 2, MAX_REST_SAMPLE_SECONDS] {
             assert_eq!(rest_sample_seconds(requested), Ok(requested));
         }
+        Ok(())
     }
 
     /// Zero is refused here for the same reason it is refused over MCP.
     #[test]
-    fn a_rest_window_of_zero_is_refused() {
+    fn a_rest_window_of_zero_is_refused() -> Result<(), TestError> {
         assert!(
             rest_sample_seconds(0).is_err(),
             "zero deltas is what a quiet capture reports; an empty window must \
              not be answered with one"
         );
+        Ok(())
     }
 }
 
@@ -13850,17 +14287,20 @@ mod archive_password_tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     fn secret(label: &str) -> &'static str {
         crate::test_material::key_str(label)
     }
 
     /// A file root holding `locked.zip` (the G.711 fixture, AES-locked with
     /// `label`) and `plain.pcap`.
-    fn root(label: &str) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tmp");
+    fn root(label: &str) -> Result<tempfile::TempDir, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples/sip-rtp-g711.pcap");
-        let pcap = std::fs::read(&fixture).expect("fixture");
+        let pcap = std::fs::read(&fixture).map_err(|e| format!("fixture: {e:?}"))?;
         std::fs::write(
             dir.path().join("locked.zip"),
             crate::capture::archive::zipped::testutil::build(
@@ -13869,11 +14309,12 @@ mod archive_password_tests {
                     zip::AesMode::Aes256,
                     secret(label).as_bytes(),
                 ),
-            ),
+            )?,
         )
-        .expect("zip");
-        std::fs::copy(&fixture, dir.path().join("plain.pcap")).expect("copy");
-        dir
+        .map_err(|e| format!("zip: {e:?}"))?;
+        std::fs::copy(&fixture, dir.path().join("plain.pcap"))
+            .map_err(|e| format!("copy: {e:?}"))?;
+        Ok(dir)
     }
 
     fn state(root: &std::path::Path, keys: &[&str]) -> ApiState {
@@ -13918,34 +14359,48 @@ mod archive_password_tests {
 
     const COMPARE: &str = "/v1/captures/compare?a=locked.zip&b=plain.pcap&dimensions=state";
 
-    fn request(uri: &str, peer: IpAddr, headers: &[(&str, &str)]) -> Request<Body> {
+    fn request(
+        uri: &str,
+        peer: IpAddr,
+        headers: &[(&str, &str)],
+    ) -> Result<Request<Body>, TestError> {
         let mut b = Request::builder().uri(uri);
         for (k, v) in headers {
             b = b.header(*k, *v);
         }
-        let mut req = b.body(Body::empty()).expect("request");
+        let mut req = b
+            .body(Body::empty())
+            .map_err(|e| format!("request: {e:?}"))?;
         req.extensions_mut()
             .insert(ConnectInfo(SocketAddr::new(peer, 40_000)));
-        req
+        Ok(req)
     }
 
     fn loopback() -> IpAddr {
         IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
     }
 
-    async fn send(state: &ApiState, req: Request<Body>) -> (StatusCode, HeaderMap, String) {
+    async fn send(
+        state: &ApiState,
+        req: Request<Body>,
+    ) -> Result<(StatusCode, HeaderMap, String), TestError> {
         let resp = build_router(state.clone())
             .oneshot(req)
             .await
-            .expect("oneshot");
+            .map_err(|e| format!("oneshot: {e:?}"))?;
         let status = resp.status();
         let headers = resp.headers().clone();
-        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
-        (
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| format!("body: {e:?}"))?
+            .to_bytes();
+        Ok((
             status,
             headers,
             String::from_utf8_lossy(&bytes).into_owned(),
-        )
+        ))
     }
 
     fn no_store(h: &HeaderMap) -> bool {
@@ -13955,8 +14410,8 @@ mod archive_password_tests {
     }
 
     #[tokio::test]
-    async fn the_header_opens_for_one_request_and_is_never_remembered() {
-        let dir = root("rest-open");
+    async fn the_header_opens_for_one_request_and_is_never_remembered() -> Result<(), TestError> {
+        let dir = root("rest-open")?;
         let st = state(dir.path(), &[]);
         let (status, headers, body) = send(
             &st,
@@ -13964,9 +14419,9 @@ mod archive_password_tests {
                 COMPARE,
                 loopback(),
                 &[(ARCHIVE_PASSWORD_HEADER, secret("rest-open"))],
-            ),
+            )?,
         )
-        .await;
+        .await?;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(
             no_store(&headers),
@@ -13974,47 +14429,51 @@ mod archive_password_tests {
         );
         assert!(!body.contains(secret("rest-open")));
 
-        let (status, headers, body) = send(&st, request(COMPARE, loopback(), &[])).await;
+        let (status, headers, body) = send(&st, request(COMPARE, loopback(), &[])?).await?;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert!(body.contains("encrypted_no_password"), "{body}");
         assert!(
             no_store(&headers),
             "a response that read a locked archive is not cached"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_password_in_the_url_is_refused_as_exposed() {
-        let dir = root("rest-url");
+    async fn a_password_in_the_url_is_refused_as_exposed() -> Result<(), TestError> {
+        let dir = root("rest-url")?;
         let st = state(dir.path(), &[]);
         for key in ["password", "archive_password", "Archive-Password"] {
             let uri = format!("{COMPARE}&{key}={}", secret("rest-url"));
-            let (status, _, body) = send(&st, request(&uri, loopback(), &[])).await;
+            let (status, _, body) = send(&st, request(&uri, loopback(), &[])?).await?;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{key}: {body}");
             assert!(body.contains(ARCHIVE_PASSWORD_HEADER), "{body}");
             assert!(body.contains("treat this password as exposed"), "{body}");
             assert!(!body.contains(secret("rest-url")), "{body}");
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_remote_peer_needs_the_operator_s_flag() {
-        let dir = root("rest-remote");
+    async fn a_remote_peer_needs_the_operator_s_flag() -> Result<(), TestError> {
+        let dir = root("rest-remote")?;
         let remote = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 7));
         let hdr = [(ARCHIVE_PASSWORD_HEADER, secret("rest-remote"))];
         let st = state(dir.path(), &[]);
-        let (status, _, body) = send(&st, request(COMPARE, remote, &hdr)).await;
+        let (status, _, body) = send(&st, request(COMPARE, remote, &hdr)?).await?;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(body.contains("--api-accept-archive-passwords"), "{body}");
         let mut open = st.clone();
         open.archive.accept_remote = true;
-        let (status, _, body) = send(&open, request(COMPARE, remote, &hdr)).await;
+        let (status, _, body) = send(&open, request(COMPARE, remote, &hdr)?).await?;
         assert_eq!(status, StatusCode::OK, "{body}");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wrong_passwords_are_limited_per_token_and_audited_without_the_password() {
-        let dir = root("rest-limit");
+    async fn wrong_passwords_are_limited_per_token_and_audited_without_the_password()
+    -> Result<(), TestError> {
+        let dir = root("rest-limit")?;
         let (tok_a, tok_b) = (secret("rest-tok-a"), secret("rest-tok-b"));
         let st = state(dir.path(), &[tok_a, tok_b]);
         let bearer_a = format!("Bearer {tok_a}");
@@ -14040,9 +14499,9 @@ mod archive_password_tests {
                         ("authorization", &bearer_a),
                         (ARCHIVE_PASSWORD_HEADER, wrong),
                     ],
-                ),
+                )?,
             )
-            .await;
+            .await?;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
             assert!(body.contains("encrypted_wrong_password"), "{body}");
         }
@@ -14055,9 +14514,9 @@ mod archive_password_tests {
                     ("authorization", &bearer_a),
                     (ARCHIVE_PASSWORD_HEADER, wrong),
                 ],
-            ),
+            )?,
         )
-        .await;
+        .await?;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
         assert!(headers.get("retry-after").is_some(), "429 says when");
 
@@ -14071,9 +14530,9 @@ mod archive_password_tests {
                     ("authorization", &bearer_b),
                     (ARCHIVE_PASSWORD_HEADER, secret("rest-limit")),
                 ],
-            ),
+            )?,
         )
-        .await;
+        .await?;
         assert_eq!(status, StatusCode::OK, "{body}");
 
         let text = String::from_utf8_lossy(&logs.lock()).into_owned();
@@ -14086,6 +14545,7 @@ mod archive_password_tests {
         for s in [wrong, secret("rest-limit"), tok_a, tok_b] {
             assert!(!text.contains(s), "a secret reached the log");
         }
+        Ok(())
     }
 
     /// A `MakeWriter` into a shared buffer.
@@ -14102,7 +14562,8 @@ mod archive_password_tests {
     }
 
     #[test]
-    fn the_wrong_password_limiter_is_bounded_and_forgets_after_its_window() {
+    fn the_wrong_password_limiter_is_bounded_and_forgets_after_its_window() -> Result<(), TestError>
+    {
         let mut lim = WrongPasswordLimiter::default();
         let t0 = std::time::Instant::now();
         let key = ("tok".to_string(), "a.zip".to_string());
@@ -14119,5 +14580,6 @@ mod archive_password_tests {
             lim.record(&(format!("t{i}"), "a.zip".into()), t0);
         }
         assert!(lim.len() <= WRONG_PASSWORD_KEYS, "Invariant 4: bounded");
+        Ok(())
     }
 }

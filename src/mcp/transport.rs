@@ -763,6 +763,9 @@ mod http {
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
+        /// Any error a test can return; `?` converts into it.
+        type TestError = Box<dyn std::error::Error>;
+
         /// Test signing key shared between minting and the router's verifier.
         ///
         /// Minted at runtime rather than pasted -- see
@@ -826,24 +829,26 @@ mod http {
         }
 
         /// A GET /probe request with an optional bearer token.
-        fn probe_request(bearer: Option<&str>) -> Request<Body> {
+        fn probe_request(bearer: Option<&str>) -> Result<Request<Body>, TestError> {
             let mut builder = Request::builder().uri("/probe");
             if let Some(token) = bearer {
                 builder =
                     builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
             }
-            builder.body(Body::empty()).expect("build request")
+            Ok(builder
+                .body(Body::empty())
+                .map_err(|e| format!("build request: {e:?}"))?)
         }
 
         /// Collect a response body into a UTF-8 string.
-        async fn body_string(resp: Response) -> String {
+        async fn body_string(resp: Response) -> Result<String, TestError> {
             let bytes = resp
                 .into_body()
                 .collect()
                 .await
-                .expect("collect body")
+                .map_err(|e| format!("collect body: {e:?}"))?
                 .to_bytes();
-            String::from_utf8(bytes.to_vec()).expect("utf8")
+            Ok(String::from_utf8(bytes.to_vec()).map_err(|e| format!("utf8: {e:?}"))?)
         }
 
         /// A `read`-scoped token is ADMITTED and stamped with its scope AND
@@ -859,7 +864,8 @@ mod http {
         /// stamp that drops the id leaves the audit record unable to say which
         /// credential made the call.
         #[tokio::test]
-        async fn a_read_scoped_token_is_admitted_and_stamped_with_its_scope_and_id() {
+        async fn a_read_scoped_token_is_admitted_and_stamped_with_its_scope_and_id()
+        -> Result<(), TestError> {
             let app = router(VerifierConfig {
                 signing_keys: vec![key().to_vec()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
@@ -873,18 +879,19 @@ mod http {
                 crate::auth::SCOPE_READ,
             );
             let resp = app
-                .oneshot(probe_request(Some(&token)))
+                .oneshot(probe_request(Some(&token))?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK);
-            assert_eq!(body_string(resp).await, "bearer:read:agent");
+            assert_eq!(body_string(resp).await?, "bearer:read:agent");
+            Ok(())
         }
 
         /// A full token (which omits the scope claim) and a static secret
         /// (which cannot carry one) both stamp `full` — and they differ on the
         /// id: the token names itself, the static secret has none to name.
         #[tokio::test]
-        async fn full_tokens_and_static_secrets_stamp_full() {
+        async fn full_tokens_and_static_secrets_stamp_full() -> Result<(), TestError> {
             let app = router(VerifierConfig {
                 signing_keys: vec![key().to_vec()],
                 static_keys: vec!["legacy-static".to_string()],
@@ -900,28 +907,30 @@ mod http {
             );
             let resp = app
                 .clone()
-                .oneshot(probe_request(Some(&token)))
+                .oneshot(probe_request(Some(&token))?)
                 .await
-                .expect("oneshot");
-            assert_eq!(body_string(resp).await, "bearer:full:ops");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(body_string(resp).await?, "bearer:full:ops");
 
             let resp = app
-                .oneshot(probe_request(Some("legacy-static")))
+                .oneshot(probe_request(Some("legacy-static"))?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(
-                body_string(resp).await,
+                body_string(resp).await?,
                 "bearer:full",
                 "a static secret carries no claims, so it stamps no id — the \
                  absence is the record, not a blank one"
             );
+            Ok(())
         }
 
         /// With a verifier configured, a missing or invalid token is 401 and
         /// the probe never runs — no admission record is ever stamped on a
         /// rejected request.
         #[tokio::test]
-        async fn missing_or_invalid_tokens_are_rejected_before_the_stamp() {
+        async fn missing_or_invalid_tokens_are_rejected_before_the_stamp() -> Result<(), TestError>
+        {
             let app = router(VerifierConfig {
                 signing_keys: vec![key().to_vec()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
@@ -929,27 +938,32 @@ mod http {
             });
             let resp = app
                 .clone()
-                .oneshot(probe_request(None))
+                .oneshot(probe_request(None)?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
             let resp = app
-                .oneshot(probe_request(Some("not-a-real-token")))
+                .oneshot(probe_request(Some("not-a-real-token"))?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            Ok(())
         }
 
         /// With no verifier configured (loopback-only mode), the request is
         /// admitted and stamped `Unauthenticated` — which dispatch treats as
         /// full access, because the boundary there is network position.
         #[tokio::test]
-        async fn unconfigured_verifier_stamps_unauthenticated() {
+        async fn unconfigured_verifier_stamps_unauthenticated() -> Result<(), TestError> {
             let app = router(VerifierConfig::default());
-            let resp = app.oneshot(probe_request(None)).await.expect("oneshot");
+            let resp = app
+                .oneshot(probe_request(None)?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK);
-            assert_eq!(body_string(resp).await, "unauthenticated");
+            assert_eq!(body_string(resp).await?, "unauthenticated");
+            Ok(())
         }
 
         /// A verifier config that requires a token, for the challenge tests.
@@ -969,8 +983,9 @@ mod http {
         /// `https://resource.example.com/resource1` at
         /// `GET /.well-known/oauth-protected-resource/resource1`.
         #[test]
-        fn the_rfc9728_worked_examples_derive_the_paths_the_rfc_prints() {
-            let bare = ProtectedResource::parse("https://resource.example.com").expect("parse");
+        fn the_rfc9728_worked_examples_derive_the_paths_the_rfc_prints() -> Result<(), TestError> {
+            let bare = ProtectedResource::parse("https://resource.example.com")
+                .map_err(|e| format!("parse: {e:?}"))?;
             assert_eq!(bare.path, "/.well-known/oauth-protected-resource");
             assert_eq!(bare.resource, "https://resource.example.com");
             assert_eq!(
@@ -978,13 +993,14 @@ mod http {
                 "https://resource.example.com/.well-known/oauth-protected-resource"
             );
 
-            let with_path =
-                ProtectedResource::parse("https://resource.example.com/resource1").expect("parse");
+            let with_path = ProtectedResource::parse("https://resource.example.com/resource1")
+                .map_err(|e| format!("parse: {e:?}"))?;
             assert_eq!(
                 with_path.path,
                 "/.well-known/oauth-protected-resource/resource1"
             );
             assert_eq!(with_path.resource, "https://resource.example.com/resource1");
+            Ok(())
         }
 
         /// [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1): "any terminating slash (/) following the host component MUST
@@ -993,7 +1009,7 @@ mod http {
         /// segment is the case that would otherwise leave an empty segment in
         /// the middle of the route.
         #[test]
-        fn a_terminating_slash_is_removed_before_the_well_known_insert() {
+        fn a_terminating_slash_is_removed_before_the_well_known_insert() -> Result<(), TestError> {
             for (raw, resource, path) in [
                 (
                     "https://resource.example.com/",
@@ -1006,10 +1022,11 @@ mod http {
                     "/.well-known/oauth-protected-resource/mcp",
                 ),
             ] {
-                let r = ProtectedResource::parse(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+                let r = ProtectedResource::parse(raw).map_err(|e| format!("{raw}: {e}"))?;
                 assert_eq!(r.resource, resource, "{raw}");
                 assert_eq!(r.path, path, "{raw}");
             }
+            Ok(())
         }
 
         /// The scheme and host are normalized to lowercase, so the identifier
@@ -1017,11 +1034,12 @@ mod http {
         /// against ([RFC 9728 section 6](https://www.rfc-editor.org/rfc/rfc9728#section-6) string operations; the MCP canonical-URI rules
         /// say the same).
         #[test]
-        fn the_identifier_is_normalized_to_lowercase_scheme_and_host() {
+        fn the_identifier_is_normalized_to_lowercase_scheme_and_host() -> Result<(), TestError> {
             let r = ProtectedResource::parse("HTTPS://Resource.Example.COM:8443/MCP")
-                .expect("parse mixed case");
+                .map_err(|e| format!("parse mixed case: {e:?}"))?;
             assert_eq!(r.resource, "https://resource.example.com:8443/MCP");
             assert_eq!(r.path, "/.well-known/oauth-protected-resource/MCP");
+            Ok(())
         }
 
         /// Every value that cannot become a resource identifier is a startup
@@ -1032,7 +1050,7 @@ mod http {
         /// carrying them would silently become a wildcard route rather than a
         /// document.
         #[test]
-        fn a_value_that_cannot_be_a_resource_identifier_is_rejected() {
+        fn a_value_that_cannot_be_a_resource_identifier_is_rejected() -> Result<(), TestError> {
             for raw in [
                 "sipnab.example.com/mcp",           // no scheme
                 "/mcp",                             // relative
@@ -1049,6 +1067,7 @@ mod http {
                     "{raw:?} must be rejected as a resource identifier"
                 );
             }
+            Ok(())
         }
 
         /// The published document carries what [RFC 9728 section 2](https://www.rfc-editor.org/rfc/rfc9728#section-2) asks of it and
@@ -1060,9 +1079,10 @@ mod http {
         /// name. `authorization_servers` is absent on purpose — see
         /// [`ProtectedResource::document`].
         #[test]
-        fn the_document_carries_the_required_fields_and_no_authorization_server() {
+        fn the_document_carries_the_required_fields_and_no_authorization_server()
+        -> Result<(), TestError> {
             let doc = ProtectedResource::parse("https://sipnab.example.com/mcp")
-                .expect("parse")
+                .map_err(|e| format!("parse: {e:?}"))?
                 .document();
             assert_eq!(doc["resource"], "https://sipnab.example.com/mcp");
             assert_eq!(
@@ -1086,6 +1106,7 @@ mod http {
                 doc.get("jwks_uri").is_none() && doc.get("signed_metadata").is_none(),
                 "nothing here is keyed or signed: {doc}"
             );
+            Ok(())
         }
 
         /// The challenge on a request that presented nothing, with and without
@@ -1095,21 +1116,32 @@ mod http {
         /// survives the unconfigured case; [RFC 6750 section 3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1) is why neither carries an
         /// error code.
         #[tokio::test]
-        async fn a_credential_less_request_is_challenged_without_an_error_code() {
+        async fn a_credential_less_request_is_challenged_without_an_error_code()
+        -> Result<(), TestError> {
             let app = router(guarded());
-            let resp = app.oneshot(probe_request(None)).await.expect("oneshot");
+            let resp = app
+                .oneshot(probe_request(None)?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
             assert_eq!(challenge_of(&resp), "Bearer realm=\"sipnab\"");
 
             let app = router_with(
                 guarded(),
-                Some(ProtectedResource::parse("https://sipnab.example.com/mcp").expect("parse")),
+                Some(
+                    ProtectedResource::parse("https://sipnab.example.com/mcp")
+                        .map_err(|e| format!("parse: {e:?}"))?,
+                ),
             );
-            let resp = app.oneshot(probe_request(None)).await.expect("oneshot");
+            let resp = app
+                .oneshot(probe_request(None)?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(
                 challenge_of(&resp),
                 "Bearer realm=\"sipnab\", resource_metadata=\"https://sipnab.example.com/.well-known/oauth-protected-resource/mcp\""
             );
+            Ok(())
         }
 
         /// A presented-but-rejected credential is `invalid_token`, and the
@@ -1121,7 +1153,8 @@ mod http {
         /// challenge that differentiated them would answer "is this id known?"
         /// and "has this key ever signed?" for anyone who asked.
         #[tokio::test]
-        async fn every_rejected_credential_gets_the_same_invalid_token_challenge() {
+        async fn every_rejected_credential_gets_the_same_invalid_token_challenge()
+        -> Result<(), TestError> {
             let app = router(guarded());
             let now = chrono::Utc::now().timestamp();
             let expired = crate::auth::mint(
@@ -1148,9 +1181,9 @@ mod http {
             for token in ["not-a-token", &expired, &wrong_audience, &forged] {
                 let resp = app
                     .clone()
-                    .oneshot(probe_request(Some(token)))
+                    .oneshot(probe_request(Some(token))?)
                     .await
-                    .expect("oneshot");
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
                 assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{token}");
                 assert_eq!(
                     challenge_of(&resp),
@@ -1159,6 +1192,7 @@ mod http {
                     "{token}: every rejection must look identical"
                 );
             }
+            Ok(())
         }
 
         /// An `Authorization` header in some other scheme is "lacks any
@@ -1170,25 +1204,33 @@ mod http {
         /// answering it with `invalid_token` would tell the operator to go look
         /// at a token that was never presented.
         #[tokio::test]
-        async fn a_non_bearer_authorization_header_is_challenged_as_credential_less() {
+        async fn a_non_bearer_authorization_header_is_challenged_as_credential_less()
+        -> Result<(), TestError> {
             let app = router(guarded());
             let request = Request::builder()
                 .uri("/probe")
                 .header(axum::http::header::AUTHORIZATION, "Basic dXNlcjpwYXNz")
                 .body(Body::empty())
-                .expect("build request");
-            let resp = app.oneshot(request).await.expect("oneshot");
+                .map_err(|e| format!("build request: {e:?}"))?;
+            let resp = app
+                .oneshot(request)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
             assert_eq!(challenge_of(&resp), "Bearer realm=\"sipnab\"");
+            Ok(())
         }
 
         /// Publishing a document does not add a challenge to a response that
         /// was never a rejection: an admitted request stays clean.
         #[tokio::test]
-        async fn an_admitted_request_carries_no_challenge() {
+        async fn an_admitted_request_carries_no_challenge() -> Result<(), TestError> {
             let app = router_with(
                 guarded(),
-                Some(ProtectedResource::parse("https://sipnab.example.com/mcp").expect("parse")),
+                Some(
+                    ProtectedResource::parse("https://sipnab.example.com/mcp")
+                        .map_err(|e| format!("parse: {e:?}"))?,
+                ),
             );
             let token = crate::auth::mint(
                 key(),
@@ -1198,11 +1240,12 @@ mod http {
                 crate::auth::SCOPE_READ,
             );
             let resp = app
-                .oneshot(probe_request(Some(&token)))
+                .oneshot(probe_request(Some(&token))?)
                 .await
-                .expect("oneshot");
+                .map_err(|e| format!("oneshot: {e:?}"))?;
             assert_eq!(resp.status(), StatusCode::OK);
             assert_eq!(challenge_of(&resp), "");
+            Ok(())
         }
     }
 }

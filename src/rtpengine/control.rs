@@ -869,6 +869,9 @@ mod tests {
     use super::*;
     use crate::rtpengine::bencode::decode;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every cookie is different, and that is the whole point.
     ///
     /// rtpengine deduplicates on the cookie and replays the cached reply for a
@@ -877,7 +880,7 @@ mod tests {
     /// described a call that no longer existed. A reused cookie is not a
     /// wasted round trip, it is a wrong answer.
     #[test]
-    fn every_transaction_gets_its_own_cookie() {
+    fn every_transaction_gets_its_own_cookie() -> Result<(), TestError> {
         let a = ControlRequest::new(ReadOnlyCommand::List { limit: 32 }, 1);
         let b = ControlRequest::new(ReadOnlyCommand::List { limit: 32 }, 2);
         assert_ne!(
@@ -890,11 +893,12 @@ mod tests {
         // caller that fails to vary it is the bug this makes visible.
         let c = ControlRequest::new(ReadOnlyCommand::List { limit: 32 }, 1);
         assert_eq!(a.cookie(), c.cookie());
+        Ok(())
     }
 
     /// The cookie says who is asking.
     #[test]
-    fn the_cookie_names_the_tool() {
+    fn the_cookie_names_the_tool() -> Result<(), TestError> {
         let r = ControlRequest::new(ReadOnlyCommand::List { limit: 8 }, 0xdead);
         assert!(
             r.cookie().starts_with("sipnab-"),
@@ -902,29 +906,35 @@ mod tests {
              to spend time on: {}",
             r.cookie()
         );
+        Ok(())
     }
 
     /// The wire format is `<cookie> <bencode>`, cookie outside the dict.
     #[test]
-    fn a_list_request_is_framed_and_encoded() {
+    fn a_list_request_is_framed_and_encoded() -> Result<(), TestError> {
         let r = ControlRequest::new(ReadOnlyCommand::List { limit: 32 }, 7);
         let wire = r.to_wire();
 
-        let space = wire.iter().position(|b| *b == b' ').expect("framing space");
+        let space = wire
+            .iter()
+            .position(|b| *b == b' ')
+            .ok_or("framing space")?;
         assert_eq!(
             &wire[..space],
             r.cookie().as_bytes(),
             "the cookie must precede the message, outside the bencode"
         );
 
-        let body = decode(&wire[space + 1..]).expect("body must be bencode");
+        let body =
+            decode(&wire[space + 1..]).map_err(|e| format!("body must be bencode: {e:?}"))?;
         assert_eq!(body.get(b"command"), Some(&Value::Bytes(b"list")));
         assert_eq!(body.get(b"limit"), Some(&Value::Int(32)));
+        Ok(())
     }
 
     /// A query carries the Call-ID it asks about.
     #[test]
-    fn a_query_request_carries_its_call_id() {
+    fn a_query_request_carries_its_call_id() -> Result<(), TestError> {
         let r = ControlRequest::new(
             ReadOnlyCommand::Query {
                 call_id: "abc@example.net".to_string(),
@@ -932,13 +942,14 @@ mod tests {
             9,
         );
         let wire = r.to_wire();
-        let space = wire.iter().position(|b| *b == b' ').expect("space");
-        let body = decode(&wire[space + 1..]).expect("bencode");
+        let space = wire.iter().position(|b| *b == b' ').ok_or("space")?;
+        let body = decode(&wire[space + 1..]).map_err(|e| format!("bencode: {e:?}"))?;
         assert_eq!(body.get(b"command"), Some(&Value::Bytes(b"query")));
         assert_eq!(
             body.get(b"call-id"),
             Some(&Value::Bytes(b"abc@example.net"))
         );
+        Ok(())
     }
 
     /// NOTHING this module can build changes the relay.
@@ -950,7 +961,7 @@ mod tests {
     /// states what it is, which is a visible act in a diff rather than an
     /// oversight.
     #[test]
-    fn no_command_this_module_can_build_changes_the_relay() {
+    fn no_command_this_module_can_build_changes_the_relay() -> Result<(), TestError> {
         for cmd in [
             ReadOnlyCommand::List { limit: 1 },
             ReadOnlyCommand::Query {
@@ -980,6 +991,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
@@ -987,12 +999,12 @@ mod tests {
     ///
     /// Obtained the only way there is: from a live capture source. A test that
     /// could conjure one would prove nothing about the gate.
-    fn live_permit() -> TransmitPermit {
+    fn live_permit() -> Result<TransmitPermit, TestError> {
         use crate::capture::CaptureSource;
-        TransmitPermit::for_source(&CaptureSource::Live {
+        Ok(TransmitPermit::for_source(&CaptureSource::Live {
             device: "test0".to_string(),
         })
-        .expect("a live source must grant a permit")
+        .ok_or("a live source must grant a permit")?)
     }
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
@@ -1002,9 +1014,11 @@ mod tests {
     /// A real socket rather than a mocked one, because the thing most likely
     /// to be wrong is the framing and the connect/timeout handling, and a mock
     /// would assert my own assumptions back at me.
-    fn fake_relay(reply_body: &'static str) -> (SocketAddr, std::thread::JoinHandle<()>) {
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
-        let addr = sock.local_addr().expect("addr");
+    fn fake_relay(
+        reply_body: &'static str,
+    ) -> Result<(SocketAddr, std::thread::JoinHandle<()>), TestError> {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind: {e:?}"))?;
+        let addr = sock.local_addr().map_err(|e| format!("addr: {e:?}"))?;
         let handle = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             if let Ok((n, peer)) = sock.recv_from(&mut buf) {
@@ -1016,7 +1030,7 @@ mod tests {
                 let _ = sock.send_to(&out, peer);
             }
         });
-        (addr, handle)
+        Ok((addr, handle))
     }
 
     /// Build a bencode byte string for a fixture.
@@ -1034,21 +1048,22 @@ mod tests {
     /// A real round trip: request framed, reply parsed, calls returned.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_round_trip_against_a_relay_returns_its_calls() {
-        let (addr, relay) = fake_relay("d6:result2:ok5:callsl4:aaaa4:bbbbee");
+    fn a_round_trip_against_a_relay_returns_its_calls() -> Result<(), TestError> {
+        let (addr, relay) = fake_relay("d6:result2:ok5:callsl4:aaaa4:bbbbee")?;
         let client = ControlClient::new(addr, Duration::from_secs(2));
 
         let reply = client
-            .list(&live_permit(), 32)
-            .expect("the relay answered; parsing must succeed");
+            .list(&live_permit()?, 32)
+            .map_err(|e| format!("the relay answered; parsing must succeed: {e:?}"))?;
         match reply {
             ControlReply::Calls(e) => {
                 assert_eq!(e.call_ids, vec!["aaaa".to_string(), "bbbb".to_string()]);
                 assert!(!e.truncated, "two of thirty-two is complete");
             }
-            other => panic!("expected calls, got {other:?}"),
+            other => return Err(format!("expected calls, got {other:?}").into()),
         }
-        relay.join().expect("relay thread");
+        relay.join().map_err(|e| format!("relay thread: {e:?}"))?;
+        Ok(())
     }
 
     /// A reply answering a DIFFERENT transaction is refused.
@@ -1059,9 +1074,9 @@ mod tests {
     /// it would attribute one call's streams to another.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_reply_with_the_wrong_cookie_is_refused() {
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
-        let addr = sock.local_addr().expect("addr");
+    fn a_reply_with_the_wrong_cookie_is_refused() -> Result<(), TestError> {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind: {e:?}"))?;
+        let addr = sock.local_addr().map_err(|e| format!("addr: {e:?}"))?;
         let relay = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             if let Ok((_, peer)) = sock.recv_from(&mut buf) {
@@ -1072,8 +1087,9 @@ mod tests {
 
         let client = ControlClient::new(addr, Duration::from_secs(2));
         let err = client
-            .list(&live_permit(), 32)
-            .expect_err("a mismatched cookie must not be accepted");
+            .list(&live_permit()?, 32)
+            .err()
+            .ok_or("a mismatched cookie must not be accepted")?;
         assert!(
             err.to_string().contains("different transaction"),
             "the error must name the cause: {err}"
@@ -1091,7 +1107,8 @@ mod tests {
             crate::stats_vocab::StatisticsOutcome::Suspect,
             "a reply that could not be trusted is suspect, not unreachable"
         );
-        relay.join().expect("relay thread");
+        relay.join().map_err(|e| format!("relay thread: {e:?}"))?;
+        Ok(())
     }
 
     /// A relay that never answers times out rather than hanging.
@@ -1101,16 +1118,17 @@ mod tests {
     /// answer nor a prompt.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_silent_relay_times_out() {
+    fn a_silent_relay_times_out() -> Result<(), TestError> {
         // Bound but never read from: the port exists, nothing replies.
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
-        let addr = sock.local_addr().expect("addr");
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind: {e:?}"))?;
+        let addr = sock.local_addr().map_err(|e| format!("addr: {e:?}"))?;
 
         let client = ControlClient::new(addr, Duration::from_millis(250));
         let start = std::time::Instant::now();
         let err = client
-            .list(&live_permit(), 32)
-            .expect_err("a silent relay must not succeed");
+            .list(&live_permit()?, 32)
+            .err()
+            .ok_or("a silent relay must not succeed")?;
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "the read timeout did not apply; this would hang a run"
@@ -1127,25 +1145,27 @@ mod tests {
             "a silent relay is unreachable, not suspect"
         );
         drop(sock);
+        Ok(())
     }
 
     /// Two calls from one client never reuse a cookie.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_client_mints_a_fresh_cookie_per_call() {
+    fn a_client_mints_a_fresh_cookie_per_call() -> Result<(), TestError> {
         let client = ControlClient::new(
-            "127.0.0.1:1".parse().expect("addr"),
+            "127.0.0.1:1".parse().map_err(|e| format!("addr: {e:?}"))?,
             Duration::from_millis(1),
         );
         let a = client.next_seed();
         let b = client.next_seed();
         assert_ne!(a, b, "a client reused a cookie seed across transactions");
+        Ok(())
     }
 
     /// `fetch_error_outcome` classifies an untrusted reply as suspect -- the
     /// answer's own problem -- so a surface does not report it as no answer.
     #[test]
-    fn an_untrusted_reply_classifies_as_suspect() {
+    fn an_untrusted_reply_classifies_as_suspect() -> Result<(), TestError> {
         let err = anyhow::Error::new(crate::relay::types::UntrustedReply {
             reason: "reply cookie does not match".to_string(),
         });
@@ -1153,24 +1173,26 @@ mod tests {
             crate::relay::types::fetch_error_outcome(&err),
             crate::stats_vocab::StatisticsOutcome::Suspect,
         );
+        Ok(())
     }
 
     /// Any other fetch failure -- a timeout, a socket error -- is unreachable:
     /// asked, and nothing valid came back. The default the classifier gives
     /// everything that is not a typed untrusted reply.
     #[test]
-    fn a_plain_fetch_error_classifies_as_unreachable() {
+    fn a_plain_fetch_error_classifies_as_unreachable() -> Result<(), TestError> {
         let err = anyhow::anyhow!("no reply from the relay within 2s");
         assert_eq!(
             crate::relay::types::fetch_error_outcome(&err),
             crate::stats_vocab::StatisticsOutcome::Unreachable,
         );
+        Ok(())
     }
 
     /// The untrusted-reply marker carries its reason through, so a surface can
     /// say why the reply was discarded rather than only that it was.
     #[test]
-    fn an_untrusted_reply_carries_its_reason() {
+    fn an_untrusted_reply_carries_its_reason() -> Result<(), TestError> {
         let err = crate::relay::types::UntrustedReply {
             reason: "reply cookie does not match the request".to_string(),
         };
@@ -1178,6 +1200,7 @@ mod tests {
             err.to_string().contains("reply cookie does not match"),
             "the reason must travel: {err}"
         );
+        Ok(())
     }
 
     /// A full answer is reported as possibly truncated, because that is the
@@ -1187,26 +1210,27 @@ mod tests {
     /// "exactly the limit" as complete is how 32 of 400 calls gets reported as
     /// the whole estate, with the other 368 looking like orphans.
     #[test]
-    fn a_full_answer_is_flagged_because_more_may_exist() {
+    fn a_full_answer_is_flagged_because_more_may_exist() -> Result<(), TestError> {
         // Fewer than asked for: the relay ran out, so this is everything.
         let body = b"d6:result2:ok5:callsl4:aaaa4:bbbbee";
-        match parse_list_reply(body, 32).expect("parse") {
+        match parse_list_reply(body, 32).map_err(|e| format!("parse: {e:?}"))? {
             ControlReply::Calls(e) => {
                 assert_eq!(e.call_ids.len(), 2);
                 assert!(!e.truncated, "two of thirty-two is not truncated");
             }
-            other => panic!("expected calls, got {other:?}"),
+            other => return Err(format!("expected calls, got {other:?}").into()),
         }
 
         // Exactly the limit: may be more behind it.
-        match parse_list_reply(body, 2).expect("parse") {
+        match parse_list_reply(body, 2).map_err(|e| format!("parse: {e:?}"))? {
             ControlReply::Calls(e) => assert!(
                 e.truncated,
                 "a full answer must be flagged; the relay does not say whether \
                  it had more"
             ),
-            other => panic!("expected calls, got {other:?}"),
+            other => return Err(format!("expected calls, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A refusal is not a transport failure.
@@ -1215,7 +1239,7 @@ mod tests {
     /// Collapsing that into an I/O error tells an operator to check the
     /// network when the answer is in the relay's configuration.
     #[test]
-    fn a_refusal_is_reported_as_a_refusal() {
+    fn a_refusal_is_reported_as_a_refusal() -> Result<(), TestError> {
         let body = format!(
             "d{}{}{}{}e",
             bstr("result"),
@@ -1223,22 +1247,23 @@ mod tests {
             bstr("error-reason"),
             bstr("unknown command")
         );
-        match parse_list_reply(body.as_bytes(), 32).expect("parse") {
+        match parse_list_reply(body.as_bytes(), 32).map_err(|e| format!("parse: {e:?}"))? {
             ControlReply::Refused { reason } => {
                 assert!(reason.contains("unknown command"), "reason lost: {reason}");
             }
-            other => panic!("expected a refusal, got {other:?}"),
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
         }
 
         // A refusal with no reason is still a refusal.
         let bare = format!("d{}{}e", bstr("result"), bstr("error"));
-        match parse_list_reply(bare.as_bytes(), 32).expect("parse") {
+        match parse_list_reply(bare.as_bytes(), 32).map_err(|e| format!("parse: {e:?}"))? {
             ControlReply::Refused { reason } => assert!(
                 !reason.is_empty(),
                 "a refusal with no stated reason must still say something"
             ),
-            other => panic!("expected a refusal, got {other:?}"),
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A malformed reply is an error, never a quiet empty answer.
@@ -1247,7 +1272,7 @@ mod tests {
     /// both leave every stream unmatched. One is a fact about the relay and
     /// the other is a fact about this parser.
     #[test]
-    fn a_malformed_reply_is_refused_rather_than_read_as_empty() {
+    fn a_malformed_reply_is_refused_rather_than_read_as_empty() -> Result<(), TestError> {
         for bad in [
             b"not bencode at all".as_slice(),
             // No `result` key.
@@ -1261,12 +1286,13 @@ mod tests {
                 String::from_utf8_lossy(bad)
             );
         }
+        Ok(())
     }
 
     /// A partial enumeration must say so, or it reports the calls it never saw
     /// as orphans and looks like it worked.
     #[test]
-    fn a_truncated_enumeration_announces_itself() {
+    fn a_truncated_enumeration_announces_itself() -> Result<(), TestError> {
         let complete = Enumeration {
             call_ids: vec!["a".into(), "b".into()],
             truncated: false,
@@ -1287,11 +1313,12 @@ mod tests {
             d.contains("may belong to a call this list never saw"),
             "the consequence is what the operator needs, not just the flag: {d}"
         );
+        Ok(())
     }
 
     /// A Call-ID is a caller's identifier; Display must not put it in a log.
     #[test]
-    fn display_does_not_leak_the_call_id() {
+    fn display_does_not_leak_the_call_id() -> Result<(), TestError> {
         let q = ReadOnlyCommand::Query {
             call_id: "sensitive-caller@example.net".to_string(),
         };
@@ -1301,6 +1328,7 @@ mod tests {
             "Display leaked a Call-ID into a string that ends up in logs \
              outliving the capture: {shown}"
         );
+        Ok(())
     }
 
     /// Stand in for a relay reachable on BOTH transports at ONE address, with
@@ -1326,7 +1354,7 @@ mod tests {
     /// of failing. Which transport goes unused is exactly what these tests
     /// vary, so there is no handle a caller could safely wait on.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
-    fn dual_relay(datagram_call: &str, stream_call: &str) -> SocketAddr {
+    fn dual_relay(datagram_call: &str, stream_call: &str) -> Result<SocketAddr, TestError> {
         let datagram_reply = format!("d6:result2:ok5:callsl{}ee", bstr(datagram_call));
         let stream_reply = format!("d6:result2:ok5:callsl{}ee", bstr(stream_call));
         // The two protocols have separate port spaces, so one port number can
@@ -1341,8 +1369,8 @@ mod tests {
                 let u = std::net::UdpSocket::bind(("127.0.0.1", port)).ok()?;
                 Some((l, u))
             })
-            .expect("a port free on both transports");
-        let addr = sock.local_addr().expect("addr");
+            .ok_or("a port free on both transports")?;
+        let addr = sock.local_addr().map_err(|e| format!("addr: {e:?}"))?;
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -1360,7 +1388,7 @@ mod tests {
                 answer_one_stream_request(conn, &[stream_reply.as_bytes()]);
             }
         });
-        addr
+        Ok(addr)
     }
 
     /// Read one framed request off a stream connection and answer it in the
@@ -1395,21 +1423,22 @@ mod tests {
     /// connection opened to a port that may hold something else entirely.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_narrow_enumeration_stays_on_the_datagram_transport() {
-        let addr = dual_relay("from-the-datagram", "from-the-stream");
+    fn a_narrow_enumeration_stays_on_the_datagram_transport() -> Result<(), TestError> {
+        let addr = dual_relay("from-the-datagram", "from-the-stream")?;
         let client = ControlClient::new(addr, Duration::from_secs(2));
 
         match client
-            .list(&live_permit(), crate::relay::reconcile::DEFAULT_LIST_LIMIT)
-            .expect("the relay answered")
+            .list(&live_permit()?, crate::relay::reconcile::DEFAULT_LIST_LIMIT)
+            .map_err(|e| format!("the relay answered: {e:?}"))?
         {
             ControlReply::Calls(e) => assert_eq!(
                 e.call_ids,
                 vec!["from-the-datagram".to_string()],
                 "a narrow enumeration must not open a connection"
             ),
-            other => panic!("expected calls, got {other:?}"),
+            other => return Err(format!("expected calls, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// An enumeration past what a datagram carries goes over the stream.
@@ -1420,21 +1449,22 @@ mod tests {
     /// identical request over the stream transport returns all 1200.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_wide_enumeration_goes_over_the_stream_transport() {
-        let addr = dual_relay("from-the-datagram", "from-the-stream");
+    fn a_wide_enumeration_goes_over_the_stream_transport() -> Result<(), TestError> {
+        let addr = dual_relay("from-the-datagram", "from-the-stream")?;
         let client = ControlClient::new(addr, Duration::from_secs(2));
 
         match client
-            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
-            .expect("the relay answered")
+            .list(&live_permit()?, crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .map_err(|e| format!("the relay answered: {e:?}"))?
         {
             ControlReply::Calls(e) => assert_eq!(
                 e.call_ids,
                 vec!["from-the-stream".to_string()],
                 "an answer this size cannot come back in a datagram"
             ),
-            other => panic!("expected calls, got {other:?}"),
+            other => return Err(format!("expected calls, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A stream answer arriving in pieces is reassembled.
@@ -1444,9 +1474,10 @@ mod tests {
     /// one reply parses half a message and reports the relay as broken.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_stream_answer_split_across_writes_is_reassembled() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
+    fn a_stream_answer_split_across_writes_is_reassembled() -> Result<(), TestError> {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind: {e:?}"))?;
+        let addr = listener.local_addr().map_err(|e| format!("addr: {e:?}"))?;
         let relay = std::thread::spawn(move || {
             if let Ok((conn, _)) = listener.accept() {
                 answer_one_stream_request(conn, &[b"d6:result2:ok5:callsl4:aaaa", b"4:bbbbee"]);
@@ -1455,15 +1486,16 @@ mod tests {
 
         let client = ControlClient::new(addr, Duration::from_secs(2));
         match client
-            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
-            .expect("a reply split across writes is still one reply")
+            .list(&live_permit()?, crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .map_err(|e| format!("a reply split across writes is still one reply: {e:?}"))?
         {
             ControlReply::Calls(e) => {
                 assert_eq!(e.call_ids, vec!["aaaa".to_string(), "bbbb".to_string()]);
             }
-            other => panic!("expected calls, got {other:?}"),
+            other => return Err(format!("expected calls, got {other:?}").into()),
         }
         let _ = relay.join();
+        Ok(())
     }
 
     /// A relay with no stream transport fails the wider ask, and says why.
@@ -1474,7 +1506,7 @@ mod tests {
     /// the capped answer it already has.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_relay_with_no_stream_transport_fails_the_wider_ask() {
+    fn a_relay_with_no_stream_transport_fails_the_wider_ask() -> Result<(), TestError> {
         // Answering on the datagram transport only: the address exists, and
         // nothing accepts a connection there. The TCP port number is HELD,
         // bound but never listening, because the UDP socket alone does not
@@ -1484,18 +1516,25 @@ mod tests {
         // 500ms", 2026-09-19). A bound, non-listening socket refuses every
         // connection, keeps anything else from listening there, and keeps the
         // kernel from picking the port as the client's own source port.
-        let (held, sock, addr) = (0..50)
-            .find_map(|_| {
-                let tcp = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
-                    .expect("tcp socket");
-                let any: std::net::SocketAddr = "127.0.0.1:0".parse().expect("addr");
-                tcp.bind(&any.into()).expect("bind tcp");
-                let addr = tcp.local_addr().ok()?.as_socket()?;
-                // The same number may already be taken on UDP; try another.
-                let udp = std::net::UdpSocket::bind(addr).ok()?;
-                Some((tcp, udp, addr))
-            })
-            .expect("a port free on both TCP and UDP");
+        let mut free = None;
+        for _ in 0..50 {
+            let tcp = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                .map_err(|e| format!("tcp socket: {e:?}"))?;
+            let any: std::net::SocketAddr =
+                "127.0.0.1:0".parse().map_err(|e| format!("addr: {e:?}"))?;
+            tcp.bind(&any.into())
+                .map_err(|e| format!("bind tcp: {e:?}"))?;
+            let Some(addr) = tcp.local_addr().ok().and_then(|a| a.as_socket()) else {
+                continue;
+            };
+            // The same number may already be taken on UDP; try another.
+            let Ok(udp) = std::net::UdpSocket::bind(addr) else {
+                continue;
+            };
+            free = Some((tcp, udp, addr));
+            break;
+        }
+        let (held, sock, addr) = free.ok_or("a port free on both TCP and UDP")?;
         assert_eq!(
             std::net::TcpListener::bind(addr).err().map(|e| e.kind()),
             Some(std::io::ErrorKind::AddrInUse),
@@ -1504,14 +1543,16 @@ mod tests {
 
         let client = ControlClient::new(addr, Duration::from_millis(500));
         let err = client
-            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
-            .expect_err("nothing accepts a connection here");
+            .list(&live_permit()?, crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .err()
+            .ok_or("nothing accepts a connection here")?;
         assert!(
             err.to_string().contains("connecting"),
             "the operator must be told the connection is what failed, since \
              the fix is to enable one: {err:#}"
         );
         drop((held, sock));
+        Ok(())
     }
 
     /// A stream answer past the read ceiling is refused rather than read
@@ -1522,9 +1563,10 @@ mod tests {
     /// its place -- decides how much memory sipnab allocates.
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
-    fn a_stream_answer_past_the_ceiling_is_refused() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
+    fn a_stream_answer_past_the_ceiling_is_refused() -> Result<(), TestError> {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind: {e:?}"))?;
+        let addr = listener.local_addr().map_err(|e| format!("addr: {e:?}"))?;
         let relay = std::thread::spawn(move || {
             use std::io::{Read, Write};
             let Ok((mut conn, _)) = listener.accept() else {
@@ -1549,19 +1591,24 @@ mod tests {
 
         let client = ControlClient::new(addr, Duration::from_secs(5));
         let err = client
-            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
-            .expect_err("an unbounded answer must be refused");
+            .list(&live_permit()?, crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .err()
+            .ok_or("an unbounded answer must be refused")?;
         assert!(
             err.to_string().contains("larger than"),
             "the error must name the ceiling, not look like a parse failure: {err:#}"
         );
         let _ = relay.join();
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod query_reply_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A real `query` answer from rtpengine 12.5.1, captured off the harness
     /// relay while two SIPp calls were up.
@@ -1572,17 +1619,17 @@ mod query_reply_tests {
     const REAL_QUERY: &[u8] =
         include_bytes!("../../tests/fixtures/rtpengine/query-reply-12.5.1.bin");
 
-    fn parsed() -> CallView {
+    fn parsed() -> Result<CallView, TestError> {
         match parse_query_reply(REAL_QUERY, "1-9582@172.28.0.21") {
-            Ok(ControlReply::Call(c)) => c,
-            other => panic!("expected a call view, got {other:?}"),
+            Ok(ControlReply::Call(c)) => Ok(c),
+            other => Err(format!("expected a call view, got {other:?}").into()),
         }
     }
 
     /// Both sides of the call are read, and the Call-ID comes from the ASK.
     #[test]
-    fn real_reply_yields_both_tags_and_the_requested_call_id() {
-        let call = parsed();
+    fn real_reply_yields_both_tags_and_the_requested_call_id() -> Result<(), TestError> {
+        let call = parsed()?;
         assert_eq!(
             call.call_id, "1-9582@172.28.0.21",
             "the Call-ID must be the one asked about; rtpengine does not echo \
@@ -1590,13 +1637,14 @@ mod query_reply_tests {
         );
         let tags: Vec<&str> = call.tags.iter().map(|t| t.tag.as_str()).collect();
         assert_eq!(tags, ["1SIPpTag0113926", "9582SIPpTag091"]);
+        Ok(())
     }
 
     /// The relay-side ports are what sipnab can see in a capture, so they are
     /// what an unexplained stream is matched on.
     #[test]
-    fn real_reply_yields_the_relay_side_ports() {
-        let call = parsed();
+    fn real_reply_yields_the_relay_side_ports() -> Result<(), TestError> {
+        let call = parsed()?;
         let mut ports: Vec<u16> = call
             .tags
             .iter()
@@ -1613,13 +1661,14 @@ mod query_reply_tests {
                 assert_eq!(stream.local_address, "172.28.0.10");
             }
         }
+        Ok(())
     }
 
     /// RTP and RTCP are told apart, because reporting a relay's RTCP port as
     /// an unattributed media stream is the confusion this is meant to end.
     #[test]
-    fn rtcp_ports_are_distinguished_from_rtp_ports() {
-        let call = parsed();
+    fn rtcp_ports_are_distinguished_from_rtp_ports() -> Result<(), TestError> {
+        let call = parsed()?;
         let rtcp: Vec<u16> = call
             .tags
             .iter()
@@ -1628,19 +1677,20 @@ mod query_reply_tests {
         let mut rtcp = rtcp;
         rtcp.sort_unstable();
         assert_eq!(rtcp, [30001, 30003], "the odd ports carry RTCP");
+        Ok(())
     }
 
     /// The endpoint and what the far side ADVERTISED are kept apart. Behind
     /// NAT they differ, and the difference is usually the bug.
     #[test]
-    fn endpoint_and_advertised_endpoint_are_both_kept() {
-        let call = parsed();
+    fn endpoint_and_advertised_endpoint_are_both_kept() -> Result<(), TestError> {
+        let call = parsed()?;
         let stream = call
             .tags
             .iter()
             .flat_map(|t| &t.streams)
             .find(|s| s.local_port == 30002)
-            .expect("port 30002 is in the fixture");
+            .ok_or("port 30002 is in the fixture")?;
         assert_eq!(stream.endpoint.as_deref(), Some("172.28.0.21:6000"));
         assert_eq!(
             stream.advertised_endpoint.as_deref(),
@@ -1648,6 +1698,7 @@ mod query_reply_tests {
             "on this harness they agree; they are stored separately so that a \
              capture where they do not can say so"
         );
+        Ok(())
     }
 
     /// The two endpoints are told apart, which the real fixture CANNOT prove.
@@ -1661,7 +1712,8 @@ mod query_reply_tests {
     /// the two fields exist only to differ. Lengths are computed, never
     /// counted, for the reason [`super::tests::bstr`] gives.
     #[test]
-    fn behind_nat_the_endpoint_and_the_advertised_endpoint_do_not_collapse() {
+    fn behind_nat_the_endpoint_and_the_advertised_endpoint_do_not_collapse() -> Result<(), TestError>
+    {
         use super::tests::bstr;
 
         // What the far side CLAIMED in SDP is a private address; where the
@@ -1704,9 +1756,9 @@ mod query_reply_tests {
         );
 
         let ControlReply::Call(call) = parse_query_reply(body.as_bytes(), "nat@example.net")
-            .expect("the synthetic reply must parse")
+            .map_err(|e| format!("the synthetic reply must parse: {e:?}"))?
         else {
-            panic!("expected a call view");
+            return Err("expected a call view".into());
         };
         let s = &call.tags[0].streams[0];
         assert_eq!(
@@ -1721,6 +1773,7 @@ mod query_reply_tests {
              these reports a private address as reachable, and the gap \
              between them is usually the bug being chased"
         );
+        Ok(())
     }
 
     /// The SSRC is the join key that survives a capture taken off-path, where
@@ -1730,31 +1783,32 @@ mod query_reply_tests {
     /// each direction is asserted at its own port. An earlier version accepted
     /// either port and passed with egress parsing deleted entirely.
     #[test]
-    fn ssrcs_are_read_from_both_directions() {
-        let call = parsed();
+    fn ssrcs_are_read_from_both_directions() -> Result<(), TestError> {
+        let call = parsed()?;
         const SSRC: u32 = 758_599_286;
 
-        let by_port = |port: u16| -> &RelayStream {
+        let by_port = |port: u16| -> Result<&RelayStream, &str> {
             call.tags
                 .iter()
                 .flat_map(|t| &t.streams)
                 .find(|s| s.local_port == port)
-                .expect("port is in the fixture")
+                .ok_or("port is in the fixture")
         };
 
         assert!(
-            by_port(30002).ssrcs.contains(&SSRC),
+            by_port(30002)?.ssrcs.contains(&SSRC),
             "the relay recorded this SSRC as INGRESS on port 30002"
         );
         assert!(
-            by_port(30000).ssrcs.contains(&SSRC),
+            by_port(30000)?.ssrcs.contains(&SSRC),
             "and as EGRESS on port 30000 -- reading only one direction loses \
              half the join keys the relay is holding"
         );
         assert!(
-            by_port(30001).ssrcs.is_empty(),
+            by_port(30001)?.ssrcs.is_empty(),
             "the RTCP port carried no media, so it must claim no SSRC"
         );
+        Ok(())
     }
 
     /// The lookup an unexplained stream actually performs.
@@ -1765,12 +1819,12 @@ mod query_reply_tests {
     /// belongs to the other one, so it can tell a real lookup from a lucky
     /// one -- and a mutant that ignored the port survived until it was here.
     #[test]
-    fn a_relay_port_finds_its_own_tag_and_its_peer() {
-        let call = parsed();
+    fn a_relay_port_finds_its_own_tag_and_its_peer() -> Result<(), TestError> {
+        let call = parsed()?;
 
         let first = call
             .tag_for_port(30000)
-            .expect("port 30000 is held by a tag in the fixture");
+            .ok_or("port 30000 is held by a tag in the fixture")?;
         assert_eq!(first.tag, "1SIPpTag0113926");
         assert_eq!(
             first.in_dialogue_with,
@@ -1781,7 +1835,7 @@ mod query_reply_tests {
 
         let second = call
             .tag_for_port(30002)
-            .expect("port 30002 is held by the other tag in the fixture");
+            .ok_or("port 30002 is held by the other tag in the fixture")?;
         assert_eq!(
             second.tag, "9582SIPpTag091",
             "each port must find the tag that actually holds it"
@@ -1794,17 +1848,19 @@ mod query_reply_tests {
              attributing a stream to the wrong call is worse than leaving it \
              an orphan"
         );
+        Ok(())
     }
 
     /// The codec the relay recorded, where it recorded one.
     #[test]
-    fn codec_is_read_where_the_relay_recorded_one() {
-        let call = parsed();
+    fn codec_is_read_where_the_relay_recorded_one() -> Result<(), TestError> {
+        let call = parsed()?;
         let codecs: Vec<Option<&str>> = call.tags.iter().map(|t| t.codec.as_deref()).collect();
         assert!(
             codecs.contains(&Some("G722/8000")),
             "the relay recorded G722 on one side: {codecs:?}"
         );
+        Ok(())
     }
 
     /// A v6 endpoint keeps its brackets, so the result parses back.
@@ -1813,7 +1869,7 @@ mod query_reply_tests {
     /// socket address any parser accepts -- the port reads as another hextet.
     /// A relay on v6 would produce a join key nothing downstream could use.
     #[test]
-    fn a_v6_endpoint_is_bracketed() {
+    fn a_v6_endpoint_is_bracketed() -> Result<(), TestError> {
         use super::tests::bstr;
 
         let ep = format!(
@@ -1846,26 +1902,27 @@ mod query_reply_tests {
             bstr("v6-tag"),
         );
 
-        let ControlReply::Call(call) =
-            parse_query_reply(body.as_bytes(), "v6@example.net").expect("must parse")
+        let ControlReply::Call(call) = parse_query_reply(body.as_bytes(), "v6@example.net")
+            .map_err(|e| format!("must parse: {e:?}"))?
         else {
-            panic!("expected a call view");
+            return Err("expected a call view".into());
         };
         let rendered = call.tags[0].streams[0]
             .endpoint
             .clone()
-            .expect("the stream has an endpoint");
+            .ok_or("the stream has an endpoint")?;
         assert_eq!(rendered, "[2001:db8::5]:5060");
         assert!(
             rendered.parse::<std::net::SocketAddr>().is_ok(),
             "the rendered endpoint must parse back; that is the whole reason \
              for the brackets: {rendered}"
         );
+        Ok(())
     }
 
     /// A refusal is the relay answering, not the transport failing.
     #[test]
-    fn a_refused_query_is_reported_as_a_refusal() {
+    fn a_refused_query_is_reported_as_a_refusal() -> Result<(), TestError> {
         let body = format!(
             "d{}{}{}{}e",
             super::tests::bstr("error-reason"),
@@ -1875,8 +1932,14 @@ mod query_reply_tests {
         );
         match parse_query_reply(body.as_bytes(), "gone@example.net") {
             Ok(ControlReply::Refused { reason }) => assert_eq!(reason, "Unknown call-id"),
-            other => panic!("a relay error must not read as a transport failure: {other:?}"),
+            other => {
+                return Err(format!(
+                    "a relay error must not read as a transport failure: {other:?}"
+                )
+                .into());
+            }
         }
+        Ok(())
     }
 
     /// A synthetic tag entry, assembled from its parts.
@@ -1935,7 +1998,7 @@ mod query_reply_tests {
     /// parties and the media analysis that judges asymmetry answers a
     /// question nobody asked.
     #[test]
-    fn a_media_subscriber_is_not_reported_as_a_dialogue_peer() {
+    fn a_media_subscriber_is_not_reported_as_a_dialogue_peer() -> Result<(), TestError> {
         let entry = tag_entry(
             "leg-a",
             30000,
@@ -1946,9 +2009,9 @@ mod query_reply_tests {
         );
         let ControlReply::Call(call) =
             parse_query_reply(reply(&[("leg-a", entry)]).as_bytes(), "c@x")
-                .expect("the synthetic reply must parse")
+                .map_err(|e| format!("the synthetic reply must parse: {e:?}"))?
         else {
-            panic!("expected a call view");
+            return Err("expected a call view".into());
         };
 
         assert_eq!(
@@ -1964,6 +2027,7 @@ mod query_reply_tests {
             "and it must not be DROPPED either -- a subscription sipnab \
              silently discards is a stream it will never explain"
         );
+        Ok(())
     }
 
     /// The subscriber's own entry is a tag too, and it holds relay ports.
@@ -1973,23 +2037,24 @@ mod query_reply_tests {
     /// Those ports DO belong to the call and are attributed to it; what they
     /// are not is a leg of it, and the difference has to survive the parse.
     #[test]
-    fn a_tag_that_only_subscribes_is_not_a_call_leg() {
+    fn a_tag_that_only_subscribes_is_not_a_call_leg() -> Result<(), TestError> {
         let leg = tag_entry("leg-a", 30000, &[subscription("leg-b", "offer/answer")]);
         let rec = tag_entry("recorder", 30010, &[subscription("leg-a", "pub/sub")]);
         let ControlReply::Call(call) = parse_query_reply(
             reply(&[("leg-a", leg), ("recorder", rec)]).as_bytes(),
             "c@x",
         )
-        .expect("the synthetic reply must parse") else {
-            panic!("expected a call view");
+        .map_err(|e| format!("the synthetic reply must parse: {e:?}"))?
+        else {
+            return Err("expected a call view".into());
         };
 
         let leg = call
             .tag_for_port(30000)
-            .expect("the leg holds port 30000 in this reply");
+            .ok_or("the leg holds port 30000 in this reply")?;
         let rec = call
             .tag_for_port(30010)
-            .expect("the subscriber holds port 30010 in this reply");
+            .ok_or("the subscriber holds port 30010 in this reply")?;
         assert!(
             !leg.is_media_subscriber(),
             "a tag with an offer/answer peer is a leg of the call"
@@ -1999,6 +2064,7 @@ mod query_reply_tests {
             "a tag that only ever subscribes to another tag's media is a \
              consumer of the call, not a party to it"
         );
+        Ok(())
     }
 
     /// The older spelling is a STRING, and reading it as a list reads nothing.
@@ -2009,7 +2075,7 @@ mod query_reply_tests {
     /// not match, and reports every call on such a relay as having no other
     /// side -- while a comment claims both spellings are read.
     #[test]
-    fn the_older_spelling_of_the_peer_is_a_string_and_is_still_read() {
+    fn the_older_spelling_of_the_peer_is_a_string_and_is_still_read() -> Result<(), TestError> {
         use super::tests::bstr;
         let entry = format!(
             "d{}{}{}{}e",
@@ -2020,9 +2086,9 @@ mod query_reply_tests {
         );
         let ControlReply::Call(call) =
             parse_query_reply(reply(&[("leg-a", entry)]).as_bytes(), "c@x")
-                .expect("the synthetic reply must parse")
+                .map_err(|e| format!("the synthetic reply must parse: {e:?}"))?
         else {
-            panic!("expected a call view");
+            return Err("expected a call view".into());
         };
         assert_eq!(
             call.tags[0].in_dialogue_with,
@@ -2030,6 +2096,7 @@ mod query_reply_tests {
             "a relay old enough to spell it this way still names the other \
              side, and sipnab must read it"
         );
+        Ok(())
     }
 
     /// A truncated datagram must fail, not read as a call with no tags.
@@ -2038,12 +2105,13 @@ mod query_reply_tests {
     /// that parses is reported as a complete one, and every stream in the call
     /// stays an orphan with no sign anything went wrong.
     #[test]
-    fn a_truncated_reply_fails_rather_than_reading_as_an_empty_call() {
+    fn a_truncated_reply_fails_rather_than_reading_as_an_empty_call() -> Result<(), TestError> {
         let short = &REAL_QUERY[..REAL_QUERY.len() / 2];
         assert!(
             parse_query_reply(short, "1-9582@172.28.0.21").is_err(),
             "half a reply must not parse as a call with no streams"
         );
+        Ok(())
     }
 }
 

@@ -282,71 +282,83 @@ fn is_rotation_of(candidate: &Path, base: &Path) -> bool {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A temp directory holding two capture-shaped files.
-    fn fixture(name: &str) -> PathBuf {
+    fn fixture(name: &str) -> Result<PathBuf, TestError> {
         let d =
             std::env::temp_dir().join(format!("sipnab-output-guard-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).expect("create temp dir");
-        std::fs::write(d.join("a.pcap"), b"not really a pcap").expect("write a");
-        std::fs::write(d.join("b.pcap"), b"not really a pcap").expect("write b");
-        d
+        std::fs::create_dir_all(&d).map_err(|e| format!("create temp dir: {e:?}"))?;
+        std::fs::write(d.join("a.pcap"), b"not really a pcap")
+            .map_err(|e| format!("write a: {e:?}"))?;
+        std::fs::write(d.join("b.pcap"), b"not really a pcap")
+            .map_err(|e| format!("write b: {e:?}"))?;
+        Ok(d)
     }
 
     /// The same file under different spellings is one file.
     #[test]
-    fn canonical_target_collapses_spellings() {
-        let d = fixture("spellings");
+    fn canonical_target_collapses_spellings() -> Result<(), TestError> {
+        let d = fixture("spellings")?;
         let plain = d.join("a.pcap");
         let dotted = d.join(".").join("a.pcap");
         let dotdot = d.join("sub").join("..").join("a.pcap");
-        std::fs::create_dir_all(d.join("sub")).expect("mkdir sub");
+        std::fs::create_dir_all(d.join("sub")).map_err(|e| format!("mkdir sub: {e:?}"))?;
         assert_eq!(canonical_target(&plain), canonical_target(&dotted));
         assert_eq!(canonical_target(&plain), canonical_target(&dotdot));
+        Ok(())
     }
 
     /// A not-yet-existing output still resolves through its parent, so a
     /// symlinked directory does not hide a collision.
     #[test]
-    fn canonical_target_resolves_a_missing_file_through_its_parent() {
-        let d = fixture("missing");
+    fn canonical_target_resolves_a_missing_file_through_its_parent() -> Result<(), TestError> {
+        let d = fixture("missing")?;
         let missing = d.join("does-not-exist.pcap");
         let resolved = canonical_target(&missing);
         assert!(resolved.is_absolute(), "got {}", resolved.display());
         assert_eq!(resolved.file_name(), missing.file_name());
         assert_eq!(
             resolved.parent(),
-            Some(d.canonicalize().expect("canon").as_path())
+            Some(
+                d.canonicalize()
+                    .map_err(|e| format!("canon: {e:?}"))?
+                    .as_path()
+            )
         );
+        Ok(())
     }
 
     /// An output equal to a resolved input is refused; a different one is not.
     #[test]
-    fn exact_input_match_is_refused() {
-        let d = fixture("exact");
+    fn exact_input_match_is_refused() -> Result<(), TestError> {
+        let d = fixture("exact")?;
         let a = d.join("a.pcap");
         let p = ProtectedInputs::new(&[], std::slice::from_ref(&a), false);
-        let err = p.check(&a, "-O", false).expect_err("must refuse");
+        let err = p.check(&a, "-O", false).err().ok_or("must refuse")?;
         assert!(err.contains("would overwrite"), "got: {err}");
         assert!(p.check(&d.join("out.pcap"), "-O", false).is_ok());
+        Ok(())
     }
 
     /// Protection follows the file, not the spelling used to name it.
     #[test]
-    fn a_different_spelling_of_an_input_is_refused() {
-        let d = fixture("alias");
+    fn a_different_spelling_of_an_input_is_refused() -> Result<(), TestError> {
+        let d = fixture("alias")?;
         let a = d.join("a.pcap");
         let p = ProtectedInputs::new(&[], std::slice::from_ref(&a), false);
         let aliased = d.join(".").join("a.pcap");
         assert!(p.check(&aliased, "-O", false).is_err());
+        Ok(())
     }
 
     /// Writing inside a directory being read is refused; a sibling directory
     /// is fine, and a subdirectory only counts when the walk recurses.
     #[test]
-    fn writing_inside_an_input_directory_is_refused() {
-        let d = fixture("dir");
-        std::fs::create_dir_all(d.join("sub")).expect("mkdir sub");
+    fn writing_inside_an_input_directory_is_refused() -> Result<(), TestError> {
+        let d = fixture("dir")?;
+        std::fs::create_dir_all(d.join("sub")).map_err(|e| format!("mkdir sub: {e:?}"))?;
         let specs = vec![d.to_string_lossy().into_owned()];
 
         let flat = ProtectedInputs::new(&specs, &[], false);
@@ -363,15 +375,16 @@ mod tests {
                 .is_err(),
             "--recursive reads subdirectories, so writing there collides"
         );
+        Ok(())
     }
 
     /// With `--split`, a rotated name that is already an input is refused;
     /// without `--split` the same pair is fine.
     #[test]
-    fn split_rotation_onto_an_input_is_refused() {
-        let d = fixture("split");
+    fn split_rotation_onto_an_input_is_refused() -> Result<(), TestError> {
+        let d = fixture("split")?;
         let rotated = d.join("cap_00001.pcap");
-        std::fs::write(&rotated, b"x").expect("write rotated");
+        std::fs::write(&rotated, b"x").map_err(|e| format!("write rotated: {e:?}"))?;
         let base = d.join("cap.pcap");
         let p = ProtectedInputs::new(&[], &[rotated], false);
         assert!(p.check(&base, "-O", true).is_err(), "rotation collides");
@@ -379,11 +392,12 @@ mod tests {
             p.check(&base, "-O", false).is_ok(),
             "without --split nothing rotates onto it"
         );
+        Ok(())
     }
 
     /// The rotation shape test accepts only `{stem}_{digits}.{ext}` siblings.
     #[test]
-    fn rotation_shape_is_precise() {
+    fn rotation_shape_is_precise() -> Result<(), TestError> {
         let base = Path::new("/caps/out.pcap");
         assert!(is_rotation_of(Path::new("/caps/out_00001.pcap"), base));
         assert!(is_rotation_of(Path::new("/caps/out_7.pcap"), base));
@@ -393,21 +407,23 @@ mod tests {
         assert!(!is_rotation_of(Path::new("/caps/out00001.pcap"), base));
         assert!(!is_rotation_of(Path::new("/caps/out_final.pcap"), base));
         assert!(!is_rotation_of(Path::new("/caps/other_00001.pcap"), base));
+        Ok(())
     }
 
     /// A live capture protects nothing, so every output is allowed.
     #[test]
-    fn no_inputs_means_no_restriction() {
+    fn no_inputs_means_no_restriction() -> Result<(), TestError> {
         let p = ProtectedInputs::new(&[], &[], false);
         assert!(p.is_empty());
         assert!(p.check(Path::new("/tmp/anything.pcap"), "-O", true).is_ok());
+        Ok(())
     }
 
     /// A spec that names a file protects that file even when the caller never
     /// resolved the set — the MCP server's case.
     #[test]
-    fn a_named_file_spec_is_protected_without_resolution() {
-        let d = fixture("spec-only");
+    fn a_named_file_spec_is_protected_without_resolution() -> Result<(), TestError> {
+        let d = fixture("spec-only")?;
         let a = d.join("a.pcap");
         let specs = vec![a.to_string_lossy().into_owned()];
         let p = ProtectedInputs::new(&specs, &[], false);
@@ -416,13 +432,14 @@ mod tests {
             p.check(&d.join("elsewhere.pcap"), "filename", false)
                 .is_ok()
         );
+        Ok(())
     }
 
     /// A glob spec protects everything it would expand to, including files
     /// that do not exist yet.
     #[test]
-    fn a_glob_spec_protects_what_it_would_match() {
-        let d = fixture("glob");
+    fn a_glob_spec_protects_what_it_would_match() -> Result<(), TestError> {
+        let d = fixture("glob")?;
         let spec = d.join("*.pcap").to_string_lossy().into_owned();
         let p = ProtectedInputs::new(&[spec], &[], false);
         assert!(
@@ -437,5 +454,6 @@ mod tests {
             p.check(&d.join("notes.txt"), "-O", false).is_ok(),
             "a name the pattern cannot match is fine"
         );
+        Ok(())
     }
 }

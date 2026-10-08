@@ -103,6 +103,7 @@ mod tests {
     };
     use crate::rtp::stream_store::StreamStore;
     use crate::sip::dialog_store::DialogStore;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A server with no capture attached.
     fn server() -> SipnabMcp {
@@ -114,7 +115,7 @@ mod tests {
 
     /// A roster with senders 7 and 9 and one refused address, on a frozen
     /// clock.
-    fn roster() -> HepRoster {
+    fn roster() -> Result<HepRoster, TestError> {
         let t = std::time::Instant::now();
         let mut state = RosterState::new(
             SenderTrust::SharedSecretHmac,
@@ -124,74 +125,79 @@ mod tests {
             chrono::Utc::now(),
         );
         for (id, peer) in [(7u32, "192.0.2.7"), (9, "192.0.2.9")] {
-            let peer: std::net::IpAddr = peer.parse().expect("literal");
+            let peer: std::net::IpAddr = peer.parse().map_err(|e| format!("literal: {e:?}"))?;
             state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
         }
-        let bad: std::net::IpAddr = "203.0.113.66".parse().expect("literal");
+        let bad: std::net::IpAddr = "203.0.113.66"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         state.refused(HepRefusal::HmacBadMac, bad, t);
-        HepRoster::with_clock(state, Arc::new(move || t))
+        Ok(HepRoster::with_clock(state, Arc::new(move || t)))
     }
 
     /// The JSON block of a tool result.
-    fn json_of(result: &CallToolResult) -> serde_json::Value {
+    fn json_of(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let text = result
             .content
             .iter()
             .find_map(|c| c.as_text())
             .map(|t| t.text.clone())
-            .expect("a JSON block");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a JSON block")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     /// Registered, and annotated read-only, so a `read`-scoped token reaches
     /// it and a host can call it without asking.
     #[test]
-    fn hep_senders_is_registered_and_annotated_read_only() {
+    fn hep_senders_is_registered_and_annotated_read_only() -> Result<(), TestError> {
         let router = SipnabMcp::hep_router();
         let tool = router
             .get("hep_senders")
-            .expect("hep_senders must be registered");
+            .ok_or("hep_senders must be registered")?;
         let annotations = tool
             .annotations
             .as_ref()
-            .expect("hep_senders must carry tool annotations");
+            .ok_or("hep_senders must carry tool annotations")?;
         assert_eq!(annotations.read_only_hint, Some(true));
         assert!(tool.output_schema.is_some(), "it declares its output shape");
+        Ok(())
     }
 
     /// The tool answers with the roster the listener hung on the meter.
     #[tokio::test]
-    async fn hep_senders_returns_the_listeners_roster() {
+    async fn hep_senders_returns_the_listeners_roster() -> Result<(), TestError> {
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let meter = rx.meter();
-        assert!(meter.attach_hep_roster(roster()));
+        assert!(meter.attach_hep_roster(roster()?));
         let srv = server().with_capture_meter(Some(meter));
         let body = json_of(
             &srv.hep_senders(Parameters(HepSendersParams { limit: None }))
                 .await
-                .expect("the tool answers"),
-        );
+                .map_err(|e| format!("the tool answers: {e:?}"))?,
+        )?;
         assert_eq!(body["listening"], true);
         assert_eq!(body["trust"], "shared_secret_hmac");
         assert_eq!(body["senders"][0]["source"], "hep:7@192.0.2.7");
         assert_eq!(body["senders"][1]["source"], "hep:9@192.0.2.9");
         assert_eq!(body["refused_sources"][0]["by_reason"]["hmac_bad_mac"], 1);
+        Ok(())
     }
 
     /// A row limit caps each list and not the totals.
     #[tokio::test]
-    async fn hep_senders_honors_its_row_limit() {
+    async fn hep_senders_honors_its_row_limit() -> Result<(), TestError> {
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let meter = rx.meter();
-        assert!(meter.attach_hep_roster(roster()));
+        assert!(meter.attach_hep_roster(roster()?));
         let srv = server().with_capture_meter(Some(meter));
         let body = json_of(
             &srv.hep_senders(Parameters(HepSendersParams { limit: Some(1) }))
                 .await
-                .expect("the tool answers"),
-        );
+                .map_err(|e| format!("the tool answers: {e:?}"))?,
+        )?;
         assert_eq!(body["senders"].as_array().map(Vec::len), Some(1));
         assert_eq!(body["senders_tracked"], 2);
+        Ok(())
     }
 
     /// **A page size never moves a roster-wide claim.** Everything but the two
@@ -199,10 +205,10 @@ mod tests {
     /// property `tests/population_claim_test.rs` holds for every other paging
     /// tool, driven here because only here can a roster exist.
     #[tokio::test]
-    async fn a_page_size_never_moves_the_roster_totals() {
+    async fn a_page_size_never_moves_the_roster_totals() -> Result<(), TestError> {
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let meter = rx.meter();
-        assert!(meter.attach_hep_roster(roster()));
+        assert!(meter.attach_hep_roster(roster()?));
         let srv = server().with_capture_meter(Some(meter));
         let at = |limit| {
             let srv = &srv;
@@ -210,12 +216,12 @@ mod tests {
                 json_of(
                     &srv.hep_senders(Parameters(HepSendersParams { limit: Some(limit) }))
                         .await
-                        .expect("the tool answers"),
+                        .map_err(|e| format!("the tool answers: {e:?}"))?,
                 )
             }
         };
-        let mut small = at(1).await;
-        let mut large = at(50).await;
+        let mut small = at(1).await?;
+        let mut large = at(50).await?;
         assert_eq!(
             small["senders"].as_array().map(Vec::len),
             Some(1),
@@ -230,22 +236,24 @@ mod tests {
             small, large,
             "a roster-wide figure moved with the page size"
         );
+        Ok(())
     }
 
     /// No listener: `listening: false` and a note, never an empty roster.
     #[tokio::test]
-    async fn hep_senders_without_a_listener_says_nothing_is_listening() {
+    async fn hep_senders_without_a_listener_says_nothing_is_listening() -> Result<(), TestError> {
         let body = json_of(
             &server()
                 .hep_senders(Parameters(HepSendersParams { limit: None }))
                 .await
-                .expect("the tool answers"),
-        );
+                .map_err(|e| format!("the tool answers: {e:?}"))?,
+        )?;
         assert_eq!(body["listening"], false);
         assert!(
             body["note"]
                 .as_str()
                 .is_some_and(|n| n.contains("no HEP listener"))
         );
+        Ok(())
     }
 }

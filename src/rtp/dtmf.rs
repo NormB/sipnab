@@ -246,6 +246,9 @@ fn event_to_digit(event: u8) -> Option<char> {
 /// Unit tests for RFC 4733 telephone-event (DTMF) extraction.
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// One keypress reports one event, not three.
     ///
     /// [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4): "The final packet for each event and for each
@@ -259,12 +262,13 @@ mod tests {
     /// event's start) and the same event code — the RFC guarantees it, which
     /// is what makes those three a usable key.
     #[test]
-    fn a_retransmitted_end_packet_is_not_a_second_keypress() {
+    fn a_retransmitted_end_packet_is_not_a_second_keypress() -> Result<(), TestError> {
         let mut seen = DtmfDedupe::default();
         // Digit 7, E=1, 2400 timestamp units — sent three times per §2.5.1.4.
         assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
         assert!(seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
         assert!(seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+        Ok(())
     }
 
     /// A different digit at the same instant is a different event.
@@ -273,10 +277,11 @@ mod tests {
     /// the same RTP timestamp window are two keypresses, and collapsing them
     /// would lose one.
     #[test]
-    fn a_different_event_code_is_a_different_keypress() {
+    fn a_different_event_code_is_a_different_keypress() -> Result<(), TestError> {
         let mut seen = DtmfDedupe::default();
         assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
         assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 1));
+        Ok(())
     }
 
     /// The same digit later in the call is a new keypress.
@@ -284,10 +289,11 @@ mod tests {
     /// The negative case for the timestamp half. Pressing `7` twice must count
     /// twice; a deduper keyed on the digit alone would report one.
     #[test]
-    fn the_same_digit_pressed_again_counts_again() {
+    fn the_same_digit_pressed_again_counts_again() -> Result<(), TestError> {
         let mut seen = DtmfDedupe::default();
         assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
         assert!(!seen.is_duplicate(0xCAFE_BABE, 176_000, 7));
+        Ok(())
     }
 
     /// Two streams pressing the same digit at the same offset are distinct.
@@ -295,10 +301,11 @@ mod tests {
     /// The negative case for the SSRC half — both directions of one call, or
     /// two calls in one capture, would otherwise collapse into one.
     #[test]
-    fn the_same_digit_on_another_stream_is_a_separate_keypress() {
+    fn the_same_digit_on_another_stream_is_a_separate_keypress() -> Result<(), TestError> {
         let mut seen = DtmfDedupe::default();
         assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
         assert!(!seen.is_duplicate(0x0BAD_F00D, 160_000, 7));
+        Ok(())
     }
 
     /// The memory is bounded, and forgetting is safe.
@@ -308,7 +315,7 @@ mod tests {
     /// keypress that is far in the past, which is the harmless direction — so
     /// the bound is deliberately small and this test states the trade.
     #[test]
-    fn the_dedupe_memory_is_bounded() {
+    fn the_dedupe_memory_is_bounded() -> Result<(), TestError> {
         let mut seen = DtmfDedupe::default();
         for i in 0..(DtmfDedupe::CAPACITY as u32 * 4) {
             assert!(!seen.is_duplicate(0xCAFE_BABE, i * 1000, 7));
@@ -318,13 +325,14 @@ mod tests {
             "the set must not grow without bound: {}",
             seen.len()
         );
+        Ok(())
     }
 
     use super::*;
 
     /// A fixed capture timestamp for the extracted events.
-    fn ts() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?)
     }
 
     /// Build a telephone-event payload.
@@ -335,104 +343,115 @@ mod tests {
 
     /// Digit 1 with the End bit is extracted with its duration in ms.
     #[test]
-    fn extract_digit_1_end() {
+    fn extract_digit_1_end() -> Result<(), TestError> {
         let payload = build_event(1, true, 10, 1600); // 200ms at 8kHz
-        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
-        let event = event.expect("should extract digit 1");
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?);
+        let event = event.ok_or("should extract digit 1")?;
         assert_eq!(event.digit, '1');
         assert_eq!(event.duration_ms, 200);
+        Ok(())
     }
 
     /// Digit 0 is extracted with the correct duration.
     #[test]
-    fn extract_digit_0() {
+    fn extract_digit_0() -> Result<(), TestError> {
         let payload = build_event(0, true, 10, 800);
-        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts())
-            .expect("should extract digit 0");
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?)
+            .ok_or("should extract digit 0")?;
         assert_eq!(event.digit, '0');
         assert_eq!(event.duration_ms, 100);
+        Ok(())
     }
 
     /// Event code 10 maps to the `*` digit.
     #[test]
-    fn extract_star() {
+    fn extract_star() -> Result<(), TestError> {
         let payload = build_event(10, true, 10, 1600);
         let event =
-            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract *");
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?).ok_or("should extract *")?;
         assert_eq!(event.digit, '*');
+        Ok(())
     }
 
     /// Event code 11 maps to the `#` digit.
     #[test]
-    fn extract_hash() {
+    fn extract_hash() -> Result<(), TestError> {
         let payload = build_event(11, true, 10, 1600);
         let event =
-            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract #");
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?).ok_or("should extract #")?;
         assert_eq!(event.digit, '#');
+        Ok(())
     }
 
     /// Event code 12 maps to the `A` digit.
     #[test]
-    fn extract_letter_a() {
+    fn extract_letter_a() -> Result<(), TestError> {
         let payload = build_event(12, true, 10, 1600);
         let event =
-            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract A");
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?).ok_or("should extract A")?;
         assert_eq!(event.digit, 'A');
+        Ok(())
     }
 
     /// Event code 15 maps to the `D` digit.
     #[test]
-    fn extract_letter_d() {
+    fn extract_letter_d() -> Result<(), TestError> {
         let payload = build_event(15, true, 10, 1600);
         let event =
-            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract D");
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?).ok_or("should extract D")?;
         assert_eq!(event.digit, 'D');
+        Ok(())
     }
 
     /// Intermediate packets (End bit clear) return `None`.
     #[test]
-    fn intermediate_packet_not_returned() {
+    fn intermediate_packet_not_returned() -> Result<(), TestError> {
         // E bit = 0 (intermediate)
         let payload = build_event(5, false, 10, 800);
-        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?);
         assert!(event.is_none(), "Intermediate packets should return None");
+        Ok(())
     }
 
     /// A payload type not matching the negotiated PT returns `None`.
     #[test]
-    fn wrong_payload_type_not_returned() {
+    fn wrong_payload_type_not_returned() -> Result<(), TestError> {
         let payload = build_event(1, true, 10, 1600);
         // PT 96 doesn't match expected 101
-        let event = extract_dtmf_with_clock(&payload, 96, 101, 8000, ts());
+        let event = extract_dtmf_with_clock(&payload, 96, 101, 8000, ts()?);
         assert!(event.is_none(), "Wrong PT should return None");
+        Ok(())
     }
 
     /// A payload under 4 bytes is too short to decode and returns `None`.
     #[test]
-    fn payload_too_short() {
-        let event = extract_dtmf_with_clock(&[0x01, 0x80], 101, 101, 8000, ts());
+    fn payload_too_short() -> Result<(), TestError> {
+        let event = extract_dtmf_with_clock(&[0x01, 0x80], 101, 101, 8000, ts()?);
         assert!(event.is_none(), "Payload < 4 bytes should return None");
+        Ok(())
     }
 
     /// An empty payload returns `None`.
     #[test]
-    fn empty_payload() {
-        let event = extract_dtmf_with_clock(&[], 101, 101, 8000, ts());
+    fn empty_payload() -> Result<(), TestError> {
+        let event = extract_dtmf_with_clock(&[], 101, 101, 8000, ts()?);
         assert!(event.is_none(), "Empty payload should return None");
+        Ok(())
     }
 
     /// An event code outside the DTMF range (16) returns `None`.
     #[test]
-    fn invalid_event_code() {
+    fn invalid_event_code() -> Result<(), TestError> {
         // Event 16 is outside DTMF range
         let payload = build_event(16, true, 10, 1600);
-        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?);
         assert!(event.is_none(), "Event code 16 should return None");
+        Ok(())
     }
 
     /// Every valid event code (0-15) maps to its expected DTMF character.
     #[test]
-    fn all_digits_roundtrip() {
+    fn all_digits_roundtrip() -> Result<(), TestError> {
         let expected = [
             (0, '0'),
             (1, '1'),
@@ -453,37 +472,40 @@ mod tests {
         ];
         for (code, digit) in expected {
             let payload = build_event(code, true, 10, 1600);
-            let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts())
-                .unwrap_or_else(|| panic!("Should extract event code {code}"));
+            let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?)
+                .ok_or_else(|| format!("Should extract event code {code}"))?;
             assert_eq!(
                 event.digit, digit,
                 "Event code {code} should map to '{digit}'"
             );
         }
+        Ok(())
     }
 
     /// Duration in timestamp units is converted to ms against an 8 kHz clock.
     #[test]
-    fn duration_calculation() {
+    fn duration_calculation() -> Result<(), TestError> {
         // 3200 timestamp units at 8kHz = 400ms
         let payload = build_event(5, true, 10, 3200);
         let event =
-            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract");
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()?).ok_or("should extract")?;
         assert_eq!(event.duration_ms, 400);
+        Ok(())
     }
 
     /// A 16 kHz telephone-event yields the correct duration when the
     /// negotiated clock rate is supplied, rather than the doubled value the
     /// 8 kHz assumption produces.
     #[test]
-    fn extract_dtmf_16khz_clock_correct_duration() {
+    fn extract_dtmf_16khz_clock_correct_duration() -> Result<(), TestError> {
         // 3200 timestamp units at 16 kHz = 200 ms (the 8 kHz assumption
         // would report 400 ms).
         let payload = build_event(1, true, 10, 3200);
-        let event = extract_dtmf_with_clock(&payload, 101, 101, 16_000, ts())
-            .expect("should extract digit 1");
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 16_000, ts()?)
+            .ok_or("should extract digit 1")?;
         assert_eq!(event.digit, '1');
         assert_eq!(event.duration_ms, 200);
+        Ok(())
     }
 
     /// No RFC 4733 event code decodes to the mask character, so a masked log
@@ -493,7 +515,7 @@ mod tests {
     /// code 10, so masking with it would make "the caller pressed star" and
     /// "the value is withheld" the same line.
     #[test]
-    fn the_mask_character_is_not_a_digit_any_event_code_can_produce() {
+    fn the_mask_character_is_not_a_digit_any_event_code_can_produce() -> Result<(), TestError> {
         for code in 0u8..=255 {
             assert_ne!(
                 event_to_digit(code),
@@ -502,13 +524,15 @@ mod tests {
                  line is indistinguishable from a real keypress"
             );
         }
+        Ok(())
     }
 
     /// A zero clock rate — which no valid `a=rtpmap` carries — returns `None`
     /// rather than dividing by zero.
     #[test]
-    fn a_zero_clock_rate_yields_no_event() {
+    fn a_zero_clock_rate_yields_no_event() -> Result<(), TestError> {
         let payload = build_event(1, true, 10, 1600);
-        assert!(extract_dtmf_with_clock(&payload, 101, 101, 0, ts()).is_none());
+        assert!(extract_dtmf_with_clock(&payload, 101, 101, 0, ts()?).is_none());
+        Ok(())
     }
 }

@@ -278,49 +278,57 @@ mod tests {
     //! round-trip and known-answer tests.
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The stub backend errors on AES-GCM decrypt with a build-hint message.
     #[test]
-    fn stub_aes_gcm_decrypt_returns_error() {
+    fn stub_aes_gcm_decrypt_returns_error() -> Result<(), TestError> {
         let stub = StubCryptoBackend;
         let result = stub.aes_gcm_decrypt(b"key", b"nonce", b"aad", b"ct");
         assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
+        let msg = result.err().ok_or("expected an error, got Ok")?.to_string();
         assert!(
             msg.contains("No crypto backend"),
             "Error should mention missing backend: {msg}"
         );
+        Ok(())
     }
 
     /// The stub backend errors on AES-CBC decrypt.
     #[test]
-    fn stub_aes_cbc_decrypt_returns_error() {
+    fn stub_aes_cbc_decrypt_returns_error() -> Result<(), TestError> {
         let stub = StubCryptoBackend;
         let result = stub.aes_cbc_decrypt(b"key", b"iv", b"ct");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// The stub backend errors on HMAC-SHA1.
     #[test]
-    fn stub_hmac_sha1_returns_error() {
+    fn stub_hmac_sha1_returns_error() -> Result<(), TestError> {
         let stub = StubCryptoBackend;
         let result = stub.hmac_sha1(b"key", b"data");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// The stub backend errors on HKDF-Expand.
     #[test]
-    fn stub_hkdf_expand_returns_error() {
+    fn stub_hkdf_expand_returns_error() -> Result<(), TestError> {
         let stub = StubCryptoBackend;
         let result = stub.hkdf_expand(b"prk", b"info", 32, HashAlg::Sha256);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// `StubCryptoBackend` is `Send + Sync` (compile-time assertion).
     #[test]
-    fn stub_is_send_and_sync() {
+    fn stub_is_send_and_sync() -> Result<(), TestError> {
         /// Compiles only if `T: Send + Sync` (the actual assertion).
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<StubCryptoBackend>();
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -333,51 +341,53 @@ mod tests {
         use super::*;
 
         /// Encrypt with ring, then decrypt — roundtrip must match.
-        fn aes_gcm_roundtrip(key: &[u8]) {
+        fn aes_gcm_roundtrip(key: &[u8]) -> Result<(), TestError> {
             use ring::aead;
 
             let algo = match key.len() {
                 16 => &aead::AES_128_GCM,
                 32 => &aead::AES_256_GCM,
-                _ => panic!("bad key len"),
+                _ => return Err("bad key len".into()),
             };
 
             let plaintext = b"SIP/2.0 200 OK\r\n\r\n";
             let nonce_bytes = [0x01u8; 12];
 
             // Encrypt
-            let unbound = aead::UnboundKey::new(algo, key).unwrap();
+            let unbound = aead::UnboundKey::new(algo, key).map_err(|e| format!("{e:?}"))?;
             let sealing_key = aead::LessSafeKey::new(unbound);
-            let nonce = aead::Nonce::try_assume_unique_for_key(&nonce_bytes).unwrap();
+            let nonce = aead::Nonce::try_assume_unique_for_key(&nonce_bytes)
+                .map_err(|e| format!("{e:?}"))?;
             let aad_bytes = b"additional data";
             let mut in_out = plaintext.to_vec();
             sealing_key
                 .seal_in_place_append_tag(nonce, aead::Aad::from(&aad_bytes[..]), &mut in_out)
-                .unwrap();
+                .map_err(|e| format!("{e:?}"))?;
 
             // Decrypt
             let backend = RingCryptoBackend;
-            let decrypted = backend
-                .aes_gcm_decrypt(key, &nonce_bytes, aad_bytes, &in_out)
-                .unwrap();
+            let decrypted = backend.aes_gcm_decrypt(key, &nonce_bytes, aad_bytes, &in_out)?;
             assert_eq!(decrypted, plaintext);
+            Ok(())
         }
 
         /// AES-128-GCM seal-then-open recovers the plaintext.
         #[test]
-        fn aes_128_gcm_roundtrip() {
-            aes_gcm_roundtrip(&[0xAAu8; 16]);
+        fn aes_128_gcm_roundtrip() -> Result<(), TestError> {
+            aes_gcm_roundtrip(&[0xAAu8; 16])?;
+            Ok(())
         }
 
         /// AES-256-GCM seal-then-open recovers the plaintext.
         #[test]
-        fn aes_256_gcm_roundtrip() {
-            aes_gcm_roundtrip(&[0xBBu8; 32]);
+        fn aes_256_gcm_roundtrip() -> Result<(), TestError> {
+            aes_gcm_roundtrip(&[0xBBu8; 32])?;
+            Ok(())
         }
 
         /// Decrypting AES-GCM with the wrong key fails authentication.
         #[test]
-        fn aes_gcm_wrong_key_fails() {
+        fn aes_gcm_wrong_key_fails() -> Result<(), TestError> {
             use ring::aead;
 
             let key = [0xAAu8; 16];
@@ -385,36 +395,41 @@ mod tests {
             let plaintext = b"secret";
             let nonce_bytes = [0x01u8; 12];
 
-            let unbound = aead::UnboundKey::new(&aead::AES_128_GCM, &key).unwrap();
+            let unbound =
+                aead::UnboundKey::new(&aead::AES_128_GCM, &key).map_err(|e| format!("{e:?}"))?;
             let sealing_key = aead::LessSafeKey::new(unbound);
-            let nonce = aead::Nonce::try_assume_unique_for_key(&nonce_bytes).unwrap();
+            let nonce = aead::Nonce::try_assume_unique_for_key(&nonce_bytes)
+                .map_err(|e| format!("{e:?}"))?;
             let mut in_out = plaintext.to_vec();
             sealing_key
                 .seal_in_place_append_tag(nonce, aead::Aad::from(&b""[..]), &mut in_out)
-                .unwrap();
+                .map_err(|e| format!("{e:?}"))?;
 
             let backend = RingCryptoBackend;
             let result = backend.aes_gcm_decrypt(&wrong_key, &nonce_bytes, b"", &in_out);
             assert!(result.is_err(), "Wrong key should produce an error");
+            Ok(())
         }
 
         /// A 24-byte AES-GCM key is rejected with a length error.
         #[test]
-        fn aes_gcm_invalid_key_length() {
+        fn aes_gcm_invalid_key_length() -> Result<(), TestError> {
             let backend = RingCryptoBackend;
             let result = backend.aes_gcm_decrypt(&[0u8; 24], &[0u8; 12], b"", b"ct");
             assert!(result.is_err());
             assert!(
                 result
-                    .unwrap_err()
+                    .err()
+                    .ok_or("expected an error, got Ok")?
                     .to_string()
                     .contains("Invalid AES-GCM key length")
             );
+            Ok(())
         }
 
         /// HMAC-SHA1 matches the RFC 2202 Test Case 1 known-answer vector.
         #[test]
-        fn hmac_sha1_known_vector() {
+        fn hmac_sha1_known_vector() -> Result<(), TestError> {
             // RFC 2202 Test Case 1: key=0x0b repeated 20 times, data="Hi There"
             let key = [0x0bu8; 20];
             let data = b"Hi There";
@@ -424,27 +439,24 @@ mod tests {
             ];
 
             let backend = RingCryptoBackend;
-            let result = backend.hmac_sha1(&key, data).unwrap();
+            let result = backend.hmac_sha1(&key, data)?;
             assert_eq!(result, expected);
+            Ok(())
         }
 
         /// HKDF-Expand yields the requested length, obeys the prefix property,
         /// and produces distinct output for distinct `info`.
         #[test]
-        fn hkdf_expand_produces_correct_length() {
+        fn hkdf_expand_produces_correct_length() -> Result<(), TestError> {
             let backend = RingCryptoBackend;
             // Use a 32-byte PRK (minimum for SHA-256)
             let prk = [0x07u8; 32];
             let info = b"tls13 key";
 
-            let out16 = backend
-                .hkdf_expand(&prk, info, 16, HashAlg::Sha256)
-                .unwrap();
+            let out16 = backend.hkdf_expand(&prk, info, 16, HashAlg::Sha256)?;
             assert_eq!(out16.len(), 16);
 
-            let out32 = backend
-                .hkdf_expand(&prk, info, 32, HashAlg::Sha256)
-                .unwrap();
+            let out32 = backend.hkdf_expand(&prk, info, 32, HashAlg::Sha256)?;
             assert_eq!(out32.len(), 32);
 
             // HKDF-Expand with the same PRK and info: shorter output is a prefix
@@ -452,42 +464,39 @@ mod tests {
             assert_eq!(out16[..], out32[..16]);
 
             // Different info produces different output
-            let out_diff = backend
-                .hkdf_expand(&prk, b"tls13 iv", 16, HashAlg::Sha256)
-                .unwrap();
+            let out_diff = backend.hkdf_expand(&prk, b"tls13 iv", 16, HashAlg::Sha256)?;
             assert_ne!(
                 out16, out_diff,
                 "Different info should produce different keys"
             );
+            Ok(())
         }
 
         /// HKDF-Expand is deterministic for the same PRK/info/length.
         #[test]
-        fn hkdf_expand_deterministic() {
+        fn hkdf_expand_deterministic() -> Result<(), TestError> {
             let backend = RingCryptoBackend;
             let prk = [0x42u8; 32];
             let info = b"test info";
 
-            let a = backend
-                .hkdf_expand(&prk, info, 16, HashAlg::Sha256)
-                .unwrap();
-            let b = backend
-                .hkdf_expand(&prk, info, 16, HashAlg::Sha256)
-                .unwrap();
+            let a = backend.hkdf_expand(&prk, info, 16, HashAlg::Sha256)?;
+            let b = backend.hkdf_expand(&prk, info, 16, HashAlg::Sha256)?;
             assert_eq!(a, b, "HKDF-Expand must be deterministic");
+            Ok(())
         }
 
         /// `RingCryptoBackend` is `Send + Sync` (compile-time assertion).
         #[test]
-        fn ring_is_send_and_sync() {
+        fn ring_is_send_and_sync() -> Result<(), TestError> {
             /// Compiles only if `T: Send + Sync` (the actual assertion).
             fn assert_send_sync<T: Send + Sync>() {}
             assert_send_sync::<RingCryptoBackend>();
+            Ok(())
         }
 
         /// AES-128-CBC encrypt-then-decrypt (PKCS7) recovers the plaintext.
         #[test]
-        fn aes_128_cbc_roundtrip() {
+        fn aes_128_cbc_roundtrip() -> Result<(), TestError> {
             use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 
             let key = [0xAAu8; 16];
@@ -496,19 +505,20 @@ mod tests {
 
             // Encrypt with PKCS7 padding
             type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
-            let encryptor = Aes128CbcEnc::new_from_slices(&key, &iv).unwrap();
+            let encryptor = Aes128CbcEnc::new_from_slices(&key, &iv)?;
             let ciphertext =
                 encryptor.encrypt_padded_vec::<cbc::cipher::block_padding::Pkcs7>(plaintext);
 
             // Decrypt
             let backend = RingCryptoBackend;
-            let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext).unwrap();
+            let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext)?;
             assert_eq!(decrypted, plaintext);
+            Ok(())
         }
 
         /// AES-256-CBC encrypt-then-decrypt (PKCS7) recovers the plaintext.
         #[test]
-        fn aes_256_cbc_roundtrip() {
+        fn aes_256_cbc_roundtrip() -> Result<(), TestError> {
             use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 
             let key = [0xCCu8; 32];
@@ -516,36 +526,40 @@ mod tests {
             let plaintext = b"INVITE sip:test SIP/2.0\r\n\r\n";
 
             type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-            let encryptor = Aes256CbcEnc::new_from_slices(&key, &iv).unwrap();
+            let encryptor = Aes256CbcEnc::new_from_slices(&key, &iv)?;
             let ciphertext =
                 encryptor.encrypt_padded_vec::<cbc::cipher::block_padding::Pkcs7>(plaintext);
 
             let backend = RingCryptoBackend;
-            let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext).unwrap();
+            let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext)?;
             assert_eq!(decrypted, plaintext);
+            Ok(())
         }
 
         /// A 24-byte AES-CBC key is rejected with a length error.
         #[test]
-        fn aes_cbc_invalid_key_length() {
+        fn aes_cbc_invalid_key_length() -> Result<(), TestError> {
             let backend = RingCryptoBackend;
             let result = backend.aes_cbc_decrypt(&[0u8; 24], &[0u8; 16], &[0u8; 16]);
             assert!(result.is_err());
             assert!(
                 result
-                    .unwrap_err()
+                    .err()
+                    .ok_or("expected an error, got Ok")?
                     .to_string()
                     .contains("Invalid AES-CBC key length")
             );
+            Ok(())
         }
 
         /// AES-CBC ciphertext that is not a multiple of the block size errors.
         #[test]
-        fn aes_cbc_invalid_ciphertext_length() {
+        fn aes_cbc_invalid_ciphertext_length() -> Result<(), TestError> {
             let backend = RingCryptoBackend;
             // Not a multiple of 16
             let result = backend.aes_cbc_decrypt(&[0u8; 16], &[0u8; 16], &[0u8; 15]);
             assert!(result.is_err());
+            Ok(())
         }
     }
 }

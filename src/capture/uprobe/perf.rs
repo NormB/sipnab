@@ -347,55 +347,60 @@ pub fn event_id(tracefs: &std::path::Path, name: &str) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The kernel rejects an `attr.size` it does not know, so the list must be
     /// ordered newest first for the newest accepted size to win.
     #[test]
-    fn attr_sizes_are_offered_newest_first() {
+    fn attr_sizes_are_offered_newest_first() -> Result<(), TestError> {
         let mut sorted = ATTR_SIZES;
         sorted.sort_unstable_by(|a, b| b.cmp(a));
         assert_eq!(
             ATTR_SIZES, sorted,
             "a smaller size would win first otherwise"
         );
+        Ok(())
     }
 
     /// The struct is kernel ABI; a Rust-side layout change would misread every
     /// field after it.
     #[test]
-    fn the_attr_struct_is_at_least_as_large_as_the_sizes_offered() {
+    fn the_attr_struct_is_at_least_as_large_as_the_sizes_offered() -> Result<(), TestError> {
         assert!(
             std::mem::size_of::<PerfEventAttr>() >= ATTR_SIZES[0] as usize,
             "claiming a size larger than the struct would hand the kernel a \
              pointer to memory this does not own"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_unreadable_or_unparsable_id_is_an_error_not_a_zero() {
-        let dir = tempfile::tempdir().unwrap();
+    fn an_unreadable_or_unparsable_id_is_an_error_not_a_zero() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         assert!(
             event_id(dir.path(), "absent").is_err(),
             "missing id is an error"
         );
 
         let d = dir.path().join("events/uprobes/bad");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("id"), "not-a-number").unwrap();
+        std::fs::create_dir_all(&d)?;
+        std::fs::write(d.join("id"), "not-a-number")?;
         assert!(
             event_id(dir.path(), "bad").is_err(),
             "event id 0 is a real, different tracepoint; defaulting to it would \
              read someone else's events"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_valid_id_is_read() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_valid_id_is_read() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let d = dir.path().join("events/uprobes/good");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("id"), "1815\n").unwrap();
-        assert_eq!(event_id(dir.path(), "good").unwrap(), 1815);
+        std::fs::create_dir_all(&d)?;
+        std::fs::write(d.join("id"), "1815\n")?;
+        assert_eq!(event_id(dir.path(), "good")?, 1815);
+        Ok(())
     }
 
     // ── The ring walk, over a file standing in for the kernel ────────────
@@ -412,9 +417,9 @@ mod tests {
     /// The one thing the reader is for: the tracepoint's own bytes, and no
     /// more of the record than the kernel said they occupy.
     #[test]
-    fn a_sample_delivers_exactly_its_raw_payload() {
-        let records = fake::sample(b"INVITE sip:b@x SIP/2.0");
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+    fn a_sample_delivers_exactly_its_raw_payload() -> Result<(), TestError> {
+        let records = fake::sample(b"INVITE sip:b@x SIP/2.0")?;
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         let n = ring.drain(|raw| got.push(raw.to_vec()));
@@ -426,16 +431,17 @@ mod tests {
             "the fixture really does carry alignment padding past the payload, \
              so an equal length above proves the padding was cut"
         );
+        Ok(())
     }
 
     /// Consumed space is handed back: the kernel may not reuse what `data_tail`
     /// does not cover, so a reader that forgot to publish it would stall the
     /// ring once it filled.
     #[test]
-    fn draining_publishes_the_tail_up_to_the_head() {
-        let mut records = fake::sample(b"one");
-        records.extend(fake::sample(b"two"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+    fn draining_publishes_the_tail_up_to_the_head() -> Result<(), TestError> {
+        let mut records = fake::sample(b"one")?;
+        records.extend(fake::sample(b"two")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
         assert_eq!(ring.tail(), 0);
 
         ring.drain(|_| {});
@@ -446,15 +452,16 @@ mod tests {
             "everything read must be released to the kernel"
         );
         assert_eq!(ring.tail(), ring.head());
+        Ok(())
     }
 
     #[test]
-    fn records_are_delivered_in_ring_order() {
+    fn records_are_delivered_in_ring_order() -> Result<(), TestError> {
         let mut records = Vec::new();
         for m in [&b"first"[..], b"second", b"third"] {
-            records.extend(fake::sample(m));
+            records.extend(fake::sample(m)?);
         }
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 3);
@@ -462,25 +469,29 @@ mod tests {
             got,
             vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
         );
+        Ok(())
     }
 
     /// An empty ring is the common case on a quiet trunk. It must deliver
     /// nothing and must not move the tail.
     #[test]
-    fn an_empty_ring_delivers_nothing() {
-        let (mut ring, _file) = fake::ring(1, 64, &[]);
-        assert_eq!(ring.drain(|_| panic!("nothing was written")), 0);
+    fn an_empty_ring_delivers_nothing() -> Result<(), TestError> {
+        let (mut ring, _file) = fake::ring(1, 64, &[])?;
+        let mut delivered = 0usize;
+        assert_eq!(ring.drain(|_| delivered += 1), 0);
+        assert_eq!(delivered, 0, "nothing was written");
         assert_eq!(ring.tail(), 64, "no record, no movement");
+        Ok(())
     }
 
     /// `PERF_RECORD_LOST` is evidence that the capture has a hole in it. It is
     /// counted, summed across records, and never handed on as a payload.
     #[test]
-    fn a_lost_record_is_counted_and_never_delivered() {
-        let mut records = fake::lost(0xABCD, 7);
-        records.extend(fake::sample(b"after the gap"));
-        records.extend(fake::lost(0xABCD, 5));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+    fn a_lost_record_is_counted_and_never_delivered() -> Result<(), TestError> {
+        let mut records = fake::lost(0xABCD, 7)?;
+        records.extend(fake::sample(b"after the gap")?);
+        records.extend(fake::lost(0xABCD, 5)?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         let n = ring.drain(|raw| got.push(raw.to_vec()));
@@ -492,32 +503,34 @@ mod tests {
             12,
             "the COUNT field is summed, not the id and not the record count"
         );
+        Ok(())
     }
 
     /// Record types this reader has no use for (mmap, comm, throttle, ...) are
     /// stepped over by their own size, or everything after them is lost.
     #[test]
-    fn an_unknown_record_type_is_stepped_over() {
-        let mut records = fake::record(99, &[0xEE; 8]);
-        records.extend(fake::sample(b"still read"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+    fn an_unknown_record_type_is_stepped_over() -> Result<(), TestError> {
+        let mut records = fake::record(99, &[0xEE; 8])?;
+        records.extend(fake::sample(b"still read")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![b"still read".to_vec()]);
         assert_eq!(ring.tail(), records.len() as u64);
+        Ok(())
     }
 
     /// A header claiming fewer than its own eight bytes would never advance
     /// the walk, which would spin forever. It stops there instead, keeping
     /// everything before it and releasing nothing past it.
     #[test]
-    fn a_record_too_short_to_advance_stops_the_walk_where_it_stands() {
-        let mut records = fake::sample(b"kept");
+    fn a_record_too_short_to_advance_stops_the_walk_where_it_stands() -> Result<(), TestError> {
+        let mut records = fake::sample(b"kept")?;
         let stuck_at = records.len() as u64;
         records.extend(fake::header(PERF_RECORD_SAMPLE, 0));
-        records.extend(fake::sample(b"unreachable"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        records.extend(fake::sample(b"unreachable")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         let n = ring.drain(|raw| got.push(raw.to_vec()));
@@ -529,17 +542,18 @@ mod tests {
             stuck_at,
             "the tail stops at the record it could not read"
         );
+        Ok(())
     }
 
     /// A raw length larger than the record that carries it is refused rather
     /// than read past: the bytes beyond belong to the next record.
     #[test]
-    fn a_raw_length_larger_than_its_record_is_not_delivered() {
-        let mut lying = fake::sample(b"abcd");
+    fn a_raw_length_larger_than_its_record_is_not_delivered() -> Result<(), TestError> {
+        let mut lying = fake::sample(b"abcd")?;
         lying[8..12].copy_from_slice(&1000u32.to_le_bytes());
         let mut records = lying;
-        records.extend(fake::sample(b"next"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        records.extend(fake::sample(b"next")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
@@ -549,57 +563,64 @@ mod tests {
             "only the honest record arrives, and the walk carries on past the \
              lying one by its header size"
         );
+        Ok(())
     }
 
     /// The kernel writes a record across the end of the data area when that is
     /// where the head happens to be. Reading it must stitch the two halves, not
     /// return the bytes that happen to sit past the end of the mapping.
     #[test]
-    fn a_record_that_wraps_the_end_of_the_ring_is_reassembled() {
+    fn a_record_that_wraps_the_end_of_the_ring_is_reassembled() -> Result<(), TestError> {
         let data_size = fake::page() as u64;
         let payload = b"INVITE sip:wrapped@x SIP/2.0 -- long enough to straddle";
-        let records = fake::sample(payload);
+        let records = fake::sample(payload)?;
         // Start 16 bytes before the end, so the header and the length fit and
         // the payload is split between the last bytes and the first.
         let start = data_size - 16;
         assert!(start + (records.len() as u64) > data_size, "must straddle");
-        let (mut ring, _file) = fake::ring(1, start, &records);
+        let (mut ring, _file) = fake::ring(1, start, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![payload.to_vec()]);
+        Ok(())
     }
 
     /// Positions are absolute and grow forever; only their low bits address
     /// the data area. A reader that indexed with the raw position would read
     /// outside the mapping after the first lap.
     #[test]
-    fn positions_past_the_first_lap_address_the_same_ring() {
+    fn positions_past_the_first_lap_address_the_same_ring() -> Result<(), TestError> {
         let data_size = fake::page() as u64;
-        let records = fake::sample(b"third lap");
-        let (mut ring, _file) = fake::ring(1, 3 * data_size + 40, &records);
+        let records = fake::sample(b"third lap")?;
+        let (mut ring, _file) = fake::ring(1, 3 * data_size + 40, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![b"third lap".to_vec()]);
         assert_eq!(ring.tail(), 3 * data_size + 40 + records.len() as u64);
+        Ok(())
     }
 
     /// The descriptor handed out for polling is the ring's own, not a copy or
     /// a stand-in: polling anything else would never wake.
     #[test]
-    fn the_polling_descriptor_is_the_rings_own() {
-        let (ring, _file) = fake::ring(2, 0, &[]);
+    fn the_polling_descriptor_is_the_rings_own() -> Result<(), TestError> {
+        let (ring, _file) = fake::ring(2, 0, &[])?;
         let dup = ring
             .as_fd()
             .try_clone_to_owned()
-            .expect("a live descriptor duplicates");
-        let len = std::fs::File::from(dup).metadata().expect("fstat").len();
+            .map_err(|e| format!("a live descriptor duplicates: {e:?}"))?;
+        let len = std::fs::File::from(dup)
+            .metadata()
+            .map_err(|e| format!("fstat: {e:?}"))?
+            .len();
         assert_eq!(
             len as usize,
             fake::page() * 3,
             "the file the ring was mapped from: one metadata page, two data"
         );
+        Ok(())
     }
 
     /// The kernel sizes the data area in pages and requires a power of two.
@@ -616,30 +637,32 @@ mod tests {
     /// A sample whose header claims no room for its own length field carries
     /// no payload. It is stepped over, not read as a zero-length payload.
     #[test]
-    fn a_sample_too_short_to_carry_its_length_is_stepped_over() {
+    fn a_sample_too_short_to_carry_its_length_is_stepped_over() -> Result<(), TestError> {
         let mut records = fake::header(PERF_RECORD_SAMPLE, 8);
-        records.extend(fake::sample(b"after"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        records.extend(fake::sample(b"after")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![b"after".to_vec()]);
+        Ok(())
     }
 
     /// A mapping the kernel refuses is reported with its errno rather than
     /// handed back as a ring over memory that is not there. A read-only file
     /// cannot be mapped shared and writable, so the kernel refuses with EACCES.
     #[test]
-    fn a_mapping_the_kernel_refuses_is_reported() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_mapping_the_kernel_refuses_is_reported() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("ring");
-        std::fs::write(&path, vec![0u8; fake::page() * 2]).unwrap();
-        let read_only = std::fs::File::open(&path).unwrap();
+        std::fs::write(&path, vec![0u8; fake::page() * 2])?;
+        let read_only = std::fs::File::open(&path)?;
         let err = match PerfRing::map(OwnedFd::from(read_only), 1) {
-            Ok(_) => panic!("a read-only descriptor cannot back a writable shared map"),
+            Ok(_) => return Err("a read-only descriptor cannot back a writable shared map".into()),
             Err(e) => e,
         };
         assert_eq!(err.raw_os_error(), Some(libc::EACCES), "{err}");
+        Ok(())
     }
 
     /// An open the kernel refuses is reported as the syscall's OWN error, not
@@ -652,9 +675,10 @@ mod tests {
     /// (EINVAL/ENOENT). Nothing is opened, so nothing is captured. The
     /// SUCCESS arm of `open` is the part no unprivileged test can reach.
     #[test]
-    fn an_event_id_no_tracepoint_carries_is_refused_with_the_kernels_own_error() {
+    fn an_event_id_no_tracepoint_carries_is_refused_with_the_kernels_own_error()
+    -> Result<(), TestError> {
         let err = match PerfRing::open(u64::MAX, 0, 1) {
-            Ok(_) => panic!("no tracepoint has id u64::MAX"),
+            Ok(_) => return Err("no tracepoint has id u64::MAX".into()),
             Err(e) => e,
         };
         assert!(
@@ -665,6 +689,7 @@ mod tests {
             !err.to_string().contains("no attr size was attempted"),
             "{err}"
         );
+        Ok(())
     }
 }
 
@@ -683,6 +708,9 @@ pub(super) mod fake {
     use super::*;
     use std::os::unix::fs::FileExt;
 
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(in crate::capture::uprobe) type TestError = Box<dyn std::error::Error>;
+
     /// This host's page size, which is what the data area is measured in.
     pub(in crate::capture::uprobe) fn page() -> usize {
         crate::capture::mapped::page_size()
@@ -698,18 +726,23 @@ pub(super) mod fake {
     }
 
     /// A record of `ev_type` carrying `body`, padded to eight bytes.
-    pub(in crate::capture::uprobe) fn record(ev_type: u32, body: &[u8]) -> Vec<u8> {
+    pub(in crate::capture::uprobe) fn record(
+        ev_type: u32,
+        body: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
         let size = (8 + body.len()).next_multiple_of(8);
-        let mut r = header(ev_type, u16::try_from(size).expect("fixture record fits"));
+        let size16 =
+            u16::try_from(size).map_err(|e| format!("fixture record of {size} bytes fits: {e}"))?;
+        let mut r = header(ev_type, size16);
         r.extend_from_slice(body);
         r.resize(size, 0);
-        r
+        Ok(r)
     }
 
     /// A `PERF_RECORD_SAMPLE` whose `PERF_SAMPLE_RAW` body is `raw`.
-    pub(in crate::capture::uprobe) fn sample(raw: &[u8]) -> Vec<u8> {
+    pub(in crate::capture::uprobe) fn sample(raw: &[u8]) -> Result<Vec<u8>, TestError> {
         let mut body = u32::try_from(raw.len())
-            .expect("fixture payload fits")
+            .map_err(|e| format!("fixture payload of {} bytes fits: {e}", raw.len()))?
             .to_le_bytes()
             .to_vec();
         body.extend_from_slice(raw);
@@ -717,7 +750,7 @@ pub(super) mod fake {
     }
 
     /// A `PERF_RECORD_LOST`: `{ u64 id, u64 lost }`.
-    pub(in crate::capture::uprobe) fn lost(id: u64, count: u64) -> Vec<u8> {
+    pub(in crate::capture::uprobe) fn lost(id: u64, count: u64) -> Result<Vec<u8>, TestError> {
         let mut body = id.to_le_bytes().to_vec();
         body.extend_from_slice(&count.to_le_bytes());
         record(PERF_RECORD_LOST, &body)
@@ -731,18 +764,21 @@ pub(super) mod fake {
         data_pages: usize,
         start: u64,
         records: &[u8],
-    ) -> (PerfRing, std::fs::File) {
-        let file = tempfile::tempfile().expect("an anonymous file");
+    ) -> Result<(PerfRing, std::fs::File), TestError> {
+        let file = tempfile::tempfile().map_err(|e| format!("an anonymous file: {e}"))?;
         file.set_len((page() * (data_pages + 1)) as u64)
-            .expect("size the file");
+            .map_err(|e| format!("size the file: {e}"))?;
         file.write_at(&start.to_le_bytes(), MMAP_DATA_TAIL as u64)
-            .expect("write data_tail");
+            .map_err(|e| format!("write data_tail: {e}"))?;
         file.write_at(&start.to_le_bytes(), MMAP_DATA_HEAD as u64)
-            .expect("write data_head");
-        let keep = file.try_clone().expect("a second handle");
-        append(&keep, data_pages, records);
-        let ring = PerfRing::map(OwnedFd::from(file), data_pages).expect("map the file");
-        (ring, keep)
+            .map_err(|e| format!("write data_head: {e}"))?;
+        let keep = file
+            .try_clone()
+            .map_err(|e| format!("a second handle: {e}"))?;
+        append(&keep, data_pages, records)?;
+        let ring = PerfRing::map(OwnedFd::from(file), data_pages)
+            .map_err(|e| format!("map the file: {e}"))?;
+        Ok((ring, keep))
     }
 
     /// Write `records` at the current head, wrapping, then advance the head --
@@ -751,22 +787,23 @@ pub(super) mod fake {
         file: &std::fs::File,
         data_pages: usize,
         records: &[u8],
-    ) {
+    ) -> Result<(), TestError> {
         let data_size = page() * data_pages;
         let mut head = [0u8; 8];
         file.read_exact_at(&mut head, MMAP_DATA_HEAD as u64)
-            .expect("read data_head");
+            .map_err(|e| format!("read data_head: {e}"))?;
         let head = u64::from_le_bytes(head);
         let at = (head as usize) & (data_size - 1);
         let first = records.len().min(data_size - at);
         file.write_at(&records[..first], (page() + at) as u64)
-            .expect("write before the end");
+            .map_err(|e| format!("write before the end: {e}"))?;
         file.write_at(&records[first..], page() as u64)
-            .expect("write the wrapped rest");
+            .map_err(|e| format!("write the wrapped rest: {e}"))?;
         file.write_at(
             &(head + records.len() as u64).to_le_bytes(),
             MMAP_DATA_HEAD as u64,
         )
-        .expect("advance data_head");
+        .map_err(|e| format!("advance data_head: {e}"))?;
+        Ok(())
     }
 }

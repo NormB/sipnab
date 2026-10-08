@@ -661,31 +661,35 @@ mod tests {
     use parking_lot::RwLock;
     use std::sync::Arc;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// One instant every fixture shares, so a uuid's timestamp half can never
     /// be what tells two dialogs apart.
-    fn ts() -> chrono::DateTime<chrono::Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
-            .single()
-            .expect("a real instant")
+    fn ts() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("a real instant")?,
+        )
     }
 
     /// Parse `raw` as SIP between localhost endpoints.
-    fn parse_at(raw: &[u8]) -> crate::sip::SipMessage {
+    fn parse_at(raw: &[u8]) -> Result<crate::sip::SipMessage, TestError> {
         let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             raw,
-            ts(),
+            ts()?,
             local,
             local,
             5060,
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("fixture parses as SIP")
+        .map_err(|e| format!("fixture parses as SIP: {e:?}"))?)
     }
 
     /// A minimal well-formed INVITE for `call_id`.
-    fn invite(call_id: &str) -> crate::sip::SipMessage {
+    fn invite(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
         parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -702,7 +706,11 @@ mod tests {
     }
 
     /// The matching final response for `call_id`.
-    fn final_response(call_id: &str, code: u16, reason: &str) -> crate::sip::SipMessage {
+    fn final_response(
+        call_id: &str,
+        code: u16,
+        reason: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
         parse_at(&crate::test_utils::build_sip_message(
             &format!("SIP/2.0 {code} {reason}"),
             &[
@@ -730,16 +738,18 @@ mod tests {
     }
 
     /// A server holding one dialog per `(call_id, final status)` pair.
-    fn server_with(calls: &[(&str, u16)]) -> SipnabMcp {
+    fn server_with(calls: &[(&str, u16)]) -> Result<SipnabMcp, TestError> {
         let mut ds = DialogStore::new(100, false);
-        for (call_id, code) in calls {
-            ds.process_message(invite(call_id));
-            ds.process_message(final_response(call_id, *code, "Fixture"));
-        }
-        SipnabMcp::new(
-            Arc::new(RwLock::new(ds)),
-            Arc::new(RwLock::new(StreamStore::new(100))),
-        )
+        Ok({
+            for (call_id, code) in calls {
+                ds.process_message(invite(call_id)?);
+                ds.process_message(final_response(call_id, *code, "Fixture")?);
+            }
+            SipnabMcp::new(
+                Arc::new(RwLock::new(ds)),
+                Arc::new(RwLock::new(StreamStore::new(100))),
+            )
+        })
     }
 
     /// The payload block of a result, skipping the untrusted-content note.
@@ -747,7 +757,7 @@ mod tests {
     /// Only a build carrying the exporter ever gets a payload; the other one
     /// gets a refusal, which is a message rather than a document.
     #[cfg(feature = "vcon")]
-    fn payload(result: &CallToolResult) -> serde_json::Value {
+    fn payload(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let note = crate::mcp::shape::untrusted_note();
         let text = result
             .content
@@ -755,8 +765,8 @@ mod tests {
             .filter_map(rmcp::model::ContentBlock::as_text)
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block that is not the note");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block that is not the note")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     /// The JSON-RPC code of a refusal.
@@ -781,11 +791,14 @@ mod tests {
     /// handler that rendered the response to a string and handed back prose
     /// fails here instead of being papered over by a direct call.
     #[cfg(feature = "vcon")]
-    async fn exported(server: &SipnabMcp, params: ExportVconParams) -> serde_json::Value {
+    async fn exported(
+        server: &SipnabMcp,
+        params: ExportVconParams,
+    ) -> Result<serde_json::Value, TestError> {
         let result = server
             .export_vcon(Parameters(params))
             .await
-            .expect("the export should succeed");
+            .map_err(|e| format!("the export should succeed: {e:?}"))?;
         payload(&result)
     }
 
@@ -800,8 +813,9 @@ mod tests {
     /// its own default format for a release.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn export_vcon_returns_a_structured_container_for_a_known_call() {
-        let server = server_with(&[("vcon-ok@x", 200)]);
+    async fn export_vcon_returns_a_structured_container_for_a_known_call() -> Result<(), TestError>
+    {
+        let server = server_with(&[("vcon-ok@x", 200)])?;
         let v = exported(
             &server,
             ExportVconParams {
@@ -809,7 +823,7 @@ mod tests {
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(v["returned"], 1, "one dialog, one container: {v}");
         assert_eq!(v["total_matched"], 1, "{v}");
@@ -835,7 +849,7 @@ mod tests {
 
         let parties = container["parties"]
             .as_array()
-            .expect("parties is an array");
+            .ok_or("parties is an array")?;
         assert_eq!(
             parties.len(),
             3,
@@ -857,6 +871,7 @@ mod tests {
                  nothing: {party}"
             );
         }
+        Ok(())
     }
 
     /// Two different dialogs answer with two different containers.
@@ -865,8 +880,8 @@ mod tests {
     /// assertion here.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn export_vcon_discriminates_between_two_dialogs() {
-        let server = server_with(&[("vcon-a@x", 200), ("vcon-b@x", 200)]);
+    async fn export_vcon_discriminates_between_two_dialogs() -> Result<(), TestError> {
+        let server = server_with(&[("vcon-a@x", 200), ("vcon-b@x", 200)])?;
         let a = exported(
             &server,
             ExportVconParams {
@@ -874,7 +889,7 @@ mod tests {
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
         let b = exported(
             &server,
             ExportVconParams {
@@ -882,7 +897,7 @@ mod tests {
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(
             a["containers"][0]["container"]["dialog"][0]["sip_call_id"],
@@ -904,6 +919,7 @@ mod tests {
             "two containers describing different calls must not share a \
              digest, or the value identifies nothing"
         );
+        Ok(())
     }
 
     /// Re-exporting one dialog keeps its identifier AND its digest.
@@ -914,14 +930,14 @@ mod tests {
     /// consumer that deduplicates on the identifier.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn export_vcon_is_stable_across_calls_for_one_dialog() {
-        let server = server_with(&[("vcon-stable@x", 200)]);
+    async fn export_vcon_is_stable_across_calls_for_one_dialog() -> Result<(), TestError> {
+        let server = server_with(&[("vcon-stable@x", 200)])?;
         let params = || ExportVconParams {
             call_id: Some("vcon-stable@x".to_string()),
             ..ExportVconParams::default()
         };
-        let first = exported(&server, params()).await;
-        let second = exported(&server, params()).await;
+        let first = exported(&server, params()).await?;
+        let second = exported(&server, params()).await?;
         assert_eq!(
             first["containers"][0]["container"]["uuid"],
             second["containers"][0]["container"]["uuid"],
@@ -949,6 +965,7 @@ mod tests {
                 "two documents that differ must not share a digest"
             );
         }
+        Ok(())
     }
 
     /// A digest is a SHA-256, spelled the way `sha256sum` spells one.
@@ -957,18 +974,18 @@ mod tests {
     /// beside a `--vcon-digest` line joins to nothing.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn a_digest_is_lowercase_hex_sha256() {
+    async fn a_digest_is_lowercase_hex_sha256() -> Result<(), TestError> {
         let v = exported(
-            &server_with(&[("vcon-hex@x", 200)]),
+            &server_with(&[("vcon-hex@x", 200)])?,
             ExportVconParams {
                 call_id: Some("vcon-hex@x".to_string()),
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
         let digest = v["containers"][0]["digest"]
             .as_str()
-            .expect("a digest string");
+            .ok_or("a digest string")?;
         assert_eq!(digest.len(), 64, "SHA-256 is 32 bytes of hex: {digest}");
         assert!(
             digest
@@ -976,6 +993,7 @@ mod tests {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "lowercase hex, the spelling `sha256sum` writes: {digest}"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID errors with invalid_params (-32602).
@@ -984,34 +1002,38 @@ mod tests {
     /// handed an empty list reads it as a capture that held no such call and
     /// moves on.
     #[tokio::test]
-    async fn export_vcon_unknown_call_id_errors() {
+    async fn export_vcon_unknown_call_id_errors() -> Result<(), TestError> {
         let err = empty_server()
             .export_vcon(Parameters(ExportVconParams {
                 call_id: Some("nonexistent@nowhere".to_string()),
                 ..ExportVconParams::default()
             }))
             .await
-            .expect_err("unknown call_id must error");
+            .err()
+            .ok_or("unknown call_id must error")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     /// A request naming neither a dialog nor a rule is refused.
     #[tokio::test]
-    async fn export_vcon_refuses_a_request_that_selects_nothing() {
+    async fn export_vcon_refuses_a_request_that_selects_nothing() -> Result<(), TestError> {
         let err = empty_server()
             .export_vcon(Parameters(ExportVconParams::default()))
             .await
-            .expect_err("a request selecting nothing must be refused");
+            .err()
+            .ok_or("a request selecting nothing must be refused")?;
         let message = message_of(err);
         assert!(
             message.contains("call_id") && message.contains("filter"),
             "the refusal must name both ways to select: {message}"
         );
+        Ok(())
     }
 
     /// A request naming both is refused, as the CLI refuses the same pair.
     #[tokio::test]
-    async fn export_vcon_refuses_a_call_id_and_a_filter_together() {
+    async fn export_vcon_refuses_a_call_id_and_a_filter_together() -> Result<(), TestError> {
         let err = empty_server()
             .export_vcon(Parameters(ExportVconParams {
                 call_id: Some("a@x".to_string()),
@@ -1019,8 +1041,9 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect_err("two selections must be refused");
-        let json = serde_json::to_value(err).expect("the error serializes");
+            .err()
+            .ok_or("two selections must be refused")?;
+        let json = serde_json::to_value(err).map_err(|e| format!("the error serializes: {e:?}"))?;
         assert_eq!(json["code"], -32602);
         assert!(
             json["message"]
@@ -1030,19 +1053,22 @@ mod tests {
             "the refusal must say the two are alternatives rather than \
              silently preferring one: {json}"
         );
+        Ok(())
     }
 
     /// An unparseable filter is refused by name.
     #[tokio::test]
-    async fn export_vcon_refuses_an_unparseable_filter() {
+    async fn export_vcon_refuses_an_unparseable_filter() -> Result<(), TestError> {
         let err = empty_server()
             .export_vcon(Parameters(ExportVconParams {
                 filter: Some("response_code >>> 400".to_string()),
                 ..ExportVconParams::default()
             }))
             .await
-            .expect_err("a broken filter must be refused");
+            .err()
+            .ok_or("a broken filter must be refused")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     // ── export_vcon: the filter form (RV5) ───────────────────────────
@@ -1054,13 +1080,13 @@ mod tests {
     /// round trips on a real capture to do what one CLI invocation does.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn a_filter_exports_every_matching_dialog_in_one_call() {
+    async fn a_filter_exports_every_matching_dialog_in_one_call() -> Result<(), TestError> {
         let server = server_with(&[
             ("ok@x", 200),
             ("busy@x", 486),
             ("gone@x", 404),
             ("fine@x", 200),
-        ]);
+        ])?;
         let v = exported(
             &server,
             ExportVconParams {
@@ -1068,7 +1094,7 @@ mod tests {
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(v["total_matched"], 2, "two calls failed: {v}");
         assert_eq!(v["returned"], 2, "and both containers came back: {v}");
@@ -1076,7 +1102,7 @@ mod tests {
 
         let mut ids: Vec<&str> = v["containers"]
             .as_array()
-            .expect("containers is an array")
+            .ok_or("containers is an array")?
             .iter()
             .map(|c| c["call_id"].as_str().unwrap_or_default())
             .collect();
@@ -1086,6 +1112,7 @@ mod tests {
             vec!["busy@x", "gone@x"],
             "the filter must select the failures and only the failures: {v}"
         );
+        Ok(())
     }
 
     /// RV5: the answer is bounded, and says it was.
@@ -1095,8 +1122,8 @@ mod tests {
     /// count across the STORE rather than the length of the list it got.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn a_filter_is_bounded_and_reports_what_it_left_behind() {
-        let server = server_with(&[("a@x", 486), ("b@x", 486), ("c@x", 486)]);
+    async fn a_filter_is_bounded_and_reports_what_it_left_behind() -> Result<(), TestError> {
+        let server = server_with(&[("a@x", 486), ("b@x", 486), ("c@x", 486)])?;
         let v = exported(
             &server,
             ExportVconParams {
@@ -1105,7 +1132,7 @@ mod tests {
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(v["returned"], 1, "the bound was applied: {v}");
         assert_eq!(
@@ -1118,6 +1145,7 @@ mod tests {
             "the count is across the store, not across the page: {v}"
         );
         assert_eq!(v["truncated"], true, "and the caller is told: {v}");
+        Ok(())
     }
 
     /// A filter matching nothing is an empty answer, not an error.
@@ -1126,15 +1154,15 @@ mod tests {
     /// is refused would make a clean capture look like a broken request.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn a_filter_that_matches_nothing_answers_with_an_empty_set() {
+    async fn a_filter_that_matches_nothing_answers_with_an_empty_set() -> Result<(), TestError> {
         let v = exported(
-            &server_with(&[("ok@x", 200)]),
+            &server_with(&[("ok@x", 200)])?,
             ExportVconParams {
                 filter: Some("response_code >= 400".to_string()),
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
         assert_eq!(v["total_matched"], 0, "{v}");
         assert_eq!(v["returned"], 0, "{v}");
         assert_eq!(v["truncated"], false, "nothing was withheld: {v}");
@@ -1142,6 +1170,7 @@ mod tests {
             v["containers"].as_array().is_some_and(Vec::is_empty),
             "an empty set is an empty array, not a missing key: {v}"
         );
+        Ok(())
     }
 
     // ── the omissions reach the caller (RV7) ─────────────────────────
@@ -1155,26 +1184,26 @@ mod tests {
     /// is the same one rather than a paraphrase that can drift.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn the_response_carries_the_containers_own_caveat() {
+    async fn the_response_carries_the_containers_own_caveat() -> Result<(), TestError> {
         let v = exported(
-            &server_with(&[("caveat@x", 200)]),
+            &server_with(&[("caveat@x", 200)])?,
             ExportVconParams {
                 call_id: Some("caveat@x".to_string()),
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
         let entry = &v["containers"][0];
 
         let inside: serde_json::Value = serde_json::from_str(
             entry["container"]["analysis"][0]["body"]
                 .as_str()
-                .expect("the analysis body is JSON text"),
+                .ok_or("the analysis body is JSON text")?,
         )
-        .expect("the analysis body parses");
+        .map_err(|e| format!("the analysis body parses: {e:?}"))?;
         let in_container = inside["capture_completeness"]["note"]
             .as_str()
-            .expect("the container carries a note");
+            .ok_or("the container carries a note")?;
 
         assert_eq!(
             entry["completeness"]["note"].as_str(),
@@ -1185,6 +1214,7 @@ mod tests {
             !in_container.is_empty(),
             "premise: there must be a caveat to carry"
         );
+        Ok(())
     }
 
     /// RV7: the applied inline-media bound is stated, not the compiled default.
@@ -1195,13 +1225,13 @@ mod tests {
     /// set, and the setting appears when something was.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn the_response_states_the_inline_media_bound_it_enforced() {
+    async fn the_response_states_the_inline_media_bound_it_enforced() -> Result<(), TestError> {
         let params = || ExportVconParams {
             call_id: Some("bound@x".to_string()),
             ..ExportVconParams::default()
         };
 
-        let unset = exported(&server_with(&[("bound@x", 200)]), params()).await;
+        let unset = exported(&server_with(&[("bound@x", 200)])?, params()).await?;
         assert_eq!(
             unset["containers"][0]["completeness"]["max_inline_media_bytes"]
                 .as_u64()
@@ -1210,12 +1240,13 @@ mod tests {
             "with nothing set, the measured default is what was enforced: {unset}"
         );
 
-        let tightened = server_with(&[("bound@x", 200)]).with_max_inline_media_bytes(Some(4096));
-        let set = exported(&tightened, params()).await;
+        let tightened = server_with(&[("bound@x", 200)])?.with_max_inline_media_bytes(Some(4096));
+        let set = exported(&tightened, params()).await?;
         assert_eq!(
             set["containers"][0]["completeness"]["max_inline_media_bytes"], 4096,
             "the number that was APPLIED, never the compiled-in one: {set}"
         );
+        Ok(())
     }
 
     /// RV7: the response says which media case applies, and `complete` never
@@ -1233,19 +1264,20 @@ mod tests {
     /// globals hold.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn the_response_states_the_media_case_and_keeps_complete_honest() {
+    async fn the_response_states_the_media_case_and_keeps_complete_honest() -> Result<(), TestError>
+    {
         let v = exported(
-            &server_with(&[("clean@x", 200)]),
+            &server_with(&[("clean@x", 200)])?,
             ExportVconParams {
                 call_id: Some("clean@x".to_string()),
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
         let completeness = &v["containers"][0]["completeness"];
         let rows = completeness["omissions"]
             .as_array()
-            .expect("an omissions array, present even when it is empty");
+            .ok_or("an omissions array, present even when it is empty")?;
 
         assert_eq!(
             completeness["complete"],
@@ -1271,6 +1303,7 @@ mod tests {
             completeness["media_note"].is_string(),
             "and the reason travels with it: {completeness}"
         );
+        Ok(())
     }
 
     /// RV7: a retention loss becomes a row, and the row and the prose agree.
@@ -1280,11 +1313,11 @@ mod tests {
     /// is a process-global the pipeline sets.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn a_retention_loss_reaches_the_response_as_a_row() {
+    async fn a_retention_loss_reaches_the_response_as_a_row() -> Result<(), TestError> {
         let mut ds = DialogStore::new(1, false);
         for id in ["first@x", "second@x"] {
-            ds.process_message(invite(id));
-            ds.process_message(final_response(id, 200, "Fixture"));
+            ds.process_message(invite(id)?);
+            ds.process_message(final_response(id, 200, "Fixture")?);
         }
         let server = SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
@@ -1298,11 +1331,11 @@ mod tests {
                 ..ExportVconParams::default()
             },
         )
-        .await;
+        .await?;
         let completeness = &v["containers"][0]["completeness"];
         let rows = completeness["omissions"]
             .as_array()
-            .expect("an omissions array");
+            .ok_or("an omissions array")?;
 
         assert!(
             !rows.is_empty(),
@@ -1323,6 +1356,7 @@ mod tests {
             rows.len(),
             "the prose and the rows must describe one set: {completeness}"
         );
+        Ok(())
     }
 
     /// An omission row is the carrier's row, on the wire.
@@ -1334,7 +1368,7 @@ mod tests {
     /// here rather than trusted.
     #[cfg(feature = "vcon")]
     #[test]
-    fn an_omission_row_is_the_wire_shape_of_the_carriers_row() {
+    fn an_omission_row_is_the_wire_shape_of_the_carriers_row() -> Result<(), TestError> {
         let carrier = crate::output::vcon::Omission {
             kind: "headers_dropped_oversize",
             count: 3,
@@ -1346,36 +1380,40 @@ mod tests {
             unit: carrier.unit.to_owned(),
         };
         assert_eq!(
-            serde_json::to_value(&row).expect("serializes"),
-            serde_json::to_value(&carrier).expect("serializes"),
+            serde_json::to_value(&row).map_err(|e| format!("serializes: {e:?}"))?,
+            serde_json::to_value(&carrier).map_err(|e| format!("serializes: {e:?}"))?,
             "the tool's row and the carrier's row must be one wire shape"
         );
+        Ok(())
     }
 
     // ── validate_vcon (RV6) ──────────────────────────────────────────
 
     /// A `validate_vcon` answer, parsed.
     #[cfg(feature = "vcon")]
-    async fn validated(server: &SipnabMcp, params: ValidateVconParams) -> serde_json::Value {
+    async fn validated(
+        server: &SipnabMcp,
+        params: ValidateVconParams,
+    ) -> Result<serde_json::Value, TestError> {
         let result = server
             .validate_vcon(Parameters(params))
             .await
-            .expect("validation should answer");
+            .map_err(|e| format!("validation should answer: {e:?}"))?;
         payload(&result)
     }
 
     /// A container sipnab just exported passes the schema sipnab vendors.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn validate_vcon_passes_a_container_this_server_just_built() {
+    async fn validate_vcon_passes_a_container_this_server_just_built() -> Result<(), TestError> {
         let v = validated(
-            &server_with(&[("valid@x", 200)]),
+            &server_with(&[("valid@x", 200)])?,
             ValidateVconParams {
                 call_id: Some("valid@x".to_string()),
                 ..ValidateVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(v["verdict"], "valid", "{v}");
         assert!(v["errors"].as_array().is_some_and(Vec::is_empty), "{v}");
@@ -1388,13 +1426,14 @@ mod tests {
             v["schema_path"], "tests/schemas/vcon.schema.json",
             "and which schema it read: {v}"
         );
+        Ok(())
     }
 
     /// RV6: a supplied container missing a required member is INVALID, and the
     /// finding says where.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn validate_vcon_refuses_a_dialog_object_with_no_start() {
+    async fn validate_vcon_refuses_a_dialog_object_with_no_start() -> Result<(), TestError> {
         let v = validated(
             &empty_server(),
             ValidateVconParams {
@@ -1406,7 +1445,7 @@ mod tests {
                 ..ValidateVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(
             v["verdict"], "invalid",
@@ -1425,6 +1464,7 @@ mod tests {
             v["deviations"].as_array().is_some_and(Vec::is_empty),
             "nothing here is the documented deviation: {v}"
         );
+        Ok(())
     }
 
     /// RV6: the documented deviation is reported by name, with its reasoning.
@@ -1434,7 +1474,8 @@ mod tests {
     /// which is the lesson the test above exists to refuse.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn validate_vcon_names_the_documented_deviation_rather_than_passing_it() {
+    async fn validate_vcon_names_the_documented_deviation_rather_than_passing_it()
+    -> Result<(), TestError> {
         let v = validated(
             &empty_server(),
             ValidateVconParams {
@@ -1446,7 +1487,7 @@ mod tests {
                 ..ValidateVconParams::default()
             },
         )
-        .await;
+        .await?;
 
         assert_eq!(v["verdict"], "valid-except-documented-deviation", "{v}");
         assert!(
@@ -1466,15 +1507,18 @@ mod tests {
             "the reasoning has to travel with the finding, or a producer reads \
              a rejection with no way to tell whether it is theirs: {v}"
         );
+        Ok(())
     }
 
     /// Neither argument, and both arguments, are refused.
     #[tokio::test]
-    async fn validate_vcon_refuses_a_request_naming_nothing_or_everything() {
+    async fn validate_vcon_refuses_a_request_naming_nothing_or_everything() -> Result<(), TestError>
+    {
         let neither = empty_server()
             .validate_vcon(Parameters(ValidateVconParams::default()))
             .await
-            .expect_err("a request naming nothing must be refused");
+            .err()
+            .ok_or("a request naming nothing must be refused")?;
         assert_eq!(code_of(neither), -32602);
 
         let both = empty_server()
@@ -1483,8 +1527,10 @@ mod tests {
                 container: Some(serde_json::json!({})),
             }))
             .await
-            .expect_err("a request naming both must be refused");
+            .err()
+            .ok_or("a request naming both must be refused")?;
         assert_eq!(code_of(both), -32602);
+        Ok(())
     }
 
     /// A `container` that is not an object is refused, by name.
@@ -1492,14 +1538,16 @@ mod tests {
     /// The likely mistake is handing over the container as a STRING, which is
     /// what every surface here warns about in the other direction.
     #[tokio::test]
-    async fn validate_vcon_refuses_a_container_that_is_not_an_object() {
+    async fn validate_vcon_refuses_a_container_that_is_not_an_object() -> Result<(), TestError> {
         let err = empty_server()
             .validate_vcon(Parameters(ValidateVconParams {
                 container: Some(serde_json::json!("{\"uuid\":\"x\"}")),
                 ..ValidateVconParams::default()
             }))
             .await
-            .expect_err("a string is not a container");
+            .err()
+            .ok_or("a string is not a container")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 }

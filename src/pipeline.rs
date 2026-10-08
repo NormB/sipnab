@@ -2970,7 +2970,7 @@ mod quiet_bad_parse_tests {
     /// payload has already failed the SIP check, which is where AMI has always
     /// been and where nothing was looking.
     #[test]
-    fn a_cleartext_ami_login_is_recorded_from_the_packet_path() {
+    fn a_cleartext_ami_login_is_recorded_from_the_packet_path() -> Result<(), TestError> {
         crate::security::ami::reset_for_test();
         let before = crate::security::ami::findings().len();
         assert_eq!(before, 0, "the recorder starts clean");
@@ -2985,12 +2985,13 @@ mod quiet_bad_parse_tests {
         assert_eq!(found.len(), 1, "the login was recorded: {found:?}");
         assert_eq!(found[0].dst_port, 5038);
         // The secret must not survive the journey.
-        let rendered = serde_json::to_string(&found).expect("serializes");
+        let rendered = serde_json::to_string(&found).map_err(|e| format!("serializes: {e:?}"))?;
         assert!(
             !rendered.contains("hunter2"),
             "the secret reached a finding: {rendered}"
         );
         crate::security::ami::reset_for_test();
+        Ok(())
     }
 
     /// A SIP message carries what only the packet knew: the source that
@@ -3057,7 +3058,7 @@ mod quiet_bad_parse_tests {
     /// media checks.
     #[test]
     #[serial_test::serial(llmnr_store)]
-    fn an_llmnr_query_is_claimed_before_any_media_check() {
+    fn an_llmnr_query_is_claimed_before_any_media_check() -> Result<(), TestError> {
         crate::llmnr::store::reset_llmnr();
         // The byte-exact query from the capture that motivated the module,
         // transaction ID 0x8006 — the ID that collided with the RTP version.
@@ -3088,6 +3089,7 @@ mod quiet_bad_parse_tests {
             "the queried name belongs in the roster: {report:?}"
         );
         crate::llmnr::store::reset_llmnr();
+        Ok(())
     }
 
     /// RTP relayed through TURN must reach reconstruction.
@@ -3102,7 +3104,7 @@ mod quiet_bad_parse_tests {
     /// bytes came back out would pass even with the pipeline still dropping
     /// them.
     #[test]
-    fn rtp_relayed_through_turn_is_classified_as_media() {
+    fn rtp_relayed_through_turn_is_classified_as_media() -> Result<(), TestError> {
         let mut rtp = vec![0x80, 0x00, 0x00, 0x01];
         rtp.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
         rtp.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // ssrc
@@ -3137,6 +3139,7 @@ mod quiet_bad_parse_tests {
             !matches!(bare_action, PacketAction::None),
             "the control must itself be media, or this test proves nothing"
         );
+        Ok(())
     }
 
     /// A DNS exchange must not be reported as an RTP stream.
@@ -3154,7 +3157,7 @@ mod quiet_bad_parse_tests {
     /// the payload's word. Real RTP is unaffected — [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11) puts it in
     /// the dynamic range, and nothing legitimately carries media on port 53.
     #[test]
-    fn a_dns_response_is_not_an_rtp_stream() {
+    fn a_dns_response_is_not_an_rtp_stream() -> Result<(), TestError> {
         // A DNS response whose transaction ID starts 0x80: two high bits set
         // to `10`, exactly what the RTP version check looks for.
         let mut dns = vec![0x80u8, 0x81, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
@@ -3186,6 +3189,7 @@ mod quiet_bad_parse_tests {
             ),
             "a query to port 53 must not become an RTP stream either"
         );
+        Ok(())
     }
 
     /// Real RTP on a dynamic port is still recognized from the payload alone.
@@ -3194,7 +3198,7 @@ mod quiet_bad_parse_tests {
     /// media on an ephemeral port is admitted immediately, without waiting for
     /// the three-packet heuristic to corroborate it.
     #[test]
-    fn rtp_on_a_dynamic_port_is_still_recognized_immediately() {
+    fn rtp_on_a_dynamic_port_is_still_recognized_immediately() -> Result<(), TestError> {
         let mut rtp = vec![0x80u8, 0x00]; // V=2, PT=0 (PCMU)
         rtp.extend_from_slice(&[0x00, 0x01]); // sequence
         rtp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // timestamp
@@ -3211,6 +3215,7 @@ mod quiet_bad_parse_tests {
             ),
             "media on a dynamic port must still be recognized from one packet"
         );
+        Ok(())
     }
 
     /// RFC 5761 RTP/RTCP multiplexing: a well-formed RTCP packet arriving on an
@@ -3219,7 +3224,7 @@ mod quiet_bad_parse_tests {
     /// whose length field does not frame the buffer stays rejected so muxed RTP
     /// is never swallowed; the classic odd-port path is unchanged.
     #[test]
-    fn muxed_rtcp_on_even_port_is_recognized() {
+    fn muxed_rtcp_on_even_port_is_recognized() -> Result<(), TestError> {
         // RTCP Receiver Report: V=2, PT=201, length=1 word => 8 bytes total.
         let rr = [0x80u8, 201, 0, 1, 0, 0, 0, 1];
         assert!(
@@ -3237,6 +3242,7 @@ mod quiet_bad_parse_tests {
         // Odd-port classic behavior is unchanged.
         assert!(is_rtcp_packet(&rr, 5001));
         assert!(is_rtcp_packet(&[0x80, 200, 0, 6, 0, 0, 0, 1], 30001));
+        Ok(())
     }
 
     /// Build an SDP body from lines, joined with CRLF.
@@ -3270,7 +3276,7 @@ mod quiet_bad_parse_tests {
     /// function that creates the endpoints did not. One rule, known in two
     /// places and applied in one.
     #[test]
-    fn a_rejected_media_description_becomes_no_stream_link() {
+    fn a_rejected_media_description_becomes_no_stream_link() -> Result<(), TestError> {
         let body = sdp_body(&[
             "v=0",
             "o=- 1 1 IN IP4 10.0.0.1",
@@ -3280,7 +3286,7 @@ mod quiet_bad_parse_tests {
             "m=audio 20000 RTP/AVP 0",
             "m=video 0 RTP/AVP 96",
         ]);
-        let sdp = sip::sdp::parse_sdp(&body).expect("the fixture parses");
+        let sdp = sip::sdp::parse_sdp(&body).map_err(|e| format!("the fixture parses: {e:?}"))?;
         assert_eq!(
             sdp.media.len(),
             2,
@@ -3299,6 +3305,7 @@ mod quiet_bad_parse_tests {
             !links.iter().any(|(_, port, _, _)| *port == 0),
             "an endpoint was registered on port zero, which no media can use"
         );
+        Ok(())
     }
 
     /// An accepted stream still becomes one, so the rule is not a blanket.
@@ -3307,7 +3314,7 @@ mod quiet_bad_parse_tests {
     /// that returns nothing at all, which would lose every stream in the tool
     /// and look like a very clean test suite.
     #[test]
-    fn an_accepted_media_description_still_becomes_a_stream_link() {
+    fn an_accepted_media_description_still_becomes_a_stream_link() -> Result<(), TestError> {
         let body = sdp_body(&[
             "v=0",
             "o=- 1 1 IN IP4 10.0.0.1",
@@ -3317,7 +3324,7 @@ mod quiet_bad_parse_tests {
             "m=audio 20000 RTP/AVP 0",
             "m=video 20002 RTP/AVP 96",
         ]);
-        let sdp = sip::sdp::parse_sdp(&body).expect("the fixture parses");
+        let sdp = sip::sdp::parse_sdp(&body).map_err(|e| format!("the fixture parses: {e:?}"))?;
         let links = extract_sdp_links(&sdp, "call-2");
         assert_eq!(
             links.len(),
@@ -3326,6 +3333,7 @@ mod quiet_bad_parse_tests {
         );
         let ports: Vec<u16> = links.iter().map(|(_, p, _, _)| *p).collect();
         assert_eq!(ports, vec![20000, 20002]);
+        Ok(())
     }
 
     /// The rejected description is still PARSED, only not turned into a stream.
@@ -3336,7 +3344,7 @@ mod quiet_bad_parse_tests {
     /// all — so dropping it in the parser would lose the evidence that the
     /// rejection happened. `sip::lint::dialog` reads exactly that.
     #[test]
-    fn a_rejected_media_description_survives_parsing() {
+    fn a_rejected_media_description_survives_parsing() -> Result<(), TestError> {
         let body = sdp_body(&[
             "v=0",
             "o=- 1 1 IN IP4 10.0.0.1",
@@ -3345,7 +3353,7 @@ mod quiet_bad_parse_tests {
             "t=0 0",
             "m=video 0 RTP/AVP 96",
         ]);
-        let sdp = sip::sdp::parse_sdp(&body).expect("the fixture parses");
+        let sdp = sip::sdp::parse_sdp(&body).map_err(|e| format!("the fixture parses: {e:?}"))?;
         assert_eq!(
             sdp.media.len(),
             1,
@@ -3355,6 +3363,7 @@ mod quiet_bad_parse_tests {
         assert_eq!(sdp.media[0].port, 0);
         assert_eq!(sdp.media[0].media_type, "video");
         assert!(extract_sdp_links(&sdp, "call-3").is_empty());
+        Ok(())
     }
 
     /// A compound whose FIRST sub-packet claims padding, on a muxed port.
@@ -3368,7 +3377,7 @@ mod quiet_bad_parse_tests {
     /// separation on the classifier that decides RTP against RTCP for every
     /// datagram on a media port". It was not on that classifier at all.
     #[test]
-    fn the_padding_rule_reaches_the_classifier_the_pipeline_uses() {
+    fn the_padding_rule_reaches_the_classifier_the_pipeline_uses() -> Result<(), TestError> {
         // SR (28 bytes: 8 header + 20 sender info) followed by an RR, so the
         // first sub-packet plainly does not fill the datagram.
         let mut compound = vec![0x80u8, 200, 0, 6];
@@ -3387,6 +3396,7 @@ mod quiet_bad_parse_tests {
              and this is the classifier that decides RTP against RTCP for \
              every datagram on a media port"
         );
+        Ok(())
     }
 
     /// The same datagram, driven through `classify` rather than the predicate.
@@ -3396,7 +3406,7 @@ mod quiet_bad_parse_tests {
     /// calls is the defect this pair exists to catch, so one test asks the
     /// predicate and one asks the pipeline.
     #[test]
-    fn a_padded_compound_is_not_reported_as_rtcp_by_the_pipeline() {
+    fn a_padded_compound_is_not_reported_as_rtcp_by_the_pipeline() -> Result<(), TestError> {
         let mut compound = vec![0x80u8, 200, 0, 6];
         compound.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
         compound.extend_from_slice(&[0u8; 20]);
@@ -3424,6 +3434,7 @@ mod quiet_bad_parse_tests {
             ),
             "the pipeline reported a compound RFC 3550 forbids as RTCP"
         );
+        Ok(())
     }
 
     /// A lone packet that fills the datagram may pad, on a muxed port too.
@@ -3432,7 +3443,7 @@ mod quiet_bad_parse_tests {
     /// set on byte zero" would pass the test above while refusing every padded
     /// single-packet datagram RFC 3550 permits outright.
     #[test]
-    fn a_padded_lone_packet_is_still_muxed_rtcp() {
+    fn a_padded_lone_packet_is_still_muxed_rtcp() -> Result<(), TestError> {
         let mut only = vec![0xA0u8, 201, 0, 1, 0x55, 0x66, 0x77, 0x88];
         assert!(
             is_rtcp_packet(&only, 5000),
@@ -3440,6 +3451,7 @@ mod quiet_bad_parse_tests {
         );
         only[0] &= !0x20;
         assert!(is_rtcp_packet(&only, 5000), "and without the bit as well");
+        Ok(())
     }
 
     /// The two classifiers agree about content on a muxed port.
@@ -3449,7 +3461,7 @@ mod quiet_bad_parse_tests {
     /// in this file is how the padding rule missed the capture path, and the
     /// only durable fix is that there is nothing here left to drift.
     #[test]
-    fn the_muxed_verdict_is_the_public_classifiers_verdict() {
+    fn the_muxed_verdict_is_the_public_classifiers_verdict() -> Result<(), TestError> {
         let mut compound = vec![0x80u8, 200, 0, 6];
         compound.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
         compound.extend_from_slice(&[0u8; 20]);
@@ -3475,6 +3487,7 @@ mod quiet_bad_parse_tests {
                  {f:02x?}, which means this file is deciding content on its own"
             );
         }
+        Ok(())
     }
 
     /// The classic odd-port arm did not tighten.
@@ -3484,7 +3497,7 @@ mod quiet_bad_parse_tests {
     /// classic RTCP datagram is still control traffic. Folding the two arms
     /// together would have been the easy mistake.
     #[test]
-    fn the_classic_odd_port_arm_still_takes_the_whole_type_range() {
+    fn the_classic_odd_port_arm_still_takes_the_whole_type_range() -> Result<(), TestError> {
         for pt in [192u8, 200, 207, 210, 223] {
             let d = [0x80u8, pt, 0, 6, 0, 0, 0, 1];
             assert!(
@@ -3498,12 +3511,13 @@ mod quiet_bad_parse_tests {
                  content"
             );
         }
+        Ok(())
     }
 
     /// By default a malformed SIP packet drops to `None` and emits the
     /// "SIP parse error" diagnostic.
     #[test]
-    fn default_reports_bad_parse() {
+    fn default_reports_bad_parse() -> Result<(), TestError> {
         let pp = malformed_sip();
         let logs = capture_logs(|| {
             let action = classify(&pp, &PipelineOptions::default());
@@ -3513,12 +3527,13 @@ mod quiet_bad_parse_tests {
             logs.contains("SIP parse error"),
             "default must emit the bad-parse diagnostic; got {logs:?}"
         );
+        Ok(())
     }
 
     /// With `quiet_bad_parse` set, the same malformed packet still drops but
     /// the diagnostic is silenced.
     #[test]
-    fn quiet_flag_suppresses_diagnostic() {
+    fn quiet_flag_suppresses_diagnostic() -> Result<(), TestError> {
         let pp = malformed_sip();
         let opts = PipelineOptions {
             quiet_bad_parse: true,
@@ -3532,11 +3547,12 @@ mod quiet_bad_parse_tests {
             !logs.contains("SIP parse error"),
             "quiet_bad_parse must silence the diagnostic; got {logs:?}"
         );
+        Ok(())
     }
 
     /// The flag never changes classification of a valid INVITE (still `Sip`).
     #[test]
-    fn quiet_flag_does_not_affect_valid_sip() {
+    fn quiet_flag_does_not_affect_valid_sip() -> Result<(), TestError> {
         // Adversarial: the flag must only gate the error notice, never change
         // how a well-formed message classifies.
         let pp = valid_invite();
@@ -3549,6 +3565,7 @@ mod quiet_bad_parse_tests {
             matches!(action, PacketAction::Sip { .. }),
             "valid INVITE must still classify as Sip"
         );
+        Ok(())
     }
 }
 
@@ -3560,13 +3577,16 @@ mod quiet_bad_parse_tests {
 /// traffic into a fabricated media diagnosis.
 #[cfg(test)]
 mod relay_control_tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// The ordering RE4 actually runs in: the snapshot is taken BEFORE the
     /// capture opens, so every stream is created after it. A snapshot that
     /// only linked streams already in the store would attribute nothing at
     /// all, and the whole point of RE4 -- naming a call that was already up
     /// when sipnab started -- would silently do nothing.
     #[test]
-    fn a_snapshot_attributes_a_stream_created_afterwards() {
+    fn a_snapshot_attributes_a_stream_created_afterwards() -> Result<(), TestError> {
         use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
         use crate::relay::reconcile::{RelayLink, RelaySnapshot};
         use crate::rtp::parser::RtpHeader;
@@ -3655,6 +3675,7 @@ mod relay_control_tests {
             !attributed[0].dialog_bound_across_sources(),
             "an absent origin must not read as a disagreement between sources"
         );
+        Ok(())
     }
 
     /// The relay assertion survives all the way to a reader.
@@ -3682,7 +3703,7 @@ mod relay_control_tests {
     /// cheapest to catch.
     #[cfg(feature = "native")]
     #[test]
-    fn a_relay_assertion_reaches_the_serialized_stream() {
+    fn a_relay_assertion_reaches_the_serialized_stream() -> Result<(), TestError> {
         use crate::capture::ParsedPacket;
         use crate::capture::parse::{InputOrigin, TransportProto};
         use crate::rtp::parser::RtpHeader;
@@ -3728,13 +3749,13 @@ mod relay_control_tests {
             payload_offset: 12,
         };
 
-        let rendered = |store: &StreamStore| -> serde_json::Value {
-            let stream = store.iter().next().expect("the packet created a stream");
-            serde_json::from_str(&crate::output::json::stream_to_json(
+        let rendered = |store: &StreamStore| -> Result<serde_json::Value, TestError> {
+            let stream = store.iter().next().ok_or("the packet created a stream")?;
+            Ok(serde_json::from_str(&crate::output::json::stream_to_json(
                 stream,
                 crate::rtp::quality::MosDelay::unknown(),
             ))
-            .expect("the renderer emits valid JSON")
+            .map_err(|e| format!("the renderer emits valid JSON: {e:?}"))?)
         };
 
         // The relay's own `ng` control plane naming a port it allocated.
@@ -3757,7 +3778,7 @@ mod relay_control_tests {
             ts,
         );
         relay_store.process_rtp(&media(links[0].1), &rtp, ts);
-        let relay_json = rendered(&relay_store);
+        let relay_json = rendered(&relay_store)?;
 
         assert_eq!(
             relay_json["dialog_assertion"], "media-relay",
@@ -3776,7 +3797,7 @@ mod relay_control_tests {
             crate::rtp::stream_store::SdpProvenance::observed(InputOrigin::Wire, ts),
         );
         signaled_store.process_rtp(&media(links[0].1), &rtp, ts);
-        let signaled_json = rendered(&signaled_store);
+        let signaled_json = rendered(&signaled_store)?;
 
         assert_eq!(
             signaled_json["dialog_assertion"], "signaled",
@@ -3787,6 +3808,7 @@ mod relay_control_tests {
             "the two assertions must be distinguishable on the wire, or the key \
              tells a reader nothing"
         );
+        Ok(())
     }
 
     /// RE3, at the point it actually matters: the endpoint WRITTEN to the
@@ -3797,7 +3819,7 @@ mod relay_control_tests {
     /// Without it, swapping `relay_asserted` for `observed` here changes
     /// nothing observable and no test notices.
     #[test]
-    fn relay_control_links_reach_the_store_as_a_relay_assertion() {
+    fn relay_control_links_reach_the_store_as_a_relay_assertion() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         use crate::rtp::stream_store::{EndpointAssertion, StreamStore};
 
@@ -3824,7 +3846,7 @@ mod relay_control_tests {
         let (ip, port, ..) = &links[0];
         let provenance = store
             .sdp_endpoint_provenance(*ip, *port)
-            .expect("the endpoint must be registered");
+            .ok_or("the endpoint must be registered")?;
         assert_eq!(
             provenance.asserted_by,
             EndpointAssertion::media_relay(
@@ -3840,6 +3862,7 @@ mod relay_control_tests {
             Some(InputOrigin::Hep),
             "and the transport it arrived over is recorded independently"
         );
+        Ok(())
     }
 }
 
@@ -3847,9 +3870,11 @@ mod relay_control_tests {
 mod quoted_media_tests {
     use super::{QuotedMediaKind, quoted_media_kind};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A well-formed RTP header yields its SSRC and payload type.
     #[test]
-    fn an_rtp_header_yields_its_ssrc_and_payload_type() {
+    fn an_rtp_header_yields_its_ssrc_and_payload_type() -> Result<(), TestError> {
         let mut p = vec![0x80u8, 8]; // V=2, PT=8 (PCMA)
         p.extend_from_slice(&7u16.to_be_bytes());
         p.extend_from_slice(&1600u32.to_be_bytes());
@@ -3862,11 +3887,12 @@ mod quoted_media_tests {
                 payload_type: 8
             }
         );
+        Ok(())
     }
 
     /// An RTCP sender report yields its SSRC and packet type.
     #[test]
-    fn an_rtcp_sender_report_yields_its_ssrc() {
+    fn an_rtcp_sender_report_yields_its_ssrc() -> Result<(), TestError> {
         let mut p = vec![0x80u8, 200]; // V=2, RC=0, PT=200 (SR)
         p.extend_from_slice(&6u16.to_be_bytes());
         p.extend_from_slice(&0x00C0_FFEEu32.to_be_bytes());
@@ -3878,6 +3904,7 @@ mod quoted_media_tests {
                 packet_type: 200
             }
         );
+        Ok(())
     }
 
     /// RFC 792 guarantees only the IP header plus 8 bytes, which for UDP is
@@ -3885,26 +3912,29 @@ mod quoted_media_tests {
     /// `NotMedia`: the flow may still match a stream, and saying "not media"
     /// would rule that out on no evidence.
     #[test]
-    fn an_empty_quote_is_unread_not_not_media() {
+    fn an_empty_quote_is_unread_not_not_media() -> Result<(), TestError> {
         assert_eq!(quoted_media_kind(&[]), QuotedMediaKind::Unread);
+        Ok(())
     }
 
     /// A truncated RTP header — version and payload type readable, SSRC not —
     /// is also `Unread`. Reading an SSRC out of bytes that are not there is
     /// how a quote gets attributed to the wrong stream.
     #[test]
-    fn a_quote_too_short_for_an_ssrc_is_unread() {
+    fn a_quote_too_short_for_an_ssrc_is_unread() -> Result<(), TestError> {
         assert_eq!(
             quoted_media_kind(&[0x80, 0x00, 0x00, 0x01, 0x00, 0x00]),
             QuotedMediaKind::Unread
         );
+        Ok(())
     }
 
     /// A DNS query is not media. Version bits of anything but 2 settle it.
     #[test]
-    fn a_dns_query_is_not_media() {
+    fn a_dns_query_is_not_media() -> Result<(), TestError> {
         let dns = [0x12u8, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
         assert_eq!(quoted_media_kind(&dns), QuotedMediaKind::NotMedia);
+        Ok(())
     }
 
     /// A DNS message with its question, as a resolver's late answer or a
@@ -3932,7 +3962,7 @@ mod quoted_media_tests {
     /// the tell: a count of one, then a well-formed name, type and class,
     /// which RTP bytes do not happen to spell.
     #[test]
-    fn a_dns_message_whose_id_reads_as_rtp_version_2_is_not_media() {
+    fn a_dns_message_whose_id_reads_as_rtp_version_2_is_not_media() -> Result<(), TestError> {
         for id in [0x9A15u16, 0x80FF, 0xBF00] {
             for response in [false, true] {
                 assert_eq!(
@@ -3948,12 +3978,13 @@ mod quoted_media_tests {
             0x9Au8, 0x15, 0x00, 0x00, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1,
         ];
         assert_eq!(quoted_media_kind(&priming), QuotedMediaKind::NotMedia);
+        Ok(())
     }
 
     /// Each rule of the question is load-bearing: a message wrong in exactly
     /// one of them is not DNS, and falls to the RTP bar.
     #[test]
-    fn a_question_wrong_in_any_one_rule_is_not_dns() {
+    fn a_question_wrong_in_any_one_rule_is_not_dns() -> Result<(), TestError> {
         let head = |qdcount: u8| vec![0x9Au8, 0x15, 0x01, 0x00, 0, qdcount, 0, 0, 0, 0, 0, 0];
         let with = |qdcount: u8, name: &[u8], qtype: u8, qclass: u8| {
             let mut m = head(qdcount);
@@ -3991,25 +4022,27 @@ mod quoted_media_tests {
         let class_hi = unicast.len() - 2;
         unicast[class_hi] = 0x80;
         assert_eq!(quoted_media_kind(&unicast), QuotedMediaKind::NotMedia);
+        Ok(())
     }
 
     /// A quote that stops before the question's class cannot be told from
     /// RTP by its question, so it is read on the RTP bar as before rather
     /// than guessed at.
     #[test]
-    fn a_dns_question_cut_short_is_not_claimed_as_dns() {
+    fn a_dns_question_cut_short_is_not_claimed_as_dns() -> Result<(), TestError> {
         let full = dns_message(0x9A15, false);
         let cut = &full[..full.len() - 2];
         assert!(matches!(
             quoted_media_kind(cut),
             QuotedMediaKind::Rtp { .. }
         ));
+        Ok(())
     }
 
     /// RTP whose timestamp happens to begin 0x0001 -- the question count's
     /// position in a DNS header -- is still RTP: its payload is no DNS name.
     #[test]
-    fn rtp_that_shares_a_dns_header_prefix_is_still_rtp() {
+    fn rtp_that_shares_a_dns_header_prefix_is_still_rtp() -> Result<(), TestError> {
         let mut p = vec![0x80u8, 0x60, 0x12, 0x34, 0x00, 0x01, 0x5F, 0x90];
         p.extend_from_slice(&0x0BAD_F00Du32.to_be_bytes());
         p.extend_from_slice(&[0xF4, 0x7A, 0x33, 0x01, 0x9C, 0x00, 0x42, 0x17]);
@@ -4020,6 +4053,7 @@ mod quoted_media_tests {
                 payload_type: 0x60
             }
         );
+        Ok(())
     }
 
     /// [RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761#section-4) reserves payload types 64-95 so RTP and RTCP can share one
@@ -4027,7 +4061,7 @@ mod quoted_media_tests {
     /// claiming it is would let a whole class of traffic pass the check on two
     /// bits of agreement.
     #[test]
-    fn the_rtcp_demux_range_is_not_read_as_rtp() {
+    fn the_rtcp_demux_range_is_not_read_as_rtp() -> Result<(), TestError> {
         for pt in [64u8, 80, 95] {
             let mut p = vec![0x80u8, pt];
             p.extend_from_slice(&[0u8; 20]);
@@ -4037,22 +4071,24 @@ mod quoted_media_tests {
                 "payload type {pt} is reserved for RTCP demultiplexing"
             );
         }
+        Ok(())
     }
 
     /// An RTCP packet type with a length field that cannot describe even its
     /// own header is malformed, not RTCP.
     #[test]
-    fn an_rtcp_length_that_cannot_hold_a_header_is_rejected() {
+    fn an_rtcp_length_that_cannot_hold_a_header_is_rejected() -> Result<(), TestError> {
         // length = 0 declares 4 bytes, which is less than the 8-byte minimum
         // for a report with an SSRC.
         let p = [0x80u8, 201, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
         assert_eq!(quoted_media_kind(&p), QuotedMediaKind::NotMedia);
+        Ok(())
     }
 
     /// The SSRC accessor answers for both media shapes and for neither of the
     /// other two, so a caller cannot accidentally match on a zero.
     #[test]
-    fn only_a_media_payload_offers_an_ssrc() {
+    fn only_a_media_payload_offers_an_ssrc() -> Result<(), TestError> {
         assert_eq!(
             QuotedMediaKind::Rtp {
                 ssrc: 9,
@@ -4073,6 +4109,7 @@ mod quoted_media_tests {
         assert_eq!(QuotedMediaKind::NotMedia.ssrc(), None);
         assert!(!QuotedMediaKind::Unread.is_media());
         assert!(!QuotedMediaKind::NotMedia.is_media());
+        Ok(())
     }
 }
 
@@ -4095,6 +4132,9 @@ mod quoted_media_tests {
 pub(crate) mod test_support {
     use chrono::{TimeZone, Utc};
 
+    /// The error a fallible fixture builder here returns.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// Ethernet (DLT_EN10MB), the link type the fixture is framed for.
     const DLT_EN10MB: i32 = 1;
 
@@ -4103,7 +4143,7 @@ pub(crate) mod test_support {
     /// Quoting RTP rather than SIP is what routes it to the MEDIA store:
     /// [`super::record_icmp_error`] branches on whether the quoted payload
     /// parses as a SIP request, not on the port it was sent to.
-    pub(crate) fn icmp_error_quoting_rtp() -> crate::capture::Packet {
+    pub(crate) fn icmp_error_quoting_rtp() -> Result<crate::capture::Packet, TestError> {
         // V=2, PT=0 (PCMU), one sequence, one timestamp, an SSRC and audio.
         let mut rtp = vec![0x80u8, 0x00];
         rtp.extend_from_slice(&1u16.to_be_bytes());
@@ -4144,16 +4184,16 @@ pub(crate) mod test_support {
         pkt.extend_from_slice(&icmp);
 
         let len = pkt.len();
-        crate::capture::Packet::new(
+        Ok(crate::capture::Packet::new(
             Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
                 .single()
-                .expect("fixture timestamp"),
+                .ok_or("fixture timestamp")?,
             pkt,
             len,
             len,
             None,
             DLT_EN10MB,
-        )
+        ))
     }
 
     /// File the fixture as evidence, through the parser every capture uses.
@@ -4161,12 +4201,13 @@ pub(crate) mod test_support {
     /// The assertion is part of the fixture: an ICMP error that became a
     /// `ParsedPacket` would mean the packet was built wrong, and the tests
     /// downstream would then be asserting about an empty store.
-    pub(crate) fn file_one_media_icmp_error() {
-        let pkt = icmp_error_quoting_rtp();
+    pub(crate) fn file_one_media_icmp_error() -> Result<(), TestError> {
+        let pkt = icmp_error_quoting_rtp()?;
         assert!(
             crate::capture::parse::parse_packet(&pkt).is_err(),
             "an ICMP error is evidence, never a ParsedPacket"
         );
+        Ok(())
     }
 }
 
@@ -4175,6 +4216,8 @@ mod resolved_media_tests {
     use super::{
         IcmpMediaReport, MediaIcmpFinding, MediaMatch, QuotedMediaKind, ResolvedIcmpMedia,
     };
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// One finding at `matched`, naming `call_ids`.
     fn finding(matched: MediaMatch, call_ids: &[&str]) -> MediaIcmpFinding {
@@ -4203,7 +4246,7 @@ mod resolved_media_tests {
     /// A collision here would let a consumer branching on the token treat a
     /// guess as a measurement, which is the whole reason the tier is carried.
     #[test]
-    fn each_attribution_tier_renders_to_its_own_token() {
+    fn each_attribution_tier_renders_to_its_own_token() -> Result<(), TestError> {
         let tiers = [
             (MediaMatch::Flow, "flow"),
             (MediaMatch::Ssrc, "ssrc"),
@@ -4226,6 +4269,7 @@ mod resolved_media_tests {
             tiers.len(),
             "two tiers share a token, so a consumer cannot tell them apart"
         );
+        Ok(())
     }
 
     /// The payload kind is a separate fact from the tier.
@@ -4234,7 +4278,7 @@ mod resolved_media_tests {
     /// exactly with no payload left to read. Collapsing the two would lose
     /// which of them a reader is looking at.
     #[test]
-    fn the_payload_kind_is_reported_separately_from_the_tier() {
+    fn the_payload_kind_is_reported_separately_from_the_tier() -> Result<(), TestError> {
         let mut f = finding(MediaMatch::None, &[]);
         assert_eq!(f.payload_kind(), "rtp");
         assert_eq!(f.attribution_tier(), "none");
@@ -4247,11 +4291,12 @@ mod resolved_media_tests {
         assert_eq!(f.payload_kind(), "unread");
         f.payload = QuotedMediaKind::NotMedia;
         assert_eq!(f.payload_kind(), "not_media");
+        Ok(())
     }
 
     /// The index returns a dialog's findings and nobody else's.
     #[test]
-    fn the_resolved_set_indexes_findings_by_the_calls_they_named() {
+    fn the_resolved_set_indexes_findings_by_the_calls_they_named() -> Result<(), TestError> {
         let report = IcmpMediaReport {
             errors: 12,
             flows: vec![
@@ -4266,6 +4311,7 @@ mod resolved_media_tests {
         assert_eq!(resolved.findings_for("a@example.com").len(), 2);
         assert_eq!(resolved.findings_for("b@example.com").len(), 1);
         assert!(resolved.findings_for("nobody@example.com").is_empty());
+        Ok(())
     }
 
     /// A finding that named no call reaches the capture-wide ledger and no
@@ -4275,7 +4321,7 @@ mod resolved_media_tests {
     /// corpus matched nothing the capture held — and it is why the ledger is
     /// capture-wide rather than assembled from the dialogs.
     #[test]
-    fn a_finding_that_named_no_call_is_still_in_the_capture_wide_ledger() {
+    fn a_finding_that_named_no_call_is_still_in_the_capture_wide_ledger() -> Result<(), TestError> {
         let report = IcmpMediaReport {
             errors: 4,
             unattributed: 4,
@@ -4290,6 +4336,7 @@ mod resolved_media_tests {
             "the ledger must hold a finding no dialog can claim"
         );
         assert!(resolved.findings_for("a@example.com").is_empty());
+        Ok(())
     }
 
     /// Discarding the evidence discards the resolved answer about it.
@@ -4298,7 +4345,7 @@ mod resolved_media_tests {
     /// the next capture's surfaces report the previous capture's flows.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn resetting_the_evidence_drops_the_resolved_findings() {
+    fn resetting_the_evidence_drops_the_resolved_findings() -> Result<(), TestError> {
         let store = crate::rtp::stream_store::StreamStore::new(4);
         super::resolve_icmp_media(&store);
         assert!(
@@ -4313,6 +4360,7 @@ mod resolved_media_tests {
             "a reset that leaves the resolved set armed serves stale findings"
         );
         assert_eq!(super::icmp_media_findings().report().errors, 0);
+        Ok(())
     }
 
     /// A reset drops the recorded EVIDENCE, not only the answer about it.
@@ -4328,11 +4376,11 @@ mod resolved_media_tests {
     /// second resolve below answers `1` again.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn resetting_drops_the_recorded_media_evidence_not_just_the_answer() {
+    fn resetting_drops_the_recorded_media_evidence_not_just_the_answer() -> Result<(), TestError> {
         let store = crate::rtp::stream_store::StreamStore::new(4);
         super::reset_icmp_evidence();
 
-        super::test_support::file_one_media_icmp_error();
+        super::test_support::file_one_media_icmp_error()?;
         let filed = super::resolve_icmp_media(&store);
         assert_eq!(
             filed.report().errors,
@@ -4349,6 +4397,7 @@ mod resolved_media_tests {
              was supposed to have discarded"
         );
         super::reset_icmp_evidence();
+        Ok(())
     }
 
     /// A resolve from somewhere else must not wipe a published set.
@@ -4364,7 +4413,7 @@ mod resolved_media_tests {
     /// published set is gone by the time it is read.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn a_resolve_elsewhere_does_not_wipe_a_published_set() {
+    fn a_resolve_elsewhere_does_not_wipe_a_published_set() -> Result<(), TestError> {
         super::reset_icmp_evidence();
         super::publish_icmp_media_for_test(ResolvedIcmpMedia::new(IcmpMediaReport {
             errors: 7,
@@ -4388,6 +4437,7 @@ mod resolved_media_tests {
             "a foreign resolve replaced the set this test published"
         );
         super::reset_icmp_evidence();
+        Ok(())
     }
 }
 
@@ -4399,15 +4449,19 @@ mod resolved_media_tests {
 /// parallel.
 #[cfg(test)]
 mod rtpproxy_control_tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every packet the pipeline classifies returns a `PacketAction`, most of
     /// them `None` or an RTP packet, so the enum's size is paid on the hot
     /// path whatever the variant. The parsed SIP message is boxed so it does
     /// not set that size: clippy's `large_enum_variant` threshold is 200
     /// bytes, and this keeps the whole enum well under it.
     #[test]
-    fn packet_action_stays_small() {
+    fn packet_action_stays_small() -> Result<(), TestError> {
         let size = std::mem::size_of::<super::PacketAction>();
         assert!(size <= 128, "PacketAction is {size} bytes");
+        Ok(())
     }
     use super::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
     use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
@@ -4472,8 +4526,9 @@ mod rtpproxy_control_tests {
     }
 
     #[test]
-    fn a_command_and_its_reply_on_the_named_socket_name_the_relays_media() {
-        let relay: SocketAddr = "10.0.0.40:7722".parse().unwrap();
+    fn a_command_and_its_reply_on_the_named_socket_name_the_relays_media() -> Result<(), TestError>
+    {
+        let relay: SocketAddr = "10.0.0.40:7722".parse()?;
         let proxy = SocketAddr::new(PROXY, 5060);
         let command = udp(proxy, relay, "p2 U rp-cap-1 192.0.2.10 40000 ftag1\n");
         assert_eq!(
@@ -4490,35 +4545,38 @@ mod rtpproxy_control_tests {
                 call_id: "rp-cap-1".to_owned(),
             }])
         );
+        Ok(())
     }
 
     #[test]
-    fn without_a_named_socket_rtpproxy_traffic_is_not_believed() {
-        let relay: SocketAddr = "10.0.0.40:7723".parse().unwrap();
+    fn without_a_named_socket_rtpproxy_traffic_is_not_believed() -> Result<(), TestError> {
+        let relay: SocketAddr = "10.0.0.40:7723".parse()?;
         let proxy = SocketAddr::new(PROXY, 5060);
         let command = udp(proxy, relay, "p2 U rp-cap-2 192.0.2.10 40000 ftag1\n");
         let reply = udp(relay, proxy, "p2 49514 10.0.0.40\n");
         assert_eq!(relay_links(classify(&command, None)), None);
         assert_eq!(relay_links(classify(&reply, None)), None);
+        Ok(())
     }
 
     #[test]
-    fn the_same_port_on_another_host_is_not_the_named_relay() {
-        let named: SocketAddr = "10.0.0.40:7724".parse().unwrap();
-        let other: SocketAddr = "10.0.0.41:7724".parse().unwrap();
+    fn the_same_port_on_another_host_is_not_the_named_relay() -> Result<(), TestError> {
+        let named: SocketAddr = "10.0.0.40:7724".parse()?;
+        let other: SocketAddr = "10.0.0.41:7724".parse()?;
         let proxy = SocketAddr::new(PROXY, 5060);
         let command = udp(proxy, other, "p2 U rp-cap-3 192.0.2.10 40000 ftag1\n");
         let reply = udp(other, proxy, "p2 49514 10.0.0.41\n");
         assert_eq!(relay_links(classify(&command, Some(named))), None);
         assert_eq!(relay_links(classify(&reply, Some(named))), None);
+        Ok(())
     }
 
     #[test]
-    fn a_named_link_attributes_the_media_that_arrives_afterwards() {
+    fn a_named_link_attributes_the_media_that_arrives_afterwards() -> Result<(), TestError> {
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream_store::{EndpointAssertion, StreamStore};
 
-        let relay: SocketAddr = "10.0.0.40:7725".parse().unwrap();
+        let relay: SocketAddr = "10.0.0.40:7725".parse()?;
         let proxy = SocketAddr::new(PROXY, 5060);
         let mut store = StreamStore::new(1000);
         for pp in [
@@ -4530,11 +4588,7 @@ mod rtpproxy_control_tests {
             }
         }
 
-        let mut media = udp(
-            "192.0.2.30:20000".parse().unwrap(),
-            "10.0.0.40:49514".parse().unwrap(),
-            "",
-        );
+        let mut media = udp("192.0.2.30:20000".parse()?, "10.0.0.40:49514".parse()?, "");
         media.payload = vec![0u8; 12 + 160].into();
         let rtp = RtpHeader {
             version: 2,
@@ -4560,5 +4614,6 @@ mod rtpproxy_control_tests {
             )),
             "rtpproxy asserted this over a bare datagram, and says so"
         );
+        Ok(())
     }
 }

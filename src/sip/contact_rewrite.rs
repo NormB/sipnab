@@ -204,14 +204,15 @@ pub fn corroborate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
-    fn ip(s: &str) -> std::net::IpAddr {
-        s.parse().expect("fixture address")
+    fn ip(s: &str) -> Result<std::net::IpAddr, TestError> {
+        Ok(s.parse().map_err(|e| format!("fixture address: {e:?}"))?)
     }
 
     /// The host comes out of the real header shapes a `Contact` carries.
     #[test]
-    fn the_contact_host_is_read_out_of_every_shape_the_header_takes() {
+    fn the_contact_host_is_read_out_of_every_shape_the_header_takes() -> Result<(), TestError> {
         for (header, want) in [
             ("<sip:alice@192.168.1.50:5060>", Some("192.168.1.50:5060")),
             ("\"Alice\" <sip:alice@192.168.1.50>", Some("192.168.1.50")),
@@ -231,6 +232,7 @@ mod tests {
         ] {
             assert_eq!(contact_host(header), want, "header {header:?}");
         }
+        Ok(())
     }
 
     /// A bracketed decoy URI inside a quoted display name does not win the
@@ -239,16 +241,17 @@ mod tests {
     /// contact-rewrite / NAT detection. [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) admits `<` and `>` in a
     /// `quoted-string`; the addr-spec after the display name is the real one.
     #[test]
-    fn a_bracketed_decoy_in_the_display_name_does_not_win_the_host() {
+    fn a_bracketed_decoy_in_the_display_name_does_not_win_the_host() -> Result<(), TestError> {
         assert_eq!(
             contact_host("\"<sip:x@203.0.113.9>\" <sip:alice@192.168.1.50>"),
             Some("192.168.1.50")
         );
+        Ok(())
     }
 
     /// An address is recovered from a host that carries a port or brackets.
     #[test]
-    fn a_port_or_brackets_do_not_hide_the_address() {
+    fn a_port_or_brackets_do_not_hide_the_address() -> Result<(), TestError> {
         for (host, private) in [
             ("192.168.1.50", true),
             ("192.168.1.50:5060", true),
@@ -256,43 +259,47 @@ mod tests {
             ("[2001:db8::1]", false),
             ("198.51.100.7:5060", false),
         ] {
-            let o = observe(Some(host), ip("203.0.113.9"));
+            let o = observe(Some(host), ip("203.0.113.9")?);
             assert_eq!(
                 o.contact_host_private,
                 Some(private),
                 "host {host:?} should read as private={private}"
             );
         }
+        Ok(())
     }
 
     /// The shape a rewrite is required for.
     #[test]
-    fn a_private_contact_from_a_public_source_requires_a_rewrite() {
-        let o = observe(Some("192.168.1.50"), ip("203.0.113.9"));
+    fn a_private_contact_from_a_public_source_requires_a_rewrite() -> Result<(), TestError> {
+        let o = observe(Some("192.168.1.50"), ip("203.0.113.9")?);
         assert_eq!(o.contact_host.as_deref(), Some("192.168.1.50"));
         assert_eq!(o.contact_host_private, Some(true));
         assert!(o.source_public);
         assert!(o.rewrite_required);
+        Ok(())
     }
 
     /// A private contact from a private source is a phone talking to a
     /// registrar on its own network. Nothing has to be rewritten.
     #[test]
-    fn a_private_contact_from_a_private_source_requires_nothing() {
-        let o = observe(Some("192.168.1.50"), ip("192.168.1.1"));
+    fn a_private_contact_from_a_private_source_requires_nothing() -> Result<(), TestError> {
+        let o = observe(Some("192.168.1.50"), ip("192.168.1.1")?);
         assert_eq!(o.contact_host_private, Some(true));
         assert!(!o.source_public);
         assert!(!o.rewrite_required);
+        Ok(())
     }
 
     /// A public contact needs no rewrite whatever the source.
     #[test]
-    fn a_public_contact_requires_nothing() {
+    fn a_public_contact_requires_nothing() -> Result<(), TestError> {
         for source in ["203.0.113.9", "192.168.1.1"] {
-            let o = observe(Some("198.51.100.7"), ip(source));
+            let o = observe(Some("198.51.100.7"), ip(source)?);
             assert_eq!(o.contact_host_private, Some(false));
             assert!(!o.rewrite_required, "source {source}");
         }
+        Ok(())
     }
 
     /// A `Contact` naming a domain is not judged.
@@ -301,14 +308,15 @@ mod tests {
     /// would invent a fault and calling it public would clear one, and neither
     /// is a measurement.
     #[test]
-    fn a_contact_naming_a_domain_is_not_judged() {
-        let o = observe(Some("pbx.example.com"), ip("203.0.113.9"));
+    fn a_contact_naming_a_domain_is_not_judged() -> Result<(), TestError> {
+        let o = observe(Some("pbx.example.com"), ip("203.0.113.9")?);
         assert_eq!(o.contact_host.as_deref(), Some("pbx.example.com"));
         assert_eq!(o.contact_host_private, None);
         assert!(
             !o.rewrite_required,
             "an unresolvable host cannot be said to require a rewrite"
         );
+        Ok(())
     }
 
     /// The finding needs the conjunction, not the observation.
@@ -317,8 +325,8 @@ mod tests {
     /// corpus are private and that estate works; firing on the observation
     /// would report three quarters of it as broken.
     #[test]
-    fn the_finding_needs_later_traffic_to_confirm_it() {
-        let o = observe(Some("192.168.1.50"), ip("203.0.113.9"));
+    fn the_finding_needs_later_traffic_to_confirm_it() -> Result<(), TestError> {
+        let o = observe(Some("192.168.1.50"), ip("203.0.113.9")?);
         assert!(o.rewrite_required, "the fixture is the at-risk shape");
 
         // The registrar rewrote: later requests went to the public source.
@@ -343,6 +351,7 @@ mod tests {
             "silence is not evidence of a fault either -- a capture that ended \
              before the first inbound call says nothing"
         );
+        Ok(())
     }
 
     /// Traffic to both is reported as not rewritten.
@@ -351,8 +360,8 @@ mod tests {
     /// still sends some nobody receives. Reading the majority would hide a
     /// partial failure behind a working one.
     #[test]
-    fn any_traffic_to_the_private_contact_is_a_finding() {
-        let o = observe(Some("192.168.1.50"), ip("203.0.113.9"));
+    fn any_traffic_to_the_private_contact_is_a_finding() -> Result<(), TestError> {
+        let o = observe(Some("192.168.1.50"), ip("203.0.113.9")?);
         let split = corroborate(o, 1, 99);
         assert_eq!(split.verdict, RewriteVerdict::NotRewritten);
         assert!(
@@ -360,13 +369,14 @@ mod tests {
             "99 deliverable requests do not make the one undeliverable request \
              deliverable"
         );
+        Ok(())
     }
 
     /// An observation that never required a rewrite is never a finding,
     /// whatever later traffic did.
     #[test]
-    fn no_rewrite_required_means_no_finding_whatever_follows() {
-        let o = observe(Some("198.51.100.7"), ip("203.0.113.9"));
+    fn no_rewrite_required_means_no_finding_whatever_follows() -> Result<(), TestError> {
+        let o = observe(Some("198.51.100.7"), ip("203.0.113.9")?);
         for (to_contact, to_source) in [(0, 0), (5, 0), (0, 5), (5, 5)] {
             let f = corroborate(o.clone(), to_contact, to_source);
             assert!(
@@ -375,5 +385,6 @@ mod tests {
                  its absence a fault ({to_contact}/{to_source})"
             );
         }
+        Ok(())
     }
 }

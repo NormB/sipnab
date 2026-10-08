@@ -379,20 +379,26 @@ mod tests {
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
     /// Fixed base timestamp (2024-06-15 12:00:00 UTC) tests offset from.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build an INVITE carrying `sdp_body` captured at `ts`.
-    fn make_invite_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -405,7 +411,7 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -413,12 +419,11 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse INVITE with SDP")
+        )?)
     }
 
     /// Build a 200 OK response carrying `sdp_body` captured at `ts`.
-    fn make_200_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
+    fn make_200_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -431,7 +436,7 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -439,12 +444,11 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse 200 OK with SDP")
+        )?)
     }
 
     /// Build an ACK request carrying `sdp_body` captured at `ts`.
-    fn make_ack_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
+    fn make_ack_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "ACK sip:bob@example.com SIP/2.0",
             &[
@@ -457,7 +461,7 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -465,12 +469,11 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse ACK with SDP")
+        )?)
     }
 
     /// Build an INVITE with no message body (no SDP) captured at `ts`.
-    fn make_invite_no_sdp(ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_no_sdp(ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -482,7 +485,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -490,8 +493,7 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse INVITE without SDP")
+        )?)
     }
 
     /// Build a sendrecv audio SDP body with the given codec, address, and port.
@@ -536,10 +538,10 @@ mod tests {
     /// it into "sdp_present_but_no_codecs", which tells an operator the far end
     /// offered nothing when it offered G.711 both ways.
     #[test]
-    fn static_payload_types_are_named_without_an_rtpmap() {
+    fn static_payload_types_are_named_without_an_rtpmap() -> Result<(), TestError> {
         let mut timeline = Vec::new();
         let sdp = static_pt_sdp("0 8 18", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp, base_ts());
+        let invite = make_invite_with_sdp(&sdp, base_ts()?)?;
         track_sdp(&mut timeline, &invite);
 
         assert_eq!(timeline.len(), 1);
@@ -550,16 +552,17 @@ mod tests {
              no a=rtpmap is present; got {:?}",
             timeline[0].codecs
         );
+        Ok(())
     }
 
     /// A dynamic payload type with no `a=rtpmap` is genuinely unnameable —
     /// 96-127 mean nothing without the map. It must not be guessed at, and it
     /// must not suppress the static entries beside it.
     #[test]
-    fn dynamic_payload_types_without_an_rtpmap_are_not_invented() {
+    fn dynamic_payload_types_without_an_rtpmap_are_not_invented() -> Result<(), TestError> {
         let mut timeline = Vec::new();
         let sdp = static_pt_sdp("0 96 97", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp, base_ts());
+        let invite = make_invite_with_sdp(&sdp, base_ts()?)?;
         track_sdp(&mut timeline, &invite);
 
         assert_eq!(
@@ -569,15 +572,16 @@ mod tests {
              be omitted, not named; got {:?}",
             timeline[0].codecs
         );
+        Ok(())
     }
 
     /// An explicit `a=rtpmap` wins over the static table. RFC 3551 permits
     /// re-binding a static number, and the wire spelling is the evidence.
     #[test]
-    fn an_explicit_rtpmap_overrides_the_static_table() {
+    fn an_explicit_rtpmap_overrides_the_static_table() -> Result<(), TestError> {
         let mut timeline = Vec::new();
         let sdp = sendrecv_sdp("SomethingElse", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp, base_ts());
+        let invite = make_invite_with_sdp(&sdp, base_ts()?)?;
         track_sdp(&mut timeline, &invite);
 
         assert_eq!(
@@ -586,6 +590,7 @@ mod tests {
             "payload type 0 was explicitly mapped; the static default must not \
              override what the wire said"
         );
+        Ok(())
     }
 
     /// Build an audio SDP body with an explicit direction attribute
@@ -620,13 +625,13 @@ mod tests {
     /// First offer records no event; the answer from a different anchor
     /// records a MediaAnchorChange.
     #[test]
-    fn initial_offer_and_answer() {
+    fn initial_offer_and_answer() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::milliseconds(500);
 
         let sdp = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp, t0);
+        let invite = make_invite_with_sdp(&sdp, t0)?;
         track_sdp(&mut timeline, &invite);
 
         assert_eq!(timeline.len(), 1);
@@ -638,128 +643,133 @@ mod tests {
         assert!(timeline[0].event.is_none()); // No previous → no event
 
         let answer_sdp = sendrecv_sdp("PCMU", "10.0.0.2", 30000);
-        let ok = make_200_with_sdp(&answer_sdp, t1);
+        let ok = make_200_with_sdp(&answer_sdp, t1)?;
         track_sdp(&mut timeline, &ok);
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].direction, OfferAnswer::Answer);
         // Different IP and port → anchor change
         assert_eq!(timeline[1].event, Some(SdpEvent::MediaAnchorChange));
+        Ok(())
     }
 
     /// A re-INVITE switching sendrecv to sendonly is detected as Hold.
     #[test]
-    fn hold_detection() {
+    fn hold_detection() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(5);
 
         let sdp1 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp1, t0);
+        let invite = make_invite_with_sdp(&sdp1, t0)?;
         track_sdp(&mut timeline, &invite);
 
         // Re-INVITE with sendonly → hold
         let sdp2 = directional_sdp("PCMU", "10.0.0.1", 20000, "sendonly");
-        let reinvite = make_invite_with_sdp(&sdp2, t1);
+        let reinvite = make_invite_with_sdp(&sdp2, t1)?;
         track_sdp(&mut timeline, &reinvite);
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].event, Some(SdpEvent::Hold));
+        Ok(())
     }
 
     /// Returning to sendrecv after a hold is detected as Resume.
     #[test]
-    fn resume_detection() {
+    fn resume_detection() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(5);
         let t2 = t0 + TimeDelta::seconds(10);
 
         // Initial sendrecv
         let sdp1 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp1, t0);
+        let invite = make_invite_with_sdp(&sdp1, t0)?;
         track_sdp(&mut timeline, &invite);
 
         // Hold (sendonly)
         let sdp2 = directional_sdp("PCMU", "10.0.0.1", 20000, "sendonly");
-        let hold = make_invite_with_sdp(&sdp2, t1);
+        let hold = make_invite_with_sdp(&sdp2, t1)?;
         track_sdp(&mut timeline, &hold);
         assert_eq!(timeline[1].event, Some(SdpEvent::Hold));
 
         // Resume (sendrecv)
         let sdp3 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let resume = make_invite_with_sdp(&sdp3, t2);
+        let resume = make_invite_with_sdp(&sdp3, t2)?;
         track_sdp(&mut timeline, &resume);
 
         assert_eq!(timeline.len(), 3);
         assert_eq!(timeline[2].event, Some(SdpEvent::Resume));
+        Ok(())
     }
 
     /// A re-INVITE swapping PCMU for opus is detected as CodecChange.
     #[test]
-    fn codec_change_detection() {
+    fn codec_change_detection() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(5);
 
         // Initial with PCMU
         let sdp1 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp1, t0);
+        let invite = make_invite_with_sdp(&sdp1, t0)?;
         track_sdp(&mut timeline, &invite);
 
         // Re-INVITE with opus
         let sdp2 = sendrecv_sdp("opus", "10.0.0.1", 20000);
-        let reinvite = make_invite_with_sdp(&sdp2, t1);
+        let reinvite = make_invite_with_sdp(&sdp2, t1)?;
         track_sdp(&mut timeline, &reinvite);
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].event, Some(SdpEvent::CodecChange));
+        Ok(())
     }
 
     /// A re-INVITE moving audio to `m=image` is detected as T38Switch.
     #[test]
-    fn t38_switch_detection() {
+    fn t38_switch_detection() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(5);
 
         // Initial audio
         let sdp1 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp1, t0);
+        let invite = make_invite_with_sdp(&sdp1, t0)?;
         track_sdp(&mut timeline, &invite);
 
         // Switch to T.38
         let sdp2 = t38_sdp("10.0.0.1", 20000);
-        let reinvite = make_invite_with_sdp(&sdp2, t1);
+        let reinvite = make_invite_with_sdp(&sdp2, t1)?;
         track_sdp(&mut timeline, &reinvite);
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].event, Some(SdpEvent::T38Switch));
+        Ok(())
     }
 
     /// Repeated T.38 re-INVITE offer/answer exchanges (e.g. session refresh
     /// while faxing) emit T38Switch exactly once, at the audio→T.38 transition.
     #[test]
-    fn repeated_t38_reinvites_emit_single_switch() {
+    fn repeated_t38_reinvites_emit_single_switch() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Initial audio offer/answer
         let audio = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        track_sdp(&mut timeline, &make_invite_with_sdp(&audio, t0));
+        track_sdp(&mut timeline, &make_invite_with_sdp(&audio, t0)?);
         track_sdp(
             &mut timeline,
-            &make_200_with_sdp(&audio, t0 + TimeDelta::seconds(1)),
+            &make_200_with_sdp(&audio, t0 + TimeDelta::seconds(1))?,
         );
 
         // Three consecutive T.38 offer/answer exchanges
         let t38 = t38_sdp("10.0.0.1", 20000);
         for i in 0..3 {
             let ts = t0 + TimeDelta::seconds(10 * (i + 1));
-            track_sdp(&mut timeline, &make_invite_with_sdp(&t38, ts));
+            track_sdp(&mut timeline, &make_invite_with_sdp(&t38, ts)?);
             track_sdp(
                 &mut timeline,
-                &make_200_with_sdp(&t38, ts + TimeDelta::seconds(1)),
+                &make_200_with_sdp(&t38, ts + TimeDelta::seconds(1))?,
             );
         }
 
@@ -773,30 +783,31 @@ mod tests {
             "T38Switch must fire once for a call that stays in T.38, got timeline {:?}",
             timeline.iter().map(|e| &e.event).collect::<Vec<_>>()
         );
+        Ok(())
     }
 
     /// A genuine T.38 → audio → T.38 sequence emits a new T38Switch for the
     /// second audio→T.38 transition.
     #[test]
-    fn t38_after_return_to_audio_emits_new_switch() {
+    fn t38_after_return_to_audio_emits_new_switch() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         let audio = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
         let t38 = t38_sdp("10.0.0.1", 20000);
 
-        track_sdp(&mut timeline, &make_invite_with_sdp(&audio, t0));
+        track_sdp(&mut timeline, &make_invite_with_sdp(&audio, t0)?);
         track_sdp(
             &mut timeline,
-            &make_invite_with_sdp(&t38, t0 + TimeDelta::seconds(10)),
+            &make_invite_with_sdp(&t38, t0 + TimeDelta::seconds(10))?,
         );
         track_sdp(
             &mut timeline,
-            &make_invite_with_sdp(&audio, t0 + TimeDelta::seconds(20)),
+            &make_invite_with_sdp(&audio, t0 + TimeDelta::seconds(20))?,
         );
         track_sdp(
             &mut timeline,
-            &make_invite_with_sdp(&t38, t0 + TimeDelta::seconds(30)),
+            &make_invite_with_sdp(&t38, t0 + TimeDelta::seconds(30))?,
         );
 
         assert_eq!(timeline[1].event, Some(SdpEvent::T38Switch));
@@ -810,32 +821,34 @@ mod tests {
             Some(SdpEvent::T38Switch),
             "second audio→T.38 transition must emit a new switch"
         );
+        Ok(())
     }
 
     /// A port change with identical codec/mode is a MediaAnchorChange.
     #[test]
-    fn media_anchor_change_detection() {
+    fn media_anchor_change_detection() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(5);
 
         // Initial
         let sdp1 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp1, t0);
+        let invite = make_invite_with_sdp(&sdp1, t0)?;
         track_sdp(&mut timeline, &invite);
 
         // Same codec/mode but different port
         let sdp2 = sendrecv_sdp("PCMU", "10.0.0.1", 30000);
-        let reinvite = make_invite_with_sdp(&sdp2, t1);
+        let reinvite = make_invite_with_sdp(&sdp2, t1)?;
         track_sdp(&mut timeline, &reinvite);
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].event, Some(SdpEvent::MediaAnchorChange));
+        Ok(())
     }
 
     /// An audio+video offer records codecs from every m= line, not just the first.
     #[test]
-    fn multi_mline_timeline_includes_video_codec() {
+    fn multi_mline_timeline_includes_video_codec() -> Result<(), TestError> {
         // An audio+video offer must not drop the video codec from the
         // timeline (it previously recorded only the first m= line).
         let sdp = b"v=0\r\n\
@@ -850,7 +863,7 @@ m=video 20002 RTP/AVP 96\r\n\
 a=rtpmap:96 H264/90000\r\n\
 a=sendrecv\r\n";
         let mut timeline = Vec::new();
-        let invite = make_invite_with_sdp(sdp, base_ts());
+        let invite = make_invite_with_sdp(sdp, base_ts()?)?;
         track_sdp(&mut timeline, &invite);
 
         assert_eq!(timeline.len(), 1);
@@ -860,6 +873,7 @@ a=sendrecv\r\n";
             codecs.iter().any(|c| c == "H264"),
             "video codec must appear in the timeline, got {codecs:?}"
         );
+        Ok(())
     }
 
     /// Delayed-offer INVITE: the offerless INVITE creates no exchange, the
@@ -867,20 +881,20 @@ a=sendrecv\r\n";
     /// answer. Roles must be labeled by offer/answer position, not by the
     /// request/response type of the carrying message.
     #[test]
-    fn delayed_offer_roles_labeled_by_position() {
+    fn delayed_offer_roles_labeled_by_position() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::milliseconds(200);
         let t2 = t0 + TimeDelta::milliseconds(400);
 
         // Offerless INVITE — no SDP, so no timeline entry.
-        let invite = make_invite_no_sdp(t0);
+        let invite = make_invite_no_sdp(t0)?;
         track_sdp(&mut timeline, &invite);
         assert!(timeline.is_empty(), "offerless INVITE adds no exchange");
 
         // 200 OK carries the delayed offer.
         let offer_sdp = sendrecv_sdp("PCMU", "10.0.0.2", 30000);
-        let ok = make_200_with_sdp(&offer_sdp, t1);
+        let ok = make_200_with_sdp(&offer_sdp, t1)?;
         track_sdp(&mut timeline, &ok);
 
         assert_eq!(timeline.len(), 1);
@@ -896,7 +910,7 @@ a=sendrecv\r\n";
 
         // ACK carries the answer, matching the offer's anchor/codecs.
         let answer_sdp = sendrecv_sdp("PCMU", "10.0.0.2", 30000);
-        let ack = make_ack_with_sdp(&answer_sdp, t2);
+        let ack = make_ack_with_sdp(&answer_sdp, t2)?;
         track_sdp(&mut timeline, &ack);
 
         assert_eq!(timeline.len(), 2);
@@ -909,11 +923,12 @@ a=sendrecv\r\n";
             timeline[1].event.is_none(),
             "answer matching the offer's anchor/codecs is not a mid-call event"
         );
+        Ok(())
     }
 
     /// A message without an SDP body leaves the timeline untouched.
     #[test]
-    fn no_sdp_body_ignored() {
+    fn no_sdp_body_ignored() -> Result<(), TestError> {
         let mut timeline = Vec::new();
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -928,43 +943,44 @@ a=sendrecv\r\n";
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse");
+        )?;
 
         track_sdp(&mut timeline, &msg);
         assert!(timeline.is_empty());
+        Ok(())
     }
 
     /// `a=inactive` is also detected as Hold (not just sendonly).
     #[test]
-    fn inactive_hold_detection() {
+    fn inactive_hold_detection() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(5);
 
         let sdp1 = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
-        let invite = make_invite_with_sdp(&sdp1, t0);
+        let invite = make_invite_with_sdp(&sdp1, t0)?;
         track_sdp(&mut timeline, &invite);
 
         // Hold with inactive mode
         let sdp2 = directional_sdp("PCMU", "10.0.0.1", 20000, "inactive");
-        let reinvite = make_invite_with_sdp(&sdp2, t1);
+        let reinvite = make_invite_with_sdp(&sdp2, t1)?;
         track_sdp(&mut timeline, &reinvite);
 
         assert_eq!(timeline[1].event, Some(SdpEvent::Hold));
+        Ok(())
     }
 
     /// A REFER request records a Transfer event with the Refer-To target.
     #[test]
-    fn track_transfer_creates_event() {
+    fn track_transfer_creates_event() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         let raw = build_sip(
             "REFER sip:bob@example.com SIP/2.0",
@@ -986,8 +1002,7 @@ a=sendrecv\r\n";
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse REFER");
+        )?;
 
         track_transfer(&mut timeline, &msg);
         assert_eq!(timeline.len(), 1);
@@ -998,6 +1013,7 @@ a=sendrecv\r\n";
                 target: Some("<sip:carol@example.com>".to_string()),
             })
         );
+        Ok(())
     }
 
     /// A REFER with no `Refer-To` records `None`, not a fabricated target.
@@ -1006,9 +1022,9 @@ a=sendrecv\r\n";
     /// renders as a transfer to a party of that name — indistinguishable from a
     /// real one, and not a URI. A malformed REFER should read as malformed.
     #[test]
-    fn track_transfer_records_no_target_when_refer_to_is_absent() {
+    fn track_transfer_records_no_target_when_refer_to_is_absent() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Same REFER as the test above, minus the Refer-To header.
         let raw = build_sip(
@@ -1030,8 +1046,7 @@ a=sendrecv\r\n";
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse REFER");
+        )?;
 
         track_transfer(&mut timeline, &msg);
         assert_eq!(timeline.len(), 1, "the REFER itself is still recorded");
@@ -1040,13 +1055,14 @@ a=sendrecv\r\n";
             Some(SdpEvent::Transfer { target: None }),
             "an absent Refer-To must not become a target string"
         );
+        Ok(())
     }
 
     /// A non-REFER request is ignored by track_transfer.
     #[test]
-    fn track_transfer_ignores_non_refer() {
+    fn track_transfer_ignores_non_refer() -> Result<(), TestError> {
         let mut timeline = Vec::new();
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -1067,10 +1083,10 @@ a=sendrecv\r\n";
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse INVITE");
+        )?;
 
         track_transfer(&mut timeline, &msg);
         assert!(timeline.is_empty());
+        Ok(())
     }
 }

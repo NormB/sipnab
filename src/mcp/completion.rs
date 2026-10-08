@@ -280,6 +280,9 @@ mod tests {
     use super::*;
     use crate::mcp::live::{DIALOG_URI_PREFIX, Live};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every template names a variable that appears in it.
     ///
     /// The failure this guards is silent and total: a `variable` that does not
@@ -287,7 +290,7 @@ mod tests {
     /// template returns nothing, and the client cannot tell that from a
     /// capture with no matching values.
     #[test]
-    fn every_template_variable_appears_in_its_template() {
+    fn every_template_variable_appears_in_its_template() -> Result<(), TestError> {
         for t in all() {
             assert!(
                 t.uri_template.contains(&format!("{{{}}}", t.variable)),
@@ -296,11 +299,12 @@ mod tests {
                 t.variable
             );
         }
+        Ok(())
     }
 
     /// Template URIs are unique, so a `ref/resource` resolves to one entry.
     #[test]
-    fn template_uris_do_not_collide() {
+    fn template_uris_do_not_collide() -> Result<(), TestError> {
         let mut seen = std::collections::BTreeSet::new();
         for t in all() {
             assert!(
@@ -309,6 +313,7 @@ mod tests {
                 t.uri_template
             );
         }
+        Ok(())
     }
 
     /// Every source is reachable from some template.
@@ -316,7 +321,7 @@ mod tests {
     /// A `Source` variant no template names is a vocabulary the server can
     /// read and no client can ask for.
     #[test]
-    fn every_source_is_reachable() {
+    fn every_source_is_reachable() -> Result<(), TestError> {
         let sources: Vec<Source> = all().iter().map(|t| t.source).collect();
         for want in [
             Source::CallIds,
@@ -327,6 +332,7 @@ mod tests {
         ] {
             assert!(sources.contains(&want), "{want:?} has no template");
         }
+        Ok(())
     }
 
     /// The dialog template builds URIs the live view can parse.
@@ -335,8 +341,8 @@ mod tests {
     /// them to one shape: a template a client fills in must produce a URI
     /// `resources/read` resolves.
     #[test]
-    fn the_dialog_template_builds_a_readable_uri() {
-        let t = find("sipnab://live/dialogs/{call_id}").expect("the dialog template is served");
+    fn the_dialog_template_builds_a_readable_uri() -> Result<(), TestError> {
+        let t = find("sipnab://live/dialogs/{call_id}").ok_or("the dialog template is served")?;
         let uri = t.uri_template.replace("{call_id}", "abc@10.0.0.1");
         assert_eq!(
             Live::parse(&uri),
@@ -344,27 +350,30 @@ mod tests {
             "the template produces a URI the live view does not recognize"
         );
         assert!(uri.starts_with(DIALOG_URI_PREFIX));
+        Ok(())
     }
 
     /// An unknown template resolves to nothing rather than the first entry.
     #[test]
-    fn an_unknown_template_finds_nothing() {
+    fn an_unknown_template_finds_nothing() -> Result<(), TestError> {
         assert!(find("sipnab://live/dialogs").is_none());
         assert!(find("sipnab://nope/{x}").is_none());
+        Ok(())
     }
 
     /// An empty prefix offers everything.
     #[test]
-    fn an_empty_prefix_offers_the_whole_vocabulary() {
+    fn an_empty_prefix_offers_the_whole_vocabulary() -> Result<(), TestError> {
         let c = narrow(["b".to_string(), "a".to_string()], "");
         assert_eq!(c.values, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(c.total, 2);
         assert!(!c.has_more);
+        Ok(())
     }
 
     /// A prefix narrows, and does so case-insensitively.
     #[test]
-    fn a_prefix_narrows_ignoring_case() {
+    fn a_prefix_narrows_ignoring_case() -> Result<(), TestError> {
         let vocab = [
             "SIP-3261-20-URI-BRACKETS".to_string(),
             "OBS-3264-6.1-PT-UNDECLARED".to_string(),
@@ -373,14 +382,16 @@ mod tests {
         assert_eq!(c.values, vec!["SIP-3261-20-URI-BRACKETS".to_string()]);
         let upper = narrow(vocab, "SIP-");
         assert_eq!(upper.values, c.values, "case must not change the answer");
+        Ok(())
     }
 
     /// A prefix nothing starts with yields nothing, not everything.
     #[test]
-    fn a_prefix_matching_nothing_yields_nothing() {
+    fn a_prefix_matching_nothing_yields_nothing() -> Result<(), TestError> {
         let c = narrow(["alpha".to_string()], "zzz");
         assert!(c.values.is_empty());
         assert_eq!(c.total, 0);
+        Ok(())
     }
 
     /// Matching is a PREFIX, not a substring.
@@ -388,13 +399,14 @@ mod tests {
     /// A substring match would offer a Call-ID for typing its host part, which
     /// a client cannot then complete into a valid URI.
     #[test]
-    fn matching_is_anchored_at_the_start() {
+    fn matching_is_anchored_at_the_start() -> Result<(), TestError> {
         let c = narrow(["abc@host".to_string()], "host");
         assert!(
             c.values.is_empty(),
             "substring matching would offer a value the typed prefix cannot build"
         );
         assert!(!matches("abc@host", "host"));
+        Ok(())
     }
 
     /// `narrow` and `matches` are one rule, not two that agree today.
@@ -403,7 +415,7 @@ mod tests {
     /// so a value one side offers and the other drops would make a completion's
     /// `total` disagree with its own `values`.
     #[test]
-    fn narrow_offers_exactly_what_matches_accepts() {
+    fn narrow_offers_exactly_what_matches_accepts() -> Result<(), TestError> {
         let vocab: Vec<String> = ["abc@10.0.0.1", "ABX@10.0.0.2", "zzz@10.0.0.3", "", "a"]
             .iter()
             .map(|s| (*s).to_string())
@@ -422,11 +434,12 @@ mod tests {
                 "narrow and matches disagree for prefix {prefix:?}"
             );
         }
+        Ok(())
     }
 
     /// The cap is enforced and reported rather than silently applied.
     #[test]
-    fn past_the_cap_the_answer_says_there_is_more() {
+    fn past_the_cap_the_answer_says_there_is_more() -> Result<(), TestError> {
         let many: Vec<String> = (0..MAX_VALUES + 25)
             .map(|i| format!("call-{i:04}"))
             .collect();
@@ -438,11 +451,12 @@ mod tests {
             "a client told 100 of 125 is a client that knows to narrow; a \
              client told 100 believes it has them all"
         );
+        Ok(())
     }
 
     /// An operator's ceiling narrows the answer, and the answer says so.
     #[test]
-    fn a_tighter_cap_narrows_and_reports_the_narrowing() {
+    fn a_tighter_cap_narrows_and_reports_the_narrowing() -> Result<(), TestError> {
         let many: Vec<String> = (0..10).map(|i| format!("call-{i:02}")).collect();
         let c = narrow_to(many, "", 3);
         assert_eq!(c.values.len(), 3);
@@ -457,6 +471,7 @@ mod tests {
         );
         assert_eq!(c.total, 10, "total reports what matched, not what fit");
         assert!(c.has_more);
+        Ok(())
     }
 
     /// A cap above the spec's ceiling cannot raise it.
@@ -464,27 +479,30 @@ mod tests {
     /// The response type refuses to be built past [`MAX_VALUES`], so a caller
     /// asking for more is asking for an answer that cannot be sent at all.
     #[test]
-    fn a_cap_above_the_spec_ceiling_is_clamped_to_it() {
+    fn a_cap_above_the_spec_ceiling_is_clamped_to_it() -> Result<(), TestError> {
         let many: Vec<String> = (0..MAX_VALUES + 5).map(|i| format!("c-{i:04}")).collect();
         let c = narrow_to(many, "", usize::MAX);
         assert_eq!(c.values.len(), MAX_VALUES);
         assert!(c.has_more);
+        Ok(())
     }
 
     /// Duplicates collapse, so one dialog is offered once.
     #[test]
-    fn duplicate_values_are_offered_once() {
+    fn duplicate_values_are_offered_once() -> Result<(), TestError> {
         let c = narrow(["a".to_string(), "a".to_string(), "b".to_string()], "");
         assert_eq!(c.values, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(c.total, 2);
+        Ok(())
     }
 
     /// The empty answer is empty, which is what an unknown argument gets.
     #[test]
-    fn the_empty_answer_carries_nothing() {
+    fn the_empty_answer_carries_nothing() -> Result<(), TestError> {
         let c = Completion::none();
         assert!(c.values.is_empty());
         assert_eq!(c.total, 0);
         assert!(!c.has_more);
+        Ok(())
     }
 }

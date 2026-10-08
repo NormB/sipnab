@@ -1397,7 +1397,7 @@ mod tests {
     }
     /// Fixed base timestamp all fixture dialogs are built from.
     fn t0() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     /// Assemble raw SIP bytes from `first_line`, `headers` and `body`
@@ -1416,17 +1416,23 @@ mod tests {
     }
 
     /// Parse `raw` as an A→B request captured at `ts`.
-    fn parse_req(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
-        parse_sip(raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp).expect("parse req")
+    fn parse_req(raw: &[u8], ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
+        Ok(
+            parse_sip(raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse req: {e:?}"))?,
+        )
     }
 
     /// Parse `raw` as a B→A response captured at `ts`.
-    fn parse_resp(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
-        parse_sip(raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp).expect("parse resp")
+    fn parse_resp(raw: &[u8], ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
+        Ok(
+            parse_sip(raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse resp: {e:?}"))?,
+        )
     }
 
     /// A→B INVITE with Call-ID `cid` and CSeq `cseq`, no body.
-    fn invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         parse_req(
             &build_raw(
                 "INVITE sip:bob@10.0.0.2 SIP/2.0",
@@ -1451,7 +1457,7 @@ mod tests {
         codecs_line: &str,
         rtpmaps: &[&str],
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let mut sdp = String::from(
             "v=0\r\n\
              o=- 1 1 IN IP4 10.0.0.1\r\n\
@@ -1484,7 +1490,12 @@ mod tests {
 
     /// A→B REGISTER; `auth` adds an `Authorization` header (the retry leg of
     /// an auth sequence).
-    fn register(cid: &str, cseq: u32, auth: Option<&str>, ts: DateTime<Utc>) -> SipMessage {
+    fn register(
+        cid: &str,
+        cseq: u32,
+        auth: Option<&str>,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let mut headers = vec![
             "From: <sip:alice@10.0.0.1>;tag=t1".to_string(),
             "To: <sip:alice@10.0.0.1>".to_string(),
@@ -1503,7 +1514,7 @@ mod tests {
     }
 
     /// A→B ACK completing an INVITE transaction.
-    fn ack(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn ack(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         parse_req(
             &build_raw(
                 "ACK sip:bob@10.0.0.2 SIP/2.0",
@@ -1522,7 +1533,7 @@ mod tests {
 
     /// A→B ACK aimed at the registrar (the ACK leg of a REGISTER auth
     /// sequence).
-    fn ack_register(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn ack_register(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         parse_req(
             &build_raw(
                 "ACK sip:10.0.0.2 SIP/2.0",
@@ -1547,7 +1558,7 @@ mod tests {
         cseq: u32,
         method: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         parse_resp(
             &build_raw(
                 &format!("SIP/2.0 {status} {reason}"),
@@ -1595,7 +1606,7 @@ mod tests {
         line: &StatusLine<'_>,
         body: &SdpLines<'_>,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let StatusLine {
             cid,
             status,
@@ -1638,7 +1649,7 @@ mod tests {
     }
 
     /// A→B BYE ending the dialog.
-    fn bye(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn bye(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         parse_req(
             &build_raw(
                 "BYE sip:bob@10.0.0.2 SIP/2.0",
@@ -1680,7 +1691,7 @@ mod tests {
     /// Delta magnitudes map to good/warning/bad/bold-bad at the documented
     /// 100ms/1s/5s boundaries; negative deltas count as good.
     #[test]
-    fn delta_style_buckets() {
+    fn delta_style_buckets() -> Result<(), TestError> {
         let theme = Theme::default();
         assert_eq!(delta_style(0, &theme).fg, Some(theme.good));
         assert_eq!(delta_style(99, &theme).fg, Some(theme.good));
@@ -1694,6 +1705,7 @@ mod tests {
         assert!(slow.add_modifier.contains(Modifier::BOLD));
         // negative deltas count as fast/good
         assert_eq!(delta_style(-10, &theme).fg, Some(theme.good));
+        Ok(())
     }
 
     // ── Columns ──────────────────────────────────────────────────────
@@ -1808,12 +1820,12 @@ mod tests {
 
     /// The post-dial delay is annotated on the first 180 and on no later one.
     #[test]
-    fn the_pdd_note_rides_on_the_first_180_only() {
+    fn the_pdd_note_rides_on_the_first_180_only() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let lopts = LayoutOptions::from(&o);
         let msgs = vec![
-            invite("pdd", 1, t0()),
+            invite("pdd", 1, t0())?,
             response(
                 "pdd",
                 180,
@@ -1821,7 +1833,7 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::milliseconds(50),
-            ),
+            )?,
             response(
                 "pdd",
                 180,
@@ -1829,23 +1841,24 @@ mod tests {
                 2,
                 "INVITE",
                 t0() + TimeDelta::milliseconds(90),
-            ),
+            )?,
         ];
         let (_p, rows) = layout(&msgs, t0(), Some(50), &lopts, &HashSet::new());
         let notes: Vec<Option<&str>> = rows.iter().map(|r| r.pdd_note.as_deref()).collect();
         assert_eq!(notes, vec![None, Some("  PDD: 50ms"), None]);
+        Ok(())
     }
 
     /// An ACK takes the codec of the 200 OK it acknowledges and no later
     /// one: once an ACK has used the pending answer codec it is spent, so the
     /// ACK of a re-INVITE that was refused draws no second media bar.
     #[test]
-    fn an_ack_does_not_reuse_an_earlier_answers_codec() {
+    fn an_ack_does_not_reuse_an_earlier_answers_codec() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.show_rtp = true;
         let msgs = vec![
-            invite("spent", 1, t0()),
+            invite("spent", 1, t0())?,
             response_with_sdp(
                 &StatusLine {
                     cid: "spent",
@@ -1859,9 +1872,9 @@ mod tests {
                     rtpmaps: &["a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("spent", 1, t0() + TimeDelta::seconds(1)),
-            invite("spent", 2, t0() + TimeDelta::seconds(5)),
+            )?,
+            ack("spent", 1, t0() + TimeDelta::seconds(1))?,
+            invite("spent", 2, t0() + TimeDelta::seconds(5))?,
             response(
                 "spent",
                 491,
@@ -1869,59 +1882,64 @@ mod tests {
                 2,
                 "INVITE",
                 t0() + TimeDelta::seconds(6),
-            ),
-            ack("spent", 2, t0() + TimeDelta::seconds(6)),
+            )?,
+            ack("spent", 2, t0() + TimeDelta::seconds(6))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let bars = prepared.iter().filter(|m| m.is_rtp_bar).count();
         assert_eq!(bars, 1, "only the answered INVITE opens media");
+        Ok(())
     }
 
     /// A diagnosis tag joins the tags already on a row, once.
     #[test]
-    fn a_diagnosis_tag_is_joined_once() {
+    fn a_diagnosis_tag_is_joined_once() -> Result<(), TestError> {
         let mut note = None;
         add_diagnosis_tag(&mut note, "FAILURE");
         add_diagnosis_tag(&mut note, "NO-RSP");
         add_diagnosis_tag(&mut note, "FAILURE");
         assert_eq!(note.as_deref(), Some("FAILURE NO-RSP"));
+        Ok(())
     }
 
     // ── format_message_label ─────────────────────────────────────────
 
     /// Requests label as their method, responses as "code reason".
     #[test]
-    fn label_request_and_response() {
-        assert_eq!(format_message_label(&invite("c1", 1, t0())), "INVITE");
-        let r = response("c1", 200, "OK", 1, "INVITE", t0());
+    fn label_request_and_response() -> Result<(), TestError> {
+        assert_eq!(format_message_label(&invite("c1", 1, t0())?), "INVITE");
+        let r = response("c1", 200, "OK", 1, "INVITE", t0())?;
         assert_eq!(format_message_label(&r), "200 OK");
-        let r180 = response("c1", 180, "Ringing", 1, "INVITE", t0());
+        let r180 = response("c1", 180, "Ringing", 1, "INVITE", t0())?;
         assert_eq!(format_message_label(&r180), "180 Ringing");
+        Ok(())
     }
 
     /// A message carrying an SDP body gets the " (SDP)" label suffix.
     #[test]
-    fn label_appends_sdp_suffix() {
+    fn label_appends_sdp_suffix() -> Result<(), TestError> {
         let m = invite_with_sdp(
             "csdp",
             1,
             "m=audio 20000 RTP/AVP 0 8",
             &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
             t0(),
-        );
+        )?;
         assert_eq!(format_message_label(&m), "INVITE (SDP)");
+        Ok(())
     }
 
     // ── prepare_messages: empty ──────────────────────────────────────
 
     /// An empty message slice yields empty participants and rows.
     #[test]
-    fn prepare_empty_returns_empty() {
+    fn prepare_empty_returns_empty() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let (parts, msgs) = prepare_messages(&[], t0(), None, &o, &HashSet::new());
         assert!(parts.is_empty());
         assert!(msgs.is_empty());
+        Ok(())
     }
 
     // ── prepare_messages: basic dialog + participants + PDD ───────────
@@ -1929,11 +1947,11 @@ mod tests {
     /// A basic dialog discovers both endpoints and attaches exactly one PDD
     /// note, on the 180 Ringing row.
     #[test]
-    fn prepare_basic_dialog_with_pdd() {
+    fn prepare_basic_dialog_with_pdd() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let msgs = vec![
-            invite("c1", 1, t0()),
+            invite("c1", 1, t0())?,
             response(
                 "c1",
                 180,
@@ -1941,20 +1959,24 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::milliseconds(500),
-            ),
-            response("c1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
-            ack("c1", 1, t0() + TimeDelta::seconds(1)),
-            bye("c1", 2, t0() + TimeDelta::seconds(30)),
+            )?,
+            response("c1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
+            ack("c1", 1, t0() + TimeDelta::seconds(1))?,
+            bye("c1", 2, t0() + TimeDelta::seconds(30))?,
         ];
         let (parts, prepared) = prepare_messages(&msgs, t0(), Some(500), &o, &HashSet::new());
         // Two endpoints discovered (A↔B).
         assert_eq!(parts.len(), 2);
         assert_eq!(prepared.len(), 5);
         // PDD note attached to the 180 Ringing row.
-        let pdd_row = prepared.iter().find(|m| m.label == "180 Ringing").unwrap();
+        let pdd_row = prepared
+            .iter()
+            .find(|m| m.label == "180 Ringing")
+            .ok_or("prepared.iter().find(|m| m.label == \"180 Ringing\") is None")?;
         assert_eq!(pdd_row.pdd_note.as_deref(), Some("  PDD: 500ms"));
         // Only one PDD note total.
         assert_eq!(prepared.iter().filter(|m| m.pdd_note.is_some()).count(), 1);
+        Ok(())
     }
 
     /// A call crossing seven distinct endpoints keeps every message on its
@@ -1964,13 +1986,13 @@ mod tests {
     /// dropped; when the geometry cannot fit them the renderer paints its
     /// explicit `TOO_NARROW_NOTICE` instead.
     #[test]
-    fn prepare_seven_endpoints_never_misattributes_columns() {
+    fn prepare_seven_endpoints_never_misattributes_columns() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         // A proxied chain: hop i goes 10.0.0.i -> 10.0.0.(i+1), i = 1..=6,
         // touching seven distinct endpoints in first-appearance order.
         let msgs: Vec<SipMessage> = (1u8..=6)
-            .map(|i| {
+            .map(|i| -> Result<_, TestError> {
                 let raw = build_raw(
                     "INVITE sip:bob@10.0.0.7 SIP/2.0",
                     &[
@@ -1982,7 +2004,7 @@ mod tests {
                     ],
                     "",
                 );
-                parse_sip(
+                Ok(parse_sip(
                     &raw,
                     t0() + TimeDelta::milliseconds(i64::from(i) * 10),
                     IpAddr::V4(Ipv4Addr::new(10, 0, 0, i)),
@@ -1991,14 +2013,14 @@ mod tests {
                     5060,
                     TransportProto::Udp,
                 )
-                .expect("parse hop")
+                .map_err(|e| format!("parse hop: {e:?}"))?)
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let (parts, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(parts.len(), 7, "every endpoint gets its own column");
         assert_eq!(prepared.len(), msgs.len(), "no row may be dropped");
         for row in &prepared {
-            let ri = row.raw_index.expect("no synthetic rows in this fixture");
+            let ri = row.raw_index.ok_or("no synthetic rows in this fixture")?;
             let m = &msgs[ri];
             assert_eq!(
                 parts[row.src_col].addr,
@@ -2011,13 +2033,14 @@ mod tests {
                 "row {ri} dst column points at the wrong participant"
             );
         }
+        Ok(())
     }
 
     // ── prepare_messages: SDP summary → extract_codec_list path ───────
 
     /// Summary SDP mode adds a "Codecs:" extra line naming the offer codecs.
     #[test]
-    fn prepare_sdp_summary_lists_codecs() {
+    fn prepare_sdp_summary_lists_codecs() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.sdp_mode = SdpDisplayMode::Summary;
@@ -2027,7 +2050,7 @@ mod tests {
             "m=audio 20000 RTP/AVP 0 8",
             &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
             t0(),
-        )];
+        )?];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(prepared.len(), 1);
         let codec_line = prepared[0]
@@ -2035,9 +2058,10 @@ mod tests {
             .iter()
             .find(|(s, _)| s.contains("Codecs:"))
             .map(|(s, _)| s.clone())
-            .expect("codec summary line");
+            .ok_or("codec summary line")?;
         assert!(codec_line.contains("PCMU"), "got: {codec_line}");
         assert!(codec_line.contains("PCMA"), "got: {codec_line}");
+        Ok(())
     }
 
     /// A SIPREC INVITE is annotated in the ladder with who is recorded.
@@ -2049,10 +2073,10 @@ mod tests {
     /// because it is the `m=` line the recorded stream was cut from, and the
     /// participant because that is the question being asked of a recording.
     #[test]
-    fn prepare_annotates_a_siprec_invite_with_its_recording() {
+    fn prepare_annotates_a_siprec_invite_with_its_recording() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
-        let msgs = vec![siprec_invite("srec-1", 1, t0())];
+        let msgs = vec![siprec_invite("srec-1", 1, t0())?];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(prepared.len(), 1);
         let lines: Vec<String> = prepared[0]
@@ -2081,11 +2105,12 @@ mod tests {
             joined.contains("label 0"),
             "and which m= line each recorded stream came from: {joined}"
         );
+        Ok(())
     }
 
     /// An ordinary INVITE gets no SIPREC annotation.
     #[test]
-    fn prepare_leaves_an_ordinary_invite_unannotated() {
+    fn prepare_leaves_an_ordinary_invite_unannotated() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let msgs = vec![invite_with_sdp(
@@ -2094,7 +2119,7 @@ mod tests {
             "m=audio 20000 RTP/AVP 0",
             &[],
             t0(),
-        )];
+        )?];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let joined: String = prepared[0]
             .extra_lines
@@ -2106,6 +2131,7 @@ mod tests {
             !joined.contains("SIPREC"),
             "a call nobody is recording must not be labeled as recorded: {joined}"
         );
+        Ok(())
     }
 
     /// A stream no participant claims says so, rather than rendering blank.
@@ -2115,13 +2141,13 @@ mod tests {
     /// described a stream and omitted the assoc has told the operator less
     /// than it should have.
     #[test]
-    fn a_stream_no_participant_claims_says_so_in_the_ladder() {
+    fn a_stream_no_participant_claims_says_so_in_the_ladder() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let meta = "<recording><datamode>complete</datamode>\
 <session session_id=\"s\"/>\
 <stream stream_id=\"lonely\"><label>7</label></stream></recording>";
-        let msgs = vec![siprec_invite_with("nobody", 1, meta, t0())];
+        let msgs = vec![siprec_invite_with("nobody", 1, meta, t0())?];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let joined: String = prepared[0]
             .extra_lines
@@ -2137,6 +2163,7 @@ mod tests {
             joined.contains("no participant claims it"),
             "and its missing owner is stated, not left blank: {joined}"
         );
+        Ok(())
     }
 
     /// A participant the SRC named without an AOR still renders.
@@ -2145,12 +2172,12 @@ mod tests {
     /// SRC that has not yet learned the party's identity sends it. Dropping
     /// the row would under-report how many parties are on the recording.
     #[test]
-    fn a_participant_with_no_aor_still_renders() {
+    fn a_participant_with_no_aor_still_renders() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let meta = "<recording><session session_id=\"s\"/>\
 <participant participant_id=\"anon\"></participant></recording>";
-        let msgs = vec![siprec_invite_with("anon", 1, meta, t0())];
+        let msgs = vec![siprec_invite_with("anon", 1, meta, t0())?];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let joined: String = prepared[0]
             .extra_lines
@@ -2162,10 +2189,16 @@ mod tests {
             joined.contains("aor not stated"),
             "an unnamed party is shown as unnamed, not omitted: {joined}"
         );
+        Ok(())
     }
 
     /// A SIPREC INVITE carrying arbitrary metadata, for the edge cases.
-    fn siprec_invite_with(cid: &str, cseq: u32, meta: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn siprec_invite_with(
+        cid: &str,
+        cseq: u32,
+        meta: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let body = format!(
             "--B\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\r\n\
              --B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--B--\r\n"
@@ -2188,7 +2221,7 @@ mod tests {
     }
 
     /// A SIPREC INVITE carrying the multipart body an SRC sends.
-    fn siprec_invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn siprec_invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let meta = concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
             "<recording xmlns='urn:ietf:params:xml:ns:recording:1'>\r\n",
@@ -2226,7 +2259,7 @@ mod tests {
 
     /// Full SDP mode emits the raw SDP body as indented extra lines.
     #[test]
-    fn prepare_sdp_full_emits_body_lines() {
+    fn prepare_sdp_full_emits_body_lines() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.sdp_mode = SdpDisplayMode::Full;
@@ -2236,7 +2269,7 @@ mod tests {
             "m=audio 20000 RTP/AVP 0",
             &["a=rtpmap:0 PCMU/8000"],
             t0(),
-        )];
+        )?];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let joined: String = prepared[0]
             .extra_lines
@@ -2246,6 +2279,7 @@ mod tests {
             .join("\n");
         assert!(joined.contains("v=0"), "full SDP body missing: {joined}");
         assert!(joined.contains("m=audio"), "media line missing: {joined}");
+        Ok(())
     }
 
     // ── prepare_messages: SDP delta badge (re-INVITE codec change) ────
@@ -2253,7 +2287,7 @@ mod tests {
     /// A re-INVITE that changes codecs gets a badge with +added and -removed
     /// names, independent of the SDP display mode.
     #[test]
-    fn prepare_sdp_badge_on_codec_change() {
+    fn prepare_sdp_badge_on_codec_change() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme); // sdp_mode None is fine; badges are independent
         let msgs = vec![
@@ -2263,7 +2297,7 @@ mod tests {
                 "m=audio 20000 RTP/AVP 0",
                 &["a=rtpmap:0 PCMU/8000"],
                 t0(),
-            ),
+            )?,
             // re-INVITE adds G722, removes PCMU.
             invite_with_sdp(
                 "cbadge",
@@ -2271,15 +2305,16 @@ mod tests {
                 "m=audio 20000 RTP/AVP 9",
                 &["a=rtpmap:9 G722/8000"],
                 t0() + TimeDelta::seconds(5),
-            ),
+            )?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let badge = prepared[1]
             .sdp_badge
             .as_deref()
-            .expect("badge on re-INVITE");
+            .ok_or("badge on re-INVITE")?;
         assert!(badge.contains("+G722"), "expected codec add: {badge}");
         assert!(badge.contains("PCMU"), "expected codec removal: {badge}");
+        Ok(())
     }
 
     // ── Signaling-diagnosis evidence annotation ──────────────────
@@ -2287,11 +2322,11 @@ mod tests {
     /// The failure response carries the note; the INVITE that provoked it does
     /// not. Only the messages the detection actually cited are marked.
     #[test]
-    fn prepare_annotates_the_failure_response_only() {
+    fn prepare_annotates_the_failure_response_only() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let msgs = vec![
-            invite("failnote", 1, t0()),
+            invite("failnote", 1, t0())?,
             response(
                 "failnote",
                 503,
@@ -2299,7 +2334,7 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::seconds(1),
-            ),
+            )?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
 
@@ -2315,11 +2350,12 @@ mod tests {
             note_for(0).is_none(),
             "the INVITE was not cited as evidence and must not be marked"
         );
+        Ok(())
     }
 
     /// An auth loop marks each challenge it counted.
     #[test]
-    fn prepare_annotates_every_auth_challenge() {
+    fn prepare_annotates_every_auth_challenge() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let mut msgs = Vec::new();
@@ -2329,7 +2365,7 @@ mod tests {
                 i + 1,
                 None,
                 t0() + TimeDelta::seconds(i as i64 * 2),
-            ));
+            )?);
             msgs.push(response(
                 "authnote",
                 401,
@@ -2337,7 +2373,7 @@ mod tests {
                 i + 1,
                 "REGISTER",
                 t0() + TimeDelta::seconds(i as i64 * 2 + 1),
-            ));
+            )?);
         }
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
 
@@ -2364,12 +2400,13 @@ mod tests {
                 "request at raw index {raw} must not be marked"
             );
         }
+        Ok(())
     }
 
     /// A message cited by two detections keeps both tags rather than the last
     /// one written winning.
     #[test]
-    fn prepare_joins_notes_when_one_message_is_evidence_twice() {
+    fn prepare_joins_notes_when_one_message_is_evidence_twice() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         // Three identical INVITEs (same CSeq and branch) with no response is a
@@ -2381,7 +2418,7 @@ mod tests {
         // branch to prove two requests are the same transaction — without it the
         // messages are skipped, which is correct and made this test fail first
         // time round.
-        let retx = |ts: DateTime<Utc>| {
+        let retx = |ts: DateTime<Utc>| -> Result<_, TestError> {
             parse_req(
                 &build_raw(
                     "INVITE sip:bob@10.0.0.2 SIP/2.0",
@@ -2399,9 +2436,9 @@ mod tests {
             )
         };
         let mut msgs = vec![
-            retx(t0()),
-            retx(t0() + TimeDelta::seconds(1)),
-            retx(t0() + TimeDelta::seconds(3)),
+            retx(t0())?,
+            retx(t0() + TimeDelta::seconds(1))?,
+            retx(t0() + TimeDelta::seconds(3))?,
         ];
         msgs.push(response(
             "bothnote",
@@ -2410,7 +2447,7 @@ mod tests {
             2,
             "INVITE",
             t0() + TimeDelta::seconds(4),
-        ));
+        )?);
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
 
         let notes: Vec<Option<String>> = (0..4)
@@ -2435,15 +2472,16 @@ mod tests {
             "the 503 should be marked FAILURE, got {:?}",
             notes[3]
         );
+        Ok(())
     }
 
     /// A clean dialog gets no annotations at all.
     #[test]
-    fn prepare_leaves_a_healthy_dialog_unannotated() {
+    fn prepare_leaves_a_healthy_dialog_unannotated() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let msgs = vec![
-            invite("oknote", 1, t0()),
+            invite("oknote", 1, t0())?,
             response(
                 "oknote",
                 200,
@@ -2451,14 +2489,15 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("oknote", 1, t0() + TimeDelta::seconds(1)),
+            )?,
+            ack("oknote", 1, t0() + TimeDelta::seconds(1))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert!(
             prepared.iter().all(|fm| fm.diagnosis_note.is_none()),
             "a successful call must carry no evidence annotations"
         );
+        Ok(())
     }
 
     // ── prepare_messages: RTP bar insertion on ACK ────────────────────
@@ -2466,15 +2505,15 @@ mod tests {
     /// With `show_rtp`, exactly one RTP bar appears, directly after the ACK,
     /// with bare label text (no rail glyphs baked in).
     #[test]
-    fn prepare_rtp_bar_inserted_after_ack() {
+    fn prepare_rtp_bar_inserted_after_ack() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.show_rtp = true;
         let msgs = vec![
-            invite("crtp", 1, t0()),
-            response("crtp", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
-            ack("crtp", 1, t0() + TimeDelta::seconds(1)),
-            bye("crtp", 2, t0() + TimeDelta::seconds(10)),
+            invite("crtp", 1, t0())?,
+            response("crtp", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
+            ack("crtp", 1, t0() + TimeDelta::seconds(1))?,
+            bye("crtp", 2, t0() + TimeDelta::seconds(10))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         // Exactly one RTP bar, and it sits immediately AFTER the ACK row.
@@ -2500,19 +2539,20 @@ mod tests {
             "rails must not be baked into the label: {:?}",
             bar.label
         );
+        Ok(())
     }
 
     /// A 183 with SDP (early media) opens the channel at the provisional —
     /// one bar after the 183, none duplicated at the ACK, codec from the 183.
     #[test]
-    fn prepare_rtp_bar_early_media_after_provisional() {
+    fn prepare_rtp_bar_early_media_after_provisional() -> Result<(), TestError> {
         // A 183 Session Progress carrying SDP = early media: the channel opens
         // at the 183, BEFORE the 200 OK / ACK, and only one bar is emitted.
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.show_rtp = true;
         let msgs = vec![
-            invite("cem", 1, t0()),
+            invite("cem", 1, t0())?,
             response_with_sdp(
                 &StatusLine {
                     cid: "cem",
@@ -2526,10 +2566,10 @@ mod tests {
                     rtpmaps: &["a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::milliseconds(200),
-            ),
-            response("cem", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
-            ack("cem", 1, t0() + TimeDelta::seconds(1)),
-            bye("cem", 2, t0() + TimeDelta::seconds(10)),
+            )?,
+            response("cem", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
+            ack("cem", 1, t0() + TimeDelta::seconds(1))?,
+            bye("cem", 2, t0() + TimeDelta::seconds(10))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let bar_idxs: Vec<usize> = prepared
@@ -2556,6 +2596,7 @@ mod tests {
             "early-media codec missing: {:?}",
             prepared[bar_idxs[0]].label
         );
+        Ok(())
     }
 
     // ── prepare_messages: RTP bar shows the USED codec, not the offer ──
@@ -2563,7 +2604,7 @@ mod tests {
     /// Offer lists three codecs; the answer narrows to one. The RTP-in-flow bar
     /// must show the single negotiated codec (PCMU), not the whole offer list.
     #[test]
-    fn prepare_rtp_bar_shows_negotiated_codec_not_offer_list() {
+    fn prepare_rtp_bar_shows_negotiated_codec_not_offer_list() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.show_rtp = true;
@@ -2578,7 +2619,7 @@ mod tests {
                     "a=rtpmap:9 G722/8000",
                 ],
                 t0(),
-            ),
+            )?,
             response_with_sdp(
                 &StatusLine {
                     cid: "cneg",
@@ -2592,9 +2633,9 @@ mod tests {
                     rtpmaps: &["a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("cneg", 1, t0() + TimeDelta::seconds(1)),
-            bye("cneg", 2, t0() + TimeDelta::seconds(10)),
+            )?,
+            ack("cneg", 1, t0() + TimeDelta::seconds(1))?,
+            bye("cneg", 2, t0() + TimeDelta::seconds(10))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let bars: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
@@ -2608,12 +2649,13 @@ mod tests {
             !label.contains("PCMA") && !label.contains("G722"),
             "must not show offered-but-unused codecs: {label:?}"
         );
+        Ok(())
     }
 
     /// A re-INVITE that renegotiates the codec (PCMU → G722) draws a second bar
     /// showing the new codec; subsequent RTP uses it.
     #[test]
-    fn prepare_rtp_bar_reinvite_switches_codec() {
+    fn prepare_rtp_bar_reinvite_switches_codec() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.show_rtp = true;
@@ -2624,7 +2666,7 @@ mod tests {
                 "m=audio 20000 RTP/AVP 0 8",
                 &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
                 t0(),
-            ),
+            )?,
             response_with_sdp(
                 &StatusLine {
                     cid: "crei",
@@ -2638,8 +2680,8 @@ mod tests {
                     rtpmaps: &["a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("crei", 1, t0() + TimeDelta::seconds(1)),
+            )?,
+            ack("crei", 1, t0() + TimeDelta::seconds(1))?,
             // re-INVITE renegotiates to G722.
             invite_with_sdp(
                 "crei",
@@ -2647,7 +2689,7 @@ mod tests {
                 "m=audio 20000 RTP/AVP 9 0",
                 &["a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000"],
                 t0() + TimeDelta::seconds(5),
-            ),
+            )?,
             response_with_sdp(
                 &StatusLine {
                     cid: "crei",
@@ -2661,9 +2703,9 @@ mod tests {
                     rtpmaps: &["a=rtpmap:9 G722/8000"],
                 },
                 t0() + TimeDelta::seconds(6),
-            ),
-            ack("crei", 2, t0() + TimeDelta::seconds(6)),
-            bye("crei", 3, t0() + TimeDelta::seconds(20)),
+            )?,
+            ack("crei", 2, t0() + TimeDelta::seconds(6))?,
+            bye("crei", 3, t0() + TimeDelta::seconds(20))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let bars: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
@@ -2678,6 +2720,7 @@ mod tests {
             "second segment is G722 after the re-INVITE: {:?}",
             bars[1].label
         );
+        Ok(())
     }
 
     /// A re-INVITE that keeps the same codec (a session refresh — the homepage
@@ -2685,13 +2728,13 @@ mod tests {
     /// segments: one bar after the initial ACK, one after the re-INVITE's ACK.
     /// And the label carries no redundant "active".
     #[test]
-    fn prepare_rtp_bar_reinvite_same_codec_shows_both_segments() {
+    fn prepare_rtp_bar_reinvite_same_codec_shows_both_segments() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.show_rtp = true;
         let sdp = ("m=audio 20000 RTP/AVP 8", ["a=rtpmap:8 PCMA/8000"]);
         let msgs = vec![
-            invite_with_sdp("crf", 1, sdp.0, &sdp.1, t0()),
+            invite_with_sdp("crf", 1, sdp.0, &sdp.1, t0())?,
             response_with_sdp(
                 &StatusLine {
                     cid: "crf",
@@ -2705,9 +2748,9 @@ mod tests {
                     rtpmaps: &sdp.1,
                 },
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("crf", 1, t0() + TimeDelta::seconds(1)),
-            invite_with_sdp("crf", 2, sdp.0, &sdp.1, t0() + TimeDelta::seconds(5)),
+            )?,
+            ack("crf", 1, t0() + TimeDelta::seconds(1))?,
+            invite_with_sdp("crf", 2, sdp.0, &sdp.1, t0() + TimeDelta::seconds(5))?,
             response_with_sdp(
                 &StatusLine {
                     cid: "crf",
@@ -2721,9 +2764,9 @@ mod tests {
                     rtpmaps: &sdp.1,
                 },
                 t0() + TimeDelta::seconds(6),
-            ),
-            ack("crf", 2, t0() + TimeDelta::seconds(6)),
-            bye("crf", 3, t0() + TimeDelta::seconds(20)),
+            )?,
+            ack("crf", 2, t0() + TimeDelta::seconds(6))?,
+            bye("crf", 3, t0() + TimeDelta::seconds(20))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         let bars: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
@@ -2743,12 +2786,13 @@ mod tests {
             "label should drop the redundant 'active': {:?}",
             bars[0].label
         );
+        Ok(())
     }
 
     /// When the answer non-conformantly lists several codecs but RTP actually
     /// carries one, the observed RTP segment wins over the SDP-first codec.
     #[test]
-    fn prepare_rtp_bar_prefers_observed_rtp_over_sdp() {
+    fn prepare_rtp_bar_prefers_observed_rtp_over_sdp() -> Result<(), TestError> {
         let theme = Theme::default();
         // Observed RTP is PCMU, active across the call.
         let segs = vec![RtpCodecSegment {
@@ -2766,7 +2810,7 @@ mod tests {
                 "m=audio 20000 RTP/AVP 8 0",
                 &["a=rtpmap:8 PCMA/8000", "a=rtpmap:0 PCMU/8000"],
                 t0(),
-            ),
+            )?,
             // Answer lists PCMA first (would be the SDP-derived pick) then PCMU.
             response_with_sdp(
                 &StatusLine {
@@ -2781,12 +2825,15 @@ mod tests {
                     rtpmaps: &["a=rtpmap:8 PCMA/8000", "a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("crtpwin", 1, t0() + TimeDelta::seconds(1)),
-            bye("crtpwin", 2, t0() + TimeDelta::seconds(10)),
+            )?,
+            ack("crtpwin", 1, t0() + TimeDelta::seconds(1))?,
+            bye("crtpwin", 2, t0() + TimeDelta::seconds(10))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
-        let bar = prepared.iter().find(|m| m.is_rtp_bar).expect("a media bar");
+        let bar = prepared
+            .iter()
+            .find(|m| m.is_rtp_bar)
+            .ok_or("a media bar")?;
         assert!(
             bar.label.contains("PCMU"),
             "observed RTP PCMU should win over SDP-first PCMA: {:?}",
@@ -2797,6 +2844,7 @@ mod tests {
             "must not show SDP-first PCMA when RTP is PCMU: {:?}",
             bar.label
         );
+        Ok(())
     }
 
     // ── Arrow direction: response reverses the request's swimlanes ────
@@ -2806,17 +2854,17 @@ mod tests {
     /// the response's (src_col, dst_col) must be the request's reversed. This
     /// is the end-to-end guard the UI tests previously lacked.
     #[test]
-    fn prepare_response_reverses_request_columns() {
+    fn prepare_response_reverses_request_columns() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let msgs = vec![
-            invite("cdir", 1, t0()), // request  A→B
-            response("cdir", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)), // response B→A
+            invite("cdir", 1, t0())?, // request  A→B
+            response("cdir", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?, // response B→A
         ];
         let (parts, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(parts.len(), 2, "two distinct endpoints expected");
-        let reqm = prepared.iter().find(|m| !m.is_response).expect("request");
-        let respm = prepared.iter().find(|m| m.is_response).expect("response");
+        let reqm = prepared.iter().find(|m| !m.is_response).ok_or("request")?;
+        let respm = prepared.iter().find(|m| m.is_response).ok_or("response")?;
         assert_ne!(
             reqm.src_col, reqm.dst_col,
             "request must span the two swimlanes"
@@ -2826,19 +2874,20 @@ mod tests {
             (reqm.dst_col, reqm.src_col),
             "response columns must be the reverse of the request — i.e. the arrow points the other way"
         );
+        Ok(())
     }
 
     // ── prepare_messages: scaled spacer insertion ─────────────────────
 
     /// Scaled mode inserts spacer rows for large inter-message gaps.
     #[test]
-    fn prepare_scaled_inserts_spacers() {
+    fn prepare_scaled_inserts_spacers() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut o = opts(&theme);
         o.ts_mode = TimestampMode::Scaled;
         // Large gaps between messages → spacer rows inserted.
         let msgs = vec![
-            invite("cscale", 1, t0()),
+            invite("cscale", 1, t0())?,
             response(
                 "cscale",
                 200,
@@ -2846,8 +2895,8 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::seconds(5),
-            ),
-            bye("cscale", 2, t0() + TimeDelta::seconds(30)),
+            )?,
+            bye("cscale", 2, t0() + TimeDelta::seconds(30))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert!(prepared.iter().any(|m| m.is_spacer), "no spacers inserted");
@@ -2857,6 +2906,7 @@ mod tests {
             "expected spacer expansion, got {}",
             prepared.len()
         );
+        Ok(())
     }
 
     // ── fold_messages: retransmit folding ─────────────────────────────
@@ -2864,7 +2914,7 @@ mod tests {
     /// A retransmission folds into the prior original (count + label) when
     /// collapsed, and stays visible when the header is expanded.
     #[test]
-    fn prepare_folds_retransmissions() {
+    fn prepare_folds_retransmissions() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let mut retx = response(
@@ -2874,10 +2924,10 @@ mod tests {
             1,
             "INVITE",
             t0() + TimeDelta::seconds(2),
-        );
+        )?;
         retx.is_retransmission = true;
         let msgs = vec![
-            invite("cretx", 1, t0()),
+            invite("cretx", 1, t0())?,
             response(
                 "cretx",
                 200,
@@ -2885,33 +2935,42 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::seconds(1),
-            ),
+            )?,
             retx,
         ];
         // Not expanded → the retransmission folds into the prior 200 OK.
         let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(folded.len(), 2, "retx should fold away one row");
-        let ok = folded.iter().find(|m| m.label == "200 OK").unwrap();
+        let ok = folded
+            .iter()
+            .find(|m| m.label == "200 OK")
+            .ok_or("folded.iter().find(|m| m.label == \"200 OK\") is None")?;
         assert_eq!(ok.folded_count, 1);
-        assert!(ok.fold_label.as_deref().unwrap().contains("retx"));
+        assert!(
+            ok.fold_label
+                .as_deref()
+                .ok_or("ok.fold_label.as_deref() is None")?
+                .contains("retx")
+        );
 
         // Expanded at the fold header (the 200 OK, raw index 1) → no folding.
         let mut expanded = HashSet::new();
         expanded.insert(1usize);
         let (_p2, unfolded) = prepare_messages(&msgs, t0(), None, &o, &expanded);
         assert_eq!(unfolded.len(), 3, "expanded retx should remain visible");
+        Ok(())
     }
 
     /// A dialog whose retransmission sits 30s+ after its original, so Scaled
     /// mode inserts spacer rows around it.
-    fn retx_msgs_with_gaps(cid: &str) -> Vec<SipMessage> {
-        let mut retx = response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(60));
+    fn retx_msgs_with_gaps(cid: &str) -> Result<Vec<SipMessage>, TestError> {
+        let mut retx = response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(60))?;
         retx.is_retransmission = true;
-        vec![
-            invite(cid, 1, t0()),
-            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(30)),
+        Ok(vec![
+            invite(cid, 1, t0())?,
+            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(30))?,
             retx,
-        ]
+        ])
     }
 
     /// Every timestamp mode, for mode-independence sweeps.
@@ -2926,9 +2985,9 @@ mod tests {
     /// the fold result (which rows exist) has to be identical in every
     /// TimestampMode, spacers aside.
     #[test]
-    fn folding_is_identical_across_all_timestamp_modes() {
+    fn folding_is_identical_across_all_timestamp_modes() -> Result<(), TestError> {
         let theme = Theme::default();
-        let msgs = retx_msgs_with_gaps("cmode");
+        let msgs = retx_msgs_with_gaps("cmode")?;
         for mode in ALL_TS_MODES {
             let mut o = opts(&theme);
             o.ts_mode = mode;
@@ -2942,22 +3001,23 @@ mod tests {
             let header = visible
                 .iter()
                 .find(|m| m.folded_count > 0)
-                .unwrap_or_else(|| panic!("{mode:?}: fold header missing"));
+                .ok_or_else(|| format!("{mode:?}: fold header missing"))?;
             assert_eq!(header.folded_count, 1, "{mode:?}");
             assert!(
                 header.fold_label.as_deref().unwrap_or("").contains("retx"),
                 "{mode:?}: fold label missing"
             );
         }
+        Ok(())
     }
 
     /// The auth-retry collapse must also be timestamp-mode independent.
     #[test]
-    fn auth_collapse_is_identical_across_all_timestamp_modes() {
+    fn auth_collapse_is_identical_across_all_timestamp_modes() -> Result<(), TestError> {
         let theme = Theme::default();
         let cid = "cauthmode";
         let msgs = vec![
-            register(cid, 1, None, t0()),
+            register(cid, 1, None, t0())?,
             response(
                 cid,
                 401,
@@ -2965,14 +3025,14 @@ mod tests {
                 1,
                 "REGISTER",
                 t0() + TimeDelta::seconds(30),
-            ),
-            ack_register(cid, 1, t0() + TimeDelta::seconds(60)),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::seconds(60))?,
             register(
                 cid,
                 2,
                 Some("Digest username=\"alice\""),
                 t0() + TimeDelta::seconds(90),
-            ),
+            )?,
         ];
         for mode in ALL_TS_MODES {
             let mut o = opts(&theme);
@@ -2986,6 +3046,7 @@ mod tests {
             );
             assert_eq!(visible[0].folded_count, 4, "{mode:?}");
         }
+        Ok(())
     }
 
     /// `selected_msg` addresses VISIBLE rows (what the user navigates), not
@@ -2993,12 +3054,12 @@ mod tests {
     /// 200 OK that FOLLOWS the folded retransmission; out-of-range selects
     /// nothing.
     #[test]
-    fn selection_indexes_visible_rows_in_every_mode() {
+    fn selection_indexes_visible_rows_in_every_mode() -> Result<(), TestError> {
         let theme = Theme::default();
-        let mut retx = invite("csel", 1, t0() + TimeDelta::seconds(30));
+        let mut retx = invite("csel", 1, t0() + TimeDelta::seconds(30))?;
         retx.is_retransmission = true;
         let msgs = vec![
-            invite("csel", 1, t0()),
+            invite("csel", 1, t0())?,
             retx,
             response(
                 "csel",
@@ -3007,7 +3068,7 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::seconds(60),
-            ),
+            )?,
         ];
         for mode in ALL_TS_MODES {
             let mut o = opts(&theme);
@@ -3026,15 +3087,16 @@ mod tests {
         o.selected_msg = Some(99);
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert!(prepared.iter().all(|m| !m.selected));
+        Ok(())
     }
 
     /// Every non-spacer row must carry the index of the raw message it
     /// renders, so the detail pane / Enter / diff open the message the user
     /// actually selected (RTP bars and spacers carry None).
     #[test]
-    fn visible_rows_carry_raw_indices() {
+    fn visible_rows_carry_raw_indices() -> Result<(), TestError> {
         let theme = Theme::default();
-        let msgs = retx_msgs_with_gaps("craw");
+        let msgs = retx_msgs_with_gaps("craw")?;
         for mode in ALL_TS_MODES {
             let mut o = opts(&theme);
             o.ts_mode = mode;
@@ -3050,25 +3112,26 @@ mod tests {
                 "{mode:?}: visible rows map to raw messages 0 and 1"
             );
         }
+        Ok(())
     }
 
     /// Expanding a fold must reveal ALL of its retransmissions: a retx run
     /// folds into the first non-retransmission ancestor, never into an
     /// already-revealed retransmission.
     #[test]
-    fn expansion_reveals_every_retransmission_in_a_run() {
+    fn expansion_reveals_every_retransmission_in_a_run() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
-        let mk_retx = |secs: i64| {
-            let mut m = invite("crun", 1, t0() + TimeDelta::seconds(secs));
+        let mk_retx = |secs: i64| -> Result<_, TestError> {
+            let mut m = invite("crun", 1, t0() + TimeDelta::seconds(secs))?;
             m.is_retransmission = true;
-            m
+            Ok(m)
         };
         let msgs = vec![
-            invite("crun", 1, t0()),
-            mk_retx(1),
-            mk_retx(2),
-            response("crun", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(3)),
+            invite("crun", 1, t0())?,
+            mk_retx(1)?,
+            mk_retx(2)?,
+            response("crun", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(3))?,
         ];
         // Collapsed: header shows both retransmissions folded.
         let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
@@ -3084,15 +3147,16 @@ mod tests {
             "both retransmissions must be revealed, got labels: {:?}",
             shown.iter().map(|m| &m.label).collect::<Vec<_>>()
         );
+        Ok(())
     }
 
     /// Expansion is keyed by the fold HEADER's raw index and works in every
     /// timestamp mode; the expanded header is labeled so it can be
     /// re-collapsed.
     #[test]
-    fn expansion_keyed_by_header_raw_index_across_modes() {
+    fn expansion_keyed_by_header_raw_index_across_modes() -> Result<(), TestError> {
         let theme = Theme::default();
-        let msgs = retx_msgs_with_gaps("cexp");
+        let msgs = retx_msgs_with_gaps("cexp")?;
         let mut expanded = HashSet::new();
         expanded.insert(1usize); // raw index of the 200 OK fold header
         for mode in ALL_TS_MODES {
@@ -3112,6 +3176,7 @@ mod tests {
                 header.fold_label
             );
         }
+        Ok(())
     }
 
     // ── detect_auth_sequence + fold (auth collapse) ───────────────────
@@ -3119,10 +3184,10 @@ mod tests {
     /// The REGISTER/401/ACK/REGISTER+Auth pattern is detected as a 4-message
     /// sequence; missing Authorization or too few messages is no match.
     #[test]
-    fn detect_auth_sequence_register_flow() {
+    fn detect_auth_sequence_register_flow() -> Result<(), TestError> {
         let cid = "cauth";
         let msgs = vec![
-            register(cid, 1, None, t0()),
+            register(cid, 1, None, t0())?,
             response(
                 cid,
                 401,
@@ -3130,20 +3195,20 @@ mod tests {
                 1,
                 "REGISTER",
                 t0() + TimeDelta::milliseconds(10),
-            ),
-            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
             register(
                 cid,
                 2,
                 Some("Digest username=\"alice\""),
                 t0() + TimeDelta::milliseconds(30),
-            ),
+            )?,
         ];
         assert_eq!(detect_auth_sequence(&msgs, 0), Some(4));
 
         // Without the Authorization header on the retry, it is not an auth seq.
         let no_auth = vec![
-            register(cid, 1, None, t0()),
+            register(cid, 1, None, t0())?,
             response(
                 cid,
                 401,
@@ -3151,25 +3216,26 @@ mod tests {
                 1,
                 "REGISTER",
                 t0() + TimeDelta::milliseconds(10),
-            ),
-            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
-            register(cid, 2, None, t0() + TimeDelta::milliseconds(30)),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
+            register(cid, 2, None, t0() + TimeDelta::milliseconds(30))?,
         ];
         assert_eq!(detect_auth_sequence(&no_auth, 0), None);
 
         // Too few messages.
         assert_eq!(detect_auth_sequence(&msgs[..3], 0), None);
+        Ok(())
     }
 
     /// The 4-message auth handshake collapses to one "(+auth)" header row,
     /// and expanding at the header shows all four rows again.
     #[test]
-    fn prepare_collapses_auth_sequence() {
+    fn prepare_collapses_auth_sequence() -> Result<(), TestError> {
         let theme = Theme::default();
         let o = opts(&theme);
         let cid = "cauth2";
         let msgs = vec![
-            register(cid, 1, None, t0()),
+            register(cid, 1, None, t0())?,
             response(
                 cid,
                 401,
@@ -3177,14 +3243,14 @@ mod tests {
                 1,
                 "REGISTER",
                 t0() + TimeDelta::milliseconds(10),
-            ),
-            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
             register(
                 cid,
                 2,
                 Some("Digest username=\"alice\""),
                 t0() + TimeDelta::milliseconds(30),
-            ),
+            )?,
         ];
         // Collapsed: the 4-message auth handshake folds into one header row.
         let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
@@ -3199,7 +3265,7 @@ mod tests {
             folded[0]
                 .fold_label
                 .as_deref()
-                .unwrap()
+                .ok_or("the folded row carries a fold label")?
                 .contains("auth retry"),
             "missing auth fold label"
         );
@@ -3213,6 +3279,7 @@ mod tests {
             4,
             "expanded auth sequence should show all rows"
         );
+        Ok(())
     }
 
     // ── extract_codec_list: rtpmap and static-PT fallback ─────────────
@@ -3220,7 +3287,7 @@ mod tests {
     /// Codec names come from `a=rtpmap` when present, else from the static
     /// payload-type number table.
     #[test]
-    fn extract_codec_list_uses_rtpmap_then_static_fallback() {
+    fn extract_codec_list_uses_rtpmap_then_static_fallback() -> Result<(), TestError> {
         // With rtpmap entries → encoding names taken verbatim.
         let with_map = invite_with_sdp(
             "ccodec",
@@ -3228,14 +3295,14 @@ mod tests {
             "m=audio 20000 RTP/AVP 0 8",
             &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
             t0(),
-        );
-        let session = with_map.sdp().expect("sdp");
+        )?;
+        let session = with_map.sdp().ok_or("sdp")?;
         let codecs = crate::mermaid::codec_list(&session);
         assert_eq!(codecs, vec!["PCMU".to_string(), "PCMA".to_string()]);
 
         // No rtpmap → static payload-type number mapping.
-        let no_map = invite_with_sdp("ccodec2", 1, "m=audio 20000 RTP/AVP 0 9 18 101", &[], t0());
-        let session2 = no_map.sdp().expect("sdp2");
+        let no_map = invite_with_sdp("ccodec2", 1, "m=audio 20000 RTP/AVP 0 9 18 101", &[], t0())?;
+        let session2 = no_map.sdp().ok_or("sdp2")?;
         let codecs2 = crate::mermaid::codec_list(&session2);
         assert_eq!(
             codecs2,
@@ -3246,6 +3313,7 @@ mod tests {
                 "telephone-event".to_string()
             ]
         );
+        Ok(())
     }
 
     // ── color modes / selection state ─────────────────────────────────
@@ -3253,11 +3321,11 @@ mod tests {
     /// CallId mode marks the selected row and its same-leg peer Related;
     /// CSeq mode with DeltaPrev timestamps renders without panicking.
     #[test]
-    fn prepare_color_modes_and_selection() {
+    fn prepare_color_modes_and_selection() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![
-            invite("csel", 1, t0()),
-            response("csel", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            invite("csel", 1, t0())?,
+            response("csel", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
         ];
 
         // CallId color mode + a selection on row 0.
@@ -3278,6 +3346,7 @@ mod tests {
         assert_eq!(prepared2.len(), 2);
         // DeltaPrev timestamps are right-aligned "+x.xxxs" strings.
         assert!(prepared2[1].timestamp.contains('+'));
+        Ok(())
     }
 
     // ── Style pinning ────────────────────────────────────────────────
@@ -3300,11 +3369,11 @@ mod tests {
     /// Absolute-mode timestamps render muted and Method-mode arrows match
     /// `message_style`.
     #[test]
-    fn styles_absolute_timestamps_muted_and_method_arrows() {
+    fn styles_absolute_timestamps_muted_and_method_arrows() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![
-            invite("sty1", 1, t0()),
-            response("sty1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            invite("sty1", 1, t0())?,
+            response("sty1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &opts(&theme), &HashSet::new());
         assert_eq!(prepared.len(), 2);
@@ -3320,14 +3389,15 @@ mod tests {
                 "Method color mode arrows use message_style"
             );
         }
+        Ok(())
     }
 
     /// DeltaPrev timestamps carry the color of their delta-magnitude bucket.
     #[test]
-    fn styles_delta_prev_timestamps_use_delta_buckets() {
+    fn styles_delta_prev_timestamps_use_delta_buckets() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![
-            invite("sty2", 1, t0()),
+            invite("sty2", 1, t0())?,
             // +50ms → good bucket; +500ms → warning; +2s → bad.
             response(
                 "sty2",
@@ -3336,7 +3406,7 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::milliseconds(50),
-            ),
+            )?,
             response(
                 "sty2",
                 200,
@@ -3344,8 +3414,8 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::milliseconds(550),
-            ),
-            ack("sty2", 1, t0() + TimeDelta::milliseconds(2550)),
+            )?,
+            ack("sty2", 1, t0() + TimeDelta::milliseconds(2550))?,
         ];
         let mut o = opts(&theme);
         o.ts_mode = TimestampMode::DeltaPrev;
@@ -3353,17 +3423,18 @@ mod tests {
         assert_eq!(prepared[1].timestamp_style, delta_style(50, &theme));
         assert_eq!(prepared[2].timestamp_style, delta_style(500, &theme));
         assert_eq!(prepared[3].timestamp_style, delta_style(2000, &theme));
+        Ok(())
     }
 
     /// CallId mode colors every row of a dialog identically, indexed by the
     /// Call-ID byte sum into the rotation palette.
     #[test]
-    fn styles_callid_mode_color_is_callid_byte_sum() {
+    fn styles_callid_mode_color_is_callid_byte_sum() -> Result<(), TestError> {
         let theme = Theme::default();
         let cid = "sty3@test";
         let msgs = vec![
-            invite(cid, 1, t0()),
-            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            invite(cid, 1, t0())?,
+            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
         ];
         let mut o = opts(&theme);
         o.color_mode = ColorMode::CallId;
@@ -3376,26 +3447,28 @@ mod tests {
                 "CallId mode colors every row of a dialog identically by call-id byte sum"
             );
         }
+        Ok(())
     }
 
     /// CSeq mode indexes the rotation palette by the CSeq number.
     #[test]
-    fn styles_cseq_mode_color_indexes_by_cseq_number() {
+    fn styles_cseq_mode_color_indexes_by_cseq_number() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![
-            invite("sty4", 1, t0()),
-            invite("sty4", 2, t0() + TimeDelta::seconds(1)),
+            invite("sty4", 1, t0())?,
+            invite("sty4", 2, t0() + TimeDelta::seconds(1))?,
         ];
         let mut o = opts(&theme);
         o.color_mode = ColorMode::CSeq;
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(prepared[0].style.fg, Some(CID_COLORS[1]));
         assert_eq!(prepared[1].style.fg, Some(CID_COLORS[2]));
+        Ok(())
     }
 
     /// SDP extra lines render muted + italic in both Summary and Full modes.
     #[test]
-    fn styles_sdp_lines_muted_italic_in_summary_and_full() {
+    fn styles_sdp_lines_muted_italic_in_summary_and_full() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![invite_with_sdp(
             "sty5",
@@ -3403,7 +3476,7 @@ mod tests {
             "m=audio 5004 RTP/AVP 0",
             &["a=rtpmap:0 PCMU/8000"],
             t0(),
-        )];
+        )?];
         for mode in [SdpDisplayMode::Summary, SdpDisplayMode::Full] {
             let mut o = opts(&theme);
             o.sdp_mode = mode;
@@ -3420,12 +3493,13 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// An RTP bar row and its absolute-mode timestamp both use the accent
     /// color.
     #[test]
-    fn styles_rtp_bar_row_accent() {
+    fn styles_rtp_bar_row_accent() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![
             invite_with_sdp(
@@ -3434,7 +3508,7 @@ mod tests {
                 "m=audio 5004 RTP/AVP 0",
                 &["a=rtpmap:0 PCMU/8000"],
                 t0(),
-            ),
+            )?,
             response_with_sdp(
                 &StatusLine {
                     cid: "sty6",
@@ -3448,8 +3522,8 @@ mod tests {
                     rtpmaps: &["a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::seconds(1),
-            ),
-            ack("sty6", 1, t0() + TimeDelta::seconds(2)),
+            )?,
+            ack("sty6", 1, t0() + TimeDelta::seconds(2))?,
         ];
         let mut o = opts(&theme);
         o.show_rtp = true;
@@ -3457,22 +3531,23 @@ mod tests {
         let bar = prepared
             .iter()
             .find(|fm| fm.is_rtp_bar)
-            .expect("INVITE/200/ACK with media must draw an RTP bar");
+            .ok_or("INVITE/200/ACK with media must draw an RTP bar")?;
         assert_eq!(bar.style.fg, Some(theme.accent));
         assert_eq!(
             bar.timestamp_style.fg,
             Some(theme.accent),
             "absolute-mode RTP bar timestamp uses accent, not muted"
         );
+        Ok(())
     }
 
     /// Scaled-mode spacer rows render muted + dim, timestamp included.
     #[test]
-    fn styles_scaled_spacers_muted_dim() {
+    fn styles_scaled_spacers_muted_dim() -> Result<(), TestError> {
         let theme = Theme::default();
         let msgs = vec![
-            invite("sty7", 1, t0()),
-            response("sty7", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(2)),
+            invite("sty7", 1, t0())?,
+            response("sty7", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(2))?,
         ];
         let mut o = opts(&theme);
         o.ts_mode = TimestampMode::Scaled;
@@ -3484,6 +3559,7 @@ mod tests {
             assert!(sp.style.add_modifier.contains(Modifier::DIM));
             assert_eq!(sp.timestamp_style, sp.style);
         }
+        Ok(())
     }
 
     // ── WS5f layout/style split ──────────────────────────────────────
@@ -3494,7 +3570,7 @@ mod tests {
     /// mode, theme and selection. This is the contract the WS4.3c ladder
     /// cache stands on: layout computed once, style re-run per frame.
     #[test]
-    fn style_over_one_layout_reproduces_prepare_messages() {
+    fn style_over_one_layout_reproduces_prepare_messages() -> Result<(), TestError> {
         // A scenario touching every styled surface: SDP info lines, an RTP
         // bar (INVITE/200/ACK with media), a PDD note on the 180, delta
         // buckets, and a 3s gap for Scaled-mode spacers.
@@ -3505,7 +3581,7 @@ mod tests {
                 "m=audio 5004 RTP/AVP 0",
                 &["a=rtpmap:0 PCMU/8000"],
                 t0(),
-            ),
+            )?,
             response(
                 "split@t",
                 180,
@@ -3513,7 +3589,7 @@ mod tests {
                 1,
                 "INVITE",
                 t0() + TimeDelta::milliseconds(80),
-            ),
+            )?,
             response_with_sdp(
                 &StatusLine {
                     cid: "split@t",
@@ -3527,9 +3603,9 @@ mod tests {
                     rtpmaps: &["a=rtpmap:0 PCMU/8000"],
                 },
                 t0() + TimeDelta::milliseconds(650),
-            ),
-            ack("split@t", 1, t0() + TimeDelta::milliseconds(700)),
-            bye("split@t", 2, t0() + TimeDelta::seconds(3)),
+            )?,
+            ack("split@t", 1, t0() + TimeDelta::milliseconds(700))?,
+            bye("split@t", 2, t0() + TimeDelta::seconds(3))?,
         ];
         let alt = Theme {
             accent: Color::Rgb(1, 2, 3),
@@ -3586,36 +3662,40 @@ mod tests {
                 }
             }
         }
+        Ok(())
     }
 
     // ── format_sdp_codecs ────────────────────────────────────────────
 
     /// With `a=rtpmap` present, encoding names are used verbatim.
     #[test]
-    fn format_sdp_codecs_prefers_rtpmap_encodings() {
+    fn format_sdp_codecs_prefers_rtpmap_encodings() -> Result<(), TestError> {
         // When a=rtpmap is present, the encoding names are used verbatim.
         let body = b"v=0\r\n\
             m=audio 5004 RTP/AVP 0 8 96\r\n\
             a=rtpmap:0 PCMU/8000\r\n\
             a=rtpmap:8 PCMA/8000\r\n\
             a=rtpmap:96 opus/48000/2\r\n";
-        let session = sdp::parse_sdp(body).expect("valid sdp");
+        let session = sdp::parse_sdp(body).map_err(|e| format!("valid sdp: {e:?}"))?;
         assert_eq!(format_sdp_codecs(&session), "PCMU, PCMA, opus");
+        Ok(())
     }
 
     /// Without `a=rtpmap`, static payload types map to names and unknown
     /// dynamic types pass through as numbers.
     #[test]
-    fn format_sdp_codecs_maps_bare_payload_types_and_passes_through_unknown() {
+    fn format_sdp_codecs_maps_bare_payload_types_and_passes_through_unknown()
+    -> Result<(), TestError> {
         // No a=rtpmap → fall back to static payload-type numbers. This is the
         // branch covering the numeric→name table and the `o => o` pass-through
         // for an unrecognized dynamic type (99).
         let body = b"v=0\r\n\
             m=audio 5004 RTP/AVP 0 8 9 18 4 3 101 99\r\n";
-        let session = sdp::parse_sdp(body).expect("valid sdp");
+        let session = sdp::parse_sdp(body).map_err(|e| format!("valid sdp: {e:?}"))?;
         assert_eq!(
             format_sdp_codecs(&session),
             "PCMU, PCMA, G722, G729, G723, GSM, telephone-event, 99"
         );
+        Ok(())
     }
 }

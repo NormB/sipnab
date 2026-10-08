@@ -1544,51 +1544,57 @@ pub fn tui_pipeline_options(
 
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     // ── The TUI's `--notes` file ────────────────────────────────────────
 
     /// No `--notes`: an empty session with nowhere to save by default.
     #[test]
-    fn no_notes_flag_starts_an_empty_session() {
-        let (notes, path) = super::tui_notes(None).expect("nothing to read");
+    fn no_notes_flag_starts_an_empty_session() -> Result<(), TestError> {
+        let (notes, path) = super::tui_notes(None)?;
         assert!(notes.is_empty());
         assert_eq!(path, None);
+        Ok(())
     }
 
     /// A `--notes` file that does not exist yet starts an empty session that
     /// saves there, so the first save creates it.
     #[test]
-    fn a_new_notes_file_starts_an_empty_session_that_saves_there() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_new_notes_file_starts_an_empty_session_that_saves_there() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let file = dir.path().join("new.notes.jsonl");
-        let (notes, path) =
-            super::tui_notes(Some(file.to_str().expect("utf-8"))).expect("absent is fine");
+        let (notes, path) = super::tui_notes(Some(file.to_str().ok_or("utf-8")?))?;
         assert!(notes.is_empty());
         assert_eq!(path.as_deref(), Some(file.as_path()));
+        Ok(())
     }
 
     /// An existing file resumes its notes.
     #[test]
-    fn an_existing_notes_file_resumes() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_existing_notes_file_resumes() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let file = dir.path().join("s.notes.jsonl");
-        std::fs::write(&file, "{\"frame\":\"a.pcap#0\",\"note\":\"kept\"}\n").expect("write");
-        let (notes, path) =
-            super::tui_notes(Some(file.to_str().expect("utf-8"))).expect("a valid file");
+        std::fs::write(&file, "{\"frame\":\"a.pcap#0\",\"note\":\"kept\"}\n")?;
+        let (notes, path) = super::tui_notes(Some(file.to_str().ok_or("utf-8")?))?;
         assert_eq!(notes.len(), 1);
         assert!(!notes.is_unsaved(), "a resumed session starts saved");
         assert_eq!(path.as_deref(), Some(file.as_path()));
+        Ok(())
     }
 
     /// A file sipnab refuses stops the run before the terminal is taken, and
     /// the error names the line.
     #[test]
-    fn a_refused_notes_file_is_an_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_refused_notes_file_is_an_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let file = dir.path().join("bad.notes.jsonl");
-        std::fs::write(&file, "not json\n").expect("write");
-        let err = super::tui_notes(Some(file.to_str().expect("utf-8")))
-            .expect_err("a bad file must not start a session");
+        std::fs::write(&file, "not json\n")?;
+        let err = super::tui_notes(Some(file.to_str().ok_or("utf-8")?))
+            .err()
+            .ok_or("a bad file must not start a session")?;
         assert!(err.to_string().contains("line 1"), "{err}");
+        Ok(())
     }
 
     use super::{bpf_status_text, build_stores, count_and_check_limit, names_path_from};
@@ -1604,20 +1610,21 @@ mod tests {
     /// screen exactly as the kernel got it — not a summary of it, which an
     /// operator would paste into `tcpdump` and get different traffic.
     #[test]
-    fn the_status_text_is_the_resolved_filter_verbatim() {
+    fn the_status_text_is_the_resolved_filter_verbatim() -> Result<(), TestError> {
         let generated = crate::app::bootstrap::auto_bpf_filter(5060, 5061, &[]);
         let config = CaptureConfig {
             bpf_filter: Some(generated.clone()),
             ..Default::default()
         };
         assert_eq!(bpf_status_text(&config), generated);
+        Ok(())
     }
 
     /// No compiled filter reports an empty string, which is what leaves the
     /// slot blank. Blank has to mean "nothing was filtered" and nothing else,
     /// or the one case the slot exists to explain becomes unreadable.
     #[test]
-    fn no_compiled_filter_reports_an_empty_status_text() {
+    fn no_compiled_filter_reports_an_empty_status_text() -> Result<(), TestError> {
         let config = CaptureConfig {
             bpf_filter: None,
             ..Default::default()
@@ -1626,11 +1633,12 @@ mod tests {
             bpf_status_text(&config).is_empty(),
             "a capture with no BPF must not put text in the slot"
         );
+        Ok(())
     }
 
     /// An unpaused packet advances the count and trips the limit on the Nth.
     #[test]
-    fn unpaused_packets_count_and_trip_limit() {
+    fn unpaused_packets_count_and_trip_limit() -> Result<(), TestError> {
         let mut total = 0u64;
         // First two are below the limit of 3.
         assert!(!count_and_check_limit(false, &mut total, Some(3)));
@@ -1640,13 +1648,14 @@ mod tests {
         // The third reaches the limit.
         assert!(count_and_check_limit(false, &mut total, Some(3)));
         assert_eq!(total, 3);
+        Ok(())
     }
 
     /// Paused packets must NOT advance the count nor trip the limit, even when
     /// the count already sits one short of the limit — otherwise a `--count N`
     /// capture could stop mid-pause with packets never processed.
     #[test]
-    fn paused_packets_do_not_count_or_trip_limit() {
+    fn paused_packets_do_not_count_or_trip_limit() -> Result<(), TestError> {
         let mut total = 2u64; // one short of the limit of 3
         // A flurry of paused packets changes nothing and never trips.
         for _ in 0..100 {
@@ -1656,15 +1665,17 @@ mod tests {
         // Resuming, the next processed packet trips the limit as expected.
         assert!(count_and_check_limit(false, &mut total, Some(3)));
         assert_eq!(total, 3);
+        Ok(())
     }
 
     /// With no `--count` set, the limit is never reached regardless of pause.
     #[test]
-    fn no_count_limit_never_trips() {
+    fn no_count_limit_never_trips() -> Result<(), TestError> {
         let mut total = 0u64;
         assert!(!count_and_check_limit(false, &mut total, None));
         assert!(!count_and_check_limit(true, &mut total, None));
         assert_eq!(total, 1, "only the unpaused packet advanced the count");
+        Ok(())
     }
 
     // ── Name-persistence path resolution ──────────────────────────────────
@@ -1672,7 +1683,7 @@ mod tests {
     /// `XDG_CONFIG_HOME` already names the config directory, so it is used as
     /// given — no `.config` appended.
     #[test]
-    fn xdg_config_home_is_used_verbatim_as_the_config_directory() {
+    fn xdg_config_home_is_used_verbatim_as_the_config_directory() -> Result<(), TestError> {
         let got = names_path_from(Some("/xdg".into()), Some("/home/u".into()));
         assert_eq!(
             got,
@@ -1680,40 +1691,45 @@ mod tests {
             "XDG_CONFIG_HOME IS the config dir; appending .config to it would \
              write the N-dialog's edits somewhere nothing else reads"
         );
+        Ok(())
     }
 
     /// `HOME` is not the config directory, so the fallback has to append
     /// `.config` — the asymmetry with `XDG_CONFIG_HOME` above is the whole
     /// point of this pair.
     #[test]
-    fn the_home_fallback_appends_dot_config_before_the_sipnab_directory() {
+    fn the_home_fallback_appends_dot_config_before_the_sipnab_directory() -> Result<(), TestError> {
         let got = names_path_from(None, Some("/home/u".into()));
         assert_eq!(got, Some(PathBuf::from("/home/u/.config/sipnab/hosts")));
+        Ok(())
     }
 
     /// `XDG_CONFIG_HOME` wins when both are set: the fallback must not be
     /// consulted at all.
     #[test]
-    fn xdg_config_home_takes_precedence_over_home() {
+    fn xdg_config_home_takes_precedence_over_home() -> Result<(), TestError> {
         let got = names_path_from(Some("/xdg".into()), Some("/home/u".into()));
         let home_only = names_path_from(None, Some("/home/u".into()));
         assert_ne!(
             got, home_only,
             "with XDG_CONFIG_HOME set the HOME-derived path must not be chosen"
         );
+        Ok(())
     }
 
     /// With neither variable set there is nowhere to persist to, and the
     /// answer is `None` rather than a relative path under the process's
     /// working directory.
     #[test]
-    fn a_bare_environment_yields_no_names_path_rather_than_a_relative_one() {
+    fn a_bare_environment_yields_no_names_path_rather_than_a_relative_one() -> Result<(), TestError>
+    {
         let got = names_path_from(None, None);
         assert_eq!(got, None, "got {got:?}");
         assert!(
             !got.is_some_and(|p| p.is_relative()),
             "a relative fallback would scatter hosts files across working dirs"
         );
+        Ok(())
     }
 
     // ── Store wiring ──────────────────────────────────────────────────────
@@ -1721,13 +1737,10 @@ mod tests {
     /// The live capture thread and a capture opened inside the TUI classify
     /// with the same options, and `--rtpproxy-control` is among them.
     #[test]
-    fn the_tui_classifies_with_the_command_lines_options() {
+    fn the_tui_classifies_with_the_command_lines_options() -> Result<(), TestError> {
         let cli = cli_from(&["--rtpproxy-control", "192.0.2.40:7722", "--no-dialog"]);
         let opts = super::tui_pipeline_options(&cli, &crate::config::Config::default(), true);
-        assert_eq!(
-            opts.rtpproxy_control,
-            Some("192.0.2.40:7722".parse().unwrap())
-        );
+        assert_eq!(opts.rtpproxy_control, Some("192.0.2.40:7722".parse()?));
         assert!(opts.no_dialog);
         assert!(opts.no_rtp);
         assert_eq!(
@@ -1740,18 +1753,20 @@ mod tests {
         assert_eq!(plain.rtpproxy_control, None);
         assert!(!plain.no_dialog && !plain.no_rtp);
         assert!(!plain.hep_parse, "HEP is unwrapped only when asked");
+        Ok(())
     }
 
     /// `-E` and `[capture] hep_parse` reach the options the TUI classifies
     /// with, so its capture thread and a capture opened in the session read a
     /// HEP copy as the headless run does.
     #[test]
-    fn the_tui_options_carry_hep_parse_from_the_flag_or_the_key() {
+    fn the_tui_options_carry_hep_parse_from_the_flag_or_the_key() -> Result<(), TestError> {
         let config = crate::config::Config::default();
         assert!(super::tui_pipeline_options(&cli_from(&["-E"]), &config, false).hep_parse);
         let mut keyed = crate::config::Config::default();
         keyed.capture.hep_parse = Some(true);
         assert!(super::tui_pipeline_options(&cli_from(&[]), &keyed, false).hep_parse);
+        Ok(())
     }
 
     /// Parse a CLI from arguments, `sipnab` included as argv[0].
@@ -1766,7 +1781,7 @@ mod tests {
     /// Two of these with the same Call-ID and different branches are the
     /// minimal input that tells the two dialog-tracking modes apart: Call-ID
     /// mode files them as one unit, branch mode as two.
-    fn invite(call_id: &str, branch: &str) -> crate::sip::SipMessage {
+    fn invite(call_id: &str, branch: &str) -> Result<crate::sip::SipMessage, TestError> {
         use std::net::{IpAddr, Ipv4Addr};
         let raw = crate::test_utils::build_sip_message(
             "INVITE sip:b@example.net SIP/2.0",
@@ -1779,27 +1794,26 @@ mod tests {
             ],
             b"",
         );
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             &raw,
-            chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid epoch"),
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid epoch")?,
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
             5060,
             5060,
             crate::net::TransportProto::Udp,
-        )
-        .expect("the fixture INVITE parses")
+        )?)
     }
 
     /// A UDP packet carrying a 12-byte RTP header plus 160 bytes of payload,
     /// which at payload type 0 (PCMU) is exactly what the store buffers for
     /// audio export.
-    fn pcmu_packet() -> crate::capture::ParsedPacket {
+    fn pcmu_packet() -> Result<crate::capture::ParsedPacket, TestError> {
         use std::net::{IpAddr, Ipv4Addr};
-        crate::capture::ParsedPacket {
+        Ok(crate::capture::ParsedPacket {
             frame_bytes: None,
             frame: None,
-            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid epoch"),
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid epoch")?,
             src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
             src_port: 20000,
@@ -1815,7 +1829,7 @@ mod tests {
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
-        }
+        })
     }
 
     /// A PCMU RTP header for sequence `seq` of one stream.
@@ -1845,7 +1859,7 @@ mod tests {
     /// The TUI's store follows no correlation header unless `[sip]
     /// xcid_headers` names one: the same default as every other entry point.
     #[test]
-    fn the_tui_store_follows_no_correlation_header_unless_configured() {
+    fn the_tui_store_follows_no_correlation_header_unless_configured() -> Result<(), TestError> {
         let cli = cli_from(&[]);
         let (unset, _) = build_stores(&cli, &Config::default(), &Default::default());
         assert!(
@@ -1856,10 +1870,12 @@ mod tests {
         config.sip.xcid_headers = Some(vec!["X-Call-ID".to_string()]);
         let (set, _) = build_stores(&cli, &config, &Default::default());
         assert_eq!(set.read().xcid_headers(), ["X-Call-ID".to_string()]);
+        Ok(())
     }
 
     #[test]
-    fn dialog_track_branch_reaches_the_store_and_splits_a_reused_call_id() {
+    fn dialog_track_branch_reaches_the_store_and_splits_a_reused_call_id() -> Result<(), TestError>
+    {
         let cli = cli_from(&["--dialog-track", "branch"]);
         assert_eq!(
             cli.dialog_args.dialog_track,
@@ -1869,8 +1885,8 @@ mod tests {
         let (dialogs, _streams) = build_stores(&cli, &Config::default(), &Default::default());
         {
             let mut ds = dialogs.write();
-            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one"));
-            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-two"));
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one")?);
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-two")?);
         }
         assert_eq!(
             dialogs.read().len(),
@@ -1878,6 +1894,7 @@ mod tests {
             "--dialog-track branch must group by Call-ID + top-Via branch; one \
              unit here means the flag never reached the store"
         );
+        Ok(())
     }
 
     /// The companion to the test above: without the flag, the same two
@@ -1887,7 +1904,7 @@ mod tests {
     /// pass the branch test while silently changing the default view of every
     /// capture.
     #[test]
-    fn the_default_tracking_mode_keeps_one_call_id_in_a_single_unit() {
+    fn the_default_tracking_mode_keeps_one_call_id_in_a_single_unit() -> Result<(), TestError> {
         let cli = cli_from(&[]);
         assert_eq!(
             cli.dialog_args.dialog_track, None,
@@ -1896,14 +1913,15 @@ mod tests {
         let (dialogs, _streams) = build_stores(&cli, &Config::default(), &Default::default());
         {
             let mut ds = dialogs.write();
-            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one"));
-            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-two"));
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one")?);
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-two")?);
         }
         assert_eq!(
             dialogs.read().len(),
             1,
             "the default is Call-ID grouping: one call, one unit"
         );
+        Ok(())
     }
 
     /// `[limits] max_audio_frames` must reach the stream store.
@@ -1921,7 +1939,7 @@ mod tests {
     /// `apply_relay_snapshot` exists to make unavailable -- but only if both
     /// sites actually call it.
     #[test]
-    fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+    fn the_relay_snapshot_reaches_the_store_this_mode_builds() -> Result<(), TestError> {
         use crate::relay::reconcile::{RelayLink, RelaySnapshot};
         use crate::rtp::stream_store::EndpointAssertion;
         use std::net::{IpAddr, Ipv4Addr};
@@ -1942,7 +1960,7 @@ mod tests {
         let provenance = streams
             .read()
             .sdp_endpoint_provenance(relay, 30000)
-            .expect("the snapshot must be registered on this mode's store");
+            .ok_or("the snapshot must be registered on this mode's store")?;
         assert_eq!(
             provenance.asserted_by,
             EndpointAssertion::media_relay(
@@ -1955,59 +1973,62 @@ mod tests {
             provenance.origin, None,
             "sipnab asked for it rather than capturing it"
         );
+        Ok(())
     }
 
     /// applied until RTP actually arrives.
     #[test]
-    fn the_configured_audio_frame_cap_reaches_the_stream_store() {
+    fn the_configured_audio_frame_cap_reaches_the_stream_store() -> Result<(), TestError> {
         let mut config = Config::default();
         config.limits.max_audio_frames = Some(2);
         let (_dialogs, streams) = build_stores(&cli_from(&[]), &config, &Default::default());
         {
             let mut ss = streams.write();
-            let packet = pcmu_packet();
+            let packet = pcmu_packet()?;
             for seq in 1..=5u16 {
                 ss.process_rtp(&packet, &pcmu_header(seq), packet.timestamp);
             }
         }
         let store = streams.read();
-        let stream = store.iter().next().expect("one stream was created");
+        let stream = store.iter().next().ok_or("one stream was created")?;
         assert_eq!(
             stream.payload_buffer.len(),
             2,
             "five frames arrived under a cap of 2; an unwired cap leaves all 5 \
              buffered at the 1500-frame default"
         );
+        Ok(())
     }
 
     /// With no `[limits] max_audio_frames`, the store's own default applies
     /// and nothing is dropped at this volume — so the cap test above is
     /// measuring the config value, not the arrival count.
     #[test]
-    fn without_a_configured_cap_every_arriving_frame_is_retained() {
+    fn without_a_configured_cap_every_arriving_frame_is_retained() -> Result<(), TestError> {
         let (_dialogs, streams) =
             build_stores(&cli_from(&[]), &Config::default(), &Default::default());
         {
             let mut ss = streams.write();
-            let packet = pcmu_packet();
+            let packet = pcmu_packet()?;
             for seq in 1..=5u16 {
                 ss.process_rtp(&packet, &pcmu_header(seq), packet.timestamp);
             }
         }
         let store = streams.read();
-        let stream = store.iter().next().expect("one stream was created");
+        let stream = store.iter().next().ok_or("one stream was created")?;
         assert_eq!(stream.payload_buffer.len(), 5);
+        Ok(())
     }
 
     /// `--limit` must bound the dialog store the TUI writes through.
     #[test]
-    fn the_dialog_limit_bounds_the_store_the_tui_writes_through() {
+    fn the_dialog_limit_bounds_the_store_the_tui_writes_through() -> Result<(), TestError> {
         let cli = cli_from(&["--limit", "2"]);
         let (dialogs, _streams) = build_stores(&cli, &Config::default(), &Default::default());
         {
             let mut ds = dialogs.write();
             for n in 0..5 {
-                ds.process_message(invite(&format!("call-{n}@example.com"), "z9hG4bK-x"));
+                ds.process_message(invite(&format!("call-{n}@example.com"), "z9hG4bK-x")?);
             }
         }
         assert_eq!(
@@ -2015,6 +2036,7 @@ mod tests {
             2,
             "five distinct Call-IDs under --limit 2 must leave 2 tracked units"
         );
+        Ok(())
     }
 
     // ── Name setup ────────────────────────────────────────────────────────
@@ -2026,7 +2048,7 @@ mod tests {
     /// `[names] persist_to_config` off: name edits never reach a config file,
     /// whatever file the run loaded.
     #[test]
-    fn name_edits_stay_out_of_the_config_unless_asked() {
+    fn name_edits_stay_out_of_the_config_unless_asked() -> Result<(), TestError> {
         let off = super::build_name_setup(
             &cli_from(&[]),
             &Config::default(),
@@ -2036,13 +2058,14 @@ mod tests {
             off.config_path, None,
             "the default must not write the config file"
         );
+        Ok(())
     }
 
     /// On: name edits go to the file the run LOADED, here `~/.sipnabrc`. They
     /// used to go to `~/.config/sipnab/sipnab.toml` always, which then shadowed
     /// the `~/.sipnabrc` they came from on every later run.
     #[test]
-    fn name_edits_go_to_the_file_the_run_loaded() {
+    fn name_edits_go_to_the_file_the_run_loaded() -> Result<(), TestError> {
         let mut config = Config::default();
         config.names.persist_to_config = Some(true);
         let on = super::build_name_setup(&cli_from(&[]), &config, &saving_to("/home/u/.sipnabrc"));
@@ -2051,12 +2074,13 @@ mod tests {
             Some(std::path::PathBuf::from("/home/u/.sipnabrc"))
         );
         assert_eq!(on.persist_refused, None);
+        Ok(())
     }
 
     /// On, but the run may not save (it loaded /etc/sipnab/sipnab.toml): no
     /// config path, rather than a guessed one.
     #[test]
-    fn name_edits_are_not_persisted_where_saving_is_refused() {
+    fn name_edits_are_not_persisted_where_saving_is_refused() -> Result<(), TestError> {
         let mut config = Config::default();
         config.names.persist_to_config = Some(true);
         let refused = super::build_name_setup(
@@ -2070,12 +2094,13 @@ mod tests {
             Some("not saved: the settings in use come from /etc/sipnab/sipnab.toml"),
             "the refusal is kept for the status line: a TUI run logs only errors"
         );
+        Ok(())
     }
 
     /// The name setup always names the default persistence file, and it is the
     /// XDG one — the `N` dialog has nowhere to save otherwise.
     #[test]
-    fn the_name_setup_carries_the_default_persistence_path() {
+    fn the_name_setup_carries_the_default_persistence_path() -> Result<(), TestError> {
         let setup = super::build_name_setup(&cli_from(&[]), &Config::default(), &saving_to("/x"));
         assert_eq!(setup.save_path, super::default_names_path());
         if let Some(p) = setup.save_path {
@@ -2085,6 +2110,7 @@ mod tests {
                 p.display()
             );
         }
+        Ok(())
     }
 
     // ── Relay-statistics view ask state ───────────────────────────────────
@@ -2092,32 +2118,34 @@ mod tests {
     /// A permit as a live run would hold one. Minting it transmits nothing:
     /// the permit is proof of a live source, and no relay is contacted by
     /// building the view's state.
-    fn live_permit() -> crate::security::transmit_guard::TransmitPermit {
-        crate::security::transmit_guard::TransmitPermit::for_source(
+    fn live_permit() -> Result<crate::security::transmit_guard::TransmitPermit, TestError> {
+        Ok(crate::security::transmit_guard::TransmitPermit::for_source(
             &crate::capture::CaptureSource::Live {
                 device: "test0".to_string(),
             },
         )
-        .expect("a live source grants a permit")
+        .ok_or("a live source grants a permit")?)
     }
 
     /// No `--rtpengine-control` is `not_configured` whatever the source: a
     /// live run with nothing named to ask still has nobody to ask.
     #[test]
-    fn a_run_naming_no_relay_leaves_the_view_not_configured_even_when_live() {
+    fn a_run_naming_no_relay_leaves_the_view_not_configured_even_when_live() -> Result<(), TestError>
+    {
         use crate::tui::relay_stats::RelayQueryState;
-        let state = super::build_tui_relay_query(&cli_from(&[]), Some(live_permit()));
+        let state = super::build_tui_relay_query(&cli_from(&[]), Some(live_permit()?));
         assert!(
             matches!(state, RelayQueryState::NotConfigured),
             "no relay named must read as not_configured"
         );
+        Ok(())
     }
 
     /// A relay named on a run with no permit (a file) is `not_permitted`, the
     /// other refusal — never collapsed into `not_configured`, because the two
     /// send the operator to different fixes.
     #[test]
-    fn a_named_relay_on_a_run_without_a_permit_is_not_permitted() {
+    fn a_named_relay_on_a_run_without_a_permit_is_not_permitted() -> Result<(), TestError> {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
         let state = super::build_tui_relay_query(&cli, None);
@@ -2125,39 +2153,44 @@ mod tests {
             matches!(state, RelayQueryState::NotPermitted),
             "a relay the run may not transmit to must read as not_permitted"
         );
+        Ok(())
     }
 
     /// An address that does not parse is `not_configured` even with a permit:
     /// there is no relay to reach, and the operator's own invocation is where
     /// to look.
     #[test]
-    fn an_unparseable_relay_address_is_not_configured_even_with_a_permit() {
+    fn an_unparseable_relay_address_is_not_configured_even_with_a_permit() -> Result<(), TestError>
+    {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "relay-without-a-port"]);
-        let state = super::build_tui_relay_query(&cli, Some(live_permit()));
+        let state = super::build_tui_relay_query(&cli, Some(live_permit()?));
         assert!(
             matches!(state, RelayQueryState::NotConfigured),
             "an unparseable address names no relay"
         );
+        Ok(())
     }
 
     /// A parseable relay address and a permit make the view ready, pointed at
     /// exactly the address the operator named.
     #[test]
-    fn a_relay_and_a_permit_make_the_view_ready_to_ask_the_named_address() {
+    fn a_relay_and_a_permit_make_the_view_ready_to_ask_the_named_address() -> Result<(), TestError>
+    {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
-        match super::build_tui_relay_query(&cli, Some(live_permit())) {
+        match super::build_tui_relay_query(&cli, Some(live_permit()?)) {
             RelayQueryState::Ready(access) => assert_eq!(
                 access.addr,
-                "127.0.0.1:22222"
-                    .parse::<std::net::SocketAddr>()
-                    .expect("valid socket address"),
+                "127.0.0.1:22222".parse::<std::net::SocketAddr>()?,
                 "the view names the relay the operator pointed it at"
             ),
-            RelayQueryState::NotConfigured => panic!("expected Ready, got NotConfigured"),
-            RelayQueryState::NotPermitted => panic!("expected Ready, got NotPermitted"),
+            RelayQueryState::NotConfigured => {
+                return Err("expected Ready, got NotConfigured".into());
+            }
+            RelayQueryState::NotPermitted => return Err("expected Ready, got NotPermitted".into()),
         }
+        Ok(())
     }
 
     // ── The action trail's opening record ─────────────────────────────────
@@ -2165,26 +2198,29 @@ mod tests {
     /// `-I` beats `-d` in the trail's first record, as it does for the capture
     /// that actually opens, and every input is named.
     #[test]
-    fn the_trail_names_every_input_file_over_a_device() {
+    fn the_trail_names_every_input_file_over_a_device() -> Result<(), TestError> {
         let cli = cli_from(&["-I", "a.pcap", "-I", "b.pcap", "-d", "eth0"]);
         assert_eq!(super::capture_opened_target(&cli), "a.pcap, b.pcap");
+        Ok(())
     }
 
     /// With no input, the trail names the device the capture opened.
     #[test]
-    fn the_trail_names_the_device_when_no_file_is_read() {
+    fn the_trail_names_the_device_when_no_file_is_read() -> Result<(), TestError> {
         let cli = cli_from(&["-d", "eth0"]);
         assert_eq!(super::capture_opened_target(&cli), "eth0");
+        Ok(())
     }
 
     /// Neither flag: the capture layer picks an interface, and the trail says
     /// so instead of recording an empty target.
     #[test]
-    fn the_trail_names_the_default_interface_when_nothing_was_named() {
+    fn the_trail_names_the_default_interface_when_nothing_was_named() -> Result<(), TestError> {
         assert_eq!(
             super::capture_opened_target(&cli_from(&[])),
             "(default interface)"
         );
+        Ok(())
     }
 
     // ── The status bar's capture source ───────────────────────────────────
@@ -2192,17 +2228,18 @@ mod tests {
     /// `-I` names the files the session reads, by file name. The status bar
     /// used to say `Online (any)` for every session, a file read included.
     #[test]
-    fn the_status_bar_names_the_files_a_session_reads() {
+    fn the_status_bar_names_the_files_a_session_reads() -> Result<(), TestError> {
         let cli = cli_from(&["-I", "/cases/a.pcap", "-I", "b.pcapng"]);
         assert_eq!(
             super::tui_capture_mode(&cli, &Config::default()),
             "Offline (a.pcap, b.pcapng)"
         );
+        Ok(())
     }
 
     /// `-d` names the interface, and beats the config file's device.
     #[test]
-    fn the_status_bar_names_the_interface_a_session_captures_on() {
+    fn the_status_bar_names_the_interface_a_session_captures_on() -> Result<(), TestError> {
         let mut config = Config::default();
         config.capture.device = Some("eth1".to_string());
         let cli = cli_from(&["-d", "eth0"]);
@@ -2211,23 +2248,25 @@ mod tests {
             super::tui_capture_mode(&cli_from(&[]), &config),
             "Online (eth1)"
         );
+        Ok(())
     }
 
     /// A HEP listener with no interface is named as the listener it is.
     #[test]
-    fn the_status_bar_names_a_hep_listener() {
+    fn the_status_bar_names_a_hep_listener() -> Result<(), TestError> {
         let cli = cli_from(&["-L", "udp:0.0.0.0:9060"]);
         assert_eq!(
             super::tui_capture_mode(&cli, &Config::default()),
             "Online (HEP listener udp:0.0.0.0:9060)"
         );
+        Ok(())
     }
 
     // ── From/To column mode ───────────────────────────────────────────────
 
     /// `--from-to-mode` wins over the `[display] from_to` config value.
     #[test]
-    fn the_from_to_flag_wins_over_the_config_value() {
+    fn the_from_to_flag_wins_over_the_config_value() -> Result<(), TestError> {
         let mut config = Config::default();
         config.display.from_to = Some("user".to_string());
         let cli = cli_from(&["--from-to-mode", "host-port"]);
@@ -2235,41 +2274,44 @@ mod tests {
             super::resolve_from_to_mode(&cli, &config),
             crate::tui::FromToMode::HostPort
         );
+        Ok(())
     }
 
     /// Without the flag, a valid config value is the starting mode.
     #[test]
-    fn a_valid_config_from_to_value_is_the_starting_mode() {
+    fn a_valid_config_from_to_value_is_the_starting_mode() -> Result<(), TestError> {
         let mut config = Config::default();
         config.display.from_to = Some("user-host-port".to_string());
         assert_eq!(
             super::resolve_from_to_mode(&cli_from(&[]), &config),
             crate::tui::FromToMode::UserHostPort
         );
+        Ok(())
     }
 
     /// A config value naming no mode is ignored rather than guessed at: the
     /// built-in default applies, not the nearest spelling.
     #[test]
-    fn an_invalid_config_from_to_value_falls_back_to_the_default() {
+    fn an_invalid_config_from_to_value_falls_back_to_the_default() -> Result<(), TestError> {
         let mut config = Config::default();
         config.display.from_to = Some("usr".to_string());
         assert_eq!(
             super::resolve_from_to_mode(&cli_from(&[]), &config),
             crate::tui::FromToMode::Default
         );
+        Ok(())
     }
 
     // ── Live security detection ───────────────────────────────────────────
 
     /// A packet carrying `raw` as a UDP SIP payload from 192.0.2.10.
-    fn sip_packet(raw: Vec<u8>) -> ParsedPacket {
-        let mut pp = pcmu_packet();
+    fn sip_packet(raw: Vec<u8>) -> Result<ParsedPacket, TestError> {
+        let mut pp = pcmu_packet()?;
         pp.src_addr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10));
         pp.src_port = 5060;
         pp.dst_port = 5060;
         pp.payload = raw.into();
-        pp
+        Ok(pp)
     }
 
     /// A 401 challenge with an MD5 nonce and no `qop`: two digest weaknesses
@@ -2297,15 +2339,16 @@ mod tests {
     /// A run with no detection flag arms nothing, so the view can say nothing
     /// was watching instead of reading as "all clear".
     #[test]
-    fn no_detection_flag_arms_no_live_detector() {
+    fn no_detection_flag_arms_no_live_detector() -> Result<(), TestError> {
         let detectors = super::LiveDetectors::from_cli(&cli_from(&[]), &Config::default());
         assert!(detectors.armed().is_empty(), "got {:?}", detectors.armed());
+        Ok(())
     }
 
     /// Each armed detector is listed under the name it files findings by, and
     /// the list is sorted so the view's header does not depend on flag order.
     #[test]
-    fn the_armed_list_names_each_detector_by_its_finding_kind_sorted() {
+    fn the_armed_list_names_each_detector_by_its_finding_kind_sorted() -> Result<(), TestError> {
         let mut config = Config::default();
         config.security.kill_scanner = Some(true);
         let cli = cli_from(&["--reg-flood", "--fraud-detect", "--digest-leak"]);
@@ -2313,17 +2356,18 @@ mod tests {
             super::LiveDetectors::from_cli(&cli, &config).armed(),
             vec!["digest", "fraud", "reg_flood", "scanner"]
         );
+        Ok(())
     }
 
     /// An armed digest detector files what it sees under `digest`, the name
     /// the security-findings view and `--alert` rules know it by.
     #[test]
-    fn an_armed_digest_detector_files_a_weak_challenge_under_digest() {
+    fn an_armed_digest_detector_files_a_weak_challenge_under_digest() -> Result<(), TestError> {
         let cli = cli_from(&["--digest-leak"]);
         let mut detectors = super::LiveDetectors::from_cli(&cli, &Config::default());
         let ds = parking_lot::RwLock::new(crate::sip::dialog_store::DialogStore::new(16, false));
         let engine = engine();
-        detectors.observe(&sip_packet(weak_digest_challenge()), &ds, &engine);
+        detectors.observe(&sip_packet(weak_digest_challenge())?, &ds, &engine);
 
         let guard = engine.read();
         let all = guard.iter_findings(&[], None, 16);
@@ -2338,29 +2382,32 @@ mod tests {
             std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10)),
             "the finding is about the challenge's sender"
         );
+        Ok(())
     }
 
     /// The same challenge with no detector armed files nothing: an unarmed
     /// detector runs no check at all.
     #[test]
-    fn an_unarmed_run_files_nothing_for_the_same_challenge() {
+    fn an_unarmed_run_files_nothing_for_the_same_challenge() -> Result<(), TestError> {
         let mut detectors = super::LiveDetectors::from_cli(&cli_from(&[]), &Config::default());
         let ds = parking_lot::RwLock::new(crate::sip::dialog_store::DialogStore::new(16, false));
         let engine = engine();
-        detectors.observe(&sip_packet(weak_digest_challenge()), &ds, &engine);
+        detectors.observe(&sip_packet(weak_digest_challenge())?, &ds, &engine);
         assert!(engine.read().iter_findings(&[], None, 16).is_empty());
+        Ok(())
     }
 
     /// A payload that is not SIP is skipped, not misread: the detectors see
     /// only what parses.
     #[test]
-    fn a_payload_that_is_not_sip_is_skipped() {
+    fn a_payload_that_is_not_sip_is_skipped() -> Result<(), TestError> {
         let cli = cli_from(&["--digest-leak"]);
         let mut detectors = super::LiveDetectors::from_cli(&cli, &Config::default());
         let ds = parking_lot::RwLock::new(crate::sip::dialog_store::DialogStore::new(16, false));
         let engine = engine();
-        detectors.observe(&sip_packet(vec![0u8; 64]), &ds, &engine);
+        detectors.observe(&sip_packet(vec![0u8; 64])?, &ds, &engine);
         assert!(engine.read().iter_findings(&[], None, 16).is_empty());
+        Ok(())
     }
 }
 

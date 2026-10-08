@@ -729,9 +729,12 @@ impl CaptureMeterExt for crate::capture::channel::CaptureMeter {
 
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// Rates divide the delta by the window that actually elapsed.
     #[test]
-    fn rates_are_the_delta_over_the_window() {
+    fn rates_are_the_delta_over_the_window() -> Result<(), TestError> {
         let t0 = std::time::Instant::now();
         let before = RateSample {
             packets: 1000,
@@ -749,6 +752,7 @@ mod tests {
         assert_eq!(r.window_seconds, 2);
         assert!((r.packets_per_second - 1000.0).abs() < 0.01, "2000 over 2s");
         assert!((r.calls_per_second - 102.0).abs() < 0.01, "204 over 2s");
+        Ok(())
     }
 
     /// The breakdown is dominant-first, and it separates the keepalive plane.
@@ -757,7 +761,7 @@ mod tests {
     /// OPTIONS describes whatever the deployment does most, which in the field
     /// is the keepalive plane rather than the calls.
     #[test]
-    fn the_rate_breakdown_puts_the_dominant_method_first() {
+    fn the_rate_breakdown_puts_the_dominant_method_first() -> Result<(), TestError> {
         let t0 = std::time::Instant::now();
         let before = RateSample {
             packets: 0,
@@ -778,6 +782,7 @@ mod tests {
         );
         assert!((r.calls_per_second_by_method[0].1 - 98.0).abs() < 0.01);
         assert_eq!(r.calls_per_second_by_method[1].0, "INVITE");
+        Ok(())
     }
 
     /// A zero window publishes zeros, never an infinity.
@@ -786,7 +791,7 @@ mod tests {
     /// rendered as a measurement is the confidently wrong number this module
     /// refuses everywhere else.
     #[test]
-    fn a_zero_window_yields_no_rate_rather_than_an_infinity() {
+    fn a_zero_window_yields_no_rate_rather_than_an_infinity() -> Result<(), TestError> {
         let t0 = std::time::Instant::now();
         let s = RateSample {
             packets: 5,
@@ -798,6 +803,7 @@ mod tests {
         assert_eq!(r.window_seconds, 0);
         assert!(r.packets_per_second.is_finite() && r.packets_per_second == 0.0);
         assert!(r.calls_per_second == 0.0);
+        Ok(())
     }
 
     /// Without a meter the queue counters are absent, never zero.
@@ -808,7 +814,7 @@ mod tests {
     /// already documents this exact trap one layer down, at the metrics
     /// server's call site in `batch.rs`.
     #[test]
-    fn without_a_meter_the_queue_counters_are_absent_rather_than_zero() {
+    fn without_a_meter_the_queue_counters_are_absent_rather_than_zero() -> Result<(), TestError> {
         let ds = crate::sip::dialog_store::DialogStore::new(10, true);
         let ss = crate::rtp::stream_store::StreamStore::new(10);
         let stats = collect(&ds, &ss, None, &[], 0, SIGNIFICANT_MEMORY_PCT);
@@ -818,19 +824,20 @@ mod tests {
         );
         assert!(stats.capture_backpressure_blocks_total.is_none());
 
-        let json = serde_json::to_value(&stats).expect("serializes");
+        let json = serde_json::to_value(&stats).map_err(|e| format!("serializes: {e:?}"))?;
         assert!(
             json.get("capture_queue_depth_packets").is_none(),
             "and the field is omitted on the wire rather than sent as null or \
              zero: {json}"
         );
+        Ok(())
     }
 
     /// The capture-source table is reported against its limit, with its
     /// refusals, on the same structure `runtime_stats` and `GET /v1/runtime`
     /// serialize.
     #[test]
-    fn the_capture_source_table_is_reported_against_its_limit() {
+    fn the_capture_source_table_is_reported_against_its_limit() -> Result<(), TestError> {
         let ds = crate::sip::dialog_store::DialogStore::new(10, true);
         let ss = crate::rtp::stream_store::StreamStore::new(10);
         let stats = collect(&ds, &ss, None, &[], 0, SIGNIFICANT_MEMORY_PCT);
@@ -842,9 +849,10 @@ mod tests {
             "{:?}",
             stats.capture_sources
         );
-        let json = serde_json::to_value(&stats).expect("serializes");
+        let json = serde_json::to_value(&stats).map_err(|e| format!("serializes: {e:?}"))?;
         assert!(json["capture_sources"]["capacity"].is_u64(), "{json}");
         assert!(json["capture_sources_refused_total"].is_u64(), "{json}");
+        Ok(())
     }
 
     /// A systemd unit's own `MemoryMax=` is found.
@@ -854,13 +862,15 @@ mod tests {
     /// on an ordinary systemd host — and every unit with `MemoryMax=` set was
     /// therefore measured against the machine's total instead of its own.
     #[test]
-    fn a_limit_on_our_own_cgroup_is_found() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_limit_on_our_own_cgroup_is_found() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path();
         let rel = "system.slice/sipnab.service";
-        std::fs::create_dir_all(root.join(rel)).expect("mkdir");
-        std::fs::write(root.join(rel).join("memory.max"), "2147483648\n").expect("write");
-        std::fs::write(root.join(rel).join("memory.current"), "1610612736\n").expect("write");
+        std::fs::create_dir_all(root.join(rel)).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::write(root.join(rel).join("memory.max"), "2147483648\n")
+            .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::write(root.join(rel).join("memory.current"), "1610612736\n")
+            .map_err(|e| format!("write: {e:?}"))?;
 
         let found = cgroup_memory(root, &format!("0::/{rel}\n"));
         assert_eq!(
@@ -868,6 +878,7 @@ mod tests {
             Some((2_147_483_648, Some(536_870_912))),
             "a unit's own MemoryMax and the headroom under it"
         );
+        Ok(())
     }
 
     /// An ancestor's limit binds even when ours says `max`.
@@ -876,13 +887,15 @@ mod tests {
     /// inside it, whatever those units declare. Reading only our own file
     /// would report unlimited for a process that is anything but.
     #[test]
-    fn the_tightest_ancestor_limit_wins() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_tightest_ancestor_limit_wins() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path();
-        std::fs::create_dir_all(root.join("system.slice/sipnab.service")).expect("mkdir");
-        std::fs::write(root.join("system.slice/memory.max"), "1073741824\n").expect("write");
+        std::fs::create_dir_all(root.join("system.slice/sipnab.service"))
+            .map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::write(root.join("system.slice/memory.max"), "1073741824\n")
+            .map_err(|e| format!("write: {e:?}"))?;
         std::fs::write(root.join("system.slice/sipnab.service/memory.max"), "max\n")
-            .expect("write");
+            .map_err(|e| format!("write: {e:?}"))?;
 
         let found = cgroup_memory(root, "0::/system.slice/sipnab.service\n");
         assert_eq!(
@@ -890,19 +903,21 @@ mod tests {
             Some(1_073_741_824),
             "the slice's cap binds the unit inside it"
         );
+        Ok(())
     }
 
     /// `max` at every level is no limit at all, and the host total stays honest.
     #[test]
-    fn an_unlimited_hierarchy_reports_no_limit() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_unlimited_hierarchy_reports_no_limit() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path();
-        std::fs::create_dir_all(root.join("user.slice/session.scope")).expect("mkdir");
+        std::fs::create_dir_all(root.join("user.slice/session.scope"))
+            .map_err(|e| format!("mkdir: {e:?}"))?;
         for p in [
             "user.slice/memory.max",
             "user.slice/session.scope/memory.max",
         ] {
-            std::fs::write(root.join(p), "max\n").expect("write");
+            std::fs::write(root.join(p), "max\n").map_err(|e| format!("write: {e:?}"))?;
         }
         assert_eq!(
             cgroup_memory(root, "0::/user.slice/session.scope\n"),
@@ -910,16 +925,19 @@ mod tests {
             "an unlimited cgroup must fall back to the machine's total, not \
              report a limit nobody set"
         );
+        Ok(())
     }
 
     /// cgroup v1 is read too, and its unlimited sentinel is not a limit.
     #[test]
-    fn cgroup_v1_is_read_and_its_sentinel_is_not_a_limit() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn cgroup_v1_is_read_and_its_sentinel_is_not_a_limit() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path();
-        std::fs::create_dir_all(root.join("memory")).expect("mkdir");
-        std::fs::write(root.join("memory/memory.limit_in_bytes"), "536870912\n").expect("write");
-        std::fs::write(root.join("memory/memory.usage_in_bytes"), "268435456\n").expect("write");
+        std::fs::create_dir_all(root.join("memory")).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::write(root.join("memory/memory.limit_in_bytes"), "536870912\n")
+            .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::write(root.join("memory/memory.usage_in_bytes"), "268435456\n")
+            .map_err(|e| format!("write: {e:?}"))?;
         // No `0::` line: a v1 system has controller-specific lines only.
         let v1_proc = "8:memory:/sipnab\n4:cpu,cpuacct:/\n";
         assert_eq!(
@@ -932,21 +950,23 @@ mod tests {
             root.join("memory/memory.limit_in_bytes"),
             "9223372036854771712\n",
         )
-        .expect("write");
+        .map_err(|e| format!("write: {e:?}"))?;
         assert_eq!(
             cgroup_memory(root, v1_proc),
             None,
             "v1's unlimited sentinel is not a denominator — reported as one it \
              puts every percentage at zero"
         );
+        Ok(())
     }
 
     /// No cgroup at all is no limit.
     #[test]
-    fn a_host_with_no_cgroup_reports_no_limit() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_host_with_no_cgroup_reports_no_limit() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         assert_eq!(cgroup_memory(dir.path(), "0::/\n"), None);
         assert_eq!(cgroup_memory(dir.path(), ""), None);
+        Ok(())
     }
 
     /// The pair comes from one denominator, on every layout.
@@ -956,11 +976,11 @@ mod tests {
     /// machine is not — so the assertion passed while the pairing was wrong.
     /// Driven layouts exercise it unconditionally.
     #[test]
-    fn available_is_headroom_under_the_same_limit() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn available_is_headroom_under_the_same_limit() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path();
         let rel = "system.slice/sipnab.service";
-        std::fs::create_dir_all(root.join(rel)).expect("mkdir");
+        std::fs::create_dir_all(root.join(rel)).map_err(|e| format!("mkdir: {e:?}"))?;
 
         for (limit, used, want) in [
             (2_147_483_648u64, 1_610_612_736u64, 536_870_912u64),
@@ -969,11 +989,12 @@ mod tests {
             // headroom, never a wrapped enormous number.
             (1_073_741_824, 2_147_483_648, 0),
         ] {
-            std::fs::write(root.join(rel).join("memory.max"), format!("{limit}\n")).expect("write");
+            std::fs::write(root.join(rel).join("memory.max"), format!("{limit}\n"))
+                .map_err(|e| format!("write: {e:?}"))?;
             std::fs::write(root.join(rel).join("memory.current"), format!("{used}\n"))
-                .expect("write");
+                .map_err(|e| format!("write: {e:?}"))?;
             let (got_limit, got_avail) =
-                cgroup_memory(root, &format!("0::/{rel}\n")).expect("a limit is set");
+                cgroup_memory(root, &format!("0::/{rel}\n")).ok_or("a limit is set")?;
             assert_eq!(got_limit, limit);
             assert_eq!(
                 got_avail,
@@ -981,10 +1002,11 @@ mod tests {
                 "available must be headroom under {limit} with {used} used"
             );
             assert!(
-                got_avail.expect("some") <= got_limit,
+                got_avail.ok_or("some")? <= got_limit,
                 "available can never exceed the total it was derived from"
             );
         }
+        Ok(())
     }
 
     /// Available never exceeds total when the basis is the cgroup.
@@ -995,7 +1017,7 @@ mod tests {
     /// ~100 GiB available — two numbers from two different machines, printed
     /// as a pair.
     #[test]
-    fn available_never_exceeds_total() {
+    fn available_never_exceeds_total() -> Result<(), TestError> {
         let h = host_stats();
         if let (Some(total), Some(avail)) = (h.memory_total_bytes, h.memory_available_bytes) {
             assert!(
@@ -1006,11 +1028,12 @@ mod tests {
                 total
             );
         }
+        Ok(())
     }
 
     /// One INVITE, enough of it to open a dialog.
     #[cfg(test)]
-    fn invite(call_id: &str) -> crate::sip::message::SipMessage {
+    fn invite(call_id: &str) -> Result<crate::sip::message::SipMessage, TestError> {
         let raw = format!(
             "INVITE sip:bob@example.com SIP/2.0\r\n\
              Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK{call_id}\r\n\
@@ -1020,16 +1043,16 @@ mod tests {
              CSeq: 1 INVITE\r\n\
              Content-Length: 0\r\n\r\n"
         );
-        crate::sip::parse_sip(
+        Ok(crate::sip::parse_sip(
             raw.as_bytes(),
             chrono::Utc::now(),
-            "10.0.0.1".parse().expect("literal"),
-            "10.0.0.2".parse().expect("literal"),
+            "10.0.0.1".parse().map_err(|e| format!("literal: {e:?}"))?,
+            "10.0.0.2".parse().map_err(|e| format!("literal: {e:?}"))?,
             5060,
             5060,
             crate::net::TransportProto::Udp,
         )
-        .expect("a well-formed INVITE parses")
+        .map_err(|e| format!("a well-formed INVITE parses: {e:?}"))?)
     }
 
     /// A store pinned at its cap still reports the calls flowing through it.
@@ -1039,12 +1062,13 @@ mod tests {
     /// after it — so a rate built on `len()` answers 0.0/s for twenty calls,
     /// which is indistinguishable from a dead switch.
     #[test]
-    fn a_store_pinned_at_its_cap_still_reports_the_calls_flowing_through_it() {
+    fn a_store_pinned_at_its_cap_still_reports_the_calls_flowing_through_it()
+    -> Result<(), TestError> {
         use crate::sip::dialog_store::DialogStore;
         let mut ds = DialogStore::new(2, true);
         let t0 = std::time::Instant::now();
         for n in 0..2 {
-            ds.process_message(invite(&format!("warm-{n}")));
+            ds.process_message(invite(&format!("warm-{n}"))?);
         }
         let before = RateSample {
             at: t0,
@@ -1053,7 +1077,7 @@ mod tests {
         assert_eq!(ds.len(), 2, "the store starts full");
 
         for n in 0..20 {
-            ds.process_message(invite(&format!("flow-{n}")));
+            ds.process_message(invite(&format!("flow-{n}"))?);
         }
         assert_eq!(ds.len(), 2, "and stays full: occupancy never moved");
 
@@ -1078,6 +1102,7 @@ mod tests {
             "the split moves with the total: {:?}",
             r.calls_per_second_by_method
         );
+        Ok(())
     }
 
     /// A counter that went backwards does not produce a negative rate.
@@ -1086,7 +1111,7 @@ mod tests {
     /// still can from a store replaced between the two reads — `open_capture`
     /// swaps one in — and a negative rate is not the honest answer to that.
     #[test]
-    fn an_evicting_store_does_not_report_a_negative_rate() {
+    fn an_evicting_store_does_not_report_a_negative_rate() -> Result<(), TestError> {
         let t0 = std::time::Instant::now();
         let before = RateSample {
             packets: 100,
@@ -1103,6 +1128,7 @@ mod tests {
         let r = rates(&before, &after);
         assert!(r.calls_per_second >= 0.0, "got {}", r.calls_per_second);
         assert!(r.calls_per_second_by_method[0].1 >= 0.0);
+        Ok(())
     }
 
     // Reads `/sys/class/net`, which exists on Linux and nowhere else. Guarded
@@ -1117,16 +1143,17 @@ mod tests {
     /// rely on. The point is that these come from the INTERFACE, not from
     /// sipnab's capture handle.
     #[test]
-    fn an_interface_reports_its_own_counters() {
+    fn an_interface_reports_its_own_counters() -> Result<(), TestError> {
         let lo = interface_stats("lo");
         assert_eq!(lo.name, "lo");
-        assert!(lo.mtu.expect("lo has an MTU") > 0);
+        assert!(lo.mtu.ok_or("lo has an MTU")? > 0);
         assert!(lo.rx_packets.is_some(), "the kernel exposes rx_packets");
         assert_eq!(
             lo.operstate.as_deref(),
             Some("unknown"),
             "loopback is always 'unknown'"
         );
+        Ok(())
     }
 
     // Reads `/sys/class/net`, which exists on Linux and nowhere else. Guarded
@@ -1140,8 +1167,9 @@ mod tests {
     /// Loopback reports `-1` for speed, meaning unknown. Rendering that as
     /// `0 Mbit/s` would read as a dead link on an interface that is fine.
     #[test]
-    fn an_unreported_speed_is_absent_rather_than_zero() {
+    fn an_unreported_speed_is_absent_rather_than_zero() -> Result<(), TestError> {
         assert_eq!(interface_stats("lo").speed_mbps, None);
+        Ok(())
     }
 
     /// An interface that does not exist yields a named row of unknowns.
@@ -1150,10 +1178,11 @@ mod tests {
     /// was looked up, and every counter absent, rather than a stack of zeros
     /// that look like a quiet interface.
     #[test]
-    fn a_missing_interface_is_all_unknowns_but_keeps_its_name() {
+    fn a_missing_interface_is_all_unknowns_but_keeps_its_name() -> Result<(), TestError> {
         let s = interface_stats("definitely-not-an-interface");
         assert_eq!(s.name, "definitely-not-an-interface");
         assert!(s.mtu.is_none() && s.rx_packets.is_none() && s.operstate.is_none());
+        Ok(())
     }
 
     /// A name that could climb out of /sys/class/net is refused.
@@ -1163,7 +1192,7 @@ mod tests {
     /// statistics would be an information leak, so traversal is refused before
     /// any filesystem access.
     #[test]
-    fn a_traversing_interface_name_reads_nothing() {
+    fn a_traversing_interface_name_reads_nothing() -> Result<(), TestError> {
         for bad in ["../../etc/passwd", "..", "eth0/../../..", "a/b", "a\\b"] {
             let s = interface_stats(bad);
             assert!(
@@ -1172,6 +1201,7 @@ mod tests {
             );
             assert_eq!(s.name, bad, "but the name asked for is still reported");
         }
+        Ok(())
     }
 
     use super::*;
@@ -1187,14 +1217,15 @@ mod tests {
     /// It could not, at all, before this — which is the first number an
     /// operator reaches for when a capture box slows down.
     #[test]
-    fn the_process_reports_its_own_memory() {
+    fn the_process_reports_its_own_memory() -> Result<(), TestError> {
         let p = process_stats();
-        let rss = p.rss_bytes.expect("Linux exposes VmRSS");
+        let rss = p.rss_bytes.ok_or("Linux exposes VmRSS")?;
         assert!(rss > 0, "a running process holds some memory");
         assert!(
-            p.virtual_bytes.expect("VmSize") >= rss,
+            p.virtual_bytes.ok_or("VmSize")? >= rss,
             "virtual size is never below resident"
         );
+        Ok(())
     }
 
     // Reads `/proc`, which exists on Linux and nowhere else. Guarded
@@ -1205,17 +1236,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     /// Threads, descriptors and CPU time are all readable.
     #[test]
-    fn the_process_reports_threads_descriptors_and_cpu() {
+    fn the_process_reports_threads_descriptors_and_cpu() -> Result<(), TestError> {
         let p = process_stats();
-        assert!(p.threads.expect("Threads") >= 1, "at least this one");
+        assert!(p.threads.ok_or("Threads")? >= 1, "at least this one");
         assert!(
-            p.open_fds.expect("/proc/self/fd") >= 3,
+            p.open_fds.ok_or("/proc/self/fd")? >= 3,
             "stdio alone is three"
         );
         assert!(
-            p.cpu_seconds.expect("utime+stime").is_finite(),
+            p.cpu_seconds.ok_or("utime+stime")?.is_finite(),
             "CPU time is a real number"
         );
+        Ok(())
     }
 
     // Reads `/proc`, which exists on Linux and nowhere else. Guarded
@@ -1230,20 +1262,21 @@ mod tests {
     /// wrong by a large factor inside a container with a small limit, and a
     /// reader cannot tell which they were given unless the answer says.
     #[test]
-    fn the_host_totals_name_their_basis() {
+    fn the_host_totals_name_their_basis() -> Result<(), TestError> {
         let h = host_stats();
-        assert!(h.memory_total_bytes.expect("MemTotal") > 0);
-        assert!(h.cpus.expect("available_parallelism") >= 1);
+        assert!(h.memory_total_bytes.ok_or("MemTotal")? > 0);
+        assert!(h.cpus.ok_or("available_parallelism")? >= 1);
         assert!(
             matches!(h.basis, "host" | "cgroup"),
             "the basis must be one of the two, got {}",
             h.basis
         );
+        Ok(())
     }
 
     /// The impact percentage is computed from both halves.
     #[test]
-    fn impact_divides_the_process_by_the_host() {
+    fn impact_divides_the_process_by_the_host() -> Result<(), TestError> {
         let p = ProcessStats {
             rss_bytes: Some(2 * 1024 * 1024 * 1024),
             ..ProcessStats::default()
@@ -1254,19 +1287,20 @@ mod tests {
             ..HostStats::default()
         };
         let i = impact(&p, &h, 10.0);
-        assert!((i.memory_pct.expect("both halves known") - 25.0).abs() < 0.01);
+        assert!((i.memory_pct.ok_or("both halves known")? - 25.0).abs() < 0.01);
         assert_eq!(i.significant, Some(true), "25% is past a 10% threshold");
         assert!(
-            i.note.expect("a note").contains("host"),
+            i.note.ok_or("a note")?.contains("host"),
             "the basis is named"
         );
+        Ok(())
     }
 
     /// Below the threshold sipnab is not called load-bearing.
     ///
     /// The negative case: a verdict that is always `true` is not a verdict.
     #[test]
-    fn a_small_share_is_not_load_bearing() {
+    fn a_small_share_is_not_load_bearing() -> Result<(), TestError> {
         let p = ProcessStats {
             rss_bytes: Some(64 * 1024 * 1024),
             ..ProcessStats::default()
@@ -1278,7 +1312,8 @@ mod tests {
         };
         let i = impact(&p, &h, 10.0);
         assert_eq!(i.significant, Some(false));
-        assert!(i.memory_pct.expect("known") < 1.0);
+        assert!(i.memory_pct.ok_or("known")? < 1.0);
+        Ok(())
     }
 
     /// A missing half yields no percentage rather than a wrong one.
@@ -1287,7 +1322,7 @@ mod tests {
     /// nothing is the confidently wrong number to avoid. `None` says "not
     /// known here", which is a different fact from zero.
     #[test]
-    fn a_missing_half_yields_no_percentage() {
+    fn a_missing_half_yields_no_percentage() -> Result<(), TestError> {
         let known = ProcessStats {
             rss_bytes: Some(1024),
             ..ProcessStats::default()
@@ -1314,6 +1349,7 @@ mod tests {
             ..HostStats::default()
         };
         assert!(impact(&known, &zero, 10.0).memory_pct.is_none());
+        Ok(())
     }
     /// A zero window is refused rather than answered.
     ///
@@ -1321,17 +1357,20 @@ mod tests {
     /// and zero deltas is what a healthy quiet capture reports. Answering it
     /// would hand the caller a number they cannot distinguish from silence.
     #[test]
-    fn a_zero_sample_window_is_refused() {
-        let refused = resolve_sample_seconds(0).expect_err("zero must not resolve");
+    fn a_zero_sample_window_is_refused() -> Result<(), TestError> {
+        let refused = resolve_sample_seconds(0)
+            .err()
+            .ok_or("zero must not resolve")?;
         assert!(
             refused.contains("at least 1"),
             "the refusal has to say what to send instead: {refused}"
         );
+        Ok(())
     }
 
     /// A window inside the cap is returned unchanged.
     #[test]
-    fn a_sample_window_inside_the_cap_is_returned_unchanged() {
+    fn a_sample_window_inside_the_cap_is_returned_unchanged() -> Result<(), TestError> {
         for requested in [1u32, 5, 29, MAX_SAMPLE_SECONDS] {
             assert_eq!(
                 resolve_sample_seconds(requested),
@@ -1339,6 +1378,7 @@ mod tests {
                 "{requested}s is inside the cap and must survive intact"
             );
         }
+        Ok(())
     }
 
     /// A window past the cap is clamped, not refused.
@@ -1347,7 +1387,7 @@ mod tests {
     /// measurement, and `Rates::window_seconds` reports the window that was
     /// actually used so the clamp is visible rather than silent.
     #[test]
-    fn a_sample_window_past_the_cap_is_clamped_not_refused() {
+    fn a_sample_window_past_the_cap_is_clamped_not_refused() -> Result<(), TestError> {
         for requested in [MAX_SAMPLE_SECONDS + 1, 600, u32::MAX] {
             assert_eq!(
                 resolve_sample_seconds(requested),
@@ -1355,6 +1395,7 @@ mod tests {
                 "{requested}s must come back as the cap"
             );
         }
+        Ok(())
     }
 
     /// The cap is a real bound, not a value large enough to never bite.
@@ -1362,12 +1403,13 @@ mod tests {
     /// A cap of `u32::MAX` would pass both tests above while holding a caller
     /// open for 136 years, so the bound itself is asserted.
     #[test]
-    fn the_sample_cap_is_a_window_a_caller_can_wait_out() {
+    fn the_sample_cap_is_a_window_a_caller_can_wait_out() -> Result<(), TestError> {
         assert!(
             (1..=60).contains(&MAX_SAMPLE_SECONDS),
             "MAX_SAMPLE_SECONDS is {MAX_SAMPLE_SECONDS}s; a cap outside a \
              minute is not a window a synchronous caller waits out"
         );
+        Ok(())
     }
     /// Off Linux, every platform-sourced fact is absent rather than zero.
     ///
@@ -1379,7 +1421,7 @@ mod tests {
     /// this.
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn off_linux_every_platform_fact_is_absent_rather_than_zero() {
+    fn off_linux_every_platform_fact_is_absent_rather_than_zero() -> Result<(), TestError> {
         let p = process_stats();
         assert!(
             p.rss_bytes.is_none()
@@ -1421,5 +1463,6 @@ mod tests {
             lo.mtu.is_none() && lo.rx_packets.is_none() && lo.operstate.is_none(),
             "there is no /sys/class/net here: {lo:?}"
         );
+        Ok(())
     }
 }

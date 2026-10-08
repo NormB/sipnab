@@ -958,9 +958,11 @@ mod tests {
     use super::*;
     use crate::capture::channel;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// `CaptureConfig::default()` matches the documented CLI defaults.
     #[test]
-    fn default_capture_config() {
+    fn default_capture_config() -> Result<(), TestError> {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 65535);
         assert_eq!(config.buffer_mb, DEFAULT_BUFFER_MB);
@@ -968,6 +970,7 @@ mod tests {
         assert!(config.count.is_none());
         assert!(config.duration.is_none());
         assert_eq!(config.buffer_budget_mb, 64);
+        Ok(())
     }
 
     /// The default is the interactive answer — the same thing every capture
@@ -975,17 +978,18 @@ mod tests {
     /// `default()` must not have its ring format changed under it; only
     /// `app::bootstrap`, which knows the run mode, turns this off.
     #[test]
-    fn default_capture_config_keeps_immediate_mode() {
+    fn default_capture_config_keeps_immediate_mode() -> Result<(), TestError> {
         assert!(
             CaptureConfig::default().immediate_mode,
             "default must preserve the historical immediate-mode capture"
         );
+        Ok(())
     }
 
     /// `channel_capacity` scales with the budget and clamps to the
     /// 10k floor / 5M ceiling, monotonically in between.
     #[test]
-    fn channel_capacity_derives_from_budget_and_clamps() {
+    fn channel_capacity_derives_from_budget_and_clamps() -> Result<(), TestError> {
         let cfg = |mb: u32| CaptureConfig {
             buffer_budget_mb: mb,
             ..CaptureConfig::default()
@@ -999,11 +1003,12 @@ mod tests {
         assert_eq!(cfg(1_000_000).channel_capacity(), 5_000_000);
         // Monotonic in between.
         assert!(cfg(256).channel_capacity() > cfg(64).channel_capacity());
+        Ok(())
     }
 
     /// `CaptureSource` variants debug-print their device/path.
     #[test]
-    fn capture_source_debug() {
+    fn capture_source_debug() -> Result<(), TestError> {
         use std::path::PathBuf;
         // Ensure CaptureSource variants can be debug-printed
         let live = CaptureSource::Live {
@@ -1014,12 +1019,13 @@ mod tests {
         };
         assert!(format!("{live:?}").contains("eth0"));
         assert!(format!("{file:?}").contains("test.pcap"));
+        Ok(())
     }
 
     /// A file capture signals readiness (before privileges would drop) and
     /// then delivers the fixture's packets.
     #[test]
-    fn ready_signal_sent_on_file_capture() {
+    fn ready_signal_sent_on_file_capture() -> Result<(), TestError> {
         use std::path::PathBuf;
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -1027,7 +1033,7 @@ mod tests {
             .join("udp_5060.pcap");
         if !fixture.exists() {
             stderr_line!("Skipping: fixture not found at {}", fixture.display());
-            return;
+            return Ok(());
         }
 
         let (pkt_tx, pkt_rx) = channel::packet_channel(1 << 20);
@@ -1043,43 +1049,50 @@ mod tests {
             Some(ready_tx),
             None,
         )
-        .expect("start_capture should succeed");
+        .map_err(|e| format!("start_capture should succeed: {e:?}"))?;
 
         // The ready signal must arrive before we'd drop privileges.
         let ready_result = ready_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("ready signal should arrive");
+            .map_err(|e| format!("ready signal should arrive: {e:?}"))?;
         assert!(
             ready_result.is_ok(),
             "ready signal should be Ok, got: {ready_result:?}"
         );
 
         // Capture should also produce packets.
-        handle.thread.join().expect("capture thread panicked").ok();
+        handle
+            .thread
+            .join()
+            .map_err(|e| format!("capture thread panicked: {e:?}"))?
+            .ok();
         let packets: Vec<_> = pkt_rx.try_iter().collect();
         assert!(!packets.is_empty(), "Expected packets from fixture file");
+        Ok(())
     }
 
     // ── start_multi_capture input validation ────────────────────────────
     /// A doubled comma in the device spec is rejected before any capture
     /// thread spawns.
     #[test]
-    fn multi_capture_rejects_malformed_device_spec_before_spawning() {
+    fn multi_capture_rejects_malformed_device_spec_before_spawning() -> Result<(), TestError> {
         // A doubled comma is a validation error: start_multi_capture must
         // return Err immediately, without spawning any capture thread.
         let (tx, _rx) = channel::packet_channel(1 << 20);
         match start_multi_capture("eth0,,docker0", CaptureConfig::default(), tx, None) {
-            Ok(_) => panic!("malformed device spec must be rejected"),
+            Ok(_) => return Err("malformed device spec must be rejected".into()),
             Err(e) => assert!(e.to_string().contains("empty interface name"), "got: {e}"),
         }
+        Ok(())
     }
 
     /// A whitespace-only device spec is rejected.
     #[test]
-    fn multi_capture_rejects_empty_device_spec() {
+    fn multi_capture_rejects_empty_device_spec() -> Result<(), TestError> {
         let (tx, _rx) = channel::packet_channel(1 << 20);
         assert!(start_multi_capture("   ", CaptureConfig::default(), tx, None).is_err());
         // (Ok(_) is not Debug; .is_err() avoids unwrapping the handle.)
+        Ok(())
     }
 
     // ── multi-capture teardown on device-open failure ───────────────────
@@ -1150,7 +1163,7 @@ mod tests {
         }
 
         /// Run `run_multi_capture` over `devs` on a helper thread.
-        fn run(devs: &[&str], with_ready: bool) -> CoordinatorRun {
+        fn run(devs: &[&str], with_ready: bool) -> Result<CoordinatorRun, TestError> {
             let stop = Arc::new(AtomicBool::new(false));
             let opened = Arc::new(AtomicU64::new(0));
             let devs: Vec<CaptureSource> = devs
@@ -1178,14 +1191,13 @@ mod tests {
                         move || stop2.store(true, Ordering::SeqCst),
                     );
                     let _ = done_tx.send(res);
-                })
-                .unwrap();
-            CoordinatorRun {
+                })?;
+            Ok(CoordinatorRun {
                 done: done_rx,
                 stop,
                 opened,
                 ready: with_ready.then_some(ready_rx),
-            }
+            })
         }
 
         /// One failed device open must (a) surface ONE error naming that
@@ -1193,61 +1205,68 @@ mod tests {
         /// did open, and (c) let the coordinator finish with the same named
         /// error instead of hanging on live siblings forever.
         #[test]
-        fn open_failure_stops_siblings_and_surfaces_one_named_error() {
+        fn open_failure_stops_siblings_and_surfaces_one_named_error() -> Result<(), TestError> {
             let CoordinatorRun {
                 done: done_rx,
                 stop,
                 opened,
                 ready: ready_rx,
-            } = run(&["good0", "bad1", "good2"], true);
+            } = run(&["good0", "bad1", "good2"], true)?;
             let msg = ready_rx
-                .unwrap()
+                .ok_or("a ready channel was requested")?
                 .recv_timeout(Duration::from_secs(5))
-                .expect("aggregated ready signal must arrive")
-                .expect_err("a failed device open must surface as Err");
+                .map_err(|e| format!("aggregated ready signal must arrive: {e:?}"))?
+                .err()
+                .ok_or("a failed device open must surface as Err")?;
             assert!(msg.contains("bad1"), "error must name the device: {msg}");
             let res = done_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("coordinator must reap stopped siblings, not hang");
-            let err = res.expect_err("coordinator must fail when a device fails");
+                .map_err(|e| format!("coordinator must reap stopped siblings, not hang: {e:?}"))?;
+            let err = res
+                .err()
+                .ok_or("coordinator must fail when a device fails")?;
             assert!(err.to_string().contains("bad1"), "got: {err}");
             assert!(stop.load(Ordering::SeqCst), "siblings must be told to stop");
             assert_eq!(opened.load(Ordering::SeqCst), 2, "both good devices ran");
+            Ok(())
         }
 
         /// The same teardown must happen when the caller passed no ready
         /// channel: the failure is still detected, siblings still stop, and
         /// the coordinator still returns the named error.
         #[test]
-        fn open_failure_without_ready_channel_still_tears_down() {
+        fn open_failure_without_ready_channel_still_tears_down() -> Result<(), TestError> {
             let CoordinatorRun {
                 done: done_rx,
                 stop,
                 ..
-            } = run(&["good0", "bad1"], false);
-            let res = done_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("coordinator must finish without a ready channel too");
-            let err = res.expect_err("coordinator must fail when a device fails");
+            } = run(&["good0", "bad1"], false)?;
+            let res = done_rx.recv_timeout(Duration::from_secs(5)).map_err(|e| {
+                format!("coordinator must finish without a ready channel too: {e:?}")
+            })?;
+            let err = res
+                .err()
+                .ok_or("coordinator must fail when a device fails")?;
             assert!(err.to_string().contains("bad1"), "got: {err}");
             assert!(stop.load(Ordering::SeqCst), "siblings must be told to stop");
+            Ok(())
         }
 
         /// All devices opening cleanly must NOT trip the stop signal; the
         /// caller gets `Ok(())` on ready and the siblings keep running.
         #[test]
-        fn all_devices_ok_does_not_stop_anyone() {
+        fn all_devices_ok_does_not_stop_anyone() -> Result<(), TestError> {
             let CoordinatorRun {
                 done: done_rx,
                 stop,
                 opened,
                 ready: ready_rx,
-            } = run(&["good0", "good1"], true);
+            } = run(&["good0", "good1"], true)?;
             ready_rx
-                .unwrap()
+                .ok_or("a ready channel was requested")?
                 .recv_timeout(Duration::from_secs(5))
-                .expect("ready signal must arrive")
-                .expect("all devices opened, ready must be Ok");
+                .map_err(|e| format!("ready signal must arrive: {e:?}"))?
+                .map_err(|e| format!("all devices opened, ready must be Ok: {e:?}"))?;
             assert_eq!(opened.load(Ordering::SeqCst), 2);
             assert!(!stop.load(Ordering::SeqCst), "no failure, no stop signal");
             // Siblings are still capturing; the coordinator must still be
@@ -1260,8 +1279,9 @@ mod tests {
             stop.store(true, Ordering::SeqCst);
             done_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("coordinator finishes after siblings stop")
-                .expect("clean shutdown is Ok");
+                .map_err(|e| format!("coordinator finishes after siblings stop: {e:?}"))?
+                .map_err(|e| format!("clean shutdown is Ok: {e:?}"))?;
+            Ok(())
         }
 
         /// A spawner whose members act out their device name, run to
@@ -1341,12 +1361,12 @@ mod tests {
         #[test]
         fn the_first_member_to_fail_its_open_is_the_one_named() -> Result<(), TestError> {
             let (result, ready, _) = run_scripted(&["good0", "bad1", "bad2"])?;
-            let msg = ready.expect_err("an open failed");
+            let msg = ready.err().ok_or("an open failed")?;
             assert_eq!(
                 msg,
                 "Capture member device 'bad1' failed to open: no such device bad1"
             );
-            assert_eq!(result.expect_err("the run fails").to_string(), msg);
+            assert_eq!(result.err().ok_or("the run fails")?.to_string(), msg);
             Ok(())
         }
 
@@ -1355,7 +1375,7 @@ mod tests {
         #[test]
         fn a_member_that_never_answers_readiness_fails_the_run() -> Result<(), TestError> {
             let (result, ready, _) = run_scripted(&["good0", "silent1"])?;
-            let msg = ready.expect_err("the member never answered");
+            let msg = ready.err().ok_or("the member never answered")?;
             assert_eq!(
                 msg,
                 "Capture member device 'silent1' exited before signaling ready"
@@ -1371,7 +1391,7 @@ mod tests {
             let (result, ready, _) = run_scripted(&["good0", "late1", "late2"])?;
             ready.map_err(|e| format!("every member opened: {e:?}"))?;
             assert_eq!(
-                result.expect_err("a member failed").to_string(),
+                result.err().ok_or("a member failed")?.to_string(),
                 "late1 failed after opening"
             );
             Ok(())
@@ -1384,14 +1404,14 @@ mod tests {
             let (result, ready, spawns) = run_scripted(&["good0", "nospawn1", "good2"])?;
             assert_eq!(spawns, 2, "no member after the failed spawn is started");
             assert_eq!(
-                ready.expect_err("a spawn failed"),
+                ready.err().ok_or("a spawn failed")?,
                 "spawn refused for nospawn1"
             );
             assert!(result.is_err());
 
             let (_, ready, _) = run_scripted(&["bad0", "nospawn1"])?;
             assert_eq!(
-                ready.expect_err("both failed"),
+                ready.err().ok_or("both failed")?,
                 "spawn refused for nospawn1"
             );
             Ok(())
@@ -1453,7 +1473,7 @@ mod tests {
         /// A failed run returns only after every started member thread has
         /// exited, so no capture thread outlives the error it caused.
         #[test]
-        fn a_failed_run_returns_after_every_member_thread_exits() {
+        fn a_failed_run_returns_after_every_member_thread_exits() -> Result<(), TestError> {
             let exited = Arc::new(AtomicU64::new(0));
             let stop = Arc::new(AtomicBool::new(false));
             let (exited2, stop2) = (exited.clone(), stop.clone());
@@ -1502,6 +1522,7 @@ mod tests {
                 3,
                 "every member thread exited before the coordinator returned"
             );
+            Ok(())
         }
     }
 
@@ -1591,7 +1612,7 @@ mod tests {
         /// producer, so the only thing that stopped a mixed run was that the
         /// coordinator took device NAMES.
         #[test]
-        fn an_interface_and_a_hep_listener_feed_one_channel() {
+        fn an_interface_and_a_hep_listener_feed_one_channel() -> Result<(), TestError> {
             let stop = Arc::new(AtomicBool::new(false));
             let members = vec![
                 CaptureSource::Live {
@@ -1617,18 +1638,18 @@ mod tests {
                     );
                     let _ = done_tx.send(res);
                 })
-                .expect("spawn coordinator");
+                .map_err(|e| format!("spawn coordinator: {e:?}"))?;
 
             ready_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("readiness must aggregate across kinds")
-                .expect("both members opened");
+                .map_err(|e| format!("readiness must aggregate across kinds: {e:?}"))?
+                .map_err(|e| format!("both members opened: {e:?}"))?;
 
             let mut sources = Vec::new();
             for _ in 0..2 {
                 let p = rx
                     .recv_timeout(Duration::from_secs(5))
-                    .expect("both members must reach the same receiver");
+                    .map_err(|e| format!("both members must reach the same receiver: {e:?}"))?;
                 sources.push(p.interface.as_deref().unwrap_or("").to_string());
             }
             sources.sort();
@@ -1645,8 +1666,8 @@ mod tests {
             stop.store(true, Ordering::SeqCst);
             done_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("coordinator finishes after both members stop")
-                .expect("clean shutdown is Ok");
+                .map_err(|e| format!("coordinator finishes after both members stop: {e:?}"))?
+                .map_err(|e| format!("clean shutdown is Ok: {e:?}"))?;
             // The coordinator dropped its own `tx` clone and both members are
             // gone, so the channel is closed — which is what makes
             // `source_exhausted` mean "every source is done" for two sources
@@ -1655,6 +1676,7 @@ mod tests {
                 rx.recv_timeout(Duration::from_millis(200)).is_err(),
                 "the channel must close once the last producer exits"
             );
+            Ok(())
         }
 
         /// A HEP member that cannot bind tears the interface member down and
@@ -1664,7 +1686,7 @@ mod tests {
         /// which sends an operator whose LISTENER failed to look at their
         /// interface.
         #[test]
-        fn a_hep_bind_failure_tears_the_interface_member_down() {
+        fn a_hep_bind_failure_tears_the_interface_member_down() -> Result<(), TestError> {
             let stop = Arc::new(AtomicBool::new(false));
             let members = vec![
                 CaptureSource::Live {
@@ -1692,12 +1714,13 @@ mod tests {
                     );
                     let _ = done_tx.send(res);
                 })
-                .expect("spawn coordinator");
+                .map_err(|e| format!("spawn coordinator: {e:?}"))?;
 
             let msg = ready_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("aggregated ready signal must arrive")
-                .expect_err("a failed HEP bind must surface as Err");
+                .map_err(|e| format!("aggregated ready signal must arrive: {e:?}"))?
+                .err()
+                .ok_or("a failed HEP bind must surface as Err")?;
             assert!(
                 msg.contains("HEP listener"),
                 "the error must name the KIND that failed, not call it a \
@@ -1711,8 +1734,10 @@ mod tests {
             );
             done_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("coordinator must reap the sibling, not hang")
-                .expect_err("coordinator must fail when a member fails");
+                .map_err(|e| format!("coordinator must reap the sibling, not hang: {e:?}"))?
+                .err()
+                .ok_or("coordinator must fail when a member fails")?;
+            Ok(())
         }
 
         /// `start_capture` refuses a composite whose membership is not
@@ -1723,7 +1748,7 @@ mod tests {
         /// file-origin packets — which parse as `InputOrigin::Wire` — off the
         /// scanner-kill path.
         #[test]
-        fn a_composite_refuses_members_it_cannot_place() {
+        fn a_composite_refuses_members_it_cannot_place() -> Result<(), TestError> {
             let live = CaptureSource::Live {
                 device: "eth9".into(),
             };
@@ -1740,7 +1765,7 @@ mod tests {
                 None,
             )
             .err()
-            .expect("a File member must be refused");
+            .ok_or("a File member must be refused")?;
             let m = format!("{e:#}");
             assert!(
                 m.contains("InputOrigin::Wire") || m.contains("scanner-kill"),
@@ -1756,7 +1781,7 @@ mod tests {
                 None,
             )
             .err()
-            .expect("a one-member composite must be refused");
+            .ok_or("a one-member composite must be refused")?;
             assert!(
                 format!("{e:#}").contains("at least two members"),
                 "got: {e:#}"
@@ -1774,8 +1799,9 @@ mod tests {
                 None,
             )
             .err()
-            .expect("a nested composite must be refused");
+            .ok_or("a nested composite must be refused")?;
             assert!(format!("{e:#}").contains("another composite"), "got: {e:#}");
+            Ok(())
         }
     }
 }
@@ -1783,6 +1809,8 @@ mod tests {
 #[cfg(test)]
 mod fanout_wiring_tests {
     use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// `--cores` must actually REACH the live capture, not just exist.
     ///
@@ -1793,7 +1821,7 @@ mod fanout_wiring_tests {
     /// value survives the config the spawn sites read rather than asserting
     /// that the module compiles.
     #[test]
-    fn the_socket_count_reaches_the_capture_config() {
+    fn the_socket_count_reaches_the_capture_config() -> Result<(), TestError> {
         let one = CaptureConfig::default();
         assert_eq!(
             one.fanout_sockets, 1,
@@ -1805,5 +1833,6 @@ mod fanout_wiring_tests {
             ..CaptureConfig::default()
         };
         assert_eq!(wide.fanout_sockets, 4);
+        Ok(())
     }
 }

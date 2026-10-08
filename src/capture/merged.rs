@@ -270,9 +270,12 @@ fn epoch_to_utc(d: std::time::Duration) -> DateTime<Utc> {
 
 #[cfg(test)]
 pub(crate) mod testutil {
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// Write to `path` a pcapng whose two interfaces disagree on BOTH link
     /// type and snaplen, holding one 40-byte frame on each interface.
-    pub(crate) fn merged_fixture(path: &std::path::Path) {
+    pub(crate) fn merged_fixture(path: &std::path::Path) -> Result<(), TestError> {
         fn block(kind: u32, body: &[u8]) -> Vec<u8> {
             let pad = (4 - body.len() % 4) % 4;
             let total = 12 + body.len() + pad;
@@ -311,7 +314,8 @@ pub(crate) mod testutil {
             epb.extend_from_slice(&data);
             out.extend_from_slice(&block(0x0000_0006, &epb));
         }
-        std::fs::write(path, out).expect("write fixture");
+        std::fs::write(path, out).map_err(|e| format!("write fixture {}: {e}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -319,6 +323,9 @@ pub(crate) mod testutil {
 mod tests {
     use super::testutil::merged_fixture;
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A reader that counts what it hands out, so "did not read the capture"
     /// is asserted as an effect rather than read off the source.
@@ -347,11 +354,11 @@ mod tests {
     /// would have passed the suite while quietly routing every merged capture
     /// back to the libpcap reader that cannot read one.
     #[test]
-    fn a_merged_pcapng_is_detected_and_an_ordinary_one_is_not() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_merged_pcapng_is_detected_and_an_ordinary_one_is_not() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
 
         let merged = dir.path().join("merged.pcapng");
-        merged_fixture(&merged);
+        merged_fixture(&merged)?;
         assert!(
             is_merged(&merged),
             "interfaces disagreeing on link type and snaplen is the definition"
@@ -374,11 +381,12 @@ mod tests {
         f.extend_from_slice(&0u16.to_le_bytes());
         f.extend_from_slice(&65535u32.to_le_bytes());
         f.extend_from_slice(&20u32.to_le_bytes());
-        std::fs::write(&plain, &f).unwrap();
+        std::fs::write(&plain, &f)?;
         assert!(
             !is_merged(&plain),
             "a single-interface pcapng is not merged and must take the ordinary path"
         );
+        Ok(())
     }
 
     /// The regression this exists to prevent shipped in 0.5.118 and survived
@@ -415,26 +423,28 @@ mod tests {
     /// frame here is raw IP, and decoding it as Ethernet would consume
     /// fourteen bytes of IP header as a link header.
     #[test]
-    fn each_frame_carries_its_own_interfaces_link_type() {
-        let dir = tempfile::tempdir().unwrap();
+    fn each_frame_carries_its_own_interfaces_link_type() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("merged.pcapng");
-        merged_fixture(&path);
+        merged_fixture(&path)?;
 
-        let mut r = MergedPcapNg::open(&path).expect("merged pcapng must open");
+        let mut r =
+            MergedPcapNg::open(&path).map_err(|e| format!("merged pcapng must open: {e:?}"))?;
         assert_eq!(
             r.link_types(),
             &[1, 12],
             "both interfaces' link types must be visible"
         );
 
-        let first = r.next_frame().expect("first frame");
-        let second = r.next_frame().expect("second frame");
+        let first = r.next_frame().ok_or("first frame")?;
+        let second = r.next_frame().ok_or("second frame")?;
         assert_eq!(first.link_type, 1, "frame 0 is on the Ethernet interface");
         assert_eq!(second.link_type, 12, "frame 1 is on the raw-IP interface");
         assert_eq!(first.data[0], 0xAA);
         assert_eq!(second.data[0], 0xBB);
         assert!(r.next_frame().is_none(), "only two frames were written");
         assert_eq!(r.skipped(), 0, "nothing was skipped in a well-formed file");
+        Ok(())
     }
 
     /// A packet naming an interface the file never described is COUNTED.
@@ -442,7 +452,7 @@ mod tests {
     /// The negative case: dropping it silently would make a truncated or
     /// malformed capture indistinguishable from one that held fewer packets.
     #[test]
-    fn a_packet_naming_an_undescribed_interface_is_counted_not_hidden() {
+    fn a_packet_naming_an_undescribed_interface_is_counted_not_hidden() -> Result<(), TestError> {
         fn block(kind: u32, body: &[u8]) -> Vec<u8> {
             let pad = (4 - body.len() % 4) % 4;
             let total = 12 + body.len() + pad;
@@ -454,7 +464,7 @@ mod tests {
             b.extend_from_slice(&(total as u32).to_le_bytes());
             b
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("dangling.pcapng");
         let mut out = Vec::new();
         let mut shb = Vec::new();
@@ -478,9 +488,9 @@ mod tests {
         epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
         epb.extend_from_slice(&data);
         out.extend_from_slice(&block(0x0000_0006, &epb));
-        std::fs::write(&path, out).unwrap();
+        std::fs::write(&path, out)?;
 
-        let mut r = MergedPcapNg::open(&path).expect("must still open");
+        let mut r = MergedPcapNg::open(&path).map_err(|e| format!("must still open: {e:?}"))?;
         assert!(
             r.next_frame().is_none(),
             "the dangling packet is not yielded"
@@ -491,5 +501,6 @@ mod tests {
             "it must be COUNTED — a silently dropped frame reads as a capture \
              that never held it"
         );
+        Ok(())
     }
 }

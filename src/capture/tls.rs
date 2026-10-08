@@ -603,6 +603,8 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// One record header with the given type and declared length, plus a
     /// payload of exactly that length.
     fn record(content_type: u8, len: u16) -> Vec<u8> {
@@ -622,7 +624,8 @@ mod tests {
     /// a shape no conformant peer emits. Accepting it spends the only evidence
     /// available at that offset.
     #[test]
-    fn a_zero_length_fragment_of_the_three_forbidden_types_is_not_a_record() {
+    fn a_zero_length_fragment_of_the_three_forbidden_types_is_not_a_record() -> Result<(), TestError>
+    {
         for (name, ct) in [
             ("change_cipher_spec", 20u8),
             ("alert", 21),
@@ -636,6 +639,7 @@ mod tests {
             );
             assert_eq!(consumed, 0, "nothing was consumed from {name}");
         }
+        Ok(())
     }
 
     /// And a zero-length Application Data record IS one.
@@ -647,11 +651,12 @@ mod tests {
     /// would discard a legitimate countermeasure while every assertion above
     /// still passed.
     #[test]
-    fn a_zero_length_application_data_record_is_still_a_record() {
+    fn a_zero_length_application_data_record_is_still_a_record() -> Result<(), TestError> {
         let (records, consumed) = parse_tls_records_with_consumed(&record(23, 0));
         assert_eq!(records.len(), 1, "the RFC permits this one");
         assert_eq!(records[0].length, 0);
         assert_eq!(consumed, TLS_RECORD_HEADER_LEN);
+        Ok(())
     }
 
     /// A non-empty record of every type still parses.
@@ -661,12 +666,13 @@ mod tests {
     /// record, whose payload is exactly one byte, and with it every session
     /// key change.
     #[test]
-    fn a_non_empty_record_of_every_type_still_parses() {
+    fn a_non_empty_record_of_every_type_still_parses() -> Result<(), TestError> {
         for (ct, len) in [(20u8, 1u16), (21, 2), (22, 4), (23, 16)] {
             let (records, _) = parse_tls_records_with_consumed(&record(ct, len));
             assert_eq!(records.len(), 1, "type {ct} with {len} byte(s) must parse");
             assert_eq!(records[0].length, len);
         }
+        Ok(())
     }
 
     /// The walk stops at a forbidden record and keeps what came before it.
@@ -676,7 +682,7 @@ mod tests {
     /// on bytes it has no reason to trust, which is how a record layer walks
     /// off into a payload.
     #[test]
-    fn the_walk_stops_at_a_forbidden_record_and_keeps_the_valid_prefix() {
+    fn the_walk_stops_at_a_forbidden_record_and_keeps_the_valid_prefix() -> Result<(), TestError> {
         let mut data = record(22, 4);
         let prefix_len = data.len();
         data.extend_from_slice(&record(22, 0));
@@ -689,6 +695,7 @@ mod tests {
             consumed, prefix_len,
             "the caller must be told the walk stopped at the bad record"
         );
+        Ok(())
     }
     use super::*;
 
@@ -702,10 +709,10 @@ mod tests {
     /// a media/NAT mismatch that is not in the capture. Reproduced on a real
     /// loopback TLS 1.3 call before this framing existed.
     #[test]
-    fn an_invite_split_across_two_records_is_reassembled_with_its_body() {
+    fn an_invite_split_across_two_records_is_reassembled_with_its_body() -> Result<(), TestError> {
         let mut r = TlsRecordReassembler::new(64);
-        let a: std::net::SocketAddr = "10.0.0.1:5061".parse().unwrap();
-        let b: std::net::SocketAddr = "10.0.0.2:5061".parse().unwrap();
+        let a: std::net::SocketAddr = "10.0.0.1:5061".parse()?;
+        let b: std::net::SocketAddr = "10.0.0.2:5061".parse()?;
 
         let sdp = "v=0\r\no=x 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\n\
                    t=0 0\r\nm=audio 40000 RTP/AVP 8\r\n";
@@ -729,13 +736,14 @@ mod tests {
             1,
             "the two records must form exactly one message"
         );
-        let msg = String::from_utf8(out[0].clone()).expect("utf8");
+        let msg = String::from_utf8(out[0].clone()).map_err(|e| format!("utf8: {e:?}"))?;
         assert!(msg.starts_with("INVITE "), "the message must be the INVITE");
         assert!(
             msg.contains("m=audio 40000"),
             "and it must carry the SDP OFFER -- losing this is what makes sipnab \
              report a NAT mismatch that is not in the capture: {msg}"
         );
+        Ok(())
     }
 
     /// Two whole messages in one record both come out.
@@ -743,10 +751,10 @@ mod tests {
     /// The other half of stream framing: a sender may coalesce. Emitting only
     /// the first would lose the second as surely as splitting loses a body.
     #[test]
-    fn two_messages_in_one_record_are_both_emitted() {
+    fn two_messages_in_one_record_are_both_emitted() -> Result<(), TestError> {
         let mut r = TlsRecordReassembler::new(64);
-        let a: std::net::SocketAddr = "10.0.0.1:5061".parse().unwrap();
-        let b: std::net::SocketAddr = "10.0.0.2:5061".parse().unwrap();
+        let a: std::net::SocketAddr = "10.0.0.1:5061".parse()?;
+        let b: std::net::SocketAddr = "10.0.0.2:5061".parse()?;
 
         let both = "SIP/2.0 100 Trying\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n\
                     SIP/2.0 180 Ringing\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
@@ -758,6 +766,7 @@ mod tests {
         );
         assert!(String::from_utf8_lossy(&out[0]).contains("100 Trying"));
         assert!(String::from_utf8_lossy(&out[1]).contains("180 Ringing"));
+        Ok(())
     }
 
     /// A held remainder that can never complete is dropped, not grown.
@@ -765,10 +774,10 @@ mod tests {
     /// Without this a peer that opens a message and never finishes it pins a
     /// buffer per direction for the life of the run.
     #[test]
-    fn an_unterminated_message_does_not_pin_memory_forever() {
+    fn an_unterminated_message_does_not_pin_memory_forever() -> Result<(), TestError> {
         let mut r = TlsRecordReassembler::new(64);
-        let a: std::net::SocketAddr = "10.0.0.1:5061".parse().unwrap();
-        let b: std::net::SocketAddr = "10.0.0.2:5061".parse().unwrap();
+        let a: std::net::SocketAddr = "10.0.0.1:5061".parse()?;
+        let b: std::net::SocketAddr = "10.0.0.2:5061".parse()?;
 
         let head = "INVITE sip:x SIP/2.0\r\nContent-Length: 999999\r\n\r\n";
         r.frame_plaintext(a, b, head.as_bytes());
@@ -780,6 +789,7 @@ mod tests {
             held <= usize::from(MAX_TLS_RECORD_LENGTH) * 4,
             "an unterminated message must not grow without bound: held {held} bytes"
         );
+        Ok(())
     }
 
     use std::io::Write;
@@ -801,7 +811,7 @@ mod tests {
     /// A well-formed TLS 1.2 Handshake record parses into one record with the
     /// expected content type, version, length, and payload.
     #[test]
-    fn parse_valid_handshake_record() {
+    fn parse_valid_handshake_record() -> Result<(), TestError> {
         let payload = vec![0x01, 0x00, 0x00, 0x05, 0x03, 0x03, 0x00, 0x00, 0x00];
         let data = make_tls_record(22, 0x0303, &payload);
 
@@ -811,22 +821,24 @@ mod tests {
         assert_eq!(records[0].version, TlsVersion::Tls12);
         assert_eq!(records[0].length, payload.len() as u16);
         assert_eq!(records[0].payload, payload);
+        Ok(())
     }
 
     /// An ApplicationData record (type 23) parses with the correct content type.
     #[test]
-    fn parse_application_data_record() {
+    fn parse_application_data_record() -> Result<(), TestError> {
         let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let data = make_tls_record(23, 0x0303, &payload);
 
         let records = parse_tls_records(&data);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].content_type, TlsContentType::ApplicationData);
+        Ok(())
     }
 
     /// Two concatenated records in one segment both parse, in order.
     #[test]
-    fn parse_multiple_records_in_segment() {
+    fn parse_multiple_records_in_segment() -> Result<(), TestError> {
         let handshake_payload = vec![0x01, 0x00];
         let appdata_payload = vec![0xCA, 0xFE];
 
@@ -837,19 +849,21 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].content_type, TlsContentType::Handshake);
         assert_eq!(records[1].content_type, TlsContentType::ApplicationData);
+        Ok(())
     }
 
     /// `is_tls` returns true for a genuine TLS record.
     #[test]
-    fn is_tls_on_tls_data() {
+    fn is_tls_on_tls_data() -> Result<(), TestError> {
         let data = make_tls_record(22, 0x0303, &[0x01, 0x00]);
         assert!(is_tls(&data));
+        Ok(())
     }
 
     /// `is_tls` returns false for SIP text, too-short input, bad content type,
     /// and an implausible version.
     #[test]
-    fn is_tls_on_non_tls_data() {
+    fn is_tls_on_non_tls_data() -> Result<(), TestError> {
         // SIP message start
         assert!(!is_tls(b"SIP/2.0 200 OK\r\n"));
         // Too short
@@ -858,29 +872,28 @@ mod tests {
         assert!(!is_tls(&[0xFF, 0x03, 0x03, 0x00, 0x05]));
         // Implausible version
         assert!(!is_tls(&[0x16, 0x05, 0x00, 0x00, 0x05]));
+        Ok(())
     }
 
     /// A record whose declared length exceeds available data is dropped, not
     /// emitted partially.
     #[test]
-    fn truncated_record_stops_cleanly() {
+    fn truncated_record_stops_cleanly() -> Result<(), TestError> {
         // Valid header but payload is cut short
         let mut data = vec![22, 0x03, 0x03, 0x00, 0x10]; // claims 16 bytes
         data.extend_from_slice(&[0u8; 8]); // only 8 bytes of payload
 
         let records = parse_tls_records(&data);
         assert!(records.is_empty(), "Truncated record should not be emitted");
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
     // TLS record reassembly across TCP segments
     // -----------------------------------------------------------------------
 
-    fn addrs() -> (std::net::SocketAddr, std::net::SocketAddr) {
-        (
-            "10.0.0.1:5061".parse().unwrap(),
-            "10.0.0.2:54321".parse().unwrap(),
-        )
+    fn addrs() -> Result<(std::net::SocketAddr, std::net::SocketAddr), TestError> {
+        Ok(("10.0.0.1:5061".parse()?, "10.0.0.2:54321".parse()?))
     }
 
     /// A record split across two chunks (e.g. a large INVITE's SDP body
@@ -888,10 +901,10 @@ mod tests {
     /// completed and returned whole once the rest arrives — the bug this
     /// reassembler exists to fix.
     #[test]
-    fn reassembler_completes_a_record_split_across_two_chunks() {
+    fn reassembler_completes_a_record_split_across_two_chunks() -> Result<(), TestError> {
         let payload = vec![0xAB; 300];
         let record = make_tls_record(23, 0x0303, &payload);
-        let (src, dst) = addrs();
+        let (src, dst) = addrs()?;
         let mut r = TlsRecordReassembler::new(10);
 
         let (head, tail) = record.split_at(record.len() - 50);
@@ -905,6 +918,7 @@ mod tests {
         let second = r.insert(src, dst, tail);
         assert_eq!(second.len(), 1, "the completed record must be returned");
         assert_eq!(second[0].payload, payload);
+        Ok(())
     }
 
     /// `has_held` reports a held partial while one is outstanding, and
@@ -918,10 +932,10 @@ mod tests {
     /// dropped exactly this case, silently, one layer below the bug this
     /// reassembler was built to fix.
     #[test]
-    fn has_held_tracks_an_incomplete_records_lifetime() {
+    fn has_held_tracks_an_incomplete_records_lifetime() -> Result<(), TestError> {
         let payload = vec![0xAB; 300];
         let record = make_tls_record(23, 0x0303, &payload);
-        let (src, dst) = addrs();
+        let (src, dst) = addrs()?;
         let mut r = TlsRecordReassembler::new(10);
 
         assert!(
@@ -941,18 +955,19 @@ mod tests {
             !r.has_held(src, dst),
             "nothing should be held once the record completes"
         );
+        Ok(())
     }
 
     /// A held partial for one stream direction is independent of another —
     /// interleaved traffic on two directions doesn't corrupt either.
     #[test]
-    fn reassembler_keeps_directions_independent() {
+    fn reassembler_keeps_directions_independent() -> Result<(), TestError> {
         let payload_a = vec![0x11; 200];
         let payload_b = vec![0x22; 40];
         let record_a = make_tls_record(23, 0x0303, &payload_a);
         let record_b = make_tls_record(23, 0x0303, &payload_b);
-        let (a_src, a_dst) = addrs();
-        let (b_src, b_dst) = ("10.0.0.3:5061".parse().unwrap(), a_dst);
+        let (a_src, a_dst) = addrs()?;
+        let (b_src, b_dst) = ("10.0.0.3:5061".parse()?, a_dst);
         let mut r = TlsRecordReassembler::new(10);
 
         let (a_head, a_tail) = record_a.split_at(record_a.len() - 30);
@@ -966,21 +981,23 @@ mod tests {
         let a_done = r.insert(a_src, a_dst, a_tail);
         assert_eq!(a_done.len(), 1);
         assert_eq!(a_done[0].payload, payload_a);
+        Ok(())
     }
 
     /// A chunk containing several complete records at once (record-layer
     /// pipelining) returns all of them, not just the first.
     #[test]
-    fn reassembler_returns_multiple_complete_records_in_one_chunk() {
+    fn reassembler_returns_multiple_complete_records_in_one_chunk() -> Result<(), TestError> {
         let mut data = make_tls_record(22, 0x0303, &[0x01, 0x00]);
         data.extend_from_slice(&make_tls_record(23, 0x0303, &[0xCA, 0xFE]));
-        let (src, dst) = addrs();
+        let (src, dst) = addrs()?;
         let mut r = TlsRecordReassembler::new(10);
 
         let records = r.insert(src, dst, &data);
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].content_type, TlsContentType::Handshake);
         assert_eq!(records[1].content_type, TlsContentType::ApplicationData);
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -989,73 +1006,81 @@ mod tests {
 
     /// A `CLIENT_RANDOM` line parses into a 32-byte random and 48-byte secret.
     #[test]
-    fn parse_keylog_client_random_entry() {
+    fn parse_keylog_client_random_entry() -> Result<(), TestError> {
         let line = "CLIENT_RANDOM \
             aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd \
             00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
-        let entry = parse_keylog_line(line).expect("should parse CLIENT_RANDOM line");
+        let entry = parse_keylog_line(line)
+            .map_err(|e| format!("should parse CLIENT_RANDOM line: {e:?}"))?;
         assert_eq!(entry.label, "CLIENT_RANDOM");
         assert_eq!(entry.client_random.len(), 32);
         assert_eq!(entry.client_random[0], 0xaa);
         assert_eq!(entry.secret.len(), 48);
         assert_eq!(entry.secret[0], 0x00);
+        Ok(())
     }
 
     /// A TLS 1.3 traffic-secret label parses with a 32-byte secret.
     #[test]
-    fn parse_keylog_tls13_labels() {
+    fn parse_keylog_tls13_labels() -> Result<(), TestError> {
         let line = "CLIENT_HANDSHAKE_TRAFFIC_SECRET \
             aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd \
             ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
 
-        let entry = parse_keylog_line(line).expect("should parse TLS 1.3 label");
+        let entry =
+            parse_keylog_line(line).map_err(|e| format!("should parse TLS 1.3 label: {e:?}"))?;
         assert_eq!(entry.label, "CLIENT_HANDSHAKE_TRAFFIC_SECRET");
         assert_eq!(entry.client_random.len(), 32);
         assert_eq!(entry.secret.len(), 32);
+        Ok(())
     }
 
     /// Parsing a keylog file skips comment and blank lines and returns only the
     /// two real entries.
     #[test]
-    fn parse_keylog_file_with_comments_and_blanks() {
-        let mut tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-        writeln!(tmp, "# TLS 1.2 key log").expect("write");
-        writeln!(tmp).expect("write");
+    fn parse_keylog_file_with_comments_and_blanks() -> Result<(), TestError> {
+        let mut tmp =
+            tempfile::NamedTempFile::new().map_err(|e| format!("create tempfile: {e:?}"))?;
+        writeln!(tmp, "# TLS 1.2 key log").map_err(|e| format!("write: {e:?}"))?;
+        writeln!(tmp).map_err(|e| format!("write: {e:?}"))?;
         writeln!(
             tmp,
             "CLIENT_RANDOM \
             aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd \
             00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
         )
-        .expect("write");
-        writeln!(tmp, "# another comment").expect("write");
+        .map_err(|e| format!("write: {e:?}"))?;
+        writeln!(tmp, "# another comment").map_err(|e| format!("write: {e:?}"))?;
         writeln!(
             tmp,
             "SERVER_HANDSHAKE_TRAFFIC_SECRET \
             11223344556677881122334455667788112233445566778811223344556677aa \
             ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
         )
-        .expect("write");
-        tmp.flush().expect("flush");
+        .map_err(|e| format!("write: {e:?}"))?;
+        tmp.flush().map_err(|e| format!("flush: {e:?}"))?;
 
-        let entries = parse_keylog_file(tmp.path()).expect("should parse keylog file");
+        let entries = parse_keylog_file(tmp.path())
+            .map_err(|e| format!("should parse keylog file: {e:?}"))?;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, "CLIENT_RANDOM");
         assert_eq!(entries[1].label, "SERVER_HANDSHAKE_TRAFFIC_SECRET");
+        Ok(())
     }
 
     /// A line with non-hex characters in a field fails to parse.
     #[test]
-    fn parse_keylog_invalid_hex() {
+    fn parse_keylog_invalid_hex() -> Result<(), TestError> {
         let line = "CLIENT_RANDOM ZZZZ 0011";
         assert!(parse_keylog_line(line).is_err());
+        Ok(())
     }
 
     /// Regression: hex decoding of multibyte-UTF-8 input returns an error
     /// instead of panicking on a non-char-boundary slice (a remote DoS).
     #[test]
-    fn decode_hex_multibyte_utf8_does_not_panic() {
+    fn decode_hex_multibyte_utf8_does_not_panic() -> Result<(), TestError> {
         // Regression: decode_hex checked BYTE-length parity then sliced
         // `&hex[i..i+2]` as a str. A multi-byte UTF-8 char (here '€',
         // 3 bytes) split by the 2-byte window panicked with "byte index
@@ -1069,6 +1094,7 @@ mod tests {
         for s in ["ü", "ünf", "🔑🔑", "a🔑", "\u{80}\u{80}"] {
             let _ = decode_hex(s); // must not panic
         }
+        Ok(())
     }
 
     // ── Security regression tests ────────────────────────────────────
@@ -1076,7 +1102,7 @@ mod tests {
     /// Constructing and dropping a `KeyLogEntry` with known secret bytes runs
     /// the zeroizing `Drop` impl without panicking.
     #[test]
-    fn keylog_entry_zeroizes_on_drop() {
+    fn keylog_entry_zeroizes_on_drop() -> Result<(), TestError> {
         // Verify the Drop impl for KeyLogEntry executes without panic.
         // In safe Rust we cannot inspect freed heap memory, but we can
         // confirm the zeroization code path runs and that creating +
@@ -1093,6 +1119,7 @@ mod tests {
             // entry is dropped here
         }
         // If we got here, the Drop impl ran without panic
+        Ok(())
     }
 
     /// `zeroize_material` clears the secret, the client random, AND the label
@@ -1100,7 +1127,7 @@ mod tests {
     /// (len 0), unlike the old elidable plain loop that left them full of
     /// zeroed-but-present bytes and never touched the label.
     #[test]
-    fn keylog_entry_zeroize_material_clears_all_fields() {
+    fn keylog_entry_zeroize_material_clears_all_fields() -> Result<(), TestError> {
         let mut entry = KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: vec![0xAA; 32],
@@ -1113,5 +1140,6 @@ mod tests {
             "client_random not zeroized/cleared"
         );
         assert!(entry.label.is_empty(), "label not zeroized/cleared");
+        Ok(())
     }
 }

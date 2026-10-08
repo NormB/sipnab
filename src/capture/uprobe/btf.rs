@@ -401,6 +401,9 @@ impl Btf {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build a BTF blob by hand, so the walk is tested against bytes rather
     /// than against whatever kernel happens to be running the tests. The aarch64 development host
     /// has no BTF at all, so a test that needed a real one would be skipped
@@ -427,7 +430,7 @@ mod tests {
         }
 
         /// Add an INT type (4 bytes of trailing data).
-        fn int(&mut self, name: &str, size: u32) -> u32 {
+        fn int(&mut self, name: &str, size: u32) -> Result<u32, TestError> {
             let n = self.intern(name);
             self.types.extend_from_slice(&n.to_le_bytes());
             // kind INT in bits 24..28, vlen 0 — spelled out so the shape of
@@ -440,7 +443,12 @@ mod tests {
         }
 
         /// Add a STRUCT with `(name, type_id, bit_offset)` members.
-        fn strukt(&mut self, name: &str, size: u32, members: &[(&str, u32, u32)]) -> u32 {
+        fn strukt(
+            &mut self,
+            name: &str,
+            size: u32,
+            members: &[(&str, u32, u32)],
+        ) -> Result<u32, TestError> {
             let n = self.intern(name);
             let names: Vec<u32> = members.iter().map(|(m, _, _)| self.intern(m)).collect();
             self.types.extend_from_slice(&n.to_le_bytes());
@@ -456,17 +464,17 @@ mod tests {
         }
 
         /// Ids are positions in the type array, counted as it is built.
-        fn next_id(&mut self) -> u32 {
+        fn next_id(&mut self) -> Result<u32, TestError> {
             let mut at = 0usize;
             let mut id = 0u32;
             while at < self.types.len() {
-                let info = u32::from_le_bytes(self.types[at + 4..at + 8].try_into().unwrap());
+                let info = u32::from_le_bytes(self.types[at + 4..at + 8].try_into()?);
                 let vlen = info & 0xffff;
                 let kind = (info >> 24) & 0x1f;
-                at += 12 + Btf::trailing_len(kind, vlen).unwrap();
+                at += 12 + Btf::trailing_len(kind, vlen).ok_or("trailing_len returned None")?;
                 id += 1;
             }
-            id
+            Ok(id)
         }
 
         fn build(&self) -> Vec<u8> {
@@ -486,11 +494,11 @@ mod tests {
     }
 
     /// A miniature `sock` / `sock_common` pair with the members that matter.
-    fn kernel_like() -> Vec<u8> {
+    fn kernel_like() -> Result<Vec<u8>, TestError> {
         let mut b = BtfBuilder::new();
-        let u16t = b.int("short unsigned int", 2);
-        let u32t = b.int("unsigned int", 4);
-        let addr6 = b.int("in6_addr", 16);
+        let u16t = b.int("short unsigned int", 2)?;
+        let u32t = b.int("unsigned int", 4)?;
+        let addr6 = b.int("in6_addr", 16)?;
         // Bit offsets, as BTF records them.
         let common = b.strukt(
             "sock_common",
@@ -504,14 +512,15 @@ mod tests {
                 ("skc_v6_daddr", addr6, 128),
                 ("skc_v6_rcv_saddr", addr6, 256),
             ],
-        );
-        let _sock = b.strukt("sock", 760, &[("__sk_common", common, 0)]);
-        b.build()
+        )?;
+        let _sock = b.strukt("sock", 760, &[("__sk_common", common, 0)])?;
+        Ok(b.build())
     }
 
     #[test]
-    fn member_offsets_come_out_in_bytes() {
-        let btf = Btf::parse(&kernel_like()).expect("hand-built BTF parses");
+    fn member_offsets_come_out_in_bytes() -> Result<(), TestError> {
+        let btf =
+            Btf::parse(&kernel_like()?).map_err(|e| format!("hand-built BTF parses: {e:?}"))?;
         assert_eq!(btf.member_offset("sock_common", "skc_daddr"), Ok(0));
         assert_eq!(btf.member_offset("sock_common", "skc_rcv_saddr"), Ok(4));
         assert_eq!(btf.member_offset("sock_common", "skc_dport"), Ok(8));
@@ -521,13 +530,16 @@ mod tests {
             Ok(16),
             "bit offsets are divided by eight, not used raw"
         );
+        Ok(())
     }
 
     /// The whole set, assembled the way the loader will use it.
     #[test]
-    fn the_sock_offsets_are_resolved_together() {
-        let btf = Btf::parse(&kernel_like()).expect("parses");
-        let off = btf.sock_offsets().expect("every member present");
+    fn the_sock_offsets_are_resolved_together() -> Result<(), TestError> {
+        let btf = Btf::parse(&kernel_like()?).map_err(|e| format!("parses: {e:?}"))?;
+        let off = btf
+            .sock_offsets()
+            .map_err(|e| format!("every member present: {e:?}"))?;
         assert_eq!(off.valid, 1);
         assert_eq!(off.daddr4, 0);
         assert_eq!(off.saddr4, 4);
@@ -536,50 +548,54 @@ mod tests {
         assert_eq!(off.family, 12);
         assert_eq!(off.daddr6, 16);
         assert_eq!(off.saddr6, 32);
+        Ok(())
     }
 
     /// **All or nothing.** A partial set would leave offsets zero, and zero is
     /// a legal offset — the program would read the start of the struct and
     /// report it as an address.
     #[test]
-    fn a_missing_member_fails_the_whole_set_rather_than_zeroing_one() {
+    fn a_missing_member_fails_the_whole_set_rather_than_zeroing_one() -> Result<(), TestError> {
         let mut b = BtfBuilder::new();
-        let u32t = b.int("unsigned int", 4);
-        let common = b.strukt("sock_common", 8, &[("skc_daddr", u32t, 0)]);
-        let _sock = b.strukt("sock", 8, &[("__sk_common", common, 0)]);
-        let btf = Btf::parse(&b.build()).expect("parses");
+        let u32t = b.int("unsigned int", 4)?;
+        let common = b.strukt("sock_common", 8, &[("skc_daddr", u32t, 0)])?;
+        let _sock = b.strukt("sock", 8, &[("__sk_common", common, 0)])?;
+        let btf = Btf::parse(&b.build()).map_err(|e| format!("parses: {e:?}"))?;
 
-        let err = btf.sock_offsets().expect_err("skc_family is missing");
+        let err = btf.sock_offsets().err().ok_or("skc_family is missing")?;
         assert!(
             matches!(err, BtfError::NoSuchMember(ref m) if m.contains("skc_")),
             "the failure must name the member: {err:?}"
         );
+        Ok(())
     }
 
     /// A kernel without the struct at all is a clear refusal, not a zero.
     #[test]
-    fn a_kernel_without_the_struct_says_which_type_is_missing() {
+    fn a_kernel_without_the_struct_says_which_type_is_missing() -> Result<(), TestError> {
         let mut b = BtfBuilder::new();
-        let _ = b.int("unsigned int", 4);
-        let btf = Btf::parse(&b.build()).expect("parses");
+        let _ = b.int("unsigned int", 4)?;
+        let btf = Btf::parse(&b.build()).map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(
             btf.member_offset("sock", "__sk_common"),
             Err(BtfError::NoSuchType("sock".to_string()))
         );
+        Ok(())
     }
 
     /// Anonymous members are transparent: their fields belong to the parent.
     #[test]
-    fn an_anonymous_member_is_searched_at_the_parent_offset() {
+    fn an_anonymous_member_is_searched_at_the_parent_offset() -> Result<(), TestError> {
         let mut b = BtfBuilder::new();
-        let u16t = b.int("short unsigned int", 2);
-        let inner = b.strukt("inner", 4, &[("skc_num", u16t, 0), ("skc_dport", u16t, 16)]);
+        let u16t = b.int("short unsigned int", 2)?;
+        let inner = b.strukt("inner", 4, &[("skc_num", u16t, 0), ("skc_dport", u16t, 16)])?;
         // The anonymous member sits 64 bits in; its fields must land at 8 and 10.
-        let outer = b.strukt("sock_common", 16, &[("", inner, 64)]);
+        let outer = b.strukt("sock_common", 16, &[("", inner, 64)])?;
         assert!(outer > 0);
-        let btf = Btf::parse(&b.build()).expect("parses");
+        let btf = Btf::parse(&b.build()).map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(btf.member_offset("sock_common", "skc_num"), Ok(8));
         assert_eq!(btf.member_offset("sock_common", "skc_dport"), Ok(10));
+        Ok(())
     }
 
     #[test]
@@ -598,24 +614,27 @@ mod tests {
 
     /// A blob claiming sections past its own end must not be walked.
     #[test]
-    fn a_truncated_blob_is_refused_rather_than_read_past() {
-        let mut raw = kernel_like();
+    fn a_truncated_blob_is_refused_rather_than_read_past() -> Result<(), TestError> {
+        let mut raw = kernel_like()?;
         raw.truncate(raw.len() - 8);
         // Header still claims the original lengths.
         assert_eq!(
             Btf::parse(&raw).err(),
             Some(BtfError::Malformed("sections extend past the file"))
         );
+        Ok(())
     }
 
     /// The real kernel, when there is one. The aarch64 development host has no BTF, so this asserts
     /// only that the two outcomes are the ones that exist: a full set, or the
     /// specific "no BTF here" refusal that sends the caller to tracefs.
     #[test]
-    fn the_running_kernel_either_answers_fully_or_says_it_has_no_btf() {
+    fn the_running_kernel_either_answers_fully_or_says_it_has_no_btf() -> Result<(), TestError> {
         match Btf::from_sys_fs() {
             Ok(btf) => {
-                let off = btf.sock_offsets().expect("a BTF kernel must resolve sock");
+                let off = btf
+                    .sock_offsets()
+                    .map_err(|e| format!("a BTF kernel must resolve sock: {e:?}"))?;
                 assert_eq!(off.valid, 1);
                 assert!(
                     off.family > 0 && off.dport > 0,
@@ -629,5 +648,6 @@ mod tests {
                 "a present-but-unreadable BTF is a real failure, not a fallback"
             ),
         }
+        Ok(())
     }
 }

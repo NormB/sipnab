@@ -502,6 +502,7 @@ mod tests {
     use chrono::TimeDelta;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build an app whose store holds exactly the given messages for one call.
     fn app_with(messages: Vec<crate::sip::SipMessage>) -> App {
@@ -509,14 +510,15 @@ mod tests {
     }
 
     /// Render `render_timeline` for `call_id` into a plain string buffer.
-    fn render_to_string(app: &App, call_id: &str, w: u16, h: u16) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("backend");
+    fn render_to_string(app: &App, call_id: &str, w: u16, h: u16) -> Result<String, TestError> {
+        let mut terminal =
+            Terminal::new(TestBackend::new(w, h)).map_err(|e| format!("backend: {e:?}"))?;
         terminal
             .draw(|frame| {
                 let area = frame.area();
                 render_timeline(frame, app, area, call_id);
             })
-            .expect("draw");
+            .map_err(|e| format!("draw: {e:?}"))?;
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
@@ -528,55 +530,55 @@ mod tests {
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// A fully-completed call: INVITE, 100, 180, 200, BYE, 200-to-BYE.
-    fn completed_call(call_id: &str) -> Vec<crate::sip::SipMessage> {
+    fn completed_call(call_id: &str) -> Result<Vec<crate::sip::SipMessage>, TestError> {
         let t0 = base_ts();
-        vec![
-            make_invite(call_id, "alice", "bob", t0),
+        Ok(vec![
+            make_invite(call_id, "alice", "bob", t0)?,
             make_response(
                 "100 Trying",
                 call_id,
                 "INVITE",
                 t0 + TimeDelta::milliseconds(50),
-            ),
+            )?,
             make_response(
                 "180 Ringing",
                 call_id,
                 "INVITE",
                 t0 + TimeDelta::milliseconds(1500),
-            ),
+            )?,
             make_response(
                 "200 OK",
                 call_id,
                 "INVITE",
                 t0 + TimeDelta::milliseconds(4500),
-            ),
+            )?,
             make_request(
                 "BYE",
                 call_id,
                 "alice",
                 "bob",
                 t0 + TimeDelta::milliseconds(20000),
-            ),
+            )?,
             make_response(
                 "200 OK",
                 call_id,
                 "BYE",
                 t0 + TimeDelta::milliseconds(20200),
-            ),
-        ]
+            )?,
+        ])
     }
 
     /// A fully-completed call yields the five canonical phases in order
     /// with exact per-phase durations, offsets, and total.
     #[test]
-    fn completed_call_yields_ordered_segments_with_durations() {
-        let app = app_with(completed_call("done@test"));
+    fn completed_call_yields_ordered_segments_with_durations() -> Result<(), TestError> {
+        let app = app_with(completed_call("done@test")?);
         let store = app.dialog_store.read();
-        let dialog = store.get("done@test").expect("dialog present");
+        let dialog = store.get("done@test").ok_or("dialog present")?;
         let segs = timeline_segments(dialog);
 
         let kinds: Vec<PhaseKind> = segs.iter().map(|s| s.kind).collect();
@@ -598,14 +600,15 @@ mod tests {
         assert_eq!(segs[0].start_ms, 0);
         assert_eq!(segs[4].start_ms, 20000);
         assert_eq!(timeline_total_ms(&segs), 20200);
+        Ok(())
     }
 
     /// Rendering a completed call shows phase labels, a unit-bearing
     /// duration, the PDD metric, the legend, and the total.
     #[test]
-    fn completed_call_renders_labels_metrics_and_legend() {
-        let app = app_with(completed_call("done@test"));
-        let text = render_to_string(&app, "done@test", 100, 24);
+    fn completed_call_renders_labels_metrics_and_legend() -> Result<(), TestError> {
+        let app = app_with(completed_call("done@test")?);
+        let text = render_to_string(&app, "done@test", 100, 24)?;
 
         // Phase labels.
         assert!(text.contains("In-Call"), "missing In-Call label:\n{text}");
@@ -619,16 +622,17 @@ mod tests {
         assert!(text.contains("Legend"), "missing legend:\n{text}");
         // Total.
         assert!(text.contains("Total"), "missing total:\n{text}");
+        Ok(())
     }
 
     /// An INVITE with no responses yields a setup phase but never an
     /// in-call segment.
     #[test]
-    fn invite_only_call_has_setup_but_no_in_call() {
+    fn invite_only_call_has_setup_but_no_in_call() -> Result<(), TestError> {
         let t0 = base_ts();
-        let app = app_with(vec![make_invite("ringing@test", "alice", "bob", t0)]);
+        let app = app_with(vec![make_invite("ringing@test", "alice", "bob", t0)?]);
         let store = app.dialog_store.read();
-        let dialog = store.get("ringing@test").expect("dialog present");
+        let dialog = store.get("ringing@test").ok_or("dialog present")?;
         let segs = timeline_segments(dialog);
 
         assert!(!segs.is_empty(), "invite-only must still yield setup");
@@ -637,36 +641,37 @@ mod tests {
             "invite-only must have no in-call segment"
         );
         assert_eq!(segs[0].kind, PhaseKind::Setup);
+        Ok(())
     }
 
     /// A 486-rejected call gets a Failed marker, no in-call segment, and
     /// renders the marker without panicking.
     #[test]
-    fn failed_call_appends_marker_without_in_call() {
+    fn failed_call_appends_marker_without_in_call() -> Result<(), TestError> {
         let t0 = base_ts();
         let app = app_with(vec![
-            make_invite("busy@test", "alice", "bob", t0),
+            make_invite("busy@test", "alice", "bob", t0)?,
             make_response(
                 "100 Trying",
                 "busy@test",
                 "INVITE",
                 t0 + TimeDelta::milliseconds(40),
-            ),
+            )?,
             make_response(
                 "180 Ringing",
                 "busy@test",
                 "INVITE",
                 t0 + TimeDelta::milliseconds(900),
-            ),
+            )?,
             make_response(
                 "486 Busy Here",
                 "busy@test",
                 "INVITE",
                 t0 + TimeDelta::milliseconds(2000),
-            ),
+            )?,
         ]);
         let store = app.dialog_store.read();
-        let dialog = store.get("busy@test").expect("dialog present");
+        let dialog = store.get("busy@test").ok_or("dialog present")?;
         let segs = timeline_segments(dialog);
 
         assert!(
@@ -679,72 +684,77 @@ mod tests {
         );
         // Rendering the failed call must not panic and shows the marker.
         drop(store);
-        let text = render_to_string(&app, "busy@test", 90, 20);
+        let text = render_to_string(&app, "busy@test", 90, 20)?;
         assert!(text.contains("Failed"), "missing Failed marker:\n{text}");
+        Ok(())
     }
 
     /// All milestones at the same instant yield zero-length segments, a
     /// total floored to 1 ms, and a panic-free render.
     #[test]
-    fn simultaneous_timestamps_do_not_divide_by_zero() {
+    fn simultaneous_timestamps_do_not_divide_by_zero() -> Result<(), TestError> {
         let t0 = base_ts();
         // All milestones at the same instant.
         let app = app_with(vec![
-            make_invite("zero@test", "alice", "bob", t0),
-            make_response("180 Ringing", "zero@test", "INVITE", t0),
-            make_response("200 OK", "zero@test", "INVITE", t0),
+            make_invite("zero@test", "alice", "bob", t0)?,
+            make_response("180 Ringing", "zero@test", "INVITE", t0)?,
+            make_response("200 OK", "zero@test", "INVITE", t0)?,
         ]);
         let store = app.dialog_store.read();
-        let dialog = store.get("zero@test").expect("dialog present");
+        let dialog = store.get("zero@test").ok_or("dialog present")?;
         let segs = timeline_segments(dialog);
         assert!(segs.iter().all(|s| s.duration_ms == 0));
         assert_eq!(timeline_total_ms(&segs), 1, "total floored to avoid /0");
         drop(store);
         // Must render without panic even though every phase is zero-length.
-        let text = render_to_string(&app, "zero@test", 80, 20);
+        let text = render_to_string(&app, "zero@test", 80, 20)?;
         assert!(
             text.contains("In-Call"),
             "zero-duration still labeled:\n{text}"
         );
+        Ok(())
     }
 
     /// A milestone-free (OPTIONS) dialog yields no segments and renders
     /// the "No timeline data" placeholder.
     #[test]
-    fn dialog_without_timing_shows_placeholder() {
+    fn dialog_without_timing_shows_placeholder() -> Result<(), TestError> {
         let t0 = base_ts();
         // A non-INVITE dialog: exists in the store but records no milestones.
         let app = app_with(vec![make_request(
             "OPTIONS", "opt@test", "alice", "bob", t0,
-        )]);
+        )?]);
         let store = app.dialog_store.read();
-        let dialog = store.get("opt@test").expect("dialog present");
+        let dialog = store.get("opt@test").ok_or("dialog present")?;
         assert!(timeline_segments(dialog).is_empty());
         drop(store);
-        let text = render_to_string(&app, "opt@test", 80, 20);
+        let text = render_to_string(&app, "opt@test", 80, 20)?;
         assert!(
             text.contains("No timeline data"),
             "expected placeholder:\n{text}"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID renders the placeholder instead of panicking.
     #[test]
-    fn missing_call_shows_placeholder_without_panic() {
+    fn missing_call_shows_placeholder_without_panic() -> Result<(), TestError> {
         let app = App::new_test();
-        let text = render_to_string(&app, "nope@test", 80, 20);
+        let text = render_to_string(&app, "nope@test", 80, 20)?;
         assert!(
             text.contains("No timeline data"),
             "expected placeholder:\n{text}"
         );
+        Ok(())
     }
 
     /// A 12x16 terminal shrinks the bar and clips content, not panics.
     #[test]
-    fn narrow_terminal_still_renders_without_panic() {
-        let app = app_with(completed_call("done@test"));
+    fn narrow_terminal_still_renders_without_panic() -> Result<(), TestError> {
+        let app = app_with(completed_call("done@test")?);
         // Extremely narrow: bar must degrade, not panic.
-        let text = render_to_string(&app, "done@test", 12, 16);
+        let text = render_to_string(&app, "done@test", 12, 16)?;
         assert!(text.contains("Total") || text.contains("In-Call"));
+        Ok(())
     }
 }

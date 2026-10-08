@@ -274,10 +274,13 @@ pub(crate) fn read_into_stores(
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A real capture must reach the stores through the worker, not merely
     /// leave the thread running.
     #[test]
-    fn a_spawned_load_fills_the_stores_and_reports_counts() {
+    fn a_spawned_load_fills_the_stores_and_reports_counts() -> Result<(), TestError> {
         let dialog_store = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let stream_store = Arc::new(RwLock::new(StreamStore::new(1000)));
         let exhausted = Arc::new(AtomicBool::new(true));
@@ -297,7 +300,7 @@ mod tests {
             #[cfg(feature = "archive")]
             crate::capture::archive::password::Keyring::default(),
         )
-        .expect("spawn the load worker");
+        .map_err(|e| format!("spawn the load worker: {e:?}"))?;
 
         // The flag must drop while the load runs, or a poller believes the new
         // capture is already complete.
@@ -309,7 +312,7 @@ mod tests {
         }
         assert!(load.finished(), "the load never finished");
 
-        let outcome = load.outcome.lock().clone().expect("an outcome");
+        let outcome = load.outcome.lock().clone().ok_or("an outcome")?;
         assert_eq!(outcome.error, None, "the fixture must load cleanly");
         assert!(outcome.packets > 0, "no packets were read");
         assert!(outcome.dialogs > 0, "no dialogs reached the store");
@@ -323,13 +326,14 @@ mod tests {
             "the source-exhausted flag must be set when the load finishes"
         );
         assert_eq!(load.instance, "test-instance");
+        Ok(())
     }
 
     /// A file that cannot be read reports the failure rather than a silent
     /// empty capture — the stores are already cleared by then, so "zero
     /// dialogs" and "the file was not there" must not look identical.
     #[test]
-    fn a_missing_file_reports_an_error_outcome() {
+    fn a_missing_file_reports_an_error_outcome() -> Result<(), TestError> {
         let dialog_store = Arc::new(RwLock::new(DialogStore::new(1000, false)));
         let stream_store = Arc::new(RwLock::new(StreamStore::new(1000)));
         let load = spawn(
@@ -345,7 +349,7 @@ mod tests {
             #[cfg(feature = "archive")]
             crate::capture::archive::password::Keyring::default(),
         )
-        .expect("spawn the load worker");
+        .map_err(|e| format!("spawn the load worker: {e:?}"))?;
         for _ in 0..400 {
             if load.finished() {
                 break;
@@ -353,11 +357,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(load.finished(), "the load never finished");
-        let outcome = load.outcome.lock().clone().expect("an outcome");
+        let outcome = load.outcome.lock().clone().ok_or("an outcome")?;
         assert!(
             outcome.error.is_some(),
             "an unreadable file must report why, got {outcome:?}"
         );
         assert_eq!(outcome.packets, 0);
+        Ok(())
     }
 }

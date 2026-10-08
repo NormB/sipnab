@@ -479,10 +479,12 @@ pub fn to_message(
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The filter must bound BOTH length and content, or one of the two jobs is
     /// not being done in the kernel.
     #[test]
-    fn the_kernel_filter_bounds_length_and_content_together() {
+    fn the_kernel_filter_bounds_length_and_content_together() -> Result<(), TestError> {
         let f = kernel_filter_for(64);
         assert!(f.contains("len > 0 && len <= 64"), "length band: {f}");
         assert!(f.contains("s ~ \"INVITE*\""), "SIP requests: {f}");
@@ -491,13 +493,14 @@ mod tests {
             f.starts_with('(') && f.contains(") && ("),
             "the two halves must both apply, not either: {f}"
         );
+        Ok(())
     }
 
     /// Every method sipnab claims to capture must be in the kernel filter, or
     /// it is dropped before userspace ever sees it -- which reads as "that
     /// traffic did not happen".
     #[test]
-    fn every_sip_start_token_reaches_the_filter() {
+    fn every_sip_start_token_reaches_the_filter() -> Result<(), TestError> {
         let f = kernel_filter_for(2048);
         for t in SIP_START_TOKENS {
             assert!(f.contains(&format!("s ~ \"{t}*\"")), "{t} missing from {f}");
@@ -507,20 +510,22 @@ mod tests {
             15,
             "14 methods plus the response form"
         );
+        Ok(())
     }
 
     /// The probe must fetch the string the filter matches on, or the filter
     /// references a field that does not exist and the kernel refuses the write.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn the_probe_fetches_the_string_its_filter_matches_on() {
-        let line = install_line("t", "/lib/libssl.so.3", 0x1000, 64).expect("known arch");
+    fn the_probe_fetches_the_string_its_filter_matches_on() -> Result<(), TestError> {
+        let line = install_line("t", "/lib/libssl.so.3", 0x1000, 64).ok_or("known arch")?;
         assert!(line.contains("s=+0("), "string arg for the filter: {line}");
         assert!(line.contains(":string"), "typed as string: {line}");
         assert!(
             line.contains(":x8[64]"),
             "payload still comes from bytes: {line}"
         );
+        Ok(())
     }
 
     fn delivered(bytes: &[u8]) -> Delivered {
@@ -533,16 +538,17 @@ mod tests {
     /// The join: plaintext from a probe becomes a message whose provenance
     /// says where it came from and refuses to claim a frame.
     #[test]
-    fn accepted_plaintext_becomes_a_message_attributed_to_its_process() {
+    fn accepted_plaintext_becomes_a_message_attributed_to_its_process() -> Result<(), TestError> {
         let d = delivered(
             b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: u@x\r\nCSeq: 1 INVITE\r\n\r\n",
         );
-        let msg = to_message(&d, 4321, "opensips", 9, chrono::Utc::now()).expect("parses");
+        let msg = to_message(&d, 4321, "opensips", 9, chrono::Utc::now())
+            .map_err(|e| format!("{e:?}"))?;
 
         let frame = msg
             .frame
             .as_ref()
-            .expect("a uprobe message still carries provenance");
+            .ok_or("a uprobe message still carries provenance")?;
         assert!(
             matches!(
                 frame.source_kind(),
@@ -555,47 +561,53 @@ mod tests {
         #[cfg(feature = "native")]
         {
             let err = crate::capture::resolve::resolve(frame)
-                .expect_err("there is no frame behind uprobe bytes");
+                .err()
+                .ok_or("there is no frame behind uprobe bytes")?;
             assert!(err.to_string().contains("opensips"), "and says so: {err}");
         }
+        Ok(())
     }
 
     /// Addresses are absent, not zero-as-a-value. A uprobe sees no socket.
     #[test]
-    fn peer_addresses_are_left_unspecified_rather_than_invented() {
+    fn peer_addresses_are_left_unspecified_rather_than_invented() -> Result<(), TestError> {
         let d = delivered(
             b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: u@x\r\nCSeq: 1 INVITE\r\n\r\n",
         );
-        let msg = to_message(&d, 1, "p", 0, chrono::Utc::now()).unwrap();
+        let msg = to_message(&d, 1, "p", 0, chrono::Utc::now()).map_err(|e| format!("{e:?}"))?;
         assert!(msg.src_addr.is_unspecified(), "no socket was observed");
         assert_eq!(msg.src_port, 0);
         assert_eq!(msg.transport, crate::net::TransportProto::Tls);
+        Ok(())
     }
 
     /// A fragment must not parse into something that looks whole.
     #[test]
-    fn a_truncated_read_is_refused_rather_than_parsed() {
+    fn a_truncated_read_is_refused_rather_than_parsed() -> Result<(), TestError> {
         let d = Delivered {
             bytes: b"INVITE sip:b@x SIP/2.0\r\n".to_vec(),
             truncated: true,
         };
-        let err =
-            to_message(&d, 1, "p", 0, chrono::Utc::now()).expect_err("a fragment is not a message");
+        let err = to_message(&d, 1, "p", 0, chrono::Utc::now())
+            .err()
+            .ok_or("a fragment is not a message")?;
         assert!(matches!(err, IngestError::Truncated { .. }), "{err}");
+        Ok(())
     }
 
     /// These probes see every process mapping the library.
     #[test]
-    fn non_sip_plaintext_does_not_become_a_message() {
+    fn non_sip_plaintext_does_not_become_a_message() -> Result<(), TestError> {
         let d = delivered(b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(matches!(
             to_message(&d, 1, "curl", 0, chrono::Utc::now()),
             Err(IngestError::NotSip(_))
         ));
+        Ok(())
     }
 
     #[test]
-    fn a_probe_name_is_unique_per_process_library_and_band() {
+    fn a_probe_name_is_unique_per_process_library_and_band() -> Result<(), TestError> {
         assert_eq!(probe_name(42, 0, 64), "sipnab_42_l0_b64");
         assert_ne!(
             probe_name(42, 0, 64),
@@ -616,24 +628,26 @@ mod tests {
             probe_name(42, 1, 64),
             "nor two libraries probed by one sipnab"
         );
+        Ok(())
     }
 
     /// Removal must name the probe. Truncating `uprobe_events` would remove
     /// every other tracer's probes on the host.
     #[test]
-    fn removal_names_one_probe_and_is_an_append() {
+    fn removal_names_one_probe_and_is_an_append() -> Result<(), TestError> {
         let line = remove_line("sipnab_42_b64");
         assert_eq!(line, "-:sipnab_42_b64");
         assert!(
             !line.is_empty(),
             "an empty write would truncate the shared file"
         );
+        Ok(())
     }
 
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn a_band_is_built_from_64_byte_fetches_because_that_is_the_ceiling() {
-        let line = install_line("t", "/lib/libssl.so.3", 0x3e110, 256).expect("known arch");
+    fn a_band_is_built_from_64_byte_fetches_because_that_is_the_ceiling() -> Result<(), TestError> {
+        let line = install_line("t", "/lib/libssl.so.3", 0x3e110, 256).ok_or("known arch")?;
         assert_eq!(
             line.matches(":x8[64]").count(),
             4,
@@ -645,53 +659,57 @@ mod tests {
             line.contains("b0=+0(") && line.contains("b64=+64("),
             "each fetch reads its own offset: {line}"
         );
+        Ok(())
     }
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn x86_64_uses_the_sysv_argument_registers() {
-        let line = install_line("t", "/l", 0, 64).expect("x86_64 is known");
+    fn x86_64_uses_the_sysv_argument_registers() -> Result<(), TestError> {
+        let line = install_line("t", "/l", 0, 64).ok_or("x86_64 is known")?;
         assert!(line.contains("(%si)"), "second argument is rsi: {line}");
         assert!(line.contains("len=%dx"), "third argument is rdx: {line}");
+        Ok(())
     }
 
     #[test]
     #[cfg(target_arch = "aarch64")]
-    fn aarch64_uses_the_aapcs64_argument_registers() {
-        let line = install_line("t", "/l", 0, 64).expect("aarch64 is known");
+    fn aarch64_uses_the_aapcs64_argument_registers() -> Result<(), TestError> {
+        let line = install_line("t", "/l", 0, 64).ok_or("aarch64 is known")?;
         assert!(line.contains("(%x1)"), "second argument is x1: {line}");
         assert!(line.contains("len=%x2"), "third argument is x2: {line}");
+        Ok(())
     }
 
     /// A removal that fails must leave the names behind, not pretend success.
     /// The kernel refuses to remove a tracepoint with an open perf consumer,
     /// and an end-to-end run really did leak four probes that way.
     #[test]
-    fn a_failed_removal_is_reported_and_keeps_the_names() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_failed_removal_is_reported_and_keeps_the_names() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let root = dir.path();
-        std::fs::write(root.join("uprobe_events"), "").unwrap();
+        std::fs::write(root.join("uprobe_events"), "")?;
         for band in BANDS {
             let d = root.join(format!("events/uprobes/{}", probe_name(8, 0, band)));
-            std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(d.join("filter"), "").unwrap();
-            std::fs::write(d.join("enable"), "").unwrap();
+            std::fs::create_dir_all(&d)?;
+            std::fs::write(d.join("filter"), "")?;
+            std::fs::write(d.join("enable"), "")?;
         }
-        let mut held = InstalledProbes::install(root, 8, 0, "/lib/libssl.so.3", 0x1000).unwrap();
+        let mut held = InstalledProbes::install(root, 8, 0, "/lib/libssl.so.3", 0x1000)?;
 
         // Stand in for the kernel refusing while a consumer is open.
         let ev = root.join("uprobe_events");
-        let mut perms = std::fs::metadata(&ev).unwrap().permissions();
+        let mut perms = std::fs::metadata(&ev)?.permissions();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             perms.set_mode(0o444);
         }
-        std::fs::set_permissions(&ev, perms).unwrap();
+        std::fs::set_permissions(&ev, perms)?;
 
         let err = held
             .remove()
-            .expect_err("an unwritable control file must fail");
+            .err()
+            .ok_or("an unwritable control file must fail")?;
         let _ = err;
         assert_eq!(
             held.names().len(),
@@ -701,35 +719,35 @@ mod tests {
         );
 
         // Let the guard clean up for real.
-        let mut perms = std::fs::metadata(&ev).unwrap().permissions();
+        let mut perms = std::fs::metadata(&ev)?.permissions();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             perms.set_mode(0o644);
         }
-        std::fs::set_permissions(&ev, perms).unwrap();
+        std::fs::set_permissions(&ev, perms)?;
+        Ok(())
     }
 
     /// The guard is the safety property: probes are kernel state that outlives
     /// the process, so dropping must remove every one it installed.
     #[test]
-    fn dropping_the_guard_removes_every_probe_it_installed() {
-        let dir = tempfile::tempdir().unwrap();
+    fn dropping_the_guard_removes_every_probe_it_installed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let root = dir.path();
-        std::fs::write(root.join("uprobe_events"), "").unwrap();
+        std::fs::write(root.join("uprobe_events"), "")?;
         for band in BANDS {
             let d = root.join(format!("events/uprobes/{}", probe_name(7, 0, band)));
-            std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(d.join("filter"), "").unwrap();
-            std::fs::write(d.join("enable"), "").unwrap();
+            std::fs::create_dir_all(&d)?;
+            std::fs::write(d.join("filter"), "")?;
+            std::fs::write(d.join("enable"), "")?;
         }
 
-        let held = InstalledProbes::install(root, 7, 0, "/lib/libssl.so.3", 0x1000)
-            .expect("install into the fake tracefs");
+        let held = InstalledProbes::install(root, 7, 0, "/lib/libssl.so.3", 0x1000)?;
         for band in BANDS {
             let enable = root.join(format!("events/uprobes/{}/enable", probe_name(7, 0, band)));
             assert_eq!(
-                std::fs::read_to_string(&enable).unwrap(),
+                std::fs::read_to_string(&enable)?,
                 "",
                 "install must NOT write enable: a tracepoint switched on through \
                  tracefs cannot then be opened by perf, which fails with a \
@@ -737,7 +755,7 @@ mod tests {
             );
         }
         assert_eq!(held.names().len(), BANDS.len(), "one probe per band");
-        let installed = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        let installed = std::fs::read_to_string(root.join("uprobe_events"))?;
         assert_eq!(
             installed.lines().filter(|l| l.starts_with("p:")).count(),
             BANDS.len()
@@ -745,7 +763,7 @@ mod tests {
 
         drop(held);
 
-        let after = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        let after = std::fs::read_to_string(root.join("uprobe_events"))?;
         for band in BANDS {
             let name = probe_name(7, 0, band);
             assert!(
@@ -758,30 +776,30 @@ mod tests {
             "removal is an APPEND of -:name; an empty file would mean sipnab \
              truncated shared kernel state and took other tracers with it"
         );
+        Ok(())
     }
 
     /// A host running OpenSSL and wolfSSL together is the ordinary case. Both
     /// probe sets must exist at once, and both must be removed.
     #[test]
-    fn two_libraries_probed_at_once_do_not_collide_and_both_are_released() {
-        let dir = tempfile::tempdir().unwrap();
+    fn two_libraries_probed_at_once_do_not_collide_and_both_are_released() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
         let root = dir.path();
-        std::fs::write(root.join("uprobe_events"), "").unwrap();
+        std::fs::write(root.join("uprobe_events"), "")?;
         for slot in 0..2 {
             for band in BANDS {
                 let d = root.join(format!("events/uprobes/{}", probe_name(9, slot, band)));
-                std::fs::create_dir_all(&d).unwrap();
-                std::fs::write(d.join("filter"), "").unwrap();
-                std::fs::write(d.join("enable"), "").unwrap();
+                std::fs::create_dir_all(&d)?;
+                std::fs::write(d.join("filter"), "")?;
+                std::fs::write(d.join("enable"), "")?;
             }
         }
 
-        let openssl =
-            InstalledProbes::install(root, 9, 0, "/lib/libssl.so.3", 0x1000).expect("openssl");
-        let wolfssl =
-            InstalledProbes::install(root, 9, 1, "/lib/libwolfssl.so.42", 0x2000).expect("wolfssl");
+        let openssl = InstalledProbes::install(root, 9, 0, "/lib/libssl.so.3", 0x1000)?;
+        let wolfssl = InstalledProbes::install(root, 9, 1, "/lib/libwolfssl.so.42", 0x2000)?;
 
-        let installed = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        let installed = std::fs::read_to_string(root.join("uprobe_events"))?;
         assert_eq!(
             installed.lines().filter(|l| l.starts_with("p:")).count(),
             BANDS.len() * 2,
@@ -808,68 +826,73 @@ mod tests {
         drop(openssl);
         drop(wolfssl);
 
-        let after = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        let after = std::fs::read_to_string(root.join("uprobe_events"))?;
         for name in &names {
             assert!(
                 after.contains(&format!("-:{name}")),
                 "drop must remove {name}"
             );
         }
+        Ok(())
     }
 
     /// THE rule. A short write inside a long fetch must yield the message and
     /// nothing else — the padding measured on a live proxy was adjacent heap.
     #[test]
-    fn only_the_bytes_the_application_wrote_come_back() {
+    fn only_the_bytes_the_application_wrote_come_back() -> Result<(), TestError> {
         let mut raw = vec![0xAA; 512];
         raw[..12].copy_from_slice(b"INVITE sip:x");
 
-        let got = accept(&mut raw, 12).expect("a 12-byte write is usable");
+        let got = accept(&mut raw, 12).ok_or("a 12-byte write is usable")?;
         assert_eq!(got.bytes, b"INVITE sip:x");
         assert!(!got.truncated);
         assert_eq!(got.bytes.len(), 12, "never the 512-byte fetch");
+        Ok(())
     }
 
     /// Ignoring the padding is not enough: it must not survive in the buffer.
     #[test]
-    fn the_padding_is_wiped_not_merely_skipped() {
+    fn the_padding_is_wiped_not_merely_skipped() -> Result<(), TestError> {
         let mut raw = vec![0xAA; 128];
         raw[..4].copy_from_slice(b"SIP/");
 
-        accept(&mut raw, 4).expect("usable");
+        accept(&mut raw, 4).ok_or("usable")?;
 
         assert!(
             raw[4..].iter().all(|&b| b == 0),
             "adjacent process memory must not outlive the call that read it"
         );
         assert_eq!(&raw[..4], b"SIP/", "and the payload is left alone");
+        Ok(())
     }
 
     /// The zero-length writes were most of the first trace. They carry only
     /// padding, so acting on them would be acting on adjacent memory.
     #[test]
-    fn a_zero_or_negative_length_write_is_rejected() {
+    fn a_zero_or_negative_length_write_is_rejected() -> Result<(), TestError> {
         let mut raw = vec![0xAA; 64];
         assert_eq!(accept(&mut raw, 0), None, "zero-length carries no payload");
         assert_eq!(accept(&mut raw, -1), None, "a negative length is not one");
+        Ok(())
     }
 
     /// A message bigger than every band is a fragment, and must announce it.
     #[test]
-    fn a_write_larger_than_the_fetch_is_reported_truncated() {
+    fn a_write_larger_than_the_fetch_is_reported_truncated() -> Result<(), TestError> {
         let mut raw = vec![b'x'; max_fetch()];
-        let got = accept(&mut raw, 9000).expect("still usable, just partial");
+        let got = accept(&mut raw, 9000).ok_or("still usable, just partial")?;
 
         assert_eq!(got.bytes.len(), max_fetch());
         assert!(
             got.truncated,
             "a half-read SIP message must never look like a complete one"
         );
+        Ok(())
     }
 
     /// Bands are chosen to overshoot as little as possible.
     #[test]
-    fn the_smallest_band_that_fits_is_chosen() {
+    fn the_smallest_band_that_fits_is_chosen() -> Result<(), TestError> {
         assert_eq!(band_for(1), Some(64));
         assert_eq!(band_for(64), Some(64), "a band includes its own size");
         assert_eq!(
@@ -879,11 +902,12 @@ mod tests {
         );
         assert_eq!(band_for(2048), Some(2048));
         assert_eq!(band_for(2049), None, "larger than every band");
+        Ok(())
     }
 
     /// The filters must partition, or a write lands in two probes or none.
     #[test]
-    fn the_band_filters_cover_every_length_exactly_once() {
+    fn the_band_filters_cover_every_length_exactly_once() -> Result<(), TestError> {
         for len in 1..=max_fetch() {
             let matching: Vec<usize> = BANDS
                 .iter()
@@ -899,20 +923,23 @@ mod tests {
                 "length {len} matched {matching:?}; bands must partition"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn filter_text_matches_the_band_it_guards() {
+    fn filter_text_matches_the_band_it_guards() -> Result<(), TestError> {
         assert_eq!(filter_for(64), "len > 0 && len <= 64");
         assert_eq!(filter_for(256), "len > 64 && len <= 256");
         assert_eq!(filter_for(2048), "len > 1024 && len <= 2048");
+        Ok(())
     }
 
     /// These probes see every process on the box mapping the library.
     #[test]
-    fn non_sip_plaintext_is_filtered_out() {
+    fn non_sip_plaintext_is_filtered_out() -> Result<(), TestError> {
         assert!(is_interesting(b"INVITE sip:b@example.net SIP/2.0\r\n\r\n"));
         assert!(!is_interesting(b"GET /index.html HTTP/1.1\r\n\r\n"));
         assert!(!is_interesting(&[0u8; 32]));
+        Ok(())
     }
 }

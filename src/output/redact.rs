@@ -1478,6 +1478,9 @@ fn json_field_action(key: &str, value: &str, redactor: &Redactor<'_>) -> HeaderA
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A fixed key, so every expectation below is reproducible.
     fn policy() -> RedactionPolicy {
         RedactionPolicy::new(RedactionKey::from_secret(b"sipnab-test-key"))
@@ -1489,41 +1492,45 @@ mod tests {
     /// operator asking "how many failures came from one subscriber" is
     /// comparing two identities, and `***` compares equal to everything.
     #[test]
-    fn one_identity_maps_to_one_token() {
+    fn one_identity_maps_to_one_token() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         assert_eq!(r.identity("+15551234567"), r.identity("+15551234567"));
         assert_ne!(r.identity("+15551234567"), r.identity("+15551234568"));
+        Ok(())
     }
 
     /// A different key produces a different token for the same input.
     #[test]
-    fn the_key_changes_the_token() {
+    fn the_key_changes_the_token() -> Result<(), TestError> {
         let a = RedactionPolicy::new(RedactionKey::from_secret(b"key-a"));
         let b = RedactionPolicy::new(RedactionKey::from_secret(b"key-b"));
         assert_ne!(
             a.redactor().identity("+15551234567"),
             b.redactor().identity("+15551234567")
         );
+        Ok(())
     }
 
     /// A number keeps its length and gains a marker no real number can carry.
     #[test]
-    fn a_number_keeps_its_length_and_is_unmistakable() {
+    fn a_number_keeps_its_length_and_is_unmistakable() -> Result<(), TestError> {
         let p = policy();
         let token = p.redactor().identity("+15551234567");
         assert_eq!(token.len(), "+15551234567".len(), "{token}");
         assert!(token.contains(NUMBER_MARKER), "{token}");
         assert!(!token.contains("5551234567"), "{token}");
+        Ok(())
     }
 
     /// The retained prefix survives verbatim, and the rest does not.
     #[test]
-    fn the_retained_prefix_survives() {
+    fn the_retained_prefix_survives() -> Result<(), TestError> {
         let p = policy().with_keep_prefix(4);
         let token = p.redactor().identity("+15551234567");
         assert!(token.starts_with("+1555"), "{token}");
         assert!(!token.contains("1234567"), "{token}");
+        Ok(())
     }
 
     /// Keeping more digits than the number has still replaces one.
@@ -1532,11 +1539,12 @@ mod tests {
     /// name says it is redacting, which is the worst failure this module can
     /// have: it looks exactly like success.
     #[test]
-    fn an_oversized_retained_prefix_still_redacts() {
+    fn an_oversized_retained_prefix_still_redacts() -> Result<(), TestError> {
         let p = policy().with_keep_prefix(99);
         let token = p.redactor().identity("+15551234567");
         assert_ne!(token, "+15551234567");
         assert!(token.contains(NUMBER_MARKER), "{token}");
+        Ok(())
     }
 
     /// Addresses sharing a prefix keep sharing it, and differing ones do not.
@@ -1545,7 +1553,7 @@ mod tests {
     /// "the media went to a subnet the SDP never advertised" stops being
     /// answerable on a redacted capture.
     #[test]
-    fn address_prefixes_are_preserved() {
+    fn address_prefixes_are_preserved() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         let host_15 = r.ip("10.0.2.15"
@@ -1560,7 +1568,7 @@ mod tests {
         let (IpAddr::V4(host_15), IpAddr::V4(host_20), IpAddr::V4(other_net)) =
             (host_15, host_20, other_net)
         else {
-            panic!("v4 in, v4 out");
+            return Err("v4 in, v4 out".into());
         };
         assert_eq!(
             host_15.octets()[..3],
@@ -1573,11 +1581,12 @@ mod tests {
             "{host_15} {other_net}"
         );
         assert_ne!(host_15, host_20, "distinct hosts must stay distinct");
+        Ok(())
     }
 
     /// IPv6 prefixes are preserved the same way.
     #[test]
-    fn ipv6_prefixes_are_preserved() {
+    fn ipv6_prefixes_are_preserved() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         let a = r.ip("2001:db8::1"
@@ -1587,10 +1596,11 @@ mod tests {
             .parse()
             .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
         let (IpAddr::V6(a), IpAddr::V6(b)) = (a, b) else {
-            panic!("v6 in, v6 out");
+            return Err("v6 in, v6 out".into());
         };
         assert_eq!(a.octets()[..8], b.octets()[..8], "{a} {b}");
         assert_ne!(a, b);
+        Ok(())
     }
 
     /// The unspecified address is a protocol signal, not an address.
@@ -1598,16 +1608,17 @@ mod tests {
     /// [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) hold is `c=IN IP4 0.0.0.0`. Pseudonymizing it deletes a
     /// call state from the export and takes the hold lint rule with it.
     #[test]
-    fn the_unspecified_address_is_left_alone() {
+    fn the_unspecified_address_is_left_alone() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         assert_eq!(r.host("0.0.0.0"), "0.0.0.0");
         assert_eq!(r.host("::"), "::");
+        Ok(())
     }
 
     /// A digest credential is deleted, not tokenized.
     #[test]
-    fn digest_credentials_are_deleted() {
+    fn digest_credentials_are_deleted() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         for name in [
@@ -1622,6 +1633,7 @@ mod tests {
                 "{name}"
             );
         }
+        Ok(())
     }
 
     /// A quoted `icid-value` containing a `;` is not split.
@@ -1635,7 +1647,7 @@ mod tests {
     /// The consequence was a leak: the tail of the icid emerged in clear, and
     /// the rewritten header was syntactically broken as well.
     #[test]
-    fn a_quoted_icid_value_containing_a_semicolon_is_not_split() {
+    fn a_quoted_icid_value_containing_a_semicolon_is_not_split() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1648,6 +1660,7 @@ mod tests {
             !out.contains("proxy.example.com"),
             "and the generating proxy is still rewritten: {out}"
         );
+        Ok(())
     }
 
     /// Whitespace before a quoted value does not strip its quotes.
@@ -1658,7 +1671,7 @@ mod tests {
     /// `transit-ioi-list` were dropped — leaving embedded COMMAs that any
     /// downstream parser reads as a header-value separator.
     #[test]
-    fn whitespace_before_a_quoted_value_keeps_its_quotes() {
+    fn whitespace_before_a_quoted_value_keeps_its_quotes() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1669,8 +1682,8 @@ mod tests {
         let ti = out
             .split(';')
             .find(|p| p.trim_start().starts_with("transit-ioi"))
-            .expect("the parameter survives");
-        let value = ti.split_once('=').expect("it has a value").1.trim();
+            .ok_or("the parameter survives")?;
+        let value = ti.split_once('=').ok_or("it has a value")?.1.trim();
         assert!(
             value.starts_with('"') && value.ends_with('"'),
             "RFC 7315 5.6 makes the DQUOTEs mandatory on transit-ioi-list: {out}"
@@ -1679,11 +1692,12 @@ mod tests {
             !out.contains("opa"),
             "the operator is still rewritten: {out}"
         );
+        Ok(())
     }
 
     /// Every `P-Charging-Vector` parameter is rewritten, `void` excepted.
     #[test]
-    fn every_charging_vector_parameter_is_rewritten() {
+    fn every_charging_vector_parameter_is_rewritten() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         let raw = "icid-value=\"sbc01.carrier.example-8f2a\";\
@@ -1704,16 +1718,18 @@ mod tests {
             out.contains("void.2"),
             "void is the spec's own marker: {out}"
         );
+        Ok(())
     }
 
     /// A `Call-ID` embedding a hostname loses both halves.
     #[test]
-    fn a_call_id_loses_its_embedded_hostname() {
+    fn a_call_id_loses_its_embedded_hostname() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().opaque("a84b4c76e66710@pbx.internal.example");
         assert!(!out.contains("pbx.internal.example"), "{out}");
         assert!(!out.contains("a84b4c76e66710"), "{out}");
         assert!(out.contains('@'), "the shape a parser expects: {out}");
+        Ok(())
     }
 
     /// A two-value `P-Asserted-Identity` redacts BOTH values.
@@ -1728,7 +1744,7 @@ mod tests {
     /// everything after the comma **verbatim**, so a container the tool calls
     /// redacted carried a real E.164 subscriber number in clear.
     #[test]
-    fn both_values_of_a_two_value_identity_header_are_redacted() {
+    fn both_values_of_a_two_value_identity_header_are_redacted() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1742,6 +1758,7 @@ mod tests {
             "and neither must the second: {out}"
         );
         assert!(out.contains(','), "the list shape survives: {out}");
+        Ok(())
     }
 
     /// A display name may end in an ESCAPED quote, and the URI after it must
@@ -1759,7 +1776,7 @@ mod tests {
     /// There is no backstop — `header()` returns `HeaderAction::Replace`, and
     /// `redact_field` sweeps free text only for `Keep`.
     #[test]
-    fn an_escaped_quote_in_a_display_name_does_not_expose_the_real_uri() {
+    fn an_escaped_quote_in_a_display_name_does_not_expose_the_real_uri() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().name_addr(
             "\"Doe\\\" <sip:decoy@attacker.example>\" <sip:15551230009@carrier.example>;tag=1",
@@ -1772,6 +1789,7 @@ mod tests {
             !out.contains("carrier.example"),
             "nor the operator's own host: {out}"
         );
+        Ok(())
     }
 
     /// A semicolon inside a quoted parameter value does not split it.
@@ -1781,7 +1799,7 @@ mod tests {
     /// shape as the duplicate `P-Charging-Vector` splitter that tore a quoted
     /// `icid-value` and leaked its tail.
     #[test]
-    fn a_semicolon_inside_a_quoted_parameter_does_not_split_it() {
+    fn a_semicolon_inside_a_quoted_parameter_does_not_split_it() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1790,6 +1808,7 @@ mod tests {
             !out.contains("15551230008"),
             "the whole quoted device id is opaque, tail included: {out}"
         );
+        Ok(())
     }
 
     /// Order does not matter: a `tel:` first still redacts the `sip:` second.
@@ -1797,7 +1816,7 @@ mod tests {
     /// The leak was order-independent, so the test must be too — checking only
     /// one order would pass against a fix that handled only one.
     #[test]
-    fn the_second_value_is_redacted_whichever_scheme_comes_first() {
+    fn the_second_value_is_redacted_whichever_scheme_comes_first() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1805,6 +1824,7 @@ mod tests {
         assert!(!out.contains("15559990001"), "{out}");
         assert!(!out.contains("jsmith"), "{out}");
         assert!(!out.contains("secret.example.com"), "{out}");
+        Ok(())
     }
 
     /// The splitter separates values and nothing else.
@@ -1817,7 +1837,7 @@ mod tests {
     /// second piece still contains exactly one `sip:`. The assertion could not
     /// fail, so it was measuring nothing.
     #[test]
-    fn the_splitter_separates_values_and_nothing_else() {
+    fn the_splitter_separates_values_and_nothing_else() -> Result<(), TestError> {
         // RFC 3261 25.1 puts `,` inside qdtext: one display name, one value.
         assert_eq!(
             split_top_level_commas("\"Doe, John\" <sip:alice@example.com>").len(),
@@ -1847,6 +1867,7 @@ mod tests {
             3,
             "COMMA = SWS \",\" SWS, so the spaces are optional"
         );
+        Ok(())
     }
 
     /// A single value with no comma comes back as exactly one part.
@@ -1854,9 +1875,10 @@ mod tests {
     /// The boundary the whole fix must not disturb: `From` and `To` are
     /// single-value and appear in every message in every capture.
     #[test]
-    fn a_value_with_no_comma_is_one_part() {
+    fn a_value_with_no_comma_is_one_part() -> Result<(), TestError> {
         assert_eq!(split_top_level_commas("<sip:alice@example.com>").len(), 1);
         assert_eq!(split_top_level_commas("").len(), 1, "even an empty value");
+        Ok(())
     }
 
     /// Every routing header that carries a list redacts every element.
@@ -1867,7 +1889,7 @@ mod tests {
     /// one representative — a per-header dispatch is exactly where a fix
     /// reaches some and not others.
     #[test]
-    fn every_list_valued_routing_header_redacts_every_element() {
+    fn every_list_valued_routing_header_redacts_every_element() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         for header in ["path", "route", "record-route", "service-route"] {
@@ -1876,7 +1898,7 @@ mod tests {
                 "<sip:p1@edge1.secret.example.com;lr>, <sip:p2@edge2.secret.example.com;lr>",
             );
             let HeaderAction::Replace(out) = action else {
-                panic!("{header} must be rewritten, got {action:?}");
+                return Err(format!("{header} must be rewritten, got {action:?}").into());
             };
             assert!(!out.contains("edge1.secret"), "{header}: {out}");
             assert!(
@@ -1885,11 +1907,12 @@ mod tests {
             );
             assert!(out.contains(";lr"), "{header} keeps routing params: {out}");
         }
+        Ok(())
     }
 
     /// Every identity-family header that carries a list redacts every element.
     #[test]
-    fn every_list_valued_identity_header_redacts_every_element() {
+    fn every_list_valued_identity_header_redacts_every_element() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         for header in [
@@ -1904,7 +1927,7 @@ mod tests {
                 "<sip:one@first.secret.example.com>, <sip:two@second.secret.example.com>",
             );
             let HeaderAction::Replace(out) = action else {
-                panic!("{header} must be rewritten, got {action:?}");
+                return Err(format!("{header} must be rewritten, got {action:?}").into());
             };
             assert!(!out.contains("first.secret"), "{header}: {out}");
             assert!(
@@ -1912,6 +1935,7 @@ mod tests {
                 "{header} leaked its second value: {out}"
             );
         }
+        Ok(())
     }
 
     /// A single-value header is unchanged by the list handling.
@@ -1920,7 +1944,7 @@ mod tests {
     /// splitter must be a no-op on them rather than a new way to mangle the
     /// commonest headers in every capture.
     #[test]
-    fn a_single_value_header_is_unaffected_by_list_handling() {
+    fn a_single_value_header_is_unaffected_by_list_handling() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().name_addr(
             "\"Alice Smith\" <sip:+15551234567@pbx.example;transport=tcp>;tag=1928301774",
@@ -1931,11 +1955,12 @@ mod tests {
             !out.contains(','),
             "no comma was there to begin with: {out}"
         );
+        Ok(())
     }
 
     /// A `From` header keeps its grammar and loses its identity.
     #[test]
-    fn a_name_addr_keeps_its_shape() {
+    fn a_name_addr_keeps_its_shape() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().name_addr(
             "\"Alice Smith\" <sip:+15551234567@pbx.example;transport=tcp>;tag=1928301774",
@@ -1950,12 +1975,13 @@ mod tests {
         assert!(!out.contains("Alice Smith"), "{out}");
         assert!(!out.contains("5551234567"), "{out}");
         assert!(!out.contains("pbx.example"), "{out}");
+        Ok(())
     }
 
     /// The SDP origin loses its username and its address, and keeps its
     /// version counter.
     #[test]
-    fn the_sdp_origin_is_rewritten_and_the_version_survives() {
+    fn the_sdp_origin_is_rewritten_and_the_version_survives() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1964,14 +1990,16 @@ mod tests {
         assert!(!out.contains("10.0.2.15"), "{out}");
         assert!(out.contains("2890844526 2890844527"), "{out}");
         assert!(out.contains("c=IN IP4 "), "{out}");
+        Ok(())
     }
 
     /// The hold address survives an SDP rewrite.
     #[test]
-    fn sdp_hold_survives_redaction() {
+    fn sdp_hold_survives_redaction() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().sdp("v=0\r\nc=IN IP4 0.0.0.0\r\n");
         assert!(out.contains("c=IN IP4 0.0.0.0"), "{out}");
+        Ok(())
     }
 
     /// Free prose loses the addresses and the numbers inside it.
@@ -1980,7 +2008,7 @@ mod tests {
     /// structured field tokenized, and two addresses published through an
     /// explanation string.
     #[test]
-    fn free_text_loses_addresses_and_numbers() {
+    fn free_text_loses_addresses_and_numbers() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
@@ -1989,6 +2017,7 @@ mod tests {
         assert!(!out.contains("10.0.2.20"), "{out}");
         assert!(!out.contains("5551234567"), "{out}");
         assert!(out.contains("RTP from"), "the prose survives: {out}");
+        Ok(())
     }
 
     /// The text sweep leaves a timestamp alone.
@@ -1997,20 +2026,22 @@ mod tests {
     /// corrupt every clock in the export, which is why candidates are parsed
     /// before they are replaced.
     #[test]
-    fn the_text_sweep_leaves_timestamps_alone() {
+    fn the_text_sweep_leaves_timestamps_alone() -> Result<(), TestError> {
         let p = policy();
         let stamp = "2026-08-28T04:19:00.123456Z";
         assert_eq!(p.redactor().text(stamp), stamp);
+        Ok(())
     }
 
     /// A version string is not a phone number.
     #[test]
-    fn the_text_sweep_leaves_short_numbers_alone() {
+    fn the_text_sweep_leaves_short_numbers_alone() -> Result<(), TestError> {
         let p = policy();
         let out = p
             .redactor()
             .text("sipnab 0.5.129 saw 42 dialogs in 1234 ms");
         assert_eq!(out, "sipnab 0.5.129 saw 42 dialogs in 1234 ms");
+        Ok(())
     }
 
     /// An unbracketed IPv6 literal stays an address.
@@ -2020,7 +2051,7 @@ mod tests {
     /// name, which redacts and destroys the prefix-preserving map at the same
     /// time.
     #[test]
-    fn an_unbracketed_ipv6_literal_is_read_as_an_address() {
+    fn an_unbracketed_ipv6_literal_is_read_as_an_address() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         let out = r.host("2001:db8::1");
@@ -2032,25 +2063,27 @@ mod tests {
         let (Ok(IpAddr::V6(a)), Ok(IpAddr::V6(b))) =
             (out.parse::<IpAddr>(), sibling.parse::<IpAddr>())
         else {
-            panic!("both must parse as IPv6");
+            return Err("both must parse as IPv6".into());
         };
         assert_eq!(a.octets()[..8], b.octets()[..8], "{a} {b}");
         assert_ne!(a, b);
+        Ok(())
     }
 
     /// A bracketed IPv6 literal keeps its brackets and its port.
     #[test]
-    fn a_bracketed_ipv6_literal_keeps_its_shape() {
+    fn a_bracketed_ipv6_literal_keeps_its_shape() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().host("[2001:db8::1]:5060");
         assert!(out.starts_with('['), "{out}");
         assert!(out.ends_with("]:5060"), "{out}");
         assert!(!out.contains("db8"), "{out}");
+        Ok(())
     }
 
     /// The SDP connection line survives an IPv6 address.
     #[test]
-    fn the_sdp_connection_line_handles_ipv6() {
+    fn the_sdp_connection_line_handles_ipv6() -> Result<(), TestError> {
         let p = policy();
         let out = p.redactor().sdp("v=0\r\nc=IN IP6 2001:db8::1\r\n");
         assert!(!out.contains("2001:db8::1"), "{out}");
@@ -2060,6 +2093,7 @@ mod tests {
             .find_map(|l| l.strip_prefix("c=IN IP6 "))
             .unwrap_or("");
         assert!(addr.parse::<IpAddr>().is_ok(), "{out}");
+        Ok(())
     }
 
     /// A host name is replaced whole, never as a fragment of a longer word.
@@ -2069,7 +2103,7 @@ mod tests {
     /// destroying the export by a different route than leaking it, and just as
     /// finally.
     #[test]
-    fn a_hostname_sweep_never_matches_a_fragment() {
+    fn a_hostname_sweep_never_matches_a_fragment() -> Result<(), TestError> {
         assert_eq!(
             replace_hostname("host db, not 2001:db8::1 or dbx", "db", "N"),
             "host N, not 2001:db8::1 or dbx",
@@ -2086,6 +2120,7 @@ mod tests {
             "a dot followed by a label is a separator, not the end of the name"
         );
         assert_eq!(replace_hostname("nothing here", "", "N"), "nothing here");
+        Ok(())
     }
 
     /// A node name that is also an ordinary word over-redacts, and that is the
@@ -2097,16 +2132,17 @@ mod tests {
     /// publishing the operator's capture host in a container that says it is
     /// redacted, which is the failure this whole sweep exists to prevent.
     #[test]
-    fn a_hostname_that_is_also_a_word_over_redacts_rather_than_leaking() {
+    fn a_hostname_that_is_also_a_word_over_redacts_rather_than_leaking() -> Result<(), TestError> {
         assert_eq!(
             replace_hostname("a capture on node a, done", "a", "NODE"),
             "NODE capture on node NODE, done"
         );
+        Ok(())
     }
 
     /// The reverse table maps a token back to what it replaced.
     #[test]
-    fn the_reverse_table_records_what_it_replaced() {
+    fn the_reverse_table_records_what_it_replaced() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         let token = r.identity("+15551234567");
@@ -2117,11 +2153,12 @@ mod tests {
                 .any(|(k, v)| *k == token && v == "+15551234567"),
             "{table:?}"
         );
+        Ok(())
     }
 
     /// A JSON document is rewritten by key and swept as text.
     #[test]
-    fn redact_json_covers_structure_and_prose() {
+    fn redact_json_covers_structure_and_prose() -> Result<(), TestError> {
         let p = policy();
         let r = p.redactor();
         let mut value = serde_json::json!({
@@ -2145,11 +2182,12 @@ mod tests {
             assert!(!text.contains(leak), "{leak} survived: {text}");
         }
         assert!(text.contains("70"), "Max-Forwards survives: {text}");
+        Ok(())
     }
 
     /// A disabled report and an enabled one are different bytes.
     #[test]
-    fn the_report_distinguishes_off_from_unstated() {
+    fn the_report_distinguishes_off_from_unstated() -> Result<(), TestError> {
         let off = RedactionReport::disabled();
         assert!(!off.enabled);
         assert_eq!(off.key_mode, "none");
@@ -2157,27 +2195,30 @@ mod tests {
         assert!(on.enabled);
         assert_eq!(on.key_mode, KeyMode::Supplied.as_str());
         assert!(on.classes.contains(&"credential"));
+        Ok(())
     }
 
     /// The key never appears in a debug rendering.
     #[test]
-    fn the_key_is_not_printable() {
+    fn the_key_is_not_printable() -> Result<(), TestError> {
         let key = RedactionKey::from_secret(b"secret");
         let shown = format!("{key:?}");
         assert!(shown.contains("Supplied"), "{shown}");
         assert!(!shown.contains("bytes"), "{shown}");
+        Ok(())
     }
 
     /// An ephemeral key is drawn from the system and differs per call.
     #[test]
-    fn ephemeral_keys_differ() {
+    fn ephemeral_keys_differ() -> Result<(), TestError> {
         let (Ok(a), Ok(b)) = (RedactionKey::ephemeral(), RedactionKey::ephemeral()) else {
             // No /dev/urandom is a platform this build does not target; the
             // supplied-key path is covered above either way.
-            return;
+            return Ok(());
         };
         assert_eq!(a.mode(), KeyMode::Ephemeral);
         assert_ne!(a.bytes, b.bytes);
+        Ok(())
     }
 
     // ── The header the redactor did not know was host-bearing ───────────
@@ -2200,22 +2241,23 @@ mod tests {
     /// decorative arm; and `via` must be among the names, which is the
     /// specific omission that shipped.
     #[test]
-    fn every_header_name_the_redactor_matches_is_really_rewritten() {
+    fn every_header_name_the_redactor_matches_is_really_rewritten() -> Result<(), TestError> {
         let src = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output/redact.rs"),
         )
-        .expect("read this file");
+        .map_err(|e| format!("read this file: {e:?}"))?;
         let body = {
             let start = src
                 .find("pub fn header(&self, name: &str, value: &str) -> HeaderAction {")
-                .expect("`Redactor::header` is declared here");
+                .ok_or("`Redactor::header` is declared here")?;
             let rest = &src[start..];
-            let end = rest.find("\n    }\n").expect("the function closes");
+            let end = rest.find("\n    }\n").ok_or("the function closes")?;
             &rest[..end]
         };
 
         // The quoted names in the match arms, in source order.
-        let quoted = regex::Regex::new(r#""([a-z0-9-]+)""#).expect("pattern");
+        let quoted =
+            regex::Regex::new(r#""([a-z0-9-]+)""#).map_err(|e| format!("pattern: {e:?}"))?;
         let names: Vec<String> = quoted
             .captures_iter(body)
             .map(|c| c[1].to_string())
@@ -2257,6 +2299,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Rewriting `Via` keeps the route it records.
@@ -2267,7 +2310,7 @@ mod tests {
     /// while destroying the only record of the path the request took and the
     /// handle a reader follows a transaction by.
     #[test]
-    fn rewriting_via_keeps_the_route_it_records() {
+    fn rewriting_via_keeps_the_route_it_records() -> Result<(), TestError> {
         let policy = policy();
         let r = policy.redactor();
         let original = "SIP/2.0/UDP pbx.internal.example:5060;branch=z9hG4bK1;received=10.11.12.13, \
@@ -2318,5 +2361,6 @@ mod tests {
         // messages went through the same proxy.
         let again = r.via(original);
         assert_eq!(again, out, "the same input must map to the same output");
+        Ok(())
     }
 }

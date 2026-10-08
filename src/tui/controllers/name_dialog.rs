@@ -285,11 +285,13 @@ mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Typing a name and pressing Enter stores the manual mapping and
     /// turns name resolution on so the change is visible.
     #[test]
-    fn name_dialog_sets_mapping_and_enables_resolution() {
-        let mut app = app_with_dialogs();
+    fn name_dialog_sets_mapping_and_enables_resolution() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         open_name_dialog_for(&mut app, vec![addr_a()], 0);
         for c in "sbc-edge".chars() {
             handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
@@ -303,13 +305,14 @@ mod tests {
                 .label_ip(addr_a(), crate::names::NameMode::Names),
             "sbc-edge"
         );
+        Ok(())
     }
 
     /// The popup offers every endpoint; Tab/Shift-Tab switch between them,
     /// each keeps its own edited name, and Enter applies them all.
     #[test]
-    fn name_dialog_tab_edits_multiple_endpoints() {
-        let mut app = app_with_dialogs();
+    fn name_dialog_tab_edits_multiple_endpoints() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         open_name_dialog_for(&mut app, vec![addr_a(), addr_b()], 0);
         assert_eq!(app.name_dialog.active_ip(), addr_a().to_string());
         for c in "alice".chars() {
@@ -338,20 +341,21 @@ mod tests {
                 .label_ip(addr_b(), crate::names::NameMode::Names),
             "bob"
         );
+        Ok(())
     }
 
     /// When BOTH the names-file save and the sipnabrc update fail, the
     /// status line must report both — a second failure used to overwrite the
     /// first, silently hiding the names-file error the operator most needs.
     #[test]
-    fn both_write_failures_are_reported_together() {
-        let mut app = app_with_dialogs();
+    fn both_write_failures_are_reported_together() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         // A regular file used as a fake parent directory: any write beneath
         // it fails (create_dir_all / open both refuse to treat a file as a
         // directory), so both persistence paths error out.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let blocker = dir.path().join("blocker");
-        std::fs::write(&blocker, b"x").unwrap();
+        std::fs::write(&blocker, b"x")?;
         app.names_save_path = Some(blocker.join("names.txt"));
         app.names_config_path = Some(blocker.join("sipnabrc"));
 
@@ -370,13 +374,14 @@ mod tests {
             status.contains("couldn't update"),
             "sipnabrc failure must be reported too, got: {status}"
         );
+        Ok(())
     }
 
     /// Deleting an existing name and pressing Enter clears the manual
     /// mapping (the plain IP shows again).
     #[test]
-    fn name_dialog_empty_clears_mapping() {
-        let mut app = app_with_dialogs();
+    fn name_dialog_empty_clears_mapping() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.resolver().set_manual(addr_a(), "old".into());
         open_name_dialog_for(&mut app, vec![addr_a()], 0);
         for _ in 0.."old".len() {
@@ -388,6 +393,7 @@ mod tests {
                 .label_ip(addr_a(), crate::names::NameMode::Names),
             "10.0.0.1"
         );
+        Ok(())
     }
 }
 
@@ -397,6 +403,8 @@ mod validation_tests {
     use super::*;
     use crate::tui::NameTarget;
     use crossterm::event::KeyModifiers;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// An over-length name must say it is over-length, and by how much.
     ///
@@ -409,7 +417,7 @@ mod validation_tests {
     /// not close. An end-to-end test drove a stored name to 250 bytes this way
     /// and could then never pass again on that machine.
     #[test]
-    fn an_over_length_name_says_so_and_gives_the_numbers() {
+    fn an_over_length_name_says_so_and_gives_the_numbers() -> Result<(), TestError> {
         let too_long = "a".repeat(crate::names::MAX_NAME_LEN + 1);
         let msg = name_rejection_reason(&too_long);
         assert!(
@@ -424,25 +432,27 @@ mod validation_tests {
             !msg.contains("control characters"),
             "a length failure must not also blame control characters: {msg}"
         );
+        Ok(())
     }
 
     /// A control character is reported as a control character, not as a length
     /// problem — the two rules must not be conflated in either direction.
     #[test]
-    fn a_control_character_is_not_reported_as_a_length_problem() {
+    fn a_control_character_is_not_reported_as_a_length_problem() -> Result<(), TestError> {
         let msg = name_rejection_reason("bad\u{7}name");
         assert!(msg.contains("control characters"), "got: {msg}");
         assert!(
             !msg.contains("limit"),
             "a control-character failure must not blame length: {msg}"
         );
+        Ok(())
     }
 
     /// An invalid name must keep the popup open with an inline error and
     /// preserve the typed text — it used to close the dialog and discard
     /// the input, leaving only a status-bar message.
     #[test]
-    fn invalid_name_keeps_dialog_open_and_preserves_input() {
+    fn invalid_name_keeps_dialog_open_and_preserves_input() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.name_dialog.targets = vec![NameTarget {
             ip: "10.0.0.1".to_string(),
@@ -480,5 +490,6 @@ mod validation_tests {
         handle_name_popup_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.active_popup.is_none(), "valid name closes the popup");
         assert!(app.name_dialog.error.is_none());
+        Ok(())
     }
 }

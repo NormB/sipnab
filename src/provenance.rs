@@ -338,63 +338,70 @@ impl FromStr for CaptureEtag {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Two identities minted in one process must differ, or a swap is
     /// invisible to exactly the consumer this exists for.
     #[test]
-    fn every_minted_instance_is_distinct() {
+    fn every_minted_instance_is_distinct() -> Result<(), TestError> {
         let a = CaptureIdentity::new();
         let b = CaptureIdentity::new();
         assert_ne!(a.instance(), b.instance());
+        Ok(())
     }
 
     /// Rotation is the swap signal: the id before and after must not match.
     #[test]
-    fn rotate_replaces_the_instance() {
+    fn rotate_replaces_the_instance() -> Result<(), TestError> {
         let mut id = CaptureIdentity::new();
         let before = id.instance().to_string();
         let after = id.rotate().to_string();
         assert_ne!(before, after, "a rotated identity must not reuse its id");
         assert_eq!(id.instance(), after, "rotate must return what it stored");
+        Ok(())
     }
 
     /// The generations travel with the instance, unmodified.
     #[test]
-    fn etag_carries_both_store_generations() {
+    fn etag_carries_both_store_generations() -> Result<(), TestError> {
         let id = CaptureIdentity::new();
         let tag = id.etag(42, 7);
         assert_eq!(tag.instance, id.instance());
         assert_eq!(tag.dialog_generation, 42);
         assert_eq!(tag.stream_generation, 7);
+        Ok(())
     }
 
     /// A grown store is not a new capture, and the two must not be confused:
     /// one means "read more", the other "throw away every cursor you hold".
     #[test]
-    fn a_higher_generation_is_not_a_different_capture() {
+    fn a_higher_generation_is_not_a_different_capture() -> Result<(), TestError> {
         let id = CaptureIdentity::new();
         let before = id.etag(1, 1);
         let after = id.etag(9, 4);
         assert!(!before.is_different_capture(&after));
         assert_ne!(before, after, "the etag itself must still differ");
+        Ok(())
     }
 
     /// A rotated identity is a different capture even at the same generation,
     /// which is the case a bare generation counter cannot express: a cleared
     /// store can legitimately be back at a number the previous capture used.
     #[test]
-    fn a_rotated_identity_is_a_different_capture_at_the_same_generation() {
+    fn a_rotated_identity_is_a_different_capture_at_the_same_generation() -> Result<(), TestError> {
         let mut id = CaptureIdentity::new();
         let before = id.etag(3, 3);
         id.rotate();
         let after = id.etag(3, 3);
         assert!(before.is_different_capture(&after));
+        Ok(())
     }
 
     /// The node must NOT change when the capture instance does. An agent
     /// correlating across servers reads a changed node as a changed topology;
     /// a capture restart is not that.
     #[test]
-    fn the_node_survives_a_capture_rotation() {
+    fn the_node_survives_a_capture_rotation() -> Result<(), TestError> {
         let mut id = CaptureIdentity::new();
         let before = id.etag(1, 2);
         id.rotate();
@@ -408,10 +415,11 @@ mod tests {
             "...but not the box it was captured on"
         );
         assert!(!after.node.is_empty(), "a node name is always reported");
+        Ok(())
     }
 
     #[test]
-    fn a_node_name_is_clipped_to_characters_and_blanks_are_refused() {
+    fn a_node_name_is_clipped_to_characters_and_blanks_are_refused() -> Result<(), TestError> {
         assert_eq!(
             clip_node_name("  sbc-edge-1  ").as_deref(),
             Some("sbc-edge-1")
@@ -421,17 +429,18 @@ mod tests {
 
         // Arbitrary UTF-8: clipping on a byte index would panic mid-sequence.
         let long = "🙂".repeat(MAX_NODE_NAME + 20);
-        let clipped = clip_node_name(&long).expect("clips");
+        let clipped = clip_node_name(&long).ok_or("clips")?;
         assert_eq!(clipped.chars().count(), MAX_NODE_NAME);
+        Ok(())
     }
 
     /// The string form must survive a round trip, because write-back hands it
     /// back as a compare-and-set token.
     #[test]
-    fn etag_round_trips_through_its_string_form() {
+    fn etag_round_trips_through_its_string_form() -> Result<(), TestError> {
         let tag = CaptureIdentity::new().etag(12, 34);
         let text = tag.to_string();
-        let parsed: CaptureEtag = text.parse().expect("round trip");
+        let parsed: CaptureEtag = text.parse()?;
 
         // The change-detection fields survive, which is what the token is for.
         assert_eq!(
@@ -454,12 +463,13 @@ mod tests {
             "the string form must not carry a node"
         );
         assert!(!tag.node.is_empty(), "but a generated etag always does");
+        Ok(())
     }
 
     /// A mangled token is refused rather than defaulted, so a compare-and-set
     /// cannot silently succeed against generation zero.
     #[test]
-    fn a_malformed_etag_is_refused() {
+    fn a_malformed_etag_is_refused() -> Result<(), TestError> {
         for bad in [
             "", "no-colon", "inst:", "inst:1", "inst:x.1", "inst:1.y", ":1.2",
         ] {
@@ -468,16 +478,18 @@ mod tests {
                 "'{bad}' must not parse as an etag"
             );
         }
+        Ok(())
     }
 
     /// The JSON shape is part of the contract: three named fields, so a
     /// consumer can compare the instance without string surgery.
     #[test]
-    fn etag_serializes_with_named_fields() {
+    fn etag_serializes_with_named_fields() -> Result<(), TestError> {
         let tag = CaptureIdentity::new().etag(5, 6);
-        let v = serde_json::to_value(&tag).expect("serialize");
+        let v = serde_json::to_value(&tag)?;
         assert_eq!(v["instance"], tag.instance);
         assert_eq!(v["dialog_generation"], 5);
         assert_eq!(v["stream_generation"], 6);
+        Ok(())
     }
 }

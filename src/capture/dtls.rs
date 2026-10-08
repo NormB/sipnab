@@ -368,6 +368,9 @@ mod tests {
     use super::*;
     use crate::crypto::RingCryptoBackend;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A boxed `ring`-backed crypto backend for the exporter under test.
     fn backend() -> Box<dyn CryptoBackend> {
         Box::new(RingCryptoBackend)
@@ -431,12 +434,13 @@ mod tests {
     /// `is_dtls` accepts a real DTLS 1.2 record and rejects short input and a
     /// (non-DTLS) TLS record.
     #[test]
-    fn is_dtls_detects_records_and_rejects_others() {
+    fn is_dtls_detects_records_and_rejects_others() -> Result<(), TestError> {
         let cr = [0u8; 32];
         assert!(is_dtls(&dtls_handshake_record(1, &client_hello_body(&cr))));
         assert!(!is_dtls(&[0u8; 4])); // too short
         // TLS (not DTLS) record version 0x0303.
         assert!(!is_dtls(&[22, 0x03, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        Ok(())
     }
 
     /// A record claiming more bytes than the datagram holds is not DTLS.
@@ -446,7 +450,7 @@ mod tests {
     /// so any datagram whose first three bytes happened to read as a content
     /// type and a DTLS version was consumed whatever its length field claimed.
     #[test]
-    fn a_record_longer_than_the_datagram_is_not_dtls() {
+    fn a_record_longer_than_the_datagram_is_not_dtls() -> Result<(), TestError> {
         let mut rec = dtls_handshake_record(1, &client_hello_body(&[0u8; 32]));
         assert!(
             is_dtls(&rec),
@@ -461,6 +465,7 @@ mod tests {
             "a record claiming one byte more than the datagram holds cannot fit \
              within it, which RFC 6347 4.1.1 forbids"
         );
+        Ok(())
     }
 
     /// A record that exactly fills the datagram still is.
@@ -469,7 +474,7 @@ mod tests {
     /// Off by one it would refuse every unpadded record — which is most of
     /// them — while the negative above went on passing.
     #[test]
-    fn a_record_that_exactly_fills_the_datagram_is_dtls() {
+    fn a_record_that_exactly_fills_the_datagram_is_dtls() -> Result<(), TestError> {
         let rec = dtls_handshake_record(1, &client_hello_body(&[0u8; 32]));
         let declared = usize::from(u16::from_be_bytes([rec[11], rec[12]]));
         assert_eq!(
@@ -479,6 +484,7 @@ mod tests {
              something else"
         );
         assert!(is_dtls(&rec));
+        Ok(())
     }
 
     /// A length past what any TLS record may declare is not DTLS.
@@ -489,12 +495,16 @@ mod tests {
     /// legal record of any kind declares more, so refusing more can never
     /// refuse a real one.
     #[test]
-    fn a_length_past_the_tls_ceiling_is_not_dtls() {
+    fn a_length_past_the_tls_ceiling_is_not_dtls() -> Result<(), TestError> {
         // A datagram big enough that only the ceiling can refuse it.
         let mut big = vec![22u8, 0xFE, 0xFD];
         big.extend_from_slice(&[0, 0]); // epoch
         big.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // sequence number
-        big.extend_from_slice(&u16::try_from(MAX_RECORD_LEN).expect("fits").to_be_bytes());
+        big.extend_from_slice(
+            &u16::try_from(MAX_RECORD_LEN)
+                .map_err(|e| format!("fits: {e:?}"))?
+                .to_be_bytes(),
+        );
         big.resize(DTLS_HEADER_LEN + MAX_RECORD_LEN, 0);
         assert!(
             is_dtls(&big),
@@ -503,7 +513,7 @@ mod tests {
         );
 
         let over = u16::try_from(MAX_RECORD_LEN + 1)
-            .expect("fits")
+            .map_err(|e| format!("fits: {e:?}"))?
             .to_be_bytes();
         big[11] = over[0];
         big[12] = over[1];
@@ -512,6 +522,7 @@ mod tests {
             !is_dtls(&big),
             "one byte past the ceiling is a length no TLS record may declare"
         );
+        Ok(())
     }
 
     /// Refusing a datagram here cannot turn it into a media stream.
@@ -523,7 +534,7 @@ mod tests {
     /// two bits RTP requires to be `10` — so a datagram this detector refuses
     /// has nowhere else to go.
     #[test]
-    fn a_datagram_this_detector_refuses_can_never_be_read_as_rtp() {
+    fn a_datagram_this_detector_refuses_can_never_be_read_as_rtp() -> Result<(), TestError> {
         for content_type in 20u8..=23 {
             let mut d = vec![content_type, 0xFE, 0xFD];
             d.resize(64, 0);
@@ -538,12 +549,13 @@ mod tests {
                  here would lose the packet to a stream that does not exist"
             );
         }
+        Ok(())
     }
 
     /// ClientHello/ServerHello randoms and the ServerHello `use_srtp` profile
     /// are extracted correctly from wrapped handshake records.
     #[test]
-    fn parses_hello_randoms_and_profile() {
+    fn parses_hello_randoms_and_profile() -> Result<(), TestError> {
         let cr = [0xC1u8; 32];
         let sr = [0x5Eu8; 32];
         let ch = dtls_handshake_record(1, &client_hello_body(&cr));
@@ -559,12 +571,13 @@ mod tests {
             server_hello_srtp_profile(shm[0].1),
             Some(SrtpProfile::Aes128CmHmacSha1_80)
         );
+        Ok(())
     }
 
     /// Derived per-direction keys have the profile's key/salt lengths and the
     /// client and server material differ.
     #[test]
-    fn derive_srtp_keys_lengths_and_distinctness() {
+    fn derive_srtp_keys_lengths_and_distinctness() -> Result<(), TestError> {
         let cr = [0x11u8; 32];
         let sr = [0x22u8; 32];
         let master = vec![0x33u8; 48];
@@ -574,8 +587,7 @@ mod tests {
             &cr,
             &sr,
             SrtpProfile::Aes128CmHmacSha1_80,
-        )
-        .unwrap();
+        )?;
         assert_eq!(c2s.master_key.len(), 16);
         assert_eq!(c2s.master_salt.len(), 14);
         assert_eq!(s2c.master_key.len(), 16);
@@ -583,11 +595,12 @@ mod tests {
         // Per-direction keys must differ.
         assert_ne!(c2s.master_key, s2c.master_key);
         assert_ne!(c2s.master_salt, s2c.master_salt);
+        Ok(())
     }
 
     /// The exporter is deterministic: identical inputs yield identical keys.
     #[test]
-    fn derive_srtp_keys_is_deterministic() {
+    fn derive_srtp_keys_is_deterministic() -> Result<(), TestError> {
         let cr = [0x11u8; 32];
         let sr = [0x22u8; 32];
         let master = vec![0x33u8; 48];
@@ -597,24 +610,23 @@ mod tests {
             &cr,
             &sr,
             SrtpProfile::Aes128CmHmacSha1_80,
-        )
-        .unwrap();
+        )?;
         let b = derive_srtp_keys(
             backend().as_ref(),
             &master,
             &cr,
             &sr,
             SrtpProfile::Aes128CmHmacSha1_80,
-        )
-        .unwrap();
+        )?;
         assert_eq!(a.0.master_key, b.0.master_key);
         assert_eq!(a.1.master_salt, b.1.master_salt);
+        Ok(())
     }
 
     /// The extractor emits two keys once the handshake completes, matches the
     /// independently derived exporter output, and does not emit again.
     #[test]
-    fn extractor_emits_keys_once_when_complete() {
+    fn extractor_emits_keys_once_when_complete() -> Result<(), TestError> {
         let cr = [0xABu8; 32];
         let sr = [0xCDu8; 32];
         let master = vec![0x44u8; 48];
@@ -642,8 +654,7 @@ mod tests {
             &cr,
             &sr,
             SrtpProfile::Aes128CmHmacSha1_80,
-        )
-        .unwrap();
+        )?;
         assert_eq!(keys[0].master_key, c2s.master_key);
 
         // Idempotent: already produced, no second emission.
@@ -651,12 +662,13 @@ mod tests {
             ex.process_dtls(&dtls_handshake_record(2, &server_hello_body(&sr, 0x0001)))
                 .is_empty()
         );
+        Ok(())
     }
 
     /// With no keylog entry matching the observed `client_random`, no keys are
     /// produced.
     #[test]
-    fn extractor_without_matching_master_secret_yields_nothing() {
+    fn extractor_without_matching_master_secret_yields_nothing() -> Result<(), TestError> {
         let cr = [0xABu8; 32];
         let sr = [0xCDu8; 32];
         // Keylog has a DIFFERENT client_random → no match.
@@ -669,13 +681,14 @@ mod tests {
         ex.process_dtls(&dtls_handshake_record(1, &client_hello_body(&cr)));
         let keys = ex.process_dtls(&dtls_handshake_record(2, &server_hello_body(&sr, 0x0001)));
         assert!(keys.is_empty(), "no matching master secret ⇒ no keys");
+        Ok(())
     }
 
     /// The extracted client→server material must be usable SRTP keys: an SRTP
     /// packet built with the exported key authenticates and decrypts via
     /// SrtpContext. This ties DTLS-SRTP extraction to the RFC 3711 cipher.
     #[test]
-    fn extracted_keys_decrypt_srtp_via_context() {
+    fn extracted_keys_decrypt_srtp_via_context() -> Result<(), TestError> {
         use crate::rtp::srtp::SrtpContext;
 
         let cr = [0x1Au8; 32];
@@ -687,8 +700,7 @@ mod tests {
             &cr,
             &sr,
             SrtpProfile::Aes128CmHmacSha1_80,
-        )
-        .unwrap();
+        )?;
 
         // Encrypt a packet with the exported client key, then decrypt via a
         // context seeded with the same extracted material.
@@ -699,9 +711,10 @@ mod tests {
             55,
             0,
             b"dtls-srtp media payload",
-        );
+        )?;
         let mut ctx = SrtpContext::new(vec![c2s], backend());
-        let out = ctx.decrypt(&packet, 12).expect("exported key decrypts");
+        let out = ctx.decrypt(&packet, 12).ok_or("exported key decrypts")?;
         assert_eq!(&out[12..], b"dtls-srtp media payload");
+        Ok(())
     }
 }

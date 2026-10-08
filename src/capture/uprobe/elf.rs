@@ -213,6 +213,9 @@ pub fn resolve_write_symbol(elf: &[u8]) -> Result<(&'static str, u64), ElfError>
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// wolfSSL exports `wolfSSL_write` and no `SSL_write`, so a hardcoded
     /// symbol attaches to nothing there. Auto-detection must find it and say
     /// which one it picked.
@@ -231,13 +234,16 @@ mod tests {
     /// A library exporting none of them names every candidate, so the operator
     /// sees what was looked for rather than one arbitrary miss.
     #[test]
-    fn a_library_with_no_known_entry_point_names_them_all() {
+    fn a_library_with_no_known_entry_point_names_them_all() -> Result<(), TestError> {
         let elf = elf_with_symbol("something_else", 0x12345);
-        let err = resolve_write_symbol(&elf).expect_err("no known symbol");
+        let err = resolve_write_symbol(&elf)
+            .err()
+            .ok_or("a library with no known symbol must be refused")?;
         let msg = err.to_string();
         for sym in KNOWN_WRITE_SYMBOLS {
             assert!(msg.contains(sym), "names {sym}: {msg}");
         }
+        Ok(())
     }
 
     /// Build a minimal ELF64 with two `PT_LOAD` segments whose `p_vaddr` and

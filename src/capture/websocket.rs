@@ -536,6 +536,8 @@ fn header_size(len7: u64, masked: bool) -> usize {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A frame with an explicit FIN bit and opcode, unmasked.
     fn frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
         let mut f = vec![if fin { 0x80 } else { 0 } | opcode];
@@ -554,7 +556,7 @@ mod tests {
     /// stream holds nothing afterwards: the bound is a refusal to count,
     /// never an unbounded buffer.
     #[test]
-    fn a_stream_refuses_a_message_past_its_ceiling() {
+    fn a_stream_refuses_a_message_past_its_ceiling() -> Result<(), TestError> {
         let mut ws = WsStream::default();
         let big = vec![b'a'; 60_000];
         let out = ws.push(&frame(false, OPCODE_TEXT, &big));
@@ -569,12 +571,13 @@ mod tests {
             out.refused
         );
         assert_eq!(ws.pending(), 0);
+        Ok(())
     }
 
     /// Frames that break [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455#section-5) are refused one by one, and the
     /// stream decodes the next good frame after each.
     #[test]
-    fn a_stream_refuses_frames_that_break_the_protocol_and_recovers() {
+    fn a_stream_refuses_frames_that_break_the_protocol_and_recovers() -> Result<(), TestError> {
         for (bad, why) in [
             (frame(true, OPCODE_CONTINUATION, b"x"), "continuation"),
             (frame(true, 3, b"x"), "reserved opcode"),
@@ -588,11 +591,12 @@ mod tests {
             let out = ws.push(&frame(true, OPCODE_TEXT, b"next"));
             assert_eq!(out.messages, vec![b"next".to_vec()], "{why}");
         }
+        Ok(())
     }
 
     /// A control frame between two fragments does not end the message.
     #[test]
-    fn a_control_frame_between_fragments_is_skipped() {
+    fn a_control_frame_between_fragments_is_skipped() -> Result<(), TestError> {
         let mut ws = WsStream::default();
         let mut chunk = frame(false, OPCODE_TEXT, b"INV");
         chunk.extend_from_slice(&frame(true, 9, b"ping"));
@@ -600,12 +604,13 @@ mod tests {
         let out = ws.push(&chunk);
         assert_eq!(out.messages, vec![b"INVITE".to_vec()]);
         assert!(out.refused.is_empty());
+        Ok(())
     }
 
     /// An HTTP head delivered one byte at a time, with a frame in the same
     /// chunk as its last byte, yields that frame and nothing else.
     #[test]
-    fn an_http_head_split_every_byte_then_a_frame() {
+    fn an_http_head_split_every_byte_then_a_frame() -> Result<(), TestError> {
         let mut ws = WsStream::default();
         let head = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
         for b in &head[..head.len() - 1] {
@@ -617,12 +622,13 @@ mod tests {
         let out = ws.push(&last);
         assert_eq!(out.messages, vec![b"SIP".to_vec()]);
         assert!(out.refused.is_empty(), "{:?}", out.refused);
+        Ok(())
     }
 
     /// A head that never ends is refused at `MAX_WS_HANDSHAKE_SIZE`, and
     /// the stream reads frames after it.
     #[test]
-    fn an_http_head_past_its_ceiling_is_refused() {
+    fn an_http_head_past_its_ceiling_is_refused() -> Result<(), TestError> {
         let mut ws = WsStream::default();
         let mut head = b"GET / HTTP/1.1\r\n".to_vec();
         head.resize(MAX_WS_HANDSHAKE_SIZE + 1, b'x');
@@ -632,24 +638,27 @@ mod tests {
         assert_eq!(ws.pending(), 0);
         let out = ws.push(&frame(true, OPCODE_TEXT, b"next"));
         assert_eq!(out.messages, vec![b"next".to_vec()]);
+        Ok(())
     }
 
     /// A stream that opens with a frame never waits for an HTTP head.
     #[test]
-    fn a_stream_that_opens_with_a_frame_reads_it_at_once() {
+    fn a_stream_that_opens_with_a_frame_reads_it_at_once() -> Result<(), TestError> {
         let mut ws = WsStream::default();
         let out = ws.push(&frame(true, OPCODE_TEXT, b"now"));
         assert_eq!(out.messages, vec![b"now".to_vec()]);
+        Ok(())
     }
 
     /// What an abandoned stream held is reported as need and got.
     #[test]
-    fn held_reports_what_an_unfinished_frame_needed() {
+    fn held_reports_what_an_unfinished_frame_needed() -> Result<(), TestError> {
         let mut ws = WsStream::default();
         assert_eq!(ws.held(), None);
         let f = frame(true, OPCODE_TEXT, &[b'z'; 200]);
         ws.push(&f[..4]);
         assert_eq!(ws.held(), Some((f.len(), 4)));
+        Ok(())
     }
 
     /// Build an unmasked WebSocket text frame with the given payload.
@@ -726,7 +735,8 @@ mod tests {
     /// job is telling a WebSocket frame from any other TCP payload that
     /// happens to start with two plausible bytes.
     #[test]
-    fn a_two_byte_length_that_a_seven_bit_field_could_carry_is_not_a_frame() {
+    fn a_two_byte_length_that_a_seven_bit_field_could_carry_is_not_a_frame() -> Result<(), TestError>
+    {
         for declared in [0u64, 1, 100, 124, 125] {
             let payload = vec![b'x'; usize::try_from(declared).unwrap_or(0)];
             let frame = frame_with_declared_len(126, declared, &payload);
@@ -736,6 +746,7 @@ mod tests {
                  non-conformant and must not read as a frame"
             );
         }
+        Ok(())
     }
 
     /// And the first length that genuinely needs the two-byte form does.
@@ -744,18 +755,19 @@ mod tests {
     /// would refuse every frame between 126 and 65535 bytes, which is most
     /// SIP over WebSocket, while every assertion above still passed.
     #[test]
-    fn the_smallest_length_that_needs_two_bytes_is_a_frame() {
+    fn the_smallest_length_that_needs_two_bytes_is_a_frame() -> Result<(), TestError> {
         let payload = vec![b'x'; 126];
         let frame = frame_with_declared_len(126, 126, &payload);
         assert!(
             is_websocket_frame(&frame),
             "126 cannot be expressed in the 7-bit field and is the minimal encoding"
         );
+        Ok(())
     }
 
     /// The same rule one form up: eight bytes for a length two would carry.
     #[test]
-    fn an_eight_byte_length_that_two_bytes_could_carry_is_not_a_frame() {
+    fn an_eight_byte_length_that_two_bytes_could_carry_is_not_a_frame() -> Result<(), TestError> {
         // The payload is built to the DECLARED length, every time. Capping it
         // made the 0xFFFF case pass for the wrong reason: the frame was short
         // of what it declared, so the detector rejected it as truncated and
@@ -770,6 +782,7 @@ mod tests {
                  non-conformant"
             );
         }
+        Ok(())
     }
 
     /// And the first length that genuinely needs eight bytes does.
@@ -779,7 +792,7 @@ mod tests {
     /// wide is the reason to test it: a rule written `>=` instead of `>` would
     /// close it entirely and nothing else would notice.
     #[test]
-    fn the_smallest_length_that_needs_eight_bytes_is_a_frame() {
+    fn the_smallest_length_that_needs_eight_bytes_is_a_frame() -> Result<(), TestError> {
         let declared = 0x1_0000u64;
         let payload = vec![b'x'; 0x1_0000];
         let frame = frame_with_declared_len(127, declared, &payload);
@@ -787,6 +800,7 @@ mod tests {
             is_websocket_frame(&frame),
             "65536 cannot be expressed in two bytes and is within MAX_FRAME_SIZE"
         );
+        Ok(())
     }
 
     /// The detector and the unwrapper read the same rule.
@@ -796,7 +810,7 @@ mod tests {
     /// a payload out of a frame the detector had refused, or a refusal for one
     /// it had accepted.
     #[test]
-    fn the_unwrapper_refuses_exactly_what_the_detector_refuses() {
+    fn the_unwrapper_refuses_exactly_what_the_detector_refuses() -> Result<(), TestError> {
         for (len7, declared) in [(126u8, 10u64), (126, 125), (127, 0xFFFF), (127, 0)] {
             // Full-length payloads, for the reason the test above records: a
             // short frame is refused as truncated and proves nothing about
@@ -809,6 +823,7 @@ mod tests {
                 "the detector refused {len7}/{declared} and the unwrapper did not"
             );
         }
+        Ok(())
     }
 
     /// A length inside the 7-bit field is untouched by any of this.
@@ -817,41 +832,44 @@ mod tests {
     /// and a version of it that reached the 7-bit field would reject every
     /// ordinary short frame — which is most SIP signaling.
     #[test]
-    fn a_seven_bit_length_is_unaffected() {
+    fn a_seven_bit_length_is_unaffected() -> Result<(), TestError> {
         for len in [0usize, 1, 60, 125] {
             let payload = vec![b'x'; len];
             let frame = build_unmasked_text_frame(&payload);
             assert!(is_websocket_frame(&frame), "a {len}-byte frame must parse");
         }
+        Ok(())
     }
 
     /// An unmasked text frame is detected and unwraps to its exact payload.
     #[test]
-    fn unwrap_unmasked_text_frame() {
+    fn unwrap_unmasked_text_frame() -> Result<(), TestError> {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
         let frame = build_unmasked_text_frame(payload);
 
         assert!(is_websocket_frame(&frame));
-        let result = unwrap_websocket_frame(&frame).unwrap();
+        let result = unwrap_websocket_frame(&frame)?;
         assert_eq!(result, Some(payload.to_vec()));
+        Ok(())
     }
 
     /// A masked frame is detected and XOR-unmasks back to the original payload.
     #[test]
-    fn unwrap_masked_frame() {
+    fn unwrap_masked_frame() -> Result<(), TestError> {
         let payload = b"SIP/2.0 200 OK\r\n\r\n";
         let mask_key = [0x37, 0xFA, 0x21, 0x3D];
         let frame = build_masked_text_frame(payload, mask_key);
 
         assert!(is_websocket_frame(&frame));
-        let result = unwrap_websocket_frame(&frame).unwrap();
+        let result = unwrap_websocket_frame(&frame)?;
         assert_eq!(result, Some(payload.to_vec()));
+        Ok(())
     }
 
     /// A payload > 125 bytes uses the 126-format 16-bit length and unwraps
     /// correctly.
     #[test]
-    fn unwrap_extended_length_126() {
+    fn unwrap_extended_length_126() -> Result<(), TestError> {
         // Create a payload > 125 bytes to trigger 126-format length
         let payload = vec![b'A'; 200];
         let frame = build_unmasked_text_frame(&payload);
@@ -860,23 +878,25 @@ mod tests {
         assert_eq!(frame[1] & 0x7F, 126);
 
         assert!(is_websocket_frame(&frame));
-        let result = unwrap_websocket_frame(&frame).unwrap();
+        let result = unwrap_websocket_frame(&frame)?;
         assert_eq!(result, Some(payload));
+        Ok(())
     }
 
     /// A close control frame (opcode 8) unwraps to `None`, not an error.
     #[test]
-    fn control_frame_close_returns_none() {
+    fn control_frame_close_returns_none() -> Result<(), TestError> {
         // opcode 8 = close, FIN=1
         let frame = vec![0x88, 0x02, 0x03, 0xE8]; // close with status 1000
 
-        let result = unwrap_websocket_frame(&frame).unwrap();
+        let result = unwrap_websocket_frame(&frame)?;
         assert!(result.is_none());
+        Ok(())
     }
 
     /// A frame declaring a payload above the 64 KB limit errors with "too large".
     #[test]
-    fn oversized_frame_returns_error() {
+    fn oversized_frame_returns_error() -> Result<(), TestError> {
         let mut frame = Vec::new();
         // FIN=1, opcode=1 (text)
         frame.push(0x81);
@@ -889,13 +909,14 @@ mod tests {
 
         let result = unwrap_websocket_frame(&frame);
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = result.err().ok_or("expected an Err, got Ok")?.to_string();
         assert!(err_msg.contains("too large"), "error: {err_msg}");
+        Ok(())
     }
 
     /// A header declaring more payload than is present errors with "truncated".
     #[test]
-    fn truncated_frame_returns_error() {
+    fn truncated_frame_returns_error() -> Result<(), TestError> {
         // Valid header declaring 50-byte payload, but only 10 bytes of data
         let mut frame = Vec::new();
         frame.push(0x81); // FIN=1, text
@@ -904,36 +925,40 @@ mod tests {
 
         let result = unwrap_websocket_frame(&frame);
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = result.err().ok_or("expected an Err, got Ok")?.to_string();
         assert!(err_msg.contains("truncated"), "error: {err_msg}");
+        Ok(())
     }
 
     /// Inputs shorter than the 2-byte minimum header are not WebSocket frames.
     #[test]
-    fn is_websocket_frame_rejects_too_short() {
+    fn is_websocket_frame_rejects_too_short() -> Result<(), TestError> {
         assert!(!is_websocket_frame(&[]));
         assert!(!is_websocket_frame(&[0x81]));
+        Ok(())
     }
 
     /// A control frame (opcode 8) fails the data-frame detection heuristic.
     #[test]
-    fn is_websocket_frame_rejects_control_frame() {
+    fn is_websocket_frame_rejects_control_frame() -> Result<(), TestError> {
         // Close frame: opcode=8
         let frame = vec![0x88, 0x02, 0x03, 0xE8];
         assert!(!is_websocket_frame(&frame));
+        Ok(())
     }
 
     /// A frame with an RSV bit set is rejected by the detection heuristic.
     #[test]
-    fn is_websocket_frame_rejects_rsv_bits_set() {
+    fn is_websocket_frame_rejects_rsv_bits_set() -> Result<(), TestError> {
         // FIN=1, RSV1=1, opcode=1 — invalid
         let frame = vec![0xC1, 0x05, b'h', b'e', b'l', b'l', b'o'];
         assert!(!is_websocket_frame(&frame));
+        Ok(())
     }
 
     /// A binary frame (opcode 2) is detected and unwraps to its payload.
     #[test]
-    fn unwrap_binary_frame() {
+    fn unwrap_binary_frame() -> Result<(), TestError> {
         let payload = b"\x00\x01\x02\x03binary data";
         let mut frame = Vec::new();
         // FIN=1, RSV=0, opcode=2 (binary)
@@ -942,7 +967,8 @@ mod tests {
         frame.extend_from_slice(payload);
 
         assert!(is_websocket_frame(&frame));
-        let result = unwrap_websocket_frame(&frame).unwrap();
+        let result = unwrap_websocket_frame(&frame)?;
         assert_eq!(result, Some(payload.to_vec()));
+        Ok(())
     }
 }

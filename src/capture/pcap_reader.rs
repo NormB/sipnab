@@ -652,21 +652,25 @@ impl<'a> Iterator for PcapReader<'a> {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A real classic pcap sample parses with link type 1 and many packets.
     #[test]
-    fn parse_real_pcap_file() {
-        let data = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
-        let reader = PcapReader::new(&data).unwrap();
+    fn parse_real_pcap_file() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap")?;
+        let reader = PcapReader::new(&data)?;
         assert_eq!(reader.link_type, 1);
         let packets: Vec<_> = reader.collect();
         assert!(packets.len() > 10, "should have multiple packets");
+        Ok(())
     }
 
     /// A real pcapng sample parses with non-zero timestamps.
     #[test]
-    fn parse_pcapng_file() {
-        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
-        let reader = PcapReader::new(&data).unwrap();
+    fn parse_pcapng_file() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng")?;
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert!(
             packets.len() > 5,
@@ -677,15 +681,17 @@ mod tests {
             packets[0].timestamp_secs > 0,
             "timestamp should be non-zero"
         );
+        Ok(())
     }
 
     /// The SIP-auth-failure pcapng sample yields packets.
     #[test]
-    fn parse_pcapng_sip_auth_failure() {
-        let data = std::fs::read("tests/pcap-samples/sip-auth-failure.pcapng").unwrap();
-        let reader = PcapReader::new(&data).unwrap();
+    fn parse_pcapng_sip_auth_failure() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/sip-auth-failure.pcapng")?;
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert!(!packets.is_empty(), "should have packets");
+        Ok(())
     }
 
     /// Fewer than 12 bytes errors with `TooShort` instead of panicking.
@@ -698,19 +704,22 @@ mod tests {
     /// A pcap cut off mid-record ends iteration cleanly with at most one
     /// packet.
     #[test]
-    fn truncated_pcap_packet() {
-        let data = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
+    fn truncated_pcap_packet() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap")?;
         let truncated = &data[..100];
-        let reader = PcapReader::new(truncated).unwrap();
+        let reader = PcapReader::new(truncated)?;
         let packets: Vec<_> = reader.collect();
         assert!(packets.len() <= 1);
+        Ok(())
     }
 
     /// An unknown magic errors with `UnknownFormat` and a message that names
     /// the supported formats including the gzip variants.
     #[test]
-    fn invalid_magic() {
-        let err = PcapReader::new(&[0xFF; 24]).unwrap_err();
+    fn invalid_magic() -> Result<(), TestError> {
+        let err = PcapReader::new(&[0xFF; 24])
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::UnknownFormat { magic: 0xFFFFFFFF }),
             "expected UnknownFormat, got: {err:?}"
@@ -719,25 +728,34 @@ mod tests {
         // including the gzip-compressed variants.
         assert!(err.to_string().contains("pcapng"), "got: {err}");
         assert!(err.to_string().contains(".pcap.gz"), "got: {err}");
+        Ok(())
     }
 
     /// A `.cap` file that is really pcap-format parses normally.
     #[test]
-    fn cap_file_pcap_format() {
-        let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap").unwrap();
-        let reader = PcapReader::new(&data).unwrap();
+    fn cap_file_pcap_format() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap")?;
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert!(!packets.is_empty(), "pcap-format .cap file should parse");
+        Ok(())
     }
 
     /// A Microsoft Network Monitor `.cap` errors with a message naming the
     /// format.
     #[test]
-    fn cap_file_netmon_format_error() {
-        let data = std::fs::read("tests/pcap-samples/rtsp-packets.cap").unwrap();
+    fn cap_file_netmon_format_error() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/rtsp-packets.cap")?;
         let result = PcapReader::new(&data);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Network Monitor"));
+        assert!(
+            result
+                .err()
+                .ok_or("expected an error")?
+                .to_string()
+                .contains("Network Monitor")
+        );
+        Ok(())
     }
 
     // ── Malformed input tests ─────────────────────────────────────────
@@ -745,19 +763,20 @@ mod tests {
     /// The tsresol guard (`max(1)`) prevents a division by zero; collecting
     /// must not panic.
     #[test]
-    fn crafted_pcapng_zero_tsresol() {
+    fn crafted_pcapng_zero_tsresol() -> Result<(), TestError> {
         // Ensure tsresol=0 doesn't cause division by zero
-        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
-        let reader = PcapReader::new(&data).unwrap();
+        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng")?;
+        let reader = PcapReader::new(&data)?;
         // Just verify it doesn't panic
         let _packets: Vec<_> = reader.collect();
+        Ok(())
     }
 
     /// A new Section Header Block resets the timestamp resolution to the
     /// microsecond default: a second section whose IDB omits `if_tsresol`
     /// must not inherit the previous section's nanosecond resolution.
     #[test]
-    fn new_section_resets_tsresol_to_default() {
+    fn new_section_resets_tsresol_to_default() -> Result<(), TestError> {
         // if_tsresol option: code 9, len 1, value 9 (10^9 = nanoseconds),
         // padded, then opt_endofopt.
         let ns_opts: &[u8] = &[
@@ -773,7 +792,7 @@ mod tests {
         data.extend(build_idb(1, &[]));
         data.extend(build_epb(0, 1_000_000, 4, 4, &[0xca, 0xfe, 0xba, 0xbe]));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert_eq!(packets.len(), 2, "both sections' packets should be read");
         // ts_low 1_000_000 at the µs default is 1 second; at the stale ns
@@ -783,13 +802,14 @@ mod tests {
             "section-2 packet must use the reset µs resolution"
         );
         assert_eq!(packets[1].timestamp_usecs, 0);
+        Ok(())
     }
 
     /// Two IDBs with DIFFERENT `if_tsresol` in one section: each EPB must be
     /// decoded with ITS interface's resolution (via `interface_id`), not the
     /// last IDB's.
     #[test]
-    fn per_interface_tsresol_decodes_each_epb_with_own_resolution() {
+    fn per_interface_tsresol_decodes_each_epb_with_own_resolution() -> Result<(), TestError> {
         // if_tsresol option: code 9, len 1, value 9 (10^9 = nanoseconds),
         // padded, then opt_endofopt.
         let ns_opts: &[u8] = &[
@@ -804,7 +824,7 @@ mod tests {
         // Interface 1 at ns: 2_500_000_000 ticks = 2 s + 500_000 µs.
         data.extend(build_epb_iface(1, 0, 2_500_000_000, 4, 4, &[5, 6, 7, 8]));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert_eq!(packets.len(), 2);
         assert_eq!(
@@ -817,13 +837,14 @@ mod tests {
             (2, 500_000),
             "interface 1 packet must decode at ITS nanosecond resolution"
         );
+        Ok(())
     }
 
     /// Two IDBs with different link types: each packet is stamped with ITS
     /// interface's link type, and the classic-pcap path keeps stamping the
     /// file header's.
     #[test]
-    fn per_interface_link_type_stamps_each_packet() {
+    fn per_interface_link_type_stamps_each_packet() -> Result<(), TestError> {
         let mut data = build_shb();
         data.extend(build_idb(1, &[])); // interface 0: Ethernet
         data.extend(build_idb(113, &[])); // interface 1: Linux SLL
@@ -831,7 +852,7 @@ mod tests {
         data.extend(build_epb_iface(1, 0, 2_000_000, 4, 4, &[5, 6, 7, 8]));
         data.extend(build_epb_iface(0, 0, 3_000_000, 4, 4, &[9, 10, 11, 12]));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert_eq!(packets.len(), 3);
         let link_types: Vec<_> = packets.iter().map(|p| p.link_type).collect();
@@ -849,10 +870,11 @@ mod tests {
         let mut classic = build_pcap_header(113);
         classic.extend(build_pcap_packet_header(1000, 0, 4, 4));
         classic.extend_from_slice(&[1, 2, 3, 4]);
-        let packets: Vec<_> = PcapReader::new(&classic).unwrap().collect();
+        let packets: Vec<_> = PcapReader::new(&classic)?.collect();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].link_type, 113);
         assert_eq!(packets[0].interface, None);
+        Ok(())
     }
 
     /// Round-trip integration lock with `PcapWriter`'s multi-IDB output: a
@@ -861,29 +883,35 @@ mod tests {
     /// timestamps intact.
     #[cfg(feature = "native")]
     #[test]
-    fn round_trip_two_interface_pcapng_from_writer() {
+    fn round_trip_two_interface_pcapng_from_writer() -> Result<(), TestError> {
         use crate::capture::packet::Packet;
         use crate::capture::writer::{PcapExportMode, PcapWriter};
         use chrono::TimeZone;
 
         /// A packet tagged with a source interface name, link type, and a
         /// fixed timestamp (secs + µs).
-        fn pkt_on(interface: &str, link_type: i32, secs: i64, usecs: u32, len: usize) -> Packet {
+        fn pkt_on(
+            interface: &str,
+            link_type: i32,
+            secs: i64,
+            usecs: u32,
+            len: usize,
+        ) -> Result<Packet, TestError> {
             let ts = chrono::Utc
                 .timestamp_opt(secs, usecs * 1000)
                 .single()
-                .unwrap();
-            Packet::new(
+                .ok_or("the timestamp is a single valid UTC instant")?;
+            Ok(Packet::new(
                 ts,
                 vec![0u8; len],
                 len,
                 len,
                 Some(interface.to_string()),
                 link_type,
-            )
+            ))
         }
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("two-iface.pcapng");
         {
             let mut w = PcapWriter::with_interface(
@@ -894,18 +922,17 @@ mod tests {
                 true,
                 PcapExportMode::Raw,
                 Some("eth0"),
-            )
-            .unwrap();
+            )?;
             // eth1 uses LINKTYPE_LINUX_SLL (113) so the reader must apply
             // per-interface link types, not the writer-global one.
-            w.write(&pkt_on("eth0", 1, 1_000, 250_000, 40)).unwrap();
-            w.write(&pkt_on("eth1", 113, 1_001, 500_000, 60)).unwrap();
-            w.write(&pkt_on("eth0", 1, 1_002, 750_000, 40)).unwrap();
-            w.finish().unwrap();
+            w.write(&pkt_on("eth0", 1, 1_000, 250_000, 40)?)?;
+            w.write(&pkt_on("eth1", 113, 1_001, 500_000, 60)?)?;
+            w.write(&pkt_on("eth0", 1, 1_002, 750_000, 40)?)?;
+            w.finish()?;
         }
 
-        let bytes = std::fs::read(&path).unwrap();
-        let packets: Vec<_> = PcapReader::new(&bytes).unwrap().collect();
+        let bytes = std::fs::read(&path)?;
+        let packets: Vec<_> = PcapReader::new(&bytes)?.collect();
         assert_eq!(packets.len(), 3);
 
         let got: Vec<_> = packets
@@ -929,13 +956,14 @@ mod tests {
             ],
             "names, link types, and timestamps must survive the round-trip per packet"
         );
+        Ok(())
     }
 
     /// An EPB whose `interface_id` is beyond the section's interface table is
     /// malformed: skipped like other bounded malformed blocks (no panic, no
     /// default-decoded packet); later valid EPBs are unaffected.
     #[test]
-    fn epb_out_of_range_interface_id_is_skipped() {
+    fn epb_out_of_range_interface_id_is_skipped() -> Result<(), TestError> {
         let mut data = build_shb();
         data.extend(build_idb(1, &[])); // only interface 0 exists
         // interface_id 5 was never declared — must be skipped, not decoded
@@ -957,7 +985,7 @@ mod tests {
             &[0xca, 0xfe, 0xba, 0xbe],
         ));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert_eq!(
             packets.len(),
@@ -966,188 +994,216 @@ mod tests {
         );
         assert_eq!(packets[0].data, [0xca, 0xfe, 0xba, 0xbe]);
         assert_eq!(packets[0].timestamp_secs, 1);
+        Ok(())
     }
 
     /// An EPB arriving before any IDB in its section has no interface to
     /// resolve against — skipped, not decoded with defaults.
     #[test]
-    fn epb_before_any_idb_is_skipped() {
+    fn epb_before_any_idb_is_skipped() -> Result<(), TestError> {
         let mut data = build_shb();
         data.extend(build_epb_iface(0, 0, 1_000_000, 4, 4, &[1, 2, 3, 4]));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert!(
             packets.is_empty(),
             "an EPB with no declared interface must not yield a packet"
         );
+        Ok(())
     }
 
     /// A pcapng cut off right after the SHB yields (nearly) no packets and
     /// no panic.
     #[test]
-    fn truncated_pcapng_block() {
+    fn truncated_pcapng_block() -> Result<(), TestError> {
         // Pcapng with valid SHB header but truncated before any packets
-        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
+        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng")?;
         let truncated = &data[..40]; // Just the SHB
-        let reader = PcapReader::new(truncated).unwrap();
+        let reader = PcapReader::new(truncated)?;
         let packets: Vec<_> = reader.collect();
         assert!(packets.is_empty() || packets.len() <= 1);
+        Ok(())
     }
 
     // ── Load every capture file in tests/pcap-samples/ ──────────────
 
     /// Assert the capture at `path` parses and yields at least
     /// `min_packets` packets.
-    fn assert_loads(path: &str, min_packets: usize) {
-        let data = std::fs::read(path).unwrap_or_else(|e| panic!("Can't read {path}: {e}"));
-        let reader = PcapReader::new(&data).unwrap_or_else(|e| panic!("{path}: {e}"));
+    fn assert_loads(path: &str, min_packets: usize) -> Result<(), TestError> {
+        let data = std::fs::read(path).map_err(|e| format!("Can't read {path}: {e}"))?;
+        let reader = PcapReader::new(&data).map_err(|e| format!("{path}: {e}"))?;
         let packets: Vec<_> = reader.collect();
         assert!(
             packets.len() >= min_packets,
             "{path}: expected >= {min_packets} packets, got {}",
             packets.len()
         );
+        Ok(())
     }
 
     // -- pcap format files --
 
     /// Sample-capture smoke test: `Asterisk_ZFONE_XLITE.pcap` loads with >= 10 packet(s).
     #[test]
-    fn load_asterisk_zfone() {
-        assert_loads("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap", 10);
+    fn load_asterisk_zfone() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap", 10)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `DTMFsipinfo.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_dtmfsipinfo() {
-        assert_loads("tests/pcap-samples/DTMFsipinfo.pcap", 1);
+    fn load_dtmfsipinfo() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/DTMFsipinfo.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `h263-over-rtp.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_h263_rtp() {
-        assert_loads("tests/pcap-samples/h263-over-rtp.pcap", 1);
+    fn load_h263_rtp() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/h263-over-rtp.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `metasploit-sip-invite-spoof.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_metasploit() {
-        assert_loads("tests/pcap-samples/metasploit-sip-invite-spoof.pcap", 1);
+    fn load_metasploit() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/metasploit-sip-invite-spoof.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `rtp-protocol.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_rtp_protocol() {
-        assert_loads("tests/pcap-samples/rtp-protocol.pcap", 1);
+    fn load_rtp_protocol() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/rtp-protocol.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `SIP_CALL_RTP_G711` loads with >= 100 packet(s).
     #[test]
-    fn load_sip_call_g711() {
-        assert_loads("tests/pcap-samples/SIP_CALL_RTP_G711", 100);
+    fn load_sip_call_g711() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/SIP_CALL_RTP_G711", 100)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `SIP_DTMF2.cap` loads with >= 10 packet(s).
     #[test]
-    fn load_sip_dtmf2_cap() {
-        assert_loads("tests/pcap-samples/SIP_DTMF2.cap", 10);
+    fn load_sip_dtmf2_cap() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/SIP_DTMF2.cap", 10)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-over-tcp.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_over_tcp() {
-        assert_loads("tests/pcap-samples/sip-over-tcp.pcap", 1);
+    fn load_sip_over_tcp() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-over-tcp.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-proxy.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_proxy() {
-        assert_loads("tests/pcap-samples/sip-proxy.pcap", 1);
+    fn load_sip_proxy() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-proxy.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-register.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_register() {
-        assert_loads("tests/pcap-samples/sip-register.pcap", 1);
+    fn load_sip_register() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-register.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-rtp-g711.pcap` loads with >= 10 packet(s).
     #[test]
-    fn load_sip_rtp_g711() {
-        assert_loads("tests/pcap-samples/sip-rtp-g711.pcap", 10);
+    fn load_sip_rtp_g711() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-rtp-g711.pcap", 10)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-rtp-g722.pcap` loads with >= 10 packet(s).
     #[test]
-    fn load_sip_rtp_g722() {
-        assert_loads("tests/pcap-samples/sip-rtp-g722.pcap", 10);
+    fn load_sip_rtp_g722() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-rtp-g722.pcap", 10)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-rtp-g729a.pcap` loads with >= 10 packet(s).
     #[test]
-    fn load_sip_rtp_g729a() {
-        assert_loads("tests/pcap-samples/sip-rtp-g729a.pcap", 10);
+    fn load_sip_rtp_g729a() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-rtp-g729a.pcap", 10)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-rtp-opus-hybrid.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_rtp_opus() {
-        assert_loads("tests/pcap-samples/sip-rtp-opus-hybrid.pcap", 1);
+    fn load_sip_rtp_opus() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-rtp-opus-hybrid.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-sdp-example.pcap` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_sdp_example() {
-        assert_loads("tests/pcap-samples/sip-sdp-example.pcap", 1);
+    fn load_sip_sdp_example() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-sdp-example.pcap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `rtsp-interleaved-tcp.cap` loads with >= 1 packet(s).
     #[test]
-    fn load_rtsp_tcp_cap() {
-        assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1);
+    fn load_rtsp_tcp_cap() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `speech_8k_ulaw.pcap` loads with >= 100 packet(s).
     #[test]
-    fn load_speech_8k_ulaw() {
+    fn load_speech_8k_ulaw() -> Result<(), TestError> {
         // Linux SLL (cooked v1) link-type — the only SLL fixture in the suite.
-        assert_loads("tests/pcap-samples/speech_8k_ulaw.pcap", 100);
+        assert_loads("tests/pcap-samples/speech_8k_ulaw.pcap", 100)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `voicecmd_combined.pcap` loads with >= 1000 packet(s).
     #[test]
-    fn load_voicecmd_combined() {
-        assert_loads("tests/pcap-samples/voicecmd_combined.pcap", 1000);
+    fn load_voicecmd_combined() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/voicecmd_combined.pcap", 1000)?;
+        Ok(())
     }
 
     // -- pcapng format files --
 
     /// Sample-capture smoke test: `b2bua-asterisk.pcapng` loads with >= 10 packet(s).
     #[test]
-    fn load_b2bua_pcapng() {
-        assert_loads("tests/pcap-samples/b2bua-asterisk.pcapng", 10);
+    fn load_b2bua_pcapng() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/b2bua-asterisk.pcapng", 10)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-488-codec-reject.pcapng` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_488_pcapng() {
-        assert_loads("tests/pcap-samples/sip-488-codec-reject.pcapng", 1);
+    fn load_sip_488_pcapng() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-488-codec-reject.pcapng", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-auth-failure.pcapng` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_auth_pcapng() {
-        assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1);
+    fn load_sip_auth_pcapng() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sip-routing-error.pcapng` loads with >= 1 packet(s).
     #[test]
-    fn load_sip_routing_pcapng() {
-        assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1);
+    fn load_sip_routing_pcapng() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1)?;
+        Ok(())
     }
     /// Sample-capture smoke test: `sipp-branch-scenario.pcapng` loads with >= 100 packet(s).
     #[test]
-    fn load_sipp_branch_pcapng() {
-        assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100);
+    fn load_sipp_branch_pcapng() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100)?;
+        Ok(())
     }
 
     // -- .cap files (mixed formats) --
 
     /// Sample-capture smoke test: `http-example.cap` loads with >= 1 packet(s).
     #[test]
-    fn load_http_cap_pcap_format() {
-        assert_loads("tests/pcap-samples/http-example.cap", 1);
+    fn load_http_cap_pcap_format() -> Result<(), TestError> {
+        assert_loads("tests/pcap-samples/http-example.cap", 1)?;
+        Ok(())
     }
 
     /// `c07-sip-r2.cap` is NetMon format: errors mentioning Network Monitor
     /// and suggesting editcap conversion.
     #[test]
-    fn load_c07_sip_r2_netmon() {
-        let data = std::fs::read("tests/pcap-samples/c07-sip-r2.cap").unwrap();
+    fn load_c07_sip_r2_netmon() -> Result<(), TestError> {
+        let data = std::fs::read("tests/pcap-samples/c07-sip-r2.cap")?;
         let result = PcapReader::new(&data);
         assert!(result.is_err(), "NetMon format should error");
-        let err = result.unwrap_err().to_string();
+        let err = result.err().ok_or("expected an error")?.to_string();
         assert!(
             err.contains("Network Monitor"),
             "Error should mention Network Monitor: {err}"
@@ -1156,6 +1212,7 @@ mod tests {
             err.contains("editcap"),
             "Error should suggest editcap conversion: {err}"
         );
+        Ok(())
     }
 
     // ── Hardening regression tests ───────────────────────────────────
@@ -1300,7 +1357,7 @@ mod tests {
     /// An EPB whose declared length exceeds the file yields no packets and
     /// no panic.
     #[test]
-    fn truncated_epb_block_no_panic() {
+    fn truncated_epb_block_no_panic() -> Result<(), TestError> {
         // EPB block header claims block_total_len >= 32 but the actual file
         // data ends before offset+28, so the field reads should return None.
         let mut data = build_shb();
@@ -1312,33 +1369,35 @@ mod tests {
         data.extend_from_slice(&64u32.to_le_bytes()); // block_total_len = 64
 
         // Only 8 bytes of the "block" exist — reads at offset+12..+28 must fail gracefully
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         // Should return no packets — the EPB is too short to parse
         assert!(packets.is_empty(), "truncated EPB should yield no packets");
+        Ok(())
     }
 
     /// A classic pcap record claiming `incl_len = 0xFFFFFFFF` is bounds
     /// checked: no out-of-bounds access, no allocation panic, no packets.
     #[test]
-    fn huge_incl_len_classic_pcap_no_panic() {
+    fn huge_incl_len_classic_pcap_no_panic() -> Result<(), TestError> {
         // Classic pcap with incl_len = 0xFFFFFFFF. The checked_add + bounds check
         // must prevent any out-of-bounds access or allocation panic.
         let mut data = build_pcap_header(1);
         data.extend_from_slice(&build_pcap_packet_header(1000, 0, 0xFFFFFFFF, 0xFFFFFFFF));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert!(
             packets.is_empty(),
             "huge incl_len should produce no packets"
         );
+        Ok(())
     }
 
     /// An EPB claiming `captured_len = 0xFFFFFFFF` beyond the actual data is
     /// skipped without panicking.
     #[test]
-    fn huge_captured_len_pcapng_epb_no_panic() {
+    fn huge_captured_len_pcapng_epb_no_panic() -> Result<(), TestError> {
         // pcapng EPB with captured_len = 0xFFFFFFFF. The data_end checked_add
         // or bounds check must prevent panic.
         let mut data = build_shb();
@@ -1358,18 +1417,19 @@ mod tests {
         epb.extend_from_slice(&32u32.to_le_bytes()); // trailing block_total_len
         data.extend_from_slice(&epb);
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert!(
             packets.is_empty(),
             "huge captured_len EPB should produce no packets"
         );
+        Ok(())
     }
 
     /// An `if_tsresol` exponent of 20 (10^20 overflows u64) clamps to
     /// `u64::MAX`; the following EPB still parses.
     #[test]
-    fn if_tsresol_overflow_no_panic() {
+    fn if_tsresol_overflow_no_panic() -> Result<(), TestError> {
         // IDB with if_tsresol option value = 20 (power-of-10 mode).
         // 10^20 overflows u64. The parser should clamp to u64::MAX and
         // not panic or divide by zero.
@@ -1392,7 +1452,7 @@ mod tests {
         let pkt_payload = [0xAAu8; 16];
         data.extend_from_slice(&build_epb(0, 1000, 16, 16, &pkt_payload));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         // Should produce exactly one packet without panicking
         assert_eq!(
@@ -1403,13 +1463,14 @@ mod tests {
         assert_eq!(packets[0].data.len(), 16);
         // Timestamp may be clamped/weird, but must be finite and not cause panic
         // (the division by u64::MAX yields 0 for ts_sec, which is fine)
+        Ok(())
     }
 
     /// A pcapng packet whose 64-bit tick counter resolves to more than
     /// `u32::MAX` whole seconds (timestamps after 2106-02-07) saturates to
     /// `u32::MAX` rather than silently wrapping to a small value.
     #[test]
-    fn pcapng_timestamp_past_2106_saturates_not_wraps() {
+    fn pcapng_timestamp_past_2106_saturates_not_wraps() -> Result<(), TestError> {
         // Default microsecond resolution (no if_tsresol option). A full 64-bit
         // tick counter (u64::MAX ticks) resolves to ~1.8e13 seconds, far beyond
         // u32::MAX (~4.29e9). Truncating `as u32` would wrap to a small value;
@@ -1419,179 +1480,192 @@ mod tests {
         let pkt_payload = [0xAAu8; 16];
         data.extend_from_slice(&build_epb(0xFFFF_FFFF, 0xFFFF_FFFF, 16, 16, &pkt_payload));
 
-        let packets: Vec<_> = PcapReader::new(&data).unwrap().collect();
+        let packets: Vec<_> = PcapReader::new(&data)?.collect();
         assert_eq!(packets.len(), 1, "the EPB must still parse");
         assert_eq!(
             packets[0].timestamp_secs,
             u32::MAX,
             "seconds beyond u32::MAX must saturate, not wrap"
         );
+        Ok(())
     }
 
     // ── Gzip-compressed captures ─────────────────────────────────────
 
     /// gzip-compress `data` into a single-member stream.
-    fn gzip(data: &[u8]) -> Vec<u8> {
+    fn gzip(data: &[u8]) -> Result<Vec<u8>, TestError> {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(data).unwrap();
-        enc.finish().unwrap()
+        enc.write_all(data)?;
+        Ok(enc.finish()?)
     }
 
     /// A gzipped classic pcap inflates to an owned buffer and yields the
     /// same packets as its uncompressed twin.
     #[test]
-    fn gzip_classic_pcap_yields_same_packets_as_uncompressed_twin() {
-        let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
-        let compressed = gzip(&plain);
-        let inflated = decompress_capture(&compressed).unwrap();
+    fn gzip_classic_pcap_yields_same_packets_as_uncompressed_twin() -> Result<(), TestError> {
+        let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap")?;
+        let compressed = gzip(&plain)?;
+        let inflated = decompress_capture(&compressed)?;
         assert!(
             matches!(inflated, std::borrow::Cow::Owned(_)),
             "gzip input must be inflated into an owned buffer"
         );
-        let twin: Vec<_> = PcapReader::new(&plain).unwrap().map(|p| p.data).collect();
-        let via_gz: Vec<_> = PcapReader::new(&inflated)
-            .unwrap()
-            .map(|p| p.data)
-            .collect();
+        let twin: Vec<_> = PcapReader::new(&plain)?.map(|p| p.data).collect();
+        let via_gz: Vec<_> = PcapReader::new(&inflated)?.map(|p| p.data).collect();
         assert!(!twin.is_empty(), "sample must contain packets");
         assert_eq!(
             twin, via_gz,
             "gzipped capture must yield the same packets as its uncompressed twin"
         );
+        Ok(())
     }
 
     /// A gzipped pcapng yields the same packets as its uncompressed twin.
     #[test]
-    fn gzip_pcapng_yields_same_packets_as_uncompressed_twin() {
-        let plain = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
-        let compressed = gzip(&plain);
-        let inflated = decompress_capture(&compressed).unwrap();
-        let twin: Vec<_> = PcapReader::new(&plain).unwrap().map(|p| p.data).collect();
-        let via_gz: Vec<_> = PcapReader::new(&inflated)
-            .unwrap()
-            .map(|p| p.data)
-            .collect();
+    fn gzip_pcapng_yields_same_packets_as_uncompressed_twin() -> Result<(), TestError> {
+        let plain = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng")?;
+        let compressed = gzip(&plain)?;
+        let inflated = decompress_capture(&compressed)?;
+        let twin: Vec<_> = PcapReader::new(&plain)?.map(|p| p.data).collect();
+        let via_gz: Vec<_> = PcapReader::new(&inflated)?.map(|p| p.data).collect();
         assert!(!twin.is_empty(), "sample must contain packets");
         assert_eq!(twin, via_gz);
+        Ok(())
     }
 
     /// Non-gzip input passes through `decompress_capture` as a borrowed
     /// (zero-copy) slice.
     #[test]
-    fn non_gzip_data_passes_through_borrowed() {
-        let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
-        let out = decompress_capture(&plain).unwrap();
+    fn non_gzip_data_passes_through_borrowed() -> Result<(), TestError> {
+        let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap")?;
+        let out = decompress_capture(&plain)?;
         assert!(
             matches!(out, std::borrow::Cow::Borrowed(_)),
             "plain pcap must pass through without copying"
         );
+        Ok(())
     }
 
     /// A gzip stream cut in half errors with `GzipDecode`, not a panic.
     #[test]
-    fn truncated_gzip_stream_errors_cleanly() {
-        let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap());
+    fn truncated_gzip_stream_errors_cleanly() -> Result<(), TestError> {
+        let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap")?)?;
         let cut = &compressed[..compressed.len() / 2];
-        let err = decompress_capture(cut).unwrap_err();
+        let err = decompress_capture(cut).err().ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::GzipDecode { .. }),
             "expected GzipDecode, got: {err:?}"
         );
         assert!(err.to_string().contains("gzip"), "got: {err}");
+        Ok(())
     }
 
     /// Valid gzip wrapping garbage decompresses fine; the format error then
     /// names the decompressed magic, not the gzip one.
     #[test]
-    fn gzip_wrapping_garbage_reports_decompressed_magic() {
+    fn gzip_wrapping_garbage_reports_decompressed_magic() -> Result<(), TestError> {
         // 24 bytes of 0xdeadbeef (LE byte order ef be ad de) inside a valid
         // gzip wrapper: decompression succeeds, the format sniff must then
         // name the DECOMPRESSED magic, not the gzip one.
         let garbage = [0xEFu8, 0xBE, 0xAD, 0xDE].repeat(6);
-        let compressed = gzip(&garbage);
-        let inflated = decompress_capture(&compressed).unwrap();
-        let err = PcapReader::new(&inflated).unwrap_err();
+        let compressed = gzip(&garbage)?;
+        let inflated = decompress_capture(&compressed)?;
+        let err = PcapReader::new(&inflated)
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::UnknownFormat { magic: 0xDEADBEEF }),
             "expected UnknownFormat with the decompressed magic, got: {err:?}"
         );
         assert!(err.to_string().contains("0xdeadbeef"), "got: {err}");
+        Ok(())
     }
 
     /// A gzip member inflating to zero bytes then errors with `TooShort`.
     #[test]
-    fn empty_gzip_member_reports_too_short() {
-        let compressed = gzip(&[]);
-        let inflated = decompress_capture(&compressed).unwrap();
+    fn empty_gzip_member_reports_too_short() -> Result<(), TestError> {
+        let compressed = gzip(&[])?;
+        let inflated = decompress_capture(&compressed)?;
         assert!(inflated.is_empty());
-        let err = PcapReader::new(&inflated).unwrap_err();
+        let err = PcapReader::new(&inflated)
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::TooShort { .. }),
             "expected TooShort, got: {err:?}"
         );
+        Ok(())
     }
 
     /// Bytes starting with the gzip magic but followed by junk error with
     /// `GzipDecode`.
     #[test]
-    fn gzip_magic_prefix_with_corrupt_body_errors() {
+    fn gzip_magic_prefix_with_corrupt_body_errors() -> Result<(), TestError> {
         // Starts with 1f 8b but the rest is junk — not a valid gzip stream.
         let mut junk = vec![0x1f, 0x8b];
         junk.extend_from_slice(&[0xFF; 30]);
-        let err = decompress_capture(&junk).unwrap_err();
+        let err = decompress_capture(&junk).err().ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::GzipDecode { .. }),
             "expected GzipDecode, got: {err:?}"
         );
+        Ok(())
     }
 
     /// A small inflation cap refuses a gzip bomb with `GzipTooLarge`, while
     /// the default cap admits an ordinary capture.
     #[test]
-    fn gzip_bomb_is_bounded() {
+    fn gzip_bomb_is_bounded() -> Result<(), TestError> {
         // 1 MiB of zeros compresses to ~1 KiB. A small inflation cap must
         // refuse it instead of allocating the full expansion…
-        let compressed = gzip(&vec![0u8; 1 << 20]);
-        let err = gunzip_limited(&compressed, 4096).unwrap_err();
+        let compressed = gzip(&vec![0u8; 1 << 20])?;
+        let err = gunzip_limited(&compressed, 4096)
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::GzipTooLarge { limit: 4096 }),
             "expected GzipTooLarge, got: {err:?}"
         );
         // …while the default cap admits an ordinary capture.
         assert!(decompress_capture(&compressed).is_ok());
+        Ok(())
     }
 
     /// Feeding still-compressed bytes to `PcapReader::new` yields the
     /// pointed `GzipData` error, not "unknown magic".
     #[test]
-    fn pcap_reader_new_on_gzip_bytes_says_gzip_not_unknown_magic() {
+    fn pcap_reader_new_on_gzip_bytes_says_gzip_not_unknown_magic() -> Result<(), TestError> {
         // A caller that skips decompress_capture must get a self-explanatory
         // error, not "unknown magic 0x00088b1f".
-        let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap());
-        let err = PcapReader::new(&compressed).unwrap_err();
+        let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap")?)?;
+        let err = PcapReader::new(&compressed)
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, CaptureError::GzipData),
             "expected GzipData, got: {err:?}"
         );
         assert!(err.to_string().contains("gzip"), "got: {err}");
+        Ok(())
     }
 
     /// A record with `incl_len = 0` parses as an empty-data packet with its
     /// header fields intact.
     #[test]
-    fn zero_length_classic_pcap_packet() {
+    fn zero_length_classic_pcap_packet() -> Result<(), TestError> {
         // Classic pcap with a packet whose incl_len = 0. Should parse
         // successfully with empty data vec.
         let mut data = build_pcap_header(1);
         data.extend_from_slice(&build_pcap_packet_header(1000, 500, 0, 100));
 
-        let reader = PcapReader::new(&data).unwrap();
+        let reader = PcapReader::new(&data)?;
         let packets: Vec<_> = reader.collect();
         assert_eq!(packets.len(), 1, "zero-length packet should parse");
         assert!(packets[0].data.is_empty(), "packet data should be empty");
         assert_eq!(packets[0].timestamp_secs, 1000);
         assert_eq!(packets[0].timestamp_usecs, 500);
         assert_eq!(packets[0].orig_len, 100);
+        Ok(())
     }
 }

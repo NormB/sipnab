@@ -223,6 +223,9 @@ impl Drop for PasswordEntry {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     fn ask() -> (PasswordEntry, mpsc::Receiver<PromptAnswer>) {
         let (reply, answer) = mpsc::sync_channel(1);
         let entry = PasswordEntry::new(PasswordAsk {
@@ -277,18 +280,19 @@ mod tests {
     }
 
     #[test]
-    fn enter_sends_the_password_and_esc_skips() {
+    fn enter_sends_the_password_and_esc_skips() -> Result<(), TestError> {
         let (mut e, rx) = ask();
         type_str(&mut e, secret());
         assert!(press(&mut e, KeyCode::Enter));
-        match rx.try_recv().expect("answered") {
+        match rx.try_recv().map_err(|e| format!("answered: {e:?}"))? {
             PromptAnswer::Password(pw) => assert_eq!(pw.expose(), secret().as_bytes()),
-            PromptAnswer::Skip => panic!("Enter with a password must send it"),
+            PromptAnswer::Skip => return Err("Enter with a password must send it".into()),
         }
         let (mut e, rx) = ask();
         type_str(&mut e, "abc");
         assert!(press(&mut e, KeyCode::Esc));
         assert!(matches!(rx.try_recv(), Ok(PromptAnswer::Skip)));
+        Ok(())
     }
 
     #[test]
@@ -302,17 +306,18 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_arrives_as_one_entry_not_as_keys() {
+    fn a_paste_arrives_as_one_entry_not_as_keys() -> Result<(), TestError> {
         let (mut e, rx) = ask();
         // Letters that are keys elsewhere, and a trailing newline a password
         // manager adds: all text, up to the line end.
         e.paste("q/xR\n");
         assert_eq!(e.field(), "\u{2022}".repeat(4));
         assert!(press(&mut e, KeyCode::Enter));
-        match rx.try_recv().expect("answered") {
+        match rx.try_recv().map_err(|e| format!("answered: {e:?}"))? {
             PromptAnswer::Password(pw) => assert_eq!(pw.expose(), b"q/xR"),
-            PromptAnswer::Skip => panic!("the paste is the password"),
+            PromptAnswer::Skip => return Err("the paste is the password".into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -332,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prompter_parks_until_the_ui_answers() {
+    fn the_prompter_parks_until_the_ui_answers() -> Result<(), TestError> {
         let (mut prompter, asks) = PopupPrompter::channel();
         let asker = std::thread::spawn(move || {
             let req = PromptRequest {
@@ -346,9 +351,13 @@ mod tests {
         });
         let ask = asks
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the load asked");
+            .map_err(|e| format!("the load asked: {e:?}"))?;
         let mut entry = PasswordEntry::new(ask);
         assert!(entry.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(asker.join().expect("asker"), "the load resumed with a skip");
+        assert!(
+            asker.join().map_err(|e| format!("asker: {e:?}"))?,
+            "the load resumed with a skip"
+        );
+        Ok(())
     }
 }

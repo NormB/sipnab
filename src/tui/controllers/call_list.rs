@@ -624,17 +624,19 @@ mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A filter with stream criteria must judge dialogs using their real RTP
     /// streams: `clear_non_matching` must not delete a dialog that matches
     /// only via its stream. The old `&[]` shortcut evaluated `rtp.codec` with
     /// no streams, so the dialog was misclassified as non-matching and wiped.
     #[test]
-    fn clear_non_matching_uses_dialog_streams_not_empty_slice() {
+    fn clear_non_matching_uses_dialog_streams_not_empty_slice() -> Result<(), TestError> {
         use crate::capture::parse::{ParsedPacket, TransportProto};
         let t0 = base_ts();
         let mut app = App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_ok("call-1@test", t0 + chrono::TimeDelta::seconds(1)),
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_ok("call-1@test", t0 + chrono::TimeDelta::seconds(1))?,
         ]);
 
         // Inject a PCMU (PT 0) RTP stream and associate it with call-1.
@@ -642,7 +644,7 @@ mod tests {
             0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78,
         ];
         data.extend_from_slice(&[0xAA; 160]);
-        let rtp = crate::rtp::parser::parse_rtp_header(&data).unwrap();
+        let rtp = crate::rtp::parser::parse_rtp_header(&data)?;
         let parsed = ParsedPacket {
             frame_bytes: None,
             frame: None,
@@ -670,8 +672,7 @@ mod tests {
         }
 
         // Filter that matches ONLY via the stream's codec.
-        app.active_filter =
-            Some(crate::sip::dsl::FilterExpr::parse("rtp.codec == 'PCMU'").unwrap());
+        app.active_filter = Some(crate::sip::dsl::FilterExpr::parse("rtp.codec == 'PCMU'")?);
 
         clear_non_matching(&mut app);
 
@@ -680,12 +681,13 @@ mod tests {
             1,
             "a dialog matching only via its RTP stream must survive clear_non_matching"
         );
+        Ok(())
     }
 
     /// Saving columns with no config path closes the selector and reports
     /// an error instead of writing anywhere.
     #[test]
-    fn save_columns_without_config_path_reports_error() {
+    fn save_columns_without_config_path_reports_error() -> Result<(), TestError> {
         // Default test App has no column_config_path → save is a safe no-op
         // that surfaces an error rather than writing anywhere.
         let mut app = App::new_test();
@@ -700,13 +702,14 @@ mod tests {
             "got: {:?}",
             app.status_error
         );
+        Ok(())
     }
 
     /// A refused save target (the run loaded /etc/sipnab/sipnab.toml) reaches
     /// the status line word for word, and nothing is written.
     #[test]
-    fn a_refused_save_says_why_and_writes_nothing() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_refused_save_says_why_and_writes_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let mut app = App::new_test();
         app.set_column_save_target(Err(format!(
             "not saved: the settings in use come from {}",
@@ -718,18 +721,15 @@ mod tests {
             app.status_error.as_deref(),
             Some("Columns not saved: the settings in use come from /etc/sipnab/sipnab.toml")
         );
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            0,
-            "nothing written"
-        );
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0, "nothing written");
+        Ok(())
     }
 
     /// `s` in the selector persists the visible layout; the written
     /// config reloads with the hidden column absent.
     #[test]
-    fn save_columns_writes_visible_layout_to_config() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_columns_writes_visible_layout_to_config() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("sub/sipnab.toml");
         let mut app = App::new_test();
         app.set_column_config_path(Some(path.clone()));
@@ -749,25 +749,28 @@ mod tests {
         );
 
         // The written config reloads with "#" hidden and the other 10 present.
-        let cfg = crate::config::Config::load(Some(path.to_str().unwrap()), false)
-            .unwrap()
-            .config;
+        let cfg = crate::config::Config::load(
+            Some(path.to_str().ok_or("to_str() returned None")?),
+            false,
+        )?
+        .config;
         let cols = cfg
             .display
             .visible_columns
-            .expect("visible_columns written");
+            .ok_or("visible_columns written")?;
         assert_eq!(cols.len(), 10);
         assert!(
             !cols.iter().any(|c| c == "#"),
             "hidden column must be absent"
         );
         assert!(cols.iter().any(|c| c == "Method"));
+        Ok(())
     }
 
     /// `u` cycles the From/To display through all four modes and back,
     /// announcing each on the status line.
     #[test]
-    fn call_list_u_cycles_from_to_mode() {
+    fn call_list_u_cycles_from_to_mode() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
         handle_call_list_key(&mut app, key(KeyCode::Char('u')));
@@ -784,12 +787,13 @@ mod tests {
         handle_call_list_key(&mut app, key(KeyCode::Char('u')));
         handle_call_list_key(&mut app, key(KeyCode::Char('u')));
         assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
+        Ok(())
     }
 
     /// The key→action mapping is pure and keymap-aware: rebinding quit to
     /// 'x' must map 'x' (and no longer 'q') without touching any App state.
     #[test]
-    fn call_list_action_honors_remapped_quit_key() {
+    fn call_list_action_honors_remapped_quit_key() -> Result<(), TestError> {
         let km = Keymap {
             quit: KeyCode::Char('x'),
             ..Default::default()
@@ -808,12 +812,13 @@ mod tests {
             call_list_action(&km, key(KeyCode::Esc)),
             Some(CallListAction::Quit)
         );
+        Ok(())
     }
 
     /// A rebind can never be shadowed by a built-in literal: the keymap
     /// arms keep their original precedence order relative to the literals.
     #[test]
-    fn call_list_action_literal_precedes_later_keymap_arm() {
+    fn call_list_action_literal_precedes_later_keymap_arm() -> Result<(), TestError> {
         // 't' is the (earlier) timestamp-cycle literal; rebinding save to
         // 't' must lose to it, exactly as the old match-arm order did.
         let km = Keymap {
@@ -824,22 +829,24 @@ mod tests {
             call_list_action(&km, key(KeyCode::Char('t'))),
             Some(CallListAction::CycleTimestampMode)
         );
+        Ok(())
     }
 
     /// `N` opens the Name Address popup with the source endpoint focused.
     #[test]
-    fn call_list_shift_n_opens_name_dialog_for_source() {
-        let mut app = app_with_dialogs();
+    fn call_list_shift_n_opens_name_dialog_for_source() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Char('N')));
         assert_eq!(app.active_popup, Some(Popup::NameAddress));
         // The source endpoint is focused first (Tab switches to the dest).
         assert_eq!(app.name_dialog.active_ip(), "10.0.0.1");
+        Ok(())
     }
 
     /// Down/j and Up/k move the row selection one row at a time.
     #[test]
-    fn call_list_down_up_navigation() {
-        let mut app = app_with_dialogs();
+    fn call_list_down_up_navigation() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         assert_eq!(app.call_list.selected(), 0);
         handle_call_list_key(&mut app, key(KeyCode::Down));
         assert_eq!(app.call_list.selected(), 1);
@@ -849,66 +856,73 @@ mod tests {
         assert_eq!(app.call_list.selected(), 1);
         handle_call_list_key(&mut app, key(KeyCode::Char('k')));
         assert_eq!(app.call_list.selected(), 0);
+        Ok(())
     }
 
     /// Home/End jump the selection to the first/last row.
     #[test]
-    fn call_list_home_end() {
-        let mut app = app_with_dialogs();
+    fn call_list_home_end() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::End));
         assert_eq!(app.call_list.selected(), 2);
         handle_call_list_key(&mut app, key(KeyCode::Home));
         assert_eq!(app.call_list.selected(), 0);
+        Ok(())
     }
 
     /// PageDown/PageUp page the selection, clamping at both ends.
     #[test]
-    fn call_list_page_down_up() {
-        let mut app = app_with_dialogs();
+    fn call_list_page_down_up() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::PageDown));
         // clamps to last (idx 2)
         assert_eq!(app.call_list.selected(), 2);
         handle_call_list_key(&mut app, key(KeyCode::PageUp));
         assert_eq!(app.call_list.selected(), 0);
+        Ok(())
     }
 
     /// Enter opens the call flow of the highlighted row.
     #[test]
-    fn call_list_enter_opens_flow() {
-        let mut app = app_with_dialogs();
+    fn call_list_enter_opens_flow() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::CallFlow(_)));
+        Ok(())
     }
 
     /// Enter on an empty list is a no-op (no view change, no panic).
     #[test]
-    fn call_list_enter_empty_noop() {
+    fn call_list_enter_empty_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Enter));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// Tab switches to the stream list view.
     #[test]
-    fn call_list_tab_to_stream_list() {
+    fn call_list_tab_to_stream_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Tab));
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     /// Space checks the highlighted row ([*] multi-selection).
     #[test]
-    fn call_list_space_toggles_selection() {
-        let mut app = app_with_dialogs();
+    fn call_list_space_toggles_selection() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         assert_eq!(app.call_list.selected_rows_count(), 0);
         handle_call_list_key(&mut app, key(KeyCode::Char(' ')));
         assert_eq!(app.call_list.selected_rows_count(), 1);
+        Ok(())
     }
 
     /// Esc from the top-level call list quits the app.
     #[test]
-    fn call_list_esc_asks_before_quitting() {
-        let mut app = app_with_dialogs();
+    fn call_list_esc_asks_before_quitting() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Esc));
         assert!(
             !app.should_quit,
@@ -916,45 +930,50 @@ mod tests {
              issue #283"
         );
         assert_eq!(app.active_popup, Some(Popup::QuitConfirm));
+        Ok(())
     }
 
     /// Ctrl-L clears every dialog (alias for the clear-calls key).
     #[test]
-    fn call_list_ctrl_l_clears() {
-        let mut app = app_with_dialogs();
+    fn call_list_ctrl_l_clears() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key_mod(KeyCode::Char('l'), KeyModifiers::CONTROL));
         assert_eq!(app.dialog_store.read().len(), 0);
+        Ok(())
     }
 
     /// F6 opens the raw view of the selected dialog's first message.
     #[test]
-    fn call_list_f6_opens_raw() {
-        let mut app = app_with_dialogs();
+    fn call_list_f6_opens_raw() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::F(6)));
         assert!(matches!(app.current_view, View::RawMessage { .. }));
+        Ok(())
     }
 
     /// `r` opens the raw view (alias for F6).
     #[test]
-    fn call_list_r_opens_raw() {
-        let mut app = app_with_dialogs();
+    fn call_list_r_opens_raw() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Char('r')));
         assert!(matches!(app.current_view, View::RawMessage { .. }));
+        Ok(())
     }
 
     /// `t` cycles the timestamp mode and announces it on the status line.
     #[test]
-    fn call_list_t_cycles_timestamp() {
+    fn call_list_t_cycles_timestamp() -> Result<(), TestError> {
         let mut app = App::new_test();
         let before = app.timestamp_mode;
         handle_call_list_key(&mut app, key(KeyCode::Char('t')));
         assert_ne!(app.timestamp_mode, before);
         assert!(app.status_error.is_some());
+        Ok(())
     }
 
     /// `<`/`>` move the sort column and `Z` reverses the direction.
     #[test]
-    fn call_list_sort_prev_next_reverse() {
+    fn call_list_sort_prev_next_reverse() -> Result<(), TestError> {
         let mut app = App::new_test();
         let start = app.call_list.sort_column();
         handle_call_list_key(&mut app, key(KeyCode::Char('>')));
@@ -964,42 +983,46 @@ mod tests {
         let asc = app.call_list.sort_ascending();
         handle_call_list_key(&mut app, key(KeyCode::Char('Z')));
         assert_ne!(app.call_list.sort_ascending(), asc);
+        Ok(())
     }
 
     /// The autoscroll key toggles follow-newest autoscroll.
     #[test]
-    fn call_list_a_toggles_autoscroll() {
+    fn call_list_a_toggles_autoscroll() -> Result<(), TestError> {
         let mut app = App::new_test();
         let before = app.call_list.autoscroll;
         handle_call_list_key(&mut app, key(KeyCode::Char('A')));
         assert_ne!(app.call_list.autoscroll, before);
+        Ok(())
     }
 
     /// The pause key toggles capture pause.
     #[test]
-    fn call_list_p_toggles_pause() {
+    fn call_list_p_toggles_pause() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(!app.paused);
         handle_call_list_key(&mut app, key(KeyCode::Char('p')));
         assert!(app.paused);
+        Ok(())
     }
 
     /// `B` opens the full-BPF-filter view.
     #[test]
-    fn call_list_b_opens_the_bpf_filter_view() {
+    fn call_list_b_opens_the_bpf_filter_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Char('B')));
         assert_eq!(app.current_view, View::BpfFilter);
+        Ok(())
     }
 
     /// F1/F2/F7/F8 open help, save, filter, and settings respectively.
     #[test]
-    fn call_list_help_save_filter_settings() {
+    fn call_list_help_save_filter_settings() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::F(1)));
         assert_eq!(app.current_view, View::Help);
 
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
 
@@ -1010,11 +1033,12 @@ mod tests {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::F(8)));
         assert_eq!(app.active_popup, Some(Popup::SettingsDialog));
+        Ok(())
     }
 
     /// Both `/` and F3 enter search-input mode.
     #[test]
-    fn call_list_search_via_slash_and_f3() {
+    fn call_list_search_via_slash_and_f3() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Char('/')));
         assert!(app.search_active);
@@ -1022,24 +1046,27 @@ mod tests {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::F(3)));
         assert!(app.search_active);
+        Ok(())
     }
 
     /// F10 opens the column selector popup.
     #[test]
-    fn call_list_f10_opens_column_selector() {
+    fn call_list_f10_opens_column_selector() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::F(10)));
         assert!(app.call_list.column_selector_open);
+        Ok(())
     }
 
     /// F9 drops the active filter and its display text.
     #[test]
-    fn call_list_f9_clears_filter() {
-        let mut app = app_with_dialogs();
+    fn call_list_f9_clears_filter() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.active_filter_text = "x".to_string();
         handle_call_list_key(&mut app, key(KeyCode::F(9)));
         assert!(app.active_filter.is_none());
         assert!(app.active_filter_text.is_empty());
+        Ok(())
     }
 
     /// F9 also drops the persisted search query — the documented
@@ -1047,76 +1074,83 @@ mod tests {
     /// reference the call-flow F9 is aligned to (both views bind F9 to the
     /// same "clear every narrowing input" action).
     #[test]
-    fn call_list_f9_clears_persisted_search() {
-        let mut app = app_with_dialogs();
+    fn call_list_f9_clears_persisted_search() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.search_query = "5595".to_string();
         handle_call_list_key(&mut app, key(KeyCode::F(9)));
         assert!(
             app.search_query.is_empty(),
             "F9 must clear the persisted search query"
         );
+        Ok(())
     }
 
     /// `s` opens the statistics view.
     #[test]
-    fn call_list_s_opens_statistics() {
+    fn call_list_s_opens_statistics() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Char('s')));
         assert_eq!(app.current_view, View::Statistics);
+        Ok(())
     }
 
     /// `T` opens the selected call's timeline; Esc returns to the list.
     #[test]
-    fn timeline_opens_from_call_list_and_returns_on_close() {
+    fn timeline_opens_from_call_list_and_returns_on_close() -> Result<(), TestError> {
         // Needs a selected call: the timeline opens for the highlighted row.
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.handle_key(KeyCode::Char('T'));
         assert!(matches!(app.current_view, View::CallTimeline(_)));
         app.handle_key(KeyCode::Esc);
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// The extended-flow key opens the flow with multi-leg mode on.
     #[test]
-    fn call_list_extended_flow_key() {
-        let mut app = app_with_dialogs();
+    fn call_list_extended_flow_key() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::F(4)));
         assert!(app.flow.extended);
         assert!(matches!(app.current_view, View::CallFlow(_)));
+        Ok(())
     }
 
     /// `O` opens the file-open dialog.
     #[test]
-    fn call_list_capital_o_opens_file_dialog() {
+    fn call_list_capital_o_opens_file_dialog() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Char('O')));
         assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+        Ok(())
     }
 
     /// An unbound key changes nothing.
     #[test]
-    fn call_list_unhandled_key_noop() {
+    fn call_list_unhandled_key_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Char('Q')));
         assert_eq!(app.current_view, View::CallList);
         assert!(!app.should_quit);
+        Ok(())
     }
 
     /// While the column selector is open it captures the keys (Esc closes
     /// it instead of quitting).
     #[test]
-    fn call_list_routes_to_column_selector_when_open() {
+    fn call_list_routes_to_column_selector_when_open() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.call_list.column_selector_open = true;
         handle_call_list_key(&mut app, key(KeyCode::Esc));
         assert!(!app.call_list.column_selector_open);
+        Ok(())
     }
 
     // ── handle_column_selector_key ───────────────────────────────────
 
     /// Up/Down move the selector cursor and Space toggles visibility.
     #[test]
-    fn column_selector_nav_and_toggle() {
+    fn column_selector_nav_and_toggle() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.call_list.column_selector_open = true;
         app.call_list.column_selector_cursor = 0;
@@ -1128,11 +1162,12 @@ mod tests {
         let vis = app.call_list.visible_columns[0];
         handle_column_selector_key(&mut app, key(KeyCode::Char(' ')));
         assert_ne!(app.call_list.visible_columns[0], vis);
+        Ok(())
     }
 
     /// Both Enter and Esc close the column selector.
     #[test]
-    fn column_selector_enter_and_esc_close() {
+    fn column_selector_enter_and_esc_close() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.call_list.column_selector_open = true;
         handle_column_selector_key(&mut app, key(KeyCode::Enter));
@@ -1141,14 +1176,16 @@ mod tests {
         app.call_list.column_selector_open = true;
         handle_column_selector_key(&mut app, key(KeyCode::Esc));
         assert!(!app.call_list.column_selector_open);
+        Ok(())
     }
 
     /// An unbound key leaves the selector open and unchanged.
     #[test]
-    fn column_selector_unhandled_noop() {
+    fn column_selector_unhandled_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.call_list.column_selector_open = true;
         handle_column_selector_key(&mut app, key(KeyCode::Char('z')));
         assert!(app.call_list.column_selector_open);
+        Ok(())
     }
 }

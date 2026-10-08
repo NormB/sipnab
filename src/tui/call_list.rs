@@ -1424,6 +1424,9 @@ fn format_from_to(
 /// list-state navigation, and column-visibility round-trips.
 #[cfg(test)]
 mod tests {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// No width ever produces a ZERO-WIDTH column (#151).
     ///
     /// At 60-61 columns the fixed columns plus overhead consumed everything, so
@@ -1512,7 +1515,7 @@ mod tests {
     /// Asserts the CHOICE, and the companion below asserts what reaches the
     /// screen; a style that is right in isolation can still be overdrawn.
     #[test]
-    fn a_filled_header_band_always_gets_a_foreground() {
+    fn a_filled_header_band_always_gets_a_foreground() -> Result<(), TestError> {
         // A filled band must name its own text color.
         for bg in [
             Color::Cyan,
@@ -1528,7 +1531,7 @@ mod tests {
                  labels inherit the terminal default and can be illegible"
             );
             assert_ne!(
-                fg.unwrap(),
+                fg.ok_or("the header foreground is set")?,
                 bg,
                 "header foreground equals its background ({bg:?}) — invisible"
             );
@@ -1540,6 +1543,7 @@ mod tests {
             None,
             "the NO_COLOR theme must emit no header foreground at all"
         );
+        Ok(())
     }
 
     /// Light backgrounds get dark text and dark backgrounds get light text.
@@ -1639,17 +1643,19 @@ mod tests {
     ///
     /// # Returns
     /// `(sum of laid-out widths, number of laid-out columns)`.
-    fn laid_out(widths: &[Option<Constraint>; 11], width: u16) -> (u16, u16) {
+    fn laid_out(widths: &[Option<Constraint>; 11], width: u16) -> Result<(u16, u16), TestError> {
         let mut sum = 0;
         let mut count = 0;
         for c in widths.iter().flatten() {
             match c {
                 Constraint::Length(n) => sum += n,
-                other => panic!("non-Length constraint {other:?} at {width} cols"),
+                other => {
+                    return Err(format!("non-Length constraint {other:?} at {width} cols").into());
+                }
             }
             count += 1;
         }
-        (sum, count)
+        Ok((sum, count))
     }
 
     /// The laid-out columns must never claim more cells than the terminal has.
@@ -1670,10 +1676,10 @@ mod tests {
     /// this sweep starts at 58 (57 before the index column grew a cell for
     /// the space in `[ ] 1`, 61 before that).
     #[test]
-    fn column_widths_never_oversubscribe_the_terminal() {
+    fn column_widths_never_oversubscribe_the_terminal() -> Result<(), TestError> {
         for width in 58u16..=200 {
             let widths = compute_column_widths(width);
-            let (sum, count) = laid_out(&widths, width);
+            let (sum, count) = laid_out(&widths, width)?;
             let overhead = layout_overhead(count);
             assert!(
                 sum + overhead <= width,
@@ -1686,6 +1692,7 @@ mod tests {
                 sum + overhead - width,
             );
         }
+        Ok(())
     }
 
     /// Edge case: on narrow terminals the flex pool is too small for two
@@ -1693,7 +1700,7 @@ mod tests {
     /// two Source/Destination columns past the shared flex budget. When they
     /// are laid out at all they must never together exceed it.
     #[test]
-    fn narrow_layout_address_columns_fit_flex_budget() {
+    fn narrow_layout_address_columns_fit_flex_budget() -> Result<(), TestError> {
         let len = |c: &Option<Constraint>| match c {
             Some(Constraint::Length(n)) => *n,
             _ => 0,
@@ -1705,7 +1712,7 @@ mod tests {
         // `.max(11)` floor overflowed the pool (61..=82).
         for width in [61u16, 66, 70, 72, 78, 80, 82, 83, 90, 119] {
             let widths = compute_column_widths(width);
-            let (_, count) = laid_out(&widths, width);
+            let (_, count) = laid_out(&widths, width)?;
             let fixed_sum: u16 = FIXED_COLS.iter().map(|&i| len(&widths[i])).sum();
             let flex = width.saturating_sub(fixed_sum + layout_overhead(count));
             // Indices 4 and 5 are Source/Destination.
@@ -1717,6 +1724,7 @@ mod tests {
                 widths
             );
         }
+        Ok(())
     }
 
     /// No column is ever laid out at a width it cannot say anything in.
@@ -1827,7 +1835,7 @@ mod tests {
         call_id: &str,
         from: &str,
         to: &str,
-    ) -> crate::sip::dialog::SipDialog {
+    ) -> Result<crate::sip::dialog::SipDialog, TestError> {
         let raw = crate::test_utils::build_sip_message(
             &format!("{method} sip:{to}@example.com SIP/2.0"),
             &[
@@ -1842,22 +1850,24 @@ mod tests {
         );
         let msg = crate::sip::parser::parse_sip(
             &raw,
-            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0).unwrap(),
-            "192.0.2.10".parse().unwrap(),
-            "198.51.100.20".parse().unwrap(),
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0)
+                .single()
+                .ok_or("the timestamp is a single valid UTC instant")?,
+            "192.0.2.10".parse()?,
+            "198.51.100.20".parse()?,
             5060,
             5062,
             crate::net::TransportProto::Udp,
         )
-        .expect("parse");
-        crate::sip::dialog::SipDialog::new(&msg).expect("dialog")
+        .map_err(|e| format!("parse: {e:?}"))?;
+        Ok(crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?)
     }
 
     /// Each field the call list displays (plus the raw body) is reachable
     /// by search: one positive assertion per field.
     #[test]
-    fn search_matches_every_displayed_field() {
-        let d = searchable_dialog("OPTIONS", "cid-xyz@host", "alice", "bob");
+    fn search_matches_every_displayed_field() -> Result<(), TestError> {
+        let d = searchable_dialog("OPTIONS", "cid-xyz@host", "alice", "bob")?;
         // One assertion per field the call list displays.
         assert!(dialog_matches_search(&d, "cid-xyz")); // Call-ID
         assert!(dialog_matches_search(&d, "options")); // method, folded
@@ -1869,38 +1879,41 @@ mod tests {
         // State string ("Completed"/"Trying"/... per state_display_str).
         let state = state_display_str(d.state()).to_ascii_lowercase();
         assert!(dialog_matches_search(&d, &state));
+        Ok(())
     }
 
     /// Absent needles never match, the empty query matches everything, and
     /// an over-long query returns false without panicking.
     #[test]
-    fn search_no_match_and_empty_query() {
-        let d = searchable_dialog("OPTIONS", "cid-1@host", "alice", "bob");
+    fn search_no_match_and_empty_query() -> Result<(), TestError> {
+        let d = searchable_dialog("OPTIONS", "cid-1@host", "alice", "bob")?;
         assert!(!dialog_matches_search(&d, "zzz-not-present"));
         // Empty query matches everything (no narrowing).
         assert!(dialog_matches_search(&d, ""));
         // Longer than any field: must not panic, must not match.
         let long = "x".repeat(10_000);
         assert!(!dialog_matches_search(&d, &long));
+        Ok(())
     }
 
     /// Mixed-case fields match lower- and upper-case queries alike (ASCII
     /// folding in both directions).
     #[test]
-    fn search_is_ascii_case_insensitive_both_directions() {
-        let d = searchable_dialog("INVITE", "MiXeD-CaSe@Host", "Alice", "BOB");
+    fn search_is_ascii_case_insensitive_both_directions() -> Result<(), TestError> {
+        let d = searchable_dialog("INVITE", "MiXeD-CaSe@Host", "Alice", "BOB")?;
         assert!(dialog_matches_search(&d, "mixed-case"));
         assert!(dialog_matches_search(&d, "MIXED-CASE"));
         assert!(dialog_matches_search(&d, "alice"));
         assert!(dialog_matches_search(&d, "ALICE"));
         assert!(dialog_matches_search(&d, "bob"));
+        Ok(())
     }
 
     /// Regex metacharacters, control bytes, and RTL/NUL sequences are
     /// treated as literal substrings — never interpreted, never panicking.
     #[test]
-    fn search_adversarial_inputs_never_panic() {
-        let d = searchable_dialog("INVITE", "adv@host", "a", "b");
+    fn search_adversarial_inputs_never_panic() -> Result<(), TestError> {
+        let d = searchable_dialog("INVITE", "adv@host", "a", "b")?;
         // Backslashes, regex metacharacters, quotes: plain substring
         // semantics, no interpretation, no panic.
         for q in [
@@ -1912,29 +1925,33 @@ mod tests {
         // A metacharacter that IS in the message matches literally.
         assert!(dialog_matches_search(&d, "sip:b@example.com"));
         // Backslash present in the raw body is found literally.
-        let d2 = searchable_dialog("INVITE", "back\\slash@host", "a", "b");
+        let d2 = searchable_dialog("INVITE", "back\\slash@host", "a", "b")?;
         assert!(dialog_matches_search(&d2, "back\\slash"));
+        Ok(())
     }
 
     /// Raw bodies are scanned as bytes: needles surrounded by NUL and
     /// invalid UTF-8 are still found, absent ones are not.
     #[test]
-    fn search_scans_raw_bytes_with_embedded_nul_and_invalid_utf8() {
-        let mut d = searchable_dialog("INVITE", "nul@host", "a", "b");
+    fn search_scans_raw_bytes_with_embedded_nul_and_invalid_utf8() -> Result<(), TestError> {
+        let mut d = searchable_dialog("INVITE", "nul@host", "a", "b")?;
         // Simulate a body carrying NUL and invalid UTF-8 around a needle.
         let mut raw = d.messages[0].raw.to_vec();
         raw.extend_from_slice(b"\x00\xff\xfeHIDDEN-NEEDLE\x00\xff");
         d.messages[0].raw = raw.into();
         assert!(dialog_matches_search(&d, "hidden-needle"));
         assert!(!dialog_matches_search(&d, "absent-needle"));
+        Ok(())
     }
 
     // ── displayed_dialogs: filter ∩ search interplay ────────────────────
 
     /// Store with 3 OPTIONS + 2 INVITE dialogs with distinct users.
-    fn mixed_store() -> DialogStore {
+    fn mixed_store() -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(100, false);
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0).unwrap();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0)
+            .single()
+            .ok_or("the timestamp is a single valid UTC instant")?;
         for (i, (method, from)) in [
             ("OPTIONS", "sipsak"),
             ("OPTIONS", "sipsak"),
@@ -1959,30 +1976,29 @@ mod tests {
             let msg = crate::sip::parser::parse_sip(
                 &raw,
                 ts + chrono::TimeDelta::seconds(i as i64),
-                "192.0.2.10".parse().unwrap(),
-                "198.51.100.20".parse().unwrap(),
+                "192.0.2.10".parse()?,
+                "198.51.100.20".parse()?,
                 5060,
                 5060,
                 crate::net::TransportProto::Udp,
             )
-            .expect("parse");
+            .map_err(|e| format!("parse: {e:?}"))?;
             store.process_message(msg);
         }
-        store
+        Ok(store)
     }
 
     /// Filter and search narrow independently and intersect: filter-only,
     /// search-only, both, and disjoint combinations all yield the expected
     /// row counts.
     #[test]
-    fn displayed_dialogs_filter_and_search_intersect() {
-        let store = mixed_store();
+    fn displayed_dialogs_filter_and_search_intersect() -> Result<(), TestError> {
+        let store = mixed_store()?;
         let all = displayed_dialogs(&store, None, None, None, "", SortColumn::Index, true);
         assert_eq!(all.len(), 5);
 
         // The field incident's expression matches everything here.
-        let f = crate::sip::dsl::FilterExpr::parse("(method == 'OPTIONS' OR method == 'INVITE')")
-            .unwrap();
+        let f = crate::sip::dsl::FilterExpr::parse("(method == 'OPTIONS' OR method == 'INVITE')")?;
         assert_eq!(
             displayed_dialogs(&store, Some(&f), None, None, "", SortColumn::Index, true).len(),
             5
@@ -2003,7 +2019,7 @@ mod tests {
             1
         );
         // A method-restricted filter composes with search on another field.
-        let inv = crate::sip::dsl::FilterExpr::parse("method == 'INVITE'").unwrap();
+        let inv = crate::sip::dsl::FilterExpr::parse("method == 'INVITE'")?;
         assert_eq!(
             displayed_dialogs(
                 &store,
@@ -2031,6 +2047,7 @@ mod tests {
             .len(),
             0
         );
+        Ok(())
     }
 
     /// The time window hides dialogs outside `[after, before)`, the upper bound
@@ -2038,10 +2055,12 @@ mod tests {
     /// `search_by_time` tool share, applied through `cursor::in_time_window`.
     /// `mixed_store`'s five dialogs open one second apart from 08:45:00Z.
     #[test]
-    fn displayed_dialogs_time_window_is_half_open() {
-        let store = mixed_store();
+    fn displayed_dialogs_time_window_is_half_open() -> Result<(), TestError> {
+        let store = mixed_store()?;
         let at = |s: u32| {
-            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, s).unwrap()
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, s)
+                .single()
+                .ok_or("the timestamp is a single valid UTC instant")
         };
         // No bounds: all five.
         assert_eq!(
@@ -2054,8 +2073,8 @@ mod tests {
             displayed_dialogs(
                 &store,
                 None,
-                Some(at(1)),
-                Some(at(4)),
+                Some(at(1)?),
+                Some(at(4)?),
                 "",
                 SortColumn::Index,
                 true
@@ -2066,21 +2085,32 @@ mod tests {
         );
         // A lower bound alone is inclusive at its own instant.
         assert_eq!(
-            displayed_dialogs(&store, None, Some(at(4)), None, "", SortColumn::Index, true).len(),
+            displayed_dialogs(
+                &store,
+                None,
+                Some(at(4)?),
+                None,
+                "",
+                SortColumn::Index,
+                true
+            )
+            .len(),
             1,
             "after == the last dialog's instant still admits it"
         );
+        Ok(())
     }
 
     /// Adversarial search queries (escapes, quotes, NUL, unbalanced
     /// parens) run through the full display pipeline without panicking.
     #[test]
-    fn displayed_dialogs_search_never_errors_on_adversarial_queries() {
-        let store = mixed_store();
+    fn displayed_dialogs_search_never_errors_on_adversarial_queries() -> Result<(), TestError> {
+        let store = mixed_store()?;
         for q in ["\\", "'", "\u{0}", ".*", "((((", "559 ", " ", "\u{202e}"] {
             // Must not panic; result count is whatever literally matches.
             let _ = displayed_dialogs(&store, None, None, None, q, SortColumn::Index, true);
         }
+        Ok(())
     }
 
     /// Duration formatting switches units at 1 s and 60 s boundaries
@@ -2157,12 +2187,9 @@ mod tests {
     /// IPv4 literals resolve to names with the port suffix preserved;
     /// Off mode, unmapped IPs, and FQDNs pass through unchanged.
     #[test]
-    fn resolve_host_label_maps_ip_literals_preserving_port() {
+    fn resolve_host_label_maps_ip_literals_preserving_port() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(
-            "10.0.0.7".parse::<IpAddr>().unwrap(),
-            "sbc-edge".to_string(),
-        );
+        r.set_manual("10.0.0.7".parse::<IpAddr>()?, "sbc-edge".to_string());
         // IPv4 with port → name + port.
         assert_eq!(
             resolve_host_label("10.0.0.7:5060", &r, NameMode::Names),
@@ -2188,16 +2215,14 @@ mod tests {
             resolve_host_label("pbx.example:5060", &r, NameMode::Names),
             "pbx.example:5060"
         );
+        Ok(())
     }
 
     /// Bracketed IPv6 hosts resolve to names, with and without a port.
     #[test]
-    fn resolve_host_label_maps_bracketed_ipv6() {
+    fn resolve_host_label_maps_bracketed_ipv6() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(
-            "2001:db8::1".parse::<IpAddr>().unwrap(),
-            "core6".to_string(),
-        );
+        r.set_manual("2001:db8::1".parse::<IpAddr>()?, "core6".to_string());
         assert_eq!(
             resolve_host_label("[2001:db8::1]:5060", &r, NameMode::Names),
             "core6:5060"
@@ -2206,6 +2231,7 @@ mod tests {
             resolve_host_label("[2001:db8::1]", &r, NameMode::Names),
             "core6"
         );
+        Ok(())
     }
 
     /// Moving up from row 0 stays at row 0 (no underflow).
@@ -2348,13 +2374,13 @@ mod tests {
     /// this owes verifying is the predicate driving the glyph. The snapshot suite
     /// covers the drawing.
     #[test]
-    fn signaling_marker_tracks_the_diagnosis() {
+    fn signaling_marker_tracks_the_diagnosis() -> Result<(), TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use std::net::{IpAddr, Ipv4Addr};
 
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?;
         let msg = |raw: &str| {
             parse_sip(
                 raw.replace('\n', "\r\n").as_bytes(),
@@ -2365,7 +2391,7 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("fixture parses")
+            .map_err(|e| format!("fixture parses: {e:?}"))
         };
 
         let invite = msg("INVITE sip:b@example.com SIP/2.0\n\
@@ -2374,8 +2400,8 @@ mod tests {
              To: <sip:b@example.com>\n\
              Call-ID: marker@example.com\n\
              CSeq: 1 INVITE\n\
-             Content-Length: 0\n\n");
-        let mut dialog = crate::sip::dialog::SipDialog::new(&invite).expect("should create");
+             Content-Length: 0\n\n")?;
+        let mut dialog = crate::sip::dialog::SipDialog::new(&invite).ok_or("should create")?;
 
         // A lone INVITE has nothing wrong with it.
         assert!(
@@ -2389,23 +2415,26 @@ mod tests {
              To: <sip:b@example.com>;tag=2\n\
              Call-ID: marker@example.com\n\
              CSeq: 1 INVITE\n\
-             Content-Length: 0\n\n"));
+             Content-Length: 0\n\n")?);
         assert!(
             signaling_marker(&dialog),
             "a 503 outcome must raise the marker"
         );
+        Ok(())
     }
 
     /// The State column must hold its longest label plus the marker, so the
     /// common case never clips. `Transferring` is the documented exception.
     #[test]
-    fn state_column_fits_its_labels_plus_the_marker() {
+    fn state_column_fits_its_labels_plus_the_marker() -> Result<(), TestError> {
         // " ⚠" costs 2 display columns.
         const MARKER: u16 = 2;
         for width in [80u16, 98, 119, 120, 160] {
             let widths = compute_column_widths(width);
             let Some(Constraint::Length(state_w)) = widths[6] else {
-                panic!("State column should be a fixed Length, got {:?}", widths[6]);
+                return Err(
+                    format!("State column should be a fixed Length, got {:?}", widths[6]).into(),
+                );
             };
             // FAILED(6) is the state a final-failure diagnosis actually pairs
             // with, and it is the case that must never clip.
@@ -2414,5 +2443,6 @@ mod tests {
                 "at {width} cols State is {state_w}, too narrow for FAILED plus the marker"
             );
         }
+        Ok(())
     }
 }

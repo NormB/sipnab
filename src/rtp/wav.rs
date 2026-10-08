@@ -169,33 +169,35 @@ pub fn wav_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// Writing samples creates a file of header + payload size on disk.
     #[test]
-    fn write_wav_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_wav_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("output.wav");
 
         let samples: Vec<i16> = vec![0, 1000, -1000, 5000, -5000];
-        write_wav(&path, &samples, 8000, 1).unwrap();
+        write_wav(&path, &samples, 8000, 1)?;
 
         assert!(path.exists(), "WAV file should be created");
-        let metadata = std::fs::metadata(&path).unwrap();
+        let metadata = std::fs::metadata(&path)?;
         // 44-byte header + 5 samples * 2 bytes = 54 bytes
         assert_eq!(metadata.len(), 54);
+        Ok(())
     }
 
     /// The written RIFF/fmt/data headers carry the expected field values.
     #[test]
-    fn write_wav_header_correct() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_wav_header_correct() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.wav");
 
         // 160 samples = 20ms at 8kHz mono
         let samples: Vec<i16> = (0..160).map(|i| (i * 100) as i16).collect();
-        write_wav(&path, &samples, 8000, 1).unwrap();
+        write_wav(&path, &samples, 8000, 1)?;
 
-        let data = std::fs::read(&path).unwrap();
+        let data = std::fs::read(&path)?;
 
         // RIFF header
         assert_eq!(&data[0..4], b"RIFF");
@@ -203,61 +205,65 @@ mod tests {
 
         // fmt chunk
         assert_eq!(&data[12..16], b"fmt ");
-        let fmt_size = u32::from_le_bytes(data[16..20].try_into().unwrap());
+        let fmt_size = u32::from_le_bytes(data[16..20].try_into()?);
         assert_eq!(fmt_size, 16); // PCM format
 
-        let audio_format = u16::from_le_bytes(data[20..22].try_into().unwrap());
+        let audio_format = u16::from_le_bytes(data[20..22].try_into()?);
         assert_eq!(audio_format, 1); // PCM
 
-        let channels = u16::from_le_bytes(data[22..24].try_into().unwrap());
+        let channels = u16::from_le_bytes(data[22..24].try_into()?);
         assert_eq!(channels, 1);
 
-        let sample_rate = u32::from_le_bytes(data[24..28].try_into().unwrap());
+        let sample_rate = u32::from_le_bytes(data[24..28].try_into()?);
         assert_eq!(sample_rate, 8000);
 
         // data chunk
         assert_eq!(&data[36..40], b"data");
-        let data_size = u32::from_le_bytes(data[40..44].try_into().unwrap());
+        let data_size = u32::from_le_bytes(data[40..44].try_into()?);
         assert_eq!(data_size, 320); // 160 samples * 2 bytes
 
         // Total file size
         assert_eq!(data.len(), 44 + 320);
+        Ok(())
     }
 
     /// A 2-channel write records channel count and block align correctly.
     #[test]
-    fn write_stereo_wav() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_stereo_wav() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("stereo.wav");
 
         // 320 interleaved samples (160 per channel)
         let samples: Vec<i16> = (0..320).map(|i| (i * 50) as i16).collect();
-        write_wav(&path, &samples, 8000, 2).unwrap();
+        write_wav(&path, &samples, 8000, 2)?;
 
-        let data = std::fs::read(&path).unwrap();
-        let channels = u16::from_le_bytes(data[22..24].try_into().unwrap());
+        let data = std::fs::read(&path)?;
+        let channels = u16::from_le_bytes(data[22..24].try_into()?);
         assert_eq!(channels, 2);
 
-        let block_align = u16::from_le_bytes(data[32..34].try_into().unwrap());
+        let block_align = u16::from_le_bytes(data[32..34].try_into()?);
         assert_eq!(block_align, 4); // 2 channels * 2 bytes
+        Ok(())
     }
 
     /// Writing zero samples produces a header-only 44-byte file.
     #[test]
-    fn write_empty_wav() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_empty_wav() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.wav");
 
-        write_wav(&path, &[], 8000, 1).unwrap();
+        write_wav(&path, &[], 8000, 1)?;
 
-        let data = std::fs::read(&path).unwrap();
+        let data = std::fs::read(&path)?;
         assert_eq!(data.len(), 44); // header only
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod provenance_tests {
     use super::info_chunk;
+    type TestError = Box<dyn std::error::Error>;
 
     /// RIFF pads every chunk body to an even length, and the pad byte is NOT
     /// counted in the size field. Miscount it and every following chunk shifts
@@ -268,7 +274,7 @@ mod provenance_tests {
     /// comment, so the odd case -- the only one where the pad exists -- was
     /// never executed.
     #[test]
-    fn the_info_chunk_pads_to_an_even_length_without_counting_the_pad() {
+    fn the_info_chunk_pads_to_an_even_length_without_counting_the_pad() -> Result<(), TestError> {
         for comment in ["odd", "even"] {
             let chunk = info_chunk(Some(comment));
             assert!(!chunk.is_empty(), "a comment must produce a chunk");
@@ -277,7 +283,11 @@ mod provenance_tests {
             assert_eq!(&chunk[12..16], b"ICMT");
 
             // The declared ICMT size counts the text and its NUL, never the pad.
-            let icmt_size = u32::from_le_bytes(chunk[16..20].try_into().expect("size")) as usize;
+            let icmt_size = u32::from_le_bytes(
+                chunk[16..20]
+                    .try_into()
+                    .map_err(|e| format!("size: {e:?}"))?,
+            ) as usize;
             assert_eq!(
                 icmt_size,
                 comment.len() + 1,
@@ -293,18 +303,22 @@ mod provenance_tests {
             );
 
             // And LIST's own size field must describe what follows it exactly.
-            let list_size = u32::from_le_bytes(chunk[4..8].try_into().expect("size")) as usize;
+            let list_size =
+                u32::from_le_bytes(chunk[4..8].try_into().map_err(|e| format!("size: {e:?}"))?)
+                    as usize;
             assert_eq!(
                 list_size + 8,
                 chunk.len(),
                 "LIST size disagrees with the bytes actually emitted"
             );
         }
+        Ok(())
     }
 
     /// No comment means no chunk at all, not an empty one.
     #[test]
-    fn no_comment_writes_no_chunk() {
+    fn no_comment_writes_no_chunk() -> Result<(), TestError> {
         assert!(info_chunk(None).is_empty());
+        Ok(())
     }
 }

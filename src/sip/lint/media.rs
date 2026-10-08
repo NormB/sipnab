@@ -657,6 +657,9 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use std::net::Ipv4Addr;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Caller media address, RFC 5737 documentation range.
     const CALLER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
     /// Callee media address.
@@ -672,8 +675,8 @@ mod tests {
     }
 
     /// Parse one message of the fixture dialog.
-    fn msg(raw: &str, offset: i64) -> SipMessage {
-        parse_sip(
+    fn msg(raw: &str, offset: i64) -> Result<SipMessage, TestError> {
+        Ok(parse_sip(
             raw.as_bytes(),
             ts(offset),
             IpAddr::V4(CALLER),
@@ -682,7 +685,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("test fixture must parse")
+        .map_err(|e| format!("test fixture must parse: {e:?}"))?)
     }
 
     /// An SDP body with the given media line and attributes.
@@ -740,22 +743,26 @@ mod tests {
     ///
     /// `SipDialog` is not `Clone`, so the store outlives the borrow rather than
     /// the dialog being lifted out of it.
-    fn negotiated(formats: &str, attrs: &str, answer_attrs: &str) -> DialogStore {
+    fn negotiated(
+        formats: &str,
+        attrs: &str,
+        answer_attrs: &str,
+    ) -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(16, false);
-        store.process_message(msg(&invite(&sdp(CALLER, CALLER_PORT, formats, attrs)), 0));
+        store.process_message(msg(&invite(&sdp(CALLER, CALLER_PORT, formats, attrs)), 0)?);
         store.process_message(msg(
             &ok(&sdp(CALLEE, CALLEE_PORT, formats, answer_attrs)),
             1,
-        ));
-        store
+        )?);
+        Ok(store)
     }
 
     /// The single dialog a fixture store holds.
-    fn only(store: &DialogStore) -> &SipDialog {
-        store
+    fn only(store: &DialogStore) -> Result<&SipDialog, TestError> {
+        Ok(store
             .iter()
             .next()
-            .expect("fixture must produce one dialog")
+            .ok_or("fixture must produce one dialog")?)
     }
 
     /// A stream of `packets` packets of `payload` octets each, `spacing_ms`
@@ -806,23 +813,24 @@ mod tests {
     }
 
     /// Rule identifiers raised for a dialog and its media.
-    fn ids(store: &DialogStore, media: &ObservedMedia) -> Vec<&'static str> {
-        Linter::new(LintConfig::new())
-            .lint_dialog_with_media(only(store), media)
+    fn ids(store: &DialogStore, media: &ObservedMedia) -> Result<Vec<&'static str>, TestError> {
+        Ok(Linter::new(LintConfig::new())
+            .lint_dialog_with_media(only(store)?, media)
             .into_iter()
             .map(|f| f.rule_id)
-            .collect()
+            .collect())
     }
 
     /// A call whose media matches its declaration raises nothing.
     #[test]
-    fn media_matching_the_declaration_raises_nothing() {
+    fn media_matching_the_declaration_raises_nothing() -> Result<(), TestError> {
         let dialog = negotiated(
             "0",
             "a=sendrecv\r\na=ptime:20\r\n",
             "a=sendrecv\r\na=ptime:20\r\n",
-        );
-        assert_eq!(ids(&dialog, &conformant_media()), Vec::<&str>::new());
+        )?;
+        assert_eq!(ids(&dialog, &conformant_media())?, Vec::<&str>::new());
+        Ok(())
     }
 
     /// The headline case: PCMU declared on payload type 0, payload type 8 on
@@ -830,8 +838,8 @@ mod tests {
     ///
     /// Both messages are flawless SIP. Only a tool holding the media can see it.
     #[test]
-    fn payload_type_the_sdp_never_declared_is_reported() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn payload_type_the_sdp_never_declared_is_reported() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new()
             .with_stream(stream(
                 (CALLER, CALLER_PORT),
@@ -851,14 +859,16 @@ mod tests {
                 160,
                 20,
             ));
-        let findings = Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog), &media);
+        let findings =
+            Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog)?, &media);
         let f = findings
             .iter()
             .find(|f| f.rule_id == PT_UNDECLARED.id)
-            .expect("undeclared payload type must be reported");
+            .ok_or("undeclared payload type must be reported")?;
         assert_eq!(f.basis, Basis::Observation);
         assert!(f.observed.contains("payload type 8"), "{}", f.observed);
         assert!(f.expected.contains('0'), "{}", f.expected);
+        Ok(())
     }
 
     /// A payload type the offer listed but the answer did not is silent.
@@ -866,8 +876,8 @@ mod tests {
     /// Sending the offerer's second choice is ordinary. A rule comparing against
     /// one endpoint's own m= line would report most answered calls.
     #[test]
-    fn a_declared_alternative_payload_type_is_silent() {
-        let dialog = negotiated("0 8", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn a_declared_alternative_payload_type_is_silent() -> Result<(), TestError> {
+        let dialog = negotiated("0 8", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT),
@@ -877,7 +887,8 @@ mod tests {
             160,
             20,
         ));
-        assert!(!ids(&dialog, &media).contains(&PT_UNDECLARED.id));
+        assert!(!ids(&dialog, &media)?.contains(&PT_UNDECLARED.id));
+        Ok(())
     }
 
     /// Comfort noise is exempt.
@@ -891,8 +902,8 @@ mod tests {
     /// exemption silently pointed at the wrong number. Mutation testing found
     /// exactly that.
     #[test]
-    fn comfort_noise_is_not_an_undeclared_payload_type() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn comfort_noise_is_not_an_undeclared_payload_type() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT),
@@ -902,17 +913,18 @@ mod tests {
             2,
             20,
         ));
-        assert!(!ids(&dialog, &media).contains(&PT_UNDECLARED.id));
+        assert!(!ids(&dialog, &media)?.contains(&PT_UNDECLARED.id));
         assert_eq!(
             COMFORT_NOISE_PT, 13,
             "RFC 3389 comfort noise is payload type 13"
         );
+        Ok(())
     }
 
     /// RTP arriving at a declared address on an undeclared port is reported.
     #[test]
-    fn rtp_on_an_unadvertised_port_is_reported() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn rtp_on_an_unadvertised_port_is_reported() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT + 500),
@@ -922,18 +934,20 @@ mod tests {
             160,
             20,
         ));
-        let findings = Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog), &media);
+        let findings =
+            Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog)?, &media);
         let f = findings
             .iter()
             .find(|f| f.rule_id == MEDIA_PORT_MISMATCH.id)
-            .expect("unadvertised port must be reported");
+            .ok_or("unadvertised port must be reported")?;
         assert!(f.observed.contains(&(CALLEE_PORT + 500).to_string()));
+        Ok(())
     }
 
     /// The RTCP port one above the RTP port is expected traffic.
     #[test]
-    fn the_rtcp_port_is_not_a_port_mismatch() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn the_rtcp_port_is_not_a_port_mismatch() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT + 1),
@@ -943,13 +957,14 @@ mod tests {
             160,
             20,
         ));
-        assert!(!ids(&dialog, &media).contains(&MEDIA_PORT_MISMATCH.id));
+        assert!(!ids(&dialog, &media)?.contains(&MEDIA_PORT_MISMATCH.id));
+        Ok(())
     }
 
     /// Media to an address nobody declared is somebody else's question.
     #[test]
-    fn media_to_an_undeclared_address_is_silent() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn media_to_an_undeclared_address_is_silent() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let relay = Ipv4Addr::new(198, 51, 100, 7);
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
@@ -960,13 +975,14 @@ mod tests {
             160,
             20,
         ));
-        assert!(!ids(&dialog, &media).contains(&MEDIA_PORT_MISMATCH.id));
+        assert!(!ids(&dialog, &media)?.contains(&MEDIA_PORT_MISMATCH.id));
+        Ok(())
     }
 
     /// `sendrecv` negotiated, media one way only.
     #[test]
-    fn one_way_media_against_a_sendrecv_negotiation_is_reported() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn one_way_media_against_a_sendrecv_negotiation_is_reported() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT),
@@ -976,7 +992,8 @@ mod tests {
             160,
             20,
         ));
-        assert!(ids(&dialog, &media).contains(&DIRECTION_UNMET.id));
+        assert!(ids(&dialog, &media)?.contains(&DIRECTION_UNMET.id));
+        Ok(())
     }
 
     /// A call that carried no media at all raises no direction finding.
@@ -985,15 +1002,16 @@ mod tests {
     /// unanswered INVITE, or a capture filtered to signaling. None of those is
     /// a one-way call.
     #[test]
-    fn a_silent_call_is_not_a_one_way_call() {
-        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n");
-        assert!(!ids(&dialog, &ObservedMedia::new()).contains(&DIRECTION_UNMET.id));
+    fn a_silent_call_is_not_a_one_way_call() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
+        assert!(!ids(&dialog, &ObservedMedia::new())?.contains(&DIRECTION_UNMET.id));
+        Ok(())
     }
 
     /// A `sendonly` negotiation carrying media one way is correct and silent.
     #[test]
-    fn one_way_media_against_a_sendonly_negotiation_is_silent() {
-        let dialog = negotiated("0", "a=sendonly\r\n", "a=recvonly\r\n");
+    fn one_way_media_against_a_sendonly_negotiation_is_silent() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendonly\r\n", "a=recvonly\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT),
@@ -1003,17 +1021,18 @@ mod tests {
             160,
             20,
         ));
-        assert!(!ids(&dialog, &media).contains(&DIRECTION_UNMET.id));
+        assert!(!ids(&dialog, &media)?.contains(&DIRECTION_UNMET.id));
+        Ok(())
     }
 
     /// `a=ptime:20` declared, 40 ms packets on the wire.
     #[test]
-    fn packetization_differing_from_ptime_is_reported() {
+    fn packetization_differing_from_ptime_is_reported() -> Result<(), TestError> {
         let dialog = negotiated(
             "0",
             "a=sendrecv\r\na=ptime:20\r\n",
             "a=sendrecv\r\na=ptime:20\r\n",
-        );
+        )?;
         let media = conformant_media().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT),
@@ -1023,13 +1042,15 @@ mod tests {
             320,
             40,
         ));
-        let findings = Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog), &media);
+        let findings =
+            Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog)?, &media);
         let f = findings
             .iter()
             .find(|f| f.rule_id == PTIME_MISMATCH.id)
-            .expect("ptime drift must be reported");
+            .ok_or("ptime drift must be reported")?;
         assert!(f.observed.contains("40 ms"), "{}", f.observed);
         assert_eq!(f.expected, "a=ptime:20");
+        Ok(())
     }
 
     /// Silence suppression stretches the gaps and must not trip the ptime rule.
@@ -1038,12 +1059,12 @@ mod tests {
     /// this case stays quiet: 20 ms packets are 20 ms packets however far apart
     /// they arrive.
     #[test]
-    fn silence_suppression_does_not_trip_the_ptime_rule() {
+    fn silence_suppression_does_not_trip_the_ptime_rule() -> Result<(), TestError> {
         let dialog = negotiated(
             "0",
             "a=sendrecv\r\na=ptime:20\r\n",
             "a=sendrecv\r\na=ptime:20\r\n",
-        );
+        )?;
         // 160-octet PCMU packets — 20 ms each — arriving 200 ms apart because
         // the sender transmits only during speech.
         let media = conformant_media().with_stream(stream(
@@ -1055,7 +1076,8 @@ mod tests {
             160,
             200,
         ));
-        assert!(!ids(&dialog, &media).contains(&PTIME_MISMATCH.id));
+        assert!(!ids(&dialog, &media)?.contains(&PTIME_MISMATCH.id));
+        Ok(())
     }
 
     /// G.729 negotiated, G.711-sized packets on the wire.
@@ -1063,8 +1085,8 @@ mod tests {
     /// 160 octets of G.729 is 160 ms of media arriving every 20 ms, which is
     /// eight times more media than time. No network does that.
     #[test]
-    fn a_payload_the_codec_cannot_produce_is_reported() {
-        let dialog = negotiated("18", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn a_payload_the_codec_cannot_produce_is_reported() -> Result<(), TestError> {
+        let dialog = negotiated("18", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new().with_stream(stream(
             (CALLER, CALLER_PORT),
             (CALLEE, CALLEE_PORT),
@@ -1074,18 +1096,20 @@ mod tests {
             160,
             20,
         ));
-        let findings = Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog), &media);
+        let findings =
+            Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog)?, &media);
         let f = findings
             .iter()
             .find(|f| f.rule_id == FRAME_SIZE_IMPOSSIBLE.id)
-            .expect("impossible frame size must be reported");
+            .ok_or("impossible frame size must be reported")?;
         assert!(f.observed.contains("G729"), "{}", f.observed);
+        Ok(())
     }
 
     /// A conformant G.729 stream is silent.
     #[test]
-    fn conformant_g729_is_silent() {
-        let dialog = negotiated("18", "a=sendrecv\r\n", "a=sendrecv\r\n");
+    fn conformant_g729_is_silent() -> Result<(), TestError> {
+        let dialog = negotiated("18", "a=sendrecv\r\n", "a=sendrecv\r\n")?;
         let media = ObservedMedia::new()
             .with_stream(stream(
                 (CALLER, CALLER_PORT),
@@ -1105,7 +1129,8 @@ mod tests {
                 20,
                 20,
             ));
-        assert_eq!(ids(&dialog, &media), Vec::<&str>::new());
+        assert_eq!(ids(&dialog, &media)?, Vec::<&str>::new());
+        Ok(())
     }
 
     /// A variable-rate codec raises no size finding at all.
@@ -1113,12 +1138,12 @@ mod tests {
     /// Opus has no octets-per-millisecond, so any threshold applied to it would
     /// be invented rather than cited.
     #[test]
-    fn a_variable_rate_codec_raises_no_size_finding() {
+    fn a_variable_rate_codec_raises_no_size_finding() -> Result<(), TestError> {
         let dialog = negotiated(
             "111",
             "a=sendrecv\r\na=ptime:20\r\n",
             "a=sendrecv\r\na=ptime:20\r\n",
-        );
+        )?;
         let media = ObservedMedia::new()
             .with_stream(stream(
                 (CALLER, CALLER_PORT),
@@ -1138,56 +1163,61 @@ mod tests {
                 900,
                 20,
             ));
-        let raised = ids(&dialog, &media);
+        let raised = ids(&dialog, &media)?;
         assert!(!raised.contains(&FRAME_SIZE_IMPOSSIBLE.id), "{raised:?}");
         assert!(!raised.contains(&PTIME_MISMATCH.id), "{raised:?}");
+        Ok(())
     }
 
     /// `a=rtcp-mux` offered, unanswered, and RTCP arriving on the RTP port.
     #[test]
-    fn unanswered_rtcp_mux_used_anyway_is_reported() {
-        let dialog = negotiated("0", "a=sendrecv\r\na=rtcp-mux\r\n", "a=sendrecv\r\n");
+    fn unanswered_rtcp_mux_used_anyway_is_reported() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\na=rtcp-mux\r\n", "a=sendrecv\r\n")?;
         let media = conformant_media().with_rtcp(ObservedRtcp {
             src: SocketAddr::new(IpAddr::V4(CALLER), CALLER_PORT),
             dst: SocketAddr::new(IpAddr::V4(CALLEE), CALLEE_PORT),
             packets: 12,
         });
-        let findings = Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog), &media);
+        let findings =
+            Linter::new(LintConfig::new()).lint_dialog_with_media(only(&dialog)?, &media);
         let f = findings
             .iter()
             .find(|f| f.rule_id == RTCP_MUX_UNANSWERED.id)
-            .expect("unanswered mux must be reported");
+            .ok_or("unanswered mux must be reported")?;
         assert_eq!(f.citation(), "RFC 5761 §5.1.1");
         assert_eq!(f.expected, format!("RTCP to port {}", CALLEE_PORT + 1));
+        Ok(())
     }
 
     /// An answered `a=rtcp-mux` is silent — multiplexing was negotiated.
     #[test]
-    fn answered_rtcp_mux_is_silent() {
+    fn answered_rtcp_mux_is_silent() -> Result<(), TestError> {
         let dialog = negotiated(
             "0",
             "a=sendrecv\r\na=rtcp-mux\r\n",
             "a=sendrecv\r\na=rtcp-mux\r\n",
-        );
+        )?;
         let media = conformant_media().with_rtcp(ObservedRtcp {
             src: SocketAddr::new(IpAddr::V4(CALLER), CALLER_PORT),
             dst: SocketAddr::new(IpAddr::V4(CALLEE), CALLEE_PORT),
             packets: 12,
         });
-        assert!(!ids(&dialog, &media).contains(&RTCP_MUX_UNANSWERED.id));
+        assert!(!ids(&dialog, &media)?.contains(&RTCP_MUX_UNANSWERED.id));
+        Ok(())
     }
 
     /// RTCP on the separate port after an unanswered offer is correct and
     /// silent — the offerer did what [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) requires.
     #[test]
-    fn rtcp_on_the_separate_port_is_silent() {
-        let dialog = negotiated("0", "a=sendrecv\r\na=rtcp-mux\r\n", "a=sendrecv\r\n");
+    fn rtcp_on_the_separate_port_is_silent() -> Result<(), TestError> {
+        let dialog = negotiated("0", "a=sendrecv\r\na=rtcp-mux\r\n", "a=sendrecv\r\n")?;
         let media = conformant_media().with_rtcp(ObservedRtcp {
             src: SocketAddr::new(IpAddr::V4(CALLER), CALLER_PORT + 1),
             dst: SocketAddr::new(IpAddr::V4(CALLEE), CALLEE_PORT + 1),
             packets: 12,
         });
-        assert!(!ids(&dialog, &media).contains(&RTCP_MUX_UNANSWERED.id));
+        assert!(!ids(&dialog, &media)?.contains(&RTCP_MUX_UNANSWERED.id));
+        Ok(())
     }
 
     /// Every frame-based codec shape agrees with its own octet rate.

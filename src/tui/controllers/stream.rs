@@ -327,10 +327,12 @@ mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The mapping is pure and keymap-aware: a rebound quit key maps and
     /// the old key unbinds, without touching any App state.
     #[test]
-    fn stream_list_action_honors_remapped_quit_key() {
+    fn stream_list_action_honors_remapped_quit_key() -> Result<(), TestError> {
         let km = Keymap {
             quit: KeyCode::Char('x'),
             ..Default::default()
@@ -345,12 +347,13 @@ mod tests {
             stream_list_action(&km, key(KeyCode::Esc)),
             Some(StreamListAction::BackToCallList)
         );
+        Ok(())
     }
 
     /// A rebound help key maps in the detail view; navigation keys still
     /// map and unbound keys return `None`.
     #[test]
-    fn stream_detail_action_honors_remapped_help_key() {
+    fn stream_detail_action_honors_remapped_help_key() -> Result<(), TestError> {
         let km = Keymap {
             help: KeyCode::Char('?'),
             ..Default::default()
@@ -364,30 +367,33 @@ mod tests {
             Some(StreamDetailAction::ScrollUp)
         );
         assert_eq!(stream_detail_action(&km, key(KeyCode::Char('z'))), None);
+        Ok(())
     }
 
     /// Tab in the stream list switches back to the call list.
     #[test]
-    fn stream_list_tab_back_to_call_list() {
+    fn stream_list_tab_back_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::Tab));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// Esc in the stream list returns to the call list.
     #[test]
-    fn stream_list_esc_to_call_list() {
+    fn stream_list_esc_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// Quit, help, search, filter, and save keys reach their popups/views
     /// from the stream list.
     #[test]
-    fn stream_list_quit_help_search_filter_save() {
+    fn stream_list_quit_help_search_filter_save() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::Char('q')));
@@ -417,12 +423,13 @@ mod tests {
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+        Ok(())
     }
 
     /// Navigation and Enter on an empty stream list neither panic nor
     /// change the view.
     #[test]
-    fn stream_list_nav_noop_when_empty() {
+    fn stream_list_nav_noop_when_empty() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::Down));
@@ -432,6 +439,7 @@ mod tests {
         // Enter with no streams: stays in stream list
         handle_stream_list_key(&mut app, key(KeyCode::Enter));
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     // ── handle_stream_detail_key ─────────────────────────────────────
@@ -453,7 +461,7 @@ mod tests {
     /// Line, page, and Home scrolling move `stream_detail_scroll` by the
     /// expected amounts.
     #[test]
-    fn stream_detail_scroll() {
+    fn stream_detail_scroll() -> Result<(), TestError> {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::Down));
         assert_eq!(app.stream_detail_scroll, 1);
@@ -467,51 +475,56 @@ mod tests {
         assert_eq!(app.stream_detail_scroll, 1);
         handle_stream_detail_key(&mut app, key(KeyCode::Home));
         assert_eq!(app.stream_detail_scroll, 0);
+        Ok(())
     }
 
     /// Scrolling up at the top saturates at zero instead of underflowing.
     #[test]
-    fn stream_detail_up_saturates() {
+    fn stream_detail_up_saturates() -> Result<(), TestError> {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::Up));
         assert_eq!(app.stream_detail_scroll, 0);
+        Ok(())
     }
 
     /// Esc returns to the recorded return view (the stream list).
     #[test]
-    fn stream_detail_esc_returns() {
+    fn stream_detail_esc_returns() -> Result<(), TestError> {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     /// With no recorded return view, Esc falls back to the stream list.
     #[test]
-    fn stream_detail_esc_default_stream_list() {
+    fn stream_detail_esc_default_stream_list() -> Result<(), TestError> {
         let mut app = app_in_stream_detail();
         app.stream_detail_return_view = None;
         handle_stream_detail_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
     }
 
     /// `L` from stream detail opens the packet loss map of the same stream;
     /// Esc from there returns to this stream's detail (its own StreamKey).
     #[test]
-    fn stream_detail_l_opens_loss_map_and_esc_returns() {
+    fn stream_detail_l_opens_loss_map_and_esc_returns() -> Result<(), TestError> {
         let mut app = app_in_stream_detail();
         let View::StreamDetail(k) = app.current_view.clone() else {
-            panic!("fixture is not on stream detail");
+            return Err("fixture is not on stream detail".into());
         };
         handle_stream_detail_key(&mut app, key(KeyCode::Char('L')));
         assert_eq!(app.current_view, View::StreamLossMap(k.clone()));
 
         crate::tui::controllers::loss_map::handle_loss_map_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.current_view, View::StreamDetail(k));
+        Ok(())
     }
 
     /// Quit, help, and save keys work from the stream detail view.
     #[test]
-    fn stream_detail_quit_help_save() {
+    fn stream_detail_quit_help_save() -> Result<(), TestError> {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::Char('q')));
         assert!(
@@ -528,6 +541,7 @@ mod tests {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+        Ok(())
     }
 }
 
@@ -536,11 +550,13 @@ mod tests {
 mod deferred_audio_tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Shift+P must not decode on the keypress: a long Opus stream stalls
     /// the UI noticeably. The toggle defers one event-loop tick so the
     /// "Decoding…" status paints first (same pattern as the save dialog).
     #[test]
-    fn toggle_playback_defers_decode_one_tick() {
+    fn toggle_playback_defers_decode_one_tick() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
 
@@ -569,15 +585,17 @@ mod deferred_audio_tests {
             "status resolved to a result (playing or an init error): {:?}",
             app.status_error
         );
+        Ok(())
     }
 
     /// A cached init failure still short-circuits without deferring.
     #[test]
-    fn cached_init_failure_short_circuits() {
+    fn cached_init_failure_short_circuits() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.audio_init_error = Some("Audio init failed: nope".to_string());
         handle_stream_detail_play(&mut app);
         assert!(!app.pending_audio_play);
         assert_eq!(app.status_error.as_deref(), Some("Audio init failed: nope"));
+        Ok(())
     }
 }

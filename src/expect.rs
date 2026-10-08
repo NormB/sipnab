@@ -987,6 +987,8 @@ fn format_value(v: f64) -> String {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A rule with only the required fields set.
     fn rule(metric: &str, op: Op, value: f64) -> ExpectRule {
         ExpectRule {
@@ -1027,7 +1029,8 @@ mod tests {
     /// alone let a `count == 0` rule report a pass against a capture holding
     /// no dialogs at all. The test is on the SAMPLE for that reason.
     #[test]
-    fn a_rule_with_nothing_in_scope_fails_rather_than_passing_on_no_data() {
+    fn a_rule_with_nothing_in_scope_fails_rather_than_passing_on_no_data() -> Result<(), TestError>
+    {
         let spec = rule("count", Op::Eq, 0.0);
         let out = judge(&compiled(&spec, Metric::Count), measured(Some(0.0), 0));
         assert_eq!(
@@ -1046,6 +1049,7 @@ mod tests {
             "and name the way to accept an empty population deliberately: {}",
             out.reason
         );
+        Ok(())
     }
 
     /// A sample below the declared floor is SKIPPED, not failed.
@@ -1053,7 +1057,7 @@ mod tests {
     /// Skipped and failed are different answers: a suite that turned a thin
     /// capture into a red build would train its readers to ignore red.
     #[test]
-    fn a_sample_below_min_sample_is_skipped_not_failed() {
+    fn a_sample_below_min_sample_is_skipped_not_failed() -> Result<(), TestError> {
         let mut spec = rule("asr", Op::Ge, 90.0);
         spec.min_sample = Some(50);
         let out = judge(&compiled(&spec, Metric::Asr), measured(Some(10.0), 7));
@@ -1063,11 +1067,12 @@ mod tests {
             "the reason names both the sample it had and the floor it wanted: {}",
             out.reason
         );
+        Ok(())
     }
 
     /// The floor is a minimum, so a sample exactly at it is judged.
     #[test]
-    fn a_sample_exactly_at_min_sample_is_judged() {
+    fn a_sample_exactly_at_min_sample_is_judged() -> Result<(), TestError> {
         let mut spec = rule("asr", Op::Ge, 90.0);
         spec.min_sample = Some(5);
         let out = judge(&compiled(&spec, Metric::Asr), measured(Some(95.0), 5));
@@ -1077,11 +1082,12 @@ mod tests {
             "min_sample is a minimum, not a threshold to exceed: {}",
             out.reason
         );
+        Ok(())
     }
 
     /// A measurement that produced no value is unevaluable, never a pass.
     #[test]
-    fn a_metric_that_produced_no_value_is_unevaluable() {
+    fn a_metric_that_produced_no_value_is_unevaluable() -> Result<(), TestError> {
         let spec = rule("mos_p10", Op::Ge, 3.5);
         let out = judge(
             &compiled(&spec, Metric::MosPercentile(10)),
@@ -1089,23 +1095,25 @@ mod tests {
         );
         assert_eq!(out.verdict, Verdict::Fail);
         assert!(out.reason.contains("unevaluable"), "reason: {}", out.reason);
+        Ok(())
     }
 
     /// A satisfied comparison passes and carries what it observed.
     #[test]
-    fn a_satisfied_rule_passes_and_reports_the_observation() {
+    fn a_satisfied_rule_passes_and_reports_the_observation() -> Result<(), TestError> {
         let spec = rule("asr", Op::Ge, 90.0);
         let out = judge(&compiled(&spec, Metric::Asr), measured(Some(97.5), 40));
         assert_eq!(out.verdict, Verdict::Pass);
         assert_eq!(out.observed, Some(97.5));
         assert_eq!(out.sample, 40);
         assert_eq!(out.threshold, 90.0);
+        Ok(())
     }
 
     /// An unsatisfied comparison fails, and the outcome still carries the
     /// observation rather than only the verdict.
     #[test]
-    fn an_unsatisfied_rule_fails_and_still_reports_what_it_saw() {
+    fn an_unsatisfied_rule_fails_and_still_reports_what_it_saw() -> Result<(), TestError> {
         let spec = rule("asr", Op::Ge, 90.0);
         let out = judge(&compiled(&spec, Metric::Asr), measured(Some(42.0), 40));
         assert_eq!(out.verdict, Verdict::Fail);
@@ -1115,6 +1123,7 @@ mod tests {
             "a failing rule that hid its observation would leave a reader \
              unable to tell a near miss from a collapse"
         );
+        Ok(())
     }
 
     /// Notes on the measurement survive into the outcome.
@@ -1123,7 +1132,7 @@ mod tests {
     /// excluded and why. Dropping them at the verdict would leave a percentile
     /// looking like it covered a population it did not.
     #[test]
-    fn measurement_notes_reach_the_outcome() {
+    fn measurement_notes_reach_the_outcome() -> Result<(), TestError> {
         let spec = rule("mos_p10", Op::Ge, 3.0);
         let m = Measured {
             value: Some(4.1),
@@ -1134,6 +1143,7 @@ mod tests {
         let out = judge(&compiled(&spec, Metric::MosPercentile(10)), m);
         assert_eq!(out.ungrounded_excluded, Some(2));
         assert_eq!(out.notes, vec!["2 stream(s) were excluded".to_string()]);
+        Ok(())
     }
 
     /// A whole number prints without a decimal tail; anything else gets four
@@ -1143,12 +1153,13 @@ mod tests {
     /// does not have, and a MOS rendered as `4` hides the difference between
     /// 4.0 and 4.4999.
     #[test]
-    fn values_print_as_counts_or_as_measurements() {
+    fn values_print_as_counts_or_as_measurements() -> Result<(), TestError> {
         assert_eq!(format_value(12.0), "12");
         assert_eq!(format_value(0.0), "0");
         assert_eq!(format_value(-3.0), "-3");
         assert_eq!(format_value(4.25), "4.2500");
         assert_eq!(format_value(97.5), "97.5000");
+        Ok(())
     }
 
     /// The nearest rank is a real observation at every percentile, including
@@ -1157,12 +1168,12 @@ mod tests {
     /// Interpolation would answer with a MOS no stream scored, which is the
     /// wrong thing to fail a build on.
     #[test]
-    fn nearest_rank_returns_an_observed_value_at_both_ends() {
+    fn nearest_rank_returns_an_observed_value_at_both_ends() -> Result<(), TestError> {
         let sorted = [1.0, 2.0, 3.0, 4.0];
         assert_eq!(nearest_rank(&sorted, 0), Some(1.0), "p0 is the lowest");
         assert_eq!(nearest_rank(&sorted, 100), Some(4.0), "p100 is the highest");
         for p in [0, 10, 25, 50, 75, 90, 100] {
-            let v = nearest_rank(&sorted, p).expect("a value at every percentile");
+            let v = nearest_rank(&sorted, p).ok_or("a value at every percentile")?;
             assert!(
                 sorted.contains(&v),
                 "p{p} returned {v}, which no observation produced"
@@ -1174,11 +1185,12 @@ mod tests {
             Some(7.0),
             "one observation is every percentile of itself"
         );
+        Ok(())
     }
 
     /// `mos_p<N>` parses across the whole range and rejects everything else.
     #[test]
-    fn percentile_metric_names_parse_only_when_they_are_percentiles() {
+    fn percentile_metric_names_parse_only_when_they_are_percentiles() -> Result<(), TestError> {
         assert_eq!(Metric::parse("mos_p0"), Some(Ok(Metric::MosPercentile(0))));
         assert_eq!(
             Metric::parse("mos_p10"),
@@ -1192,31 +1204,34 @@ mod tests {
         assert_eq!(Metric::parse("mos_p"), None);
         assert_eq!(Metric::parse("mos_p10x"), None);
         assert_eq!(Metric::parse("mos"), None);
+        Ok(())
     }
 
     /// Nearest rank returns a value the data actually contains, at both ends.
     #[test]
-    fn nearest_rank_picks_a_real_observation() {
+    fn nearest_rank_picks_a_real_observation() -> Result<(), TestError> {
         let sorted = [1.0, 2.0, 3.0, 4.0, 5.0];
         assert_eq!(nearest_rank(&sorted, 0), Some(1.0), "p0 is the minimum");
         assert_eq!(nearest_rank(&sorted, 100), Some(5.0), "p100 is the maximum");
         assert_eq!(nearest_rank(&sorted, 20), Some(1.0));
         assert_eq!(nearest_rank(&sorted, 50), Some(3.0));
         assert_eq!(nearest_rank(&[], 50), None, "no data, no percentile");
+        Ok(())
     }
 
     /// Every operator compares in the direction its symbol reads.
     #[test]
-    fn operators_compare_in_the_direction_they_are_written() {
+    fn operators_compare_in_the_direction_they_are_written() -> Result<(), TestError> {
         assert!(Op::Ge.holds(1.0, 1.0) && !Op::Gt.holds(1.0, 1.0));
         assert!(Op::Le.holds(1.0, 1.0) && !Op::Lt.holds(1.0, 1.0));
         assert!(Op::Eq.holds(1.0, 1.0) && !Op::Ne.holds(1.0, 1.0));
         assert!(Op::Gt.holds(2.0, 1.0) && !Op::Lt.holds(2.0, 1.0));
+        Ok(())
     }
 
     /// A suite file round-trips through TOML with the operators as symbols.
     #[test]
-    fn a_toml_suite_parses_with_symbolic_operators() {
+    fn a_toml_suite_parses_with_symbolic_operators() -> Result<(), TestError> {
         let suite = Suite::from_toml_str(
             r#"
             [[rules]]
@@ -1233,17 +1248,18 @@ mod tests {
             min_sample = 50
             "#,
         )
-        .expect("suite parses");
+        .map_err(|e| format!("suite parses: {e:?}"))?;
         assert_eq!(suite.rules.len(), 2);
         assert_eq!(suite.rules[0].op, Op::Eq);
         assert_eq!(suite.rules[0].name.as_deref(), Some("no 488s"));
         assert_eq!(suite.rules[1].op, Op::Ge);
         assert_eq!(suite.rules[1].min_sample, Some(50));
+        Ok(())
     }
 
     /// `Report::exit_code` distinguishes the three suite outcomes.
     #[test]
-    fn exit_codes_separate_green_red_and_unjudged() {
+    fn exit_codes_separate_green_red_and_unjudged() -> Result<(), TestError> {
         let mut report = Report {
             schema_version: SCHEMA_VERSION,
             verdict: SuiteVerdict::Pass,
@@ -1267,55 +1283,68 @@ mod tests {
             2,
             "a suite that judged nothing must not report success"
         );
+        Ok(())
     }
 
     /// Compiling rejects a metric it cannot compute, naming the vocabulary.
     #[test]
-    fn an_unknown_metric_is_refused_by_name() {
+    fn an_unknown_metric_is_refused_by_name() -> Result<(), TestError> {
         let t = AliasThresholds::default();
-        let err = compile(0, &rule("acd", Op::Ge, 1.0), &t).expect_err("unknown metric must error");
+        let err = compile(0, &rule("acd", Op::Ge, 1.0), &t)
+            .err()
+            .ok_or("unknown metric must error")?;
         let text = err.to_string();
         assert!(text.contains("acd"), "names the offender: {text}");
         assert!(text.contains("lint_errors"), "names the vocabulary: {text}");
+        Ok(())
     }
 
     /// A setting that does not apply to the metric is refused rather than
     /// silently ignored.
     #[test]
-    fn grounded_only_is_refused_on_a_metric_that_reads_no_mos() {
+    fn grounded_only_is_refused_on_a_metric_that_reads_no_mos() -> Result<(), TestError> {
         let t = AliasThresholds::default();
         let mut r = rule("count", Op::Eq, 0.0);
         r.grounded_only = Some(true);
-        let err = compile(0, &r, &t).expect_err("grounded_only on count must error");
+        let err = compile(0, &r, &t)
+            .err()
+            .ok_or("grounded_only on count must error")?;
         assert!(
             err.to_string().contains("grounded_only"),
             "{}",
             err.to_string()
         );
+        Ok(())
     }
 
     /// A severity scope on a metric with no findings to select is refused.
     #[test]
-    fn a_severity_scope_is_refused_on_a_metric_with_no_findings() {
+    fn a_severity_scope_is_refused_on_a_metric_with_no_findings() -> Result<(), TestError> {
         let t = AliasThresholds::default();
         let mut r = rule("asr", Op::Ge, 0.9);
         r.scope = Some("severity:error".to_string());
-        let err = compile(0, &r, &t).expect_err("severity scope on asr must error");
+        let err = compile(0, &r, &t)
+            .err()
+            .ok_or("severity scope on asr must error")?;
         assert!(err.to_string().contains("lint_errors"), "{err}");
+        Ok(())
     }
 
     /// A scope with no recognized prefix names both prefixes.
     #[test]
-    fn an_unprefixed_scope_is_refused() {
+    fn an_unprefixed_scope_is_refused() -> Result<(), TestError> {
         let t = AliasThresholds::default();
         let mut r = rule("count", Op::Eq, 0.0);
         r.scope = Some("dst.ip == '203.0.113.9'".to_string());
-        let err = compile(0, &r, &t).expect_err("bare expression must error");
+        let err = compile(0, &r, &t)
+            .err()
+            .ok_or("bare expression must error")?;
         let text = err.to_string();
         assert!(
             text.contains("filter:") && text.contains("severity:"),
             "{text}"
         );
+        Ok(())
     }
 
     // ── Evaluation over a populated store ───────────────────────────
@@ -1328,9 +1357,9 @@ mod tests {
     }
 
     /// Parse `raw` as SIP between two localhost endpoints.
-    fn parse_at(raw: &[u8]) -> crate::sip::SipMessage {
+    fn parse_at(raw: &[u8]) -> Result<crate::sip::SipMessage, TestError> {
         let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             raw,
             ts(),
             local,
@@ -1339,11 +1368,11 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("fixture parses as SIP")
+        .map_err(|e| format!("fixture parses as SIP: {e:?}"))?)
     }
 
     /// A minimal INVITE for `call_id`.
-    fn invite(call_id: &str) -> crate::sip::SipMessage {
+    fn invite(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
         parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1359,7 +1388,11 @@ mod tests {
     }
 
     /// A final response to `call_id`'s INVITE.
-    fn response(call_id: &str, code: u16, reason: &str) -> crate::sip::SipMessage {
+    fn response(
+        call_id: &str,
+        code: u16,
+        reason: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
         parse_at(&crate::test_utils::build_sip_message(
             &format!("SIP/2.0 {code} {reason}"),
             &[
@@ -1377,23 +1410,25 @@ mod tests {
 
     /// A store holding one INVITE per `(call_id, final code)`, with `None`
     /// leaving the call in progress.
-    fn store(calls: &[(&str, Option<u16>)]) -> DialogStore {
+    fn store(calls: &[(&str, Option<u16>)]) -> Result<DialogStore, TestError> {
         let mut ds = DialogStore::new(64, false);
-        for (id, code) in calls {
-            ds.process_message(invite(id));
-            if let Some(c) = code {
-                ds.process_message(response(id, *c, "Done"));
+        Ok({
+            for (id, code) in calls {
+                ds.process_message(invite(id)?);
+                if let Some(c) = code {
+                    ds.process_message(response(id, *c, "Done")?);
+                }
             }
-        }
-        ds
+            ds
+        })
     }
 
     /// Evaluate `rules` against a store built from `calls`.
-    fn run(calls: &[(&str, Option<u16>)], rules: &[ExpectRule]) -> Report {
-        let ds = store(calls);
+    fn run(calls: &[(&str, Option<u16>)], rules: &[ExpectRule]) -> Result<Report, TestError> {
+        let ds = store(calls)?;
         let ss = StreamStore::new(64);
         let t = AliasThresholds::default();
-        evaluate(
+        Ok(evaluate(
             rules,
             &Inputs {
                 dialogs: &ds,
@@ -1402,19 +1437,19 @@ mod tests {
                 suppressions: None,
             },
         )
-        .expect("these rules compile")
+        .map_err(|e| format!("these rules compile: {e:?}"))?)
     }
 
     /// A count rule passes when the capture satisfies it and FAILS when it does
     /// not — the direction a gate exists for, asserted in both directions on the
     /// same rule so a verdict stuck on one value cannot pass this.
     #[test]
-    fn a_count_rule_fails_the_capture_that_violates_it() {
+    fn a_count_rule_fails_the_capture_that_violates_it() -> Result<(), TestError> {
         let calls = [("a@x", Some(200)), ("b@x", Some(488)), ("c@x", Some(200))];
         let mut r = rule("count", Op::Eq, 0.0);
         r.scope = Some("filter:response_code == 488".to_string());
 
-        let bad = run(&calls, std::slice::from_ref(&r));
+        let bad = run(&calls, std::slice::from_ref(&r))?;
         assert_eq!(bad.verdict, SuiteVerdict::Fail, "{:?}", bad.results);
         assert_eq!(bad.exit_code, 1);
         assert_eq!(bad.results[0].verdict, Verdict::Fail);
@@ -1422,22 +1457,23 @@ mod tests {
         assert_eq!(bad.results[0].sample, 3, "judged against the whole capture");
 
         // The SAME rule against a capture holding no 488.
-        let good = run(&[("a@x", Some(200)), ("c@x", Some(200))], &[r]);
+        let good = run(&[("a@x", Some(200)), ("c@x", Some(200))], &[r])?;
         assert_eq!(good.verdict, SuiteVerdict::Pass);
         assert_eq!(good.exit_code, 0);
         assert_eq!(good.results[0].observed, Some(0.0));
+        Ok(())
     }
 
     /// ASR is answered over seized, and a call still ringing is in neither.
     #[test]
-    fn asr_counts_answered_over_seized_and_excludes_calls_in_progress() {
+    fn asr_counts_answered_over_seized_and_excludes_calls_in_progress() -> Result<(), TestError> {
         let calls = [
             ("a@x", Some(200)),
             ("b@x", Some(200)),
             ("c@x", Some(486)),
             ("d@x", None),
         ];
-        let report = run(&calls, &[rule("asr", Op::Ge, 99.0)]);
+        let report = run(&calls, &[rule("asr", Op::Ge, 99.0)])?;
         let o = &report.results[0];
         assert_eq!(o.sample, 3, "the ringing call is not a seizure: {o:?}");
         // Percent, matching `group_dialogs`. A rule an operator writes should
@@ -1445,26 +1481,28 @@ mod tests {
         // hundred -- the two surfaces used to disagree, and a threshold copied
         // between them was wrong by 100x in the direction that always passes.
         assert!(
-            (o.observed.expect("two of three seizures answered") - 200.0 / 3.0).abs() < 1e-9,
+            (o.observed.ok_or("two of three seizures answered")? - 200.0 / 3.0).abs() < 1e-9,
             "expected ~66.67 percent, got {:?}",
             o.observed
         );
         assert_eq!(o.verdict, Verdict::Fail, "66.7% is not >= 99%");
         assert_eq!(o.unit, "percent");
 
-        let passing = run(&calls, &[rule("asr", Op::Ge, 60.0)]);
+        let passing = run(&calls, &[rule("asr", Op::Ge, 60.0)])?;
         assert_eq!(passing.results[0].verdict, Verdict::Pass);
+        Ok(())
     }
 
     /// A rule with nothing to measure FAILS. This is the whole point: a green
     /// build on a capture the gate never judged is the outcome that gets a gate
     /// trusted and then betrayed.
     #[test]
-    fn a_rule_with_an_empty_population_fails_rather_than_passing_quietly() {
+    fn a_rule_with_an_empty_population_fails_rather_than_passing_quietly() -> Result<(), TestError>
+    {
         // 1200 REGISTER-shaped dialogs would be a busy capture; here it is
         // enough that no INVITE reached a final response, so ASR has no
         // denominator.
-        let report = run(&[("a@x", None)], &[rule("asr", Op::Ge, 99.0)]);
+        let report = run(&[("a@x", None)], &[rule("asr", Op::Ge, 99.0)])?;
         let o = &report.results[0];
         assert_eq!(o.verdict, Verdict::Fail, "unevaluable must not pass: {o:?}");
         assert_eq!(o.observed, None);
@@ -1476,15 +1514,17 @@ mod tests {
         );
         assert_eq!(report.verdict, SuiteVerdict::Fail);
         assert_eq!(report.exit_code, 1);
+        Ok(())
     }
 
     /// Declaring min_sample is what turns that failure into a skip, and a suite
     /// where everything skipped is NOT a pass.
     #[test]
-    fn min_sample_downgrades_an_unjudgeable_rule_to_skipped_not_to_passed() {
+    fn min_sample_downgrades_an_unjudgeable_rule_to_skipped_not_to_passed() -> Result<(), TestError>
+    {
         let mut r = rule("asr", Op::Ge, 99.0);
         r.min_sample = Some(50);
-        let report = run(&[("a@x", None)], &[r]);
+        let report = run(&[("a@x", None)], &[r])?;
         let o = &report.results[0];
         assert_eq!(o.verdict, Verdict::Skipped, "{o:?}");
         assert!(o.reason.contains("min_sample"), "{}", o.reason);
@@ -1496,16 +1536,17 @@ mod tests {
             "a suite that judged nothing reports so"
         );
         assert_eq!(report.exit_code, 2);
+        Ok(())
     }
 
     /// A sample at the declared floor is judged; one below it is not.
     #[test]
-    fn min_sample_is_a_floor_the_sample_may_sit_on() {
+    fn min_sample_is_a_floor_the_sample_may_sit_on() -> Result<(), TestError> {
         let calls = [("a@x", Some(486)), ("b@x", Some(486))];
         let mut at_floor = rule("asr", Op::Ge, 99.0);
         at_floor.min_sample = Some(2);
         assert_eq!(
-            run(&calls, &[at_floor]).results[0].verdict,
+            run(&calls, &[at_floor])?.results[0].verdict,
             Verdict::Fail,
             "two seizures meets a floor of two, so the threshold applies"
         );
@@ -1513,9 +1554,10 @@ mod tests {
         let mut above_floor = rule("asr", Op::Ge, 99.0);
         above_floor.min_sample = Some(3);
         assert_eq!(
-            run(&calls, &[above_floor]).results[0].verdict,
+            run(&calls, &[above_floor])?.results[0].verdict,
             Verdict::Skipped
         );
+        Ok(())
     }
 
     /// A count of zero over an empty capture is unevaluable, not a pass.
@@ -1523,10 +1565,10 @@ mod tests {
     /// The one metric whose value exists whatever the population is, and the
     /// reason the emptiness test reads the SAMPLE rather than the value.
     #[test]
-    fn a_count_of_zero_over_no_dialogs_fails_rather_than_passing() {
+    fn a_count_of_zero_over_no_dialogs_fails_rather_than_passing() -> Result<(), TestError> {
         let mut r = rule("count", Op::Eq, 0.0);
         r.scope = Some("filter:state == 'Failed'".to_string());
-        let report = run(&[], std::slice::from_ref(&r));
+        let report = run(&[], std::slice::from_ref(&r))?;
         assert_eq!(report.results[0].observed, Some(0.0));
         assert_eq!(
             report.results[0].verdict,
@@ -1537,34 +1579,37 @@ mod tests {
 
         // The same rule over one dialog that satisfies it does pass, so the
         // failure above is emptiness and not a rule that can never hold.
-        let populated = run(&[("a@x", Some(200))], &[r]);
+        let populated = run(&[("a@x", Some(200))], &[r])?;
         assert_eq!(populated.results[0].verdict, Verdict::Pass);
+        Ok(())
     }
 
     /// A declared floor of zero declares nothing, and leaves the empty case
     /// failing exactly as an absent one does.
     #[test]
-    fn a_min_sample_of_zero_does_not_silence_an_empty_population() {
+    fn a_min_sample_of_zero_does_not_silence_an_empty_population() -> Result<(), TestError> {
         let mut r = rule("asr", Op::Ge, 99.0);
         r.min_sample = Some(0);
-        assert_eq!(run(&[], &[r]).results[0].verdict, Verdict::Fail);
+        assert_eq!(run(&[], &[r])?.results[0].verdict, Verdict::Fail);
+        Ok(())
     }
 
     /// One failing rule fails the suite even when the others pass.
     #[test]
-    fn one_failing_rule_fails_the_whole_suite() {
+    fn one_failing_rule_fails_the_whole_suite() -> Result<(), TestError> {
         let calls = [("a@x", Some(200)), ("b@x", Some(488))];
         let mut violated = rule("count", Op::Eq, 0.0);
         violated.scope = Some("filter:response_code == 488".to_string());
-        let report = run(&calls, &[rule("count", Op::Ge, 1.0), violated]);
+        let report = run(&calls, &[rule("count", Op::Ge, 1.0), violated])?;
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 1);
         assert_eq!(report.verdict, SuiteVerdict::Fail);
+        Ok(())
     }
 
     /// An empty suite is refused: it would pass every capture.
     #[test]
-    fn an_empty_suite_is_refused() {
+    fn an_empty_suite_is_refused() -> Result<(), TestError> {
         let ds = DialogStore::new(16, false);
         let ss = StreamStore::new(16);
         let t = AliasThresholds::default();
@@ -1577,8 +1622,10 @@ mod tests {
                 suppressions: None,
             },
         )
-        .expect_err("an empty suite must error");
+        .err()
+        .ok_or("an empty suite must error")?;
         assert!(matches!(err, RuleError::NoRules));
+        Ok(())
     }
 
     // ── The rule vocabulary, end to end ─────────────────────────────
@@ -1588,7 +1635,7 @@ mod tests {
     /// quotes; a quote that did not round-trip would name a rule the file
     /// never contained.
     #[test]
-    fn every_operator_reads_back_as_the_symbol_a_rule_file_uses() {
+    fn every_operator_reads_back_as_the_symbol_a_rule_file_uses() -> Result<(), TestError> {
         for (op, symbol) in [
             (Op::Ge, ">="),
             (Op::Gt, ">"),
@@ -1601,31 +1648,35 @@ mod tests {
             let suite = Suite::from_toml_str(&format!(
                 "[[rules]]\nmetric = \"count\"\nop = \"{symbol}\"\nvalue = 1\n"
             ))
-            .expect("every documented operator parses");
+            .map_err(|e| format!("every documented operator parses: {e:?}"))?;
             assert_eq!(suite.rules[0].op, op, "{symbol} parses to {op:?}");
         }
+        Ok(())
     }
 
     /// The strict operators exclude the threshold and the inclusive ones take
     /// it, in both directions. Only `>=`, `>`, `==` and `!=` had an equal-value
     /// case above; a `<` that behaved as `<=` would pass that test.
     #[test]
-    fn strict_operators_exclude_the_threshold_on_both_sides() {
+    fn strict_operators_exclude_the_threshold_on_both_sides() -> Result<(), TestError> {
         assert!(Op::Lt.holds(0.5, 1.0) && !Op::Lt.holds(1.0, 1.0));
         assert!(Op::Le.holds(0.5, 1.0) && !Op::Le.holds(1.5, 1.0));
         assert!(Op::Gt.holds(1.5, 1.0) && !Op::Gt.holds(0.5, 1.0));
         assert!(Op::Ne.holds(0.5, 1.0));
+        Ok(())
     }
 
     /// A percentile past 100 is refused, quoting the number that was asked
     /// for, because `mos_p300` is a typo for something and the author has to
     /// be told which part was wrong.
     #[test]
-    fn a_percentile_past_one_hundred_is_refused_with_the_number_asked_for() {
+    fn a_percentile_past_one_hundred_is_refused_with_the_number_asked_for() -> Result<(), TestError>
+    {
         let t = AliasThresholds::default();
         for (metric, asked) in [("mos_p101", 101), ("mos_p300", 300)] {
             let err = compile(3, &rule(metric, Op::Ge, 3.5), &t)
-                .expect_err("a percentile past 100 must be refused");
+                .err()
+                .ok_or("a percentile past 100 must be refused")?;
             assert!(
                 matches!(
                     &err,
@@ -1640,25 +1691,28 @@ mod tests {
                 "{text}"
             );
         }
+        Ok(())
     }
 
     /// Digits too many to be any number are not a percentile at all -- the
     /// name is unknown, rather than a percentile of some wrapped value.
     #[test]
-    fn a_percentile_too_long_to_be_a_number_is_an_unknown_metric() {
+    fn a_percentile_too_long_to_be_a_number_is_an_unknown_metric() -> Result<(), TestError> {
         assert_eq!(Metric::parse("mos_p99999999999"), None);
         let t = AliasThresholds::default();
         let err = compile(0, &rule("mos_p99999999999", Op::Ge, 3.5), &t)
-            .expect_err("an unparseable percentile must be refused");
+            .err()
+            .ok_or("an unparseable percentile must be refused")?;
         assert!(matches!(err, RuleError::UnknownMetric { .. }), "{err:?}");
+        Ok(())
     }
 
     /// A malformed filter refuses the WHOLE suite, naming the rule and the
     /// expression. Evaluating the rules around it would be half a gate
     /// reporting green.
     #[test]
-    fn an_unparseable_filter_refuses_the_whole_suite_naming_the_rule() {
-        let ds = store(&[("a@x", Some(200))]);
+    fn an_unparseable_filter_refuses_the_whole_suite_naming_the_rule() -> Result<(), TestError> {
+        let ds = store(&[("a@x", Some(200))])?;
         let ss = StreamStore::new(16);
         let t = AliasThresholds::default();
         let mut bad = rule("count", Op::Eq, 0.0);
@@ -1672,18 +1726,20 @@ mod tests {
                 suppressions: None,
             },
         )
-        .expect_err("a malformed filter must refuse the suite");
+        .err()
+        .ok_or("a malformed filter must refuse the suite")?;
         match &err {
             RuleError::BadFilter { index, filter, .. } => {
                 assert_eq!(*index, 2);
                 assert_eq!(filter, "response_code == == 488", "quoted as written");
             }
-            other => panic!("expected BadFilter, got {other:?}"),
+            other => return Err(format!("expected BadFilter, got {other:?}").into()),
         }
         assert!(
             err.to_string().starts_with("rule 2: invalid filter"),
             "{err}"
         );
+        Ok(())
     }
 
     /// A `filter:` scope accepts a diagnostic alias, expanded with the
@@ -1691,10 +1747,10 @@ mod tests {
     /// same vocabulary. `problems` is not DSL on its own: without the
     /// expansion it would be refused as a malformed filter.
     #[test]
-    fn a_filter_scope_accepts_a_diagnostic_alias() {
+    fn a_filter_scope_accepts_a_diagnostic_alias() -> Result<(), TestError> {
         let mut r = rule("count", Op::Eq, 0.0);
         r.scope = Some("filter:problems".to_string());
-        let report = run(&[("a@x", Some(200)), ("b@x", Some(486))], &[r]);
+        let report = run(&[("a@x", Some(200)), ("b@x", Some(486))], &[r])?;
         assert_eq!(
             report.results[0].observed,
             Some(1.0),
@@ -1702,16 +1758,19 @@ mod tests {
             report.results[0]
         );
         assert_eq!(report.results[0].verdict, Verdict::Fail);
+        Ok(())
     }
 
     /// A severity that does not exist is refused by name, with the ones that
     /// do.
     #[test]
-    fn an_unknown_severity_is_refused_by_name() {
+    fn an_unknown_severity_is_refused_by_name() -> Result<(), TestError> {
         let t = AliasThresholds::default();
         let mut r = rule("lint_errors", Op::Eq, 0.0);
         r.scope = Some("severity:fatal".to_string());
-        let err = compile(1, &r, &t).expect_err("an unknown severity must error");
+        let err = compile(1, &r, &t)
+            .err()
+            .ok_or("an unknown severity must error")?;
         assert!(
             matches!(&err, RuleError::UnknownSeverity { index: 1, name } if name == "fatal"),
             "{err:?}"
@@ -1720,12 +1779,13 @@ mod tests {
             err.to_string().contains("info, notice, warning, error"),
             "{err}"
         );
+        Ok(())
     }
 
     /// A pass and a fail each quote the observation, the comparison and the
     /// population in the metric's own noun -- the sentence a CI log shows.
     #[test]
-    fn a_verdict_reason_quotes_the_numbers_in_the_metrics_own_noun() {
+    fn a_verdict_reason_quotes_the_numbers_in_the_metrics_own_noun() -> Result<(), TestError> {
         let spec = rule("count", Op::Eq, 0.0);
         let out = judge(&compiled(&spec, Metric::Count), measured(Some(2.0), 3));
         assert_eq!(out.reason, "2 is NOT == 0 over 3 dialog(s)");
@@ -1743,14 +1803,15 @@ mod tests {
         let out = judge(&compiled(&spec, Metric::LintErrors), measured(Some(1.0), 2));
         assert_eq!(out.reason, "1 is NOT <= 0 over 2 dialog(s)");
         assert_eq!(out.unit, "findings");
+        Ok(())
     }
 
     /// ASR is a property of calls: a REGISTER that got its 200 is neither a
     /// seizure nor an answer, and counting it would lift ASR on a capture of
     /// failing calls.
     #[test]
-    fn asr_counts_only_invite_dialogs() {
-        let mut ds = store(&[("call@x", Some(486))]);
+    fn asr_counts_only_invite_dialogs() -> Result<(), TestError> {
+        let mut ds = store(&[("call@x", Some(486))])?;
         let register = |raw_first: &str, extra: &str| {
             parse_at(&crate::test_utils::build_sip_message(
                 raw_first,
@@ -1766,8 +1827,8 @@ mod tests {
                 b"",
             ))
         };
-        ds.process_message(register("REGISTER sip:example.com SIP/2.0", ""));
-        ds.process_message(register("SIP/2.0 200 OK", ";tag=r2"));
+        ds.process_message(register("REGISTER sip:example.com SIP/2.0", "")?);
+        ds.process_message(register("SIP/2.0 200 OK", ";tag=r2")?);
         let ss = StreamStore::new(16);
         let t = AliasThresholds::default();
         let report = evaluate(
@@ -1779,7 +1840,7 @@ mod tests {
                 suppressions: None,
             },
         )
-        .expect("the rule compiles");
+        .map_err(|e| format!("the rule compiles: {e:?}"))?;
         assert_eq!(report.dialogs_in_capture, 2, "the REGISTER is a dialog");
         let o = &report.results[0];
         assert_eq!(o.sample, 1, "but only the INVITE is a seizure: {o:?}");
@@ -1789,11 +1850,12 @@ mod tests {
             "nor is the REGISTER an INVITE still waiting for its answer: {:?}",
             o.notes
         );
+        Ok(())
     }
 
     /// An INVITE whose Content-Length promises a body that never arrived: one
     /// error-severity conformance finding ([RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14)).
-    fn invite_with_missing_body(call_id: &str) -> crate::sip::SipMessage {
+    fn invite_with_missing_body(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
         parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1814,10 +1876,10 @@ mod tests {
         ds: &DialogStore,
         rules: &[ExpectRule],
         suppressions: Option<&SuppressionFile>,
-    ) -> Report {
+    ) -> Result<Report, TestError> {
         let ss = StreamStore::new(16);
         let t = AliasThresholds::default();
-        evaluate(
+        Ok(evaluate(
             rules,
             &Inputs {
                 dialogs: ds,
@@ -1826,18 +1888,19 @@ mod tests {
                 suppressions,
             },
         )
-        .expect("the rules compile")
+        .map_err(|e| format!("the rules compile: {e:?}"))?)
     }
 
     /// `lint_errors` counts from `error` unless the rule names a floor, and
     /// says which floor it counted from. A default that counted every warning
     /// would make the obvious `lint_errors == 0` unsatisfiable.
     #[test]
-    fn lint_errors_count_from_the_error_floor_unless_a_severity_scope_lowers_it() {
+    fn lint_errors_count_from_the_error_floor_unless_a_severity_scope_lowers_it()
+    -> Result<(), TestError> {
         // The fixture INVITEs carry no Max-Forwards: a WARNING per dialog, and
         // no error at all.
-        let clean = store(&[("a@x", Some(200)), ("b@x", Some(200))]);
-        let report = evaluate_lint(&clean, &[rule("lint_errors", Op::Eq, 0.0)], None);
+        let clean = store(&[("a@x", Some(200)), ("b@x", Some(200))])?;
+        let report = evaluate_lint(&clean, &[rule("lint_errors", Op::Eq, 0.0)], None)?;
         let o = &report.results[0];
         assert_eq!(o.observed, Some(0.0), "{o:?}");
         assert_eq!(o.sample, 2);
@@ -1850,7 +1913,7 @@ mod tests {
 
         let mut warnings = rule("lint_errors", Op::Eq, 0.0);
         warnings.scope = Some("severity:warning".to_string());
-        let report = evaluate_lint(&clean, &[warnings], None);
+        let report = evaluate_lint(&clean, &[warnings], None)?;
         let o = &report.results[0];
         assert!(
             o.observed.is_some_and(|n| n >= 2.0),
@@ -1864,8 +1927,8 @@ mod tests {
 
         // An error-severity defect is counted at the default floor.
         let mut broken = DialogStore::new(16, false);
-        broken.process_message(invite_with_missing_body("c@x"));
-        let report = evaluate_lint(&broken, &[rule("lint_errors", Op::Eq, 0.0)], None);
+        broken.process_message(invite_with_missing_body("c@x")?);
+        let report = evaluate_lint(&broken, &[rule("lint_errors", Op::Eq, 0.0)], None)?;
         assert_eq!(
             report.results[0].observed,
             Some(1.0),
@@ -1873,27 +1936,30 @@ mod tests {
             report.results[0]
         );
         assert_eq!(report.results[0].verdict, Verdict::Fail);
+        Ok(())
     }
 
     /// A rule silenced in the suppression file does not count against the
     /// gate, and the report says a suppression file was in force -- or a zero
     /// could be mistaken for one taken with every rule armed.
     #[test]
-    fn a_suppressed_rule_does_not_count_and_the_report_says_one_was_in_force() {
-        let dir = tempfile::tempdir().expect("a scratch directory");
+    fn a_suppressed_rule_does_not_count_and_the_report_says_one_was_in_force()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("a scratch directory: {e:?}"))?;
         let path = dir.path().join(crate::sip::lint::SUPPRESSION_FILENAME);
         std::fs::write(&path, "SIP-3261-20.14-CONTENT-LENGTH-MISMATCH\n")
-            .expect("write the suppression file");
-        let file = SuppressionFile::load(&path).expect("the suppression file loads");
+            .map_err(|e| format!("write the suppression file: {e:?}"))?;
+        let file = SuppressionFile::load(&path)
+            .map_err(|e| format!("the suppression file loads: {e:?}"))?;
 
         let mut ds = DialogStore::new(16, false);
-        ds.process_message(invite_with_missing_body("c@x"));
+        ds.process_message(invite_with_missing_body("c@x")?);
         let rules = [rule("lint_errors", Op::Eq, 0.0)];
 
-        let armed = evaluate_lint(&ds, &rules, None);
+        let armed = evaluate_lint(&ds, &rules, None)?;
         assert_eq!(armed.results[0].observed, Some(1.0));
 
-        let silenced = evaluate_lint(&ds, &rules, Some(&file));
+        let silenced = evaluate_lint(&ds, &rules, Some(&file))?;
         assert_eq!(
             silenced.results[0].observed,
             Some(0.0),
@@ -1902,6 +1968,7 @@ mod tests {
         );
         assert_eq!(silenced.verdict, SuiteVerdict::Pass);
         assert!(silenced.suppressions_applied);
+        Ok(())
     }
 
     // ── MOS percentiles over real streams ───────────────────────────
@@ -1966,10 +2033,10 @@ mod tests {
         calls: &[(&str, Option<u16>)],
         ss: &StreamStore,
         rules: &[ExpectRule],
-    ) -> Report {
-        let ds = store(calls);
+    ) -> Result<Report, TestError> {
+        let ds = store(calls)?;
         let t = AliasThresholds::default();
-        evaluate(
+        Ok(evaluate(
             rules,
             &Inputs {
                 dialogs: &ds,
@@ -1978,7 +2045,7 @@ mod tests {
                 suppressions: None,
             },
         )
-        .expect("these rules compile")
+        .map_err(|e| format!("these rules compile: {e:?}"))?)
     }
 
     /// By default a MOS percentile reads only streams whose codec has a real
@@ -1986,11 +2053,11 @@ mod tests {
     /// score is byte-identical to a measured one, so a gate that read it would
     /// pass on a number nobody measured.
     #[test]
-    fn a_mos_percentile_reads_only_grounded_codecs_and_counts_the_rest() {
+    fn a_mos_percentile_reads_only_grounded_codecs_and_counts_the_rest() -> Result<(), TestError> {
         let mut ss = StreamStore::new(16);
         rtp_into(&mut ss, Some("a@x"), PCMU, 4000, 5000);
         rtp_into(&mut ss, Some("a@x"), G722, 4002, 5002);
-        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[rule("mos_p50", Op::Ge, 1.0)]);
+        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[rule("mos_p50", Op::Ge, 1.0)])?;
         let o = &report.results[0];
         assert_eq!(o.sample, 1, "only the PCMU stream is scored: {o:?}");
         assert_eq!(o.ungrounded_excluded, Some(1));
@@ -2006,18 +2073,19 @@ mod tests {
             o.notes
         );
         assert_eq!(report.streams_in_capture, 2);
+        Ok(())
     }
 
     /// Turning `grounded_only` off admits the placeholder -- and stamps the
     /// outcome with that, so the percentile never passes for a measurement.
     #[test]
-    fn grounded_only_off_admits_placeholder_scores_and_says_so() {
+    fn grounded_only_off_admits_placeholder_scores_and_says_so() -> Result<(), TestError> {
         let mut ss = StreamStore::new(16);
         rtp_into(&mut ss, Some("a@x"), PCMU, 4000, 5000);
         rtp_into(&mut ss, Some("a@x"), G722, 4002, 5002);
         let mut r = rule("mos_p50", Op::Ge, 1.0);
         r.grounded_only = Some(false);
-        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[r]);
+        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[r])?;
         let o = &report.results[0];
         assert_eq!(o.sample, 2, "both streams are scored: {o:?}");
         assert_eq!(o.ungrounded_excluded, Some(0));
@@ -2033,6 +2101,7 @@ mod tests {
             "nothing was excluded, so nothing may say it was: {:?}",
             o.notes
         );
+        Ok(())
     }
 
     /// With no filter a MOS rule reads every stream, orphans included -- a
@@ -2040,7 +2109,7 @@ mod tests {
     /// side. A filter selects dialogs, so it reaches only their streams, and
     /// says so.
     #[test]
-    fn a_filter_scope_reaches_only_the_selected_dialogs_streams() {
+    fn a_filter_scope_reaches_only_the_selected_dialogs_streams() -> Result<(), TestError> {
         let mut ss = StreamStore::new(16);
         rtp_into(&mut ss, Some("a@x"), PCMU, 4000, 5000);
         rtp_into(&mut ss, Some("b@x"), PCMU, 4002, 5002);
@@ -2048,7 +2117,7 @@ mod tests {
         rtp_into(&mut ss, None, PCMU, 4004, 5004);
         let calls = [("a@x", Some(200)), ("b@x", Some(200))];
 
-        let everything = run_with_streams(&calls, &ss, &[rule("mos_p0", Op::Ge, 1.0)]);
+        let everything = run_with_streams(&calls, &ss, &[rule("mos_p0", Op::Ge, 1.0)])?;
         assert_eq!(
             everything.results[0].sample, 3,
             "the orphan counts when nothing narrows the rule: {:?}",
@@ -2063,7 +2132,7 @@ mod tests {
 
         let mut one_call = rule("mos_p0", Op::Ge, 1.0);
         one_call.scope = Some("filter:call_id == 'a@x'".to_string());
-        let narrowed = run_with_streams(&calls, &ss, &[one_call]);
+        let narrowed = run_with_streams(&calls, &ss, &[one_call])?;
         let o = &narrowed.results[0];
         assert_eq!(o.sample, 1, "only call a's stream: {o:?}");
         assert!(
@@ -2071,15 +2140,16 @@ mod tests {
             "{:?}",
             o.notes
         );
+        Ok(())
     }
 
     /// A MOS rule over a capture holding only placeholder codecs judged
     /// nothing, so it fails as unevaluable rather than passing on no data.
     #[test]
-    fn a_mos_rule_over_only_placeholder_codecs_fails_as_unevaluable() {
+    fn a_mos_rule_over_only_placeholder_codecs_fails_as_unevaluable() -> Result<(), TestError> {
         let mut ss = StreamStore::new(16);
         rtp_into(&mut ss, Some("a@x"), G722, 4002, 5002);
-        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[rule("mos_p10", Op::Ge, 1.0)]);
+        let report = run_with_streams(&[("a@x", Some(200))], &ss, &[rule("mos_p10", Op::Ge, 1.0)])?;
         let o = &report.results[0];
         assert_eq!(o.observed, None);
         assert_eq!(o.sample, 0);
@@ -2090,5 +2160,6 @@ mod tests {
             "{}",
             o.reason
         );
+        Ok(())
     }
 }

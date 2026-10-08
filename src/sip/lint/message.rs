@@ -922,14 +922,16 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed capture timestamp for every test message.
     fn ts() -> DateTime<Utc> {
         DateTime::from_timestamp(1_718_452_800, 0).unwrap_or_default()
     }
 
     /// Parse `raw` into a message, from and to fixed RFC 5737 test addresses.
-    fn msg(raw: &str) -> SipMessage {
-        parse_sip(
+    fn msg(raw: &str) -> Result<SipMessage, TestError> {
+        Ok(parse_sip(
             raw.as_bytes(),
             ts(),
             IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
@@ -937,8 +939,7 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("test fixture must parse")
+        )?)
     }
 
     /// A well-formed INVITE with every header the rules look for.
@@ -957,12 +958,12 @@ mod tests {
     }
 
     /// Rule identifiers raised for `raw` by a default linter.
-    fn ids(raw: &str) -> Vec<&'static str> {
-        Linter::new(LintConfig::new())
-            .lint_message(&msg(raw), 0)
+    fn ids(raw: &str) -> Result<Vec<&'static str>, TestError> {
+        Ok(Linter::new(LintConfig::new())
+            .lint_message(&msg(raw)?, 0)
             .into_iter()
             .map(|f| f.rule_id)
-            .collect()
+            .collect())
     }
 
     /// A 2xx to INVITE, with whatever extra header lines the test needs.
@@ -990,42 +991,44 @@ mod tests {
     /// why this needs no dialog: a UAS honoring the floor answers 422 and the
     /// call never starts.
     #[test]
-    fn session_expires_below_min_se_is_reported() {
+    fn session_expires_below_min_se_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Session-Expires: 120\r\nMin-SE: 1800\r\nContent-Length: 0\r\n",
         );
         assert!(
-            ids(&raw).contains(&SESSION_EXPIRES_BELOW_MIN_SE.id),
+            ids(&raw)?.contains(&SESSION_EXPIRES_BELOW_MIN_SE.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// Session-Expires at or above Min-SE is silent.
     #[test]
-    fn session_expires_at_or_above_min_se_is_silent() {
+    fn session_expires_at_or_above_min_se_is_silent() -> Result<(), TestError> {
         for (se, min) in [(1800, 1800), (3600, 90)] {
             let raw = clean_invite().replace(
                 "Content-Length: 0\r\n",
                 &format!("Session-Expires: {se}\r\nMin-SE: {min}\r\nContent-Length: 0\r\n"),
             );
             assert!(
-                !ids(&raw).contains(&SESSION_EXPIRES_BELOW_MIN_SE.id),
+                !ids(&raw)?.contains(&SESSION_EXPIRES_BELOW_MIN_SE.id),
                 "Session-Expires {se} against Min-SE {min} is legal: {:?}",
-                ids(&raw)
+                ids(&raw)?
             );
         }
+        Ok(())
     }
 
     /// Both floors fire below 90, and stay quiet at exactly 90.
     #[test]
-    fn the_ninety_second_floors_are_inclusive() {
+    fn the_ninety_second_floors_are_inclusive() -> Result<(), TestError> {
         let below = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Session-Expires: 60\r\nMin-SE: 45\r\nContent-Length: 0\r\n",
         );
-        let got = ids(&below);
+        let got = ids(&below)?;
         assert!(got.contains(&SESSION_EXPIRES_TOO_SMALL.id), "{got:?}");
         assert!(got.contains(&MIN_SE_TOO_SMALL.id), "{got:?}");
 
@@ -1034,9 +1037,10 @@ mod tests {
             "Content-Length: 0\r\n",
             "Session-Expires: 90\r\nMin-SE: 90\r\nContent-Length: 0\r\n",
         );
-        let got = ids(&at);
+        let got = ids(&at)?;
         assert!(!got.contains(&SESSION_EXPIRES_TOO_SMALL.id), "{got:?}");
         assert!(!got.contains(&MIN_SE_TOO_SMALL.id), "{got:?}");
+        Ok(())
     }
 
     /// A message breaking the floor and the ordering reports both.
@@ -1044,14 +1048,15 @@ mod tests {
     /// Raising Session-Expires to 90 would still leave it under a Min-SE of
     /// 1800, so reporting only one would send the operator round twice.
     #[test]
-    fn a_message_breaking_the_floor_and_the_ordering_reports_both() {
+    fn a_message_breaking_the_floor_and_the_ordering_reports_both() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Session-Expires: 60\r\nMin-SE: 1800\r\nContent-Length: 0\r\n",
         );
-        let got = ids(&raw);
+        let got = ids(&raw)?;
         assert!(got.contains(&SESSION_EXPIRES_TOO_SMALL.id), "{got:?}");
         assert!(got.contains(&SESSION_EXPIRES_BELOW_MIN_SE.id), "{got:?}");
+        Ok(())
     }
 
     /// The delta-seconds stops at the first parameter.
@@ -1060,22 +1065,28 @@ mod tests {
     /// failure and not 1800-with-junk. Reading the whole value as a number
     /// would silence every conformant timer in existence.
     #[test]
-    fn parameters_do_not_confuse_the_delta_seconds() {
+    fn parameters_do_not_confuse_the_delta_seconds() -> Result<(), TestError> {
         assert_eq!(timer_seconds("1800;refresher=uas"), Some(1800));
         assert_eq!(timer_seconds("  90  "), Some(90));
         assert_eq!(timer_seconds("not-a-number"), None);
+        Ok(())
     }
 
     /// A 2xx to INVITE negotiating a timer must name the refresher.
     #[test]
-    fn a_2xx_without_a_refresher_is_reported() {
+    fn a_2xx_without_a_refresher_is_reported() -> Result<(), TestError> {
         let raw = ok_to_invite(&["Session-Expires: 1800"]);
-        assert!(ids(&raw).contains(&REFRESHER_MISSING.id), "{:?}", ids(&raw));
+        assert!(
+            ids(&raw)?.contains(&REFRESHER_MISSING.id),
+            "{:?}",
+            ids(&raw)?
+        );
+        Ok(())
     }
 
     /// Either refresher value satisfies the rule, in any case.
     #[test]
-    fn a_2xx_naming_a_refresher_is_silent() {
+    fn a_2xx_naming_a_refresher_is_silent() -> Result<(), TestError> {
         for value in [
             "Session-Expires: 1800;refresher=uas",
             "Session-Expires: 1800;refresher=uac",
@@ -1083,11 +1094,12 @@ mod tests {
         ] {
             let raw = ok_to_invite(&[value]);
             assert!(
-                !ids(&raw).contains(&REFRESHER_MISSING.id),
+                !ids(&raw)?.contains(&REFRESHER_MISSING.id),
                 "{value} names a refresher: {:?}",
-                ids(&raw)
+                ids(&raw)?
             );
         }
+        Ok(())
     }
 
     /// The refresher rule is confined to 2xx answers to INVITE.
@@ -1098,53 +1110,55 @@ mod tests {
     /// Without these three checks the rule fires on ordinary conformant
     /// traffic, which is how a linter gets switched off in week one.
     #[test]
-    fn the_refresher_rule_ignores_requests_and_non_invite_answers() {
+    fn the_refresher_rule_ignores_requests_and_non_invite_answers() -> Result<(), TestError> {
         // A request carrying Session-Expires: the UAC offers, it does not answer.
         let request = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Session-Expires: 1800\r\nContent-Length: 0\r\n",
         );
         assert!(
-            !ids(&request).contains(&REFRESHER_MISSING.id),
+            !ids(&request)?.contains(&REFRESHER_MISSING.id),
             "{:?}",
-            ids(&request)
+            ids(&request)?
         );
 
         // A 200 to REGISTER.
         let register = ok_to_invite(&["Session-Expires: 1800"])
             .replace("CSeq: 314159 INVITE", "CSeq: 314159 REGISTER");
         assert!(
-            !ids(&register).contains(&REFRESHER_MISSING.id),
+            !ids(&register)?.contains(&REFRESHER_MISSING.id),
             "{:?}",
-            ids(&register)
+            ids(&register)?
         );
 
         // A provisional answer to INVITE.
         let ringing = ok_to_invite(&["Session-Expires: 1800"]).replace("200 OK", "180 Ringing");
         assert!(
-            !ids(&ringing).contains(&REFRESHER_MISSING.id),
+            !ids(&ringing)?.contains(&REFRESHER_MISSING.id),
             "{:?}",
-            ids(&ringing)
+            ids(&ringing)?
         );
 
         // And a 2xx that negotiates no timer at all.
         let no_timer = ok_to_invite(&[]);
         assert!(
-            !ids(&no_timer).contains(&REFRESHER_MISSING.id),
+            !ids(&no_timer)?.contains(&REFRESHER_MISSING.id),
             "{:?}",
-            ids(&no_timer)
+            ids(&no_timer)?
         );
+        Ok(())
     }
 
     /// A 2xx to INVITE with no Contact leaves the dialog unroutable.
     #[test]
-    fn a_2xx_to_invite_without_contact_is_reported() {
+    fn a_2xx_to_invite_without_contact_is_reported() -> Result<(), TestError> {
         let raw = ok_to_invite(&[]);
         assert!(
-            ids(&raw).contains(&CONTACT_MISSING_IN_2XX.id),
+            ids(&raw)?.contains(&CONTACT_MISSING_IN_2XX.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// The Contact rule is confined to 2xx answers to INVITE.
@@ -1153,42 +1167,44 @@ mod tests {
     /// the response [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) governs. Without these guards the rule fires on
     /// ordinary conformant traffic.
     #[test]
-    fn the_contact_rule_ignores_other_responses() {
+    fn the_contact_rule_ignores_other_responses() -> Result<(), TestError> {
         let with_contact = ok_to_invite(&["Contact: <sip:bob@192.0.2.2>"]);
-        assert!(!ids(&with_contact).contains(&CONTACT_MISSING_IN_2XX.id));
+        assert!(!ids(&with_contact)?.contains(&CONTACT_MISSING_IN_2XX.id));
 
         let bye = ok_to_invite(&[]).replace("CSeq: 314159 INVITE", "CSeq: 314159 BYE");
         assert!(
-            !ids(&bye).contains(&CONTACT_MISSING_IN_2XX.id),
+            !ids(&bye)?.contains(&CONTACT_MISSING_IN_2XX.id),
             "{:?}",
-            ids(&bye)
+            ids(&bye)?
         );
 
         let ringing = ok_to_invite(&[]).replace("200 OK", "180 Ringing");
         assert!(
-            !ids(&ringing).contains(&CONTACT_MISSING_IN_2XX.id),
+            !ids(&ringing)?.contains(&CONTACT_MISSING_IN_2XX.id),
             "{:?}",
-            ids(&ringing)
+            ids(&ringing)?
         );
 
         let busy = ok_to_invite(&[]).replace("200 OK", "486 Busy Here");
         assert!(
-            !ids(&busy).contains(&CONTACT_MISSING_IN_2XX.id),
+            !ids(&busy)?.contains(&CONTACT_MISSING_IN_2XX.id),
             "{:?}",
-            ids(&busy)
+            ids(&busy)?
         );
+        Ok(())
     }
 
     /// A provisional demanding 100rel must carry the number the PRACK cites.
     #[test]
-    fn a_reliable_provisional_without_rseq_is_reported() {
+    fn a_reliable_provisional_without_rseq_is_reported() -> Result<(), TestError> {
         let raw = ok_to_invite(&["Require: 100rel", "Contact: <sip:bob@192.0.2.2>"])
             .replace("200 OK", "183 Session Progress");
         assert!(
-            ids(&raw).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            ids(&raw)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// The RSeq rule stays off everything it does not govern.
@@ -1197,88 +1213,94 @@ mod tests {
     /// correct, and 100rel in a Require on a final response is a different
     /// question entirely.
     #[test]
-    fn the_rseq_rule_is_confined_to_reliable_provisionals() {
+    fn the_rseq_rule_is_confined_to_reliable_provisionals() -> Result<(), TestError> {
         let with_rseq =
             ok_to_invite(&["Require: 100rel", "RSeq: 1"]).replace("200 OK", "183 Session Progress");
-        assert!(!ids(&with_rseq).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+        assert!(!ids(&with_rseq)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
 
         // 100 Trying is the one provisional that is never reliable.
         let trying = ok_to_invite(&["Require: 100rel"]).replace("200 OK", "100 Trying");
         assert!(
-            !ids(&trying).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            !ids(&trying)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
             "{:?}",
-            ids(&trying)
+            ids(&trying)?
         );
 
         // A provisional that never asked for reliability.
         let plain = ok_to_invite(&[]).replace("200 OK", "180 Ringing");
-        assert!(!ids(&plain).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+        assert!(!ids(&plain)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
 
         // A final response is out of scope even carrying the tag.
         let final_resp = ok_to_invite(&["Require: 100rel", "Contact: <sip:b@192.0.2.2>"]);
-        assert!(!ids(&final_resp).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+        assert!(!ids(&final_resp)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+        Ok(())
     }
 
     /// The option tag is matched per comma-separated entry, case-insensitively.
     #[test]
-    fn the_100rel_tag_is_matched_as_a_whole_entry() {
+    fn the_100rel_tag_is_matched_as_a_whole_entry() -> Result<(), TestError> {
         let multi =
             ok_to_invite(&["Require: timer, 100REL"]).replace("200 OK", "183 Session Progress");
         assert!(
-            ids(&multi).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            ids(&multi)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
             "{:?}",
-            ids(&multi)
+            ids(&multi)?
         );
 
         // A tag that merely contains the text is not the tag.
         let lookalike =
             ok_to_invite(&["Require: no100relhere"]).replace("200 OK", "183 Session Progress");
         assert!(
-            !ids(&lookalike).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            !ids(&lookalike)?.contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
             "{:?}",
-            ids(&lookalike)
+            ids(&lookalike)?
         );
+        Ok(())
     }
 
     /// The clean fixture trips nothing.
     ///
     /// Without this, every rule below could be passing for the wrong reason.
     #[test]
-    fn a_conformant_invite_raises_nothing() {
-        assert_eq!(ids(&clean_invite()), Vec::<&str>::new());
+    fn a_conformant_invite_raises_nothing() -> Result<(), TestError> {
+        assert_eq!(ids(&clean_invite())?, Vec::<&str>::new());
+        Ok(())
     }
 
     /// A message with no `Call-ID` names the field that is missing.
     #[test]
-    fn missing_mandatory_header_names_the_field() {
+    fn missing_mandatory_header_names_the_field() -> Result<(), TestError> {
         let raw = clean_invite().replace("Call-ID: a84b4c76e66710\r\n", "");
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
         let f = findings
             .iter()
             .find(|f| f.rule_id == MANDATORY_HEADER_MISSING.id)
-            .expect("missing Call-ID must be reported");
+            .ok_or("missing Call-ID must be reported")?;
         assert!(f.observed.contains("Call-ID"), "{}", f.observed);
         assert_eq!(f.citation(), "RFC 3261 §8.1.1");
+        Ok(())
     }
 
     /// An unparseable `CSeq` is a different finding from a missing one.
     #[test]
-    fn unparseable_cseq_is_reported() {
+    fn unparseable_cseq_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace("CSeq: 314159 INVITE", "CSeq: nonsense");
-        assert!(ids(&raw).contains(&CSEQ_MALFORMED.id));
+        assert!(ids(&raw)?.contains(&CSEQ_MALFORMED.id));
+        Ok(())
     }
 
     /// A `Content-Length` larger than the body is reported with both numbers.
     #[test]
-    fn content_length_overrun_reports_both_numbers() {
+    fn content_length_overrun_reports_both_numbers() -> Result<(), TestError> {
         let raw = clean_invite().replace("Content-Length: 0", "Content-Length: 400");
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
         let f = findings
             .iter()
             .find(|f| f.rule_id == CONTENT_LENGTH_MISMATCH.id)
-            .expect("overrun must be reported");
+            .ok_or("overrun must be reported")?;
         assert!(f.observed.contains("400"), "{}", f.observed);
         assert!(f.observed.contains('0'), "{}", f.observed);
+        Ok(())
     }
 
     /// A control byte inside a header value is reported.
@@ -1286,44 +1308,47 @@ mod tests {
     /// The [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) grammar admits no C0 byte other than the tab of LWS, so this
     /// is a crafted message rather than a phone that got something wrong.
     #[test]
-    fn control_byte_in_a_header_is_reported() {
+    fn control_byte_in_a_header_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace("Call-ID: a84b4c76e66710", "Call-ID: a84b\u{1}c76e66710");
-        assert!(ids(&raw).contains(&HEADER_CONTROL_BYTE.id));
+        assert!(ids(&raw)?.contains(&HEADER_CONTROL_BYTE.id));
+        Ok(())
     }
 
     /// A `Contact` URI holding a question mark outside brackets breaks the
     /// [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20) MUST and reports as one.
     #[test]
-    fn bare_uri_with_question_mark_is_a_must_violation() {
+    fn bare_uri_with_question_mark_is_a_must_violation() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Contact: <sip:alice@192.0.2.1>",
             "Contact: sip:alice@192.0.2.1?Route=%3Csip:proxy%3E",
         );
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
         let f = findings
             .iter()
             .find(|f| f.rule_id == URI_BRACKETS.id)
-            .expect("bare URI with '?' must be reported");
+            .ok_or("bare URI with '?' must be reported")?;
         assert_eq!(f.basis, crate::sip::lint::Basis::Must);
         assert_eq!(f.citation(), "RFC 3261 §20");
+        Ok(())
     }
 
     /// A `transport` parameter outside the brackets reports as interop, not as
     /// a broken MUST — the bytes are legal SIP that means the wrong thing.
     #[test]
-    fn demoted_uri_parameter_reports_as_interop() {
+    fn demoted_uri_parameter_reports_as_interop() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Contact: <sip:alice@192.0.2.1>",
             "Contact: sip:alice@192.0.2.1;transport=tcp",
         );
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
         let f = findings
             .iter()
             .find(|f| f.rule_id == URI_PARAM_DEMOTED.id)
-            .expect("demoted transport parameter must be reported");
+            .ok_or("demoted transport parameter must be reported")?;
         assert_eq!(f.basis, crate::sip::lint::Basis::Interop);
         assert!(f.observed.contains("transport"), "{}", f.observed);
         assert!(!findings.iter().any(|f| f.rule_id == URI_BRACKETS.id));
+        Ok(())
     }
 
     /// A bare `From` with only a `tag` is legal and silent.
@@ -1332,36 +1357,39 @@ mod tests {
     /// appears in RFC 3261's own examples. A rule that fired here would fire on
     /// most of the traffic in existence.
     #[test]
-    fn bare_from_with_only_a_tag_is_silent() {
+    fn bare_from_with_only_a_tag_is_silent() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "From: <sip:alice@example.com>;tag=1928301774",
             "From: sip:alice@example.com;tag=1928301774",
         );
-        let raised = ids(&raw);
+        let raised = ids(&raw)?;
         assert!(!raised.contains(&URI_BRACKETS.id), "{raised:?}");
         assert!(!raised.contains(&URI_PARAM_DEMOTED.id), "{raised:?}");
+        Ok(())
     }
 
     /// A bracketed URI carrying every parameter inside is silent.
     #[test]
-    fn bracketed_uri_parameters_are_silent() {
+    fn bracketed_uri_parameters_are_silent() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Contact: <sip:alice@192.0.2.1>",
             "Contact: <sip:alice@192.0.2.1;transport=tcp;lr>",
         );
-        assert!(!ids(&raw).contains(&URI_PARAM_DEMOTED.id));
+        assert!(!ids(&raw)?.contains(&URI_PARAM_DEMOTED.id));
+        Ok(())
     }
 
     /// A request with no `Max-Forwards` is reported.
     #[test]
-    fn absent_max_forwards_is_reported() {
+    fn absent_max_forwards_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace("Max-Forwards: 70\r\n", "");
-        assert!(ids(&raw).contains(&MAX_FORWARDS_MISSING.id));
+        assert!(ids(&raw)?.contains(&MAX_FORWARDS_MISSING.id));
+        Ok(())
     }
 
     /// A response with no `Max-Forwards` is not — the field is request-only.
     #[test]
-    fn responses_are_exempt_from_max_forwards() {
+    fn responses_are_exempt_from_max_forwards() -> Result<(), TestError> {
         let raw = "SIP/2.0 200 OK\r\n\
                    Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n\
                    To: <sip:bob@example.net>;tag=a6c85cf\r\n\
@@ -1370,47 +1398,51 @@ mod tests {
                    CSeq: 314159 INVITE\r\n\
                    Content-Length: 0\r\n\
                    \r\n";
-        assert!(!ids(raw).contains(&MAX_FORWARDS_MISSING.id));
+        assert!(!ids(raw)?.contains(&MAX_FORWARDS_MISSING.id));
+        Ok(())
     }
 
     /// Zero and anything above 70 both trip the range rule; 70 and 20 do not.
     #[test]
-    fn max_forwards_range_fires_at_zero_and_above_seventy() {
+    fn max_forwards_range_fires_at_zero_and_above_seventy() -> Result<(), TestError> {
         for (value, expected) in [("0", true), ("20", false), ("70", false), ("255", true)] {
             let raw = clean_invite().replace("Max-Forwards: 70", &format!("Max-Forwards: {value}"));
             assert_eq!(
-                ids(&raw).contains(&MAX_FORWARDS_RANGE.id),
+                ids(&raw)?.contains(&MAX_FORWARDS_RANGE.id),
                 expected,
                 "Max-Forwards: {value}"
             );
         }
+        Ok(())
     }
 
     /// A branch without the magic cookie is reported, and a compliant one is
     /// not.
     #[test]
-    fn branch_without_the_magic_cookie_is_reported() {
+    fn branch_without_the_magic_cookie_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace("branch=z9hG4bK776asdhds", "branch=776asdhds");
-        assert!(ids(&raw).contains(&BRANCH_COOKIE.id));
-        assert!(!ids(&clean_invite()).contains(&BRANCH_COOKIE.id));
+        assert!(ids(&raw)?.contains(&BRANCH_COOKIE.id));
+        assert!(!ids(&clean_invite())?.contains(&BRANCH_COOKIE.id));
+        Ok(())
     }
 
     /// A `Via` with no branch at all is reported by the same rule, and says so.
     #[test]
-    fn branch_absent_entirely_is_reported() {
+    fn branch_absent_entirely_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace(";branch=z9hG4bK776asdhds", "");
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
         let f = findings
             .iter()
             .find(|f| f.rule_id == BRANCH_COOKIE.id)
-            .expect("absent branch must be reported");
+            .ok_or("absent branch must be reported")?;
         assert!(f.observed.contains("no branch"), "{}", f.observed);
+        Ok(())
     }
 
     /// A response carrying a pre-RFC3261 branch is silent — the originating
     /// request already carries the finding.
     #[test]
-    fn responses_do_not_repeat_the_branch_finding() {
+    fn responses_do_not_repeat_the_branch_finding() -> Result<(), TestError> {
         let raw = "SIP/2.0 200 OK\r\n\
                    Via: SIP/2.0/UDP 192.0.2.1:5060;branch=776asdhds\r\n\
                    To: <sip:bob@example.net>;tag=a6c85cf\r\n\
@@ -1419,21 +1451,23 @@ mod tests {
                    CSeq: 314159 INVITE\r\n\
                    Content-Length: 0\r\n\
                    \r\n";
-        assert!(!ids(raw).contains(&BRANCH_COOKIE.id));
+        assert!(!ids(raw)?.contains(&BRANCH_COOKIE.id));
+        Ok(())
     }
 
     /// A CSeq method disagreeing with the request line is reported, with both
     /// methods in the observation.
     #[test]
-    fn cseq_method_mismatch_is_reported() {
+    fn cseq_method_mismatch_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace("CSeq: 314159 INVITE", "CSeq: 314159 OPTIONS");
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
         let f = findings
             .iter()
             .find(|f| f.rule_id == CSEQ_METHOD_MISMATCH.id)
-            .expect("mismatch must be reported");
+            .ok_or("mismatch must be reported")?;
         assert!(f.observed.contains("INVITE"), "{}", f.observed);
         assert!(f.observed.contains("OPTIONS"), "{}", f.observed);
+        Ok(())
     }
 
     /// An extension method the parser does not know is not a CSeq mismatch.
@@ -1442,7 +1476,7 @@ mod tests {
     /// the wire, so comparing against it would report every extension method
     /// in the capture.
     #[test]
-    fn extension_methods_are_not_cseq_mismatches() {
+    fn extension_methods_are_not_cseq_mismatches() -> Result<(), TestError> {
         let raw = "SERVICE sip:bob@example.net SIP/2.0\r\n\
                    Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n\
                    Max-Forwards: 70\r\n\
@@ -1452,7 +1486,8 @@ mod tests {
                    CSeq: 1 SERVICE\r\n\
                    Content-Length: 0\r\n\
                    \r\n";
-        assert!(!ids(raw).contains(&CSEQ_METHOD_MISMATCH.id));
+        assert!(!ids(raw)?.contains(&CSEQ_METHOD_MISMATCH.id));
+        Ok(())
     }
 
     /// The linter and the long-standing `malformations` list agree on every
@@ -1462,7 +1497,7 @@ mod tests {
     /// `SipMessage::malformations`, and the day the two detectors disagree is
     /// the day one of them is wrong without anyone noticing.
     #[test]
-    fn linter_and_malformations_agree() {
+    fn linter_and_malformations_agree() -> Result<(), TestError> {
         let cases = [
             clean_invite(),
             clean_invite().replace("Call-ID: a84b4c76e66710\r\n", ""),
@@ -1471,7 +1506,7 @@ mod tests {
             clean_invite().replace("Via: SIP/2.0/UDP 192.0.2.1:5060", "Via: "),
         ];
         for raw in cases {
-            let parsed = msg(&raw);
+            let parsed = msg(&raw)?;
             let legacy = parsed.malformations();
             let linted: Vec<&str> = Linter::new(LintConfig::new())
                 .lint_message(&parsed, 0)
@@ -1493,6 +1528,7 @@ mod tests {
                 "malformations {legacy:?} disagrees with linter {linted:?}"
             );
         }
+        Ok(())
     }
 
     /// `malformation_reasons` reproduces the exact strings `--json` publishes.
@@ -1500,11 +1536,11 @@ mod tests {
     /// The wording is a documented output format. Pinned here so a later
     /// rewording of a rule's explanation cannot silently change it.
     #[test]
-    fn malformation_wording_is_unchanged() {
+    fn malformation_wording_is_unchanged() -> Result<(), TestError> {
         let raw = clean_invite()
             .replace("Call-ID: a84b4c76e66710\r\n", "")
             .replace("Content-Length: 0", "Content-Length: 12");
-        let reasons = malformation_reasons(&msg(&raw));
+        let reasons = malformation_reasons(&msg(&raw)?);
         assert!(
             reasons.contains(&"missing mandatory header: Call-ID".to_string()),
             "{reasons:?}"
@@ -1515,11 +1551,12 @@ mod tests {
             ),
             "{reasons:?}"
         );
+        Ok(())
     }
 
     /// The bracket splitter recognizes a name-addr wherever the brackets sit.
     #[test]
-    fn bracket_split_recognizes_name_addr() {
+    fn bracket_split_recognizes_name_addr() -> Result<(), TestError> {
         assert_eq!(
             split_uri_value("\"Alice\" <sip:a@b>;tag=1"),
             UriBrackets::Bracketed
@@ -1532,13 +1569,15 @@ mod tests {
                 params: vec!["transport=tcp"],
             }
         );
+        Ok(())
     }
 
     /// A bare flag parameter yields its own name.
     #[test]
-    fn param_name_handles_valueless_flags() {
+    fn param_name_handles_valueless_flags() -> Result<(), TestError> {
         assert_eq!(param_name("lr"), "lr");
         assert_eq!(param_name("transport=tcp"), "transport");
+        Ok(())
     }
 
     /// A conforming RFC 7989 `Session-ID`, used as the base for the tests below.
@@ -1556,32 +1595,33 @@ mod tests {
     }
 
     /// Findings for `raw`, as `(rule_id, observed)` pairs.
-    fn findings_of(raw: &str) -> Vec<(&'static str, String)> {
-        Linter::new(LintConfig::new())
-            .lint_message(&msg(raw), 0)
+    fn findings_of(raw: &str) -> Result<Vec<(&'static str, String)>, TestError> {
+        Ok(Linter::new(LintConfig::new())
+            .lint_message(&msg(raw)?, 0)
             .into_iter()
             .map(|f| (f.rule_id, f.observed))
-            .collect()
+            .collect())
     }
 
     /// A half that is not 32 characters cannot be a `sess-uuid`, and the
     /// finding says how long it actually was.
     #[test]
-    fn a_short_session_id_half_is_reported_as_malformed() {
-        let got = findings_of(&invite_with_session_id("deadbeef"));
+    fn a_short_session_id_half_is_reported_as_malformed() -> Result<(), TestError> {
+        let got = findings_of(&invite_with_session_id("deadbeef"))?;
         let observed = got
             .iter()
             .find(|(id, _)| *id == SESSION_ID_MALFORMED.id)
             .map(|(_, observed)| observed.as_str())
-            .unwrap_or_else(|| panic!("no malformed finding: {got:?}"));
+            .ok_or_else(|| format!("no malformed finding: {got:?}"))?;
         assert_eq!(observed, "Session-ID local-uuid is 8 characters, not 32");
+        Ok(())
     }
 
     /// A half of the right length holding something outside `[0-9a-f]` is
     /// reported for the character set rather than for the length.
     #[test]
-    fn a_non_hex_session_id_half_is_reported_for_its_character_set() {
-        let got = findings_of(&invite_with_session_id(&"z".repeat(32)));
+    fn a_non_hex_session_id_half_is_reported_for_its_character_set() -> Result<(), TestError> {
+        let got = findings_of(&invite_with_session_id(&"z".repeat(32)))?;
         assert!(
             got.contains(&(
                 SESSION_ID_MALFORMED.id,
@@ -1590,6 +1630,7 @@ mod tests {
             "{} must report a non-hex half: {got:?}",
             SESSION_ID_MALFORMED.id
         );
+        Ok(())
     }
 
     /// Uppercase hex is its own finding, and is NOT reported as malformed.
@@ -1604,8 +1645,8 @@ mod tests {
     /// peer that simply omits the parameter — a distinction one message cannot
     /// support, and the reason this rule exists at notice rather than error.
     #[test]
-    fn a_session_id_without_remote_is_an_interop_notice_not_a_violation() {
-        let got = findings_of(&invite_with_session_id(SESSION_A));
+    fn a_session_id_without_remote_is_an_interop_notice_not_a_violation() -> Result<(), TestError> {
+        let got = findings_of(&invite_with_session_id(SESSION_A))?;
         assert!(
             got.iter().any(|(id, _)| *id == SESSION_ID_LEGACY_FORM.id),
             "a Session-ID with no `remote` must be reported: {got:?}"
@@ -1627,16 +1668,17 @@ mod tests {
         // every well-formed Session-ID and says nothing.
         let both = invite_with_session_id(&format!("{SESSION_A};remote={SESSION_B}"));
         assert!(
-            !findings_of(&both)
+            !findings_of(&both)?
                 .iter()
                 .any(|(id, _)| *id == SESSION_ID_LEGACY_FORM.id),
             "a conforming Session-ID with both halves must not be reported"
         );
+        Ok(())
     }
 
     #[test]
-    fn uppercase_hex_is_reported_separately_from_a_malformed_half() {
-        let got = findings_of(&invite_with_session_id(&SESSION_A.to_ascii_uppercase()));
+    fn uppercase_hex_is_reported_separately_from_a_malformed_half() -> Result<(), TestError> {
+        let got = findings_of(&invite_with_session_id(&SESSION_A.to_ascii_uppercase()))?;
         assert!(
             got.contains(&(
                 SESSION_ID_UPPERCASE.id,
@@ -1649,6 +1691,7 @@ mod tests {
             !got.iter().any(|(id, _)| *id == SESSION_ID_MALFORMED.id),
             "uppercase is still a usable UUID: {got:?}"
         );
+        Ok(())
     }
 
     /// A conforming header, and a `nil` remote, raise nothing.
@@ -1659,20 +1702,21 @@ mod tests {
     /// [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) expects it before the far end has contributed a UUID — so reporting
     /// it would fire on the first message of practically every conformant call.
     #[test]
-    fn a_conforming_session_id_raises_no_finding() {
+    fn a_conforming_session_id_raises_no_finding() -> Result<(), TestError> {
         for value in [
             SESSION_A.to_string(),
             format!("{SESSION_A};remote={SESSION_B}"),
             format!("{SESSION_A};remote={}", "0".repeat(32)),
             format!("{};remote={SESSION_B}", "0".repeat(32)),
         ] {
-            let got = findings_of(&invite_with_session_id(&value));
+            let got = findings_of(&invite_with_session_id(&value))?;
             assert!(
                 !got.iter().any(|(id, _)| *id == SESSION_ID_MALFORMED.id
                     || *id == SESSION_ID_UPPERCASE.id),
                 "{value} is conformant: {got:?}"
             );
         }
+        Ok(())
     }
 
     /// Each finding names the half it came from, and the two do not swap.
@@ -1683,12 +1727,12 @@ mod tests {
     /// pairing coming apart: with one deviation, or with two of the same kind,
     /// a swap is invisible.
     #[test]
-    fn each_session_id_finding_names_the_half_it_came_from() {
+    fn each_session_id_finding_names_the_half_it_came_from() -> Result<(), TestError> {
         let raw = invite_with_session_id(&format!(
             "{};remote=nonsense",
             SESSION_A.to_ascii_uppercase()
         ));
-        let got = findings_of(&raw);
+        let got = findings_of(&raw)?;
         assert!(
             got.contains(&(
                 SESSION_ID_UPPERCASE.id,
@@ -1703,6 +1747,7 @@ mod tests {
             )),
             "the malformed finding must name the REMOTE half: {got:?}"
         );
+        Ok(())
     }
 
     /// The finding carries [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) as data, and quotes the ABNF it holds
@@ -1711,12 +1756,12 @@ mod tests {
     /// A lint rule that cannot name the clause it enforces is an opinion, and
     /// the citation is only checkable because it is a field rather than prose.
     #[test]
-    fn a_session_id_finding_cites_the_abnf_it_enforces() {
+    fn a_session_id_finding_cites_the_abnf_it_enforces() -> Result<(), TestError> {
         let finding = Linter::new(LintConfig::new())
-            .lint_message(&msg(&invite_with_session_id("deadbeef")), 0)
+            .lint_message(&msg(&invite_with_session_id("deadbeef"))?, 0)
             .into_iter()
             .find(|f| f.rule_id == SESSION_ID_MALFORMED.id)
-            .expect("the malformed rule must fire");
+            .ok_or("the malformed rule must fire")?;
         assert_eq!(finding.rfc, 7989);
         assert_eq!(finding.section, "5");
         assert_eq!(finding.citation(), "RFC 7989 §5");
@@ -1726,6 +1771,7 @@ mod tests {
             "the expectation must quote the production: {}",
             finding.expected
         );
+        Ok(())
     }
 
     /// A message with no `Session-ID` at all is silent.
@@ -1734,13 +1780,14 @@ mod tests {
     /// absence would fire on nearly every dialog in every capture, which is how
     /// a linter gets switched off in week one.
     #[test]
-    fn a_message_without_a_session_id_is_silent() {
-        let got = findings_of(&clean_invite());
+    fn a_message_without_a_session_id_is_silent() -> Result<(), TestError> {
+        let got = findings_of(&clean_invite())?;
         assert!(
             !got.iter()
                 .any(|(id, _)| *id == SESSION_ID_MALFORMED.id || *id == SESSION_ID_UPPERCASE.id),
             "{got:?}"
         );
+        Ok(())
     }
 
     // ── RFC 3261 §7.3.1 — single-valued header fields ───────────────────
@@ -1751,17 +1798,19 @@ mod tests {
     /// has to pick, and "2 To header field rows" tells the operator how many
     /// candidates two elements could disagree about.
     #[test]
-    fn a_repeated_singular_header_is_reported() {
+    fn a_repeated_singular_header_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "CSeq: 314159 INVITE\r\n",
             "CSeq: 314159 INVITE\r\nTo: <sip:mallory@example.net>\r\n",
         );
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
+        let seen = ids(&raw)?;
         let found = findings
             .iter()
             .find(|f| f.rule_id == SINGULAR_HEADER_REPEATED.id)
-            .unwrap_or_else(|| panic!("{:?}", ids(&raw)));
+            .ok_or_else(|| format!("{seen:?}"))?;
         assert!(found.observed.contains("2 To"), "{}", found.observed);
+        Ok(())
     }
 
     /// A compact row and its long form are two rows of one header field.
@@ -1771,16 +1820,17 @@ mod tests {
     /// header-smuggling attempt takes, because a parser that reads only one
     /// spelling sees a message with one `Call-ID`.
     #[test]
-    fn a_compact_row_beside_its_long_form_is_a_repeat() {
+    fn a_compact_row_beside_its_long_form_is_a_repeat() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Call-ID: a84b4c76e66710\r\n",
             "Call-ID: a84b4c76e66710\r\ni: smuggled-call-id\r\n",
         );
         assert!(
-            ids(&raw).contains(&SINGULAR_HEADER_REPEATED.id),
+            ids(&raw)?.contains(&SINGULAR_HEADER_REPEATED.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// Two `Authorization` rows are the exception [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) writes down, not a
@@ -1791,7 +1841,7 @@ mod tests {
     /// RFC's own permitted form as a violation, and a `407` carrying two
     /// challenges is ordinary traffic.
     #[test]
-    fn repeated_authorization_rows_are_the_documented_exception() {
+    fn repeated_authorization_rows_are_the_documented_exception() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "CSeq: 314159 INVITE\r\n",
             "CSeq: 314159 INVITE\r\n\
@@ -1799,42 +1849,46 @@ mod tests {
              Authorization: Digest username=\"alice\", realm=\"b\"\r\n",
         );
         assert!(
-            !ids(&raw).contains(&SINGULAR_HEADER_REPEATED.id),
+            !ids(&raw)?.contains(&SINGULAR_HEADER_REPEATED.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// Two `Via` rows are the ordinary shape of a forwarded request.
     #[test]
-    fn repeated_via_rows_are_not_a_singular_header_finding() {
+    fn repeated_via_rows_are_not_a_singular_header_finding() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
             "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKproxy\r\n\
              Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
         );
         assert!(
-            !ids(&raw).contains(&SINGULAR_HEADER_REPEATED.id),
+            !ids(&raw)?.contains(&SINGULAR_HEADER_REPEATED.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     // ── RFC 3261 §16.6 item 4 — Record-Route is a loose route ───────────
 
     /// A recorded route with no `lr` is reported.
     #[test]
-    fn a_strict_record_route_is_reported() {
+    fn a_strict_record_route_is_reported() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Record-Route: <sip:p1.example.net>\r\nContent-Length: 0\r\n",
         );
-        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw)?, 0);
+        let seen = ids(&raw)?;
         let found = findings
             .iter()
             .find(|f| f.rule_id == RECORD_ROUTE_NOT_LOOSE.id)
-            .unwrap_or_else(|| panic!("{:?}", ids(&raw)));
+            .ok_or_else(|| format!("{seen:?}"))?;
         assert!(found.expected.contains(";lr>"), "{}", found.expected);
+        Ok(())
     }
 
     /// A loose route is silent, and so is the `lr=on` spelling some stacks
@@ -1844,18 +1898,19 @@ mod tests {
     /// with a value is still loose-routing. Reporting that spelling would send
     /// an operator to change a proxy that is behaving correctly.
     #[test]
-    fn a_loose_record_route_is_silent() {
+    fn a_loose_record_route_is_silent() -> Result<(), TestError> {
         for uri in ["sip:p1.example.net;lr", "sip:p1.example.net;lr=on"] {
             let raw = clean_invite().replace(
                 "Content-Length: 0\r\n",
                 &format!("Record-Route: <{uri}>\r\nContent-Length: 0\r\n"),
             );
             assert!(
-                !ids(&raw).contains(&RECORD_ROUTE_NOT_LOOSE.id),
+                !ids(&raw)?.contains(&RECORD_ROUTE_NOT_LOOSE.id),
                 "{uri}: {:?}",
-                ids(&raw)
+                ids(&raw)?
             );
         }
+        Ok(())
     }
 
     /// A comma inside a display name does not split one route into two.
@@ -1864,33 +1919,35 @@ mod tests {
     /// `"Smith, John" <sip:p1.example.net;lr>` as two entries of which neither
     /// carries `lr`, and reports a conformant proxy twice.
     #[test]
-    fn a_display_name_comma_does_not_split_a_route() {
+    fn a_display_name_comma_does_not_split_a_route() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Record-Route: \"Smith, John\" <sip:p1.example.net;lr>\r\nContent-Length: 0\r\n",
         );
         assert!(
-            !ids(&raw).contains(&RECORD_ROUTE_NOT_LOOSE.id),
+            !ids(&raw)?.contains(&RECORD_ROUTE_NOT_LOOSE.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// Two routes on one row are both read, and only the strict one reports.
     #[test]
-    fn a_multi_value_record_route_row_reports_only_the_strict_hop() {
+    fn a_multi_value_record_route_row_reports_only_the_strict_hop() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Content-Length: 0\r\n",
             "Record-Route: <sip:p1.example.net;lr>, <sip:p2.example.net>\r\nContent-Length: 0\r\n",
         );
         let strict: Vec<String> = Linter::new(LintConfig::new())
-            .lint_message(&msg(&raw), 0)
+            .lint_message(&msg(&raw)?, 0)
             .into_iter()
             .filter(|f| f.rule_id == RECORD_ROUTE_NOT_LOOSE.id)
             .map(|f| f.observed)
             .collect();
         assert_eq!(strict.len(), 1, "{strict:?}");
         assert!(strict[0].contains("p2.example.net"), "{strict:?}");
+        Ok(())
     }
 
     // ── RFC 3261 §8.1.1.7 — one branch, once ────────────────────────────
@@ -1901,33 +1958,35 @@ mod tests {
     /// loop, and a finding per repetition would bury every other rule under a
     /// single defect.
     #[test]
-    fn a_duplicated_via_branch_is_reported_once() {
+    fn a_duplicated_via_branch_is_reported_once() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
             "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKloop\r\n\
              Via: SIP/2.0/UDP 192.0.2.8:5060;branch=z9hG4bKloop\r\n\
              Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKloop\r\n",
         );
-        let hits = ids(&raw)
+        let hits = ids(&raw)?
             .iter()
             .filter(|id| **id == VIA_BRANCH_DUPLICATE.id)
             .count();
-        assert_eq!(hits, 1, "{:?}", ids(&raw));
+        assert_eq!(hits, 1, "{:?}", ids(&raw)?);
+        Ok(())
     }
 
     /// Distinct branches in a deep Via stack are silent.
     #[test]
-    fn distinct_via_branches_are_silent() {
+    fn distinct_via_branches_are_silent() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
             "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKtwo\r\n\
              Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKone\r\n",
         );
         assert!(
-            !ids(&raw).contains(&VIA_BRANCH_DUPLICATE.id),
+            !ids(&raw)?.contains(&VIA_BRANCH_DUPLICATE.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// A response carrying the same duplicated stack is not reported.
@@ -1936,17 +1995,18 @@ mod tests {
     /// reporting the response would count one element's defect once more for
     /// every message the loop provoked.
     #[test]
-    fn a_response_echoing_a_duplicated_stack_is_silent() {
+    fn a_response_echoing_a_duplicated_stack_is_silent() -> Result<(), TestError> {
         let raw = ok_to_invite(&[]).replace(
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
             "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKloop\r\n\
              Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKloop\r\n",
         );
         assert!(
-            !ids(&raw).contains(&VIA_BRANCH_DUPLICATE.id),
+            !ids(&raw)?.contains(&VIA_BRANCH_DUPLICATE.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 
     /// One row carrying two comma-separated Via values with one branch is
@@ -1956,16 +2016,17 @@ mod tests {
     /// is the same stack. Reading rows without splitting them is the shape that
     /// lets a loop hide from this rule.
     #[test]
-    fn a_comma_separated_via_row_is_read_as_a_stack() {
+    fn a_comma_separated_via_row_is_read_as_a_stack() -> Result<(), TestError> {
         let raw = clean_invite().replace(
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
             "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKloop, \
              SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKloop\r\n",
         );
         assert!(
-            ids(&raw).contains(&VIA_BRANCH_DUPLICATE.id),
+            ids(&raw)?.contains(&VIA_BRANCH_DUPLICATE.id),
             "{:?}",
-            ids(&raw)
+            ids(&raw)?
         );
+        Ok(())
     }
 }

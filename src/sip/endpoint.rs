@@ -505,12 +505,23 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use std::net::Ipv4Addr;
 
-    fn ts() -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn ts() -> Result<chrono::DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?)
     }
 
     /// Ingest one INVITE (from `src`) and its final response into a store.
-    fn store_with_invite(src: IpAddr, dst: IpAddr, final_code: u16, ua: &str) -> DialogStore {
+    fn store_with_invite(
+        src: IpAddr,
+        dst: IpAddr,
+        final_code: u16,
+        ua: &str,
+    ) -> Result<DialogStore, TestError> {
         let mut ds = DialogStore::new(1000, true);
         let inv = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -525,7 +536,8 @@ mod tests {
             b"",
         );
         ds.process_message(
-            parse_sip(&inv, ts(), src, dst, 5060, 5060, TransportProto::Udp).expect("parse"),
+            parse_sip(&inv, ts()?, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
         );
         let rsp = build_sip(
             &format!("SIP/2.0 {final_code} X"),
@@ -540,19 +552,20 @@ mod tests {
             b"",
         );
         ds.process_message(
-            parse_sip(&rsp, ts(), dst, src, 5060, 5060, TransportProto::Udp).expect("parse"),
+            parse_sip(&rsp, ts()?, dst, src, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
         );
-        ds
+        Ok(ds)
     }
 
     /// By ip, the report attributes the INVITE the address SENT, its banner
     /// raw, its messages-sent, and its failed outcome — and it is the sender's
     /// address, not the destination's, that selects.
     #[test]
-    fn describe_by_ip_attributes_what_the_sender_did() {
+    fn describe_by_ip_attributes_what_the_sender_did() -> Result<(), TestError> {
         let a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         let b = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
-        let ds = store_with_invite(a, b, 486, "Sipnabophone/9");
+        let ds = store_with_invite(a, b, 486, "Sipnabophone/9")?;
         let ss = StreamStore::new(100);
         let r = describe(&ds, &ss, &Selector::Ip(a), 50);
 
@@ -567,12 +580,13 @@ mod tests {
         // The banner is raw here; the MCP surface fences it.
         assert_eq!(r.banners[0].value, "Sipnabophone/9");
         assert_eq!(r.recent_call_ids, vec!["ep-1@h".to_string()]);
+        Ok(())
     }
 
     /// A selector is exactly one of ip or user. Neither and both are refused,
     /// and a malformed address is named.
     #[test]
-    fn selector_demands_exactly_one() {
+    fn selector_demands_exactly_one() -> Result<(), TestError> {
         assert!(matches!(
             Selector::parse(Some("192.0.2.1"), None),
             Ok(Selector::Ip(_))
@@ -584,21 +598,23 @@ mod tests {
         assert!(Selector::parse(None, None).is_err());
         assert!(Selector::parse(Some("192.0.2.1"), Some("alice")).is_err());
         assert!(Selector::parse(Some("not-an-ip"), None).is_err());
+        Ok(())
     }
 
     /// A user selector names a URI, not a socket, so it reports no messages sent
     /// or received — a count derived from something else under that name would
     /// be worse than zero.
     #[test]
-    fn a_user_selector_has_no_socket_side() {
+    fn a_user_selector_has_no_socket_side() -> Result<(), TestError> {
         let a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         let b = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
-        let ds = store_with_invite(a, b, 200, "UA/1");
+        let ds = store_with_invite(a, b, 200, "UA/1")?;
         let ss = StreamStore::new(100);
         let r = describe(&ds, &ss, &Selector::User("alice".to_string()), 50);
         assert_eq!(r.kind, "user");
         assert_eq!(r.dialogs, 1, "alice is the From user");
         assert_eq!(r.messages_sent, 0, "a user has no socket");
         assert_eq!(r.messages_received, 0);
+        Ok(())
     }
 }

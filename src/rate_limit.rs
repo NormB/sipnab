@@ -317,10 +317,13 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A peer over its per-peer cap is refused, and the refusal names the cap
     /// that stopped it.
     #[test]
-    fn the_per_peer_cap_refuses_the_event_that_exceeds_it() {
+    fn the_per_peer_cap_refuses_the_event_that_exceeds_it() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(0, 2, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
@@ -330,11 +333,12 @@ mod tests {
             Err(Refusal::PerPeer),
             "the third event in a 2/s window must be refused"
         );
+        Ok(())
     }
 
     /// A flooding peer is throttled without spending a quiet peer's allowance.
     #[test]
-    fn one_noisy_peer_does_not_spend_another_peers_allowance() {
+    fn one_noisy_peer_does_not_spend_another_peers_allowance() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(1000, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("noisy", now), Ok(()));
@@ -344,11 +348,12 @@ mod tests {
             Ok(()),
             "a quiet peer keeps its own allowance"
         );
+        Ok(())
     }
 
     /// The window resets, and only after a whole window has elapsed.
     #[test]
-    fn a_new_window_restores_the_allowance() {
+    fn a_new_window_restores_the_allowance() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(0, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
@@ -362,11 +367,12 @@ mod tests {
             Ok(()),
             "a whole window later the allowance is back"
         );
+        Ok(())
     }
 
     /// The global ceiling bounds every peer together, whichever one arrives.
     #[test]
-    fn the_global_ceiling_bounds_every_peer_together() {
+    fn the_global_ceiling_bounds_every_peer_together() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(2, 100, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
@@ -376,25 +382,27 @@ mod tests {
             Err(Refusal::Global),
             "the third event hits the global ceiling of 2 whoever sends it"
         );
+        Ok(())
     }
 
     /// Zero disables a cap rather than refusing everything — the property both
     /// CLI knobs document, pinned here where the behavior actually lives.
     #[test]
-    fn zero_disables_a_cap_rather_than_refusing_everything() {
+    fn zero_disables_a_cap_rather_than_refusing_everything() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(0, 0, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         for _ in 0..10_000 {
             assert_eq!(lim.check("a", now), Ok(()), "0 and 0 must limit nothing");
         }
         assert_eq!(lim.refused_total(), 0);
+        Ok(())
     }
 
     /// Once the tracking map is full, a brand-new peer is refused rather than
     /// bypassing the per-peer cap — a many-source flood must not get a free
     /// pass by exhausting the table it would otherwise be counted in.
     #[test]
-    fn a_full_tracking_map_refuses_a_new_peer() {
+    fn a_full_tracking_map_refuses_a_new_peer() -> Result<(), TestError> {
         // Effectively unlimited ceiling so only the per-peer path can refuse.
         let mut lim = FixedWindowLimiter::new(u64::MAX, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
@@ -410,13 +418,14 @@ mod tests {
             Err(Refusal::TrackingFull),
             "a new peer past the tracking bound must be refused, not waved through"
         );
+        Ok(())
     }
 
     /// The tracking bound is the one the CALLER passed, not the shipped
     /// figure: a limiter built with room for three peers refuses the fourth
     /// while the default would have admitted it.
     #[test]
-    fn the_configured_capacity_is_what_bounds_the_map() {
+    fn the_configured_capacity_is_what_bounds_the_map() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(u64::MAX, 1, 3);
         let now = Instant::now();
         for i in 0..3 {
@@ -433,12 +442,13 @@ mod tests {
             3,
             "the caller's figure is reported"
         );
+        Ok(())
     }
 
     /// A map of one is clamped up to the floor rather than accepted, so the
     /// per-peer cap cannot be turned into a global lock by a small number.
     #[test]
-    fn a_map_of_one_is_clamped_up_to_the_floor() {
+    fn a_map_of_one_is_clamped_up_to_the_floor() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(u64::MAX, 1, 1);
         let now = Instant::now();
         assert_eq!(lim.max_tracked_peers(), MIN_TRACKED_PEERS);
@@ -449,11 +459,12 @@ mod tests {
             "at the floor a second peer still gets its own allowance; at 1 the \
              first sender would have taken the whole window"
         );
+        Ok(())
     }
 
     /// Every refusal is counted, and an admitted event is not.
     #[test]
-    fn refusals_are_counted_and_admissions_are_not() {
+    fn refusals_are_counted_and_admissions_are_not() -> Result<(), TestError> {
         let mut lim = FixedWindowLimiter::new(0, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
@@ -461,6 +472,7 @@ mod tests {
         assert!(lim.check("a", now).is_err());
         assert!(lim.check("a", now).is_err());
         assert_eq!(lim.refused_total(), 2, "both refusals counted");
+        Ok(())
     }
     /// Every surface that meters a peer can actually reach this module.
     ///
@@ -474,14 +486,14 @@ mod tests {
     /// that satisfies it: the question is which features the attribute NAMES,
     /// and that is a fact about the text.
     #[test]
-    fn the_module_gate_names_every_surface_that_uses_it() {
+    fn the_module_gate_names_every_surface_that_uses_it() -> Result<(), TestError> {
         let lib = include_str!("lib.rs");
         let gate = lib
             .lines()
             .zip(lib.lines().skip(1))
             .find(|(_, next)| next.trim() == "pub mod rate_limit;")
             .map(|(cfg, _)| cfg.trim().to_string())
-            .expect("`pub mod rate_limit;` is declared with a cfg above it");
+            .ok_or("`pub mod rate_limit;` is declared with a cfg above it")?;
 
         for feature in ["hep", "mcp", "api"] {
             assert!(
@@ -490,6 +502,7 @@ mod tests {
                  does not name it, so that build will not compile: {gate}"
             );
         }
+        Ok(())
     }
 
     /// The surfaces named above really do call it.
@@ -499,7 +512,7 @@ mod tests {
     /// have no use for it, which is the dead-counter cost the original comment
     /// exists to avoid.
     #[test]
-    fn every_named_surface_actually_calls_this_module() {
+    fn every_named_surface_actually_calls_this_module() -> Result<(), TestError> {
         for (feature, rel, src) in [
             ("api", "src/output/api.rs", include_str!("output/api.rs")),
             ("hep", "src/capture/hep.rs", include_str!("capture/hep.rs")),
@@ -512,5 +525,6 @@ mod tests {
                  or the gate carries a feature it does not need"
             );
         }
+        Ok(())
     }
 }

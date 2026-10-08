@@ -402,6 +402,8 @@ mod tests {
     use chrono::{Duration, Utc};
     use std::net::SocketAddr;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Minimal PCMU RTP header with the given sequence and RTP timestamp.
     fn header(seq: u16, ts: u32) -> RtpHeader {
         RtpHeader {
@@ -419,17 +421,17 @@ mod tests {
     }
 
     /// Test socket address 192.0.2.10 with the given port.
-    fn addr(port: u16) -> SocketAddr {
-        format!("192.0.2.10:{port}").parse().unwrap()
+    fn addr(port: u16) -> Result<SocketAddr, TestError> {
+        Ok(format!("192.0.2.10:{port}").parse()?)
     }
 
     /// A stream with `n` clean packets ending "now" (active).
-    fn clean_stream(ssrc: u32, n: u16) -> RtpStream {
+    fn clean_stream(ssrc: u32, n: u16) -> Result<RtpStream, TestError> {
         let start = Utc::now();
         let key = StreamKey {
             ssrc,
-            src: addr(10000),
-            dst: addr(20000),
+            src: addr(10000)?,
+            dst: addr(20000)?,
         };
         let mut s = RtpStream::new(key, &header(0, 0), start);
         for i in 1..n {
@@ -439,7 +441,7 @@ mod tests {
                 160,
             );
         }
-        s
+        Ok(s)
     }
 
     /// Stream store preloaded with the given streams.
@@ -454,7 +456,7 @@ mod tests {
     /// An empty store yields zeroed totals, `None` MOS aggregates, and
     /// no rows.
     #[test]
-    fn empty_store_yields_empty_snapshot() {
+    fn empty_store_yields_empty_snapshot() -> Result<(), TestError> {
         let snap = DashboardSnapshot::from_streams(&StreamStore::new(64), None);
         assert_eq!(snap.total_streams, 0);
         assert_eq!(snap.active_streams, 0);
@@ -462,6 +464,7 @@ mod tests {
         assert_eq!(snap.worst_mos, None);
         assert_eq!(snap.streams_with_loss, 0);
         assert!(snap.rows.is_empty());
+        Ok(())
     }
 
     /// The dashboard's loss column reads the shared figure, not a private
@@ -478,8 +481,8 @@ mod tests {
     /// 90 received and 10 lost is the pair that discriminates: `lost /
     /// received` reads 11.1% where the definition reads 10.0%.
     #[test]
-    fn the_dashboard_loss_column_is_the_shared_loss_figure() {
-        let mut s = clean_stream(1, 5);
+    fn the_dashboard_loss_column_is_the_shared_loss_figure() -> Result<(), TestError> {
+        let mut s = clean_stream(1, 5)?;
         s.packet_count = 90;
         s.lost_packets = 10;
         let expected = s.loss_percent();
@@ -501,13 +504,14 @@ mod tests {
             snap.streams_with_loss, 1,
             "and the derived totals must be counted off the same figure"
         );
+        Ok(())
     }
 
     /// One clean PCMU stream scores MOS > 4.0 and its row equals both
     /// the average and worst aggregates.
     #[test]
-    fn single_clean_stream_scores_high_and_matches_aggregates() {
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![clean_stream(1, 50)]), None);
+    fn single_clean_stream_scores_high_and_matches_aggregates() -> Result<(), TestError> {
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![clean_stream(1, 50)?]), None);
         assert_eq!(snap.total_streams, 1);
         assert_eq!(snap.active_streams, 1);
         assert_eq!(snap.streams_with_loss, 0);
@@ -523,14 +527,15 @@ mod tests {
         assert_eq!(snap.worst_mos, Some(row.mos));
         assert!(row.active);
         assert_eq!(row.call_id, None);
+        Ok(())
     }
 
     /// A ~33%-loss stream ranks ahead of a clean one, is counted in
     /// streams_with_loss, and drives worst_mos and the average.
     #[test]
-    fn lossy_stream_ranks_first_and_is_counted() {
-        let clean = clean_stream(1, 50);
-        let mut lossy = clean_stream(2, 50);
+    fn lossy_stream_ranks_first_and_is_counted() -> Result<(), TestError> {
+        let clean = clean_stream(1, 50)?;
+        let mut lossy = clean_stream(2, 50)?;
         lossy.lost_packets = 25; // ~33% loss
         let snap = DashboardSnapshot::from_streams(&store_with(vec![clean, lossy]), None);
         assert_eq!(snap.total_streams, 2);
@@ -544,68 +549,81 @@ mod tests {
         assert!(snap.rows[0].loss_pct > 30.0 && snap.rows[0].loss_pct < 35.0);
         assert_eq!(snap.worst_mos, Some(snap.rows[0].mos));
         let avg = (snap.rows[0].mos + snap.rows[1].mos) / 2.0;
-        assert!((snap.avg_mos.unwrap() - avg).abs() < 1e-9);
+        assert!((snap.avg_mos.ok_or("the snapshot has an average MOS")? - avg).abs() < 1e-9);
+        Ok(())
     }
 
     /// A stream where everything was lost reports 100% loss with MOS
     /// still clamped at >= 1.0, without panicking.
     #[test]
-    fn all_lost_stream_reports_full_loss_without_panicking() {
+    fn all_lost_stream_reports_full_loss_without_panicking() -> Result<(), TestError> {
         // adversarial: every packet after the first was lost
-        let mut s = clean_stream(3, 1);
+        let mut s = clean_stream(3, 1)?;
         s.packet_count = 0; // hypothetical: nothing received
         s.lost_packets = 100;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         assert_eq!(snap.rows[0].loss_pct, 100.0);
         assert!(snap.rows[0].mos >= 1.0, "MOS stays clamped at >=1.0");
+        Ok(())
     }
 
     /// A stream object with no traffic at all yields 0% loss (no
     /// divide-by-zero).
     #[test]
-    fn zero_packet_stream_is_handled() {
+    fn zero_packet_stream_is_handled() -> Result<(), TestError> {
         // adversarial: a stream object with no traffic at all
-        let mut s = clean_stream(4, 1);
+        let mut s = clean_stream(4, 1)?;
         s.packet_count = 0;
         s.lost_packets = 0;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         assert_eq!(snap.total_streams, 1);
         assert_eq!(snap.rows[0].loss_pct, 0.0);
+        Ok(())
     }
 
     /// A dialog-linked stream carries its Call-ID into the row; an
     /// orphaned stream carries `None`.
     #[test]
-    fn associated_dialog_and_orphan_flow_through() {
-        let mut linked = clean_stream(5, 10);
+    fn associated_dialog_and_orphan_flow_through() -> Result<(), TestError> {
+        let mut linked = clean_stream(5, 10)?;
         linked.associated_dialog = Some("call-1@example.com".into());
         // No `associated_dialog`, which is the whole of what an orphan is.
-        let orphan = clean_stream(6, 10);
+        let orphan = clean_stream(6, 10)?;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![linked, orphan]), None);
-        let linked_row = snap.rows.iter().find(|r| r.key.ssrc == 5).unwrap();
-        let orphan_row = snap.rows.iter().find(|r| r.key.ssrc == 6).unwrap();
+        let linked_row = snap
+            .rows
+            .iter()
+            .find(|r| r.key.ssrc == 5)
+            .ok_or("a row for SSRC 5")?;
+        let orphan_row = snap
+            .rows
+            .iter()
+            .find(|r| r.key.ssrc == 6)
+            .ok_or("a row for SSRC 6")?;
         assert_eq!(linked_row.call_id.as_deref(), Some("call-1@example.com"));
         assert_eq!(orphan_row.call_id, None);
+        Ok(())
     }
 
     /// A stream idle for two minutes is still totaled but not counted
     /// (or flagged) as active.
     #[test]
-    fn inactive_stream_is_counted_but_not_active() {
-        let mut old = clean_stream(7, 10);
+    fn inactive_stream_is_counted_but_not_active() -> Result<(), TestError> {
+        let mut old = clean_stream(7, 10)?;
         old.last_seen = Utc::now() - Duration::seconds(120);
         let snap = DashboardSnapshot::from_streams(&store_with(vec![old]), None);
         assert_eq!(snap.total_streams, 1);
         assert_eq!(snap.active_streams, 0);
         assert!(!snap.rows[0].active);
+        Ok(())
     }
 
     /// Trend points mirror the quality intervals oldest-first, and their
     /// MOS agrees with the canonical estimator.
     #[test]
-    fn trend_is_built_from_quality_intervals_oldest_first() {
+    fn trend_is_built_from_quality_intervals_oldest_first() -> Result<(), TestError> {
         let start = Utc::now();
-        let mut s = clean_stream(8, 2);
+        let mut s = clean_stream(8, 2)?;
         // two intervals: first clean, second degraded
         s.quality_intervals.clear();
         s.quality_intervals
@@ -643,6 +661,7 @@ mod tests {
             crate::rtp::quality::DEFAULT_ONE_WAY_DELAY_MS,
         );
         assert!((trend[1].mos - expect).abs() < 1e-9);
+        Ok(())
     }
 
     // ── loss_to_block glyph mapping ─────────────────────────────────
@@ -650,7 +669,7 @@ mod tests {
     /// Ascending loss climbs the eight-glyph block ramp; values just
     /// below a boundary stay in the lower band.
     #[test]
-    fn loss_to_block_across_range() {
+    fn loss_to_block_across_range() -> Result<(), TestError> {
         // Ascending loss climbs the eight-glyph block ramp; the lowest
         // glyph is the flat baseline and the highest is a full block.
         assert_eq!(loss_to_block(0.0), '\u{2581}'); // ▁ baseline
@@ -665,12 +684,13 @@ mod tests {
         // Just below a boundary stays in the lower band.
         assert_eq!(loss_to_block(0.4), '\u{2581}'); // ▁
         assert_eq!(loss_to_block(49.9), '\u{2587}'); // ▇
+        Ok(())
     }
 
     /// NaN and negatives clamp to the baseline glyph; values above 100
     /// (including infinity) clamp to the full block.
     #[test]
-    fn loss_to_block_clamps_invalid_input() {
+    fn loss_to_block_clamps_invalid_input() -> Result<(), TestError> {
         // NaN, negatives and sub-zero all clamp to the baseline glyph.
         assert_eq!(loss_to_block(f64::NAN), '\u{2581}'); // ▁
         assert_eq!(loss_to_block(-1.0), '\u{2581}'); // ▁
@@ -678,6 +698,7 @@ mod tests {
         // Anything above 100 clamps down to the full block.
         assert_eq!(loss_to_block(150.0), '\u{2588}'); // █
         assert_eq!(loss_to_block(f64::INFINITY), '\u{2588}'); // █
+        Ok(())
     }
 
     // ── render_dashboard loss trend + legend ────────────────────────
@@ -687,61 +708,71 @@ mod tests {
 
     /// Build a stream whose completed quality intervals carry the given
     /// `(jitter_ms, loss_pct)` pairs, oldest first.
-    fn stream_with_intervals(ssrc: u32, intervals: &[(f64, f64)]) -> RtpStream {
+    fn stream_with_intervals(ssrc: u32, intervals: &[(f64, f64)]) -> Result<RtpStream, TestError> {
         let start = Utc::now();
-        let mut s = clean_stream(ssrc, 3);
+        let mut s = clean_stream(ssrc, 3)?;
         s.quality_intervals.clear();
-        for (i, &(jitter_ms, loss_pct)) in intervals.iter().enumerate() {
-            s.quality_intervals.push(QualityInterval {
-                timestamp: start + Duration::seconds(5 * i as i64),
-                jitter_ms,
-                loss_pct,
-                packets: 250,
-            });
-        }
-        s
+        Ok({
+            for (i, &(jitter_ms, loss_pct)) in intervals.iter().enumerate() {
+                s.quality_intervals.push(QualityInterval {
+                    timestamp: start + Duration::seconds(5 * i as i64),
+                    jitter_ms,
+                    loss_pct,
+                    packets: 250,
+                });
+            }
+            s
+        })
     }
 
     /// Render the dashboard from a prebuilt snapshot into a fixed-size test
     /// backend and flatten the buffer to newline-joined rows.
-    fn render_snapshot(snap: DashboardSnapshot, selected: usize, w: u16, h: u16) -> String {
+    fn render_snapshot(
+        snap: DashboardSnapshot,
+        selected: usize,
+        w: u16,
+        h: u16,
+    ) -> Result<String, TestError> {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let mut app = App::new_test();
         app.dashboard_snapshot = Some(snap);
         app.dashboard_selected = selected;
         let backend = TestBackend::new(w, h);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| render_dashboard(frame, frame.area(), &app))
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| render_dashboard(frame, frame.area(), &app))?;
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                out.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell lies inside the buffer")?
+                        .symbol(),
+                );
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// The trend loss row is the one carrying the "Loss:" label (the table
     /// header uses "Loss%", so it never collides).
-    fn loss_row(out: &str) -> &str {
-        out.lines()
+    fn loss_row(out: &str) -> Result<&str, TestError> {
+        Ok(out
+            .lines()
             .find(|l| l.contains("Loss:"))
-            .expect("loss trend row must be rendered")
+            .ok_or("loss trend row must be rendered")?)
     }
 
     /// A 100%-loss interval renders a full-block glyph on the loss row,
     /// and the legend names every metric with units.
     #[test]
-    fn render_shows_loss_spike_and_legend() {
-        let s = stream_with_intervals(1, &[(1.0, 0.0), (2.0, 100.0)]);
+    fn render_shows_loss_spike_and_legend() -> Result<(), TestError> {
+        let s = stream_with_intervals(1, &[(1.0, 0.0), (2.0, 100.0)])?;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
-        let out = render_snapshot(snap, 0, 100, 30);
+        let out = render_snapshot(snap, 0, 100, 30)?;
         // The legend names the metrics, their units, and the color keys.
         assert!(out.contains("Legend"), "legend missing: {out}");
         assert!(out.contains("MOS 1"), "MOS unit missing: {out}");
@@ -749,25 +780,26 @@ mod tests {
         assert!(out.contains("Loss %"), "loss unit missing: {out}");
         // A 100% loss interval drives the loss row to the full block.
         assert!(
-            loss_row(&out).contains('\u{2588}'),
+            loss_row(&out)?.contains('\u{2588}'),
             "loss spike glyph missing: {out}"
         );
+        Ok(())
     }
 
     /// Each row names its MOS band in a word, so the meaning does not rest
     /// on color alone (a color-blind reader, a monochrome terminal, NO_COLOR),
     /// and the legend spells out the band words and the activity dots.
     #[test]
-    fn rows_name_their_band_in_words_and_the_legend_defines_the_dots() {
-        let snap = snapshot_with_rows(1);
+    fn rows_name_their_band_in_words_and_the_legend_defines_the_dots() -> Result<(), TestError> {
+        let snap = snapshot_with_rows(1)?;
         let mos = snap.rows[0].mos;
         let bands = crate::rtp::bands::QualityBands::default();
         let word = crate::tui::stream_detail::MosBand::of(mos, &bands).label();
-        let out = render_snapshot(snap, 0, 120, 30);
+        let out = render_snapshot(snap, 0, 120, 30)?;
         let row = out
             .lines()
             .find(|l| l.contains('\u{25B6}'))
-            .expect("the selected row renders");
+            .ok_or("the selected row renders")?;
         assert!(row.contains(word), "band word {word:?} missing: {row}");
         assert!(out.contains("Rating"), "column header missing: {out}");
         for key in [
@@ -779,74 +811,81 @@ mod tests {
         ] {
             assert!(out.contains(key), "legend lacks {key:?}: {out}");
         }
+        Ok(())
     }
 
     /// All-lost intervals render only full blocks on the loss row — no
     /// baseline glyph.
     #[test]
-    fn render_full_loss_is_max_glyph() {
-        let s = stream_with_intervals(1, &[(1.0, 100.0), (1.0, 100.0)]);
+    fn render_full_loss_is_max_glyph() -> Result<(), TestError> {
+        let s = stream_with_intervals(1, &[(1.0, 100.0), (1.0, 100.0)])?;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
-        let out = render_snapshot(snap, 0, 100, 30);
-        let row = loss_row(&out);
+        let out = render_snapshot(snap, 0, 100, 30)?;
+        let row = loss_row(&out)?;
         assert!(row.contains('\u{2588}'), "expected full block: {row}");
         assert!(
             !row.contains('\u{2581}'),
             "no baseline glyph when fully lost: {row}"
         );
+        Ok(())
     }
 
     /// Loss-free intervals render the flat baseline glyph — never a
     /// full block.
     #[test]
-    fn render_zero_loss_is_flat_baseline() {
-        let s = stream_with_intervals(1, &[(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)]);
+    fn render_zero_loss_is_flat_baseline() -> Result<(), TestError> {
+        let s = stream_with_intervals(1, &[(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)])?;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
-        let out = render_snapshot(snap, 0, 100, 30);
-        let row = loss_row(&out);
+        let out = render_snapshot(snap, 0, 100, 30)?;
+        let row = loss_row(&out)?;
         assert!(row.contains('\u{2581}'), "expected baseline glyph: {row}");
         assert!(
             !row.contains('\u{2588}'),
             "no full block when loss-free: {row}"
         );
+        Ok(())
     }
 
     /// With no completed intervals, the loss row, legend, and an
     /// empty-history placeholder still render without panicking.
     #[test]
-    fn render_empty_history_degrades_gracefully() {
+    fn render_empty_history_degrades_gracefully() -> Result<(), TestError> {
         // A stream with no completed intervals must still render the loss
         // row and legend without panicking.
-        let mut s = clean_stream(1, 3);
+        let mut s = clean_stream(1, 3)?;
         s.quality_intervals.clear();
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
-        let out = render_snapshot(snap, 0, 100, 30);
+        let out = render_snapshot(snap, 0, 100, 30)?;
         assert!(out.contains("Loss:"), "loss row label missing: {out}");
         assert!(out.contains("Legend"), "legend missing: {out}");
         assert!(
             out.contains("(no completed intervals yet)"),
             "empty-history placeholder missing: {out}"
         );
+        Ok(())
     }
 
     /// An 8x4 terminal clips the dashboard instead of panicking.
     #[test]
-    fn render_narrow_terminal_does_not_panic() {
+    fn render_narrow_terminal_does_not_panic() -> Result<(), TestError> {
         // Robustness: a very narrow, short terminal must clip, not overflow.
-        let s = stream_with_intervals(1, &[(1.0, 50.0)]);
+        let s = stream_with_intervals(1, &[(1.0, 50.0)])?;
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
-        let _ = render_snapshot(snap, 0, 8, 4);
+        let _ = render_snapshot(snap, 0, 8, 4)?;
+        Ok(())
     }
 
     /// Build a snapshot with `n` synthetic rows labeled `row-{i}` so the
     /// rendered worst-streams table can be searched by row identity.
-    fn snapshot_with_rows(n: usize) -> DashboardSnapshot {
+    fn snapshot_with_rows(n: usize) -> Result<DashboardSnapshot, TestError> {
+        let src = addr(10000)?;
+        let dst = addr(20000)?;
         let rows = (0..n)
             .map(|i| StreamHealth {
                 key: StreamKey {
                     ssrc: i as u32,
-                    src: addr(10000),
-                    dst: addr(20000),
+                    src,
+                    dst,
                 },
                 call_id: Some(format!("row-{i}")),
                 codec: Some("PCMU".to_string()),
@@ -858,29 +897,29 @@ mod tests {
                 trend: Vec::new(),
             })
             .collect();
-        DashboardSnapshot {
+        Ok(DashboardSnapshot {
             total_streams: n,
             active_streams: n,
             avg_mos: Some(4.0),
             worst_mos: Some(4.0),
             rows,
             ..Default::default()
-        }
+        })
     }
 
     /// Edge case: the scroll window must keep the selection in view with
     /// context, not pin it to the bottom row. With a mid-list selection there
     /// must be rendered rows BELOW it — impossible under the old bottom-anchor.
     #[test]
-    fn scroll_window_keeps_selection_in_view_with_context() {
+    fn scroll_window_keeps_selection_in_view_with_context() -> Result<(), TestError> {
         // height 25 → visible window = 25 - 13 = 12 rows out of 30.
-        let out = render_snapshot(snapshot_with_rows(30), 15, 130, 25);
+        let out = render_snapshot(snapshot_with_rows(30)?, 15, 130, 25)?;
 
         // The selected row is rendered with its marker (▶).
         let selected_line = out
             .lines()
             .find(|l| l.contains("row-15") && l.contains('\u{25b6}'))
-            .unwrap_or_else(|| panic!("selected row-15 not rendered with marker:\n{out}"));
+            .ok_or_else(|| format!("selected row-15 not rendered with marker:\n{out}"))?;
         assert!(selected_line.contains('\u{25b6}'));
 
         // Context below the selection is visible (row-16) — the old
@@ -894,5 +933,6 @@ mod tests {
             out.contains("row-12"),
             "no context above the selection:\n{out}"
         );
+        Ok(())
     }
 }

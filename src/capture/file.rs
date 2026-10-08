@@ -1325,7 +1325,7 @@ mod tests {
     /// clamp rather than overflow the u32 nanosecond conversion.
     #[test]
     #[serial_test::serial(invalid_timestamps)]
-    fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() {
+    fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() -> Result<(), TestError> {
         // A corrupt/hostile pcap can carry tv_usec outside [0, 1_000_000).
         // The microsecond→nanosecond conversion must clamp rather than overflow
         // u32 (which panics in debug / wraps in release). Values are chosen to
@@ -1343,6 +1343,7 @@ mod tests {
             tv_sec: 0,
             tv_usec: -1, // as u32 → huge → overflow in old code
         });
+        Ok(())
     }
 
     /// A huge replay inter-packet delta must not delay shutdown: the sleep is
@@ -1350,7 +1351,7 @@ mod tests {
     /// once the signal fires instead of blocking for the full duration.
     /// Regression for the "large delta delays shutdown arbitrarily" gap.
     #[test]
-    fn sleep_interruptible_returns_promptly_on_stop() {
+    fn sleep_interruptible_returns_promptly_on_stop() -> Result<(), TestError> {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1376,12 +1377,13 @@ mod tests {
             elapsed < std::time::Duration::from_secs(2),
             "sliced sleep must react to the stop signal promptly, took {elapsed:?}"
         );
+        Ok(())
     }
 
     /// Without a stop signal the sliced sleep runs to completion and reports
     /// that it was not interrupted.
     #[test]
-    fn sleep_interruptible_runs_to_completion_without_stop() {
+    fn sleep_interruptible_runs_to_completion_without_stop() -> Result<(), TestError> {
         let started = std::time::Instant::now();
         let interrupted = sleep_interruptible(std::time::Duration::from_millis(120), || false);
         assert!(!interrupted, "no stop signal → not interrupted");
@@ -1389,6 +1391,7 @@ mod tests {
             started.elapsed() >= std::time::Duration::from_millis(100),
             "must actually sleep the requested duration"
         );
+        Ok(())
     }
 
     /// A tv_sec/tv_usec that cannot be represented must fall back to the wall
@@ -1398,7 +1401,7 @@ mod tests {
     /// `file.rs` fell back without counting while `live.rs` counted+warned.
     #[test]
     #[serial_test::serial(invalid_timestamps)]
-    fn fallback_to_now_is_counted_like_live() {
+    fn fallback_to_now_is_counted_like_live() -> Result<(), TestError> {
         use std::sync::atomic::Ordering;
         let counter = &crate::capture::live::INVALID_PCAP_TIMESTAMPS;
         let before = counter.load(Ordering::Relaxed);
@@ -1414,6 +1417,7 @@ mod tests {
         );
         // The fallback stamps the current wall clock.
         assert!((Utc::now() - dt).num_seconds().abs() < 60);
+        Ok(())
     }
 
     /// Helper: path to the test fixture pcap.
@@ -1438,10 +1442,10 @@ mod tests {
     }
 
     /// Read a capture file via `capture_file` and return the packet count.
-    fn count_packets(path: &Path) -> usize {
+    fn count_packets(path: &Path) -> Result<usize, TestError> {
         let (tx, rx) = packet_channel(TEST_CAP);
-        capture_file(path, &CaptureConfig::default(), tx, None).unwrap();
-        rx.try_iter().count()
+        capture_file(path, &CaptureConfig::default(), tx, None)?;
+        Ok(rx.try_iter().count())
     }
 
     /// gzip-compressed captures must read transparently: libpcap cannot open
@@ -1449,34 +1453,34 @@ mod tests {
     /// the fly, so sipnab matches that behavior. Regression for the
     /// `.pcap.gz`-mislabeled-as-`.pcap` case.
     #[test]
-    fn reads_gzip_compressed_pcap() {
+    fn reads_gzip_compressed_pcap() -> Result<(), TestError> {
         use std::io::Write;
 
         let sample = sample_pcap();
         if !sample.exists() {
             stderr_line!("Skipping: sample not found at {}", sample.display());
-            return;
+            return Ok(());
         }
-        let baseline = count_packets(&sample);
+        let baseline = count_packets(&sample)?;
         assert!(baseline > 0, "sample should contain packets");
 
         // Produce a gzip-compressed copy with a deliberately plain `.pcap` name.
-        let raw = std::fs::read(&sample).unwrap();
+        let raw = std::fs::read(&sample)?;
         let gz_file = tempfile::Builder::new()
             .prefix("sipnab-test-")
             .suffix(".pcap")
-            .tempfile()
-            .unwrap();
+            .tempfile()?;
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(&raw).unwrap();
-        let compressed = encoder.finish().unwrap();
-        std::fs::write(gz_file.path(), &compressed).unwrap();
+        encoder.write_all(&raw)?;
+        let compressed = encoder.finish()?;
+        std::fs::write(gz_file.path(), &compressed)?;
 
-        let via_gz = count_packets(gz_file.path());
+        let via_gz = count_packets(gz_file.path())?;
         assert_eq!(
             via_gz, baseline,
             "gzip-compressed capture should yield the same packets as the original"
         );
+        Ok(())
     }
 
     /// The closing summary counts files that were READ, not the size of the
@@ -1486,7 +1490,7 @@ mod tests {
     /// still claimed 27 — which is what made an earlier truncation bug nearly
     /// invisible.
     #[test]
-    fn the_summary_reports_files_read_not_files_offered() {
+    fn the_summary_reports_files_read_not_files_offered() -> Result<(), TestError> {
         let tally = ReadTally {
             given: 27,
             complete: 3,
@@ -1504,11 +1508,12 @@ mod tests {
             "the files never opened are the other half of the count: {line}"
         );
         assert!(tally.lossy(), "a read error and two skips are losses");
+        Ok(())
     }
 
     /// The overwhelmingly common case stays one clause, and is not a warning.
     #[test]
-    fn the_summary_of_a_clean_single_file_run_stays_one_clause() {
+    fn the_summary_of_a_clean_single_file_run_stays_one_clause() -> Result<(), TestError> {
         let tally = ReadTally {
             given: 1,
             complete: 1,
@@ -1519,12 +1524,13 @@ mod tests {
             "Read 852 packets: 1 of 1 file(s) read in full"
         );
         assert!(!tally.lossy());
+        Ok(())
     }
 
     /// A requested stop is not a loss: `--count` leaving files unread is what
     /// the operator asked for, so the summary reports it without crying wolf.
     #[test]
-    fn a_count_limit_is_reported_but_not_called_a_loss() {
+    fn a_count_limit_is_reported_but_not_called_a_loss() -> Result<(), TestError> {
         let tally = ReadTally {
             given: 3,
             stopped_early: 1,
@@ -1534,11 +1540,12 @@ mod tests {
         assert!(line.contains("0 of 3 file(s) read in full"), "{line}");
         assert!(line.contains("2 not reached"), "{line}");
         assert!(!tally.lossy(), "a limit is not data loss");
+        Ok(())
     }
 
     /// A file of the set that cannot be opened is counted, not absorbed.
     #[test]
-    fn a_file_of_the_set_that_cannot_be_opened_is_counted_as_skipped() {
+    fn a_file_of_the_set_that_cannot_be_opened_is_counted_as_skipped() -> Result<(), TestError> {
         let good = sample_pcap();
         let also_good = fixture_path();
         for p in [&good, &also_good] {
@@ -1560,21 +1567,22 @@ mod tests {
             &mut tally,
             &mut count,
         )
-        .expect("one unopenable file must not fail the set");
+        .map_err(|e| format!("one unopenable file must not fail the set: {e:?}"))?;
 
         assert_eq!(tally.complete, 2, "{tally:?}");
         assert_eq!(tally.skipped, 1, "{tally:?}");
         assert_eq!(tally.not_reached(), 0, "{tally:?}");
         assert!(tally.lossy(), "a file that never opened is a loss");
         assert!(count > 0, "the readable files still contributed packets");
+        Ok(())
     }
 
     /// A read reports the span it covered, which is where the end time for the
     /// overlap check comes from — no extra pass over the file.
     #[test]
-    fn a_file_read_reports_the_span_it_covered() {
+    fn a_file_read_reports_the_span_it_covered() -> Result<(), TestError> {
         let path = sample_pcap();
-        let (mut cap, _guard) = open_offline(&path).expect("open");
+        let (mut cap, _guard) = open_offline(&path).map_err(|e| format!("open: {e:?}"))?;
         let (tx, _rx) = packet_channel(TEST_CAP);
         let mut count = 0u64;
         let mut prev_ts = None;
@@ -1589,10 +1597,10 @@ mod tests {
                 prev_ts: &mut prev_ts,
             },
         )
-        .expect("read");
+        .map_err(|e| format!("read: {e:?}"))?;
 
         assert!(read.reached_eof, "the fixture reads to the end");
-        let (first, last) = read.span.expect("the fixture holds packets");
+        let (first, last) = read.span.ok_or("the fixture holds packets")?;
         assert_eq!(
             first.timestamp(),
             1_480_171_979,
@@ -1602,6 +1610,7 @@ mod tests {
             last > first,
             "the last packet cannot precede the first: {first} .. {last}"
         );
+        Ok(())
     }
 
     /// Overlap is the previous file's END against the next file's START.
@@ -1611,15 +1620,15 @@ mod tests {
     /// capture runs, or the same traffic collected on two interfaces, whose
     /// packets are then counted twice.
     #[test]
-    fn overlap_is_the_previous_end_against_the_next_start() {
-        let t = |s: i64| DateTime::from_timestamp(s, 0).expect("timestamp");
+    fn overlap_is_the_previous_end_against_the_next_start() -> Result<(), TestError> {
+        let t = |s: i64| DateTime::from_timestamp(s, 0).ok_or("timestamp");
         let a = Path::new("first.pcap");
         let b = Path::new("second.pcap");
 
         // second.pcap starts 30 s before first.pcap ends: the two hold the same
         // 30 s of traffic and every count spanning it is inflated.
-        let msg = overlap_message(a, t(1_767_225_660), b, t(1_767_225_630))
-            .expect("an overlapping handover must be reported");
+        let msg = overlap_message(a, t(1_767_225_660)?, b, t(1_767_225_630)?)
+            .ok_or("an overlapping handover must be reported")?;
         assert!(
             msg.contains("first.pcap") && msg.contains("second.pcap"),
             "{msg}"
@@ -1628,22 +1637,24 @@ mod tests {
             msg.contains("twice"),
             "the consequence must be stated: {msg}"
         );
+        Ok(())
     }
 
     /// A clean ring-buffer handover is silent: file N+1 starts after file N
     /// ends, which is the normal state of every `tcpdump -C -W` set.
     #[test]
-    fn a_clean_handover_is_not_reported_as_overlap() {
-        let t = |s: i64| DateTime::from_timestamp(s, 0).expect("timestamp");
+    fn a_clean_handover_is_not_reported_as_overlap() -> Result<(), TestError> {
+        let t = |s: i64| DateTime::from_timestamp(s, 0).ok_or("timestamp");
         assert!(
             overlap_message(
                 Path::new("a.pcap"),
-                t(1_767_225_630),
+                t(1_767_225_630)?,
                 Path::new("b.pcap"),
-                t(1_767_225_660),
+                t(1_767_225_660)?,
             )
             .is_none()
         );
+        Ok(())
     }
 
     /// Helper: a sample whose link type is NOT Ethernet, so an `ether` filter
@@ -1666,7 +1677,7 @@ mod tests {
     /// file sharing its link type — left the analysis behind one log line while
     /// the run still exited 0.
     #[test]
-    fn a_bpf_filter_that_does_not_compile_fails_on_a_later_file_too() {
+    fn a_bpf_filter_that_does_not_compile_fails_on_a_later_file_too() -> Result<(), TestError> {
         let ethernet = sample_pcap();
         let other_link = non_ethernet_pcap();
         for p in [&ethernet, &other_link] {
@@ -1686,30 +1697,31 @@ mod tests {
         // Failing on a LATER file must be the same error, not a skip.
         let (tx, _rx) = packet_channel(TEST_CAP);
         let later = capture_files(&[ethernet, other_link], &config, tx, None);
-        let err = later.expect_err(
+        let err = later.err().ok_or(
             "a filter that does not compile against file 2's link type must fail \
              the run, not silently drop that file's traffic",
-        );
+        )?;
         assert!(
             format!("{err:#}").contains("BPF filter"),
             "the error must name the filter: {err:#}"
         );
+        Ok(())
     }
 
     /// Reading the UDP fixture yields non-empty packets, each stamped with
     /// the file it was read from.
     #[test]
-    fn read_fixture_pcap() {
+    fn read_fixture_pcap() -> Result<(), TestError> {
         let path = fixture_path();
         if !path.exists() {
             // Skip if fixture not yet generated
             stderr_line!("Skipping: fixture not found at {}", path.display());
-            return;
+            return Ok(());
         }
 
         let (tx, rx) = packet_channel(TEST_CAP);
         let config = CaptureConfig::default();
-        capture_file(&path, &config, tx, None).unwrap();
+        capture_file(&path, &config, tx, None)?;
 
         let packets: Vec<Packet> = rx.try_iter().collect();
         assert!(
@@ -1726,6 +1738,7 @@ mod tests {
                 "a replayed packet names the file it came from"
             );
         }
+        Ok(())
     }
 
     /// A classic pcap of `link_type` holding one record stamped `secs`.
@@ -1743,14 +1756,14 @@ mod tests {
         f
     }
 
-    fn gzip(data: &[u8]) -> Vec<u8> {
+    fn gzip(data: &[u8]) -> Result<Vec<u8>, TestError> {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        enc.write_all(data).expect("gzip");
-        enc.finish().expect("gzip")
+        enc.write_all(data).map_err(|e| format!("gzip: {e:?}"))?;
+        Ok(enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
     }
 
-    fn tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    fn tgz(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, TestError> {
         use crate::capture::archive::tar::testutil::{Spec, build};
         let specs: Vec<Spec<'_>> = entries.iter().map(|(n, d)| Spec::file(n, d)).collect();
         gzip(&build(&specs))
@@ -1760,8 +1773,8 @@ mod tests {
     /// label — the name its frame pointers resolve through — never with the
     /// temporary file it happened to be read from.
     #[test]
-    fn each_archive_member_stamps_its_label_as_the_source() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn each_archive_member_stamps_its_label_as_the_source() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = root.path().join("two.tgz");
         let frame = [0xabu8; 60];
         std::fs::write(
@@ -1769,17 +1782,18 @@ mod tests {
             tgz(&[
                 ("a.pcap", &one_record(1, 1_000, &frame)),
                 ("b.pcap", &one_record(1, 2_000, &frame)),
-            ]),
+            ])?,
         )
-        .expect("write");
+        .map_err(|e| format!("write: {e:?}"))?;
         let set = crate::capture::input_set::resolve_set(
             &[path.display().to_string()],
             &crate::capture::input_set::ResolveOptions::default(),
         )
-        .expect("resolve");
+        .map_err(|e| format!("resolve: {e:?}"))?;
 
         let (tx, rx) = packet_channel(TEST_CAP);
-        capture_files(&set.paths(), &CaptureConfig::default(), tx, None).expect("read");
+        capture_files(&set.paths(), &CaptureConfig::default(), tx, None)
+            .map_err(|e| format!("read: {e:?}"))?;
         let sources: Vec<String> = rx
             .try_iter()
             .map(|p| p.interface.as_deref().unwrap_or_default().to_string())
@@ -1789,50 +1803,58 @@ mod tests {
             sources,
             vec![format!("{root_name}/a.pcap"), format!("{root_name}/b.pcap")]
         );
+        Ok(())
     }
 
     /// `open_offline` opens ONE capture. Handed an archive of several it says
     /// what the file is and how to read it, instead of libpcap's "unknown file
     /// format".
     #[test]
-    fn open_offline_names_an_archive_instead_of_failing_obscurely() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn open_offline_names_an_archive_instead_of_failing_obscurely() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = root.path().join("set.tgz");
         let rec = one_record(1, 1_000, &[0u8; 60]);
-        std::fs::write(&path, tgz(&[("a.pcap", &rec), ("b.pcap", &rec)])).expect("write");
+        std::fs::write(&path, tgz(&[("a.pcap", &rec), ("b.pcap", &rec)])?)
+            .map_err(|e| format!("write: {e:?}"))?;
         let err = open_offline(&path)
             .map(|_| ())
-            .expect_err("an archive is a set");
+            .err()
+            .ok_or("an archive is a set")?;
         let msg = format!("{err:#}");
         assert!(
             msg.contains("archive") && msg.contains("2 capture"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// A `.pcap.gz` is inflated under the same ceiling as an archive. It used
     /// to be inflated to disk with no bound at all, so a few kilobytes could
     /// claim the whole temp filesystem.
     #[test]
-    fn open_offline_bounds_a_compressed_capture() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn open_offline_bounds_a_compressed_capture() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let mut big = one_record(1, 1_000, &[0u8; 60]);
         big.resize(4 * 1024 * 1024, 0);
         let path = root.path().join("bomb.pcap.gz");
-        std::fs::write(&path, gzip(&big)).expect("write");
+        std::fs::write(&path, gzip(&big)?).map_err(|e| format!("write: {e:?}"))?;
         let limits = crate::capture::archive::Limits {
             max_inflated_bytes: 1024 * 1024,
             ..crate::capture::archive::Limits::for_run()
         };
         let err = open_offline_with(&path, &limits)
             .map(|_| ())
-            .expect_err("over the ceiling");
+            .err()
+            .ok_or("over the ceiling")?;
         assert!(format!("{err:#}").contains("ceiling"), "{err:#}");
 
         let small = root.path().join("ok.pcap.gz");
-        std::fs::write(&small, gzip(&one_record(1, 1_000, &[0u8; 60]))).expect("write");
-        let (mut cap, _guard) = open_offline_with(&small, &limits).expect("within the ceiling");
+        std::fs::write(&small, gzip(&one_record(1, 1_000, &[0u8; 60]))?)
+            .map_err(|e| format!("write: {e:?}"))?;
+        let (mut cap, _guard) =
+            open_offline_with(&small, &limits).map_err(|e| format!("within the ceiling: {e:?}"))?;
         assert!(cap.next_packet().is_ok());
+        Ok(())
     }
 
     /// Replaying a set reproduces the gap BETWEEN its files, not only within
@@ -1840,7 +1862,7 @@ mod tests {
     /// file's first packet waits for the time that separated it from the
     /// first file's last.
     #[test]
-    fn replaying_a_set_reproduces_the_gap_between_its_files() {
+    fn replaying_a_set_reproduces_the_gap_between_its_files() -> Result<(), TestError> {
         // One Ethernet record per file, 300 ms apart.
         fn record_at(secs: u32, usecs: u32) -> Vec<u8> {
             let frame = [0u8; 60];
@@ -1856,11 +1878,11 @@ mod tests {
             f.extend_from_slice(&frame);
             f
         }
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let first = root.path().join("a.pcap");
         let second = root.path().join("b.pcap");
-        std::fs::write(&first, record_at(1_000, 0)).expect("write");
-        std::fs::write(&second, record_at(1_000, 300_000)).expect("write");
+        std::fs::write(&first, record_at(1_000, 0)).map_err(|e| format!("write: {e:?}"))?;
+        std::fs::write(&second, record_at(1_000, 300_000)).map_err(|e| format!("write: {e:?}"))?;
         let config = CaptureConfig {
             replay: true,
             ..CaptureConfig::default()
@@ -1873,13 +1895,14 @@ mod tests {
         let (tx, _rx) = packet_channel(TEST_CAP);
         let started = std::time::Instant::now();
         read_set(&[first, second], &config, &tx, None, &mut tally, &mut count)
-            .expect("both files read");
+            .map_err(|e| format!("both files read: {e:?}"))?;
         let took = started.elapsed();
         assert_eq!(count, 2);
         assert!(
             took >= std::time::Duration::from_millis(250),
             "the 300 ms gap between the files was not replayed: took {took:?}"
         );
+        Ok(())
     }
 
     /// A member whose link type sipnab cannot decode is skipped when the BPF
@@ -1887,12 +1910,13 @@ mod tests {
     /// that — instead of ending the whole set, as a filter failure on a
     /// decodable member still does.
     #[test]
-    fn an_undecodable_link_type_is_skipped_not_fatal_under_a_filter() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn an_undecodable_link_type_is_skipped_not_fatal_under_a_filter() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         // DLT 149 (USER2): what an LTE/NR MAC capture from a test handset uses,
         // which libpcap cannot compile a filter against.
         let mac = root.path().join("mac.pcap");
-        std::fs::write(&mac, one_record(149, 1_000, &[0x42u8; 40])).expect("write");
+        std::fs::write(&mac, one_record(149, 1_000, &[0x42u8; 40]))
+            .map_err(|e| format!("write: {e:?}"))?;
         let eth = sample_pcap();
         let config = CaptureConfig {
             bpf_filter: Some("udp".to_string()),
@@ -1905,11 +1929,12 @@ mod tests {
         let mut count = 0u64;
         let (tx, _rx) = packet_channel(TEST_CAP);
         read_set(&[eth, mac], &config, &tx, None, &mut tally, &mut count)
-            .expect("an undecodable member must not end the set");
+            .map_err(|e| format!("an undecodable member must not end the set: {e:?}"))?;
         assert_eq!(tally.complete, 1, "{tally:?}");
         assert_eq!(tally.skipped, 1, "{tally:?}");
         assert!(!tally.lost, "nothing sipnab could decode was skipped");
         assert!(count > 0);
+        Ok(())
     }
 
     /// When the file that sorts FIRST is the one skipped, readiness passes to
@@ -1917,23 +1942,26 @@ mod tests {
     /// it left the consumer waiting for a signal that never came and the run
     /// died with "exited before signaling ready".
     #[test]
-    fn readiness_passes_on_when_the_first_file_is_skipped() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn readiness_passes_on_when_the_first_file_is_skipped() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let mac = root.path().join("mac.pcap");
-        std::fs::write(&mac, one_record(149, 1_000, &[0x42u8; 40])).expect("write");
+        std::fs::write(&mac, one_record(149, 1_000, &[0x42u8; 40]))
+            .map_err(|e| format!("write: {e:?}"))?;
         let config = CaptureConfig {
             bpf_filter: Some("udp".to_string()),
             ..CaptureConfig::default()
         };
         let (tx, rx) = packet_channel(TEST_CAP);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
-        capture_files(&[mac, sample_pcap()], &config, tx, Some(ready_tx)).expect("read");
+        capture_files(&[mac, sample_pcap()], &config, tx, Some(ready_tx))
+            .map_err(|e| format!("read: {e:?}"))?;
         assert_eq!(
             ready_rx.try_recv(),
             Ok(Ok(())),
             "the second file signals readiness"
         );
         assert!(rx.try_iter().count() > 0);
+        Ok(())
     }
 
     /// Every packet of a two-file set names the file it was actually read
@@ -1945,17 +1973,17 @@ mod tests {
     /// every frame on the first input's interface, so the export stated the
     /// wrong origin for the whole of the second file.
     #[test]
-    fn each_file_of_a_set_stamps_its_own_source() {
+    fn each_file_of_a_set_stamps_its_own_source() -> Result<(), TestError> {
         let a = sample("register-invite-reinvite-bye.pcap");
         let b = sample("sip-rtp-g711.pcap");
         if !a.exists() || !b.exists() {
             stderr_line!("Skipping: samples not found");
-            return;
+            return Ok(());
         }
 
         let (tx, rx) = packet_channel(4096);
         capture_files(&[a.clone(), b.clone()], &CaptureConfig::default(), tx, None)
-            .expect("read the set");
+            .map_err(|e| format!("read the set: {e:?}"))?;
 
         let packets: Vec<Packet> = rx.try_iter().collect();
         let from_a = packets
@@ -1973,6 +2001,7 @@ mod tests {
             packets.len(),
             "every packet names one of the two files it could have come from"
         );
+        Ok(())
     }
 
     /// A classic Ethernet pcap of `n` one-byte records, all stamped `secs`.
@@ -2024,7 +2053,7 @@ mod tests {
     fn a_merged_capture_numbers_its_frames_and_stops_at_the_count() -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("merged.pcapng");
-        crate::capture::merged::testutil::merged_fixture(&path);
+        crate::capture::merged::testutil::merged_fixture(&path)?;
 
         let (tx, rx) = packet_channel(TEST_CAP);
         capture_file(&path, &CaptureConfig::default(), tx, None)
@@ -2077,7 +2106,7 @@ mod tests {
         let answer = ready_rx
             .try_recv()
             .map_err(|e| format!("readiness was answered: {e:?}"))?;
-        let msg = answer.expect_err("readiness says the open failed");
+        let msg = answer.err().ok_or("readiness says the open failed")?;
         assert!(msg.contains("gone.pcap"), "{msg}");
         Ok(())
     }
@@ -2102,7 +2131,8 @@ mod tests {
         let msg = ready_rx
             .try_recv()
             .map_err(|e| format!("readiness was answered: {e:?}"))?
-            .expect_err("readiness carries the failure");
+            .err()
+            .ok_or("readiness carries the failure")?;
         assert!(msg.contains("BPF filter"), "{msg}");
         Ok(())
     }
@@ -2110,7 +2140,7 @@ mod tests {
     /// A filter that fails on a later file marks the set as having lost
     /// data: the files after it are never read.
     #[test]
-    fn a_filter_failure_on_a_later_file_is_a_loss() {
+    fn a_filter_failure_on_a_later_file_is_a_loss() -> Result<(), TestError> {
         let config = CaptureConfig {
             bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
             ..CaptureConfig::default()
@@ -2126,6 +2156,7 @@ mod tests {
         assert!(result.is_err());
         assert!(tally.lossy(), "{tally:?}");
         assert_eq!(tally.skipped, 1, "{tally:?}");
+        Ok(())
     }
 
     /// `--duration` that has already run out stops the read before the first

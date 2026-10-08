@@ -87,6 +87,9 @@ mod tests {
     use super::*;
     use rmcp::model::ContentBlock;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A result whose only block is `json`.
     fn json_result(json: &str) -> CallToolResult {
         CallToolResult::success(vec![ContentBlock::text(json)])
@@ -94,7 +97,7 @@ mod tests {
 
     /// The common shape: payload first, provenance note second.
     #[test]
-    fn an_object_payload_is_published_as_structured_content() {
+    fn an_object_payload_is_published_as_structured_content() -> Result<(), TestError> {
         let mut result = CallToolResult::success(vec![
             ContentBlock::text(r#"{"schema_version":1,"dialogs":3}"#),
             ContentBlock::text(crate::mcp::shape::untrusted_note()),
@@ -106,30 +109,33 @@ mod tests {
             Some(serde_json::json!({"schema_version": 1, "dialogs": 3})),
             "the payload block is the first one; a trailing note must not hide it"
         );
+        Ok(())
     }
 
     /// The guarantee the module exists for: one document, two views.
     #[test]
-    fn the_text_block_and_the_structured_content_are_the_same_document() {
+    fn the_text_block_and_the_structured_content_are_the_same_document() -> Result<(), TestError> {
         let mut result = json_result(r#"{"a":[1,2,{"b":null}],"c":"x"}"#);
         attach(&mut result);
 
         let ContentBlock::Text(block) = &result.content[0] else {
-            panic!("the fixture's first block is text");
+            return Err("the fixture's first block is text".into());
         };
-        let from_text: Value = serde_json::from_str(&block.text).expect("fixture is JSON");
+        let from_text: Value =
+            serde_json::from_str(&block.text).map_err(|e| format!("fixture is JSON: {e:?}"))?;
         assert_eq!(
             result.structured_content,
             Some(from_text),
             "structuredContent is parsed FROM the text, so they cannot differ"
         );
+        Ok(())
     }
 
     /// A top-level array is a shape the MCP schema cannot carry
     /// in `structuredContent`. Wrapping it would invent a shape the text block
     /// does not have.
     #[test]
-    fn an_array_payload_gets_no_structured_content() {
+    fn an_array_payload_gets_no_structured_content() -> Result<(), TestError> {
         let mut result = json_result(r#"[{"bucket":0,"dialogs":2}]"#);
         attach(&mut result);
 
@@ -137,30 +143,33 @@ mod tests {
             result.structured_content, None,
             "structuredContent is typed as an object; an array has none to give"
         );
+        Ok(())
     }
 
     /// `render_ladder` and the non-JSON report formats return a document.
     #[test]
-    fn a_rendered_document_gets_no_structured_content() {
+    fn a_rendered_document_gets_no_structured_content() -> Result<(), TestError> {
         let mut result = json_result("alice -> bob  INVITE\nbob -> alice  200 OK\n");
         attach(&mut result);
 
         assert_eq!(result.structured_content, None);
+        Ok(())
     }
 
     /// Text that begins like an object but is not one must not become a
     /// half-parsed structure, and must not panic.
     #[test]
-    fn truncated_json_gets_no_structured_content() {
+    fn truncated_json_gets_no_structured_content() -> Result<(), TestError> {
         let mut result = json_result(r#"{"schema_version":1,"dialogs":"#);
         attach(&mut result);
 
         assert_eq!(result.structured_content, None);
+        Ok(())
     }
 
     /// A tool that set its own structure knows something this does not.
     #[test]
-    fn a_structure_the_tool_set_is_not_overwritten() {
+    fn a_structure_the_tool_set_is_not_overwritten() -> Result<(), TestError> {
         let mut result = json_result(r#"{"from":"text"}"#);
         result.structured_content = Some(serde_json::json!({"from": "the tool"}));
         attach(&mut result);
@@ -169,25 +178,28 @@ mod tests {
             result.structured_content,
             Some(serde_json::json!({"from": "the tool"}))
         );
+        Ok(())
     }
 
     /// An error result's content is a message, not a payload. Publishing it as
     /// `structuredContent` would offer it to a client validating against the
     /// tool's `outputSchema`, which describes the SUCCESS shape.
     #[test]
-    fn an_error_result_is_left_alone() {
+    fn an_error_result_is_left_alone() -> Result<(), TestError> {
         let mut result = CallToolResult::error(vec![ContentBlock::text(r#"{"error":"nope"}"#)]);
         attach(&mut result);
 
         assert_eq!(result.structured_content, None);
+        Ok(())
     }
 
     /// A result with no content must not index past the end.
     #[test]
-    fn an_empty_result_is_left_alone() {
+    fn an_empty_result_is_left_alone() -> Result<(), TestError> {
         let mut result = CallToolResult::success(vec![]);
         attach(&mut result);
 
         assert_eq!(result.structured_content, None);
+        Ok(())
     }
 }

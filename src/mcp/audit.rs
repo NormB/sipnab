@@ -277,14 +277,17 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Read a sink file back as lines.
-    fn lines(path: &Path) -> Vec<String> {
+    fn lines(path: &Path) -> Result<Vec<String>, TestError> {
         let mut s = String::new();
         std::fs::File::open(path)
-            .expect("open sink")
+            .map_err(|e| format!("open sink: {e:?}"))?
             .read_to_string(&mut s)
-            .expect("read sink");
-        s.lines().map(str::to_string).collect()
+            .map_err(|e| format!("read sink: {e:?}"))?;
+        Ok(s.lines().map(str::to_string).collect())
     }
 
     /// A record for tests, with the fields that matter overridable.
@@ -307,16 +310,18 @@ mod tests {
     /// `write(true)` on a fresh open would both pass every "the sink writes a
     /// line" test while erasing every previous run.
     #[test]
-    fn reopening_the_sink_does_not_truncate_what_is_there() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn reopening_the_sink_does_not_truncate_what_is_there() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        std::fs::write(&path, "{\"seq\":1,\"tool\":\"from_an_earlier_run\"}\n").expect("seed");
+        std::fs::write(&path, "{\"seq\":1,\"tool\":\"from_an_earlier_run\"}\n")
+            .map_err(|e| format!("seed: {e:?}"))?;
 
-        let sink = AuditSink::open(&path).expect("open");
-        sink.append(&rec("list_dialogs", "{}")).expect("append");
+        let sink = AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?;
+        sink.append(&rec("list_dialogs", "{}"))
+            .map_err(|e| format!("append: {e:?}"))?;
         drop(sink);
 
-        let out = lines(&path);
+        let out = lines(&path)?;
         assert_eq!(
             out.len(),
             2,
@@ -326,6 +331,7 @@ mod tests {
             out[0].contains("from_an_earlier_run"),
             "the pre-existing record must still be FIRST and intact: {out:?}"
         );
+        Ok(())
     }
 
     /// The attack: a hostile value inside the arguments must not be able to
@@ -337,27 +343,29 @@ mod tests {
     /// like a genuine record of a call that never happened, which is worse
     /// than a missing record: it is a false one.
     #[test]
-    fn a_newline_in_the_arguments_cannot_forge_a_record() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_newline_in_the_arguments_cannot_forge_a_record() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = AuditSink::open(&path).expect("open");
+        let sink = AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?;
 
         let hostile = "{\"q\":\"x\"}\n{\"seq\":99,\"tool\":\"shutdown_server\",\"outcome\":\"ok\"}";
         sink.append(&rec("search_messages", hostile))
-            .expect("append");
+            .map_err(|e| format!("append: {e:?}"))?;
 
-        let out = lines(&path);
+        let out = lines(&path)?;
         assert_eq!(
             out.len(),
             1,
             "the arguments forged a second record: {out:?}"
         );
-        let v: serde_json::Value = serde_json::from_str(&out[0]).expect("one valid JSON line");
+        let v: serde_json::Value =
+            serde_json::from_str(&out[0]).map_err(|e| format!("one valid JSON line: {e:?}"))?;
         assert_eq!(
             v["tool"], "search_messages",
             "the forged record replaced the real one: {v}"
         );
         assert_eq!(v["seq"], 1, "the forged sequence number was believed: {v}");
+        Ok(())
     }
 
     /// The attack: a quote in the arguments must not end the field.
@@ -367,18 +375,19 @@ mod tests {
     /// is JSON specifically so this cannot happen, and asserting it is what
     /// stops somebody switching the sink to the console format later.
     #[test]
-    fn a_quote_in_the_arguments_cannot_end_a_field() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_quote_in_the_arguments_cannot_end_a_field() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = AuditSink::open(&path).expect("open");
+        let sink = AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?;
         sink.append(&rec(
             "get_message",
             "{\"call_id\":\"a\\\" outcome=ok caller=\\\"stdio\"}",
         ))
-        .expect("append");
+        .map_err(|e| format!("append: {e:?}"))?;
 
-        let out = lines(&path);
-        let v: serde_json::Value = serde_json::from_str(&out[0]).expect("valid JSON");
+        let out = lines(&path)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&out[0]).map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
             v["outcome"], "ok",
             "outcome must come from the record, not the arguments: {v}"
@@ -388,9 +397,10 @@ mod tests {
             "caller must come from the transport, not the arguments: {v}"
         );
         assert!(
-            v["args"].as_str().expect("args").contains("outcome=ok"),
+            v["args"].as_str().ok_or("args")?.contains("outcome=ok"),
             "the hostile text must still be RECORDED, only defanged: {v}"
         );
+        Ok(())
     }
 
     /// No record is lost when many threads append at once, and every sequence
@@ -400,30 +410,37 @@ mod tests {
     /// counter handed out before the lock, or a `BufWriter`, or two writes per
     /// record, each shows up here as a missing or duplicated `seq`.
     #[test]
-    fn concurrent_appends_lose_no_record_and_no_sequence_number() {
+    fn concurrent_appends_lose_no_record_and_no_sequence_number() -> Result<(), TestError> {
         const THREADS: u64 = 8;
         const PER_THREAD: u64 = 64;
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = std::sync::Arc::new(AuditSink::open(&path).expect("open"));
+        let sink = std::sync::Arc::new(AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?);
 
-        std::thread::scope(|s| {
+        std::thread::scope(|s| -> Result<(), TestError> {
+            let mut writers = Vec::new();
             for t in 0..THREADS {
                 let sink = std::sync::Arc::clone(&sink);
-                s.spawn(move || {
+                writers.push(s.spawn(move || -> Result<(), String> {
                     for i in 0..PER_THREAD {
                         let args = format!("{{\"t\":{t},\"i\":{i}}}");
-                        sink.append(&rec("list_dialogs", &args)).expect("append");
+                        sink.append(&rec("list_dialogs", &args))
+                            .map_err(|e| format!("append: {e:?}"))?;
                     }
-                });
+                    Ok(())
+                }));
             }
-        });
+            for writer in writers {
+                writer.join().map_err(|_| "thread panicked")??;
+            }
+            Ok(())
+        })?;
 
         let expected = THREADS * PER_THREAD;
         assert_eq!(sink.records_written(), expected);
 
-        let out = lines(&path);
+        let out = lines(&path)?;
         assert_eq!(
             out.len() as u64,
             expected,
@@ -431,12 +448,12 @@ mod tests {
         );
         let mut seen: Vec<u64> = out
             .iter()
-            .map(|l| {
+            .map(|l| -> Result<u64, TestError> {
                 let v: serde_json::Value = serde_json::from_str(l)
-                    .unwrap_or_else(|e| panic!("a concurrent write split a line: {e}: {l}"));
-                v["seq"].as_u64().expect("seq")
+                    .map_err(|e| format!("a concurrent write split a line: {e}: {l}"))?;
+                Ok(v["seq"].as_u64().ok_or("seq")?)
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         seen.sort_unstable();
         let want: Vec<u64> = (1..=expected).collect();
         assert_eq!(
@@ -444,33 +461,42 @@ mod tests {
             "sequence numbers must appear exactly once each — a gap is a lost \
              record and a repeat is two records a reader cannot tell apart"
         );
+        Ok(())
     }
 
     /// Records land in the file in sequence order, so `seq` describes the
     /// file rather than merely labeling lines.
     #[test]
-    fn the_file_order_matches_the_sequence_order() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_file_order_matches_the_sequence_order() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = std::sync::Arc::new(AuditSink::open(&path).expect("open"));
-        std::thread::scope(|s| {
+        let sink = std::sync::Arc::new(AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?);
+        std::thread::scope(|s| -> Result<(), TestError> {
+            let mut writers = Vec::new();
             for _ in 0..4 {
                 let sink = std::sync::Arc::clone(&sink);
-                s.spawn(move || {
+                writers.push(s.spawn(move || -> Result<(), String> {
                     for _ in 0..32 {
-                        sink.append(&rec("t", "{}")).expect("append");
+                        sink.append(&rec("t", "{}"))
+                            .map_err(|e| format!("append: {e:?}"))?;
                     }
-                });
+                    Ok(())
+                }));
             }
-        });
-        let seqs: Vec<u64> = lines(&path)
+            for writer in writers {
+                writer.join().map_err(|_| "thread panicked")??;
+            }
+            Ok(())
+        })?;
+        let seqs: Vec<u64> = lines(&path)?
             .iter()
-            .map(|l| {
-                serde_json::from_str::<serde_json::Value>(l).expect("json")["seq"]
+            .map(|l| -> Result<u64, TestError> {
+                Ok(serde_json::from_str::<serde_json::Value>(l)
+                    .map_err(|e| format!("json: {e:?}"))?["seq"]
                     .as_u64()
-                    .expect("seq")
+                    .ok_or("seq")?)
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let mut sorted = seqs.clone();
         sorted.sort_unstable();
         assert_eq!(
@@ -478,6 +504,7 @@ mod tests {
             "a record reached the file out of sequence order, so a reader \
              cannot use seq to find where a gap starts"
         );
+        Ok(())
     }
 
     /// A record carries every field an auditor needs, including on a refusal.
@@ -486,10 +513,10 @@ mod tests {
     /// to call" is what the record is read for, and an audit that only kept
     /// successes would answer the opposite question.
     #[test]
-    fn a_refusal_is_recorded_with_its_reason() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_refusal_is_recorded_with_its_reason() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = AuditSink::open(&path).expect("open");
+        let sink = AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?;
         sink.append(&AuditRecord {
             tool: "shutdown_server",
             request_id: "42",
@@ -499,46 +526,50 @@ mod tests {
             args: "{}",
             error: "tool shutdown_server is not read-only",
         })
-        .expect("append");
+        .map_err(|e| format!("append: {e:?}"))?;
 
-        let v: serde_json::Value =
-            serde_json::from_str(&lines(&path)[0]).expect("valid JSON record");
+        let v: serde_json::Value = serde_json::from_str(&lines(&path)?[0])
+            .map_err(|e| format!("valid JSON record: {e:?}"))?;
         assert_eq!(v["outcome"], "refused");
         assert_eq!(v["tool"], "shutdown_server");
         assert_eq!(v["id"], "42");
         assert!(
             v["caller"]
                 .as_str()
-                .expect("caller")
+                .ok_or("caller")?
                 .contains("token=ci-runner-1"),
             "the record must name the credential to revoke: {v}"
         );
         assert!(
             v["error"]
                 .as_str()
-                .expect("error")
+                .ok_or("error")?
                 .contains("not read-only"),
             "a refusal with no reason does not answer why: {v}"
         );
         assert!(
-            v["ts"].as_str().expect("ts").contains('T'),
+            v["ts"].as_str().ok_or("ts")?.contains('T'),
             "every record is timestamped: {v}"
         );
+        Ok(())
     }
 
     /// A successful call carries `error: null` rather than omitting the key.
     #[test]
-    fn a_successful_call_records_a_null_error_rather_than_no_key() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_successful_call_records_a_null_error_rather_than_no_key() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = AuditSink::open(&path).expect("open");
-        sink.append(&rec("list_dialogs", "{}")).expect("append");
-        let v: serde_json::Value = serde_json::from_str(&lines(&path)[0]).expect("json");
+        let sink = AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?;
+        sink.append(&rec("list_dialogs", "{}"))
+            .map_err(|e| format!("append: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&lines(&path)?[0]).map_err(|e| format!("json: {e:?}"))?;
         assert!(
             v.get("error").is_some() && v["error"].is_null(),
             "`.error` must exist on every record so a reader never has to tell \
              an absent key from a call that did not fail: {v}"
         );
+        Ok(())
     }
 
     /// Opening a path that cannot be a file is an error the caller sees.
@@ -547,11 +578,13 @@ mod tests {
     /// and got a run that recorded nothing would find out when they went
     /// looking for the record, which is the one moment it cannot be recreated.
     #[test]
-    fn opening_an_impossible_path_is_reported_not_swallowed() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn opening_an_impossible_path_is_reported_not_swallowed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let err = AuditSink::open(&dir.path().join("no-such-dir").join("audit.jsonl"))
-            .expect_err("a missing parent directory must fail the open");
+            .err()
+            .ok_or("a missing parent directory must fail the open")?;
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        Ok(())
     }
 
     /// A write that fails is REPORTED, not swallowed.
@@ -562,37 +595,46 @@ mod tests {
     /// than a mock of it.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_write_that_fails_is_reported_not_swallowed() {
+    fn a_write_that_fails_is_reported_not_swallowed() -> Result<(), TestError> {
         let dev_full = Path::new("/dev/full");
         if !dev_full.exists() {
-            return;
+            return Ok(());
         }
-        let sink = AuditSink::open(dev_full).expect("open /dev/full for append");
+        let sink =
+            AuditSink::open(dev_full).map_err(|e| format!("open /dev/full for append: {e:?}"))?;
         let err = sink
             .append(&rec("list_dialogs", "{}"))
-            .expect_err("a write to a full device must not report success");
+            .err()
+            .ok_or("a write to a full device must not report success")?;
         assert_eq!(
             err.kind(),
             std::io::ErrorKind::StorageFull,
             "the caller has to be able to tell a full disk from anything else \
              to decide what to do about it: {err}"
         );
+        Ok(())
     }
 
     /// On Unix a freshly created sink is owner-only.
     #[cfg(unix)]
     #[test]
-    fn a_new_sink_file_is_not_readable_by_other_accounts() {
+    fn a_new_sink_file_is_not_readable_by_other_accounts() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("audit.jsonl");
-        let sink = AuditSink::open(&path).expect("open");
-        sink.append(&rec("list_dialogs", "{}")).expect("append");
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        let sink = AuditSink::open(&path).map_err(|e| format!("open: {e:?}"))?;
+        sink.append(&rec("list_dialogs", "{}"))
+            .map_err(|e| format!("append: {e:?}"))?;
+        let mode = std::fs::metadata(&path)
+            .map_err(|e| format!("stat: {e:?}"))?
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
             mode, 0o600,
             "the record carries tool arguments, so it is not for every account \
              on the host"
         );
+        Ok(())
     }
 }

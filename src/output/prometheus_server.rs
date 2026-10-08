@@ -592,80 +592,92 @@ mod tests {
 
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A bare port string binds to `127.0.0.1:<port>`.
     #[test]
-    fn parse_metrics_addr_port_only() {
-        let addr = parse_metrics_addr("9100").unwrap();
+    fn parse_metrics_addr_port_only() -> Result<(), TestError> {
+        let addr = parse_metrics_addr("9100")?;
         assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9100));
+        Ok(())
     }
 
     /// The `:port` shorthand binds to `127.0.0.1:<port>`.
     #[test]
-    fn parse_metrics_addr_colon_port() {
-        let addr = parse_metrics_addr(":9100").unwrap();
+    fn parse_metrics_addr_colon_port() -> Result<(), TestError> {
+        let addr = parse_metrics_addr(":9100")?;
         assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9100));
+        Ok(())
     }
 
     /// A full `addr:port` pair parses verbatim.
     #[test]
-    fn parse_metrics_addr_full() {
-        let addr = parse_metrics_addr("0.0.0.0:9100").unwrap();
+    fn parse_metrics_addr_full() -> Result<(), TestError> {
+        let addr = parse_metrics_addr("0.0.0.0:9100")?;
         assert_eq!(
             addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9100)
         );
+        Ok(())
     }
 
     /// A non-address string is rejected.
     #[test]
-    fn parse_metrics_addr_invalid() {
+    fn parse_metrics_addr_invalid() -> Result<(), TestError> {
         assert!(parse_metrics_addr("not-an-address").is_err());
+        Ok(())
     }
 
     /// Correct base64 credentials pass the Basic auth check.
     #[test]
-    fn basic_auth_valid() {
+    fn basic_auth_valid() -> Result<(), TestError> {
         // base64("user:pass") = "dXNlcjpwYXNz"
         assert!(check_basic_auth("Basic dXNlcjpwYXNz", "user:pass"));
+        Ok(())
     }
 
     /// Wrong-password credentials fail the Basic auth check.
     #[test]
-    fn basic_auth_invalid() {
+    fn basic_auth_invalid() -> Result<(), TestError> {
         assert!(!check_basic_auth("Basic dXNlcjp3cm9uZw==", "user:pass"));
+        Ok(())
     }
 
     /// A non-`Basic` scheme fails the Basic auth check.
     #[test]
-    fn basic_auth_missing_prefix() {
+    fn basic_auth_missing_prefix() -> Result<(), TestError> {
         assert!(!check_basic_auth("Bearer token", "user:pass"));
+        Ok(())
     }
 
     /// Odd-but-valid RFC 7235 scheme casings and inter-token whitespace are
     /// accepted: the auth-scheme is case-insensitive and one-or-more spaces
     /// (or tabs) may separate it from the credentials.
     #[test]
-    fn basic_auth_accepts_odd_scheme_casing_and_spacing() {
+    fn basic_auth_accepts_odd_scheme_casing_and_spacing() -> Result<(), TestError> {
         // base64("user:pass") = "dXNlcjpwYXNz"
         assert!(check_basic_auth("basic dXNlcjpwYXNz", "user:pass"));
         assert!(check_basic_auth("BASIC dXNlcjpwYXNz", "user:pass"));
         assert!(check_basic_auth("bAsIc dXNlcjpwYXNz", "user:pass"));
         assert!(check_basic_auth("Basic    dXNlcjpwYXNz", "user:pass"));
         assert!(check_basic_auth("Basic\tdXNlcjpwYXNz", "user:pass"));
+        Ok(())
     }
 
     /// A wrong token is still rejected even with an odd-but-valid scheme
     /// casing and extra whitespace — the token comparison is not weakened.
     #[test]
-    fn basic_auth_wrong_token_rejected_despite_odd_casing() {
+    fn basic_auth_wrong_token_rejected_despite_odd_casing() -> Result<(), TestError> {
         // base64("user:wrong") = "dXNlcjp3cm9uZw=="
         assert!(!check_basic_auth("basic   dXNlcjp3cm9uZw==", "user:pass"));
+        Ok(())
     }
 
     /// The Authorization header field name is matched case-insensitively
     /// and tolerates arbitrary optional whitespace (OWS) after the colon.
     #[test]
-    fn authorization_header_name_is_case_insensitive_and_ows_tolerant() {
+    fn authorization_header_name_is_case_insensitive_and_ows_tolerant() -> Result<(), TestError> {
         assert_eq!(
             strip_authorization("Authorization: Basic xyz"),
             Some("Basic xyz")
@@ -683,6 +695,7 @@ mod tests {
             Some("Basic xyz")
         );
         assert_eq!(strip_authorization("Content-Type: text/plain"), None);
+        Ok(())
     }
 
     // ── End-to-end server tests ────────────────────────────────────────
@@ -713,20 +726,18 @@ mod tests {
     }
 
     /// Send a raw HTTP request and return the full response as a string.
-    fn http_request(addr: SocketAddr, raw: &str) -> String {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        stream.write_all(raw.as_bytes()).unwrap();
+    fn http_request(addr: SocketAddr, raw: &str) -> Result<String, TestError> {
+        let mut stream = TcpStream::connect(addr)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        stream.write_all(raw.as_bytes())?;
         let mut resp = String::new();
         // Server sets Connection: close, so read to EOF.
-        stream.read_to_string(&mut resp).unwrap();
-        resp
+        stream.read_to_string(&mut resp)?;
+        Ok(resp)
     }
 
     /// A dialog store containing one tracked INVITE dialog.
-    fn populated_dialog_store() -> Arc<RwLock<DialogStore>> {
+    fn populated_dialog_store() -> Result<Arc<RwLock<DialogStore>>, TestError> {
         let raw = b"INVITE sip:bob@example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-x\r\n\
                     From: Alice <sip:alice@example.com>;tag=a1\r\n\
@@ -745,11 +756,10 @@ mod tests {
             5060,
             5060,
             crate::capture::parse::TransportProto::Udp,
-        )
-        .unwrap();
+        )?;
         let mut ds = DialogStore::new(100, false);
         ds.process_message(msg);
-        Arc::new(RwLock::new(ds))
+        Ok(Arc::new(RwLock::new(ds)))
     }
 
     /// A dialog store holding one answered call and one still ringing.
@@ -757,9 +767,12 @@ mod tests {
     /// Deliberately asymmetric: `sipnab_dialogs_active` must read 2 and
     /// `sipnab_calls_active` must read 1, so a build that computed one gauge
     /// twice cannot pass.
-    fn mixed_dialog_store() -> Arc<RwLock<DialogStore>> {
-        fn parse(raw: &str, ts: chrono::DateTime<Utc>) -> crate::sip::SipMessage {
-            crate::sip::parser::parse_sip_bytes(
+    fn mixed_dialog_store() -> Result<Arc<RwLock<DialogStore>>, TestError> {
+        fn parse(
+            raw: &str,
+            ts: chrono::DateTime<Utc>,
+        ) -> Result<crate::sip::SipMessage, TestError> {
+            Ok(crate::sip::parser::parse_sip_bytes(
                 &bytes::Bytes::copy_from_slice(raw.as_bytes()),
                 ts,
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -768,7 +781,7 @@ mod tests {
                 5060,
                 crate::capture::parse::TransportProto::Udp,
             )
-            .expect("fixture must parse")
+            .map_err(|e| format!("fixture must parse: {e:?}"))?)
         }
 
         let invite = |call_id: &str| {
@@ -787,7 +800,7 @@ mod tests {
 
         let now = Utc::now();
         let mut ds = DialogStore::new(100, false);
-        ds.process_message(parse(&invite("answered"), now));
+        ds.process_message(parse(&invite("answered"), now)?);
         ds.process_message(parse(
             "SIP/2.0 200 OK\r\n\
              Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-answered\r\n\
@@ -797,9 +810,9 @@ mod tests {
              CSeq: 1 INVITE\r\n\
              Content-Length: 0\r\n\r\n",
             now,
-        ));
-        ds.process_message(parse(&invite("ringing"), now));
-        Arc::new(RwLock::new(ds))
+        )?);
+        ds.process_message(parse(&invite("ringing"), now)?);
+        Ok(Arc::new(RwLock::new(ds)))
     }
 
     /// A stream store containing one active RTP stream (last_seen ~= now).
@@ -846,19 +859,19 @@ mod tests {
     /// `GET /metrics` returns 200 with the Prometheus content type and a
     /// `sipnab_` body.
     #[test]
-    fn metrics_endpoint_returns_200_with_body() {
+    fn metrics_endpoint_returns_200_with_body() -> Result<(), TestError> {
         let (addr, _handle) = start_metrics_server(
             ephemeral(),
-            populated_dialog_store(),
+            populated_dialog_store()?,
             populated_stream_store(),
             None,
             None,
             None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
-        .expect("server should bind");
+        .map_err(|e| format!("server should bind: {e:?}"))?;
 
-        let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")?;
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
         assert!(
             resp.contains("version=0.0.4"),
@@ -866,11 +879,12 @@ mod tests {
         );
         // Body should carry the exposition text produced by format_metrics.
         assert!(resp.contains("sipnab_"), "metrics body missing: {resp:?}");
+        Ok(())
     }
 
     /// Any path other than `/metrics` returns 404.
     #[test]
-    fn unknown_path_returns_404() {
+    fn unknown_path_returns_404() -> Result<(), TestError> {
         let (addr, _handle) = start_metrics_server(
             ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
@@ -880,16 +894,17 @@ mod tests {
             None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
-        .expect("server should bind");
+        .map_err(|e| format!("server should bind: {e:?}"))?;
 
-        let resp = http_request(addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        let resp = http_request(addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n")?;
         assert!(resp.starts_with("HTTP/1.1 404 Not Found"), "got: {resp:?}");
+        Ok(())
     }
 
     /// With auth configured: no/wrong credentials get 401 (with a
     /// challenge), correct credentials get 200.
     #[test]
-    fn basic_auth_enforced() {
+    fn basic_auth_enforced() -> Result<(), TestError> {
         let (addr, _handle) = start_metrics_server(
             ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
@@ -899,10 +914,10 @@ mod tests {
             None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
-        .expect("server should bind");
+        .map_err(|e| format!("server should bind: {e:?}"))?;
 
         // No credentials -> 401 with a challenge.
-        let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")?;
         assert!(
             resp.starts_with("HTTP/1.1 401 Unauthorized"),
             "got: {resp:?}"
@@ -913,7 +928,7 @@ mod tests {
         let resp = http_request(
             addr,
             "GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Basic dXNlcjp3cm9uZw==\r\n\r\n",
-        );
+        )?;
         assert!(
             resp.starts_with("HTTP/1.1 401 Unauthorized"),
             "got: {resp:?}"
@@ -923,24 +938,26 @@ mod tests {
         let resp = http_request(
             addr,
             "GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n",
-        );
+        )?;
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
+        Ok(())
     }
 
     /// The connection gate caps concurrent handlers: acquisitions beyond the
     /// limit are refused (returning `None`) so a burst of slow clients cannot
     /// exhaust threads, and a slot frees when its permit is dropped (SN-02).
     #[test]
-    fn conn_gate_caps_and_releases() {
+    fn conn_gate_caps_and_releases() -> Result<(), TestError> {
         let gate = ConnGate::new(2);
-        let p1 = gate.try_acquire().expect("first permit");
-        let _p2 = gate.try_acquire().expect("second permit");
+        let p1 = gate.try_acquire().ok_or("first permit")?;
+        let _p2 = gate.try_acquire().ok_or("second permit")?;
         assert!(
             gate.try_acquire().is_none(),
             "third over the cap is refused"
         );
         drop(p1);
         assert!(gate.try_acquire().is_some(), "a freed slot is reusable");
+        Ok(())
     }
 
     /// The standalone metrics server must fail closed on a non-loopback
@@ -948,8 +965,8 @@ mod tests {
     /// REST API and MCP HTTP transports (SN-02). Otherwise operational
     /// telemetry is published to the network unauthenticated.
     #[test]
-    fn refuses_non_loopback_bind_without_auth() {
-        let bind: SocketAddr = "0.0.0.0:0".parse().unwrap();
+    fn refuses_non_loopback_bind_without_auth() -> Result<(), TestError> {
+        let bind: SocketAddr = "0.0.0.0:0".parse()?;
         let err = start_metrics_server(
             bind,
             Arc::new(RwLock::new(DialogStore::new(10, false))),
@@ -959,17 +976,19 @@ mod tests {
             None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
-        .expect_err("non-loopback without auth must be refused");
+        .err()
+        .ok_or("non-loopback without auth must be refused")?;
         assert!(
             err.to_string().contains("non-loopback"),
             "error should explain the bind policy, got: {err}"
         );
+        Ok(())
     }
 
     /// A non-loopback bind is allowed once a credential is configured.
     #[test]
-    fn allows_non_loopback_bind_with_auth() {
-        let bind: SocketAddr = "0.0.0.0:0".parse().unwrap();
+    fn allows_non_loopback_bind_with_auth() -> Result<(), TestError> {
+        let bind: SocketAddr = "0.0.0.0:0".parse()?;
         let handle = start_metrics_server(
             bind,
             Arc::new(RwLock::new(DialogStore::new(10, false))),
@@ -983,11 +1002,12 @@ mod tests {
             handle.is_ok(),
             "auth-configured non-loopback bind should start"
         );
+        Ok(())
     }
 
     /// Loopback binds never require auth (the common local-scrape case).
     #[test]
-    fn allows_loopback_bind_without_auth() {
+    fn allows_loopback_bind_without_auth() -> Result<(), TestError> {
         let handle = start_metrics_server(
             ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
@@ -998,6 +1018,7 @@ mod tests {
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         );
         assert!(handle.is_ok(), "loopback without auth should start");
+        Ok(())
     }
 
     /// Both scrape doors publish byte-identical exposition for one capture.
@@ -1020,8 +1041,8 @@ mod tests {
     /// test race every other test that decodes a frame, because those counters
     /// are process-global -- see `collect_metrics_onto`.
     #[test]
-    fn both_scrape_doors_publish_identical_exposition() {
-        let ds = populated_dialog_store();
+    fn both_scrape_doors_publish_identical_exposition() -> Result<(), TestError> {
+        let ds = populated_dialog_store()?;
         let ss = populated_stream_store();
         let base = crate::output::prometheus::PrometheusMetrics::for_scrape();
 
@@ -1057,6 +1078,7 @@ mod tests {
             "dialog-state labels are lowercase, which is what the shipped \
              dashboards query: {standalone}"
         );
+        Ok(())
     }
 
     /// The two doors still agree when the capture tally MOVES between them.
@@ -1075,8 +1097,8 @@ mod tests {
     /// version that calls `for_scrape()` once per door this fails every time
     /// rather than once in a hundred runs.
     #[test]
-    fn the_two_doors_agree_across_a_moving_capture_tally() {
-        let ds = populated_dialog_store();
+    fn the_two_doors_agree_across_a_moving_capture_tally() -> Result<(), TestError> {
+        let ds = populated_dialog_store()?;
         let ss = populated_stream_store();
         let base = crate::output::prometheus::PrometheusMetrics::for_scrape();
 
@@ -1116,12 +1138,13 @@ mod tests {
             "the two doors describe one snapshot, so a capture that moves \
              between them must not make them disagree"
         );
+        Ok(())
     }
 
     /// Collected metrics count the seeded dialog and the one active stream.
     #[test]
-    fn collect_metrics_counts_dialogs_and_active_streams() {
-        let metrics = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
+    fn collect_metrics_counts_dialogs_and_active_streams() -> Result<(), TestError> {
+        let metrics = collect_metrics(&populated_dialog_store()?, &populated_stream_store(), None);
         // One INVITE dialog was inserted.
         assert!(metrics.messages_total.values().sum::<u64>() >= 1);
         assert!(!metrics.dialogs_total.is_empty());
@@ -1141,6 +1164,7 @@ mod tests {
             "and it is counted as such, on this server too -- the family used \
              to be absent here entirely, so a panel built on it stayed blank"
         );
+        Ok(())
     }
 
     /// The two dialog gauges are scraped as different numbers, and the
@@ -1151,8 +1175,8 @@ mod tests {
     /// assigned the same computation to both, which is the obvious way to get
     /// this wrong.
     #[test]
-    fn collect_metrics_separates_active_dialogs_from_active_calls() {
-        let metrics = collect_metrics(&mixed_dialog_store(), &populated_stream_store(), None);
+    fn collect_metrics_separates_active_dialogs_from_active_calls() -> Result<(), TestError> {
+        let metrics = collect_metrics(&mixed_dialog_store()?, &populated_stream_store(), None);
 
         assert_eq!(
             metrics.dialogs_active, 2,
@@ -1177,31 +1201,33 @@ mod tests {
                 && output.contains("# TYPE sipnab_calls_active gauge"),
             "both series must be typed as gauges, not counters: {output}"
         );
+        Ok(())
     }
 
     /// A supplied capture meter reports queue depth; without one the gauge
     /// stays 0.
     #[test]
-    fn collect_metrics_reports_capture_queue_depth() {
+    fn collect_metrics_reports_capture_queue_depth() -> Result<(), TestError> {
         use crate::capture::channel::packet_channel;
         use crate::capture::packet::Packet;
 
         let (tx, rx) = packet_channel(8);
-        let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        let ts = chrono::DateTime::from_timestamp(0, 0).ok_or("from_timestamp() returned None")?;
         tx.send(Packet::new(ts, vec![0u8; 32], 32, 32, None, 1))
-            .unwrap();
+            .map_err(|e| format!("{e:?}"))?;
         tx.send(Packet::new(ts, vec![0u8; 32], 32, 32, None, 1))
-            .unwrap();
+            .map_err(|e| format!("{e:?}"))?;
 
         let m = collect_metrics(
-            &populated_dialog_store(),
+            &populated_dialog_store()?,
             &populated_stream_store(),
             Some(&rx.meter()),
         );
         assert_eq!(m.capture_queue_depth_packets, 2);
         // Without a meter the gauge stays at its default 0.
-        let m0 = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
+        let m0 = collect_metrics(&populated_dialog_store()?, &populated_stream_store(), None);
         assert_eq!(m0.capture_queue_depth_packets, 0);
+        Ok(())
     }
 
     /// The standalone server carries the capture-quality block too.
@@ -1218,7 +1244,7 @@ mod tests {
     /// stopped reading.
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn collect_metrics_carries_capture_quality() {
+    fn collect_metrics_carries_capture_quality() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
         let mut proc = crate::capture::PacketProcessor::new();
         for _ in 0..2 {
@@ -1241,7 +1267,7 @@ mod tests {
         // before and just after it ran. A default (0) cannot, because the
         // "before" reading already holds the two frames recorded above.
         let before = crate::capture::undecodable_frames();
-        let m = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
+        let m = collect_metrics(&populated_dialog_store()?, &populated_stream_store(), None);
         let after = crate::capture::undecodable_frames();
         assert!(
             before >= 2,
@@ -1270,5 +1296,6 @@ mod tests {
             assert!(body.contains(family), "{family} missing from the scrape");
         }
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 }

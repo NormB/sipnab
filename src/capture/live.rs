@@ -1300,15 +1300,21 @@ pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 mod fanout_plan_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The live loop reads through `next_ex::next_packet`, never the `pcap`
     /// crate's `Capture::next_packet`, which builds a slice over address 0
     /// when libpcap's netmap module reports a filter-rejected frame as a read
     /// (NM1). No test can hand this loop a netmap device, so the wiring is
     /// pinned on the source: code lines only, comments stripped.
     #[test]
-    fn the_live_loop_reads_through_the_delivery_checking_reader() {
+    fn the_live_loop_reads_through_the_delivery_checking_reader() -> Result<(), TestError> {
         let src = include_str!("live.rs");
-        let body = src.split("#[cfg(test)]").next().expect("source has a body");
+        let body = src
+            .split("#[cfg(test)]")
+            .next()
+            .ok_or("source has a body")?;
         let code: Vec<&str> = body
             .lines()
             .map(|l| l.split("//").next().unwrap_or(""))
@@ -1324,6 +1330,7 @@ mod fanout_plan_tests {
             "the live capture loop must read with next_ex::next_packet, once, \
              and never call Capture::next_packet directly"
         );
+        Ok(())
     }
 
     /// NM2: libpcap's netmap read never returns on a silent link, so the loop's
@@ -1333,9 +1340,12 @@ mod fanout_plan_tests {
     /// hand this loop a netmap device, so the wiring is pinned on the source
     /// and the behavior on the lab (see `capture::breaker`).
     #[test]
-    fn the_live_loop_can_be_broken_out_of_a_read_that_never_returns() {
+    fn the_live_loop_can_be_broken_out_of_a_read_that_never_returns() -> Result<(), TestError> {
         let src = include_str!("live.rs");
-        let body = src.split("#[cfg(test)]").next().expect("source has a body");
+        let body = src
+            .split("#[cfg(test)]")
+            .next()
+            .ok_or("source has a body")?;
         let code: String = body
             .lines()
             .map(|l| l.split("//").next().unwrap_or(""))
@@ -1344,7 +1354,7 @@ mod fanout_plan_tests {
         let group = code
             .split("fn capture_live_group(")
             .nth(1)
-            .expect("capture_live_group exists");
+            .ok_or("capture_live_group exists")?;
         assert!(
             group.contains("breaker::Breaker::spawn(") && group.contains("cap.breakloop_handle()"),
             "capture_live_group must start a Breaker on its own pcap handle"
@@ -1357,7 +1367,7 @@ mod fanout_plan_tests {
         let arm = group
             .split("Err(pcap::Error::NoMorePackets) =>")
             .nth(1)
-            .expect("the loop must handle NoMorePackets, the broken read, itself");
+            .ok_or("the loop must handle NoMorePackets, the broken read, itself")?;
         let arm = arm.split("Err(").next().unwrap_or("");
         assert!(
             arm.contains("Ok(ReadStep::Stop)") && !arm.contains("return Err"),
@@ -1367,6 +1377,7 @@ mod fanout_plan_tests {
             group.contains("if self.read_step(cap)? == ReadStep::Stop {\n                break;"),
             "the loop must leave on the step that reports a stop"
         );
+        Ok(())
     }
 
     /// One socket is not a fanout group, and asking for zero is the same
@@ -1382,16 +1393,19 @@ mod fanout_plan_tests {
     /// to an operator who asked for N cores and is getting one. "It did not
     /// work" is not something they can act on.
     #[test]
-    fn every_solo_answer_explains_itself() {
+    fn every_solo_answer_explains_itself() -> Result<(), TestError> {
         for n in [0, 1] {
             match plan_fanout(n) {
                 FanoutPlan::Solo(reason) => assert!(
                     !reason.is_empty(),
                     "a solo decision must say why, sockets={n}"
                 ),
-                FanoutPlan::Group(_) => panic!("{n} sockets must not form a group"),
+                FanoutPlan::Group(_) => {
+                    return Err(format!("{n} sockets must not form a group").into());
+                }
             }
         }
+        Ok(())
     }
 
     /// On Linux a real request becomes a group of exactly that size; off Linux
@@ -1439,8 +1453,10 @@ mod fanout_plan_tests {
     /// two for ordinary single-socket capture; one that always allowed would
     /// bring the duplicate pointers back.
     #[test]
-    fn every_socket_numbers_its_own_frames_under_a_name_no_sibling_shares() {
-        let mut solo = frame_counter_for(None).expect("a lone socket owns its device's numbering");
+    fn every_socket_numbers_its_own_frames_under_a_name_no_sibling_shares() -> Result<(), TestError>
+    {
+        let mut solo =
+            frame_counter_for(None).ok_or("a lone socket owns its device's numbering")?;
         assert_eq!(solo.next_origin().ordinal, 0);
         assert_eq!(
             solo.next_origin().ordinal,
@@ -1449,7 +1465,7 @@ mod fanout_plan_tests {
         );
 
         let mut grouped = frame_counter_for(Some(0xA1B2))
-            .expect("a grouped socket numbers its own frames too, under its own name");
+            .ok_or("a grouped socket numbers its own frames too, under its own name")?;
         assert_eq!(grouped.next_origin().ordinal, 0);
 
         // Both counters DO start at zero. That is safe only because the names
@@ -1474,6 +1490,7 @@ mod fanout_plan_tests {
             "a lone socket keeps the plain device name -- the pointer is \
              operator-facing and it has nothing to disambiguate from"
         );
+        Ok(())
     }
 }
 
@@ -1489,7 +1506,7 @@ mod tests {
     /// — the auto-detect path lists the available devices, and the explicit
     /// path must too so the user can correct the name.
     #[test]
-    fn open_failure_for_explicit_device_lists_available_devices() {
+    fn open_failure_for_explicit_device_lists_available_devices() -> Result<(), TestError> {
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (tx, _rx) = crate::capture::channel::packet_channel(16);
         let config = crate::capture::CaptureConfig::default();
@@ -1497,8 +1514,9 @@ mod tests {
         assert!(result.is_err(), "nonexistent device must fail");
         let err = ready_rx
             .try_recv()
-            .expect("ready channel must carry the error")
-            .expect_err("must be Err");
+            .map_err(|e| format!("ready channel must carry the error: {e:?}"))?
+            .err()
+            .ok_or("must be Err")?;
         assert!(
             err.contains("sipnab-no-such-dev0"),
             "names the device: {err}"
@@ -1516,6 +1534,7 @@ mod tests {
                 "must list the real devices so the typo is correctable: {err}"
             );
         }
+        Ok(())
     }
 
     /// The exact strings libpcap emits must classify as permission failures,
@@ -1604,14 +1623,16 @@ mod tests {
     /// that makes a capture feel slow.
     #[cfg(unix)]
     #[test]
-    fn batched_timeout_is_far_below_the_idle_poll_interval() {
-        let batched = u128::try_from(read_timeout_ms(false)).expect("non-negative timeout");
+    fn batched_timeout_is_far_below_the_idle_poll_interval() -> Result<(), TestError> {
+        let batched = u128::try_from(read_timeout_ms(false))
+            .map_err(|e| format!("non-negative timeout: {e:?}"))?;
         assert!(
             batched * 10 <= POLL_INTERVAL.as_millis(),
             "block-retire timer {batched} ms is not an order of magnitude \
              below the {} ms idle poll",
             POLL_INTERVAL.as_millis()
         );
+        Ok(())
     }
 
     /// A non-positive timeout is never produced. Zero would mean "retire a V3
@@ -1702,12 +1723,13 @@ mod tests {
         /// An idle fd yields `TimedOut` within roughly the timeout — the
         /// bounded-wait property the old loop lacked.
         #[test]
-        fn times_out_on_idle_fd() {
+        fn times_out_on_idle_fd() -> Result<(), TestError> {
             // The regression test: nothing is ever written, yet the wait MUST
             // return (TimedOut) within roughly the timeout — not block forever.
             let (r, w) = make_pipe();
             let start = Instant::now();
-            let res = wait_readable(r, Duration::from_millis(80)).expect("poll ok");
+            let res = wait_readable(r, Duration::from_millis(80))
+                .map_err(|e| format!("poll ok: {e:?}"))?;
             let elapsed = start.elapsed();
             assert_eq!(res, WaitResult::TimedOut);
             assert!(
@@ -1720,18 +1742,20 @@ mod tests {
             );
             close(r);
             close(w);
+            Ok(())
         }
 
         /// With data already queued, the wait returns `Readable` promptly.
         #[test]
-        fn returns_readable_when_data_present() {
+        fn returns_readable_when_data_present() -> Result<(), TestError> {
             let (r, w) = make_pipe();
             // SAFETY: `w` is a live pipe fd and the buffer is 1 valid byte.
             let n = unsafe { libc::write(w, b"x".as_ptr() as *const libc::c_void, 1) };
             assert_eq!(n, 1, "write failed");
             let start = Instant::now();
             // Generous timeout: must come back fast because data is ready.
-            let res = wait_readable(r, Duration::from_secs(5)).expect("poll ok");
+            let res =
+                wait_readable(r, Duration::from_secs(5)).map_err(|e| format!("poll ok: {e:?}"))?;
             assert_eq!(res, WaitResult::Readable);
             assert!(
                 start.elapsed() < Duration::from_secs(1),
@@ -1739,18 +1763,20 @@ mod tests {
             );
             close(r);
             close(w);
+            Ok(())
         }
 
         /// A zero timeout on an idle fd returns `TimedOut` immediately.
         #[test]
-        fn zero_timeout_returns_immediately() {
+        fn zero_timeout_returns_immediately() -> Result<(), TestError> {
             let (r, w) = make_pipe();
             let start = Instant::now();
-            let res = wait_readable(r, Duration::ZERO).expect("poll ok");
+            let res = wait_readable(r, Duration::ZERO).map_err(|e| format!("poll ok: {e:?}"))?;
             assert_eq!(res, WaitResult::TimedOut);
             assert!(start.elapsed() < Duration::from_millis(500));
             close(r);
             close(w);
+            Ok(())
         }
 
         /// A closed fd (POLLNVAL) surfaces as an error, never a spurious
@@ -2147,31 +2173,35 @@ mod tests {
     /// shutdown flag at once -- never a fatal capture error.
     #[cfg(unix)]
     #[test]
-    fn an_interrupted_poll_is_a_timeout_not_a_failure() {
+    fn an_interrupted_poll_is_a_timeout_not_a_failure() -> Result<(), TestError> {
         let eintr = Err(std::io::Error::from_raw_os_error(libc::EINTR));
         assert_eq!(
-            poll_outcome(eintr, 0).expect("not fatal"),
+            poll_outcome(eintr, 0).map_err(|e| format!("not fatal: {e:?}"))?,
             WaitResult::TimedOut
         );
+        Ok(())
     }
 
     /// Any other failure of `poll` itself is returned as the kernel's error.
     #[cfg(unix)]
     #[test]
-    fn a_failing_poll_is_returned_as_the_kernels_error() {
+    fn a_failing_poll_is_returned_as_the_kernels_error() -> Result<(), TestError> {
         let err = poll_outcome(Err(std::io::Error::from_raw_os_error(libc::ENOMEM)), 0)
-            .expect_err("fatal");
+            .err()
+            .ok_or("fatal")?;
         assert_eq!(err.raw_os_error(), Some(libc::ENOMEM));
+        Ok(())
     }
 
     /// Nothing ready is a timeout, whatever `revents` happens to hold.
     #[cfg(unix)]
     #[test]
-    fn nothing_ready_is_a_timeout() {
+    fn nothing_ready_is_a_timeout() -> Result<(), TestError> {
         assert_eq!(
-            poll_outcome(Ok(0), libc::POLLNVAL).expect("ok"),
+            poll_outcome(Ok(0), libc::POLLNVAL).map_err(|e| format!("ok: {e:?}"))?,
             WaitResult::TimedOut
         );
+        Ok(())
     }
 
     /// A ready descriptor is readable -- including on POLLERR or POLLHUP,
@@ -2179,16 +2209,19 @@ mod tests {
     /// which means the descriptor is not open and would spin the loop.
     #[cfg(unix)]
     #[test]
-    fn a_ready_descriptor_is_readable_unless_it_is_invalid() {
+    fn a_ready_descriptor_is_readable_unless_it_is_invalid() -> Result<(), TestError> {
         for revents in [libc::POLLIN, libc::POLLERR, libc::POLLHUP] {
             assert_eq!(
-                poll_outcome(Ok(1), revents).expect("ok"),
+                poll_outcome(Ok(1), revents).map_err(|e| format!("ok: {e:?}"))?,
                 WaitResult::Readable,
                 "revents {revents:#x}"
             );
         }
-        let err = poll_outcome(Ok(1), libc::POLLNVAL).expect_err("an invalid fd is fatal");
+        let err = poll_outcome(Ok(1), libc::POLLNVAL)
+            .err()
+            .ok_or("an invalid fd is fatal")?;
         assert!(err.to_string().contains("POLLNVAL"), "{err}");
+        Ok(())
     }
 
     // ── Opening fails before anything is captured ───────────────────────
@@ -2202,7 +2235,8 @@ mod tests {
     /// socket, says so, and still reports the device failure on the
     /// readiness channel rather than hanging the launch.
     #[test]
-    fn a_fanout_whose_probe_fails_falls_back_to_one_socket_and_still_reports() {
+    fn a_fanout_whose_probe_fails_falls_back_to_one_socket_and_still_reports()
+    -> Result<(), TestError> {
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (tx, _rx) = crate::capture::channel::packet_channel(16);
         let config = crate::capture::CaptureConfig::default();
@@ -2219,13 +2253,14 @@ mod tests {
         });
 
         assert!(
-            result.expect("ran").is_err(),
+            result.ok_or("ran")?.is_err(),
             "a nonexistent device cannot be captured"
         );
         let reported = ready_rx
             .try_recv()
-            .expect("the fallback answers readiness")
-            .expect_err("with the failure");
+            .map_err(|e| format!("the fallback answers readiness: {e:?}"))?
+            .err()
+            .ok_or("with the failure")?;
         assert!(reported.contains("sipnab-no-such-dev0"), "{reported}");
         assert!(
             logs.contains("'sipnab-no-such-dev0'") && logs.contains("one socket"),
@@ -2246,6 +2281,7 @@ mod tests {
             !logs.contains("capturing on 4 sockets"),
             "no group was formed: {logs}"
         );
+        Ok(())
     }
 
     /// A buffer above the C-int ceiling is announced as clamped before the
@@ -2291,7 +2327,7 @@ mod tests {
             spawn(Err(anyhow::anyhow!("second socket failed"))),
             spawn(Err(anyhow::anyhow!("third socket failed"))),
         ];
-        let err = first_thread_error(handles).expect_err("a socket failed");
+        let err = first_thread_error(handles).err().ok_or("a socket failed")?;
         assert_eq!(err.to_string(), "second socket failed");
 
         // The panic is the fixture: a socket thread that dies instead of
@@ -2300,7 +2336,9 @@ mod tests {
             spawn(Ok(())),
             std::thread::spawn(|| -> Result<()> { panic!("socket thread panicked") }),
         ];
-        let err = first_thread_error(panicked).expect_err("a panic is a failure");
+        let err = first_thread_error(panicked)
+            .err()
+            .ok_or("a panic is a failure")?;
         assert_eq!(err.to_string(), "a capture thread panicked");
 
         assert!(first_thread_error(vec![spawn(Ok(())), spawn(Ok(()))]).is_ok());
@@ -2326,7 +2364,9 @@ mod tests {
             3,
         )
         .map_err(|e| format!("threads start: {e:?}"))?;
-        let err = first_thread_error(handles).expect_err("the device does not exist");
+        let err = first_thread_error(handles)
+            .err()
+            .ok_or("the device does not exist")?;
         assert!(err.to_string().contains("sipnab-no-such-dev0"), "{err}");
         let answers: Vec<Result<(), String>> = ready_rx.try_iter().collect();
         assert_eq!(answers.len(), 1, "one answer, from socket 0: {answers:?}");

@@ -362,6 +362,9 @@ mod tests {
         full_scale_for, measure,
     };
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     const RATE: u32 = 8000;
 
     /// `n` milliseconds of samples, all `v`.
@@ -388,9 +391,9 @@ mod tests {
     /// zero, and the E-model scores it 4.36 with `mos_grounded: true`. The only
     /// thing wrong with the call is the one thing nothing looked at.
     #[test]
-    fn full_rate_digital_silence_is_dead_air() {
+    fn full_rate_digital_silence_is_dead_air() -> Result<(), TestError> {
         let pcm = flat(0, 3000);
-        let r = measure(&pcm, RATE, 32124).expect("three seconds is measurable");
+        let r = measure(&pcm, RATE, 32124).ok_or("three seconds is measurable")?;
         assert!(r.has_dead_air(), "three seconds of zeros read as audio");
         assert_eq!(r.dead_air.len(), 1);
         assert_eq!(r.dead_air[0].start_ms, 0);
@@ -399,44 +402,47 @@ mod tests {
             "the span must cover the silence, not a window of it: {}ms",
             r.longest_dead_air_ms()
         );
+        Ok(())
     }
 
     /// A-law's idle codes decode to ±8, not to 0. A floor that only caught
     /// exact zeros would report a silent A-law call as healthy.
     #[test]
-    fn the_a_law_idle_level_is_still_silence() {
+    fn the_a_law_idle_level_is_still_silence() -> Result<(), TestError> {
         let pcm = flat(8, 3000);
-        let r = measure(&pcm, RATE, 32256).expect("measurable");
+        let r = measure(&pcm, RATE, 32256).ok_or("measurable")?;
         assert!(
             r.has_dead_air(),
             "A-law idle at ±8 must sit under the floor, or the floor is set \
              below the quietest thing a gateway can send"
         );
+        Ok(())
     }
 
     /// Speech does not read as dead air. The other half of the pair: a floor
     /// high enough to catch everything catches every call.
     #[test]
-    fn ordinary_speech_level_audio_is_not_dead_air() {
+    fn ordinary_speech_level_audio_is_not_dead_air() -> Result<(), TestError> {
         // -20 dBFS, a normal active speech level and 40 dB above the floor.
         let peak = (f64::from(32124i16) * 0.1) as i16;
-        let r = measure(&tone(peak, 3000), RATE, 32124).expect("measurable");
+        let r = measure(&tone(peak, 3000), RATE, 32124).ok_or("measurable")?;
         assert!(
             !r.has_dead_air(),
             "a -20 dBFS tone was reported as silence: {:?}",
             r.dead_air
         );
+        Ok(())
     }
 
     /// Conversation is roughly half silence. A measurement that reported the
     /// gap between two words would report every healthy call.
     #[test]
-    fn a_gap_shorter_than_the_minimum_is_not_reported() {
+    fn a_gap_shorter_than_the_minimum_is_not_reported() -> Result<(), TestError> {
         let peak = (f64::from(32124i16) * 0.1) as i16;
         let mut pcm = tone(peak, 1000);
         pcm.extend(flat(0, 500));
         pcm.extend(tone(peak, 1000));
-        let r = measure(&pcm, RATE, 32124).expect("measurable");
+        let r = measure(&pcm, RATE, 32124).ok_or("measurable")?;
         assert!(
             !r.has_dead_air(),
             "a 500 ms pause between words was reported as dead air: {:?}",
@@ -446,17 +452,18 @@ mod tests {
             u64::from(MIN_DEAD_AIR_MS) > 500,
             "this test rests on the minimum being above 500 ms"
         );
+        Ok(())
     }
 
     /// The span says WHERE, because "this call had dead air" and "this call
     /// went silent 40 seconds in" are different findings.
     #[test]
-    fn a_span_names_where_the_silence_started() {
+    fn a_span_names_where_the_silence_started() -> Result<(), TestError> {
         let peak = (f64::from(32124i16) * 0.1) as i16;
         let mut pcm = tone(peak, 2000);
         pcm.extend(flat(0, 2000));
         pcm.extend(tone(peak, 1000));
-        let r = measure(&pcm, RATE, 32124).expect("measurable");
+        let r = measure(&pcm, RATE, 32124).ok_or("measurable")?;
         assert_eq!(r.dead_air.len(), 1, "one span, not one per window");
         let span = r.dead_air[0];
         assert!(
@@ -469,24 +476,26 @@ mod tests {
             "and runs two seconds, not {}ms",
             span.duration_ms
         );
+        Ok(())
     }
 
     /// Two separate outages are two findings, and the total is not the longest.
     #[test]
-    fn the_total_and_the_longest_are_different_numbers() {
+    fn the_total_and_the_longest_are_different_numbers() -> Result<(), TestError> {
         let peak = (f64::from(32124i16) * 0.1) as i16;
         let mut pcm = tone(peak, 500);
         pcm.extend(flat(0, 1500));
         pcm.extend(tone(peak, 500));
         pcm.extend(flat(0, 2500));
         pcm.extend(tone(peak, 500));
-        let r = measure(&pcm, RATE, 32124).expect("measurable");
+        let r = measure(&pcm, RATE, 32124).ok_or("measurable")?;
         assert_eq!(r.dead_air.len(), 2, "got {:?}", r.dead_air);
         assert!(r.dead_air_ms > r.longest_dead_air_ms());
         assert_eq!(
             r.dead_air_ms,
             r.dead_air.iter().map(|s| s.duration_ms).sum::<u64>()
         );
+        Ok(())
     }
 
     // ── clipping ────────────────────────────────────────────────────
@@ -497,13 +506,13 @@ mod tests {
     /// written against `i16::MAX` never fires on either — which is every
     /// ordinary telephony call.
     #[test]
-    fn clipping_is_measured_against_the_codec_ceiling_not_the_container() {
-        let ceiling = full_scale_for(Some("PCMU")).expect("PCMU decodes");
+    fn clipping_is_measured_against_the_codec_ceiling_not_the_container() -> Result<(), TestError> {
+        let ceiling = full_scale_for(Some("PCMU")).ok_or("PCMU decodes")?;
         assert!(
             ceiling < i16::MAX,
             "mu-law fills its container after all, and this whole test is moot"
         );
-        let r = measure(&flat(ceiling, 500), RATE, ceiling).expect("measurable");
+        let r = measure(&flat(ceiling, 500), RATE, ceiling).ok_or("measurable")?;
         assert!(
             r.is_clipping(),
             "a mu-law stream pinned at its own maximum ({ceiling}) reported no \
@@ -515,27 +524,29 @@ mod tests {
             "the threshold reported was {} — a value this codec cannot reach",
             r.clip_threshold
         );
+        Ok(())
     }
 
     /// A-law's ceiling is not mu-law's. The threshold has to follow the stream.
     #[test]
-    fn each_companding_law_has_its_own_ceiling() {
-        let u = full_scale_for(Some("PCMU")).expect("PCMU");
-        let a = full_scale_for(Some("PCMA")).expect("PCMA");
+    fn each_companding_law_has_its_own_ceiling() -> Result<(), TestError> {
+        let u = full_scale_for(Some("PCMU")).ok_or("PCMU")?;
+        let a = full_scale_for(Some("PCMA")).ok_or("PCMA")?;
         assert_ne!(u, a, "the two laws decode to different maxima");
         // A signal at mu-law's ceiling is BELOW A-law's, so measuring one
         // against the other's threshold changes the answer.
-        let r = measure(&flat(u, 500), RATE, a).expect("measurable");
+        let r = measure(&flat(u, 500), RATE, a).ok_or("measurable")?;
         assert!(
             r.clip_threshold > (f64::from(u) * CLIP_FRACTION) as i16,
             "the A-law threshold must be above the mu-law one, or the two \
              ceilings are not being told apart"
         );
+        Ok(())
     }
 
     /// One loud sample is a loud sample. Three in a row is a flat top.
     #[test]
-    fn a_run_shorter_than_the_minimum_is_not_clipping() {
+    fn a_run_shorter_than_the_minimum_is_not_clipping() -> Result<(), TestError> {
         let ceiling = 32124i16;
         let mut pcm = tone(1000, 200);
         // Exactly one sample below the minimum run, in the middle.
@@ -543,25 +554,27 @@ mod tests {
         for i in 0..(MIN_CLIP_RUN - 1) {
             pcm[at + i] = ceiling;
         }
-        let r = measure(&pcm, RATE, ceiling).expect("measurable");
+        let r = measure(&pcm, RATE, ceiling).ok_or("measurable")?;
         assert!(
             !r.is_clipping(),
             "{} consecutive samples at the ceiling was reported as clipping",
             MIN_CLIP_RUN - 1
         );
+        Ok(())
     }
 
     /// Negative peaks clip too. A magnitude test that only looked at the
     /// positive half would miss a waveform cut off at the bottom.
     #[test]
-    fn the_negative_rail_clips_as_well_as_the_positive() {
+    fn the_negative_rail_clips_as_well_as_the_positive() -> Result<(), TestError> {
         let ceiling = 32124i16;
-        let r = measure(&flat(-ceiling, 500), RATE, ceiling).expect("measurable");
+        let r = measure(&flat(-ceiling, 500), RATE, ceiling).ok_or("measurable")?;
         assert!(
             r.is_clipping(),
             "a run at the negative rail was not counted"
         );
         assert!(r.clipped_samples > 0);
+        Ok(())
     }
 
     // ── the thresholds travel with the answer ───────────────────────
@@ -569,8 +582,8 @@ mod tests {
     /// A finding whose threshold lives only in the source is a finding nobody
     /// can argue with. Every one of them is a field.
     #[test]
-    fn the_report_states_the_thresholds_that_produced_it() {
-        let r = measure(&flat(0, 2000), RATE, 32124).expect("measurable");
+    fn the_report_states_the_thresholds_that_produced_it() -> Result<(), TestError> {
+        let r = measure(&flat(0, 2000), RATE, 32124).ok_or("measurable")?;
         assert!((r.floor_dbfs - DEAD_AIR_FLOOR_DBFS).abs() < f64::EPSILON);
         assert_eq!(r.window_ms, WINDOW_MS);
         assert_eq!(r.min_dead_air_ms, MIN_DEAD_AIR_MS);
@@ -578,6 +591,7 @@ mod tests {
         assert_eq!(r.full_scale, 32124);
         assert_eq!(r.sample_rate, RATE);
         assert_eq!(r.duration_ms, 2000);
+        Ok(())
     }
 
     // ── not measured is not clean ───────────────────────────────────
@@ -586,21 +600,23 @@ mod tests {
     /// dead air" about it would be the confident wrong answer this project
     /// refuses everywhere else.
     #[test]
-    fn nothing_to_measure_returns_no_measurement() {
+    fn nothing_to_measure_returns_no_measurement() -> Result<(), TestError> {
         assert!(measure(&[], RATE, 32124).is_none(), "no samples");
         assert!(measure(&flat(0, 100), 0, 32124).is_none(), "no sample rate");
         assert!(measure(&flat(0, 100), RATE, 0).is_none(), "no ceiling");
+        Ok(())
     }
 
     /// A codec whose PCM sipnab cannot produce has no ceiling to measure
     /// against, and inventing one would measure samples that were never
     /// decoded.
     #[test]
-    fn a_codec_without_a_decoder_has_no_full_scale() {
+    fn a_codec_without_a_decoder_has_no_full_scale() -> Result<(), TestError> {
         assert!(full_scale_for(None).is_none());
         assert!(full_scale_for(Some("AMR-WB")).is_none());
         assert!(full_scale_for(Some("G729")).is_none());
         assert_eq!(full_scale_for(Some("opus")), Some(i16::MAX));
         assert_eq!(full_scale_for(Some("Opus")), Some(i16::MAX));
+        Ok(())
     }
 }

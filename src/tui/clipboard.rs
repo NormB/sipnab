@@ -242,6 +242,9 @@ pub(in crate::tui) fn spawn_copy_worker(
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Known input produces the exact escape framing and base64 payload.
     #[test]
     fn osc52_sequence_frames_known_input() {
@@ -263,7 +266,7 @@ mod tests {
     /// Input over the bound is truncated to exactly the bound and the
     /// payload decodes back to the leading bytes.
     #[test]
-    fn osc52_sequence_truncates_at_bound() {
+    fn osc52_sequence_truncates_at_bound() -> Result<(), TestError> {
         let text = "a".repeat(OSC52_MAX_RAW_BYTES + 10);
         let (seq, copied, truncated) = osc52_sequence(&text);
         assert_eq!(copied, OSC52_MAX_RAW_BYTES);
@@ -271,16 +274,19 @@ mod tests {
         let payload = seq
             .strip_prefix("\x1b]52;c;")
             .and_then(|s| s.strip_suffix('\x07'))
-            .expect("well-formed OSC 52 framing");
-        let decoded = STANDARD.decode(payload).expect("valid base64");
+            .ok_or("well-formed OSC 52 framing")?;
+        let decoded = STANDARD
+            .decode(payload)
+            .map_err(|e| format!("valid base64: {e:?}"))?;
         assert_eq!(decoded.len(), OSC52_MAX_RAW_BYTES);
         assert_eq!(decoded, text.as_bytes()[..OSC52_MAX_RAW_BYTES]);
+        Ok(())
     }
 
     /// Truncation never splits a multibyte char: the cut lands on a char
     /// boundary at or below the bound.
     #[test]
-    fn osc52_sequence_truncates_on_char_boundary() {
+    fn osc52_sequence_truncates_on_char_boundary() -> Result<(), TestError> {
         // 'α' is 2 bytes; an odd bound position must back off by one.
         let text = "α".repeat(OSC52_MAX_RAW_BYTES); // 2× the bound in bytes
         let (seq, copied, truncated) = osc52_sequence(&text);
@@ -290,9 +296,12 @@ mod tests {
         let payload = seq
             .strip_prefix("\x1b]52;c;")
             .and_then(|s| s.strip_suffix('\x07'))
-            .expect("well-formed OSC 52 framing");
-        let decoded = STANDARD.decode(payload).expect("valid base64");
+            .ok_or("well-formed OSC 52 framing")?;
+        let decoded = STANDARD
+            .decode(payload)
+            .map_err(|e| format!("valid base64: {e:?}"))?;
         assert!(std::str::from_utf8(&decoded).is_ok(), "payload not UTF-8");
+        Ok(())
     }
 }
 
@@ -311,6 +320,9 @@ mod tests {
 #[cfg(test)]
 mod seam_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// Each mechanism that worked is named; when neither did, the outcome is
     /// an error rather than a claim that something was copied.
@@ -363,7 +375,7 @@ mod seam_tests {
     /// included — is already a boundary and the back-off never runs; a
     /// one-byte prefix moves the boundaries to odd offsets.)
     #[test]
-    fn the_cut_backs_off_to_the_char_boundary_below_the_bound() {
+    fn the_cut_backs_off_to_the_char_boundary_below_the_bound() -> Result<(), TestError> {
         let text = format!("a{}", "α".repeat(OSC52_MAX_RAW_BYTES));
         assert!(
             !text.is_char_boundary(OSC52_MAX_RAW_BYTES),
@@ -375,10 +387,13 @@ mod seam_tests {
         let payload = seq
             .strip_prefix("\x1b]52;c;")
             .and_then(|s| s.strip_suffix('\x07'))
-            .expect("well-formed OSC 52 framing");
-        let decoded = STANDARD.decode(payload).expect("valid base64");
+            .ok_or("well-formed OSC 52 framing")?;
+        let decoded = STANDARD
+            .decode(payload)
+            .map_err(|e| format!("valid base64: {e:?}"))?;
         assert_eq!(decoded, text.as_bytes()[..copied]);
         assert!(std::str::from_utf8(&decoded).is_ok(), "no split character");
+        Ok(())
     }
 
     /// Records every byte written and how many had arrived when flushed.
@@ -418,17 +433,21 @@ mod seam_tests {
     /// The terminal receives the exact sequence, whole, and it is flushed only
     /// after the last byte; a failed write is reported and not flushed.
     #[test]
-    fn the_sequence_reaches_the_writer_whole_and_flushed() {
+    fn the_sequence_reaches_the_writer_whole_and_flushed() -> Result<(), TestError> {
         let (seq, _, _) = osc52_sequence("hi");
         let mut rec = Recorder::default();
-        write_sequence(&mut rec, &seq).expect("an in-memory write succeeds");
+        write_sequence(&mut rec, &seq)
+            .map_err(|e| format!("an in-memory write succeeds: {e:?}"))?;
         assert_eq!(rec.bytes, b"\x1b]52;c;aGk=\x07");
         assert_eq!(rec.flushed_at, Some(rec.bytes.len()), "flushed after all");
 
         let mut broken = Broken::default();
-        let err = write_sequence(&mut broken, &seq).expect_err("the write fails");
+        let err = write_sequence(&mut broken, &seq)
+            .err()
+            .ok_or("the write fails")?;
         assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
         assert!(!broken.flushed, "nothing to flush after a failed write");
+        Ok(())
     }
 
     /// The bounded run is a success only for a command that starts, takes the

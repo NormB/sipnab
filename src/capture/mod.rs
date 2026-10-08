@@ -1623,31 +1623,38 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// "30s" and a bare "30" both parse as 30 seconds.
     #[test]
-    fn parse_duration_seconds() {
-        assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
-        assert_eq!(parse_duration("30").unwrap(), Duration::from_secs(30));
+    fn parse_duration_seconds() -> Result<(), TestError> {
+        assert_eq!(parse_duration("30s")?, Duration::from_secs(30));
+        assert_eq!(parse_duration("30")?, Duration::from_secs(30));
+        Ok(())
     }
 
     /// "5m" parses as 300 seconds.
     #[test]
-    fn parse_duration_minutes() {
-        assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
+    fn parse_duration_minutes() -> Result<(), TestError> {
+        assert_eq!(parse_duration("5m")?, Duration::from_secs(300));
+        Ok(())
     }
 
     /// "2h" parses as 7200 seconds.
     #[test]
-    fn parse_duration_hours() {
-        assert_eq!(parse_duration("2h").unwrap(), Duration::from_secs(7200));
+    fn parse_duration_hours() -> Result<(), TestError> {
+        assert_eq!(parse_duration("2h")?, Duration::from_secs(7200));
+        Ok(())
     }
 
     /// Empty strings, non-numeric values, and unknown suffixes are errors.
     #[test]
-    fn parse_duration_invalid() {
+    fn parse_duration_invalid() -> Result<(), TestError> {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("5x").is_err());
+        Ok(())
     }
 
     /// A duration whose value overflows `u64` seconds once the suffix
@@ -1656,18 +1663,19 @@ mod tests {
     /// string straight from the command line, so an operator typo (or a
     /// hostile config) must not abort the process.
     #[test]
-    fn parse_duration_overflow_is_rejected_not_panic() {
+    fn parse_duration_overflow_is_rejected_not_panic() -> Result<(), TestError> {
         // u64::MAX minutes/hours both overflow the *60 / *3600 multiply.
         assert!(parse_duration("18446744073709551615m").is_err());
         assert!(parse_duration("18446744073709551615h").is_err());
         // The largest hour count that still fits (u64::MAX / 3600, floored)
         // must keep working — the guard rejects overflow, not large values.
         assert_eq!(
-            parse_duration("5124095576030431h").unwrap(),
+            parse_duration("5124095576030431h")?,
             Duration::from_secs(18_446_744_073_709_551_600)
         );
         // One hour more overflows and is rejected.
         assert!(parse_duration("5124095576030432h").is_err());
+        Ok(())
     }
 
     // ── TCP SIP framing (SNB-0008) ──────────────────────────────────
@@ -1701,7 +1709,7 @@ mod tests {
     /// Three complete messages in one buffer are all framed, in order, with
     /// the whole buffer consumed.
     #[test]
-    fn frame_three_complete_messages_in_one_buffer() {
+    fn frame_three_complete_messages_in_one_buffer() -> Result<(), TestError> {
         let mut buf = opts("a");
         buf.extend(opts("b"));
         buf.extend(opts("c"));
@@ -1712,12 +1720,13 @@ mod tests {
         assert!(msgs[1].contains("Call-ID: b"));
         assert!(msgs[2].contains("Call-ID: c"));
         assert_eq!(consumed, total, "fully consumed, nothing held");
+        Ok(())
     }
 
     /// A trailing message whose headers lack the blank-line terminator is
     /// held (not framed); `consumed` stops at its start.
     #[test]
-    fn frame_holds_incomplete_trailing_headers() {
+    fn frame_holds_incomplete_trailing_headers() -> Result<(), TestError> {
         let mut buf = opts("a");
         buf.extend(opts("b"));
         let consumed_expected = buf.len();
@@ -1725,12 +1734,13 @@ mod tests {
         let (msgs, consumed) = frame_strs(&buf);
         assert_eq!(msgs.len(), 2, "two complete; the partial third is held");
         assert_eq!(consumed, consumed_expected, "held bytes start after msg 2");
+        Ok(())
     }
 
     /// A message with complete headers but fewer body bytes than
     /// Content-Length declares is held until the body arrives.
     #[test]
-    fn frame_holds_message_with_unfinished_body() {
+    fn frame_holds_message_with_unfinished_body() -> Result<(), TestError> {
         // Headers complete, Content-Length declares 10 but no body bytes yet.
         let mut buf = opts("a");
         let after_a = buf.len();
@@ -1741,12 +1751,13 @@ mod tests {
             consumed, after_a,
             "the CL:10 message is held until its body"
         );
+        Ok(())
     }
 
     /// A body containing its own blank line is taken whole by Content-Length,
     /// never split at the embedded separator.
     #[test]
-    fn frame_body_with_embedded_blank_line_not_split() {
+    fn frame_body_with_embedded_blank_line_not_split() -> Result<(), TestError> {
         // A body that itself contains \r\n\r\n must be taken by Content-Length,
         // not split at the blank line.
         let body = "v=0\r\n\r\no=x"; // 10 bytes, contains a blank line
@@ -1768,31 +1779,34 @@ mod tests {
             "body taken whole by Content-Length"
         );
         assert_eq!(consumed, buf.len());
+        Ok(())
     }
 
     /// The compact `l:` form of Content-Length is honored when framing.
     #[test]
-    fn frame_compact_content_length_header() {
+    fn frame_compact_content_length_header() -> Result<(), TestError> {
         let body = "abcd";
         let msg = format!("MESSAGE sip:h SIP/2.0\r\nCall-ID: m\r\nl: 4\r\n\r\n{body}").into_bytes();
         let (msgs, consumed) = frame_strs(&msg);
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].ends_with("abcd"), "compact 'l' header honored");
         assert_eq!(consumed, msg.len());
+        Ok(())
     }
 
     /// A message using bare-LF line endings (LFLF header terminator) frames.
     #[test]
-    fn frame_lenient_lf_only_separator() {
+    fn frame_lenient_lf_only_separator() -> Result<(), TestError> {
         let msg = b"OPTIONS sip:h SIP/2.0\nCall-ID: x\nContent-Length: 0\n\n";
         let (msgs, consumed) = frame_strs(msg);
         assert_eq!(msgs.len(), 1, "LFLF terminator accepted");
         assert_eq!(consumed, msg.len());
+        Ok(())
     }
 
     /// The earliest of CRLFCRLF/LFLF wins and the index lands just past it.
     #[test]
-    fn find_header_end_takes_earliest_terminator() {
+    fn find_header_end_takes_earliest_terminator() -> Result<(), TestError> {
         // Pins the CRLFCRLF-vs-LFLF precedence: the earliest blank-line
         // separator of either form wins, and the index is just past it.
         assert_eq!(find_header_end(b"A: b\r\n\r\nBODY"), Some(8));
@@ -1803,11 +1817,12 @@ mod tests {
         assert_eq!(find_header_end(b"A\r\n\r\nx\n\ny"), Some(5));
         // Incomplete: no terminator yet.
         assert_eq!(find_header_end(b"A: b\r\nCall-ID: x\r\n"), None);
+        Ok(())
     }
 
     /// Bodies with NULs, backslashes, and CRLFs are framed strictly by length.
     #[test]
-    fn frame_adversarial_bodies() {
+    fn frame_adversarial_bodies() -> Result<(), TestError> {
         // Body with backslashes, embedded NUL, and special chars — taken whole.
         let body = b"a\\b\x00c\r\nd";
         let mut msg = format!(
@@ -1822,17 +1837,19 @@ mod tests {
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0], 0..after, "NUL/backslash body framed by length");
         assert_eq!(consumed, msg.len());
+        Ok(())
     }
 
     /// Empty input frames nothing; terminator-less garbage is held entirely.
     #[test]
-    fn frame_empty_and_garbage() {
+    fn frame_empty_and_garbage() -> Result<(), TestError> {
         // Empty input: nothing framed, nothing consumed.
         assert_eq!(frame_tcp_sip(b""), (vec![], 0));
         // Garbage without a header terminator: held entirely (consumed 0).
         let (ranges, consumed) = frame_tcp_sip(b"not a sip message at all");
         assert!(ranges.is_empty());
         assert_eq!(consumed, 0);
+        Ok(())
     }
 
     /// Build an EN10MB frame (Ethernet+IPv4+TCP) carrying `payload`, so a raw
@@ -1868,7 +1885,7 @@ mod tests {
 
         let len = eth.len();
         Packet::new(
-            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
             eth,
             len,
             len,
@@ -1880,7 +1897,7 @@ mod tests {
     /// SNB-0008 regression: three SIP messages packed into one TCP segment
     /// all emerge from `process`, not just the first.
     #[test]
-    fn process_splits_multiple_sip_messages_in_one_tcp_segment() {
+    fn process_splits_multiple_sip_messages_in_one_tcp_segment() -> Result<(), TestError> {
         // SNB-0008 regression: three SIP messages packed into one TCP segment
         // must all emerge from process(), not just the first.
         let mut payload = opts("a");
@@ -1902,6 +1919,7 @@ mod tests {
             out.iter()
                 .all(|p| p.transport == parse::TransportProto::Tcp)
         );
+        Ok(())
     }
 
     /// TCP framing must be zero-copy: every message emitted from one segment
@@ -1910,7 +1928,7 @@ mod tests {
     /// payload in its own heap allocation (never contiguous — allocator
     /// chunk headers/alignment sit between them).
     #[test]
-    fn tcp_framing_emits_zero_copy_slices_of_one_buffer() {
+    fn tcp_framing_emits_zero_copy_slices_of_one_buffer() -> Result<(), TestError> {
         let mut payload = opts("a");
         payload.extend(opts("b"));
         payload.extend(opts("c"));
@@ -1930,12 +1948,13 @@ mod tests {
             p1 + out[1].payload.len(),
             "third message must be a view directly after the second"
         );
+        Ok(())
     }
 
     /// A partial message held while the stream is open is emitted truncated
     /// on FIN so a downstream parser can flag it, never silently dropped.
     #[test]
-    fn process_surfaces_truncated_tail_on_fin() {
+    fn process_surfaces_truncated_tail_on_fin() -> Result<(), TestError> {
         // A message whose body never completes before the connection closes is
         // held while the stream is open, then emitted (truncated) on FIN so a
         // downstream parser can flag it malformed — never silently dropped.
@@ -1951,12 +1970,13 @@ mod tests {
         let out2 = proc.process(&tcp_frame(b"", 1 + head.len() as u32, false, true));
         assert_eq!(out2.len(), 1, "truncated tail emitted on FIN, not dropped");
         assert!(String::from_utf8_lossy(&out2[0].payload).contains("Call-ID: trunc"));
+        Ok(())
     }
 
     /// With `--no-reassembly` a multi-message TCP segment passes through as
     /// one raw packet, byte-for-byte, instead of being reframed.
     #[test]
-    fn no_reassembly_passes_tcp_segment_through_unframed() {
+    fn no_reassembly_passes_tcp_segment_through_unframed() -> Result<(), TestError> {
         // Two SIP messages packed in one TCP segment: with reassembly OFF
         // the raw segment emerges as a single packet,
         // not reframed into individual messages.
@@ -1976,12 +1996,13 @@ mod tests {
             &payload[..],
             "bytes pass through intact"
         );
+        Ok(())
     }
 
     /// The default processor (reassembly on) reframes the same two-message
     /// segment into two separate parsed packets.
     #[test]
-    fn reassembly_on_by_default_reframes_tcp() {
+    fn reassembly_on_by_default_reframes_tcp() -> Result<(), TestError> {
         // Contrast: the default processor DOES reframe the same segment.
         let mut payload = opts("a");
         payload.extend(opts("b"));
@@ -1992,12 +2013,13 @@ mod tests {
             2,
             "default reassembly reframes into two messages"
         );
+        Ok(())
     }
 
     /// Binary TCP payloads (e.g. TLS records) are never SIP-framed, even when
     /// they contain a CRLFCRLF — they pass through whole for TLS decryption.
     #[test]
-    fn process_passes_non_sip_tcp_through_unframed() {
+    fn process_passes_non_sip_tcp_through_unframed() -> Result<(), TestError> {
         // TLS-over-TCP (and other binary payloads) must NOT be SIP-framed — they
         // pass through whole so downstream TLS decryption still sees them.
         let mut proc = PacketProcessor::new();
@@ -2011,12 +2033,13 @@ mod tests {
             "non-SIP TCP payload emerges as a single packet"
         );
         assert_eq!(&out[0].payload[..], &tls[..], "bytes pass through intact");
+        Ok(())
     }
 
     /// A body split across two TCP segments is held silently, then emitted
     /// complete once the rest of the body arrives.
     #[test]
-    fn process_holds_partial_across_segments_then_completes() {
+    fn process_holds_partial_across_segments_then_completes() -> Result<(), TestError> {
         // A message body split across two TCP segments must be held, not
         // emitted as a (false) malformed message, then completed on arrival.
         let mut proc = PacketProcessor::new();
@@ -2034,6 +2057,7 @@ mod tests {
             "the completed message is emitted once the body arrives"
         );
         assert!(String::from_utf8_lossy(&out2[0].payload).ends_with("abcde"));
+        Ok(())
     }
 
     /// Split the same TCP segment `tcp_frame` would build into two IPv4
@@ -2074,7 +2098,7 @@ mod tests {
             eth.extend_from_slice(&ip);
             let len = eth.len();
             Packet::new(
-                chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
                 eth,
                 len,
                 len,
@@ -2092,7 +2116,8 @@ mod tests {
     /// segment must complete: the reassembled datagram has to re-enter the
     /// TCP reassembler / SIP framer, not bypass them as a standalone unit.
     #[test]
-    fn fragmented_tcp_segment_joins_stream_and_completes_spanning_message() {
+    fn fragmented_tcp_segment_joins_stream_and_completes_spanning_message() -> Result<(), TestError>
+    {
         let mut proc = PacketProcessor::new();
         // Headers complete, body 5 of 10 bytes: held while the stream is open.
         let head = b"MESSAGE sip:h SIP/2.0\r\nCall-ID: span\r\nContent-Length: 10\r\n\r\nabcde";
@@ -2114,6 +2139,7 @@ mod tests {
             msg.ends_with("abcdefghij"),
             "full body must span the fragmented segment, got: {msg}"
         );
+        Ok(())
     }
 
     /// A segment the capture never held splits a SIP-over-TCP stream. The
@@ -2122,7 +2148,7 @@ mod tests {
     /// joined a long-lived proxy-to-proxy connection, or of a tap that
     /// dropped a packet; every message on that direction used to be lost.
     #[test]
-    fn messages_after_a_hole_in_the_capture_are_recovered() {
+    fn messages_after_a_hole_in_the_capture_are_recovered() -> Result<(), TestError> {
         let mut proc = PacketProcessor::new();
         let head = b"INVITE sip:b@x SIP/2.0\r\nCall-ID: lost\r\nContent-Length: 0\r\n";
         assert!(
@@ -2148,6 +2174,7 @@ mod tests {
             ],
             "both messages after the hole, and nothing of the lost INVITE"
         );
+        Ok(())
     }
 
     /// When the message behind a hole is the LAST thing its direction ever
@@ -2155,7 +2182,7 @@ mod tests {
     /// end of the capture does. `finish` releases it; before `finish`, it is
     /// held. A processor with nothing blocked finishes with nothing.
     #[test]
-    fn the_end_of_the_capture_releases_a_message_held_behind_a_hole() {
+    fn the_end_of_the_capture_releases_a_message_held_behind_a_hole() -> Result<(), TestError> {
         let mut proc = PacketProcessor::new();
         assert!(
             proc.finish().is_empty(),
@@ -2174,6 +2201,7 @@ mod tests {
         assert_eq!(&released[0].payload[..], &last[..]);
         assert_eq!(released[0].src_port, 5230);
         assert!(proc.finish().is_empty(), "released once");
+        Ok(())
     }
 
     /// A NULL-encrypted ESP packet too big for one frame arrives as IP
@@ -2181,7 +2209,7 @@ mod tests {
     /// UDP datagram inside it -- the reassembly path used to know only UDP and
     /// TCP, so the SIP inside came out as raw ESP bytes and parsed as nothing.
     #[test]
-    fn a_fragmented_esp_null_datagram_yields_the_sip_inside() {
+    fn a_fragmented_esp_null_datagram_yields_the_sip_inside() -> Result<(), TestError> {
         let src = [10, 20, 0, 1];
         let dst = [10, 20, 0, 2];
         let sip = format!(
@@ -2236,7 +2264,7 @@ mod tests {
             eth.extend_from_slice(&ip);
             let len = eth.len();
             Packet::new(
-                chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
                 eth,
                 len,
                 len,
@@ -2252,13 +2280,14 @@ mod tests {
         assert_eq!((out[0].src_port, out[0].dst_port), (5060, 5060));
         assert_eq!(&out[0].payload[..], sip.as_bytes());
         assert_eq!(out[0].ip_protocol, 17);
+        Ok(())
     }
 
     /// At the `max_sessions` cap the held-partial map must evict the
     /// least-recently-updated connection, not an arbitrary one — an active
     /// session's partial data must survive while the stalest entry goes.
     #[test]
-    fn leftover_eviction_removes_least_recently_updated() {
+    fn leftover_eviction_removes_least_recently_updated() -> Result<(), TestError> {
         // Body incomplete (2 of 5 bytes) so the whole message is held.
         fn head(cid: &str) -> Vec<u8> {
             format!("MESSAGE sip:h SIP/2.0\r\nCall-ID: {cid}\r\nContent-Length: 5\r\n\r\nab")
@@ -2293,18 +2322,20 @@ mod tests {
             !ports.contains(&6002),
             "least-recently-updated entry is the eviction victim: {ports:?}"
         );
+        Ok(())
     }
 
     /// Leading zeros and surrounding whitespace in a Content-Length value
     /// still parse to the correct body length.
     #[test]
-    fn frame_content_length_whitespace_and_zeros() {
+    fn frame_content_length_whitespace_and_zeros() -> Result<(), TestError> {
         // Leading zeros and surrounding spaces in the CL value parse fine.
         let msg = b"OPTIONS sip:h SIP/2.0\r\nCall-ID: w\r\nContent-Length:  007\r\n\r\n\
                     1234567";
         let (ranges, consumed) = frame_tcp_sip(msg);
         assert_eq!(ranges.len(), 1);
         assert_eq!(consumed, msg.len(), "CL ' 007' == 7 body bytes consumed");
+        Ok(())
     }
 
     // ── SCTP cross-packet DATA reassembly through the pipeline ──────────
@@ -2349,7 +2380,7 @@ mod tests {
         eth.extend_from_slice(&ip);
         let len = eth.len();
         Packet::new(
-            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
             eth,
             len,
             len,
@@ -2362,7 +2393,7 @@ mod tests {
     /// three packets is reassembled by `process`: nothing emerges until the E
     /// fragment, which yields the complete message with its ports recovered.
     #[test]
-    fn process_reassembles_sctp_data_fragments() {
+    fn process_reassembles_sctp_data_fragments() -> Result<(), TestError> {
         let sip: &[u8] =
             b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\nContent-Length: 4\r\n\r\nbody";
         let (p1, p2, p3) = (&sip[..24], &sip[24..56], &sip[56..]);
@@ -2381,12 +2412,13 @@ mod tests {
         assert_eq!(out[0].transport, parse::TransportProto::Sctp);
         assert_eq!((out[0].src_port, out[0].dst_port), (5060, 5062));
         assert_eq!(&out[0].payload[..], sip, "full SIP message reassembled");
+        Ok(())
     }
 
     /// A single-packet complete (B+E) SCTP DATA chunk still passes straight
     /// through `process` unchanged — the reassembler must not disturb it.
     #[test]
-    fn process_passes_single_packet_sctp_through() {
+    fn process_passes_single_packet_sctp_through() -> Result<(), TestError> {
         let sip: &[u8] = b"OPTIONS sip:h SIP/2.0\r\nContent-Length: 0\r\n\r\n";
         let mut proc = PacketProcessor::new();
         let out = proc.process(&sctp_frag_frame(0x03, 1, 0, sip)); // B|E
@@ -2394,12 +2426,13 @@ mod tests {
         assert_eq!(out[0].transport, parse::TransportProto::Sctp);
         assert_eq!((out[0].src_port, out[0].dst_port), (5060, 5062));
         assert_eq!(&out[0].payload[..], sip);
+        Ok(())
     }
 
     /// With `--no-reassembly` SCTP DATA fragments are not reassembled: each
     /// fragment passes through as its own (empty-payload) packet.
     #[test]
-    fn no_reassembly_does_not_reassemble_sctp() {
+    fn no_reassembly_does_not_reassemble_sctp() -> Result<(), TestError> {
         let mut proc = PacketProcessor::new().with_reassembly(false);
         let out = proc.process(&sctp_frag_frame(0x02, 1, 0, b"INVITE sip:h SIP/2.0"));
         assert_eq!(out.len(), 1, "fragment passes through, not buffered");
@@ -2407,6 +2440,7 @@ mod tests {
             out[0].payload.is_empty(),
             "no reassembly leaves the fragment payload unrecovered"
         );
+        Ok(())
     }
 
     // ── PacketProcessor::process dispatch (device-free) ─────────────────
@@ -2417,6 +2451,9 @@ mod tests {
         use super::*;
         use crate::capture::packet::Packet;
         use chrono::Utc;
+
+        /// Any error a test can return; `?` converts into it.
+        type TestError = Box<dyn std::error::Error>;
 
         /// Minimal Ethernet + IPv4 + UDP frame carrying `payload`.
         fn eth_ipv4_udp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
@@ -2454,19 +2491,20 @@ mod tests {
         /// A plain UDP SIP packet yields exactly one parsed packet with the
         /// right transport and ports.
         #[test]
-        fn udp_packet_yields_one_parsed() {
+        fn udp_packet_yields_one_parsed() -> Result<(), TestError> {
             let mut proc = PacketProcessor::new();
             let frame = eth_ipv4_udp(5060, 5060, b"REGISTER sip:x SIP/2.0\r\n\r\n");
             let out = proc.process(&packet(frame));
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].transport, parse::TransportProto::Udp);
             assert_eq!(out[0].dst_port, 5060);
+            Ok(())
         }
 
         /// A parse limit (`-S`/`--limitlen`) caps the emitted payload at N
         /// bytes.
         #[test]
-        fn parse_limit_truncates_payload() {
+        fn parse_limit_truncates_payload() -> Result<(), TestError> {
             // `-S`/`--limitlen`: only the first N bytes of each message are
             // handed downstream, independent of capture snaplen.
             let mut proc = PacketProcessor::new().with_parse_limit(Some(10));
@@ -2479,20 +2517,22 @@ mod tests {
                 "payload capped to the parse limit"
             );
             assert_eq!(&out[0].payload[..], &sip[..10]);
+            Ok(())
         }
 
         /// Without a parse limit the full payload is preserved.
         #[test]
-        fn parse_limit_none_keeps_full_payload() {
+        fn parse_limit_none_keeps_full_payload() -> Result<(), TestError> {
             let mut proc = PacketProcessor::new();
             let sip = b"REGISTER sip:x SIP/2.0\r\n\r\n";
             let out = proc.process(&packet(eth_ipv4_udp(5060, 5060, sip)));
             assert_eq!(out[0].payload.len(), sip.len(), "no limit → full payload");
+            Ok(())
         }
 
         /// A parse limit larger than the payload leaves it untouched.
         #[test]
-        fn parse_limit_larger_than_payload_is_noop() {
+        fn parse_limit_larger_than_payload_is_noop() -> Result<(), TestError> {
             let mut proc = PacketProcessor::new().with_parse_limit(Some(100_000));
             let sip = b"REGISTER sip:x SIP/2.0\r\n\r\n";
             let out = proc.process(&packet(eth_ipv4_udp(5060, 5060, sip)));
@@ -2501,6 +2541,7 @@ mod tests {
                 sip.len(),
                 "limit beyond payload is a no-op"
             );
+            Ok(())
         }
 
         /// A non-IP frame (ARP EtherType) yields no parsed packets.
@@ -2511,7 +2552,7 @@ mod tests {
         /// it.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn non_ip_frame_yields_nothing() {
+        fn non_ip_frame_yields_nothing() -> Result<(), TestError> {
             let mut proc = PacketProcessor::with_max_sessions(16);
             // EtherType 0x0806 (ARP) — not IP, so parse yields no ParsedPacket.
             let mut frame = vec![0xAAu8; 6];
@@ -2519,6 +2560,7 @@ mod tests {
             frame.extend_from_slice(&[0x08, 0x06]); // ARP
             frame.extend_from_slice(&[0u8; 28]);
             assert!(proc.process(&packet(frame)).is_empty());
+            Ok(())
         }
 
         /// Bytes too short to be a valid frame hit the parse-error path and
@@ -2527,17 +2569,19 @@ mod tests {
         /// Keyed for the reason above: the parse error is counted.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn truncated_garbage_yields_nothing() {
+        fn truncated_garbage_yields_nothing() -> Result<(), TestError> {
             let mut proc = PacketProcessor::new();
             // Too short to be a valid Ethernet/IP frame -> parse error path.
             assert!(proc.process(&packet(vec![0x01, 0x02, 0x03])).is_empty());
+            Ok(())
         }
 
         /// `sweep` on a processor with no tracked state is a safe no-op.
         #[test]
-        fn sweep_is_safe_on_empty_state() {
+        fn sweep_is_safe_on_empty_state() -> Result<(), TestError> {
             let mut proc = PacketProcessor::default();
             proc.sweep(); // exercises both reassembler sweeps with no entries
+            Ok(())
         }
     }
 
@@ -2564,6 +2608,9 @@ mod tests {
     mod undecodable {
         use super::*;
         use chrono::Utc;
+
+        /// Any error a test can return; `?` converts into it.
+        type TestError = Box<dyn std::error::Error>;
 
         /// Wrap raw frame bytes in a `Packet` with an explicit link type.
         fn packet_dlt(data: Vec<u8>, link_type: i32) -> Packet {
@@ -2636,7 +2683,7 @@ mod tests {
         /// names no capture format an operator can act on.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn unsupported_link_type_carries_the_dlt_number() {
+        fn unsupported_link_type_carries_the_dlt_number() -> Result<(), TestError> {
             let r = tally(&[
                 (vec![0u8; 64], 147),
                 (vec![0u8; 64], 147),
@@ -2658,13 +2705,14 @@ mod tests {
                 ],
                 "busiest reason first, each carrying its own DLT number"
             );
+            Ok(())
         }
 
         /// A frame that decoded but carries no IP layer takes its EtherType
         /// from what the decoder handed out — 0x8847 (MPLS) here — never from
         /// a second walk of the bytes.
         #[test]
-        fn not_ip_takes_the_ethertype_it_is_given() {
+        fn not_ip_takes_the_ethertype_it_is_given() -> Result<(), TestError> {
             let reason = classify_undecodable(
                 &CaptureError::NotIp { what: "packet" },
                 FrameFacts {
@@ -2673,18 +2721,20 @@ mod tests {
                 },
             );
             assert_eq!(reason, Some(UndecodableReason::NotIp(Some(0x8847))));
+            Ok(())
         }
 
         /// With no EtherType handed out the reason says *not recorded* rather
         /// than inventing one. A wrong number stated confidently is worse than
         /// no number: it is the same defect this tally exists to remove.
         #[test]
-        fn not_ip_without_a_recorded_ethertype_says_so() {
+        fn not_ip_without_a_recorded_ethertype_says_so() -> Result<(), TestError> {
             let reason = classify_undecodable(
                 &CaptureError::NotIp { what: "ARP packet" },
                 FrameFacts::UNRECORDED,
             );
             assert_eq!(reason, Some(UndecodableReason::NotIp(None)));
+            Ok(())
         }
 
         /// "IP layer with no payload" is the not-IP family, not truncation.
@@ -2692,7 +2742,7 @@ mod tests {
         /// under "truncated" would send an operator to raise a snaplen that
         /// was never the problem.
         #[test]
-        fn no_ip_payload_is_not_ip_rather_than_truncation() {
+        fn no_ip_payload_is_not_ip_rather_than_truncation() -> Result<(), TestError> {
             assert_eq!(
                 classify_undecodable(
                     &CaptureError::NoIpPayload { what: "packet" },
@@ -2715,12 +2765,13 @@ mod tests {
                 Some(UndecodableReason::Truncated),
                 "a stated need/got IS truncation",
             );
+            Ok(())
         }
 
         /// IP that carries no transport sipnab handles takes the IP PROTOCOL
         /// number it is given — 50 (ESP) here.
         #[test]
-        fn no_transport_takes_the_ip_protocol_it_is_given() {
+        fn no_transport_takes_the_ip_protocol_it_is_given() -> Result<(), TestError> {
             let reason = classify_undecodable(
                 &CaptureError::NoTransport,
                 FrameFacts {
@@ -2729,20 +2780,22 @@ mod tests {
                 },
             );
             assert_eq!(reason, Some(UndecodableReason::NoTransport(Some(50))));
+            Ok(())
         }
 
         /// With no protocol handed out the reason says *not recorded*.
         #[test]
-        fn no_transport_without_a_recorded_protocol_says_so() {
+        fn no_transport_without_a_recorded_protocol_says_so() -> Result<(), TestError> {
             let reason = classify_undecodable(&CaptureError::NoTransport, FrameFacts::UNRECORDED);
             assert_eq!(reason, Some(UndecodableReason::NoTransport(None)));
+            Ok(())
         }
 
         /// Two errors already carry their own number, so they are fully named
         /// with no help from `FrameFacts`: a GRE inner protocol IS an
         /// EtherType, and the pre-parsed (HEP) path states its IP protocol.
         #[test]
-        fn errors_that_carry_their_own_number_need_no_facts() {
+        fn errors_that_carry_their_own_number_need_no_facts() -> Result<(), TestError> {
             assert_eq!(
                 classify_undecodable(
                     &CaptureError::UnsupportedGreProtocol(0x880B),
@@ -2757,6 +2810,7 @@ mod tests {
                 ),
                 Some(UndecodableReason::NoTransport(Some(50))),
             );
+            Ok(())
         }
 
         /// End to end through the real swallow site: a frame with no IP layer
@@ -2766,7 +2820,7 @@ mod tests {
         /// yet hand its EtherType back, and saying so beats inventing one.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn unnumbered_reasons_are_counted_and_reported_as_unrecorded() {
+        fn unnumbered_reasons_are_counted_and_reported_as_unrecorded() -> Result<(), TestError> {
             let r = tally(&[
                 (eth_arp([10, 0, 0, 2]), 1), // ARP: decodes, carries no IP
                 (eth_arp([10, 0, 0, 3]), 1), // a second ARP frame
@@ -2788,6 +2842,7 @@ mod tests {
                 ],
                 "counted and classified, with the number honestly absent"
             );
+            Ok(())
         }
 
         /// A fragmented ESP datagram that is NOT NULL-encrypted can only be
@@ -2795,7 +2850,7 @@ mod tests {
         /// never emitted as a datagram of ciphertext.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn a_fragmented_encrypted_esp_datagram_is_counted_as_esp() {
+        fn a_fragmented_encrypted_esp_datagram_is_counted_as_esp() -> Result<(), TestError> {
             let mut esp = 0x0000_2002u32.to_be_bytes().to_vec();
             esp.extend_from_slice(&1u32.to_be_bytes());
             let mut x: u32 = 0x1234_5678;
@@ -2830,6 +2885,7 @@ mod tests {
                     frames: 1,
                 }]
             );
+            Ok(())
         }
 
         /// A frame shorter than the link header it claims is counted as
@@ -2837,7 +2893,7 @@ mod tests {
         /// not a parser fix.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn short_frame_counts_as_truncated() {
+        fn short_frame_counts_as_truncated() -> Result<(), TestError> {
             // DLT_LINUX_SLL2 needs 20 header bytes; 10 is a truncated frame.
             let r = tally(&[(vec![0u8; 10], 276)]);
             assert_eq!(r.frames, 1);
@@ -2848,12 +2904,13 @@ mod tests {
                     frames: 1,
                 }]
             );
+            Ok(())
         }
 
         /// Bytes the decoder rejects outright are counted as a decode error.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn rejected_bytes_count_as_a_decode_error() {
+        fn rejected_bytes_count_as_a_decode_error() -> Result<(), TestError> {
             // Three bytes on Ethernet: too short for etherparse to slice at all.
             let r = tally(&[(vec![0x01, 0x02, 0x03], 1)]);
             assert_eq!(r.frames, 1);
@@ -2864,6 +2921,7 @@ mod tests {
                     frames: 1,
                 }]
             );
+            Ok(())
         }
 
         /// A packet sipnab decodes fully leaves the tally at zero. Without
@@ -2871,13 +2929,14 @@ mod tests {
         /// and the whole signal would be worthless.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn a_decoded_packet_is_never_counted() {
+        fn a_decoded_packet_is_never_counted() -> Result<(), TestError> {
             let r = tally(&[(
                 eth_ipv4_udp(5060, 5060, b"REGISTER sip:x SIP/2.0\r\n\r\n"),
                 1,
             )]);
             assert_eq!(r.frames, 0, "a decoded frame is not undecodable");
             assert!(r.reasons.is_empty());
+            Ok(())
         }
 
         /// ICMP is UNDERSTOOD — `parse_packet` records the quote as dialog
@@ -2896,7 +2955,7 @@ mod tests {
         /// mid-assertion. Two keys over one global is no mutual exclusion.
         #[test]
         #[serial_test::serial(undecodable_tally, icmp_evidence)]
-        fn icmp_is_understood_and_not_counted() {
+        fn icmp_is_understood_and_not_counted() -> Result<(), TestError> {
             // Ethernet + IPv4 + ICMP port-unreachable quoting a UDP datagram.
             let quoted = {
                 let mut ip = vec![0x45u8, 0x00];
@@ -2928,6 +2987,7 @@ mod tests {
             // key overlapping above keeps the readers out while this runs; this
             // keeps them from finding it afterwards.
             crate::pipeline::reset_icmp_evidence();
+            Ok(())
         }
 
         /// More distinct numbers than the slot table holds: the TOTAL stays
@@ -2935,7 +2995,7 @@ mod tests {
         /// rather than silently vanishing from the total.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn slot_overflow_keeps_the_total_exact_and_says_what_it_lost() {
+        fn slot_overflow_keeps_the_total_exact_and_says_what_it_lost() -> Result<(), TestError> {
             let frames: Vec<(Vec<u8>, i32)> = (0..UNDECODABLE_REASON_SLOTS + 4)
                 .map(|i| (vec![0u8; 64], 200 + i as i32))
                 .collect();
@@ -2953,13 +3013,14 @@ mod tests {
                 r.frames,
                 "the breakdown plus what it dropped must equal the total"
             );
+            Ok(())
         }
 
         /// The counter is monotonic across packets until reset, and reset
         /// returns it to zero.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn reset_clears_the_tally() {
+        fn reset_clears_the_tally() -> Result<(), TestError> {
             let r = tally(&[(vec![0u8; 64], 147)]);
             assert_eq!(r.frames, 1);
             reset_undecodable_frames();
@@ -2967,13 +3028,14 @@ mod tests {
             assert_eq!(after.frames, 0);
             assert!(after.reasons.is_empty());
             assert_eq!(after.reasons_dropped, 0);
+            Ok(())
         }
 
         /// Every reason renders both a human sentence carrying its number and
         /// a stable metric label. A label without the number is the defect
         /// this whole tally exists to fix.
         #[test]
-        fn reasons_render_their_number_in_both_forms() {
+        fn reasons_render_their_number_in_both_forms() -> Result<(), TestError> {
             let cases = [
                 (
                     UndecodableReason::UnsupportedLinkType(0),
@@ -3022,6 +3084,7 @@ mod tests {
                 assert_eq!(reason.to_string(), sentence);
                 assert_eq!(reason.label(), label);
             }
+            Ok(())
         }
 
         /// `frame` recorded with its last `cut` bytes missing, on `link_type`:
@@ -3036,13 +3099,15 @@ mod tests {
         /// The rule itself: a frame is snapped when it captured fewer bytes
         /// than crossed the wire, and not when it captured all of them.
         #[test]
-        fn a_frame_is_snapped_exactly_when_it_captured_less_than_the_wire_carried() {
+        fn a_frame_is_snapped_exactly_when_it_captured_less_than_the_wire_carried()
+        -> Result<(), TestError> {
             let at = |caplen: usize, origlen: usize| {
                 Packet::new(Utc::now(), vec![0u8; caplen], caplen, origlen, None, 1)
             };
             assert!(at(96, 1500).is_snapped(), "headers only is snapped");
             assert!(at(1499, 1500).is_snapped(), "one byte short is snapped");
             assert!(!at(1500, 1500).is_snapped(), "a whole frame is not snapped");
+            Ok(())
         }
 
         /// A frame the capture cut short is counted as snapped exactly once,
@@ -3054,7 +3119,7 @@ mod tests {
         /// capture and every replay counted nothing.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn a_snapped_frame_is_counted_once_whether_or_not_it_decodes() {
+        fn a_snapped_frame_is_counted_once_whether_or_not_it_decodes() -> Result<(), TestError> {
             reset_undecodable_frames();
             let mut proc = PacketProcessor::new();
 
@@ -3081,6 +3146,7 @@ mod tests {
                 "the decodable snapped frame counts too"
             );
             reset_undecodable_frames();
+            Ok(())
         }
 
         /// A snapped frame that produced nothing is filed as TRUNCATED, never as
@@ -3091,7 +3157,7 @@ mod tests {
         /// frame format sipnab cannot read, when the remedy is `--snaplen`.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn a_snapped_frame_that_cannot_decode_is_filed_as_truncated() {
+        fn a_snapped_frame_that_cannot_decode_is_filed_as_truncated() -> Result<(), TestError> {
             reset_undecodable_frames();
             let mut proc = PacketProcessor::new();
             proc.process(&cut_short(eth_ipv4_udp(5060, 5060, b"cut short"), 5, 1));
@@ -3105,6 +3171,7 @@ mod tests {
                 }]
             );
             reset_undecodable_frames();
+            Ok(())
         }
 
         /// The snap is blamed only for what a snap can cause.
@@ -3115,7 +3182,7 @@ mod tests {
         /// would hide the DLT number that names the real one.
         #[test]
         #[serial_test::serial(undecodable_tally)]
-        fn a_snapped_frame_keeps_a_reason_its_length_did_not_cause() {
+        fn a_snapped_frame_keeps_a_reason_its_length_did_not_cause() -> Result<(), TestError> {
             reset_undecodable_frames();
             let mut proc = PacketProcessor::new();
             proc.process(&cut_short(vec![0u8; 64], 8, 147));
@@ -3129,6 +3196,7 @@ mod tests {
             );
             assert_eq!(snapped_frames(), 1, "it is still a snapped frame");
             reset_undecodable_frames();
+            Ok(())
         }
     }
 }

@@ -363,37 +363,42 @@ pub fn capture_uprobe(
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     #[test]
-    fn a_uprobe_packet_names_its_process_and_claims_no_peer() {
+    fn a_uprobe_packet_names_its_process_and_claims_no_peer() -> Result<(), TestError> {
         let pkt = to_packet(b"INVITE sip:b@x SIP/2.0\r\n\r\n", 4321, 7);
 
-        let iface = pkt.interface.as_deref().expect("a source name");
+        let iface = pkt.interface.as_deref().ok_or("a source name")?;
         assert!(iface.starts_with("uprobe:"), "source name is {iface}");
         assert!(iface.ends_with("/4321"), "names the pid: {iface}");
 
-        let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+        let meta = pkt.pre_parsed.as_ref().ok_or("pre-parsed")?;
         assert!(meta.src_addr.is_unspecified(), "no socket was observed");
         assert!(meta.dst_addr.is_unspecified());
         assert_eq!(meta.src_port, 0);
         assert_eq!(meta.dst_port, 0);
+        Ok(())
     }
 
     /// The pointer must survive into the parsed packet, or the provenance work
     /// stops at the capture boundary.
     #[test]
-    fn a_uprobe_packet_carries_a_resolvable_pointer_shape() {
+    fn a_uprobe_packet_carries_a_resolvable_pointer_shape() -> Result<(), TestError> {
         let pkt = to_packet(b"INVITE sip:b@x SIP/2.0\r\n\r\n", 4321, 7);
-        let loc = pkt.frame_locator().expect("both halves present");
+        let loc = pkt.frame_locator().ok_or("both halves present")?;
         assert_eq!(loc.origin.ordinal, 7);
         assert!(
             loc.origin.digest.is_none(),
             "these bytes cannot be read twice, so a digest would be unverifiable"
         );
-        let r = pkt.frame_ref().expect("owned pointer");
+        let r = pkt.frame_ref().ok_or("owned pointer")?;
         assert!(matches!(
             r.source_kind(),
             crate::capture::packet::FrameSource::Uprobe { pid: 4321, .. }
         ));
+        Ok(())
     }
 
     /// A pid whose comm cannot be read still yields a usable label.
@@ -432,40 +437,42 @@ mod tests {
         rec
     }
 
-    fn layout() -> Arc<record::RecordLayout> {
-        Arc::new(record::parse_layout(FORMAT).expect("real kernel output parses"))
+    fn layout() -> Result<Arc<record::RecordLayout>, TestError> {
+        Ok(Arc::new(
+            record::parse_layout(FORMAT).ok_or("real kernel output parses")?,
+        ))
     }
 
     /// A reader over one stand-in ring holding `records`, with no probes.
-    fn reader_over(records: &[u8]) -> (UprobeReader, std::fs::File) {
-        let (ring, file) = fake::ring(1, 0, records);
+    fn reader_over(records: &[u8]) -> Result<(UprobeReader, std::fs::File), TestError> {
+        let (ring, file) = fake::ring(1, 0, records)?;
         let reader = UprobeReader {
             bands: vec![Band {
                 ring,
-                layout: layout(),
+                layout: layout()?,
             }],
             probes: Vec::new(),
             next_ordinal: 0,
         };
-        (reader, file)
+        Ok((reader, file))
     }
 
     /// Only an accepted SIP write becomes a packet, and only the bytes the
     /// application wrote travel in it -- never the fetch padding.
     #[test]
-    fn a_drain_sends_only_accepted_sip_and_only_what_was_written() {
-        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
+    fn a_drain_sends_only_accepted_sip_and_only_what_was_written() -> Result<(), TestError> {
+        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
         // Not SIP: the probes see every process that maps the library.
         records.extend(fake::sample(&tracepoint(
             NO_SUCH_PID,
             b"GET / HTTP/1.1\r\n",
             16,
-        )));
+        ))?);
         // A zero-length write: padding only.
-        records.extend(fake::sample(&tracepoint(NO_SUCH_PID, INVITE, 0)));
+        records.extend(fake::sample(&tracepoint(NO_SUCH_PID, INVITE, 0))?);
         // Shorter than the layout: refused rather than decoded partially.
-        records.extend(fake::sample(&[0u8; 40]));
-        let (mut reader, _file) = reader_over(&records);
+        records.extend(fake::sample(&[0u8; 40])?);
+        let (mut reader, _file) = reader_over(&records)?;
         let (tx, rx) = packet_channel(16);
 
         assert_eq!(reader.drain_once(&tx), 1, "exactly one record survives");
@@ -482,6 +489,7 @@ mod tests {
             Some(format!("uprobe:unknown/{NO_SUCH_PID}").as_str()),
             "attributed to the process that wrote it"
         );
+        Ok(())
     }
 
     /// A frame pointer is `<source>#<ordinal>`, and two different reads must
@@ -491,23 +499,23 @@ mod tests {
     /// to be each other. The BPF backend already threads its ordinal across
     /// sweeps; this pins the tracefs one to the same rule.
     #[test]
-    fn frame_ordinals_keep_counting_across_sweeps() {
-        let first = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
-        let (mut reader, file) = reader_over(&first);
+    fn frame_ordinals_keep_counting_across_sweeps() -> Result<(), TestError> {
+        let first = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
+        let (mut reader, file) = reader_over(&first)?;
         let (tx, rx) = packet_channel(16);
 
         assert_eq!(reader.drain_once(&tx), 1);
         fake::append(
             &file,
             1,
-            &fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32)),
-        );
+            &fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?,
+        )?;
         assert_eq!(reader.drain_once(&tx), 1);
 
         let refs: Vec<String> = rx
             .try_iter()
-            .map(|p| p.frame_ref().expect("both halves").to_string())
-            .collect();
+            .map(|p| p.frame_ref().map(|r| r.to_string()).ok_or("both halves"))
+            .collect::<Result<_, _>>()?;
         assert_eq!(refs.len(), 2);
         assert_ne!(
             refs[0], refs[1],
@@ -520,47 +528,49 @@ mod tests {
                 format!("uprobe:unknown/{NO_SUCH_PID}#1"),
             ]
         );
+        Ok(())
     }
 
     /// A read that could not be handed on is not numbered: the ordinal counts
     /// packets that exist, so the next one delivered is still `#0`.
     #[test]
-    fn a_closed_channel_sends_nothing_and_counts_nothing() {
-        let rec = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
-        let (mut reader, file) = reader_over(&rec);
+    fn a_closed_channel_sends_nothing_and_counts_nothing() -> Result<(), TestError> {
+        let rec = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
+        let (mut reader, file) = reader_over(&rec)?;
         let (closed_tx, closed_rx) = packet_channel(16);
         drop(closed_rx);
         assert_eq!(reader.drain_once(&closed_tx), 0, "nothing reached anyone");
 
-        fake::append(&file, 1, &rec);
+        fake::append(&file, 1, &rec)?;
         let (tx, rx) = packet_channel(16);
         assert_eq!(reader.drain_once(&tx), 1);
         let origin = rx
             .try_iter()
             .next()
             .and_then(|p| p.origin)
-            .expect("a numbered packet");
+            .ok_or("a numbered packet")?;
         assert_eq!(
             origin.ordinal, 0,
             "the undelivered read must not have consumed an ordinal"
         );
+        Ok(())
     }
 
     /// Every band's losses are the reader's losses. Reporting one ring's would
     /// understate the hole in the capture.
     #[test]
-    fn records_lost_on_every_ring_are_summed() {
-        let (ring_a, _fa) = fake::ring(1, 0, &fake::lost(1, 3));
-        let (ring_b, _fb) = fake::ring(1, 0, &fake::lost(2, 4));
+    fn records_lost_on_every_ring_are_summed() -> Result<(), TestError> {
+        let (ring_a, _fa) = fake::ring(1, 0, &fake::lost(1, 3)?)?;
+        let (ring_b, _fb) = fake::ring(1, 0, &fake::lost(2, 4)?)?;
         let mut reader = UprobeReader {
             bands: vec![
                 Band {
                     ring: ring_a,
-                    layout: layout(),
+                    layout: layout()?,
                 },
                 Band {
                     ring: ring_b,
-                    layout: layout(),
+                    layout: layout()?,
                 },
             ],
             probes: Vec::new(),
@@ -570,15 +580,16 @@ mod tests {
         assert_eq!(reader.lost(), 0);
         assert_eq!(reader.drain_once(&tx), 0);
         assert_eq!(reader.lost(), 7, "3 on one ring and 4 on the other");
+        Ok(())
     }
 
     /// `run` drains until told to stop, and on the way out says how much the
     /// kernel threw away -- a capture with a hole in it must be able to say so.
     #[test]
-    fn run_drains_until_stopped_and_reports_what_the_kernel_dropped() {
-        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
-        records.extend(fake::lost(9, 5));
-        let (mut reader, _file) = reader_over(&records);
+    fn run_drains_until_stopped_and_reports_what_the_kernel_dropped() -> Result<(), TestError> {
+        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
+        records.extend(fake::lost(9, 5)?);
+        let (mut reader, _file) = reader_over(&records)?;
         let (tx, rx) = packet_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -595,7 +606,10 @@ mod tests {
         let logs = capture_logs(|| reader.run(&tx, &stop));
 
         assert_eq!(
-            stopper.join().expect("stopper thread").expect("a packet"),
+            stopper
+                .join()
+                .map_err(|e| format!("stopper thread: {e:?}"))?
+                .map_err(|e| format!("a packet: {e:?}"))?,
             INVITE
         );
         assert_eq!(reader.lost(), 5);
@@ -603,16 +617,18 @@ mod tests {
             logs.contains("dropped 5 record(s)") && logs.contains("missing from the capture"),
             "the loss is reported, with its size: {logs}"
         );
+        Ok(())
     }
 
     /// Nothing lost, nothing said: the warning is evidence, not decoration.
     #[test]
-    fn a_clean_run_reports_no_loss() {
-        let (mut reader, _file) = reader_over(&[]);
+    fn a_clean_run_reports_no_loss() -> Result<(), TestError> {
+        let (mut reader, _file) = reader_over(&[])?;
         let (tx, _rx) = packet_channel(16);
         let stop = AtomicBool::new(true);
         let logs = capture_logs(|| reader.run(&tx, &stop));
         assert!(!logs.contains("dropped"), "{logs}");
+        Ok(())
     }
 
     /// Run `f` under a thread-local subscriber and return what it logged.
@@ -664,25 +680,33 @@ mod tests {
 
     /// A tracefs root with `uprobe_events` and, for every band of `slot`, a
     /// directory holding `format` (when given) and an `id`.
-    fn fake_tracefs(root: &Path, slot: usize, format: Option<&str>, id: &str) {
-        std::fs::write(root.join("uprobe_events"), "").expect("uprobe_events");
+    fn fake_tracefs(
+        root: &Path,
+        slot: usize,
+        format: Option<&str>,
+        id: &str,
+    ) -> Result<(), TestError> {
+        std::fs::write(root.join("uprobe_events"), "")
+            .map_err(|e| format!("uprobe_events: {e:?}"))?;
         for band in BANDS {
             let d = root.join(format!(
                 "events/uprobes/{}",
                 probe_name(std::process::id(), slot, band)
             ));
-            std::fs::create_dir_all(&d).expect("event dir");
+            std::fs::create_dir_all(&d).map_err(|e| format!("event dir: {e:?}"))?;
             if let Some(f) = format {
-                std::fs::write(d.join("format"), f).expect("format");
+                std::fs::write(d.join("format"), f).map_err(|e| format!("format: {e:?}"))?;
             }
-            std::fs::write(d.join("id"), id).expect("id");
+            std::fs::write(d.join("id"), id).map_err(|e| format!("id: {e:?}"))?;
         }
+        Ok(())
     }
 
     /// Every probe `attach_many` installed for `slot` was also removed, with
     /// the `-:name` append that leaves other tracers' probes standing.
-    fn assert_installed_then_removed(root: &Path, slot: usize) {
-        let events = std::fs::read_to_string(root.join("uprobe_events")).expect("uprobe_events");
+    fn assert_installed_then_removed(root: &Path, slot: usize) -> Result<(), TestError> {
+        let events = std::fs::read_to_string(root.join("uprobe_events"))
+            .map_err(|e| format!("uprobe_events: {e:?}"))?;
         for band in BANDS {
             let name = probe_name(std::process::id(), slot, band);
             assert!(
@@ -695,44 +719,49 @@ mod tests {
                  the library costing every process that maps it: {events}"
             );
         }
+        Ok(())
     }
 
     /// An empty target list is refused by name. A capture attached to nothing
     /// reads exactly like a quiet trunk.
     #[test]
-    fn attaching_to_no_library_is_refused_rather_than_started() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn attaching_to_no_library_is_refused_rather_than_started() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let err = UprobeReader::attach_many(dir.path(), &[])
             .err()
-            .expect("nothing to attach to")
+            .ok_or("nothing to attach to")?
             .to_string();
         assert!(err.contains("no TLS library to probe"), "{err}");
+        Ok(())
     }
 
     /// `attach` is `attach_many` for one library, and a library that cannot
     /// be read is named in the refusal.
     #[test]
-    fn an_unreadable_library_is_named_in_the_refusal() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_unreadable_library_is_named_in_the_refusal() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let lib = dir.path().join("libabsent.so.3");
         let err = UprobeReader::attach(dir.path(), &lib.display().to_string(), "SSL_write")
             .err()
-            .expect("an absent library cannot be probed")
+            .ok_or("an absent library cannot be probed")?
             .to_string();
         assert!(
             err.starts_with(&lib.display().to_string()),
             "the operator must be told WHICH library: {err}"
         );
+        Ok(())
     }
 
     /// A file that is not an ELF shared object is refused with the library
     /// named, before anything is written to tracefs.
     #[test]
-    fn a_library_that_is_not_elf_is_refused_before_tracefs_is_touched() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_library_that_is_not_elf_is_refused_before_tracefs_is_touched() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let lib = dir.path().join("libssl.so.3");
-        std::fs::write(&lib, b"#!/bin/sh\necho not a library\n").expect("write");
-        std::fs::write(dir.path().join("uprobe_events"), "").expect("uprobe_events");
+        std::fs::write(&lib, b"#!/bin/sh\necho not a library\n")
+            .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::write(dir.path().join("uprobe_events"), "")
+            .map_err(|e| format!("uprobe_events: {e:?}"))?;
         let err = UprobeReader::attach_many(
             dir.path(),
             &[Target {
@@ -741,14 +770,16 @@ mod tests {
             }],
         )
         .err()
-        .expect("not an ELF")
+        .ok_or("not an ELF")?
         .to_string();
         assert!(err.starts_with(&lib.display().to_string()), "{err}");
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("uprobe_events")).expect("read"),
+            std::fs::read_to_string(dir.path().join("uprobe_events"))
+                .map_err(|e| format!("read: {e:?}"))?,
             "",
             "no probe may be installed for a library that could not be resolved"
         );
+        Ok(())
     }
 
     /// A format the kernel published without the fields sipnab reads is
@@ -756,13 +787,14 @@ mod tests {
     /// installed are removed on the way out.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn a_format_without_the_fields_sipnab_reads_is_refused_and_the_probes_removed() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_format_without_the_fields_sipnab_reads_is_refused_and_the_probes_removed()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let lib = dir.path().join("libssl.so.3");
-        std::fs::write(&lib, elf_exporting_ssl_write()).expect("write");
+        std::fs::write(&lib, elf_exporting_ssl_write()).map_err(|e| format!("write: {e:?}"))?;
         let no_len = "format:\n\tfield:int common_pid;\toffset:4;\tsize:4;\tsigned:1;\n\
                       \tfield:u8 b0[];\toffset:16;\tsize:64;\tsigned:0;\n";
-        fake_tracefs(dir.path(), 0, Some(no_len), "1\n");
+        fake_tracefs(dir.path(), 0, Some(no_len), "1\n")?;
 
         let err = UprobeReader::attach_many(
             dir.path(),
@@ -772,27 +804,29 @@ mod tests {
             }],
         )
         .err()
-        .expect("a layout without len bounds nothing")
+        .ok_or("a layout without len bounds nothing")?
         .to_string();
 
         assert!(err.contains("without the fields sipnab reads"), "{err}");
-        assert_installed_then_removed(dir.path(), 0);
-        let events = std::fs::read_to_string(dir.path().join("uprobe_events")).expect("read");
+        assert_installed_then_removed(dir.path(), 0)?;
+        let events = std::fs::read_to_string(dir.path().join("uprobe_events"))
+            .map_err(|e| format!("read: {e:?}"))?;
         assert!(
             events.contains(":0x500 "),
             "the probe sits at the symbol's FILE offset: {events}"
         );
+        Ok(())
     }
 
     /// A band whose format file is missing fails the attach with the I/O
     /// error, and again nothing is left installed.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn a_missing_format_fails_the_attach_and_leaves_nothing_installed() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_missing_format_fails_the_attach_and_leaves_nothing_installed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let lib = dir.path().join("libssl.so.3");
-        std::fs::write(&lib, elf_exporting_ssl_write()).expect("write");
-        fake_tracefs(dir.path(), 0, None, "1\n");
+        std::fs::write(&lib, elf_exporting_ssl_write()).map_err(|e| format!("write: {e:?}"))?;
+        fake_tracefs(dir.path(), 0, None, "1\n")?;
 
         let err = UprobeReader::attach_many(
             dir.path(),
@@ -802,9 +836,10 @@ mod tests {
             }],
         )
         .err()
-        .expect("no format, no layout");
+        .ok_or("no format, no layout")?;
         assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
-        assert_installed_then_removed(dir.path(), 0);
+        assert_installed_then_removed(dir.path(), 0)?;
+        Ok(())
     }
 
     /// When no CPU will open a ring for any band, nothing would ever be read,
@@ -814,11 +849,12 @@ mod tests {
     /// every privilege level; see `perf`'s test of the same refusal.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn with_no_ring_open_on_any_cpu_the_attach_is_refused_and_nothing_left_installed() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn with_no_ring_open_on_any_cpu_the_attach_is_refused_and_nothing_left_installed()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let lib = dir.path().join("libssl.so.3");
-        std::fs::write(&lib, elf_exporting_ssl_write()).expect("write");
-        fake_tracefs(dir.path(), 0, Some(FORMAT), &format!("{}\n", u64::MAX));
+        std::fs::write(&lib, elf_exporting_ssl_write()).map_err(|e| format!("write: {e:?}"))?;
+        fake_tracefs(dir.path(), 0, Some(FORMAT), &format!("{}\n", u64::MAX))?;
 
         let err = UprobeReader::attach_many(
             dir.path(),
@@ -828,11 +864,12 @@ mod tests {
             }],
         )
         .err()
-        .expect("a reader with no ring reads nothing")
+        .ok_or("a reader with no ring reads nothing")?
         .to_string();
 
         assert!(err.contains("no perf ring could be opened"), "{err}");
-        assert_installed_then_removed(dir.path(), 0);
+        assert_installed_then_removed(dir.path(), 0)?;
+        Ok(())
     }
 
     /// On a host running two TLS libraries, the second failing is reported
@@ -840,11 +877,11 @@ mod tests {
     /// released rather than left behind.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn a_later_library_failing_releases_the_probes_on_the_earlier_one() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_later_library_failing_releases_the_probes_on_the_earlier_one() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let good = dir.path().join("libssl.so.3");
-        std::fs::write(&good, elf_exporting_ssl_write()).expect("write");
-        fake_tracefs(dir.path(), 0, Some(FORMAT), &format!("{}\n", u64::MAX));
+        std::fs::write(&good, elf_exporting_ssl_write()).map_err(|e| format!("write: {e:?}"))?;
+        fake_tracefs(dir.path(), 0, Some(FORMAT), &format!("{}\n", u64::MAX))?;
         let absent = dir.path().join("libwolfssl.so.42");
 
         let err = UprobeReader::attach_many(
@@ -861,11 +898,12 @@ mod tests {
             ],
         )
         .err()
-        .expect("the second library cannot be read")
+        .ok_or("the second library cannot be read")?
         .to_string();
 
         assert!(err.starts_with(&absent.display().to_string()), "{err}");
-        assert_installed_then_removed(dir.path(), 0);
+        assert_installed_then_removed(dir.path(), 0)?;
+        Ok(())
     }
 
     /// A tracefs whose `uprobe_events` cannot be written refuses the install,
@@ -873,12 +911,13 @@ mod tests {
     /// probes than it was asked for.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn a_probe_that_cannot_be_installed_fails_the_attach() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_probe_that_cannot_be_installed_fails_the_attach() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let lib = dir.path().join("libssl.so.3");
-        std::fs::write(&lib, elf_exporting_ssl_write()).expect("write");
-        fake_tracefs(dir.path(), 0, Some(FORMAT), &format!("{}\n", u64::MAX));
-        std::fs::remove_file(dir.path().join("uprobe_events")).expect("remove");
+        std::fs::write(&lib, elf_exporting_ssl_write()).map_err(|e| format!("write: {e:?}"))?;
+        fake_tracefs(dir.path(), 0, Some(FORMAT), &format!("{}\n", u64::MAX))?;
+        std::fs::remove_file(dir.path().join("uprobe_events"))
+            .map_err(|e| format!("remove: {e:?}"))?;
 
         let err = UprobeReader::attach_many(
             dir.path(),
@@ -888,30 +927,34 @@ mod tests {
             }],
         )
         .err()
-        .expect("nowhere to install a probe");
+        .ok_or("nowhere to install a probe")?;
         assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        Ok(())
     }
 
     /// Every probe the reader holds, across every library, is listed in
     /// installation order -- and dropping the reader removes all of them.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn probe_names_lists_every_probe_across_every_library() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn probe_names_lists_every_probe_across_every_library() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path();
-        std::fs::write(root.join("uprobe_events"), "").expect("uprobe_events");
+        std::fs::write(root.join("uprobe_events"), "")
+            .map_err(|e| format!("uprobe_events: {e:?}"))?;
         let want: Vec<String> = (0..2)
             .flat_map(|slot| BANDS.map(|band| probe_name(77, slot, band)))
             .collect();
         for name in &want {
-            std::fs::create_dir_all(root.join(format!("events/uprobes/{name}"))).expect("dir");
+            std::fs::create_dir_all(root.join(format!("events/uprobes/{name}")))
+                .map_err(|e| format!("dir: {e:?}"))?;
         }
         let reader = UprobeReader {
             bands: Vec::new(),
             probes: vec![
-                InstalledProbes::install(root, 77, 0, "/lib/libssl.so.3", 0x1000).expect("openssl"),
+                InstalledProbes::install(root, 77, 0, "/lib/libssl.so.3", 0x1000)
+                    .map_err(|e| format!("openssl: {e:?}"))?,
                 InstalledProbes::install(root, 77, 1, "/lib/libwolfssl.so.42", 0x2000)
-                    .expect("wolfssl"),
+                    .map_err(|e| format!("wolfssl: {e:?}"))?,
             ],
             next_ordinal: 0,
         };
@@ -922,13 +965,15 @@ mod tests {
         );
 
         drop(reader);
-        let events = std::fs::read_to_string(root.join("uprobe_events")).expect("read");
+        let events = std::fs::read_to_string(root.join("uprobe_events"))
+            .map_err(|e| format!("read: {e:?}"))?;
         for name in &want {
             assert!(
                 events.contains(&format!("-:{name}")),
                 "{name} removed: {events}"
             );
         }
+        Ok(())
     }
 
     // ── The capture entry point's failure contract ───────────────────────
@@ -940,8 +985,9 @@ mod tests {
     /// The library does not exist, so the attach fails reading it, before
     /// the real tracefs is touched at all.
     #[test]
-    fn a_failed_attach_is_reported_on_the_ready_channel_with_every_target_named() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_failed_attach_is_reported_on_the_ready_channel_with_every_target_named()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let a = dir.path().join("libssl.so.3").display().to_string();
         let targets = [crate::capture::UprobeTarget {
             library: a.clone(),
@@ -951,30 +997,35 @@ mod tests {
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
 
         let err = capture_uprobe(&targets, tx, Some(ready_tx))
-            .expect_err("an absent library cannot be captured from")
+            .err()
+            .ok_or("an absent library cannot be captured from")?
             .to_string();
 
         let reported = ready_rx
             .try_recv()
-            .expect("readiness must be answered")
-            .expect_err("and the answer is a failure");
+            .map_err(|e| format!("readiness must be answered: {e:?}"))?
+            .err()
+            .ok_or("and the answer is a failure")?;
         assert_eq!(reported, err, "one message, both places");
         assert!(
             err.starts_with(&format!("uprobe capture on [{a}:SSL_write] failed:")),
             "{err}"
         );
+        Ok(())
     }
 
     /// With nobody waiting on readiness, the failure is still returned.
     #[test]
-    fn a_failed_attach_without_a_ready_channel_still_fails() {
+    fn a_failed_attach_without_a_ready_channel_still_fails() -> Result<(), TestError> {
         let (tx, _rx) = packet_channel(16);
         let err = capture_uprobe(&[], tx, None)
-            .expect_err("no target, no capture")
+            .err()
+            .ok_or("no target, no capture")?
             .to_string();
         assert!(
             err.starts_with("uprobe capture on [] failed:") && err.contains("no TLS library"),
             "{err}"
         );
+        Ok(())
     }
 }

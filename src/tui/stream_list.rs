@@ -581,6 +581,9 @@ fn health_row_style(health: StreamHealth, theme: &super::Theme) -> Style {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Up/down/top/bottom navigation moves and clamps the selection.
     #[test]
     fn stream_list_state_navigation() {
@@ -739,7 +742,7 @@ mod tests {
     /// unassociated streams and streams whose dialog vanished are kept (a
     /// SIP filter cannot judge them).
     #[test]
-    fn displayed_streams_honors_sip_filter() {
+    fn displayed_streams_honors_sip_filter() -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;
         use crate::sip::dialog_store::DialogStore;
         use crate::sip::dsl::FilterExpr;
@@ -767,7 +770,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse");
+        .map_err(|e| format!("parse: {e:?}"))?;
         let mut ds = DialogStore::new(10, false);
         ds.process_message(msg);
 
@@ -776,7 +779,8 @@ mod tests {
         let orphan = mk_stream(3, 20004, Some("PCMU"), None);
         let all = [&matching, &other, &orphan];
 
-        let f = FilterExpr::parse("from.user == '1001'").expect("parse filter");
+        let f =
+            FilterExpr::parse("from.user == '1001'").map_err(|e| format!("parse filter: {e:?}"))?;
         let shown = displayed_streams(
             all,
             Some(&ds),
@@ -792,7 +796,8 @@ mod tests {
             "a stream pointing at a vanished dialog cannot be judged -> kept"
         );
 
-        let f2 = FilterExpr::parse("from.user == '9999'").expect("parse filter");
+        let f2 =
+            FilterExpr::parse("from.user == '9999'").map_err(|e| format!("parse filter: {e:?}"))?;
         let shown = displayed_streams(
             all,
             Some(&ds),
@@ -803,6 +808,7 @@ mod tests {
         let ssrcs: Vec<u32> = shown.iter().map(|s| s.key.ssrc).collect();
         assert!(!ssrcs.contains(&1), "dialog fails the filter -> hidden");
         assert!(ssrcs.contains(&3), "unassociated stream still shown");
+        Ok(())
     }
 
     /// A fresh stream with no jitter or loss classifies as Good.

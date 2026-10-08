@@ -743,6 +743,8 @@ impl HepSendersReport {
 mod hep_senders_text {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A report with one live sender, one silent one and one refused source,
     /// built by hand so the rendering is tested against known values.
     fn sample() -> HepSendersReport {
@@ -795,7 +797,7 @@ mod hep_senders_text {
     /// reasons, and the trust and identity caveat, all in the one table the
     /// CLI prints and the TUI shows.
     #[test]
-    fn the_table_names_every_sender_its_state_and_every_refused_source() {
+    fn the_table_names_every_sender_its_state_and_every_refused_source() -> Result<(), TestError> {
         let text = sample().to_text();
         for needle in [
             "hep:7@192.0.2.7",
@@ -826,24 +828,28 @@ mod hep_senders_text {
             .find(|l| l.contains("hep:7@192.0.2.7"))
             .unwrap_or_default();
         assert!(!live_line.contains("SILENT"), "{live_line}");
+        Ok(())
     }
 
     /// A run with no listener says so, instead of printing an empty table
     /// that reads as "nobody is sending".
     #[test]
-    fn a_run_with_no_listener_says_so_rather_than_printing_an_empty_table() {
+    fn a_run_with_no_listener_says_so_rather_than_printing_an_empty_table() -> Result<(), TestError>
+    {
         let text = HepSendersReport::not_listening().to_text();
         assert!(text.contains("no HEP listener"), "{text}");
         assert!(!text.contains("SOURCE"), "no table header: {text}");
+        Ok(())
     }
 
     /// A list cut by a row limit says how many it left out.
     #[test]
-    fn a_table_cut_by_a_row_limit_says_what_it_left_out() {
+    fn a_table_cut_by_a_row_limit_says_what_it_left_out() -> Result<(), TestError> {
         let mut report = sample();
         report.senders_tracked = 40;
         let text = report.to_text();
         assert!(text.contains("2 of 40"), "{text}");
+        Ok(())
     }
 }
 
@@ -862,6 +868,8 @@ mod wideband_tests {
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// An AMR-WB stream whose payloads pinned exactly `ft`, with `lost`
     /// packets against `received`.
@@ -895,11 +903,11 @@ mod wideband_tests {
     /// which listening context it was read in.
     #[test]
     #[serial_test::serial(listening_context)]
-    fn a_published_mode_reaches_the_surface_with_its_context() {
+    fn a_published_mode_reaches_the_surface_with_its_context() -> Result<(), TestError> {
         // Frame type 2 is 12.65 kbit/s, published in both contexts.
         let s = amr_wb_stream(2, 100, 0);
         let out = StreamSummary::of(&s, crate::rtp::quality::MosDelay::unknown());
-        let mos = out.mos_wideband.expect("12.65 is published");
+        let mos = out.mos_wideband.ok_or("12.65 is published")?;
         assert!((3.0..=4.5).contains(&mos), "MOS_CQEW out of range: {mos}");
         assert_eq!(out.mos_wideband_context.as_deref(), Some("monotic"));
         assert_eq!(out.mos_wideband_unavailable, None);
@@ -910,12 +918,13 @@ mod wideband_tests {
             "the two scales must not coincide by accident: {} and {mos}",
             out.mos
         );
+        Ok(())
     }
 
     /// A mode G.113 does not publish in the context in force says so by name.
     #[test]
     #[serial_test::serial(listening_context)]
-    fn an_unpublished_mode_names_itself_rather_than_going_quiet() {
+    fn an_unpublished_mode_names_itself_rather_than_going_quiet() -> Result<(), TestError> {
         crate::rtp::emodel_wb::set_listening_context(
             crate::rtp::emodel_wb::ListeningContext::Diotic,
         );
@@ -930,13 +939,14 @@ mod wideband_tests {
         crate::rtp::emodel_wb::set_listening_context(
             crate::rtp::emodel_wb::ListeningContext::Monotic,
         );
+        Ok(())
     }
 
     /// Loss on a mode with no published robustness factor is reported as not
     /// computable, which is a different answer from an unpublished mode.
     #[test]
     #[serial_test::serial(listening_context)]
-    fn loss_without_a_robustness_factor_is_reported_as_not_computable() {
+    fn loss_without_a_robustness_factor_is_reported_as_not_computable() -> Result<(), TestError> {
         // Frame type 0 is 6.6 kbit/s: an Ie,WB in both contexts, a Bpl,wb in
         // neither, so it scores clean and refuses under loss.
         let clean = StreamSummary::of(
@@ -956,6 +966,7 @@ mod wideband_tests {
             "and NOT unpublished_mode -- the tables are not silent here, this \
              stream is the thing that cannot be scored"
         );
+        Ok(())
     }
 
     /// A stream nobody attempted to score wideband carries no wideband fields
@@ -965,12 +976,13 @@ mod wideband_tests {
     /// field explaining why it has no AMR-WB score.
     #[test]
     #[serial_test::serial(listening_context)]
-    fn a_narrowband_stream_carries_no_wideband_fields() {
+    fn a_narrowband_stream_carries_no_wideband_fields() -> Result<(), TestError> {
         let mut s = amr_wb_stream(2, 100, 0);
         s.codec = Some("PCMU".to_string());
         let out = StreamSummary::of(&s, crate::rtp::quality::MosDelay::unknown());
         assert_eq!(out.mos_wideband, None);
         assert_eq!(out.mos_wideband_context, None);
         assert_eq!(out.mos_wideband_unavailable, None);
+        Ok(())
     }
 }

@@ -732,22 +732,25 @@ impl Linter {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every ruleset name parses back to the variant it names, and
     /// `Ruleset::names` lists all of them.
     #[test]
-    fn ruleset_names_round_trip() {
+    fn ruleset_names_round_trip() -> Result<(), TestError> {
         for name in Ruleset::names() {
-            let set = Ruleset::from_name(name).unwrap_or_else(|| panic!("{name} does not parse"));
+            let set = Ruleset::from_name(name).ok_or_else(|| format!("{name} does not parse"))?;
             assert_eq!(set.as_str(), *name);
         }
         assert_eq!(Ruleset::from_name("OBS"), Some(Ruleset::Observation));
         assert_eq!(Ruleset::from_name("nonsense"), None);
+        Ok(())
     }
 
     /// `Ruleset::names` and the parser agree on the full set — a variant added
     /// without a name would silently be unselectable from a CLI flag.
     #[test]
-    fn every_ruleset_variant_has_a_name() {
+    fn every_ruleset_variant_has_a_name() -> Result<(), TestError> {
         let all = [
             Ruleset::All,
             Ruleset::Must,
@@ -764,6 +767,7 @@ mod tests {
             );
         }
         assert_eq!(Ruleset::names().len(), all.len());
+        Ok(())
     }
 
     /// The `must` ruleset holds only MUST violations, and the `interop` set
@@ -772,7 +776,7 @@ mod tests {
     /// This is the separation the whole `Basis` axis exists for: a CI job
     /// running `must` must never fail on a vendor heuristic.
     #[test]
-    fn must_and_interop_do_not_overlap() {
+    fn must_and_interop_do_not_overlap() -> Result<(), TestError> {
         for rule in RULES {
             assert!(
                 !(Ruleset::Must.contains(rule) && Ruleset::Interop.contains(rule)),
@@ -783,11 +787,12 @@ mod tests {
         assert!(Ruleset::Must.contains(&BRANCH_COOKIE));
         assert!(!Ruleset::Must.contains(&ANSWER_EXTRA_FORMAT));
         assert!(Ruleset::Interop.contains(&ANSWER_EXTRA_FORMAT));
+        Ok(())
     }
 
     /// The `observation` ruleset is exactly the media-scoped rules.
     #[test]
-    fn observation_ruleset_is_the_media_rules() {
+    fn observation_ruleset_is_the_media_rules() -> Result<(), TestError> {
         let selected: Vec<&str> = RULES
             .iter()
             .filter(|r| Ruleset::Observation.contains(r))
@@ -797,19 +802,21 @@ mod tests {
         for id in &selected {
             assert!(id.starts_with("OBS-"), "{id} is not an observation rule");
         }
+        Ok(())
     }
 
     /// An exact suppression silences one rule and leaves its neighbors alone.
     #[test]
-    fn exact_suppression_silences_one_rule() {
+    fn exact_suppression_silences_one_rule() -> Result<(), TestError> {
         let config = LintConfig::new().suppress(BRANCH_COOKIE.id);
         assert!(!config.enabled(&BRANCH_COOKIE));
         assert!(config.enabled(&MAX_FORWARDS_MISSING));
+        Ok(())
     }
 
     /// A trailing `*` suppresses every identifier under the prefix.
     #[test]
-    fn prefix_suppression_silences_a_family() {
+    fn prefix_suppression_silences_a_family() -> Result<(), TestError> {
         let config = LintConfig::new().suppress("OBS-*");
         for rule in RULES {
             assert_eq!(
@@ -819,11 +826,12 @@ mod tests {
                 rule.id
             );
         }
+        Ok(())
     }
 
     /// A suppression list parses commas, whitespace, newlines and comments.
     #[test]
-    fn suppression_lists_parse_files_and_flags() {
+    fn suppression_lists_parse_files_and_flags() -> Result<(), TestError> {
         let config = LintConfig::new().suppress_list(
             "OBS-*, SIP-3261-20-URI-BRACKETS  # carrier rewrites these\n\
              \n\
@@ -834,50 +842,55 @@ mod tests {
         assert!(!config.enabled(&BRANCH_COOKIE));
         assert!(!config.enabled(&PT_UNDECLARED));
         assert!(config.enabled(&MAX_FORWARDS_MISSING));
+        Ok(())
     }
 
     /// A comment introduced by `#` never becomes a suppression pattern.
     #[test]
-    fn suppression_comments_are_not_patterns() {
+    fn suppression_comments_are_not_patterns() -> Result<(), TestError> {
         let config = LintConfig::new().suppress_list("# everything off\nSIP-3261-20-URI-BRACKETS");
         assert_eq!(config.suppressions(), ["SIP-3261-20-URI-BRACKETS"]);
+        Ok(())
     }
 
     /// A minimum severity drops the quieter rules.
     #[test]
-    fn min_severity_filters_by_loudness() {
+    fn min_severity_filters_by_loudness() -> Result<(), TestError> {
         let config = LintConfig::new().with_min_severity(Severity::Error);
         for rule in RULES {
             assert_eq!(config.enabled(rule), rule.severity == Severity::Error);
         }
+        Ok(())
     }
 
     /// The sink honors the per-rule cap and reports nothing beyond it.
     #[test]
-    fn sink_caps_repeated_findings() {
+    fn sink_caps_repeated_findings() -> Result<(), TestError> {
         let config = LintConfig::new().with_max_per_rule(2);
         let mut sink = FindingSink::new(&config);
         for i in 0..10 {
             sink.push(&BRANCH_COOKIE, i, "o", "e", "x");
         }
         assert_eq!(sink.finish().len(), 2);
+        Ok(())
     }
 
     /// A zero cap means uncapped.
     #[test]
-    fn sink_cap_of_zero_is_unlimited() {
+    fn sink_cap_of_zero_is_unlimited() -> Result<(), TestError> {
         let config = LintConfig::new().with_max_per_rule(0);
         let mut sink = FindingSink::new(&config);
         for i in 0..10 {
             sink.push(&BRANCH_COOKIE, i, "o", "e", "x");
         }
         assert_eq!(sink.finish().len(), 10);
+        Ok(())
     }
 
     /// The sink drops a suppressed rule, and says so through `wants` before the
     /// rule does any work.
     #[test]
-    fn sink_drops_suppressed_rules_and_counts_every_one() {
+    fn sink_drops_suppressed_rules_and_counts_every_one() -> Result<(), TestError> {
         let config = LintConfig::new().suppress(BRANCH_COOKIE.id);
         let mut sink = FindingSink::new(&config);
 
@@ -907,6 +920,7 @@ mod tests {
         );
         assert_eq!(outcome.withheld.below_severity, 0);
         assert_eq!(outcome.withheld.capped, 0);
+        Ok(())
     }
 
     /// The three reasons are counted apart, because they mean different things.
@@ -916,7 +930,7 @@ mod tests {
     /// combined `hidden` count would say something was withheld without saying
     /// why, which is only marginally better than saying nothing.
     #[test]
-    fn withheld_reasons_are_counted_separately() {
+    fn withheld_reasons_are_counted_separately() -> Result<(), TestError> {
         // MAX_FORWARDS_RANGE is a Notice, below a Warning floor.
         let config = LintConfig::new()
             .with_min_severity(Severity::Warning)
@@ -935,11 +949,12 @@ mod tests {
         assert_eq!(outcome.withheld.below_severity, 1);
         assert_eq!(outcome.withheld.capped, 1);
         assert!(outcome.withheld.any());
+        Ok(())
     }
 
     /// A clean run reports zeroes rather than nothing.
     #[test]
-    fn a_run_that_withheld_nothing_still_reports_counts() {
+    fn a_run_that_withheld_nothing_still_reports_counts() -> Result<(), TestError> {
         let config = LintConfig::new();
         let mut sink = FindingSink::new(&config);
         sink.push(&BRANCH_COOKIE, 0, "o", "e", "x");
@@ -947,30 +962,33 @@ mod tests {
         assert_eq!(outcome.findings.len(), 1);
         assert_eq!(outcome.withheld, WithheldCounts::default());
         assert!(!outcome.withheld.any());
+        Ok(())
     }
 
     /// A scratch directory tree for the discovery tests, removed on drop.
     struct Tree(std::path::PathBuf);
 
     impl Tree {
-        fn new(name: &str) -> Self {
+        fn new(name: &str) -> Result<Self, TestError> {
             let dir =
                 std::env::temp_dir().join(format!("sipnab-lintdisc-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("scratch dir");
-            Self(dir)
+            std::fs::create_dir_all(&dir).map_err(|e| format!("scratch dir: {e:?}"))?;
+            Ok(Self(dir))
         }
-        fn mkdir(&self, rel: &str) -> std::path::PathBuf {
+        fn mkdir(&self, rel: &str) -> Result<std::path::PathBuf, TestError> {
             let d = self.0.join(rel);
-            std::fs::create_dir_all(&d).expect("mkdir");
-            d
+            std::fs::create_dir_all(&d).map_err(|e| format!("mkdir: {e:?}"))?;
+            Ok(d)
         }
-        fn touch(&self, rel: &str) {
+        fn touch(&self, rel: &str) -> Result<(), TestError> {
             let f = self.0.join(rel);
             if let Some(parent) = f.parent() {
-                std::fs::create_dir_all(parent).expect("mkdir");
+                std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e:?}"))?;
             }
-            std::fs::write(&f, "SIP-3261-20-URI-BRACKETS\n").expect("write");
+            std::fs::write(&f, "SIP-3261-20-URI-BRACKETS\n")
+                .map_err(|e| format!("write: {e:?}"))?;
+            Ok(())
         }
     }
 
@@ -982,27 +1000,29 @@ mod tests {
 
     /// A `.sipnablint` beside the capture is found.
     #[test]
-    fn discovery_finds_the_file_beside_the_capture() {
-        let t = Tree::new("beside");
-        let caps = t.mkdir("caps");
-        t.touch("caps/.sipnablint");
+    fn discovery_finds_the_file_beside_the_capture() -> Result<(), TestError> {
+        let t = Tree::new("beside")?;
+        let caps = t.mkdir("caps")?;
+        t.touch("caps/.sipnablint")?;
         assert_eq!(
             SuppressionFile::discover(&caps),
             Some(caps.join(SUPPRESSION_FILENAME))
         );
+        Ok(())
     }
 
     /// Inside a project, discovery climbs to the project root and stops there.
     #[test]
-    fn discovery_climbs_to_the_project_root() {
-        let t = Tree::new("climb");
-        t.mkdir("proj/.git");
-        let caps = t.mkdir("proj/captures/today");
-        t.touch("proj/.sipnablint");
+    fn discovery_climbs_to_the_project_root() -> Result<(), TestError> {
+        let t = Tree::new("climb")?;
+        t.mkdir("proj/.git")?;
+        let caps = t.mkdir("proj/captures/today")?;
+        t.touch("proj/.sipnablint")?;
         assert_eq!(
             SuppressionFile::discover(&caps),
             Some(t.0.join("proj").join(SUPPRESSION_FILENAME))
         );
+        Ok(())
     }
 
     /// A capture in a directory that belongs to no project adopts nothing from
@@ -1013,43 +1033,46 @@ mod tests {
     /// off that nobody in this project turned off, and the run would look
     /// clean for a reason found four directories away.
     #[test]
-    fn discovery_refuses_to_climb_out_of_an_unrelated_tree() {
-        let t = Tree::new("unrelated");
+    fn discovery_refuses_to_climb_out_of_an_unrelated_tree() -> Result<(), TestError> {
+        let t = Tree::new("unrelated")?;
         // A suppression file above the capture, and no `.git` anywhere.
-        t.touch(".sipnablint");
-        let caps = t.mkdir("corpus/vendor-drop");
+        t.touch(".sipnablint")?;
+        let caps = t.mkdir("corpus/vendor-drop")?;
         assert_eq!(
             SuppressionFile::discover(&caps),
             None,
             "no project above the capture means no upward search"
         );
+        Ok(())
     }
 
     /// The file nearest the capture wins over one higher up.
     #[test]
-    fn discovery_prefers_the_closest_file() {
-        let t = Tree::new("closest");
-        t.mkdir("proj/.git");
-        let caps = t.mkdir("proj/captures");
-        t.touch("proj/.sipnablint");
-        t.touch("proj/captures/.sipnablint");
+    fn discovery_prefers_the_closest_file() -> Result<(), TestError> {
+        let t = Tree::new("closest")?;
+        t.mkdir("proj/.git")?;
+        let caps = t.mkdir("proj/captures")?;
+        t.touch("proj/.sipnablint")?;
+        t.touch("proj/captures/.sipnablint")?;
         assert_eq!(
             SuppressionFile::discover(&caps),
             Some(caps.join(SUPPRESSION_FILENAME))
         );
+        Ok(())
     }
 
     /// Loading reads the patterns and remembers where they came from.
     #[test]
-    fn a_loaded_file_remembers_its_own_path() {
-        let t = Tree::new("load");
-        let caps = t.mkdir("caps");
+    fn a_loaded_file_remembers_its_own_path() -> Result<(), TestError> {
+        let t = Tree::new("load")?;
+        let caps = t.mkdir("caps")?;
         std::fs::write(
             caps.join(SUPPRESSION_FILENAME),
             "# carrier rewrites these\nOBS-*, SIP-3261-20-URI-BRACKETS\n",
         )
-        .expect("write");
-        let file = SuppressionFile::load(caps.join(SUPPRESSION_FILENAME)).expect("load");
+        .map_err(|e| format!("write: {e:?}"))?;
+        let file = SuppressionFile::load(caps.join(SUPPRESSION_FILENAME))
+            .map_err(|e| format!("load: {e:?}"))?;
         assert_eq!(file.path(), caps.join(SUPPRESSION_FILENAME));
         assert_eq!(file.patterns(), ["OBS-*", "SIP-3261-20-URI-BRACKETS"]);
 
@@ -1057,13 +1080,15 @@ mod tests {
         assert!(!config.enabled(&PT_UNDECLARED));
         assert!(!config.enabled(&URI_BRACKETS));
         assert!(config.enabled(&MAX_FORWARDS_MISSING));
+        Ok(())
     }
 
     /// A named file that cannot be read is an error, never an empty list.
     #[test]
-    fn a_missing_named_suppression_file_is_an_error() {
-        let t = Tree::new("missing");
+    fn a_missing_named_suppression_file_is_an_error() -> Result<(), TestError> {
+        let t = Tree::new("missing")?;
         assert!(SuppressionFile::load(t.0.join("nope.sipnablint")).is_err());
+        Ok(())
     }
 
     /// A rule outside the selected ruleset is not "withheld" from anybody.
@@ -1072,19 +1097,20 @@ mod tests {
     /// which reads as "something was hidden from you" when the caller simply
     /// did not ask for it.
     #[test]
-    fn a_rule_outside_the_ruleset_is_not_counted_as_withheld() {
+    fn a_rule_outside_the_ruleset_is_not_counted_as_withheld() -> Result<(), TestError> {
         let config = LintConfig::new().with_ruleset(Ruleset::Syntax);
         let mut sink = FindingSink::new(&config);
         sink.push(&PT_UNDECLARED, 0, "o", "e", "x");
         let outcome = sink.finish_outcome();
         assert!(outcome.findings.is_empty());
         assert_eq!(outcome.withheld, WithheldCounts::default());
+        Ok(())
     }
 
     /// Findings come back ordered by message index, then by rule identifier —
     /// stable output a golden test or a diff can rely on.
     #[test]
-    fn findings_sort_by_index_then_rule() {
+    fn findings_sort_by_index_then_rule() -> Result<(), TestError> {
         let config = LintConfig::new();
         let mut sink = FindingSink::new(&config);
         sink.push(&MAX_FORWARDS_MISSING, 2, "o", "e", "x");
@@ -1103,11 +1129,12 @@ mod tests {
                 (2, MAX_FORWARDS_MISSING.id),
             ]
         );
+        Ok(())
     }
 
     /// `active_rules` reports exactly what a configuration would run.
     #[test]
-    fn active_rules_reflects_the_configuration() {
+    fn active_rules_reflects_the_configuration() -> Result<(), TestError> {
         let config = LintConfig::new()
             .with_ruleset(Ruleset::Observation)
             .suppress(PT_UNDECLARED.id);
@@ -1115,5 +1142,6 @@ mod tests {
         assert!(!active.contains(&PT_UNDECLARED.id));
         assert!(active.contains(&MEDIA_PORT_MISMATCH.id));
         assert!(!active.contains(&BRANCH_COOKIE.id));
+        Ok(())
     }
 }

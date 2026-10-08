@@ -170,72 +170,77 @@ mod tests {
     use crate::security::alerting::AlertEngine;
     use chrono::{TimeZone, Utc};
 
-    fn at(secs: i64) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap() + chrono::Duration::seconds(secs)
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?
+            + chrono::Duration::seconds(secs))
     }
 
     /// Seed three findings from three sources (so no cooldown suppresses them):
     /// two `scanner`, one `fraud`.
-    fn seeded_engine() -> AlertEngine {
+    fn seeded_engine() -> Result<AlertEngine, TestError> {
         let mut e = AlertEngine::new(Vec::new(), None);
+        e.fire("scanner", "10.0.0.1".parse()?, "ua=sipvicious", at(0)?);
         e.fire(
             "scanner",
-            "10.0.0.1".parse().unwrap(),
-            "ua=sipvicious",
-            at(0),
-        );
-        e.fire(
-            "scanner",
-            "10.0.0.2".parse().unwrap(),
+            "10.0.0.2".parse()?,
             "ua=friendly-scanner",
-            at(1),
+            at(1)?,
         );
-        e.fire(
-            "fraud",
-            "10.0.0.3".parse().unwrap(),
-            "irsf destination",
-            at(2),
-        );
-        e
+        e.fire("fraud", "10.0.0.3".parse()?, "irsf destination", at(2)?);
+        Ok(e)
     }
 
     /// A kind outside the four is refused, and the `--alert`-grammar spelling
     /// `reg-flood` is named as the near miss for `reg_flood`.
     #[test]
-    fn parse_query_refuses_an_unknown_kind_and_hints_the_near_miss() {
-        let err = parse_query(&["bogus".to_string()], None).expect_err("unknown kind");
+    fn parse_query_refuses_an_unknown_kind_and_hints_the_near_miss() -> Result<(), TestError> {
+        let err = parse_query(&["bogus".to_string()], None)
+            .err()
+            .ok_or("unknown kind")?;
         assert!(
             err.contains("unknown kind 'bogus'"),
             "names the kind: {err}"
         );
         assert!(err.contains("scanner"), "names the vocabulary: {err}");
 
-        let hint = parse_query(&["reg-flood".to_string()], None).expect_err("hyphen form");
+        let hint = parse_query(&["reg-flood".to_string()], None)
+            .err()
+            .ok_or("hyphen form")?;
         assert!(
             hint.contains("did you mean 'reg_flood'?"),
             "hints the underscore spelling: {hint}"
         );
 
         // A valid kind and a valid cursor parse.
-        let (kinds, since) =
-            parse_query(&["scanner".to_string()], Some("2024-01-15T12:00:00Z")).expect("valid");
+        let (kinds, since) = parse_query(&["scanner".to_string()], Some("2024-01-15T12:00:00Z"))
+            .map_err(|e| format!("valid: {e:?}"))?;
         assert_eq!(kinds, vec!["scanner".to_string()]);
         assert!(since.is_some());
+        Ok(())
     }
 
     /// `since` must be RFC 3339.
     #[test]
-    fn parse_query_rejects_a_malformed_since() {
-        let err = parse_query(&[], Some("last tuesday")).expect_err("bad since");
+    fn parse_query_rejects_a_malformed_since() -> Result<(), TestError> {
+        let err = parse_query(&[], Some("last tuesday"))
+            .err()
+            .ok_or("bad since")?;
         assert!(err.contains("RFC 3339"), "names the format: {err}");
+        Ok(())
     }
 
     /// The page bounds `rows` to `limit` but `total_matched` counts every
     /// admitted finding, and `truncated` says the page is short. The armed list
     /// is reported and, being non-empty, no note is attached.
     #[test]
-    fn build_report_bounds_the_page_but_counts_every_match() {
-        let engine = seeded_engine();
+    fn build_report_bounds_the_page_but_counts_every_match() -> Result<(), TestError> {
+        let engine = seeded_engine()?;
         let armed = vec!["scanner".to_string(), "fraud".to_string()];
         let r = build_report(Some(&engine), &armed, &[], None, 2);
 
@@ -245,26 +250,28 @@ mod tests {
         assert!(r.detection_armed, "two detectors are armed");
         assert!(r.note.is_none(), "an armed server attaches no note");
         assert_eq!(r.armed_kinds, armed);
+        Ok(())
     }
 
     /// A `kinds` filter narrows both the page and the total.
     #[test]
-    fn build_report_filters_by_kind() {
-        let engine = seeded_engine();
+    fn build_report_filters_by_kind() -> Result<(), TestError> {
+        let engine = seeded_engine()?;
         let armed = vec!["scanner".to_string()];
         let r = build_report(Some(&engine), &armed, &["fraud".to_string()], None, 50);
         assert_eq!(r.total_matched, 1, "only the one fraud finding");
         assert_eq!(r.rows[0].rule_name, "fraud");
         // Raw: the detail is the detector's own line, unfenced.
         assert_eq!(r.rows[0].detail, "irsf destination");
+        Ok(())
     }
 
     /// A detector's standing observation gap rides on the page beside the
     /// findings, narrowed by the same `kinds` filter, and a detector that
     /// withdraws it takes it off the page.
     #[test]
-    fn build_report_carries_the_observation_gaps() {
-        let mut engine = seeded_engine();
+    fn build_report_carries_the_observation_gaps() -> Result<(), TestError> {
+        let mut engine = seeded_engine()?;
         let gap = ObservationGap {
             rule_name: "reg_flood".to_string(),
             reason: "no_answers".to_string(),
@@ -292,12 +299,13 @@ mod tests {
                 .is_empty(),
             "a withdrawn gap leaves the page"
         );
+        Ok(())
     }
 
     /// With no engine and nothing armed, the page is empty AND carries the note
     /// that says so — the distinction a bare `[]` cannot draw.
     #[test]
-    fn build_report_without_a_detector_explains_the_empty_list() {
+    fn build_report_without_a_detector_explains_the_empty_list() -> Result<(), TestError> {
         let r = build_report(None, &[], &[], None, 50);
         assert!(r.rows.is_empty());
         assert_eq!(r.total_matched, 0);
@@ -308,5 +316,6 @@ mod tests {
                 .is_some_and(|n| n.contains("nothing was watching")),
             "the empty list is explained, not left ambiguous"
         );
+        Ok(())
     }
 }

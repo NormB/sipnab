@@ -157,6 +157,8 @@ mod tests {
 
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Text of a line, for assertions.
     fn text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
@@ -164,7 +166,7 @@ mod tests {
 
     /// Typing, moving and deleting edit on character boundaries.
     #[test]
-    fn the_editor_edits_on_character_boundaries() {
+    fn the_editor_edits_on_character_boundaries() -> Result<(), TestError> {
         let mut e = NoteEditor::new(None);
         for c in "héllo".chars() {
             e.insert(c);
@@ -178,11 +180,12 @@ mod tests {
         e.end();
         e.insert('!');
         assert_eq!(text(&e.line(Style::default())), "éXlo! ");
+        Ok(())
     }
 
     /// An empty commit removes; a refused one says why; a good one keeps.
     #[test]
-    fn commit_keeps_removes_or_refuses() {
+    fn commit_keeps_removes_or_refuses() -> Result<(), TestError> {
         let mut e = NoteEditor::new(None);
         assert_eq!(e.commit(), Ok(None), "empty removes the note");
         for c in "inline:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1c".chars() {
@@ -193,24 +196,32 @@ mod tests {
         for c in "fine".chars() {
             ok.insert(c);
         }
-        assert_eq!(ok.commit(), Ok(Some(NoteText::new("fine").expect("valid"))));
+        assert_eq!(
+            ok.commit(),
+            Ok(Some(
+                NoteText::new("fine").map_err(|e| format!("valid: {e:?}"))?
+            ))
+        );
+        Ok(())
     }
 
     /// An existing note opens with its text and the cursor at the end.
     #[test]
-    fn an_existing_note_opens_for_amending() {
-        let note = NoteText::new("first\nsecond").expect("valid");
+    fn an_existing_note_opens_for_amending() -> Result<(), TestError> {
+        let note = NoteText::new("first\nsecond").map_err(|e| format!("valid: {e:?}"))?;
         let mut e = NoteEditor::new(Some(&note));
         e.insert('!');
         assert_eq!(text(&e.line(Style::default())), "first↵second! ");
+        Ok(())
     }
 
     /// The pane shows one line per line of the note.
     #[test]
-    fn the_pane_shows_every_line_of_the_note() {
-        let note = NoteText::new("one\n\ttwo").expect("valid");
+    fn the_pane_shows_every_line_of_the_note() -> Result<(), TestError> {
+        let note = NoteText::new("one\n\ttwo").map_err(|e| format!("valid: {e:?}"))?;
         let lines = note_lines(&note, Style::default());
         let texts: Vec<String> = lines.iter().map(text).collect();
         assert_eq!(texts, ["one", "    two"]);
+        Ok(())
     }
 }

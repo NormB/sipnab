@@ -774,6 +774,7 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
+    type TestError = Box<dyn std::error::Error>;
 
     /// The loopback address used as the destination in test messages.
     fn localhost() -> IpAddr {
@@ -786,15 +787,19 @@ mod tests {
     }
 
     /// A fixed timestamp inside default business hours (14:00 UTC).
-    fn ts() -> DateTime<Utc> {
+    fn ts() -> Result<DateTime<Utc>, TestError> {
         // Use a time that's within default business hours (14:00 UTC)
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0).unwrap()
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build an INVITE to `to_user` from `src` with the given Call-ID.
-    fn make_invite(to_user: &str, src: IpAddr, call_id: &str) -> SipMessage {
+    fn make_invite(to_user: &str, src: IpAddr, call_id: &str) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
             &[
@@ -806,21 +811,21 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             src,
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     /// Create a dialog from a SIP message.
-    fn make_dialog_from_msg(msg: &SipMessage) -> SipDialog {
-        SipDialog::new(msg).expect("should create dialog")
+    fn make_dialog_from_msg(msg: &SipMessage) -> Result<SipDialog, TestError> {
+        Ok(SipDialog::new(msg).ok_or("should create dialog")?)
     }
 
     /// Multiple short calls to the same number prefix trigger a wangiri alert.
@@ -832,7 +837,7 @@ mod tests {
     /// reason the defect survived: the fixture supplied the very measurement
     /// the code could not make.
     #[test]
-    fn wangiri_pattern_detected() {
+    fn wangiri_pattern_detected() -> Result<(), TestError> {
         // Non-consecutive numbers under one prefix, so sequential scanning
         // cannot fire instead.
         let alerts = replay(
@@ -844,10 +849,11 @@ mod tests {
                 call("+44900999", 16, 1),
             ],
             attacker_ip(),
-        );
+        )?;
         let wangiri = details(&alerts, &FraudType::Wangiri);
-        let first = wangiri.first().expect("should detect wangiri pattern");
+        let first = wangiri.first().ok_or("should detect wangiri pattern")?;
         assert!(first.contains("short calls to prefix"), "got {first:?}");
+        Ok(())
     }
 
     /// The two wangiri thresholds agree: `WANGIRI_THRESHOLD - 1` short calls
@@ -855,7 +861,7 @@ mod tests {
     /// (The entry gate and the per-prefix trigger both use the "minimum
     /// short calls" semantics of `WANGIRI_THRESHOLD`.)
     #[test]
-    fn wangiri_triggers_exactly_at_threshold() {
+    fn wangiri_triggers_exactly_at_threshold() -> Result<(), TestError> {
         // Same "+44900" prefix, deliberately non-consecutive numbers so
         // sequential-scanning detection cannot fire instead.
         let dests = ["+44900111", "+44900555", "+44900999"];
@@ -866,18 +872,19 @@ mod tests {
             .map(|(i, d)| call(d, i as i64 * 4, 1))
             .collect();
 
-        let below = replay(&calls[..WANGIRI_THRESHOLD as usize - 1], attacker_ip());
+        let below = replay(&calls[..WANGIRI_THRESHOLD as usize - 1], attacker_ip())?;
         assert!(
             details(&below, &FraudType::Wangiri).is_empty(),
             "{} short calls are below the threshold of {WANGIRI_THRESHOLD}",
             WANGIRI_THRESHOLD - 1
         );
 
-        let at_threshold = replay(&calls, attacker_ip());
+        let at_threshold = replay(&calls, attacker_ip())?;
         assert!(
             !details(&at_threshold, &FraudType::Wangiri).is_empty(),
             "the WANGIRI_THRESHOLD-th short call to a prefix must raise the alert"
         );
+        Ok(())
     }
 
     /// Calls to consecutive numbers that do not exist trigger a
@@ -889,40 +896,42 @@ mod tests {
     /// used to hand the detector a dialog whose duration it had set by hand,
     /// which no capture produces at the moment an INVITE is analyzed.
     #[test]
-    fn sequential_scanning_detected() {
-        let alerts = replay_refused(&DIDS[..5], attacker_ip());
+    fn sequential_scanning_detected() -> Result<(), TestError> {
+        let alerts = replay_refused(&DIDS[..5], attacker_ip())?;
         let alert = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::SequentialScanning)
-            .expect("should detect sequential scanning");
+            .ok_or("should detect sequential scanning")?;
         assert!(alert.detail.contains("sequential dialing"));
+        Ok(())
     }
 
     /// Normal calls of realistic duration to distinct numbers raise no alert.
     #[test]
-    fn normal_call_pattern_not_detected() {
+    fn normal_call_pattern_not_detected() -> Result<(), TestError> {
         let mut detector = FraudDetector::new(None);
         let src = attacker_ip();
 
         // Two normal calls to different destinations with realistic durations
-        let msg1 = make_invite("+18005551234", src, "normal-1@test");
-        let mut dialog1 = make_dialog_from_msg(&msg1);
+        let msg1 = make_invite("+18005551234", src, "normal-1@test")?;
+        let mut dialog1 = make_dialog_from_msg(&msg1)?;
         dialog1.updated_at = dialog1.created_at + TimeDelta::seconds(120);
         assert!(detector.check(&msg1, &dialog1).is_none());
 
-        let msg2 = make_invite("+442071234567", src, "normal-2@test");
-        let mut dialog2 = make_dialog_from_msg(&msg2);
+        let msg2 = make_invite("+442071234567", src, "normal-2@test")?;
+        let mut dialog2 = make_dialog_from_msg(&msg2)?;
         dialog2.updated_at = dialog2.created_at + TimeDelta::seconds(180);
         assert!(
             detector.check(&msg2, &dialog2).is_none(),
             "normal calls should not trigger fraud detection"
         );
+        Ok(())
     }
 
     /// A call placed outside configured business hours triggers an off-hours
     /// alert.
     #[test]
-    fn off_hours_detection() {
+    fn off_hours_detection() -> Result<(), TestError> {
         let mut detector = FraudDetector::new(Some((8, 18)));
 
         // Create a message at 03:00 (outside business hours)
@@ -937,7 +946,9 @@ mod tests {
             ],
             b"",
         );
-        let early_ts = chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 3, 0, 0).unwrap();
+        let early_ts = chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 3, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let msg = parse_sip(
             &raw,
             early_ts,
@@ -947,31 +958,39 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse");
-        let dialog = make_dialog_from_msg(&msg);
+        .map_err(|e| format!("parse: {e:?}"))?;
+        let dialog = make_dialog_from_msg(&msg)?;
 
         let alert = detector.check(&msg, &dialog);
         assert!(alert.is_some(), "should detect off-hours call");
-        let alert = alert.unwrap();
+        let alert = alert.ok_or("alert is Some")?;
         assert_eq!(alert.alert_type, FraudType::OffHours);
         assert!(alert.detail.contains("outside business hours"));
+        Ok(())
     }
 
     // ── Measured call duration, and packet time ──────────────────────
 
     /// Capture time `secs` seconds after the fixed base timestamp.
-    fn at(secs: i64) -> DateTime<Utc> {
-        ts() + TimeDelta::seconds(secs)
+    fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(ts()? + TimeDelta::seconds(secs))
     }
 
     /// Parse `raw` as arriving from `src` at capture time `when`.
-    fn parse_at(raw: &[u8], src: IpAddr, when: DateTime<Utc>) -> SipMessage {
-        parse_sip(raw, when, src, localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse")
+    fn parse_at(raw: &[u8], src: IpAddr, when: DateTime<Utc>) -> Result<SipMessage, TestError> {
+        Ok(
+            parse_sip(raw, when, src, localhost(), 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse: {e:?}"))?,
+        )
     }
 
     /// An INVITE from the caller opening `call_id` towards `to_user`.
-    fn invite_at(to_user: &str, src: IpAddr, call_id: &str, when: DateTime<Utc>) -> SipMessage {
+    fn invite_at(
+        to_user: &str,
+        src: IpAddr,
+        call_id: &str,
+        when: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
             &[
@@ -987,7 +1006,7 @@ mod tests {
     }
 
     /// The callee's `200 OK` answering the INVITE of `call_id`.
-    fn ok_at(to_user: &str, call_id: &str, when: DateTime<Utc>) -> SipMessage {
+    fn ok_at(to_user: &str, call_id: &str, when: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1003,7 +1022,12 @@ mod tests {
     }
 
     /// The caller's `BYE`, which ends the dialog.
-    fn bye_at(to_user: &str, src: IpAddr, call_id: &str, when: DateTime<Utc>) -> SipMessage {
+    fn bye_at(
+        to_user: &str,
+        src: IpAddr,
+        call_id: &str,
+        when: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("BYE sip:{to_user}@example.com SIP/2.0"),
             &[
@@ -1059,17 +1083,17 @@ mod tests {
     /// from one call before the INVITE of an earlier one, which is a timeline
     /// no capture contains and which the pruning logic is entitled to assume
     /// cannot happen.
-    fn replay(calls: &[Call<'_>], src: IpAddr) -> Vec<FraudAlert> {
+    fn replay(calls: &[Call<'_>], src: IpAddr) -> Result<Vec<FraudAlert>, TestError> {
         let mut msgs: Vec<SipMessage> = Vec::new();
         for (i, c) in calls.iter().enumerate() {
             let call_id = format!("call-{i}@test");
-            msgs.push(invite_at(c.dest, src, &call_id, at(c.start)));
+            msgs.push(invite_at(c.dest, src, &call_id, at(c.start)?)?);
             msgs.push(ok_at(
                 c.dest,
                 &call_id,
-                at(c.start) + TimeDelta::milliseconds(500),
-            ));
-            msgs.push(bye_at(c.dest, src, &call_id, at(c.start + c.secs)));
+                at(c.start)? + TimeDelta::milliseconds(500),
+            )?);
+            msgs.push(bye_at(c.dest, src, &call_id, at(c.start + c.secs)?)?);
         }
         msgs.sort_by_key(|m| m.timestamp);
 
@@ -1081,7 +1105,7 @@ mod tests {
                 alerts.push(a);
             }
         }
-        alerts
+        Ok(alerts)
     }
 
     /// A block of consecutive DIDs, the shape a hunt group and a dial-plan
@@ -1098,7 +1122,12 @@ mod tests {
     ];
 
     /// The callee's final refusal of `call_id`.
-    fn refused_at(status: u16, to_user: &str, call_id: &str, when: DateTime<Utc>) -> SipMessage {
+    fn refused_at(
+        status: u16,
+        to_user: &str,
+        call_id: &str,
+        when: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {status} Not Found"),
             &[
@@ -1115,23 +1144,23 @@ mod tests {
 
     /// Replay one INVITE per destination, each refused with `404`, and return
     /// every alert raised.
-    fn replay_refused(dests: &[&str], src: IpAddr) -> Vec<FraudAlert> {
+    fn replay_refused(dests: &[&str], src: IpAddr) -> Result<Vec<FraudAlert>, TestError> {
         let mut store = crate::sip::dialog_store::DialogStore::new(1000, false);
         let mut det = FraudDetector::new(None);
         let mut alerts = Vec::new();
         for (i, dest) in dests.iter().enumerate() {
             let call_id = format!("refused-{i}@test");
-            let start = at(i as i64 * 2);
+            let start = at(i as i64 * 2)?;
             for msg in [
-                invite_at(dest, src, &call_id, start),
-                refused_at(404, dest, &call_id, start + TimeDelta::milliseconds(80)),
+                invite_at(dest, src, &call_id, start)?,
+                refused_at(404, dest, &call_id, start + TimeDelta::milliseconds(80))?,
             ] {
                 if let Some(a) = feed(&mut store, &mut det, &msg) {
                     alerts.push(a);
                 }
             }
         }
-        alerts
+        Ok(alerts)
     }
 
     /// The alerts of `kind` in `alerts`, as their detail strings.
@@ -1153,7 +1182,7 @@ mod tests {
     /// prefix were reported as three short calls. A call's duration is not
     /// knowable when it starts; it is knowable when it ends.
     #[test]
-    fn calls_that_lasted_minutes_are_not_short_calls() {
+    fn calls_that_lasted_minutes_are_not_short_calls() -> Result<(), TestError> {
         // Non-consecutive numbers so sequential scanning cannot fire instead;
         // three calls, so the volume path cannot either.
         let alerts = replay(
@@ -1163,18 +1192,19 @@ mod tests {
                 call("+44900999", 40, 200),
             ],
             attacker_ip(),
-        );
+        )?;
         let wangiri = details(&alerts, &FraudType::Wangiri);
         assert!(
             wangiri.is_empty(),
             "three calls of 200s each are not short calls, got {wangiri:?}"
         );
+        Ok(())
     }
 
     /// Three genuinely short calls to one prefix still raise wangiri — the
     /// duration test must not become a way to never detect anything.
     #[test]
-    fn three_genuinely_short_calls_to_one_prefix_still_alert() {
+    fn three_genuinely_short_calls_to_one_prefix_still_alert() -> Result<(), TestError> {
         let alerts = replay(
             &[
                 call("+44900111", 0, 1),
@@ -1182,15 +1212,16 @@ mod tests {
                 call("+44900999", 10, 1),
             ],
             attacker_ip(),
-        );
+        )?;
         let wangiri = details(&alerts, &FraudType::Wangiri);
         let first = wangiri
             .first()
-            .expect("three 1-second calls to one prefix is wangiri");
+            .ok_or("three 1-second calls to one prefix is wangiri")?;
         assert!(
             first.contains("+44900"),
             "the alert must name the prefix it counted, got {first:?}"
         );
+        Ok(())
     }
 
     /// The per-prefix count is over SHORT calls, not over every call.
@@ -1208,7 +1239,7 @@ mod tests {
     /// calls. `+11111` reaches three only by counting two 200-second
     /// conversations alongside its one short call.
     #[test]
-    fn wangiri_counts_short_calls_not_every_call() {
+    fn wangiri_counts_short_calls_not_every_call() -> Result<(), TestError> {
         let alerts = replay(
             &[
                 call("+11111000", 0, 1),
@@ -1218,13 +1249,14 @@ mod tests {
                 call("+11111888", 20, 200),
             ],
             attacker_ip(),
-        );
+        )?;
         let wangiri = details(&alerts, &FraudType::Wangiri);
         assert!(
             wangiri.is_empty(),
             "no prefix has {WANGIRI_THRESHOLD} SHORT calls — '+11111' has one, plus two \
              200-second conversations — got {wangiri:?}"
         );
+        Ok(())
     }
 
     /// The volume window counts what the capture says, not how long sipnab
@@ -1236,7 +1268,7 @@ mod tests {
     /// lifetime total. Measured against the real corpus, sources whose true
     /// busiest minute held four calls were reported as six in sixty seconds.
     #[test]
-    fn volume_window_is_measured_in_packet_time() {
+    fn volume_window_is_measured_in_packet_time() -> Result<(), TestError> {
         // One call every 30s: at most three in any 60-second window, against a
         // minimum of VOLUME_SPIKE_MIN_CALLS.
         let dests: Vec<String> = (0..12)
@@ -1247,13 +1279,14 @@ mod tests {
             .enumerate()
             .map(|(i, d)| call(d, i as i64 * 30, 20))
             .collect();
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         assert!(
             spikes.is_empty(),
             "one call every 30s is 3 per {VOLUME_WINDOW_SECS}s window, under the minimum of \
              {VOLUME_SPIKE_MIN_CALLS} — got {spikes:?}"
         );
+        Ok(())
     }
 
     /// The volume window is exactly `VOLUME_WINDOW_SECS` wide, not a second
@@ -1265,7 +1298,7 @@ mod tests {
     /// six in 61 seconds and five in 60, which is the difference between
     /// alerting and not.
     #[test]
-    fn the_volume_window_is_exactly_sixty_seconds() {
+    fn the_volume_window_is_exactly_sixty_seconds() -> Result<(), TestError> {
         let step = VOLUME_WINDOW_SECS as i64 / (VOLUME_SPIKE_MIN_CALLS as i64 - 1);
         let dests: Vec<String> = (0..VOLUME_SPIKE_MIN_CALLS)
             .map(|i| format!("+1800555{:04}", i * 7 + 1))
@@ -1275,7 +1308,7 @@ mod tests {
             .enumerate()
             .map(|(i, d)| call(d, i as i64 * step, 5))
             .collect();
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         assert!(
             spikes.is_empty(),
@@ -1283,6 +1316,7 @@ mod tests {
              {} fall inside a {VOLUME_WINDOW_SECS}s window — got {spikes:?}",
             VOLUME_SPIKE_MIN_CALLS - 1
         );
+        Ok(())
     }
 
     // ── A run of numbers is a scan only when the numbers are not there ──
@@ -1295,7 +1329,7 @@ mod tests {
     /// there. Counted over every call whatever became of it, an ordinary
     /// eleven-second trunk capture reported 39 sequential scans.
     #[test]
-    fn a_hunt_group_answered_in_order_is_not_sequential_scanning() {
+    fn a_hunt_group_answered_in_order_is_not_sequential_scanning() -> Result<(), TestError> {
         let calls: Vec<Call<'_>> = (0..8)
             .map(|i| Call {
                 dest: DIDS[i],
@@ -1303,25 +1337,27 @@ mod tests {
                 secs: 30,
             })
             .collect();
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let seq = details(&alerts, &FraudType::SequentialScanning);
         assert!(
             seq.is_empty(),
             "eight consecutive DIDs, every call answered and held for 30 seconds, \
              is a hunt group — got {seq:?}"
         );
+        Ok(())
     }
 
     /// Consecutive numbers the network refused are still sequential scanning.
     #[test]
-    fn consecutive_numbers_the_network_refused_are_still_a_scan() {
-        let alerts = replay_refused(&DIDS[..5], attacker_ip());
+    fn consecutive_numbers_the_network_refused_are_still_a_scan() -> Result<(), TestError> {
+        let alerts = replay_refused(&DIDS[..5], attacker_ip())?;
         let seq = details(&alerts, &FraudType::SequentialScanning);
         assert!(
             !seq.is_empty(),
             "five consecutive numbers, none of which exists, is a dial-plan walk — \
              got {alerts:?}"
         );
+        Ok(())
     }
 
     // ── A baseline has to be measured before it can be exceeded ──────
@@ -1341,7 +1377,7 @@ mod tests {
     /// froze the baseline at the value that produced it, and every later call
     /// from that source alerted too.
     #[test]
-    fn a_steady_ordinary_call_rate_is_not_a_spike() {
+    fn a_steady_ordinary_call_rate_is_not_a_spike() -> Result<(), TestError> {
         // Twelve calls a minute for ten minutes, flat. Destinations are
         // non-consecutive and the calls last longer than SHORT_CALL_SECS, so
         // neither sequential scanning nor wangiri can fire instead.
@@ -1353,7 +1389,7 @@ mod tests {
             .enumerate()
             .map(|(i, d)| call(d, i as i64 * 5, 4))
             .collect();
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         assert!(
             spikes.is_empty(),
@@ -1361,6 +1397,7 @@ mod tests {
              baseline of twelve, and twelve is not {VOLUME_SPIKE_MULTIPLIER} times \
              twelve — got {spikes:?}"
         );
+        Ok(())
     }
 
     /// A source that was quiet and then bursts is still a volume spike.
@@ -1369,7 +1406,7 @@ mod tests {
     /// per call, it chases the burst and suppresses the very alert it exists
     /// to raise.
     #[test]
-    fn a_quiet_source_that_bursts_is_still_a_spike() {
+    fn a_quiet_source_that_bursts_is_still_a_spike() -> Result<(), TestError> {
         let mut calls: Vec<Call<'_>> = Vec::new();
         let dests: Vec<String> = (0..30)
             .map(|i| format!("+1800555{:04}", i * 7 + 1))
@@ -1381,13 +1418,14 @@ mod tests {
         for (i, d) in dests.iter().skip(10).take(12).enumerate() {
             calls.push(call(d, 600 + i as i64, 4));
         }
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         assert!(
             !spikes.is_empty(),
             "a source that placed one call a minute for ten minutes and then twelve \
              in ten seconds is a spike — got {alerts:?}",
         );
+        Ok(())
     }
 
     /// Nothing is a spike before the source has completed a window.
@@ -1397,7 +1435,7 @@ mod tests {
     /// window is the first thing known about it, so it cannot also be a
     /// departure from what is known about it.
     #[test]
-    fn a_source_cannot_spike_before_it_has_a_baseline() {
+    fn a_source_cannot_spike_before_it_has_a_baseline() -> Result<(), TestError> {
         let dests: Vec<String> = (0..30)
             .map(|i| format!("+1800555{:04}", i * 7 + 1))
             .collect();
@@ -1406,13 +1444,14 @@ mod tests {
             .enumerate()
             .map(|(i, d)| call(d, i as i64, 4))
             .collect();
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         assert!(
             spikes.is_empty(),
             "30 calls inside the first {VOLUME_WINDOW_SECS}s window are the source's \
              whole history, not a departure from it — got {spikes:?}"
         );
+        Ok(())
     }
 
     /// A genuine burst inside one window still alerts, and reports a count the
@@ -1422,7 +1461,7 @@ mod tests {
     /// spike is a departure from an established rate and there is no departure
     /// from a rate nobody has established.
     #[test]
-    fn a_real_burst_inside_one_minute_still_alerts() {
+    fn a_real_burst_inside_one_minute_still_alerts() -> Result<(), TestError> {
         let dests: Vec<String> = (0..VOLUME_SPIKE_MIN_CALLS + 2)
             .map(|i| format!("+1800555{:04}", i * 7 + 1))
             .collect();
@@ -1439,15 +1478,16 @@ mod tests {
                 .enumerate()
                 .map(|(i, d)| call(d, 120 + i as i64 * 2, 5)),
         );
-        let alerts = replay(&calls, attacker_ip());
+        let alerts = replay(&calls, attacker_ip())?;
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         let first = spikes
             .first()
-            .expect("6 calls in 10s of capture time, from a source that has been doing one a minute, is a volume spike");
+            .ok_or("6 calls in 10s of capture time, from a source that has been doing one a minute, is a volume spike")?;
         assert!(
             first.contains(&format!("{VOLUME_SPIKE_MIN_CALLS} calls")),
             "the count must be the calls actually inside the window, got {first:?}"
         );
+        Ok(())
     }
 
     /// `sweep` ages call patterns out on capture time — in both directions.
@@ -1460,14 +1500,14 @@ mod tests {
     /// today — every source is years idle the moment it is read, so the sweep
     /// empties the map and the detector forgets a source mid-pattern.
     #[test]
-    fn sweep_ages_call_patterns_out_on_packet_time() {
+    fn sweep_ages_call_patterns_out_on_packet_time() -> Result<(), TestError> {
         let mut store = crate::sip::dialog_store::DialogStore::new(1000, false);
         let mut det = FraudDetector::new(None);
         let (quiet, active) = (attacker_ip(), localhost());
         let _ = feed(
             &mut store,
             &mut det,
-            &invite_at("+18005551234", quiet, "sweep-1@test", at(0)),
+            &invite_at("+18005551234", quiet, "sweep-1@test", at(0)?)?,
         );
         assert_eq!(det.call_patterns.len(), 1, "the source must be tracked");
 
@@ -1475,7 +1515,7 @@ mod tests {
         let _ = feed(
             &mut store,
             &mut det,
-            &invite_at("+18005559999", active, "sweep-2@test", at(600)),
+            &invite_at("+18005559999", active, "sweep-2@test", at(600)?)?,
         );
         det.sweep(std::time::Duration::from_secs(120));
         assert!(
@@ -1488,11 +1528,12 @@ mod tests {
              must survive — a sweep aged against `Utc::now()` drops it, because a capture \
              recorded before today is already older than any max_age"
         );
+        Ok(())
     }
 
     /// Non-INVITE requests (e.g. REGISTER) are ignored by the detector.
     #[test]
-    fn non_invite_ignored() {
+    fn non_invite_ignored() -> Result<(), TestError> {
         let mut detector = FraudDetector::new(None);
         let raw = build_sip(
             "REGISTER sip:registrar@example.com SIP/2.0",
@@ -1507,20 +1548,21 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             attacker_ip(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("parse");
-        let dialog = make_dialog_from_msg(&msg);
+        .map_err(|e| format!("parse: {e:?}"))?;
+        let dialog = make_dialog_from_msg(&msg)?;
 
         assert!(
             detector.check(&msg, &dialog).is_none(),
             "REGISTER should not trigger fraud detection"
         );
+        Ok(())
     }
 
     // ── destination country (R3) ─────────────────────────────────────────────
@@ -1532,66 +1574,74 @@ mod tests {
         )
     }
 
-    fn at_three_am(mut msg: SipMessage) -> SipMessage {
+    fn at_three_am(mut msg: SipMessage) -> Result<SipMessage, TestError> {
         use chrono::TimeZone;
-        msg.timestamp = Utc.with_ymd_and_hms(2026, 9, 3, 3, 0, 0).unwrap();
-        msg
+        msg.timestamp = Utc
+            .with_ymd_and_hms(2026, 9, 3, 3, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
+        Ok(msg)
     }
 
     #[test]
-    fn an_invite_to_a_watched_destination_is_reported() {
+    fn an_invite_to_a_watched_destination_is_reported() -> Result<(), TestError> {
         let mut det = watch(&["DO"]);
-        let msg = make_invite("+18095550100", attacker_ip(), "r3-1");
+        let msg = make_invite("+18095550100", attacker_ip(), "r3-1")?;
         let alert = det
-            .check(&msg, &make_dialog_from_msg(&msg))
-            .expect("an INVITE to +1 809 with DO on the watch list must alert");
+            .check(&msg, &make_dialog_from_msg(&msg)?)
+            .ok_or("an INVITE to +1 809 with DO on the watch list must alert")?;
         assert_eq!(alert.alert_type, FraudType::Destination);
         assert_eq!(alert.destination.as_deref(), Some("DO"));
         assert!(alert.detail.contains("DO"), "{}", alert.detail);
+        Ok(())
     }
 
     #[test]
-    fn a_watch_list_that_does_not_name_the_destination_stays_silent() {
+    fn a_watch_list_that_does_not_name_the_destination_stays_silent() -> Result<(), TestError> {
         let mut det = watch(&["GB"]);
-        let msg = make_invite("+18095550100", attacker_ip(), "r3-2");
-        assert!(det.check(&msg, &make_dialog_from_msg(&msg)).is_none());
+        let msg = make_invite("+18095550100", attacker_ip(), "r3-2")?;
+        assert!(det.check(&msg, &make_dialog_from_msg(&msg)?).is_none());
+        Ok(())
     }
 
     #[test]
-    fn no_watch_list_means_no_destination_alert_on_a_bare_machine() {
+    fn no_watch_list_means_no_destination_alert_on_a_bare_machine() -> Result<(), TestError> {
         let mut det = FraudDetector::new(None);
-        let msg = make_invite("+18095550100", attacker_ip(), "r3-3");
-        assert!(det.check(&msg, &make_dialog_from_msg(&msg)).is_none());
+        let msg = make_invite("+18095550100", attacker_ip(), "r3-3")?;
+        assert!(det.check(&msg, &make_dialog_from_msg(&msg)?).is_none());
+        Ok(())
     }
 
     #[test]
-    fn an_off_hours_alert_carries_the_resolved_destination() {
+    fn an_off_hours_alert_carries_the_resolved_destination() -> Result<(), TestError> {
         let mut det = FraudDetector::new(Some((9, 17)));
-        let msg = at_three_am(make_invite("+18095550100", attacker_ip(), "r3-4"));
+        let msg = at_three_am(make_invite("+18095550100", attacker_ip(), "r3-4")?)?;
         let alert = det
-            .check(&msg, &make_dialog_from_msg(&msg))
-            .expect("03:00 is outside 09-17");
+            .check(&msg, &make_dialog_from_msg(&msg)?)
+            .ok_or("03:00 is outside 09-17")?;
         assert_eq!(alert.alert_type, FraudType::OffHours);
         assert_eq!(
             alert.destination.as_deref(),
             Some("DO"),
             "every finding names where the call was going when the number resolves"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_domestic_number_has_no_destination_and_never_matches_a_watch() {
+    fn a_domestic_number_has_no_destination_and_never_matches_a_watch() -> Result<(), TestError> {
         // No prefix and no bare-E.164 declaration: out of scope for the plan, so
         // `2125551234` is NOT read as Morocco (+212) and the US watch cannot match.
         let mut det = watch(&["US", "MA"]);
-        let msg = make_invite("2125551234", attacker_ip(), "r3-5");
-        assert!(det.check(&msg, &make_dialog_from_msg(&msg)).is_none());
+        let msg = make_invite("2125551234", attacker_ip(), "r3-5")?;
+        assert!(det.check(&msg, &make_dialog_from_msg(&msg)?).is_none());
         let mut det = FraudDetector::new(Some((9, 17)));
-        let msg = at_three_am(make_invite("2125551234", attacker_ip(), "r3-6"));
+        let msg = at_three_am(make_invite("2125551234", attacker_ip(), "r3-6")?)?;
         let alert = det
-            .check(&msg, &make_dialog_from_msg(&msg))
-            .expect("off hours");
+            .check(&msg, &make_dialog_from_msg(&msg)?)
+            .ok_or("off hours")?;
         assert_eq!(alert.destination, None);
+        Ok(())
     }
 
     // ── every finding carries the destination: the two group heuristics ─────
@@ -1610,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wangiri_alert_names_the_country_of_the_lure_prefix() {
+    fn a_wangiri_alert_names_the_country_of_the_lure_prefix() -> Result<(), TestError> {
         // The 6-character prefix alone is under the E.164 floor; the country comes
         // from a full number in the group that prefix won.
         let numbers = strings(&[
@@ -1620,16 +1670,17 @@ mod tests {
             "+1809555077",
             "+1809555099",
         ]);
-        let alerts = replay(&short_calls_to(&numbers), attacker_ip());
+        let alerts = replay(&short_calls_to(&numbers), attacker_ip())?;
         let w = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::Wangiri)
-            .expect("wangiri fires");
+            .ok_or("wangiri fires")?;
         assert_eq!(w.destination.as_deref(), Some("DO"), "{}", w.detail);
+        Ok(())
     }
 
     #[test]
-    fn a_wangiri_alert_to_domestic_numbers_has_no_destination() {
+    fn a_wangiri_alert_to_domestic_numbers_has_no_destination() -> Result<(), TestError> {
         let numbers = strings(&[
             "2125550011",
             "2125550022",
@@ -1637,19 +1688,20 @@ mod tests {
             "2125550077",
             "2125550099",
         ]);
-        let alerts = replay(&short_calls_to(&numbers), attacker_ip());
+        let alerts = replay(&short_calls_to(&numbers), attacker_ip())?;
         let w = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::Wangiri)
-            .expect("wangiri fires");
+            .ok_or("wangiri fires")?;
         assert_eq!(
             w.destination, None,
             "no prefix: domestic, not Morocco (+212)"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_sequential_scan_alert_names_the_country_being_scanned() {
+    fn a_sequential_scan_alert_names_the_country_being_scanned() -> Result<(), TestError> {
         let alerts = replay_refused(
             &[
                 "+18095550100",
@@ -1659,16 +1711,17 @@ mod tests {
                 "+18095550104",
             ],
             attacker_ip(),
-        );
+        )?;
         let s = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::SequentialScanning)
-            .expect("scan fires");
+            .ok_or("scan fires")?;
         assert_eq!(s.destination.as_deref(), Some("DO"), "{}", s.detail);
+        Ok(())
     }
 
     #[test]
-    fn a_sequential_scan_of_domestic_numbers_has_no_destination() {
+    fn a_sequential_scan_of_domestic_numbers_has_no_destination() -> Result<(), TestError> {
         let alerts = replay_refused(
             &[
                 "2125550100",
@@ -1678,12 +1731,13 @@ mod tests {
                 "2125550104",
             ],
             attacker_ip(),
-        );
+        )?;
         let s = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::SequentialScanning)
-            .expect("scan fires");
+            .ok_or("scan fires")?;
         assert_eq!(s.destination, None);
+        Ok(())
     }
 
     /// One call per window for five windows, then eight in the sixth: the
@@ -1706,24 +1760,26 @@ mod tests {
     }
 
     #[test]
-    fn a_volume_spike_alert_names_the_country_being_flooded() {
+    fn a_volume_spike_alert_names_the_country_being_flooded() -> Result<(), TestError> {
         let numbers = baseline_then_burst("+1809555");
-        let alerts = replay(&burst_calls(&numbers), attacker_ip());
+        let alerts = replay(&burst_calls(&numbers), attacker_ip())?;
         let v = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::VolumeSpike)
-            .expect("spike fires");
+            .ok_or("spike fires")?;
         assert_eq!(v.destination.as_deref(), Some("DO"), "{}", v.detail);
+        Ok(())
     }
 
     #[test]
-    fn a_volume_spike_of_domestic_calls_has_no_destination() {
+    fn a_volume_spike_of_domestic_calls_has_no_destination() -> Result<(), TestError> {
         let numbers = baseline_then_burst("2125550");
-        let alerts = replay(&burst_calls(&numbers), attacker_ip());
+        let alerts = replay(&burst_calls(&numbers), attacker_ip())?;
         let v = alerts
             .iter()
             .find(|a| a.alert_type == FraudType::VolumeSpike)
-            .expect("spike fires");
+            .ok_or("spike fires")?;
         assert_eq!(v.destination, None);
+        Ok(())
     }
 }

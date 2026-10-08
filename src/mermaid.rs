@@ -429,6 +429,7 @@ pub fn dialog_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A reason phrase cannot end the statement it sits in.
     ///
@@ -436,10 +437,11 @@ mod tests {
     /// as a reason phrase put an attacker-chosen Mermaid statement into the
     /// diagram.
     #[test]
-    fn a_newline_cannot_split_a_label_into_a_second_statement() {
+    fn a_newline_cannot_split_a_label_into_a_second_statement() -> Result<(), TestError> {
         let out = escape_mermaid_label("Busy\nNote over p0,p1: injected");
         assert!(!out.contains('\n'), "got {out:?}");
         assert!(out.starts_with("Busy Note"), "got {out:?}");
+        Ok(())
     }
 
     /// A carriage return is neutralized too.
@@ -448,15 +450,17 @@ mod tests {
     /// far likelier to carry `\r` than `\n`. Handling only `\n` would leave the
     /// commoner case open.
     #[test]
-    fn a_carriage_return_is_neutralized() {
+    fn a_carriage_return_is_neutralized() -> Result<(), TestError> {
         assert!(!escape_mermaid_label("Busy\r\nx").contains(['\r', '\n']));
+        Ok(())
     }
 
     /// `#` is escaped, or a label can spell any character through Mermaid's own
     /// entity syntax.
     #[test]
-    fn the_entity_introducer_is_itself_escaped() {
+    fn the_entity_introducer_is_itself_escaped() -> Result<(), TestError> {
         assert_eq!(escape_mermaid_label("#59;"), "#35;59#59;");
+        Ok(())
     }
 
     /// `%%` cannot truncate a label.
@@ -466,10 +470,11 @@ mod tests {
     /// shortened label is worse than a loud parse error, because nothing says
     /// the diagram is incomplete.
     #[test]
-    fn a_comment_introducer_cannot_truncate_a_label() {
+    fn a_comment_introducer_cannot_truncate_a_label() -> Result<(), TestError> {
         let out = escape_mermaid_label("Busy %% here");
         assert!(!out.contains("%%"), "got {out:?}");
         assert!(out.ends_with("here"), "the tail must survive: {out:?}");
+        Ok(())
     }
 
     /// Angle brackets never reach the HTML wrapper.
@@ -478,9 +483,10 @@ mod tests {
     /// label carrying markup is an injection into that page as well as into the
     /// diagram.
     #[test]
-    fn angle_brackets_cannot_reach_the_html_wrapper() {
+    fn angle_brackets_cannot_reach_the_html_wrapper() -> Result<(), TestError> {
         let out = escape_mermaid_label("<script>alert(1)</script>");
         assert!(!out.contains('<') && !out.contains('>'), "got {out:?}");
+        Ok(())
     }
 
     /// A semicolon becomes an entity rather than a statement terminator.
@@ -490,8 +496,9 @@ mod tests {
     /// never pass and would have to be weakened into something vacuous. What
     /// matters is that no BARE semicolon survives.
     #[test]
-    fn a_semicolon_becomes_an_entity() {
+    fn a_semicolon_becomes_an_entity() -> Result<(), TestError> {
         assert_eq!(escape_mermaid_label("a;b"), "a#59;b");
+        Ok(())
     }
 
     /// No bare separator survives, stated as one property over every character
@@ -501,7 +508,7 @@ mod tests {
     /// the invariant they exist to serve: after escaping, the only occurrences
     /// of a special character are the ones that close an entity sipnab wrote.
     #[test]
-    fn every_special_character_leaves_only_entities_behind() {
+    fn every_special_character_leaves_only_entities_behind() -> Result<(), TestError> {
         let out = escape_mermaid_label("a<b>c#d%e;f");
         assert_eq!(out, "a#60;b#62;c#35;d#37;e#59;f");
         // Every `;` in the result closes a `#NN` entity — none is a bare one.
@@ -510,6 +517,7 @@ mod tests {
             .filter(|(i, _)| !out[..*i].ends_with(|c: char| c.is_ascii_digit()))
             .count();
         assert_eq!(bare, 0, "a bare semicolon survived: {out:?}");
+        Ok(())
     }
 
     /// Ordinary text is unchanged, including non-ASCII.
@@ -518,7 +526,7 @@ mod tests {
     /// every reason phrase in a non-English deployment, and nothing else would
     /// report it.
     #[test]
-    fn ordinary_text_passes_through_untouched() {
+    fn ordinary_text_passes_through_untouched() -> Result<(), TestError> {
         for s in [
             "Busy Here",
             "Service Unavailable",
@@ -528,12 +536,14 @@ mod tests {
         ] {
             assert_eq!(escape_mermaid_label(s), s, "{s} must survive unchanged");
         }
+        Ok(())
     }
 
     /// The empty string survives.
     #[test]
-    fn the_empty_string_is_empty() {
+    fn the_empty_string_is_empty() -> Result<(), TestError> {
         assert_eq!(escape_mermaid_label(""), "");
+        Ok(())
     }
 
     /// Participant ids are positional and cannot collide.
@@ -542,13 +552,14 @@ mod tests {
     /// same id under the address-mangling scheme, silently merging two
     /// lifelines. A positional id cannot.
     #[test]
-    fn participant_ids_are_distinct_by_construction() {
+    fn participant_ids_are_distinct_by_construction() -> Result<(), TestError> {
         let ids: Vec<String> = (0..4).map(participant_id).collect();
         assert_eq!(ids, ["p0", "p1", "p2", "p3"]);
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len(), "ids must be unique");
+        Ok(())
     }
 
     /// A participant id carries no capture-derived text at all.
@@ -556,7 +567,7 @@ mod tests {
     /// The structural half: an id that cannot contain a payload needs no
     /// escaping and cannot be got wrong by a future caller.
     #[test]
-    fn a_participant_id_is_alphanumeric() {
+    fn a_participant_id_is_alphanumeric() -> Result<(), TestError> {
         assert!(
             participant_id(17)
                 .chars()
@@ -564,6 +575,7 @@ mod tests {
             "got {}",
             participant_id(17)
         );
+        Ok(())
     }
     /// The shared builder escapes every label it writes.
     ///
@@ -573,7 +585,7 @@ mod tests {
     /// escaping actually happens — for the arrow labels and for the
     /// participant names alike, both of which can be capture-derived.
     #[test]
-    fn the_shared_builder_escapes_every_label_it_writes() {
+    fn the_shared_builder_escapes_every_label_it_writes() -> Result<(), TestError> {
         // `#` starts a Mermaid entity, `;` and a newline end a statement, and
         // `<`/`>` matter to the HTML wrapper the TUI writes around this.
         let nasty = "BAD#;<b>\nsecond line";
@@ -609,6 +621,7 @@ mod tests {
             "an unescaped newline in a participant label added a statement: \
              {labeled}"
         );
+        Ok(())
     }
 
     /// A caller-supplied label changes the display name and nothing else.
@@ -617,7 +630,7 @@ mod tests {
     /// the same name are still two lifelines, because collapsing them would
     /// merge two hosts into one row of the ladder.
     #[test]
-    fn a_shared_label_does_not_merge_two_endpoints() {
+    fn a_shared_label_does_not_merge_two_endpoints() -> Result<(), TestError> {
         let rows = vec![(
             "198.51.100.1:5060".to_string(),
             "198.51.100.2:5060".to_string(),
@@ -633,6 +646,7 @@ mod tests {
             "two endpoints sharing a resolved name are still two lifelines: \
              {out}"
         );
+        Ok(())
     }
 }
 
@@ -643,13 +657,20 @@ mod dialog_rows_tests {
     use crate::capture::parse::TransportProto;
     use crate::sip::message::SipMessage;
     use chrono::{DateTime, TimeZone, Utc};
+    type TestError = Box<dyn std::error::Error>;
 
-    fn at(ms: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(1_700_000_000, 0).single().expect("ts")
-            + chrono::Duration::milliseconds(ms)
+    fn at(ms: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(Utc.timestamp_opt(1_700_000_000, 0).single().ok_or("ts")?
+            + chrono::Duration::milliseconds(ms))
     }
 
-    fn msg(first_line: &str, ms: i64, sdp: Option<&str>, src: &str, dst: &str) -> SipMessage {
+    fn msg(
+        first_line: &str,
+        ms: i64,
+        sdp: Option<&str>,
+        src: &str,
+        dst: &str,
+    ) -> Result<SipMessage, TestError> {
         let body = sdp.unwrap_or("");
         let ct = if sdp.is_some() {
             "Content-Type: application/sdp"
@@ -670,23 +691,23 @@ mod dialog_rows_tests {
             ],
             body.as_bytes(),
         );
-        let (s_ip, s_port) = src.rsplit_once(':').expect("src");
-        let (d_ip, d_port) = dst.rsplit_once(':').expect("dst");
+        let (s_ip, s_port) = src.rsplit_once(':').ok_or("src")?;
+        let (d_ip, d_port) = dst.rsplit_once(':').ok_or("dst")?;
         let ip = |s: &str| {
             s.trim_matches(|c| c == '[' || c == ']')
-                .parse()
-                .expect("ip")
+                .parse::<std::net::IpAddr>()
+                .map_err(|e| format!("ip: {e:?}"))
         };
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             &raw,
-            at(ms),
-            ip(s_ip),
-            ip(d_ip),
-            s_port.parse().expect("port"),
-            d_port.parse().expect("port"),
+            at(ms)?,
+            ip(s_ip)?,
+            ip(d_ip)?,
+            s_port.parse().map_err(|e| format!("port: {e:?}"))?,
+            d_port.parse().map_err(|e| format!("port: {e:?}"))?,
             TransportProto::Udp,
         )
-        .expect("parses")
+        .map_err(|e| format!("parses: {e:?}"))?)
     }
 
     fn sdp(codec_pts: &str, rtpmaps: &[&str], direction: &str) -> String {
@@ -706,38 +727,40 @@ mod dialog_rows_tests {
 
     /// Every row carries its offset from the first message.
     #[test]
-    fn every_row_carries_its_offset_from_the_first_message() {
+    fn every_row_carries_its_offset_from_the_first_message() -> Result<(), TestError> {
         let msgs = vec![
-            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B),
-            msg("SIP/2.0 100 Trying", 15, None, B, A),
+            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B)?,
+            msg("SIP/2.0 100 Trying", 15, None, B, A)?,
         ];
         let rows = dialog_rows(&msgs, None);
         assert_eq!(rows[0].note.as_deref(), Some("+0.000s"));
         assert_eq!(rows[1].note.as_deref(), Some("+0.015s"));
+        Ok(())
     }
 
     /// Post-dial delay is noted on the first 180, and only there.
     #[test]
-    fn pdd_is_noted_on_the_first_ringing_only() {
+    fn pdd_is_noted_on_the_first_ringing_only() -> Result<(), TestError> {
         let msgs = vec![
-            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B),
-            msg("SIP/2.0 180 Ringing", 847, None, B, A),
-            msg("SIP/2.0 180 Ringing", 900, None, B, A),
+            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B)?,
+            msg("SIP/2.0 180 Ringing", 847, None, B, A)?,
+            msg("SIP/2.0 180 Ringing", 900, None, B, A)?,
         ];
         let rows = dialog_rows(&msgs, Some(847));
         assert_eq!(rows[1].note.as_deref(), Some("+0.847s · PDD 847ms"));
         assert_eq!(rows[2].note.as_deref(), Some("+0.900s"));
+        Ok(())
     }
 
     /// A later SDP that changes codecs or puts the call on hold is badged
     /// the way the TUI ladder badges it.
     #[test]
-    fn an_sdp_change_is_badged() {
+    fn an_sdp_change_is_badged() -> Result<(), TestError> {
         let offer = sdp("0", &["0 PCMU/8000"], "sendrecv");
         let reinvite = sdp("9", &["9 G722/8000"], "sendonly");
         let msgs = vec![
-            msg("INVITE sip:b@y SIP/2.0", 0, Some(&offer), A, B),
-            msg("INVITE sip:b@y SIP/2.0", 5000, Some(&reinvite), A, B),
+            msg("INVITE sip:b@y SIP/2.0", 0, Some(&offer), A, B)?,
+            msg("INVITE sip:b@y SIP/2.0", 5000, Some(&reinvite), A, B)?,
         ];
         let rows = dialog_rows(&msgs, None);
         assert_eq!(
@@ -749,39 +772,42 @@ mod dialog_rows_tests {
             rows[1].note.as_deref(),
             Some("+5.000s · +G722 \u{2212}PCMU HOLD")
         );
+        Ok(())
     }
 
     /// A retransmission says so.
     #[test]
-    fn a_retransmission_is_noted() {
-        let mut second = msg("INVITE sip:b@y SIP/2.0", 500, None, A, B);
+    fn a_retransmission_is_noted() -> Result<(), TestError> {
+        let mut second = msg("INVITE sip:b@y SIP/2.0", 500, None, A, B)?;
         second.is_retransmission = true;
-        let msgs = vec![msg("INVITE sip:b@y SIP/2.0", 0, None, A, B), second];
+        let msgs = vec![msg("INVITE sip:b@y SIP/2.0", 0, None, A, B)?, second];
         let rows = dialog_rows(&msgs, None);
         assert_eq!(rows[1].note.as_deref(), Some("+0.500s · retransmission"));
+        Ok(())
     }
 
     /// An IPv6 endpoint is bracketed, so its port cannot be read as part of
     /// the address.
     #[test]
-    fn an_ipv6_endpoint_is_bracketed() {
+    fn an_ipv6_endpoint_is_bracketed() -> Result<(), TestError> {
         let msgs = vec![msg(
             "INVITE sip:b@y SIP/2.0",
             0,
             None,
             "[2001:db8::1]:5060",
             B,
-        )];
+        )?];
         let rows = dialog_rows(&msgs, None);
         assert_eq!(rows[0].from, "[2001:db8::1]:5060");
+        Ok(())
     }
 
     /// The rendered diagram carries the notes.
     #[test]
-    fn the_diagram_draws_the_notes() {
+    fn the_diagram_draws_the_notes() -> Result<(), TestError> {
         let msgs = vec![
-            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B),
-            msg("SIP/2.0 180 Ringing", 847, None, B, A),
+            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B)?,
+            msg("SIP/2.0 180 Ringing", 847, None, B, A)?,
         ];
         let out = sequence_diagram_rows(
             &dialog_rows(&msgs, Some(847)),
@@ -789,5 +815,6 @@ mod dialog_rows_tests {
             MAX_MESSAGES,
         );
         assert!(out.contains("PDD 847ms"), "{out}");
+        Ok(())
     }
 }

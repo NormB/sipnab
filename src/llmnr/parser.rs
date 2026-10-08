@@ -251,6 +251,9 @@ pub fn rtype_name(rtype: u16) -> String {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A real query for "GHS08", byte-exact from the capture that motivated
     /// this module.
     const QUERY_A: &[u8] = &[
@@ -270,25 +273,27 @@ mod tests {
     ];
 
     #[test]
-    fn decodes_the_queried_hostname() {
-        let msg = parse_llmnr(QUERY_A).expect("valid query");
+    fn decodes_the_queried_hostname() -> Result<(), TestError> {
+        let msg = parse_llmnr(QUERY_A).map_err(|e| format!("valid query: {e:?}"))?;
         assert!(!msg.is_response);
         assert_eq!(msg.questions.len(), 1);
         assert_eq!(msg.questions[0].name, "GHS08");
         assert_eq!(msg.questions[0].qtype, 1);
+        Ok(())
     }
 
     #[test]
-    fn decodes_an_aaaa_question() {
-        let msg = parse_llmnr(QUERY_AAAA).expect("valid query");
+    fn decodes_an_aaaa_question() -> Result<(), TestError> {
+        let msg = parse_llmnr(QUERY_AAAA).map_err(|e| format!("valid query: {e:?}"))?;
         assert_eq!(msg.questions[0].name, "GHS08");
         assert_eq!(rtype_name(msg.questions[0].qtype), "AAAA");
+        Ok(())
     }
 
     /// A response is the half that identifies a host: the answer names the
     /// host and gives its address.
     #[test]
-    fn decodes_a_response_answer_to_a_name_and_address() {
+    fn decodes_a_response_answer_to_a_name_and_address() -> Result<(), TestError> {
         let mut data = vec![
             0x80, 0x06, // same transaction ID
             0x80, 0x00, // response
@@ -304,19 +309,24 @@ mod tests {
         data.extend_from_slice(&[0x00, 0x04]); // RDLENGTH
         data.extend_from_slice(&[192, 0, 2, 79]); // 192.0.2.79
 
-        let msg = parse_llmnr(&data).expect("valid response");
+        let msg = parse_llmnr(&data).map_err(|e| format!("valid response: {e:?}"))?;
         assert!(msg.is_response);
         assert_eq!(msg.answers.len(), 1);
         assert_eq!(msg.answers[0].name, "GHS08");
         assert_eq!(msg.answers[0].ttl, 30);
         assert_eq!(
             msg.answers[0].address,
-            Some("192.0.2.79".parse().expect("valid addr"))
+            Some(
+                "192.0.2.79"
+                    .parse()
+                    .map_err(|e| format!("valid addr: {e:?}"))?
+            )
         );
+        Ok(())
     }
 
     #[test]
-    fn decodes_a_multi_label_name() {
+    fn decodes_a_multi_label_name() -> Result<(), TestError> {
         let mut data = vec![
             0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
@@ -324,14 +334,15 @@ mod tests {
             0x03, b'w', b'k', b's', 0x05, b'l', b'o', b'c', b'a', b'l', 0x00,
         ]);
         data.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
-        let msg = parse_llmnr(&data).expect("valid query");
+        let msg = parse_llmnr(&data).map_err(|e| format!("valid query: {e:?}"))?;
         assert_eq!(msg.questions[0].name, "wks.local");
+        Ok(())
     }
 
     /// Compression is forbidden in LLMNR but a non-conformant responder may
     /// still use it, and the parser must follow it rather than lose the record.
     #[test]
-    fn follows_a_compression_pointer() {
+    fn follows_a_compression_pointer() -> Result<(), TestError> {
         let mut data = vec![
             0x00, 0x01, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
@@ -341,46 +352,50 @@ mod tests {
         data.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x04]);
         data.extend_from_slice(&[192, 0, 2, 79]);
 
-        let msg = parse_llmnr(&data).expect("valid response");
+        let msg = parse_llmnr(&data).map_err(|e| format!("valid response: {e:?}"))?;
         assert_eq!(msg.answers.len(), 1, "the pointer must resolve");
         assert_eq!(msg.answers[0].name, "GHS08");
+        Ok(())
     }
 
     /// A pointer that points at itself must terminate, not hang. Network input
     /// is hostile by default.
     #[test]
-    fn a_self_referential_pointer_terminates() {
+    fn a_self_referential_pointer_terminates() -> Result<(), TestError> {
         let mut data = vec![
             0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         data.extend_from_slice(&[0xc0, 0x0c]); // offset 12 points to offset 12
         data.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
-        let msg = parse_llmnr(&data).expect("must not hang or panic");
+        let msg = parse_llmnr(&data).map_err(|e| format!("must not hang or panic: {e:?}"))?;
         assert!(
             msg.questions.is_empty(),
             "a looping name yields no question"
         );
+        Ok(())
     }
 
     #[test]
-    fn rejects_a_payload_shorter_than_the_header() {
+    fn rejects_a_payload_shorter_than_the_header() -> Result<(), TestError> {
         assert!(parse_llmnr(&QUERY_A[..11]).is_err());
+        Ok(())
     }
 
     /// A count that overstates what the buffer holds must not panic, and must
     /// keep whatever was genuinely decoded.
     #[test]
-    fn a_lying_question_count_keeps_what_was_real() {
+    fn a_lying_question_count_keeps_what_was_real() -> Result<(), TestError> {
         let mut data = QUERY_A.to_vec();
         data[5] = 0x09; // claim nine questions; the buffer holds one
-        let msg = parse_llmnr(&data).expect("must not panic");
+        let msg = parse_llmnr(&data).map_err(|e| format!("must not panic: {e:?}"))?;
         assert_eq!(msg.questions.len(), 1);
         assert_eq!(msg.questions[0].name, "GHS08");
+        Ok(())
     }
 
     /// An answer whose RDLENGTH runs past the buffer must be dropped, not read.
     #[test]
-    fn an_answer_overrunning_the_buffer_is_dropped() {
+    fn an_answer_overrunning_the_buffer_is_dropped() -> Result<(), TestError> {
         let mut data = vec![
             0x00, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
@@ -388,20 +403,22 @@ mod tests {
         data.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e]);
         data.extend_from_slice(&[0xff, 0xff]); // RDLENGTH 65535
         data.extend_from_slice(&[192, 0, 2, 79]);
-        let msg = parse_llmnr(&data).expect("must not panic");
+        let msg = parse_llmnr(&data).map_err(|e| format!("must not panic: {e:?}"))?;
         assert!(msg.answers.is_empty());
+        Ok(())
     }
 
     /// An over-long label is refused rather than assembled.
     #[test]
-    fn an_over_long_label_is_refused() {
+    fn an_over_long_label_is_refused() -> Result<(), TestError> {
         let mut data = vec![
             0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         data.push(0x7f); // 127 > MAX_LABEL_LEN, and not a pointer
         data.extend_from_slice(&[b'x'; 127]);
         data.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x01]);
-        let msg = parse_llmnr(&data).expect("must not panic");
+        let msg = parse_llmnr(&data).map_err(|e| format!("must not panic: {e:?}"))?;
         assert!(msg.questions.is_empty());
+        Ok(())
     }
 }

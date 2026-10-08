@@ -1787,6 +1787,9 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     const SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     const DST: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
 
@@ -1796,10 +1799,9 @@ mod tests {
     /// Fixtures are written with bare `\n` for readability and converted here:
     /// the parser requires CRLF, so writing them out literally would make every
     /// fixture unreadable to catch a mistake the parser already catches.
-    fn msg_at(raw: &str, secs: i64) -> SipMessage {
-        let ts = chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0)
-            .expect("valid fixture timestamp");
-        parse_sip(
+    fn msg_at(raw: &str, secs: i64) -> Result<SipMessage, TestError> {
+        let ts = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000 + secs);
+        Ok(parse_sip(
             raw.replace('\n', "\r\n").as_bytes(),
             ts,
             SRC,
@@ -1808,10 +1810,10 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("fixture parses")
+        .map_err(|e| format!("fixture parses: {e:?}"))?)
     }
 
-    fn msg(raw: &str) -> SipMessage {
+    fn msg(raw: &str) -> Result<SipMessage, TestError> {
         msg_at(raw, 0)
     }
 
@@ -1842,30 +1844,31 @@ mod tests {
     // -- detection 1 ------------------------------------------------------
 
     #[test]
-    fn final_failure_records_code_and_phrase() {
+    fn final_failure_records_code_and_phrase() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&invite("z9hG4bK1", 1)),
-            msg(&response(503, "Service Unavailable", "")),
+            msg(&invite("z9hG4bK1", 1))?,
+            msg(&response(503, "Service Unavailable", ""))?,
         ]);
-        let f = d.final_failure.expect("503 is a final failure");
+        let f = d.final_failure.ok_or("503 is a final failure")?;
         assert_eq!(f.code, 503);
         assert_eq!(f.reason_phrase, "Service Unavailable");
         assert_eq!(f.evidence, vec![1]);
         assert!(d.hints[0].contains("503"));
+        Ok(())
     }
 
     #[test]
-    fn final_failure_carries_reason_and_warning_headers() {
+    fn final_failure_carries_reason_and_warning_headers() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&invite("z9hG4bK1", 1)),
+            msg(&invite("z9hG4bK1", 1))?,
             msg(&response(
                 503,
                 "Service Unavailable",
                 "Reason: Q.850;cause=34;text=\"no circuit available\"\n\
                  Warning: 399 proxy \"trunk group exhausted\"\n",
-            )),
+            ))?,
         ]);
-        let f = d.final_failure.expect("detected");
+        let f = d.final_failure.ok_or("detected")?;
         assert_eq!(
             f.reason_header.as_deref(),
             Some("Q.850;cause=34;text=\"no circuit available\"")
@@ -1876,70 +1879,73 @@ mod tests {
         );
         // The hint surfaces the Reason, because 503 alone does not say why.
         assert!(d.hints[0].contains("no circuit available"));
+        Ok(())
     }
 
     #[test]
-    fn a_successful_call_has_no_final_failure() {
-        let d = diagnose_signaling(&[msg(&invite("z9hG4bK1", 1)), msg(&response(200, "OK", ""))]);
+    fn a_successful_call_has_no_final_failure() -> Result<(), TestError> {
+        let d = diagnose_signaling(&[msg(&invite("z9hG4bK1", 1))?, msg(&response(200, "OK", ""))?]);
         assert!(d.final_failure.is_none());
         assert!(d.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn failure_after_a_2xx_is_not_the_dialog_outcome() {
+    fn failure_after_a_2xx_is_not_the_dialog_outcome() -> Result<(), TestError> {
         // A rejected re-INVITE mid-call must not be reported as the call failing.
         let d = diagnose_signaling(&[
-            msg(&invite("z9hG4bK1", 1)),
-            msg(&response(200, "OK", "")),
-            msg(&invite("z9hG4bK9", 2)),
-            msg(&response(488, "Not Acceptable Here", "")),
+            msg(&invite("z9hG4bK1", 1))?,
+            msg(&response(200, "OK", ""))?,
+            msg(&invite("z9hG4bK9", 2))?,
+            msg(&response(488, "Not Acceptable Here", ""))?,
         ]);
         assert!(d.final_failure.is_none());
+        Ok(())
     }
 
     #[test]
-    fn last_failure_wins_over_an_earlier_one() {
+    fn last_failure_wins_over_an_earlier_one() -> Result<(), TestError> {
         // Challenged, then the trunk fails. The 503 is the answer, not the 404.
         let d = diagnose_signaling(&[
-            msg(&invite("z9hG4bK1", 1)),
-            msg(&response(404, "Not Found", "")),
-            msg(&invite("z9hG4bK2", 2)),
-            msg(&response(503, "Service Unavailable", "")),
+            msg(&invite("z9hG4bK1", 1))?,
+            msg(&response(404, "Not Found", ""))?,
+            msg(&invite("z9hG4bK2", 2))?,
+            msg(&response(503, "Service Unavailable", ""))?,
         ]);
-        assert_eq!(d.final_failure.expect("detected").code, 503);
+        assert_eq!(d.final_failure.ok_or("detected")?.code, 503);
+        Ok(())
     }
 
     #[test]
-    fn a_challenge_alone_is_not_a_failure() {
+    fn a_challenge_alone_is_not_a_failure() -> Result<(), TestError> {
         // 401 is a handshake step. Reporting it as the cause would send the
         // reader after credentials when nothing has failed yet.
         let d = diagnose_signaling(&[
-            msg(&invite("z9hG4bK1", 1)),
-            msg(&response(401, "Unauthorized", "")),
+            msg(&invite("z9hG4bK1", 1))?,
+            msg(&response(401, "Unauthorized", ""))?,
         ]);
         assert!(d.final_failure.is_none());
+        Ok(())
     }
 
     // -- detection 2 ------------------------------------------------------
 
     #[test]
-    fn three_challenges_without_authorization_is_a_silent_drop() {
-        let msgs: Vec<SipMessage> = (0..3)
-            .flat_map(|i| {
-                [
-                    msg(&invite(&format!("z9hG4bK{i}"), i + 1)),
-                    msg(&response(401, "Unauthorized", "")),
-                ]
-            })
-            .collect();
-        let a = diagnose_signaling(&msgs).auth_loop.expect("loop detected");
+    fn three_challenges_without_authorization_is_a_silent_drop() -> Result<(), TestError> {
+        let mut msgs: Vec<SipMessage> = Vec::new();
+        for i in 0..3 {
+            msgs.push(msg(&invite(&format!("z9hG4bK{i}"), i + 1))?);
+            msgs.push(msg(&response(401, "Unauthorized", ""))?);
+        }
+        let a = diagnose_signaling(&msgs).auth_loop.ok_or("loop detected")?;
         assert_eq!(a.kind, AuthLoopKind::SilentDrop);
         assert_eq!(a.challenges, 3);
         assert_eq!(a.evidence, vec![1, 3, 5]);
+        Ok(())
     }
 
     #[test]
-    fn three_challenges_with_authorization_is_a_credential_failure() {
+    fn three_challenges_with_authorization_is_a_credential_failure() -> Result<(), TestError> {
         let with_auth = |i: u32| {
             invite(&format!("z9hG4bK{i}"), i).replace(
                 "Content-Length: 0",
@@ -1947,93 +1953,98 @@ mod tests {
             )
         };
         let msgs = vec![
-            msg(&with_auth(1)),
-            msg(&response(407, "Proxy Authentication Required", "")),
-            msg(&with_auth(2)),
-            msg(&response(407, "Proxy Authentication Required", "")),
-            msg(&with_auth(3)),
-            msg(&response(407, "Proxy Authentication Required", "")),
+            msg(&with_auth(1))?,
+            msg(&response(407, "Proxy Authentication Required", ""))?,
+            msg(&with_auth(2))?,
+            msg(&response(407, "Proxy Authentication Required", ""))?,
+            msg(&with_auth(3))?,
+            msg(&response(407, "Proxy Authentication Required", ""))?,
         ];
-        let a = diagnose_signaling(&msgs).auth_loop.expect("loop detected");
+        let a = diagnose_signaling(&msgs).auth_loop.ok_or("loop detected")?;
         assert_eq!(a.kind, AuthLoopKind::CredentialFailure);
         assert_eq!(a.challenges, 3);
+        Ok(())
     }
 
     #[test]
-    fn two_challenges_is_normal_and_not_a_loop() {
+    fn two_challenges_is_normal_and_not_a_loop() -> Result<(), TestError> {
         // The first request is unauthenticated by design.
         let msgs = vec![
-            msg(&invite("z9hG4bK1", 1)),
-            msg(&response(401, "Unauthorized", "")),
-            msg(&invite("z9hG4bK2", 2)),
-            msg(&response(401, "Unauthorized", "")),
+            msg(&invite("z9hG4bK1", 1))?,
+            msg(&response(401, "Unauthorized", ""))?,
+            msg(&invite("z9hG4bK2", 2))?,
+            msg(&response(401, "Unauthorized", ""))?,
         ];
         assert!(diagnose_signaling(&msgs).auth_loop.is_none());
+        Ok(())
     }
 
     #[test]
-    fn challenges_followed_by_success_are_not_a_loop() {
-        let mut msgs: Vec<SipMessage> = (0..3)
-            .flat_map(|i| {
-                [
-                    msg(&invite(&format!("z9hG4bK{i}"), i + 1)),
-                    msg(&response(401, "Unauthorized", "")),
-                ]
-            })
-            .collect();
-        msgs.push(msg(&response(200, "OK", "")));
+    fn challenges_followed_by_success_are_not_a_loop() -> Result<(), TestError> {
+        let mut msgs: Vec<SipMessage> = Vec::new();
+        for i in 0..3 {
+            msgs.push(msg(&invite(&format!("z9hG4bK{i}"), i + 1))?);
+            msgs.push(msg(&response(401, "Unauthorized", ""))?);
+        }
+        msgs.push(msg(&response(200, "OK", ""))?);
         assert!(diagnose_signaling(&msgs).auth_loop.is_none());
+        Ok(())
     }
 
     // -- detection 3 ------------------------------------------------------
 
     #[test]
-    fn retransmitted_invite_with_no_response_reports_count_and_span() {
+    fn retransmitted_invite_with_no_response_reports_count_and_span() -> Result<(), TestError> {
         // Same branch and CSeq three times, nothing back.
         let msgs: Vec<SipMessage> = [0i64, 1, 3]
             .iter()
             .map(|s| msg_at(&invite("z9hG4bK1", 1), *s))
-            .collect();
+            .collect::<Result<_, _>>()?;
         let r = diagnose_signaling(&msgs)
             .retransmissions
-            .expect("storm detected");
+            .ok_or("storm detected")?;
         assert_eq!(r.method, "INVITE");
         assert_eq!(r.count, 3);
         assert!((r.span_sec - 3.0).abs() < 0.001, "span was {}", r.span_sec);
         assert_eq!(r.evidence, vec![0, 1, 2]);
+        Ok(())
     }
 
     #[test]
-    fn retransmissions_that_got_a_response_are_not_reported() {
+    fn retransmissions_that_got_a_response_are_not_reported() -> Result<(), TestError> {
         let mut msgs: Vec<SipMessage> = [0i64, 1, 3]
             .iter()
             .map(|s| msg_at(&invite("z9hG4bK1", 1), *s))
-            .collect();
-        msgs.push(msg_at(&response(503, "Service Unavailable", ""), 4));
+            .collect::<Result<_, _>>()?;
+        msgs.push(msg_at(&response(503, "Service Unavailable", ""), 4)?);
         assert!(diagnose_signaling(&msgs).retransmissions.is_none());
+        Ok(())
     }
 
     #[test]
-    fn two_transmissions_is_below_the_threshold() {
+    fn two_transmissions_is_below_the_threshold() -> Result<(), TestError> {
         let msgs: Vec<SipMessage> = [0i64, 1]
             .iter()
             .map(|s| msg_at(&invite("z9hG4bK1", 1), *s))
-            .collect();
+            .collect::<Result<_, _>>()?;
         assert!(diagnose_signaling(&msgs).retransmissions.is_none());
+        Ok(())
     }
 
     #[test]
-    fn different_branches_are_different_transactions_not_retransmissions() {
+    fn different_branches_are_different_transactions_not_retransmissions() -> Result<(), TestError>
+    {
         // Three separate INVITEs, each its own transaction. Grouping on CSeq
         // alone would call this a storm.
         let msgs: Vec<SipMessage> = (0..3)
             .map(|i| msg_at(&invite(&format!("z9hG4bK{i}"), 1), i))
-            .collect();
+            .collect::<Result<_, _>>()?;
         assert!(diagnose_signaling(&msgs).retransmissions.is_none());
+        Ok(())
     }
 
     #[test]
-    fn retransmitted_ack_is_not_a_no_response_fault() {
+    fn retransmitted_ack_is_not_a_no_response_fault() -> Result<(), TestError> {
         // ACK is never answered; counting its repeats would flag every dialog.
         let ack = |branch: &str| {
             format!(
@@ -2049,29 +2060,31 @@ mod tests {
         let msgs: Vec<SipMessage> = [0i64, 1, 2]
             .iter()
             .map(|s| msg_at(&ack("z9hG4bK1"), *s))
-            .collect();
+            .collect::<Result<_, _>>()?;
         assert!(diagnose_signaling(&msgs).retransmissions.is_none());
+        Ok(())
     }
 
     // -- shape ------------------------------------------------------------
 
     #[test]
-    fn an_empty_dialog_detects_nothing() {
+    fn an_empty_dialog_detects_nothing() -> Result<(), TestError> {
         let d = diagnose_signaling(&[]);
         assert!(d.is_empty());
         assert!(d.hints.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn detections_compose_on_one_dialog() {
+    fn detections_compose_on_one_dialog() -> Result<(), TestError> {
         // A storm and then a failure: both are true, and both are reported.
         let mut msgs: Vec<SipMessage> = [0i64, 1, 3]
             .iter()
             .map(|s| msg_at(&invite("z9hG4bK1", 1), *s))
-            .collect();
+            .collect::<Result<_, _>>()?;
         // A failure on a different transaction, so the storm stays unanswered.
-        msgs.push(msg_at(&invite("z9hG4bK9", 2), 4));
-        let mut fail = msg_at(&response(503, "Service Unavailable", ""), 5);
+        msgs.push(msg_at(&invite("z9hG4bK9", 2), 4)?);
+        let mut fail = msg_at(&response(503, "Service Unavailable", ""), 5)?;
         fail.headers
             .retain(|h| !h.name.eq_ignore_ascii_case("CSeq"));
         msgs.push(fail);
@@ -2079,10 +2092,11 @@ mod tests {
         assert!(d.retransmissions.is_some(), "storm should survive");
         assert!(d.final_failure.is_some(), "failure should be reported");
         assert_eq!(d.hints.len(), 2, "one hint per detection: {:?}", d.hints);
+        Ok(())
     }
 
     #[test]
-    fn is_empty_tracks_the_detection_fields() {
+    fn is_empty_tracks_the_detection_fields() -> Result<(), TestError> {
         let mut d = SignalingDiagnosis::default();
         assert!(d.is_empty());
         d.hints.push("a hint alone does not count".to_string());
@@ -2092,6 +2106,7 @@ mod tests {
         );
         d.final_failure = Some(FinalFailure::default());
         assert!(!d.is_empty());
+        Ok(())
     }
 
     // -- detection 4: ACK never received ----------------------------------
@@ -2109,44 +2124,47 @@ mod tests {
     }
 
     #[test]
-    fn answered_invite_with_no_ack_past_timer_h_is_flagged() {
+    fn answered_invite_with_no_ack_past_timer_h_is_flagged() -> Result<(), TestError> {
         // 200 retransmitted for 40s — past Timer H — and never acknowledged.
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(200, "OK", ""), 1),
-            msg_at(&response(200, "OK", ""), 20),
-            msg_at(&response(200, "OK", ""), 41),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&response(200, "OK", ""), 20)?,
+            msg_at(&response(200, "OK", ""), 41)?,
         ]);
-        let a = d.ack_missing.expect("no ACK in 40s is a fault");
+        let a = d.ack_missing.ok_or("no ACK in 40s is a fault")?;
         assert_eq!(a.answer_transmissions, 3);
         assert_eq!(a.evidence, vec![1, 2, 3]);
         assert!((a.waited_sec - 40.0).abs() < 0.001, "{}", a.waited_sec);
+        Ok(())
     }
 
     #[test]
-    fn answered_invite_with_an_ack_is_not_flagged() {
+    fn answered_invite_with_an_ack_is_not_flagged() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(200, "OK", ""), 1),
-            msg_at(&ack(1), 2),
-            msg_at(&response(200, "OK", ""), 60),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&ack(1), 2)?,
+            msg_at(&response(200, "OK", ""), 60)?,
         ]);
         assert!(d.ack_missing.is_none(), "the ACK is right there");
+        Ok(())
     }
 
     /// The capture-truncation guard. Without it, every capture that stops just
     /// after the answer reports a fault that did not happen.
     #[test]
-    fn answered_invite_at_the_end_of_a_short_capture_is_not_flagged() {
+    fn answered_invite_at_the_end_of_a_short_capture_is_not_flagged() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(200, "OK", ""), 1),
-            msg_at(&response(200, "OK", ""), 5),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&response(200, "OK", ""), 5)?,
         ]);
         assert!(
             d.ack_missing.is_none(),
             "5s is inside Timer H — the ACK may simply not have been captured yet"
         );
+        Ok(())
     }
 
     /// Caught by a TUI snapshot rather than by a unit test: the fixture call
@@ -2154,7 +2172,7 @@ mod tests {
     /// version of this detection flagged an ordinary completed call. A
     /// diagnosis that fires on healthy traffic is worse than no diagnosis.
     #[test]
-    fn a_call_that_hung_up_normally_has_no_missing_ack() {
+    fn a_call_that_hung_up_normally_has_no_missing_ack() -> Result<(), TestError> {
         let bye = "BYE sip:b@example.com SIP/2.0\n\
              Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK7\n\
              From: <sip:a@example.com>;tag=1\n\
@@ -2163,22 +2181,23 @@ mod tests {
              CSeq: 2 BYE\n\
              Content-Length: 0\n\n";
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(200, "OK", ""), 1),
-            msg_at(bye, 62),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(bye, 62)?,
         ]);
         assert!(
             d.ack_missing.is_none(),
             "a BYE proves the dialog was established, so the ACK was captured-missing, not missing"
         );
+        Ok(())
     }
 
     #[test]
-    fn ack_timeout_threshold_is_configurable() {
+    fn ack_timeout_threshold_is_configurable() -> Result<(), TestError> {
         let msgs = [
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(200, "OK", ""), 1),
-            msg_at(&response(200, "OK", ""), 5),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&response(200, "OK", ""), 5)?,
         ];
         let tight = SignalingThresholds {
             ack_timeout_sec: 4.0,
@@ -2188,6 +2207,7 @@ mod tests {
             diagnose_signaling_with(&msgs, &tight).ack_missing.is_some(),
             "5s exceeds a 4s window"
         );
+        Ok(())
     }
 
     // -- detection 5: abandoned / canceled -------------------------------
@@ -2205,29 +2225,30 @@ mod tests {
     }
 
     #[test]
-    fn cancel_before_a_final_response_is_canceled() {
+    fn cancel_before_a_final_response_is_canceled() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(180, "Ringing", ""), 1),
-            msg_at(&cancel(1), 9),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(180, "Ringing", ""), 1)?,
+            msg_at(&cancel(1), 9)?,
         ]);
-        let a = d.abandoned.expect("canceled before any final response");
+        let a = d.abandoned.ok_or("canceled before any final response")?;
         assert_eq!(a.kind, AbandonedKind::Canceled);
         assert_eq!(a.evidence, vec![2]);
         assert!(d.hints.iter().any(|h| h.contains("canceled")));
+        Ok(())
     }
 
     /// The detection the spec calls "most likely to lie if written carelessly".
     /// A capture that stopped while ringing must report *unknown*, and must say
     /// so in the words a reader will see.
     #[test]
-    fn no_final_response_is_unknown_not_a_failure() {
+    fn no_final_response_is_unknown_not_a_failure() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(180, "Ringing", ""), 1),
-            msg_at(&response(180, "Ringing", ""), 200),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(180, "Ringing", ""), 1)?,
+            msg_at(&response(180, "Ringing", ""), 200)?,
         ]);
-        let a = d.abandoned.expect("no final response");
+        let a = d.abandoned.ok_or("no final response")?;
         assert_eq!(a.kind, AbandonedKind::NoFinalResponse);
         assert!(
             d.hints.iter().any(|h| h.contains("UNKNOWN")),
@@ -2238,62 +2259,67 @@ mod tests {
             d.final_failure.is_none(),
             "a truncated capture is not a call failure"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_call_that_reached_a_final_response_is_not_abandoned() {
+    fn a_call_that_reached_a_final_response_is_not_abandoned() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(200, "OK", ""), 1),
-            msg_at(&ack(1), 1),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&ack(1), 1)?,
         ]);
         assert!(d.abandoned.is_none());
+        Ok(())
     }
 
     // -- detection 6: post-dial delay -------------------------------------
 
     #[test]
-    fn slow_ringback_exceeds_the_e721_threshold() {
+    fn slow_ringback_exceeds_the_e721_threshold() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(180, "Ringing", ""), 14),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(180, "Ringing", ""), 14)?,
         ]);
-        let p = d.post_dial_delay.expect("14s is over the 11s target");
+        let p = d.post_dial_delay.ok_or("14s is over the 11s target")?;
         assert_eq!(p.responded_with, 180);
         assert_eq!(p.threshold_sec, 11.0);
         assert!((p.delay_sec - 14.0).abs() < 0.001);
         assert_eq!(p.evidence, vec![0, 1]);
+        Ok(())
     }
 
     #[test]
-    fn prompt_ringback_is_not_flagged() {
+    fn prompt_ringback_is_not_flagged() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(180, "Ringing", ""), 2),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(180, "Ringing", ""), 2)?,
         ]);
         assert!(d.post_dial_delay.is_none());
+        Ok(())
     }
 
     /// `100 Trying` is hop-by-hop and inaudible. Counting it would measure the
     /// nearest proxy's reflexes and report a silent caller as a healthy one.
     #[test]
-    fn trying_does_not_stop_the_post_dial_clock() {
+    fn trying_does_not_stop_the_post_dial_clock() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(100, "Trying", ""), 0),
-            msg_at(&response(180, "Ringing", ""), 15),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(100, "Trying", ""), 0)?,
+            msg_at(&response(180, "Ringing", ""), 15)?,
         ]);
         let p = d
             .post_dial_delay
-            .expect("the caller waited 15s for ring-back, whatever the proxy said");
+            .ok_or("the caller waited 15s for ring-back, whatever the proxy said")?;
         assert!((p.delay_sec - 15.0).abs() < 0.001, "{}", p.delay_sec);
+        Ok(())
     }
 
     #[test]
-    fn post_dial_threshold_is_configurable() {
+    fn post_dial_threshold_is_configurable() -> Result<(), TestError> {
         let msgs = [
-            msg_at(&invite("z9hG4bK1", 1), 0),
-            msg_at(&response(180, "Ringing", ""), 4),
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(180, "Ringing", ""), 4)?,
         ];
         let strict = SignalingThresholds {
             post_dial_delay_sec: 3.0,
@@ -2304,6 +2330,7 @@ mod tests {
                 .post_dial_delay
                 .is_some()
         );
+        Ok(())
     }
 
     // -- detection 7: registration failure --------------------------------
@@ -2334,15 +2361,16 @@ mod tests {
     }
 
     #[test]
-    fn rejected_registration_is_flagged() {
+    fn rejected_registration_is_flagged() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(403, "Forbidden", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(403, "Forbidden", ""))?,
         ]);
-        let r = d.registration_failure.expect("403 rejects the binding");
+        let r = d.registration_failure.ok_or("403 rejects the binding")?;
         assert_eq!(r.kind, RegistrationFailureKind::Rejected);
         assert_eq!(r.code, 403);
         assert_eq!(r.requested_expiry_sec, Some(3600));
+        Ok(())
     }
 
     /// A second `REGISTER` answering a challenge: same transaction shape as
@@ -2385,7 +2413,7 @@ mod tests {
     /// problem is a live possibility — see
     /// [`request_timeout_is_the_only_code_that_may_mention_reachability`].
     #[test]
-    fn no_rejection_code_claims_the_endpoint_is_offline() -> Result<(), String> {
+    fn no_rejection_code_claims_the_endpoint_is_offline() -> Result<(), TestError> {
         for (code, phrase) in [
             (400, "Bad Request"),
             (403, "Forbidden"),
@@ -2397,8 +2425,8 @@ mod tests {
             (603, "Decline"),
         ] {
             let hint = rejection_hint(&[
-                msg(&register("Expires: 3600\n")),
-                msg(&register_response(code, phrase, "")),
+                msg(&register("Expires: 3600\n"))?,
+                msg(&register_response(code, phrase, ""))?,
             ])?;
             let lower = hint.to_lowercase();
             for claim in ["offline", "unreachable", "not reachable"] {
@@ -2419,12 +2447,12 @@ mod tests {
     /// demonstrably online — it answered the challenge — and the fault is in
     /// the credentials or the account, not in the network.
     #[test]
-    fn forbidden_after_a_challenge_points_at_the_credentials() -> Result<(), String> {
+    fn forbidden_after_a_challenge_points_at_the_credentials() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(401, "Unauthorized", "")),
-            msg(&register_with_credentials()),
-            msg(&register_response(403, "Forbidden", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(401, "Unauthorized", ""))?,
+            msg(&register_with_credentials())?,
+            msg(&register_response(403, "Forbidden", ""))?,
         ])?;
         let lower = hint.to_lowercase();
         assert!(
@@ -2443,10 +2471,10 @@ mod tests {
     /// Nothing was offered and nothing was rejected, so naming credentials
     /// would be inventing a cause exactly as the old wording did.
     #[test]
-    fn forbidden_without_a_challenge_does_not_invent_credentials() -> Result<(), String> {
+    fn forbidden_without_a_challenge_does_not_invent_credentials() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(403, "Forbidden", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(403, "Forbidden", ""))?,
         ])?;
         assert!(
             !hint.to_lowercase().contains("credential"),
@@ -2460,10 +2488,10 @@ mod tests {
     /// does not exist. The endpoint is online; the address-of-record is not
     /// provisioned.
     #[test]
-    fn not_found_names_the_address_of_record() -> Result<(), String> {
+    fn not_found_names_the_address_of_record() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(404, "Not Found", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(404, "Not Found", ""))?,
         ])?;
         let lower = hint.to_lowercase();
         assert!(
@@ -2477,10 +2505,10 @@ mod tests {
     /// an operator to check the phone points them at the wrong end of the
     /// call.
     #[test]
-    fn service_unavailable_points_at_the_registrar() -> Result<(), String> {
+    fn service_unavailable_points_at_the_registrar() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(503, "Service Unavailable", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(503, "Service Unavailable", ""))?,
         ])?;
         let lower = hint.to_lowercase();
         assert!(
@@ -2494,14 +2522,14 @@ mod tests {
     /// shorter than its minimum and MUST say what that minimum is. Nothing is
     /// offline; the two numbers are the whole diagnosis.
     #[test]
-    fn interval_too_brief_reports_both_intervals() -> Result<(), String> {
+    fn interval_too_brief_reports_both_intervals() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 60\n")),
+            msg(&register("Expires: 60\n"))?,
             msg(&register_response(
                 423,
                 "Interval Too Brief",
                 "Min-Expires: 3600\n",
-            )),
+            ))?,
         ])?;
         assert!(hint.contains("60"), "the requested interval: {hint}");
         assert!(hint.contains("3600"), "the registrar's minimum: {hint}");
@@ -2512,10 +2540,10 @@ mod tests {
     /// A `423` whose `Min-Expires` is missing is a registrar breaking
     /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261#section-10.3) step 7. Saying so beats inventing the minimum it did not send.
     #[test]
-    fn interval_too_brief_without_min_expires_says_so() -> Result<(), String> {
+    fn interval_too_brief_without_min_expires_says_so() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 60\n")),
-            msg(&register_response(423, "Interval Too Brief", "")),
+            msg(&register("Expires: 60\n"))?,
+            msg(&register_response(423, "Interval Too Brief", ""))?,
         ])?;
         assert!(
             hint.contains("Min-Expires"),
@@ -2528,10 +2556,10 @@ mod tests {
     /// still phrased as a possibility, because the `408` reaching the endpoint
     /// proves something answered it.
     #[test]
-    fn request_timeout_is_the_only_code_that_may_mention_reachability() -> Result<(), String> {
+    fn request_timeout_is_the_only_code_that_may_mention_reachability() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(408, "Request Timeout", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(408, "Request Timeout", ""))?,
         ])?;
         let lower = hint.to_lowercase();
         assert!(hint.contains("408"), "{hint}");
@@ -2546,10 +2574,10 @@ mod tests {
     /// ends ([RFC 3261 section 21.4.16](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.16)) — the request never reached a registrar that
     /// would answer it. Neither end is offline.
     #[test]
-    fn too_many_hops_is_a_routing_fault() -> Result<(), String> {
+    fn too_many_hops_is_a_routing_fault() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(483, "Too Many Hops", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(483, "Too Many Hops", ""))?,
         ])?;
         let lower = hint.to_lowercase();
         assert!(hint.contains("Max-Forwards"), "{hint}");
@@ -2562,10 +2590,10 @@ mod tests {
     /// case: `480 No DNS results` in the corpus is a proxy that could not
     /// resolve, and any invented cause would have been wrong.
     #[test]
-    fn an_unmapped_code_reports_the_observation_and_stops() -> Result<(), String> {
+    fn an_unmapped_code_reports_the_observation_and_stops() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(480, "No DNS results", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(480, "No DNS results", ""))?,
         ])?;
         assert!(hint.contains("480"), "{hint}");
         assert!(
@@ -2578,14 +2606,14 @@ mod tests {
     /// `Retry-After` is the registrar saying when to come back; dropping it
     /// leaves the reader guessing at the one number the server supplied.
     #[test]
-    fn retry_after_is_carried_into_the_hint() -> Result<(), String> {
+    fn retry_after_is_carried_into_the_hint() -> Result<(), TestError> {
         let hint = rejection_hint(&[
-            msg(&register("Expires: 3600\n")),
+            msg(&register("Expires: 3600\n"))?,
             msg(&register_response(
                 503,
                 "Service Unavailable",
                 "Retry-After: 120\n",
-            )),
+            ))?,
         ])?;
         assert!(hint.contains("120"), "Retry-After must survive: {hint}");
         Ok(())
@@ -2596,28 +2624,29 @@ mod tests {
     /// rejection meant — which is how both came to say "the endpoint is
     /// offline" for every code.
     #[test]
-    fn both_surfaces_render_the_same_headline() {
+    fn both_surfaces_render_the_same_headline() -> Result<(), TestError> {
         let messages = [
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(401, "Unauthorized", "")),
-            msg(&register_with_credentials()),
-            msg(&register_response(403, "Forbidden", "")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(401, "Unauthorized", ""))?,
+            msg(&register_with_credentials())?,
+            msg(&register_response(403, "Forbidden", ""))?,
         ];
         let d = diagnose_signaling(&messages);
-        let failure = d.registration_failure.expect("403 rejects the binding");
+        let failure = d.registration_failure.ok_or("403 rejects the binding")?;
         let shared = registration_rejection_headline(&failure, &messages);
         assert!(
             d.hints.iter().any(|h| h.starts_with(&shared)),
             "the hint must be the shared headline: {:?} vs {shared}",
             d.hints
         );
+        Ok(())
     }
 
     /// A compacted dialog can no longer supply the response the headline was
     /// drawn from. It must degrade to the code rather than panic on an
     /// out-of-range evidence index.
     #[test]
-    fn headline_survives_evidence_pointing_past_the_message_list() {
+    fn headline_survives_evidence_pointing_past_the_message_list() -> Result<(), TestError> {
         let failure = RegistrationFailure {
             kind: RegistrationFailureKind::Rejected,
             code: 404,
@@ -2627,6 +2656,7 @@ mod tests {
         };
         let head = registration_rejection_headline(&failure, &[]);
         assert!(head.contains("404"), "{head}");
+        Ok(())
     }
 
     /// A valueless Contact parameter must not hide the expiry.
@@ -2641,12 +2671,12 @@ mod tests {
     /// returned `None` from the whole function and the `Expires` header fallback
     /// never ran. An unregister from such a phone read as no expiry at all.
     #[test]
-    fn a_valueless_contact_parameter_does_not_hide_the_expiry() {
+    fn a_valueless_contact_parameter_does_not_hide_the_expiry() -> Result<(), TestError> {
         // `;ob` before the value-bearing parameter: the parameter form.
         let m = msg(&register("Expires: 3600\n").replace(
             "Contact: <sip:a@10.0.0.1>",
             "Contact: <sip:a@10.0.0.1>;ob;expires=0",
-        ));
+        ))?;
         assert_eq!(
             crate::sip::registration_expiry(&m),
             Some(0),
@@ -2655,13 +2685,14 @@ mod tests {
 
         // `;ob` with no expires parameter at all: the header must still be read.
         let m = msg(&register("Expires: 0\n")
-            .replace("Contact: <sip:a@10.0.0.1>", "Contact: <sip:a@10.0.0.1>;ob"));
+            .replace("Contact: <sip:a@10.0.0.1>", "Contact: <sip:a@10.0.0.1>;ob"))?;
         assert_eq!(
             crate::sip::registration_expiry(&m),
             Some(0),
             "`;ob` on the Contact stopped the `Expires` header from being read, \
              so an unregister from a pjsip phone looks like no expiry at all"
         );
+        Ok(())
     }
 
     /// Both spellings of the interval work, and the parameter wins.
@@ -2671,9 +2702,9 @@ mod tests {
     /// supported" is the requirement, and one of the two was unreachable behind
     /// any valueless parameter.
     #[test]
-    fn both_spellings_of_the_registration_interval_are_read() {
+    fn both_spellings_of_the_registration_interval_are_read() -> Result<(), TestError> {
         // Header only.
-        let m = msg(&register("Expires: 600\n"));
+        let m = msg(&register("Expires: 600\n"))?;
         assert_eq!(
             crate::sip::registration_expiry(&m),
             Some(600),
@@ -2684,7 +2715,7 @@ mod tests {
         let m = msg(&register("").replace(
             "Contact: <sip:a@10.0.0.1>",
             "Contact: <sip:a@10.0.0.1>;expires=600",
-        ));
+        ))?;
         assert_eq!(
             crate::sip::registration_expiry(&m),
             Some(600),
@@ -2695,7 +2726,7 @@ mod tests {
         let m = msg(&register("Expires: 3600\n").replace(
             "Contact: <sip:a@10.0.0.1>",
             "Contact: <sip:a@10.0.0.1>;expires=0",
-        ));
+        ))?;
         assert_eq!(
             crate::sip::registration_expiry(&m),
             Some(0),
@@ -2705,12 +2736,13 @@ mod tests {
         );
 
         // Neither: nothing to report, rather than a default invented here.
-        let m = msg(&register(""));
+        let m = msg(&register(""))?;
         assert_eq!(
             crate::sip::registration_expiry(&m),
             None,
             "no interval stated anywhere"
         );
+        Ok(())
     }
 
     /// The parameter scan tolerates the shapes real Contacts carry.
@@ -2719,7 +2751,7 @@ mod tests {
     /// the one that matters. Each is a way the scan could stop early and fall
     /// back to a header that may not be there.
     #[test]
-    fn the_expiry_parameter_scan_tolerates_real_contact_shapes() {
+    fn the_expiry_parameter_scan_tolerates_real_contact_shapes() -> Result<(), TestError> {
         for (contact, want, why) in [
             (
                 "<sip:a@10.0.0.1>;EXPIRES=0",
@@ -2750,91 +2782,99 @@ mod tests {
         ] {
             let m =
                 msg(&register("")
-                    .replace("Contact: <sip:a@10.0.0.1>", &format!("Contact: {contact}")));
+                    .replace("Contact: <sip:a@10.0.0.1>", &format!("Contact: {contact}")))?;
             assert_eq!(
                 crate::sip::registration_expiry(&m),
                 want,
                 "{why}: {contact}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn shortened_expiry_reports_both_numbers() {
+    fn shortened_expiry_reports_both_numbers() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&register("Expires: 3600\n")),
+            msg(&register("Expires: 3600\n"))?,
             msg(&register_response(
                 200,
                 "OK",
                 "Contact: <sip:a@10.0.0.1>;expires=60\n",
-            )),
+            ))?,
         ]);
-        let r = d.registration_failure.expect("granted far less than asked");
+        let r = d
+            .registration_failure
+            .ok_or("granted far less than asked")?;
         assert_eq!(r.kind, RegistrationFailureKind::ShortenedExpiry);
         assert_eq!(r.requested_expiry_sec, Some(3600));
         assert_eq!(r.granted_expiry_sec, Some(60));
         assert_eq!(r.code, 200);
+        Ok(())
     }
 
     #[test]
-    fn a_registration_granted_what_it_asked_for_is_not_flagged() {
+    fn a_registration_granted_what_it_asked_for_is_not_flagged() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&register("Expires: 3600\n")),
+            msg(&register("Expires: 3600\n"))?,
             msg(&register_response(
                 200,
                 "OK",
                 "Contact: <sip:a@10.0.0.1>;expires=3600\n",
-            )),
+            ))?,
         ]);
         assert!(d.registration_failure.is_none());
+        Ok(())
     }
 
     /// `Expires: 0` is a phone deliberately going offline. Flagging it would
     /// report every clean shutdown on the network as a fault.
     #[test]
-    fn deregistration_is_not_a_failure() {
+    fn deregistration_is_not_a_failure() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&register("Expires: 0\n")),
-            msg(&register_response(200, "OK", "")),
+            msg(&register("Expires: 0\n"))?,
+            msg(&register_response(200, "OK", ""))?,
         ]);
         assert!(d.registration_failure.is_none());
+        Ok(())
     }
 
     #[test]
-    fn a_challenged_registration_is_not_a_rejection() {
+    fn a_challenged_registration_is_not_a_rejection() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&register("Expires: 3600\n")),
-            msg(&register_response(401, "Unauthorized", "")),
-            msg(&register("Expires: 3600\n")),
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(401, "Unauthorized", ""))?,
+            msg(&register("Expires: 3600\n"))?,
             msg(&register_response(
                 200,
                 "OK",
                 "Contact: <sip:a@10.0.0.1>;expires=3600\n",
-            )),
+            ))?,
         ]);
         assert!(
             d.registration_failure.is_none(),
             "401 then 200 is a normal registration"
         );
+        Ok(())
     }
 
     /// The `Contact` parameter is the per-binding value and wins over the
     /// header, per [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1). Getting this backwards would compare a
     /// requested 3600 against a granted 3600 and miss the shortening.
     #[test]
-    fn contact_expires_parameter_beats_the_expires_header() {
+    fn contact_expires_parameter_beats_the_expires_header() -> Result<(), TestError> {
         let d = diagnose_signaling(&[
-            msg(&register("Expires: 3600\n")),
+            msg(&register("Expires: 3600\n"))?,
             msg(&register_response(
                 200,
                 "OK",
                 "Contact: <sip:a@10.0.0.1>;expires=120\nExpires: 3600\n",
-            )),
+            ))?,
         ]);
         let r = d
             .registration_failure
-            .expect("the binding got 120s whatever the header says");
+            .ok_or("the binding got 120s whatever the header says")?;
         assert_eq!(r.granted_expiry_sec, Some(120));
+        Ok(())
     }
 
     // -- cross-detection --------------------------------------------------
@@ -2843,7 +2883,7 @@ mod tests {
     /// destructure enforces at compile time. This checks the runtime half: each
     /// field alone is enough to make a diagnosis non-empty.
     #[test]
-    fn every_detection_alone_makes_the_diagnosis_non_empty() {
+    fn every_detection_alone_makes_the_diagnosis_non_empty() -> Result<(), TestError> {
         let base = SignalingDiagnosis::default();
         assert!(base.is_empty());
 
@@ -2881,6 +2921,7 @@ mod tests {
             evidence: vec![0, 1],
         });
         assert!(!d.is_empty(), "registration_failure");
+        Ok(())
     }
 
     // -- detection 8, and what it does to detection 3 ---------------------
@@ -2895,8 +2936,7 @@ mod tests {
         crate::capture::parse::DialogIcmpEvidence {
             errors,
             samples: vec![crate::capture::parse::IcmpEvidence {
-                timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
-                    .expect("valid fixture timestamp"),
+                timestamp: chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
                 unreachable_addr: DST,
                 unreachable_port: Some(5060),
                 reported_by: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 254)),
@@ -2913,12 +2953,18 @@ mod tests {
     }
 
     /// Three INVITEs into silence, and a router that said why.
-    fn storm_with(icmp: &crate::capture::parse::DialogIcmpEvidence) -> SignalingDiagnosis {
+    fn storm_with(
+        icmp: &crate::capture::parse::DialogIcmpEvidence,
+    ) -> Result<SignalingDiagnosis, TestError> {
         let msgs: Vec<SipMessage> = [0i64, 1, 3]
             .iter()
             .map(|s| msg_at(&invite("z9hG4bK1", 1), *s))
-            .collect();
-        diagnose_signaling_with_evidence(&msgs, &SignalingThresholds::default(), icmp)
+            .collect::<Result<_, _>>()?;
+        Ok(diagnose_signaling_with_evidence(
+            &msgs,
+            &SignalingThresholds::default(),
+            icmp,
+        ))
     }
 
     /// The ICMP fact annotates the retransmission finding; it does not delete
@@ -2927,13 +2973,14 @@ mod tests {
     /// retransmission hint stops offering an inference the ICMP error has
     /// already settled.
     #[test]
-    fn icmp_annotates_the_retransmission_finding_rather_than_replacing_it() {
-        let d = storm_with(&icmp_evidence(3, 1, "host unreachable", 4));
+    fn icmp_annotates_the_retransmission_finding_rather_than_replacing_it() -> Result<(), TestError>
+    {
+        let d = storm_with(&icmp_evidence(3, 1, "host unreachable", 4))?;
 
         let r = d
             .retransmissions
             .as_ref()
-            .expect("the storm is still reported: the count is the measurement");
+            .ok_or("the storm is still reported: the count is the measurement")?;
         assert_eq!(r.count, 3, "suppression would have lost this");
         assert_eq!(
             r.icmp_cause.as_deref(),
@@ -2945,7 +2992,7 @@ mod tests {
             .hints
             .iter()
             .find(|h| h.starts_with("No response to "))
-            .expect("the retransmission hint is still rendered");
+            .ok_or("the retransmission hint is still rendered")?;
         assert!(
             !hint.contains("a one-way path or an unreachable peer"),
             "the guess must not stand beside the fact that replaced it: {hint}"
@@ -2958,42 +3005,44 @@ mod tests {
             hint.contains("3 transmissions"),
             "annotating must not cost the count: {hint}"
         );
+        Ok(())
     }
 
     /// With no ICMP evidence the retransmission hint is exactly what it always
     /// was — the inference is honest when nothing better is available.
     #[test]
-    fn without_icmp_the_retransmission_hint_still_infers() {
-        let d = storm_with(&Default::default());
-        let r = d.retransmissions.as_ref().expect("storm detected");
+    fn without_icmp_the_retransmission_hint_still_infers() -> Result<(), TestError> {
+        let d = storm_with(&Default::default())?;
+        let r = d.retransmissions.as_ref().ok_or("storm detected")?;
         assert_eq!(r.icmp_cause, None);
         let hint = d
             .hints
             .iter()
             .find(|h| h.starts_with("No response to "))
-            .expect("hint rendered");
+            .ok_or("hint rendered")?;
         assert!(
             hint.contains("a one-way path or an unreachable peer"),
             "with nothing better, the inference is the honest answer: {hint}"
         );
+        Ok(())
     }
 
     /// "Administratively prohibited" is a filter, not a dead host, and the two
     /// send an operator to different devices. The finding must not tell them
     /// the peer is down when a firewall rejected the packet.
     #[test]
-    fn administratively_prohibited_names_a_filter_not_a_dead_peer() {
+    fn administratively_prohibited_names_a_filter_not_a_dead_peer() -> Result<(), TestError> {
         let d = storm_with(&icmp_evidence(
             3,
             13,
             "communication administratively prohibited",
             2,
-        ));
+        ))?;
         let hint = d
             .hints
             .iter()
             .find(|h| h.starts_with("ICMP "))
-            .expect("the ICMP hint is rendered");
+            .ok_or("the ICMP hint is rendered")?;
         assert!(
             hint.contains("filtering") || hint.contains("firewall"),
             "a prohibition is a policy device's decision, and that is the fix: {hint}"
@@ -3002,33 +3051,35 @@ mod tests {
             !hint.contains("not reachable on that port"),
             "a filter says nothing about whether the port is open: {hint}"
         );
+        Ok(())
     }
 
     /// A port-unreachable is the opposite case: the host answered, so the
     /// service is the fault and the network is not.
     #[test]
-    fn port_unreachable_names_the_service_not_the_network() {
-        let d = storm_with(&icmp_evidence(3, 3, "port unreachable", 1));
+    fn port_unreachable_names_the_service_not_the_network() -> Result<(), TestError> {
+        let d = storm_with(&icmp_evidence(3, 3, "port unreachable", 1))?;
         let hint = d
             .hints
             .iter()
             .find(|h| h.starts_with("ICMP "))
-            .expect("the ICMP hint is rendered");
+            .ok_or("the ICMP hint is rendered")?;
         assert!(
             hint.contains("nothing was listening"),
             "port-unreachable means the host is up and the port is not: {hint}"
         );
+        Ok(())
     }
 
     /// A host-unreachable is a routing or power question, not a port one.
     #[test]
-    fn host_unreachable_does_not_claim_anything_about_a_port() {
-        let d = storm_with(&icmp_evidence(3, 1, "host unreachable", 1));
+    fn host_unreachable_does_not_claim_anything_about_a_port() -> Result<(), TestError> {
+        let d = storm_with(&icmp_evidence(3, 1, "host unreachable", 1))?;
         let hint = d
             .hints
             .iter()
             .find(|h| h.starts_with("ICMP "))
-            .expect("the ICMP hint is rendered");
+            .ok_or("the ICMP hint is rendered")?;
         assert!(
             !hint.contains("nothing was listening"),
             "nothing reached the host, so nothing is known about its ports: {hint}"
@@ -3037,6 +3088,7 @@ mod tests {
             hint.contains("route") && hint.contains("powered off"),
             "the fix is routing, addressing or the host itself: {hint}"
         );
+        Ok(())
     }
 
     // -- detection 9: the two witnesses disagree --------------------------
@@ -3049,10 +3101,13 @@ mod tests {
 
     /// A message stamped with the capture source that delivered it, which is
     /// the only input detection 9 has that the other eight do not.
-    fn from_source(raw: &str, origin: crate::capture::parse::InputOrigin) -> SipMessage {
-        let mut m = msg(raw);
+    fn from_source(
+        raw: &str,
+        origin: crate::capture::parse::InputOrigin,
+    ) -> Result<SipMessage, TestError> {
+        let mut m = msg(raw)?;
         m.input_origin = Some(origin);
-        m
+        Ok(m)
     }
 
     /// Parse CRLF-exact fixture text and stamp its source.
@@ -3061,9 +3116,11 @@ mod tests {
     /// header-only fixtures readable — but an SDP body has to be written with
     /// real line endings for `Content-Length` to be the length the parser
     /// measures, and rewriting those would double every CR.
-    fn msg_crlf(raw: &str, origin: crate::capture::parse::InputOrigin) -> SipMessage {
-        let ts =
-            chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid fixture timestamp");
+    fn msg_crlf(
+        raw: &str,
+        origin: crate::capture::parse::InputOrigin,
+    ) -> Result<SipMessage, TestError> {
+        let ts = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
         let mut m = parse_sip(
             raw.as_bytes(),
             ts,
@@ -3073,9 +3130,9 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("fixture parses");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
         m.input_origin = Some(origin);
-        m
+        Ok(m)
     }
 
     /// An INVITE whose SDP advertises `ip:port` — the fact the two witnesses
@@ -3109,17 +3166,17 @@ mod tests {
     /// **Mirror-only.** A message the proxy mirrored and the wire never
     /// carried is a proxy that believes it sent something it did not.
     #[test]
-    fn a_message_only_the_mirror_reported_is_named_as_mirror_only() {
+    fn a_message_only_the_mirror_reported_is_named_as_mirror_only() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
             // The proxy says it answered. Nothing left the box.
-            from_source(&response(200, "OK", ""), InputOrigin::Hep),
+            from_source(&response(200, "OK", ""), InputOrigin::Hep)?,
         ]);
         let s = d
             .source_disagreement
-            .expect("a mirrored 200 the wire never carried is the finding");
+            .ok_or("a mirrored 200 the wire never carried is the finding")?;
         assert_eq!(
             s.agreed, 1,
             "the INVITE arrived on both witnesses and must pair"
@@ -3141,22 +3198,23 @@ mod tests {
             "the report surfaces render evidence with the machinery the other \
              eight detections use; an empty one renders nothing"
         );
+        Ok(())
     }
 
     /// **Wire-only.** A message on the wire the mirror never reported is
     /// tracing that is lying to its operator: the box did something its own
     /// trace does not admit to.
     #[test]
-    fn a_message_only_the_wire_carried_is_named_as_wire_only() {
+    fn a_message_only_the_wire_carried_is_named_as_wire_only() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
-            from_source(&response(486, "Busy Here", ""), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
+            from_source(&response(486, "Busy Here", ""), InputOrigin::Wire)?,
         ]);
         let s = d
             .source_disagreement
-            .expect("a 486 on the wire the mirror never reported is the finding");
+            .ok_or("a 486 on the wire the mirror never reported is the finding")?;
         assert_eq!(s.wire_only.len(), 1);
         assert_eq!(s.wire_only[0].index, 2);
         assert!(
@@ -3165,6 +3223,7 @@ mod tests {
             s.wire_only[0].summary
         );
         assert!(s.mirror_only.is_empty());
+        Ok(())
     }
 
     /// **Differing in SDP.** The same message on both witnesses advertising
@@ -3172,21 +3231,21 @@ mod tests {
     /// job, sometimes the bug. Both addresses are reported, because which of
     /// those it is cannot be decided here.
     #[test]
-    fn matched_messages_whose_sdp_differs_report_both_addresses() {
+    fn matched_messages_whose_sdp_differs_report_both_addresses() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
             msg_crlf(
                 &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
                 InputOrigin::Hep,
-            ),
+            )?,
             msg_crlf(
                 &invite_offering("z9hG4bK1", 1, "203.0.113.9", 30000),
                 InputOrigin::Wire,
-            ),
+            )?,
         ]);
         let s = d
             .source_disagreement
-            .expect("two accounts of one message naming two media sockets");
+            .ok_or("two accounts of one message naming two media sockets")?;
         assert_eq!(
             s.agreed, 1,
             "they are the same message and must pair — a rewrite is not a gap"
@@ -3198,43 +3257,46 @@ mod tests {
             s.mirror_only.is_empty() && s.wire_only.is_empty(),
             "neither copy is missing; they disagree about content"
         );
+        Ok(())
     }
 
     /// **Agreement is not a finding.** Two witnesses that say the same thing
     /// are the healthy case, and a diagnosis object on every clean call in a
     /// composite run is how a finding becomes noise.
     #[test]
-    fn two_witnesses_that_agree_on_every_message_report_nothing() {
+    fn two_witnesses_that_agree_on_every_message_report_nothing() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
-            from_source(&response(200, "OK", ""), InputOrigin::Hep),
-            from_source(&response(200, "OK", ""), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
+            from_source(&response(200, "OK", ""), InputOrigin::Hep)?,
+            from_source(&response(200, "OK", ""), InputOrigin::Wire)?,
         ]);
         assert!(
             d.source_disagreement.is_none(),
             "the two accounts match; there is nothing to report"
         );
         assert!(d.is_empty(), "and the whole diagnosis stays clean");
+        Ok(())
     }
 
     /// **A single-source run reports nothing new.** One witness has no second
     /// account to be checked against, so every message would be "only this
     /// source" — the whole call, reported as a finding, for every call.
     #[test]
-    fn a_single_source_run_reports_no_source_disagreement() {
+    fn a_single_source_run_reports_no_source_disagreement() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
             let d = diagnose_signaling(&[
-                from_source(&invite("z9hG4bK1", 1), origin),
-                from_source(&response(486, "Busy Here", ""), origin),
+                from_source(&invite("z9hG4bK1", 1), origin)?,
+                from_source(&response(486, "Busy Here", ""), origin)?,
             ]);
             assert!(
                 d.source_disagreement.is_none(),
                 "{origin}: one witness cannot disagree with itself"
             );
         }
+        Ok(())
     }
 
     /// **An absent origin is "nobody said", never "the same source".**
@@ -3245,8 +3307,8 @@ mod tests {
     /// beside one that has that catches `unwrap_or_default()`, which would
     /// read a hand-built message as something seen on a wire.
     #[test]
-    fn messages_with_no_recorded_origin_report_nothing() {
-        let d = diagnose_signaling(&[msg(&invite("z9hG4bK1", 1)), msg(&response(200, "OK", ""))]);
+    fn messages_with_no_recorded_origin_report_nothing() -> Result<(), TestError> {
+        let d = diagnose_signaling(&[msg(&invite("z9hG4bK1", 1))?, msg(&response(200, "OK", ""))?]);
         assert!(
             d.source_disagreement.is_none(),
             "no origins, nothing to compare"
@@ -3257,14 +3319,15 @@ mod tests {
             from_source(
                 &invite("z9hG4bK1", 1),
                 crate::capture::parse::InputOrigin::Hep,
-            ),
-            msg(&response(486, "Busy Here", "")),
+            )?,
+            msg(&response(486, "Busy Here", ""))?,
         ]);
         assert!(
             mixed.source_disagreement.is_none(),
             "a message no source claimed is not evidence that the OTHER source \
              carried it"
         );
+        Ok(())
     }
 
     /// **The trap SRC2 names.** The HEP mirror is usually FIRST — the proxy
@@ -3276,23 +3339,23 @@ mod tests {
     /// directions: the paired copies must report the same per-source values
     /// whichever arrived first, and a gap must stay on the side it belongs to.
     #[test]
-    fn the_mirror_arriving_first_does_not_make_it_the_reference() {
+    fn the_mirror_arriving_first_does_not_make_it_the_reference() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let mirror = msg_crlf(
             &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
             InputOrigin::Hep,
-        );
+        )?;
         let wire = msg_crlf(
             &invite_offering("z9hG4bK1", 1, "203.0.113.9", 30000),
             InputOrigin::Wire,
-        );
+        )?;
 
         let first = diagnose_signaling(&[mirror.clone(), wire.clone()])
             .source_disagreement
-            .expect("mirror first");
+            .ok_or("mirror first")?;
         let second = diagnose_signaling(&[wire, mirror])
             .source_disagreement
-            .expect("wire first");
+            .ok_or("wire first")?;
 
         assert_eq!(
             first.sdp_differs[0].mirror, second.sdp_differs[0].mirror,
@@ -3312,9 +3375,9 @@ mod tests {
         // mirror's copies placed before it and after it. An early mirror must
         // not absorb it into a match, and a late mirror must not turn it into
         // a mirror-only gap.
-        let inv_h = from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep);
-        let inv_w = from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire);
-        let busy_w = from_source(&response(486, "Busy Here", ""), InputOrigin::Wire);
+        let inv_h = from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?;
+        let inv_w = from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?;
+        let busy_w = from_source(&response(486, "Busy Here", ""), InputOrigin::Wire)?;
         for (label, ladder) in [
             (
                 "mirror first",
@@ -3324,13 +3387,14 @@ mod tests {
         ] {
             let s = diagnose_signaling(&ladder)
                 .source_disagreement
-                .unwrap_or_else(|| panic!("{label}: the 486 is on one witness only"));
+                .ok_or_else(|| format!("{label}: the 486 is on one witness only"))?;
             assert_eq!(s.wire_only.len(), 1, "{label}: the wire carried it");
             assert!(
                 s.mirror_only.is_empty(),
                 "{label}: the mirror is silent, not surplus"
             );
         }
+        Ok(())
     }
 
     /// **Only the pair sipnab can actually produce is compared.** A uprobe
@@ -3339,13 +3403,14 @@ mod tests {
     /// against the wire would be untested code answering a question no run
     /// can ask.
     #[test]
-    fn a_uprobe_source_is_not_compared_against_the_wire() {
+    fn a_uprobe_source_is_not_compared_against_the_wire() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Uprobe),
-            from_source(&response(486, "Busy Here", ""), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Uprobe)?,
+            from_source(&response(486, "Busy Here", ""), InputOrigin::Wire)?,
         ]);
         assert!(d.source_disagreement.is_none());
+        Ok(())
     }
 
     /// **Copies pair by count.** Three mirrored transmissions against two on
@@ -3353,20 +3418,21 @@ mod tests {
     /// did arrive are matches, and reporting them as gaps would inflate every
     /// retransmitting call into a disagreement.
     #[test]
-    fn a_retransmission_the_wire_missed_is_one_gap_not_three() {
+    fn a_retransmission_the_wire_missed_is_one_gap_not_three() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
         ]);
         let s = d
             .source_disagreement
-            .expect("three mirrored copies against two on the wire");
+            .ok_or("three mirrored copies against two on the wire")?;
         assert_eq!(s.agreed, 2, "two transmissions reached both witnesses");
         assert_eq!(s.mirror_only.len(), 1, "one surplus copy, not three");
+        Ok(())
     }
 
     /// **A body one witness dropped is a disagreement, not a blank.** The two
@@ -3374,18 +3440,18 @@ mod tests {
     /// other did not, which is exactly the case a comparison written as "diff
     /// the endpoints when both have them" would render as agreement.
     #[test]
-    fn an_sdp_only_one_witness_carried_is_reported_as_a_difference() {
+    fn an_sdp_only_one_witness_carried_is_reported_as_a_difference() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
             msg_crlf(
                 &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
                 InputOrigin::Hep,
-            ),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            )?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
         ]);
         let s = d
             .source_disagreement
-            .expect("one copy offered media and the other offered none");
+            .ok_or("one copy offered media and the other offered none")?;
         assert_eq!(s.agreed, 1, "same message, so it pairs");
         assert_eq!(s.sdp_differs[0].mirror, vec!["audio 198.51.100.7:20000"]);
         assert!(
@@ -3397,11 +3463,12 @@ mod tests {
             .hints
             .iter()
             .find(|h| h.starts_with("Capture sources disagree"))
-            .expect("rendered");
+            .ok_or("rendered")?;
         assert!(
             hint.contains("no SDP on the wire"),
             "an empty list must render as a statement, not as a blank: {hint}"
         );
+        Ok(())
     }
 
     /// **The hint stops naming messages; the finding does not.** A hint is one
@@ -3410,26 +3477,28 @@ mod tests {
     /// into all three, and the reader who wants every one has the structured
     /// finding.
     #[test]
-    fn the_hint_caps_the_messages_it_names_and_says_how_many_it_cut() {
+    fn the_hint_caps_the_messages_it_names_and_says_how_many_it_cut() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let mut ladder = vec![
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
         ];
         for code in [180u16, 181, 182, 183, 199] {
             ladder.push(from_source(
                 &response(code, "Ringing", ""),
                 InputOrigin::Hep,
-            ));
+            )?);
         }
         let d = diagnose_signaling(&ladder);
-        let s = d.source_disagreement.expect("five mirrored-only responses");
+        let s = d
+            .source_disagreement
+            .ok_or("five mirrored-only responses")?;
         assert_eq!(s.mirror_only.len(), 5, "the finding carries all of them");
         let hint = d
             .hints
             .iter()
             .find(|h| h.starts_with("Capture sources disagree"))
-            .expect("rendered");
+            .ok_or("rendered")?;
         assert!(
             hint.contains("and 2 more"),
             "the hint names three and counts the rest: {hint}"
@@ -3438,6 +3507,7 @@ mod tests {
             !hint.contains("199"),
             "the fifth is past the cap and must not be named: {hint}"
         );
+        Ok(())
     }
 
     /// **`is_empty` counts it.** A dialog whose only finding is that its two
@@ -3445,12 +3515,12 @@ mod tests {
     /// whole object on `is_empty`, so forgetting this one line would make the
     /// finding invisible on every door at once.
     #[test]
-    fn a_source_disagreement_alone_makes_the_diagnosis_non_empty() {
+    fn a_source_disagreement_alone_makes_the_diagnosis_non_empty() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
-            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
-            from_source(&response(200, "OK", ""), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
+            from_source(&response(200, "OK", ""), InputOrigin::Hep)?,
         ]);
         assert!(
             d.final_failure.is_none()
@@ -3460,6 +3530,7 @@ mod tests {
             "nothing else fired, so is_empty can only be reading detection 9"
         );
         assert!(!d.is_empty(), "the disagreement is a finding");
+        Ok(())
     }
 
     /// **The hint names both witnesses and neither as the truth.** The plain
@@ -3467,23 +3538,23 @@ mod tests {
     /// shaped "the wire is missing X" would hand the proxy's account the
     /// authority this whole detection exists to withhold.
     #[test]
-    fn the_disagreement_hint_names_both_witnesses() {
+    fn the_disagreement_hint_names_both_witnesses() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         let d = diagnose_signaling(&[
             msg_crlf(
                 &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
                 InputOrigin::Hep,
-            ),
+            )?,
             msg_crlf(
                 &invite_offering("z9hG4bK1", 1, "203.0.113.9", 30000),
                 InputOrigin::Wire,
-            ),
+            )?,
         ]);
         let hint = d
             .hints
             .iter()
             .find(|h| h.starts_with("Capture sources disagree"))
-            .expect("one plain-language line per detection");
+            .ok_or("one plain-language line per detection")?;
         assert!(
             hint.contains("198.51.100.7:20000") && hint.contains("203.0.113.9:30000"),
             "both accounts, side by side: {hint}"
@@ -3492,6 +3563,7 @@ mod tests {
             hint.contains("mirror") && hint.contains("wire"),
             "each address attributed to the witness that gave it: {hint}"
         );
+        Ok(())
     }
     /// The shipped alert rules page at the threshold the code calls a fault.
     ///
@@ -3505,7 +3577,7 @@ mod tests {
     /// a fix that reached only one of them is the same defect one directory
     /// along.
     #[test]
-    fn the_shipped_alert_pdd_threshold_matches_the_code() {
+    fn the_shipped_alert_pdd_threshold_matches_the_code() -> Result<(), TestError> {
         let expected = SignalingThresholds::BUILT_IN.post_dial_delay_sec;
         for (path, yaml) in [
             (
@@ -3521,12 +3593,12 @@ mod tests {
                 .lines()
                 .skip_while(|l| !l.contains("alert: SipnabCriticalPDD"))
                 .find(|l| l.trim_start().starts_with("expr:"))
-                .unwrap_or_else(|| panic!("{path} has no SipnabCriticalPDD rule"));
+                .ok_or_else(|| format!("{path} has no SipnabCriticalPDD rule"))?;
             let threshold: f64 = expr
                 .rsplit_once('>')
                 .map(|(_, rhs)| rhs.trim())
                 .and_then(|v| v.parse().ok())
-                .unwrap_or_else(|| panic!("{path}: cannot read a threshold from {expr}"));
+                .ok_or_else(|| format!("{path}: cannot read a threshold from {expr}"))?;
             assert!(
                 (threshold - expected).abs() < f64::EPSILON,
                 "{path} pages at {threshold}s; the code calls a call faulty at \
@@ -3534,6 +3606,7 @@ mod tests {
                  be paged for what sipnab itself reports as healthy."
             );
         }
+        Ok(())
     }
 
     /// The warning tier sits below the critical one and above the local target.
@@ -3542,7 +3615,7 @@ mod tests {
     /// which makes it decoration. One below E.721's local 95% target would
     /// warn on conformant local service.
     #[test]
-    fn the_warning_tier_sits_between_the_local_target_and_the_page() {
+    fn the_warning_tier_sits_between_the_local_target_and_the_page() -> Result<(), TestError> {
         let yaml = include_str!("../../contrib/prometheus/sipnab-alerts.yml");
         let warn: f64 = yaml
             .lines()
@@ -3550,7 +3623,7 @@ mod tests {
             .find(|l| l.trim_start().starts_with("expr:"))
             .and_then(|l| l.rsplit_once('>').map(|(_, r)| r.trim().to_string()))
             .and_then(|v| v.parse().ok())
-            .expect("SipnabHighPDD carries a numeric threshold");
+            .ok_or("SipnabHighPDD carries a numeric threshold")?;
 
         // 6.0 s is E.721 Table 2, local connection, normal load, 95%.
         assert!(
@@ -3562,5 +3635,6 @@ mod tests {
             warn < SignalingThresholds::BUILT_IN.post_dial_delay_sec,
             "a warning at or above the page threshold never fires first"
         );
+        Ok(())
     }
 }

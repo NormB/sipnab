@@ -838,14 +838,17 @@ pub fn load(prog: &[SockFilter], flags: libc::c_uint) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The program a run with no allowlist installs, instruction by
     /// instruction.
     ///
     /// Every field is pinned, not just the ones that look interesting: a
     /// layout test that checks some fields passes while the rest drift.
     #[test]
-    fn an_empty_allowlist_logs_everything_on_the_right_architecture() {
-        let prog = build_program(AUDIT_ARCH_X86_64, &[], SECCOMP_RET_LOG).expect("builds");
+    fn an_empty_allowlist_logs_everything_on_the_right_architecture() -> Result<(), TestError> {
+        let prog = build_program(AUDIT_ARCH_X86_64, &[], SECCOMP_RET_LOG)
+            .map_err(|e| format!("builds: {e:?}"))?;
         assert_eq!(
             prog,
             vec![
@@ -881,6 +884,7 @@ mod tests {
                 },
             ]
         );
+        Ok(())
     }
 
     /// Every compare reaches the trailing `RET ALLOW`, and only it.
@@ -890,9 +894,10 @@ mod tests {
     /// allowed syscall on the fallback action. Walked rather than asserted as
     /// a constant, because a constant would encode the same mistake twice.
     #[test]
-    fn every_compare_jumps_to_the_allow_and_falls_through_to_the_next() {
+    fn every_compare_jumps_to_the_allow_and_falls_through_to_the_next() -> Result<(), TestError> {
         let allow: Vec<i64> = (100..140).collect();
-        let prog = build_program(AUDIT_ARCH_AARCH64, &allow, SECCOMP_RET_LOG).expect("builds");
+        let prog = build_program(AUDIT_ARCH_AARCH64, &allow, SECCOMP_RET_LOG)
+            .map_err(|e| format!("builds: {e:?}"))?;
         let n = allow.len();
         let ret_fallback = 3 + n;
         let ret_allow = 4 + n;
@@ -914,6 +919,7 @@ mod tests {
         }
         assert_eq!(prog[ret_fallback].k, SECCOMP_RET_LOG);
         assert_eq!(prog[ret_allow].k, SECCOMP_RET_ALLOW);
+        Ok(())
     }
 
     /// A wrong architecture reaches the fallback, never the allow.
@@ -923,10 +929,11 @@ mod tests {
     /// else entirely, so an allowlist matched without the architecture check
     /// is an allowlist for the wrong syscalls.
     #[test]
-    fn a_foreign_architecture_lands_on_the_fallback() {
+    fn a_foreign_architecture_lands_on_the_fallback() -> Result<(), TestError> {
         for n in [0usize, 1, 7, 254] {
             let allow: Vec<i64> = (0..n as i64).collect();
-            let prog = build_program(AUDIT_ARCH_X86_64, &allow, SECCOMP_RET_LOG).expect("builds");
+            let prog = build_program(AUDIT_ARCH_X86_64, &allow, SECCOMP_RET_LOG)
+                .map_err(|e| format!("builds: {e:?}"))?;
             let taken = 1 + 1 + usize::from(prog[1].jf);
             assert_eq!(
                 taken,
@@ -938,19 +945,22 @@ mod tests {
             assert_eq!(prog[taken].code, BPF_RET_K);
             assert_eq!(prog[taken].k, SECCOMP_RET_LOG);
         }
+        Ok(())
     }
 
     /// The longest list that fits still encodes reachable jumps.
     #[test]
-    fn the_largest_allowlist_still_encodes() {
+    fn the_largest_allowlist_still_encodes() -> Result<(), TestError> {
         let allow: Vec<i64> = (0..MAX_ALLOWLIST as i64).collect();
-        let prog = build_program(AUDIT_ARCH_AARCH64, &allow, SECCOMP_RET_LOG).expect("builds");
+        let prog = build_program(AUDIT_ARCH_AARCH64, &allow, SECCOMP_RET_LOG)
+            .map_err(|e| format!("builds: {e:?}"))?;
         assert_eq!(
             prog[3].jt, 254,
             "the first compare must reach the RET ALLOW"
         );
         assert_eq!(prog[1].jf, 255, "the arch check must reach the fallback");
         assert_eq!(prog.len(), MAX_ALLOWLIST + 5);
+        Ok(())
     }
 
     /// One more than fits is refused, not silently mis-encoded.
@@ -959,7 +969,7 @@ mod tests {
     /// jump to a real instruction, just the wrong one, and the filter would
     /// load and run and allow the wrong calls.
     #[test]
-    fn a_list_too_long_for_a_jump_offset_is_refused() {
+    fn a_list_too_long_for_a_jump_offset_is_refused() -> Result<(), TestError> {
         let allow: Vec<i64> = (0..=MAX_ALLOWLIST as i64).collect();
         assert_eq!(
             build_program(AUDIT_ARCH_AARCH64, &allow, SECCOMP_RET_LOG),
@@ -968,11 +978,12 @@ mod tests {
                 limit: MAX_ALLOWLIST
             })
         );
+        Ok(())
     }
 
     /// A number `seccomp_data.nr` cannot hold is refused.
     #[test]
-    fn a_syscall_number_outside_the_field_is_refused() {
+    fn a_syscall_number_outside_the_field_is_refused() -> Result<(), TestError> {
         for nr in [-1i64, i64::from(i32::MAX) + 1, i64::MAX] {
             assert_eq!(
                 build_program(AUDIT_ARCH_X86_64, &[nr], SECCOMP_RET_LOG),
@@ -981,6 +992,7 @@ mod tests {
             );
         }
         assert!(build_program(AUDIT_ARCH_X86_64, &[i64::from(i32::MAX)], SECCOMP_RET_LOG).is_ok());
+        Ok(())
     }
 
     /// The two architectures produce different programs.
@@ -989,14 +1001,17 @@ mod tests {
     /// — and a logging filter that matches nothing is silent, which reads
     /// exactly like a clean run.
     #[test]
-    fn the_architecture_token_reaches_the_program() {
-        let a = build_program(AUDIT_ARCH_AARCH64, &[1, 2], SECCOMP_RET_LOG).expect("builds");
-        let x = build_program(AUDIT_ARCH_X86_64, &[1, 2], SECCOMP_RET_LOG).expect("builds");
+    fn the_architecture_token_reaches_the_program() -> Result<(), TestError> {
+        let a = build_program(AUDIT_ARCH_AARCH64, &[1, 2], SECCOMP_RET_LOG)
+            .map_err(|e| format!("builds: {e:?}"))?;
+        let x = build_program(AUDIT_ARCH_X86_64, &[1, 2], SECCOMP_RET_LOG)
+            .map_err(|e| format!("builds: {e:?}"))?;
         assert_eq!(a[1].k, AUDIT_ARCH_AARCH64);
         assert_eq!(x[1].k, AUDIT_ARCH_X86_64);
         assert_ne!(a, x);
         assert_eq!(AUDIT_ARCH_AARCH64, 0xc000_00b7);
         assert_eq!(AUDIT_ARCH_X86_64, 0xc000_003e);
+        Ok(())
     }
 
     /// `SockFilter` is the kernel's `sock_filter`, field for field.
@@ -1007,7 +1022,7 @@ mod tests {
     /// comparison is the point.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_instruction_matches_the_kernels_layout() {
+    fn the_instruction_matches_the_kernels_layout() -> Result<(), TestError> {
         assert_eq!(
             std::mem::size_of::<SockFilter>(),
             std::mem::size_of::<libc::sock_filter>()
@@ -1020,6 +1035,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(SockFilter, jt), 2);
         assert_eq!(std::mem::offset_of!(SockFilter, jf), 3);
         assert_eq!(std::mem::offset_of!(SockFilter, k), 4);
+        Ok(())
     }
 
     /// The fallback action reaches the program unchanged.
@@ -1027,22 +1043,25 @@ mod tests {
     /// A test can build a denying program even though nothing shipped does,
     /// and `seccomp_child_test` uses one to prove a filter is really loaded.
     #[test]
-    fn the_fallback_action_is_whatever_the_caller_asked_for() {
+    fn the_fallback_action_is_whatever_the_caller_asked_for() -> Result<(), TestError> {
         for action in [
             SECCOMP_RET_LOG,
             SECCOMP_RET_ALLOW,
             SECCOMP_RET_ERRNO | u32::from(libc::EPERM as u16),
         ] {
-            let prog = build_program(AUDIT_ARCH_X86_64, &[1], action).expect("builds");
+            let prog = build_program(AUDIT_ARCH_X86_64, &[1], action)
+                .map_err(|e| format!("builds: {e:?}"))?;
             assert_eq!(prog[prog.len() - 2].k, action);
         }
+        Ok(())
     }
 
     /// Off installs nothing, on every platform.
     #[test]
-    fn off_installs_nothing() {
+    fn off_installs_nothing() -> Result<(), TestError> {
         assert_eq!(install(SeccompMode::Off), SeccompStatus::Disabled);
         assert_eq!(SeccompMode::default(), SeccompMode::Off);
+        Ok(())
     }
 
     /// Every startup line says what is not protected.
@@ -1051,7 +1070,7 @@ mod tests {
     /// be true and would leave an operator believing a control is in force
     /// when nothing is denied.
     #[test]
-    fn the_startup_line_never_implies_protection() {
+    fn the_startup_line_never_implies_protection() -> Result<(), TestError> {
         let logging = startup_line(&SeccompStatus::Logging);
         assert!(
             logging.contains("allowed") && logging.contains("protects nothing"),
@@ -1091,6 +1110,7 @@ mod tests {
             startup_line(&SeccompStatus::Disabled),
             "Syscall logging off."
         );
+        Ok(())
     }
 
     /// A failed thread sync says nothing was installed, not "partly".
@@ -1101,11 +1121,11 @@ mod tests {
     /// at 0. A message reading "partly covered" would send an operator looking
     /// for a filter that does not exist.
     #[test]
-    fn a_failed_thread_sync_does_not_claim_partial_coverage() {
+    fn a_failed_thread_sync_does_not_claim_partial_coverage() -> Result<(), TestError> {
         let src = include_str!("seccomp.rs");
         let start = src
             .find("could not synchronize thread")
-            .expect("the thread-sync failure message is still here");
+            .ok_or("the thread-sync failure message is still here")?;
         // To the end of the string literal, not a fixed count of characters.
         // This read `start + 200` until `no_structural_gate_here_slices_a_window_chosen_by_eye`
         // found it — the same expiring window that broke the readback gate one
@@ -1120,6 +1140,7 @@ mod tests {
             "the message claims partial coverage, which the kernel does not \
              produce: {msg}"
         );
+        Ok(())
     }
 
     /// Every failure this module can report says nothing is in force.
@@ -1130,7 +1151,8 @@ mod tests {
     /// operator believing a control is half on. So this walks every failure
     /// string in the file rather than the one that was wrong.
     #[test]
-    fn no_failure_path_leaves_an_operator_thinking_a_filter_is_partly_on() {
+    fn no_failure_path_leaves_an_operator_thinking_a_filter_is_partly_on() -> Result<(), TestError>
+    {
         // Logical lines, not physical ones. A Rust string continuation ends
         // in a backslash, and the first version of this test looked only at
         // the line carrying the `Failed(` marker — so the mutation that put
@@ -1174,6 +1196,7 @@ mod tests {
              install either takes or does not; saying otherwise sends an \
              operator looking for a filter that is not there"
         );
+        Ok(())
     }
 
     /// A failure's operator line and its status agree.
@@ -1183,7 +1206,7 @@ mod tests {
     /// the status was right — so this drives every failure variant through the
     /// line and requires the two to say the same thing.
     #[test]
-    fn a_failure_status_and_its_operator_line_say_the_same_thing() {
+    fn a_failure_status_and_its_operator_line_say_the_same_thing() -> Result<(), TestError> {
         for status in [
             SeccompStatus::Unsupported("no kernel support".to_string()),
             SeccompStatus::Failed("EACCES".to_string()),
@@ -1205,6 +1228,7 @@ mod tests {
         // And the success variant is the only one that reads as success, so the
         // pair above cannot pass by the line being uniformly negative.
         assert!(startup_line(&SeccompStatus::Logging).contains("Syscall logging on"));
+        Ok(())
     }
 
     /// `install` reads the filter back before reporting success.
@@ -1215,16 +1239,16 @@ mod tests {
     /// Structural on purpose — the behavioral half cannot see this, which is
     /// the whole finding.
     #[test]
-    fn install_reads_the_filter_back_before_reporting_success() {
+    fn install_reads_the_filter_back_before_reporting_success() -> Result<(), TestError> {
         let src = include_str!("seccomp.rs");
         let start = src
             .find("pub fn install(mode: SeccompMode) -> SeccompStatus {")
-            .expect("the Linux install is in this file");
+            .ok_or("the Linux install is in this file")?;
         // The real body, by brace depth. A fixed-size window was here and the
         // function outgrew it the moment enforcement landed — the readback
         // moved past character 2000 and the gate reported it missing. A window
         // chosen by eye is a window that expires.
-        let open = start + src[start..].find('{').expect("the function has a body");
+        let open = start + src[start..].find('{').ok_or("the function has a body")?;
         let mut depth = 0i32;
         let mut end = open;
         for (offset, ch) in src[open..].char_indices() {
@@ -1241,13 +1265,13 @@ mod tests {
             }
         }
         let body = &src[open..=end];
-        let load = body.find("load(&prog").expect("install loads a program");
+        let load = body.find("load(&prog").ok_or("install loads a program")?;
         let readback = body
             .find("in_filter_mode()")
-            .expect("install reads the mode back");
+            .ok_or("install reads the mode back")?;
         let success = body
             .find("SeccompStatus::Logging")
-            .expect("install reports success somewhere");
+            .ok_or("install reports success somewhere")?;
         assert!(
             load < readback && readback < success,
             "install reports success without reading the filter back first \
@@ -1255,6 +1279,7 @@ mod tests {
              allowing filter and no filter look identical from outside, so this \
              ordering is the only thing between them"
         );
+        Ok(())
     }
 
     /// The readback answers about THIS thread, not about the process.
@@ -1265,7 +1290,7 @@ mod tests {
     /// question would answer both incorrectly.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_readback_is_false_in_a_process_that_installed_nothing() {
+    fn the_readback_is_false_in_a_process_that_installed_nothing() -> Result<(), TestError> {
         assert!(
             !in_filter_mode(),
             "this test process reports a seccomp filter without installing one, \
@@ -1274,6 +1299,7 @@ mod tests {
         );
         assert_eq!(install(SeccompMode::Off), SeccompStatus::Disabled);
         assert!(!in_filter_mode(), "asking for no filter left one in force");
+        Ok(())
     }
 
     /// The operator guidance names both places a record can land.
@@ -1284,7 +1310,7 @@ mod tests {
     /// filter never installed. Both routes and the way to tell them apart are
     /// required in every surface an operator reads.
     #[test]
-    fn every_operator_surface_names_both_record_routes() {
+    fn every_operator_surface_names_both_record_routes() -> Result<(), TestError> {
         let surfaces: [(&str, String); 2] = [
             ("the startup line", startup_line(&SeccompStatus::Logging)),
             (
@@ -1311,6 +1337,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Neither route is described as the only one.
@@ -1319,21 +1346,22 @@ mod tests {
     /// is the same defect with more words, so the phrasing has to make the fork
     /// explicit — it says where they go DEPENDS on the host.
     #[test]
-    fn the_guidance_presents_the_routes_as_a_fork_not_a_default() {
+    fn the_guidance_presents_the_routes_as_a_fork_not_a_default() -> Result<(), TestError> {
         let line = startup_line(&SeccompStatus::Logging);
         assert!(
             line.contains("depends on this host"),
             "the startup line names two routes without saying the choice \
              depends on the host, which reads as one route with an aside: {line}"
         );
-        let dmesg = line.find("dmesg").expect("dmesg is named");
-        let ausearch = line.find("ausearch").expect("ausearch is named");
-        let auditctl = line.find("auditctl").expect("auditctl is named");
+        let dmesg = line.find("dmesg").ok_or("dmesg is named")?;
+        let ausearch = line.find("ausearch").ok_or("ausearch is named")?;
+        let auditctl = line.find("auditctl").ok_or("auditctl is named")?;
         assert!(
             auditctl < ausearch && auditctl < dmesg,
             "the line names a route before telling the reader how to find out \
              which one applies: {line}"
         );
+        Ok(())
     }
 
     /// The guidance says the ring-buffer route drops records.
@@ -1350,7 +1378,7 @@ mod tests {
     /// that sends an operator to a log which silently drops is not a smaller
     /// version of the right guidance; it is the mechanism of that failure.
     #[test]
-    fn the_guidance_warns_that_the_ring_buffer_route_drops_records() {
+    fn the_guidance_warns_that_the_ring_buffer_route_drops_records() -> Result<(), TestError> {
         let line = startup_line(&SeccompStatus::Logging);
         assert!(
             line.contains("DROPS RECORDS"),
@@ -1367,6 +1395,7 @@ mod tests {
             line.contains("printk_ratelimit"),
             "the line names no way to stop the dropping: {line}"
         );
+        Ok(())
     }
 
     /// It says WHY a short list is the dangerous direction.
@@ -1376,20 +1405,23 @@ mod tests {
     /// is that the artifact being derived kills processes when it is short, and
     /// an operator who does not know that has no reason to re-run.
     #[test]
-    fn the_guidance_says_what_a_missing_record_costs() {
+    fn the_guidance_says_what_a_missing_record_costs() -> Result<(), TestError> {
         let line = startup_line(&SeccompStatus::Logging);
         assert!(
             line.contains("kills the process"),
             "the line warns about dropped records without saying what a \
              derivation built from them does: {line}"
         );
-        let drops = line.find("DROPS RECORDS").expect("the warning is present");
-        let cost = line.find("kills the process").expect("the cost is present");
+        let drops = line.find("DROPS RECORDS").ok_or("the warning is present")?;
+        let cost = line
+            .find("kills the process")
+            .ok_or("the cost is present")?;
         assert!(
             drops < cost,
             "the line states the consequence before the cause, which reads as \
              two unrelated cautions: {line}"
         );
+        Ok(())
     }
 
     /// Every surface an operator reads carries the warning, not just one.
@@ -1400,14 +1432,14 @@ mod tests {
     /// never see. This is the same pairing the record-route guidance already
     /// needed, and it went wrong there first.
     #[test]
-    fn both_operator_surfaces_carry_the_dropped_record_warning() {
+    fn both_operator_surfaces_carry_the_dropped_record_warning() -> Result<(), TestError> {
         let cli = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
         )
-        .expect("src/cli.rs is in the tree");
+        .map_err(|e| format!("src/cli.rs is in the tree: {e:?}"))?;
         let start = cli
             .find("pub seccomp: Option<SeccompModeArg>")
-            .expect("the flag is declared");
+            .ok_or("the flag is declared")?;
         // Rendered, not raw. A doc comment wraps, so "kills the process" is
         // split by a newline and three slashes in the source and matches
         // nothing — the same physical-versus-logical-line mistake that let a
@@ -1430,6 +1462,7 @@ mod tests {
             "the flag's help warns about dropped records without saying what \
              they cost"
         );
+        Ok(())
     }
 
     /// The guidance names BOTH ways the ring buffer loses records.
@@ -1441,7 +1474,7 @@ mod tests {
     /// lines, and three different run shapes each came back with 453 to 455 —
     /// a number that is the buffer's size rather than any run's behavior.
     #[test]
-    fn the_guidance_names_both_ways_the_ring_buffer_loses_records() {
+    fn the_guidance_names_both_ways_the_ring_buffer_loses_records() -> Result<(), TestError> {
         let line = startup_line(&SeccompStatus::Logging);
         assert!(
             line.contains("callbacks suppressed"),
@@ -1457,6 +1490,7 @@ mod tests {
             "the line does not tell a reader that the second loss is silent, \
              so they will look for a warning that never comes: {line}"
         );
+        Ok(())
     }
 
     /// And it says to stream rather than to read afterwards.
@@ -1466,19 +1500,20 @@ mod tests {
     /// it anyway. `dmesg --follow` defeats both losses at once, which is the
     /// only instruction here that actually produces a complete list.
     #[test]
-    fn the_guidance_says_to_stream_the_records_not_to_read_them_after() {
+    fn the_guidance_says_to_stream_the_records_not_to_read_them_after() -> Result<(), TestError> {
         let line = startup_line(&SeccompStatus::Logging);
         assert!(
             line.contains("dmesg --follow"),
             "the line names no way to collect a complete set: {line}"
         );
-        let wraps = line.to_uppercase().find("WRAPS").expect("the hazard");
-        let fix = line.find("dmesg --follow").expect("the remedy");
+        let wraps = line.to_uppercase().find("WRAPS").ok_or("the hazard")?;
+        let fix = line.find("dmesg --follow").ok_or("the remedy")?;
         assert!(
             wraps < fix,
             "the remedy is offered before the hazard it answers, which reads as \
              an unexplained preference: {line}"
         );
+        Ok(())
     }
 
     /// The flag's help carries the measurement, not just the warning.
@@ -1489,14 +1524,14 @@ mod tests {
     /// missing entries in an allowlist is nine ways to kill the process it was
     /// built for.
     #[test]
-    fn the_flag_help_carries_what_reading_after_the_run_actually_lost() {
+    fn the_flag_help_carries_what_reading_after_the_run_actually_lost() -> Result<(), TestError> {
         let cli = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
         )
-        .expect("src/cli.rs is in the tree");
+        .map_err(|e| format!("src/cli.rs is in the tree: {e:?}"))?;
         let start = cli
             .find("pub seccomp: Option<SeccompModeArg>")
-            .expect("the flag is declared");
+            .ok_or("the flag is declared")?;
         let help: String = cli[start.saturating_sub(3000)..start]
             .lines()
             .map(|l| l.trim_start().trim_start_matches("///").trim())
@@ -1512,6 +1547,7 @@ mod tests {
              warning with no number reads as a caution rather than a defect: \
              {help}"
         );
+        Ok(())
     }
 
     /// The action a mode installs, named once so a status cannot contradict it.
@@ -1521,7 +1557,7 @@ mod tests {
     /// because an allowing filter and an enforcing one are told apart only by a
     /// call that gets refused — and nothing in the runner made one.
     #[test]
-    fn each_mode_names_exactly_one_action() {
+    fn each_mode_names_exactly_one_action() -> Result<(), TestError> {
         assert_eq!(intended_action(SeccompMode::Log), Some(SECCOMP_RET_LOG));
         assert_eq!(
             intended_action(SeccompMode::Enforce),
@@ -1533,6 +1569,7 @@ mod tests {
             "the two actions are equal, so no test anywhere can tell a recorder \
              from a control"
         );
+        Ok(())
     }
 
     /// The program a mode builds carries that mode's action.
@@ -1541,23 +1578,25 @@ mod tests {
     /// artifact rather than the report: build what each mode builds, and read
     /// the fallback out of the instruction the kernel will actually run.
     #[test]
-    fn the_program_each_mode_builds_carries_that_modes_action() {
+    fn the_program_each_mode_builds_carries_that_modes_action() -> Result<(), TestError> {
         for mode in [SeccompMode::Log, SeccompMode::Enforce] {
             let Some(action) = intended_action(mode) else {
-                panic!("{mode:?} names no action");
+                return Err(format!("{mode:?} names no action").into());
             };
             let allow: &[i64] = if mode == SeccompMode::Enforce {
                 &[1, 2, 3]
             } else {
                 &[]
             };
-            let prog = build_program(AUDIT_ARCH_X86_64, allow, action).expect("builds");
+            let prog = build_program(AUDIT_ARCH_X86_64, allow, action)
+                .map_err(|e| format!("builds: {e:?}"))?;
             assert_eq!(
                 prog[prog.len() - 2].k,
                 action,
                 "{mode:?} built a program whose fallback is not its own action"
             );
         }
+        Ok(())
     }
 
     /// A status claiming enforcement is only reachable from the enforcing mode.
@@ -1566,17 +1605,18 @@ mod tests {
     /// ran fine. `Enforcing` must be returned under a test of the mode, not
     /// unconditionally at the end of a shared path.
     #[test]
-    fn the_enforcing_status_is_returned_only_under_a_test_of_the_mode() {
+    fn the_enforcing_status_is_returned_only_under_a_test_of_the_mode() -> Result<(), TestError> {
         let src = include_str!("seccomp.rs");
         let at = src
             .find("return SeccompStatus::Enforcing")
-            .expect("install returns the enforcing status somewhere");
+            .ok_or("install returns the enforcing status somewhere")?;
         let before = &src[at.saturating_sub(200)..at];
         assert!(
             before.contains("mode == SeccompMode::Enforce"),
             "the enforcing status is returned without testing the mode first, \
              which is how a logging install came to report enforcement: {before}"
         );
+        Ok(())
     }
 
     /// Enforcement refuses when no list was supplied for this host.
@@ -1589,7 +1629,7 @@ mod tests {
     /// be reachable without one the operator made.
     #[cfg(target_os = "linux")]
     #[test]
-    fn enforcement_refuses_when_no_list_was_supplied_for_this_host() {
+    fn enforcement_refuses_when_no_list_was_supplied_for_this_host() -> Result<(), TestError> {
         // SAFETY: reading the variable here and nothing else; the test process
         // installs no filter either way.
         let had = std::env::var_os(ALLOWLIST_ENV);
@@ -1612,12 +1652,16 @@ mod tests {
                      it reads as a missing-configuration nag: {why}"
                 );
             }
-            other => panic!(
-                "enforcement installed without a supplied list: {other:?}. The \
+            other => {
+                return Err(format!(
+                    "enforcement installed without a supplied list: {other:?}. The \
                  list in this binary killed a process on a host it was not \
                  derived on"
-            ),
+                )
+                .into());
+            }
         }
+        Ok(())
     }
 
     /// The shipped list is documented as a reference and enforced by nothing.
@@ -1626,12 +1670,12 @@ mod tests {
     /// looks authoritative. Nothing on the install path may read it, and its
     /// documentation has to say why in the place someone will look.
     #[test]
-    fn the_shipped_list_is_a_reference_that_nothing_enforces() {
+    fn the_shipped_list_is_a_reference_that_nothing_enforces() -> Result<(), TestError> {
         let src = include_str!("seccomp.rs");
         let start = src
             .find("pub fn install(mode: SeccompMode) -> SeccompStatus {")
-            .expect("the Linux install is in this file");
-        let open = start + src[start..].find('{').expect("body");
+            .ok_or("the Linux install is in this file")?;
+        let open = start + src[start..].find('{').ok_or("body")?;
         let mut depth = 0i32;
         let mut end = open;
         for (offset, ch) in src[open..].char_indices() {
@@ -1655,13 +1699,14 @@ mod tests {
         );
         let doc_at = src
             .find("pub const DERIVED_ALLOWLIST")
-            .expect("the reference list is in this file");
+            .ok_or("the reference list is in this file")?;
         let doc = &src[doc_at.saturating_sub(3000)..doc_at];
         assert!(
             doc.contains("killed a process") && doc.contains("REFERENCE"),
             "the reference list does not say that it killed a process or that \
              nothing enforces it, so the next reader will enforce it"
         );
+        Ok(())
     }
 
     /// A supplied list is parsed strictly: a bad line refuses, never skips.
@@ -1671,21 +1716,28 @@ mod tests {
     /// direction that ends a capture. Comments and blanks are fine; anything
     /// that is not a number is a refusal naming the line.
     #[test]
-    fn a_supplied_list_is_parsed_strictly_rather_than_skipping_a_bad_line() {
-        let good = parse_allowlist("# comment\n1\n 2 \n\n3 4\n").expect("parses");
+    fn a_supplied_list_is_parsed_strictly_rather_than_skipping_a_bad_line() -> Result<(), TestError>
+    {
+        let good =
+            parse_allowlist("# comment\n1\n 2 \n\n3 4\n").map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(good, vec![1, 2, 3, 4], "sorted, deduped, comments dropped");
         assert_eq!(
-            parse_allowlist("1\n1\n2\n").expect("parses"),
+            parse_allowlist("1\n1\n2\n").map_err(|e| format!("parses: {e:?}"))?,
             vec![1, 2],
             "a duplicate entry must not change the list"
         );
-        let err = parse_allowlist("1\nopenat\n3\n").expect_err("a name is not a number");
+        let err = parse_allowlist("1\nopenat\n3\n")
+            .err()
+            .ok_or("a name is not a number")?;
         assert!(
             err.contains("line 2") && err.contains("openat"),
             "the refusal does not name the offending line: {err}"
         );
-        let out_of_range = parse_allowlist("1\n-5\n").expect_err("negative is refused");
+        let out_of_range = parse_allowlist("1\n-5\n")
+            .err()
+            .ok_or("negative is refused")?;
         assert!(out_of_range.contains("line 2"), "{out_of_range}");
+        Ok(())
     }
 
     /// An architecture with no derived list is refused, and says which.
@@ -1694,9 +1746,9 @@ mod tests {
     /// this branch could not be reached on a machine whose features also
     /// differ — and deleting it survived a mutation for exactly that reason.
     #[test]
-    fn enforcement_refuses_an_architecture_with_no_derived_list() {
+    fn enforcement_refuses_an_architecture_with_no_derived_list() -> Result<(), TestError> {
         let why = enforcement_refusal(0, "riscv64", DERIVED_FEATURES)
-            .expect("an empty list must be refused");
+            .ok_or("an empty list must be refused")?;
         assert!(
             why.contains("riscv64"),
             "the refusal does not name the architecture it is about: {why}"
@@ -1705,6 +1757,7 @@ mod tests {
             why.contains("derive-seccomp-allowlist.sh"),
             "the refusal names no way to obtain a list that would work: {why}"
         );
+        Ok(())
     }
 
     /// A build whose features differ is refused, and says which differ.
@@ -1713,9 +1766,9 @@ mod tests {
     /// true for the build it came from: more features, more calls, and a call
     /// the list does not carry ends the process.
     #[test]
-    fn enforcement_refuses_a_build_the_list_was_not_derived_against() {
+    fn enforcement_refuses_a_build_the_list_was_not_derived_against() -> Result<(), TestError> {
         let why = enforcement_refusal(42, "x86_64", "native,tui")
-            .expect("a different feature set must be refused");
+            .ok_or("a different feature set must be refused")?;
         assert!(
             why.contains("native,tui"),
             "the refusal does not say what this binary carries: {why}"
@@ -1724,6 +1777,7 @@ mod tests {
             why.contains(DERIVED_FEATURES),
             "the refusal does not say what the list was derived against: {why}"
         );
+        Ok(())
     }
 
     /// The matching case is permitted, so the refusals are not blanket.
@@ -1732,12 +1786,13 @@ mod tests {
     /// predicate that refuses everything, which would make `--seccomp enforce`
     /// a flag that never works and nobody would notice for months.
     #[test]
-    fn enforcement_is_permitted_where_the_list_was_derived() {
+    fn enforcement_is_permitted_where_the_list_was_derived() -> Result<(), TestError> {
         assert_eq!(
             enforcement_refusal(42, "x86_64", DERIVED_FEATURES),
             None,
             "a build the list WAS derived for was refused"
         );
+        Ok(())
     }
 
     /// The refusals are ordered so the more fundamental one answers first.
@@ -1747,13 +1802,14 @@ mod tests {
     /// send someone to rebuild with different features when what they need is a
     /// derivation.
     #[test]
-    fn the_architecture_refusal_answers_before_the_feature_one() {
+    fn the_architecture_refusal_answers_before_the_feature_one() -> Result<(), TestError> {
         let why = enforcement_refusal(0, "aarch64", "native,tui")
-            .expect("both conditions hold, so it must refuse");
+            .ok_or("both conditions hold, so it must refuse")?;
         assert!(
             why.contains("aarch64") && !why.contains("native,tui"),
             "with no derived list at all, the refusal talks about features: {why}"
         );
+        Ok(())
     }
 
     /// The shipped list is the one that was derived, not a copy of it.
@@ -1769,7 +1825,7 @@ mod tests {
     /// scanner caught it here before it could again.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
-    fn the_derived_list_is_the_one_the_derivation_returned() {
+    fn the_derived_list_is_the_one_the_derivation_returned() -> Result<(), TestError> {
         assert_eq!(
             DERIVED_ALLOWLIST.len(),
             42,
@@ -1800,6 +1856,7 @@ mod tests {
                  short kills on the first call"
             );
         }
+        Ok(())
     }
 
     /// The variant scan sees a variant appended after the ones it knows.
@@ -1810,12 +1867,12 @@ mod tests {
     /// enum carrying a variant the real one does not have, which is the only
     /// way to know it would see the next one.
     #[test]
-    fn the_variant_scan_would_see_the_next_variant_too() {
+    fn the_variant_scan_would_see_the_next_variant_too() -> Result<(), TestError> {
         let src = "pub enum SeccompStatus {\n    Disabled,\n    Logging,\n    \
                    Enforcing {\n        count: usize,\n    },\n    \
                    Quarantining,\n    Failed(String),\n}\n";
-        let start = src.find("pub enum SeccompStatus {").expect("present");
-        let body = &src[start..start + src[start..].find("\n}").expect("ends")];
+        let start = src.find("pub enum SeccompStatus {").ok_or("present")?;
+        let body = &src[start..start + src[start..].find("\n}").ok_or("ends")?];
         let variants: Vec<&str> = body
             .lines()
             .map(str::trim)
@@ -1835,6 +1892,7 @@ mod tests {
             5,
             "the parser miscounted a five-variant enum: {variants:?}"
         );
+        Ok(())
     }
 
     /// No structural gate here slices a fixed-size window out of the source.
@@ -1845,7 +1903,7 @@ mod tests {
     /// reported it missing. A window chosen by eye expires, silently, and the
     /// failure looks like the code being wrong rather than the test.
     #[test]
-    fn no_structural_gate_here_slices_a_window_chosen_by_eye() {
+    fn no_structural_gate_here_slices_a_window_chosen_by_eye() -> Result<(), TestError> {
         // CODE, not commentary. A comment describing this pattern is not an
         // instance of it, and the doc comment above this very function is
         // written in terms of it — which is how the first two versions
@@ -1853,7 +1911,8 @@ mod tests {
         // obvious fix and the wrong one: it missed the doc comment, because a
         // window drawn by hand is the thing being outlawed here.
         let src = include_str!("seccomp.rs");
-        let re = regex::Regex::new(r"start \+ [0-9]{2,}\]").expect("pattern");
+        let re =
+            regex::Regex::new(r"start \+ [0-9]{2,}\]").map_err(|e| format!("pattern: {e:?}"))?;
         let hits: Vec<String> = src
             .lines()
             .filter(|l| {
@@ -1868,6 +1927,7 @@ mod tests {
              expires the moment the thing they read grows: {hits:?}. Walk the \
              braces instead"
         );
+        Ok(())
     }
 
     /// The brace walk returns a whole function, not a prefix of one.
@@ -1876,10 +1936,10 @@ mod tests {
     /// Nested braces are the case a naive scan gets wrong, and a function whose
     /// body contains a block is every function here.
     #[test]
-    fn the_brace_walk_returns_the_whole_function() {
+    fn the_brace_walk_returns_the_whole_function() -> Result<(), TestError> {
         let src = "fn a() {\n    if x {\n        y();\n    }\n    z();\n}\nfn b() {}\n";
-        let start = src.find("fn a()").expect("present");
-        let open = start + src[start..].find('{').expect("body");
+        let start = src.find("fn a()").ok_or("present")?;
+        let open = start + src[start..].find('{').ok_or("body")?;
         let mut depth = 0i32;
         let mut end = open;
         for (offset, ch) in src[open..].char_indices() {
@@ -1901,6 +1961,7 @@ mod tests {
             !body.contains("fn b"),
             "the walk ran past the function it was reading: {body}"
         );
+        Ok(())
     }
 
     /// And it stops at the function's own close, not the file's.
@@ -1909,10 +1970,10 @@ mod tests {
     /// end of the file and every `contains` check on it passes — a gate that
     /// agrees with any source.
     #[test]
-    fn the_brace_walk_stops_at_the_functions_own_close() {
+    fn the_brace_walk_stops_at_the_functions_own_close() -> Result<(), TestError> {
         let src = "fn a() {\n    let s = 1;\n}\nfn poison() { unreachable!() }\n";
-        let start = src.find("fn a()").expect("present");
-        let open = start + src[start..].find('{').expect("body");
+        let start = src.find("fn a()").ok_or("present")?;
+        let open = start + src[start..].find('{').ok_or("body")?;
         let mut depth = 0i32;
         let mut end = open;
         for (offset, ch) in src[open..].char_indices() {
@@ -1933,6 +1994,7 @@ mod tests {
             "the walk swallowed the next function, so any gate using it would \
              pass on text from somewhere else"
         );
+        Ok(())
     }
 
     /// A status two modes can reach names neither of them.
@@ -1945,7 +2007,7 @@ mod tests {
     /// The rule is structural because the wrong sentence compiles: a variant
     /// both modes reach must render without naming either.
     #[test]
-    fn a_status_both_modes_reach_names_neither_mode() {
+    fn a_status_both_modes_reach_names_neither_mode() -> Result<(), TestError> {
         for status in [
             SeccompStatus::Unsupported("a reason".to_string()),
             SeccompStatus::Failed("a reason".to_string()),
@@ -1959,6 +2021,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A refusal reached from enforce reads as a filter failure.
@@ -1967,7 +2030,7 @@ mod tests {
     /// useful once the mode words are gone. "No filter is in force" is true for
     /// both modes and is the fact an operator needs.
     #[test]
-    fn a_refusal_says_no_filter_is_in_force_whichever_mode_asked() {
+    fn a_refusal_says_no_filter_is_in_force_whichever_mode_asked() -> Result<(), TestError> {
         for status in [
             SeccompStatus::Unsupported("no derived list".to_string()),
             SeccompStatus::Failed("EACCES".to_string()),
@@ -1985,6 +2048,7 @@ mod tests {
                 "the line drops the reason it was given: {line}"
             );
         }
+        Ok(())
     }
 
     /// Only the two mode-specific statuses name a mode.
@@ -1993,7 +2057,7 @@ mod tests {
     /// mode words from everything and the success lines stop saying what is
     /// running; this pins which statuses are allowed to name one.
     #[test]
-    fn the_mode_specific_statuses_are_the_only_ones_naming_a_mode() {
+    fn the_mode_specific_statuses_are_the_only_ones_naming_a_mode() -> Result<(), TestError> {
         let logging = startup_line(&SeccompStatus::Logging).to_lowercase();
         assert!(
             logging.contains("logging"),
@@ -2013,6 +2077,7 @@ mod tests {
             !off.contains("enforc"),
             "the off line mentions enforcement: {off}"
         );
+        Ok(())
     }
 
     /// Exactly one status reads as enforcement, and it is the one that does.
@@ -2029,12 +2094,12 @@ mod tests {
     /// installer uses — `SECCOMP_RET_KILL_PROCESS` appears once in the file,
     /// on the enforcing path.
     #[test]
-    fn only_the_enforcing_status_reads_as_enforcement() {
+    fn only_the_enforcing_status_reads_as_enforcement() -> Result<(), TestError> {
         let src = include_str!("seccomp.rs");
         let start = src
             .find("pub enum SeccompStatus {")
-            .expect("the status enum is in this file");
-        let body = &src[start..start + src[start..].find("\n}").expect("it ends")];
+            .ok_or("the status enum is in this file")?;
+        let body = &src[start..start + src[start..].find("\n}").ok_or("it ends")?];
         let variants: Vec<&str> = body
             .lines()
             .map(str::trim)
@@ -2066,6 +2131,7 @@ mod tests {
             src.contains("SECCOMP_RET_KILL_PROCESS"),
             "a status claims enforcement and no denying action exists in the file"
         );
+        Ok(())
     }
 
     /// The variant scan sees a variant added by hand, which the old one did not.
@@ -2075,11 +2141,11 @@ mod tests {
     /// `Enforcing` to the enum changed nothing it could observe. This drives
     /// the parser over a synthetic enum instead of the real one.
     #[test]
-    fn the_variant_scan_reads_the_type_rather_than_a_typed_out_list() {
+    fn the_variant_scan_reads_the_type_rather_than_a_typed_out_list() -> Result<(), TestError> {
         let src = "pub enum SeccompStatus {\n    Disabled,\n    Logging,\n    \
                    Enforcing {\n        count: usize,\n    },\n    Failed(String),\n}\n";
-        let start = src.find("pub enum SeccompStatus {").expect("present");
-        let body = &src[start..start + src[start..].find("\n}").expect("ends")];
+        let start = src.find("pub enum SeccompStatus {").ok_or("present")?;
+        let body = &src[start..start + src[start..].find("\n}").ok_or("ends")?];
         let variants: Vec<&str> = body
             .lines()
             .map(str::trim)
@@ -2098,5 +2164,6 @@ mod tests {
             variants.iter().any(|v| v.contains("Disabled")),
             "the parser cannot see a unit variant: {variants:?}"
         );
+        Ok(())
     }
 }

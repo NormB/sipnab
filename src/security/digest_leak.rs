@@ -333,20 +333,26 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The loopback address used as source/destination in the test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
     /// A fixed capture timestamp for the parsed SIP messages.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build a 401 challenge whose digest declares the weak MD5 algorithm.
-    fn make_401_md5() -> SipMessage {
+    fn make_401_md5() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -359,20 +365,19 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse 401")
+        )?)
     }
 
     /// Build a 401 challenge using SHA-256 but omitting the `qop` parameter.
-    fn make_401_no_qop() -> SipMessage {
+    fn make_401_no_qop() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -385,20 +390,19 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse 401")
+        )?)
     }
 
     /// Build a strong 401 challenge (SHA-256, unique nonce, `qop=auth`).
-    fn make_401_good() -> SipMessage {
+    fn make_401_good() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -411,23 +415,22 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse 401")
+        )?)
     }
 
     /// An MD5 challenge is flagged as a weak algorithm.
     #[test]
-    fn detect_weak_algorithm() {
+    fn detect_weak_algorithm() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
-        let msg = make_401_md5();
+        let msg = make_401_md5()?;
 
         let alerts = detector.check(&msg);
         assert!(
@@ -436,13 +439,14 @@ mod tests {
                 .any(|a| a.vulnerability == DigestVulnerability::WeakAlgorithm),
             "should detect weak MD5 algorithm"
         );
+        Ok(())
     }
 
     /// A challenge without `qop` is flagged as missing qop.
     #[test]
-    fn detect_missing_qop() {
+    fn detect_missing_qop() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
-        let msg = make_401_no_qop();
+        let msg = make_401_no_qop()?;
 
         let alerts = detector.check(&msg);
         assert!(
@@ -451,19 +455,21 @@ mod tests {
                 .any(|a| a.vulnerability == DigestVulnerability::MissingQop),
             "should detect missing qop"
         );
+        Ok(())
     }
 
     /// A strong 401 (SHA-256 + qop) produces no alerts.
     #[test]
-    fn good_401_no_alerts() {
+    fn good_401_no_alerts() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
-        let msg = make_401_good();
+        let msg = make_401_good()?;
 
         let alerts = detector.check(&msg);
         assert!(
             alerts.is_empty(),
             "good 401 with SHA-256 + qop should produce no alerts, got: {alerts:?}"
         );
+        Ok(())
     }
 
     /// A 401 issued on the transaction (`call_id`, `cseq`, top-`Via`
@@ -481,28 +487,27 @@ mod tests {
     /// challenges). The clock and the number of labels minted so far give
     /// both without any constant in the value. Hex only, so it is legal
     /// inside a quoted `nonce="..."` param.
-    fn nonce_for(label: &str) -> String {
+    fn nonce_for(label: &str) -> Result<String, TestError> {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
         use std::time::{SystemTime, UNIX_EPOCH};
         static MINTED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-        let mut minted = MINTED
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .expect("fixture mint is not poisoned");
+        let mut minted = MINTED.get_or_init(|| Mutex::new(HashMap::new())).lock()?;
         if let Some(n) = minted.get(label) {
-            return n.clone();
+            return Ok(n.clone());
         }
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("the clock is after 1970")
-            .as_nanos() as u64;
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
         let distinct = minted.len() as u64;
         let nonce = format!("{:016x}", nanos.rotate_left(13) ^ distinct);
         minted.insert(label.to_string(), nonce.clone());
-        nonce
+        Ok(nonce)
     }
-    fn challenge(call_id: &str, cseq: u32, branch: &str, nonce: &str) -> SipMessage {
+    fn challenge(
+        call_id: &str,
+        cseq: u32,
+        branch: &str,
+        nonce: &str,
+    ) -> Result<SipMessage, TestError> {
         let via = format!("Via: SIP/2.0/UDP 10.0.0.7:5060;branch={branch}");
         let call_id = format!("Call-ID: {call_id}");
         let cseq = format!("CSeq: {cseq} REGISTER");
@@ -522,16 +527,15 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse 401")
+        )?)
     }
 
     /// How many of `alerts` are `NonceReuse`.
@@ -548,25 +552,26 @@ mod tests {
     /// The control for the retransmission test below: the detector must keep
     /// firing on real reuse once it has learned to ignore a retransmission.
     #[test]
-    fn detect_nonce_reuse() {
+    fn detect_nonce_reuse() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let _ = detector.check(&challenge(
             "phone-a@10.0.0.7",
             1,
             "z9hG4bK-a1",
-            &nonce_for("shared"),
-        ));
+            &nonce_for("shared")?,
+        )?);
         let alerts = detector.check(&challenge(
             "phone-b@10.0.0.8",
             1,
             "z9hG4bK-b1",
-            &nonce_for("shared"),
-        ));
+            &nonce_for("shared")?,
+        )?);
         assert_eq!(
             nonce_reuse_alerts(&alerts),
             1,
             "one nonce challenging two Call-IDs is reuse, and must be reported: {alerts:?}"
         );
+        Ok(())
     }
 
     /// The failure this shipped with. A REGISTER over lossy UDP: the 401 is
@@ -577,16 +582,16 @@ mod tests {
     /// and reported a healthy registrar for nonce reuse; with `--alert-exec`
     /// a command spawned for it.
     #[test]
-    fn a_retransmitted_401_is_not_nonce_reuse() {
+    fn a_retransmitted_401_is_not_nonce_reuse() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
-        let first = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", &nonce_for("1"));
+        let first = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", &nonce_for("1")?)?;
         assert_eq!(
             nonce_reuse_alerts(&detector.check(&first)),
             0,
             "control: the first sighting of a nonce is not reuse"
         );
 
-        let retransmitted = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", &nonce_for("1"));
+        let retransmitted = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", &nonce_for("1")?)?;
         let alerts = detector.check(&retransmitted);
         assert_eq!(
             nonce_reuse_alerts(&alerts),
@@ -595,6 +600,7 @@ mod tests {
              which RFC 3261 section 17.2.2 requires the registrar to send -- was \
              reported as nonce reuse against a healthy registrar: {alerts:?}"
         );
+        Ok(())
     }
 
     /// One dialog, next CSeq, same nonce: the registrar re-challenged a
@@ -602,48 +608,49 @@ mod tests {
     /// transaction and real reuse, and the transaction key must not be so
     /// loose that a shared Call-ID hides it.
     #[test]
-    fn the_same_nonce_on_the_next_cseq_of_one_dialog_is_reuse() {
+    fn the_same_nonce_on_the_next_cseq_of_one_dialog_is_reuse() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let _ = detector.check(&challenge(
             "reg-2@phone",
             1,
             "z9hG4bK-reg-2a",
-            &nonce_for("2"),
-        ));
+            &nonce_for("2")?,
+        )?);
         let alerts = detector.check(&challenge(
             "reg-2@phone",
             2,
             "z9hG4bK-reg-2b",
-            &nonce_for("2"),
-        ));
+            &nonce_for("2")?,
+        )?);
         assert_eq!(
             nonce_reuse_alerts(&alerts),
             1,
             "the same nonce on the next CSeq of one dialog is a second challenge \
              with a used nonce, and must be reported: {alerts:?}"
         );
+        Ok(())
     }
 
     /// A reused challenge is reported once. Its own retransmission -- the
     /// second phone's 401 lost and re-sent -- is the same message again, and
     /// must not count as a third challenge.
     #[test]
-    fn a_retransmission_of_a_reused_challenge_is_not_reported_again() {
+    fn a_retransmission_of_a_reused_challenge_is_not_reported_again() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let _ = detector.check(&challenge(
             "phone-a@10.0.0.7",
             1,
             "z9hG4bK-a1",
-            &nonce_for("shared"),
-        ));
-        let reused = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", &nonce_for("shared"));
+            &nonce_for("shared")?,
+        )?);
+        let reused = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", &nonce_for("shared")?)?;
         assert_eq!(
             nonce_reuse_alerts(&detector.check(&reused)),
             1,
             "control: the second transaction with this nonce is reuse"
         );
 
-        let retransmitted = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", &nonce_for("shared"));
+        let retransmitted = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", &nonce_for("shared")?)?;
         let alerts = detector.check(&retransmitted);
         assert_eq!(
             nonce_reuse_alerts(&alerts),
@@ -651,11 +658,12 @@ mod tests {
             "the retransmission of an already-reported reused challenge was \
              reported again: {alerts:?}"
         );
+        Ok(())
     }
 
     /// An Authorization with `qop` but no `cnonce` is flagged.
     #[test]
-    fn detect_missing_cnonce() {
+    fn detect_missing_cnonce() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
 
         let raw = build_sip(
@@ -672,14 +680,13 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse");
+        )?;
 
         let alerts = detector.check(&msg);
         assert!(
@@ -688,34 +695,38 @@ mod tests {
                 .any(|a| a.vulnerability == DigestVulnerability::MissingCnonce),
             "should detect missing cnonce when qop is present"
         );
+        Ok(())
     }
 
     /// Quoted parameter values are extracted without their surrounding quotes.
     #[test]
-    fn extract_param_quoted() {
+    fn extract_param_quoted() -> Result<(), TestError> {
         let header = r#"Digest realm="example.com", nonce="abc123", algorithm=MD5"#;
         assert_eq!(extract_param(header, "realm"), Some("example.com"));
         assert_eq!(extract_param(header, "nonce"), Some("abc123"));
         assert_eq!(extract_param(header, "algorithm"), Some("MD5"));
+        Ok(())
     }
 
     /// Parameter name matching is case-insensitive.
     #[test]
-    fn extract_param_case_insensitive() {
+    fn extract_param_case_insensitive() -> Result<(), TestError> {
         let header = r#"Digest Realm="test.com", Algorithm=SHA-256"#;
         assert_eq!(extract_param(header, "realm"), Some("test.com"));
         assert_eq!(extract_param(header, "algorithm"), Some("SHA-256"));
+        Ok(())
     }
 
     /// A parameter absent from the header extracts as `None`.
     #[test]
-    fn extract_param_missing() {
+    fn extract_param_missing() -> Result<(), TestError> {
         let header = r#"Digest realm="example.com""#;
         assert_eq!(extract_param(header, "qop"), None);
+        Ok(())
     }
 
     /// Build a 401 challenge carrying an arbitrary challenge header line.
-    fn parse_challenge_www(www_authenticate: &str) -> SipMessage {
+    fn parse_challenge_www(www_authenticate: &str) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -728,20 +739,19 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse 401")
+        )?)
     }
 
     /// Build a REGISTER carrying an arbitrary Authorization header line.
-    fn parse_register_auth(authorization: &str) -> SipMessage {
+    fn parse_register_auth(authorization: &str) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "REGISTER sip:registrar@example.com SIP/2.0",
             &[
@@ -754,16 +764,15 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse REGISTER")
+        )?)
     }
 
     /// The auth-scheme is case-insensitive ([RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235#section-2.1)), so an
@@ -772,11 +781,11 @@ mod tests {
     /// any other way slipped past every check -- a one-character evasion of the
     /// whole digest-leak detector.
     #[test]
-    fn an_uppercase_digest_scheme_is_still_analyzed() {
+    fn an_uppercase_digest_scheme_is_still_analyzed() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let msg = parse_challenge_www(
             r#"WWW-Authenticate: DIGEST realm="example.com", nonce="n1", algorithm=MD5"#,
-        );
+        )?;
         let alerts = detector.check(&msg);
         assert!(
             alerts
@@ -785,17 +794,18 @@ mod tests {
             "an uppercase DIGEST scheme must still be analyzed (RFC 7235 \
              makes the scheme case-insensitive), got: {alerts:?}"
         );
+        Ok(())
     }
 
     /// `MD5-sess` is MD5-based and just as weak as `MD5`, but the weak-algorithm
     /// check compared only against the literal `MD5`, so `algorithm=MD5-sess`
     /// passed as if it were strong.
     #[test]
-    fn md5_sess_is_flagged_as_a_weak_algorithm() {
+    fn md5_sess_is_flagged_as_a_weak_algorithm() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let msg = parse_challenge_www(
             r#"WWW-Authenticate: Digest realm="example.com", nonce="n2", algorithm=MD5-sess, qop="auth""#,
-        );
+        )?;
         let alerts = detector.check(&msg);
         assert!(
             alerts
@@ -803,6 +813,7 @@ mod tests {
                 .any(|a| a.vulnerability == DigestVulnerability::WeakAlgorithm),
             "MD5-sess is a weak algorithm and must be flagged, got: {alerts:?}"
         );
+        Ok(())
     }
 
     /// A `qop=` sitting inside a quoted `realm` value is not the challenge's
@@ -810,11 +821,11 @@ mod tests {
     /// healthy `qop`, hiding a genuinely missing one -- the downgrade the
     /// MissingQop check exists to catch.
     #[test]
-    fn a_qop_inside_a_realm_value_does_not_hide_a_missing_qop() {
+    fn a_qop_inside_a_realm_value_does_not_hide_a_missing_qop() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let msg = parse_challenge_www(
             r#"WWW-Authenticate: Digest realm="qop=bad", nonce="n3", algorithm=SHA-256"#,
-        );
+        )?;
         let alerts = detector.check(&msg);
         assert!(
             alerts
@@ -823,17 +834,18 @@ mod tests {
             "the challenge has no real qop, so MissingQop must fire even though \
              the realm value contains the text 'qop=', got: {alerts:?}"
         );
+        Ok(())
     }
 
     /// A `cnonce=` sitting inside a quoted `realm` value is not the response's
     /// `cnonce`. The old substring search found it and reported a present
     /// cnonce, hiding the missing one the MissingCnonce check exists to catch.
     #[test]
-    fn a_cnonce_inside_a_realm_value_does_not_hide_a_missing_cnonce() {
+    fn a_cnonce_inside_a_realm_value_does_not_hide_a_missing_cnonce() -> Result<(), TestError> {
         let mut detector = DigestLeakDetector::new();
         let msg = parse_register_auth(
             r#"Authorization: Digest username="alice", realm="cnonce=fake", nonce="n4", qop=auth, response="aabbcc""#,
-        );
+        )?;
         let alerts = detector.check(&msg);
         assert!(
             alerts
@@ -842,13 +854,14 @@ mod tests {
             "the response has qop but no real cnonce, so MissingCnonce must fire \
              even though the realm value contains the text 'cnonce=', got: {alerts:?}"
         );
+        Ok(())
     }
 
     /// `extract_param` matches a parameter only at a real token boundary: not
     /// inside a quoted value, and not as a substring of a longer name
     /// (`nonce` must not be found inside `cnonce`).
     #[test]
-    fn extract_param_matches_only_at_a_token_boundary() {
+    fn extract_param_matches_only_at_a_token_boundary() -> Result<(), TestError> {
         // `qop=` inside a quoted realm value is not a qop parameter.
         assert_eq!(
             extract_param(r#"Digest realm="qop=bad", nonce="n""#, "qop"),
@@ -864,6 +877,7 @@ mod tests {
             extract_param(r#"Digest cnonce="c", nonce="thenonce""#, "nonce"),
             Some("thenonce")
         );
+        Ok(())
     }
 
     /// The reuse decision as a function of its two inputs: no previous
@@ -871,7 +885,7 @@ mod tests {
     /// retransmission, and any other transaction is reuse -- whichever of
     /// the three fields differs.
     #[test]
-    fn classify_nonce_sighting_covers_first_retransmission_and_reuse() {
+    fn classify_nonce_sighting_covers_first_retransmission_and_reuse() -> Result<(), TestError> {
         let seen = ChallengeTransaction {
             call_id: "a@host".to_owned(),
             cseq: Some(1),
@@ -905,45 +919,53 @@ mod tests {
                 "a transaction differing only in its {name} is a new transaction"
             );
         }
+        Ok(())
     }
 
     // ── the fixture helper's contract: what the scenarios above rely on ──
 
     #[test]
-    fn the_same_label_derives_the_same_nonce() {
+    fn the_same_label_derives_the_same_nonce() -> Result<(), TestError> {
         assert_eq!(
-            nonce_for("shared"),
-            nonce_for("shared"),
+            nonce_for("shared")?,
+            nonce_for("shared")?,
             "a retransmission must compare equal"
         );
+        Ok(())
     }
 
     #[test]
-    fn different_labels_derive_different_nonces() {
+    fn different_labels_derive_different_nonces() -> Result<(), TestError> {
         assert_ne!(
-            nonce_for("1"),
-            nonce_for("2"),
+            nonce_for("1")?,
+            nonce_for("2")?,
             "distinct challenges must not collide"
         );
-        assert_ne!(nonce_for("reg-1"), nonce_for("reg-2"));
+        assert_ne!(nonce_for("reg-1")?, nonce_for("reg-2")?);
+        Ok(())
     }
 
     #[test]
-    fn a_derived_nonce_is_legal_inside_a_quoted_param() {
-        let n = nonce_for("shared");
+    fn a_derived_nonce_is_legal_inside_a_quoted_param() -> Result<(), TestError> {
+        let n = nonce_for("shared")?;
         assert_eq!(n.len(), 16);
         assert!(n.chars().all(|c| c.is_ascii_hexdigit()), "{n}");
+        Ok(())
     }
 
     /// The value reaches the detector exactly: what the fixture wrote into the
     /// header is what `extract_param` reads back, so equality tests test equality.
     #[test]
-    fn a_derived_nonce_round_trips_through_the_challenge_header() {
-        let msg = challenge("rt@phone", 1, "z9hG4bK-rt", &nonce_for("rt"));
+    fn a_derived_nonce_round_trips_through_the_challenge_header() -> Result<(), TestError> {
+        let msg = challenge("rt@phone", 1, "z9hG4bK-rt", &nonce_for("rt")?)?;
         let www = msg
             .header("WWW-Authenticate")
-            .expect("challenge carries WWW-Authenticate")
+            .ok_or("challenge carries WWW-Authenticate")?
             .to_string();
-        assert_eq!(extract_param(&www, "nonce"), Some(nonce_for("rt").as_str()));
+        assert_eq!(
+            extract_param(&www, "nonce"),
+            Some(nonce_for("rt")?.as_str())
+        );
+        Ok(())
     }
 }

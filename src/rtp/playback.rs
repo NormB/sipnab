@@ -546,6 +546,9 @@ mod tests {
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// An RtpStream with the given payload type and no captured frames yet.
     fn stream(payload_type: u8) -> RtpStream {
         let key = StreamKey {
@@ -570,36 +573,39 @@ mod tests {
 
     /// Resampling at an equal rate, or an empty input, is an identity operation.
     #[test]
-    fn resample_same_rate_and_empty_are_identity() {
+    fn resample_same_rate_and_empty_are_identity() -> Result<(), TestError> {
         let s = vec![0.1, -0.2, 0.3];
         assert_eq!(resample_f32(&s, 8000, 8000), s);
         assert_eq!(resample_f32(&[], 8000, 16000), Vec::<f32>::new());
+        Ok(())
     }
 
     /// Up- and down-sampling produce output lengths scaled by the rate ratio.
     #[test]
-    fn resample_upsample_and_downsample_lengths() {
+    fn resample_upsample_and_downsample_lengths() -> Result<(), TestError> {
         let s = vec![0.0f32; 100];
         // 8k -> 16k roughly doubles the sample count.
         assert_eq!(resample_f32(&s, 8000, 16000).len(), 200);
         // 48k -> 8k roughly divides by six.
         let s = vec![0.0f32; 60];
         assert_eq!(resample_f32(&s, 48000, 8000).len(), 10);
+        Ok(())
     }
 
     /// 2x upsampling linearly interpolates a midpoint between two samples.
     #[test]
-    fn resample_linear_interpolation_values() {
+    fn resample_linear_interpolation_values() -> Result<(), TestError> {
         // Upsampling [0.0, 1.0] by 2x interpolates a midpoint near 0.5.
         let out = resample_f32(&[0.0, 1.0], 8000, 16000);
         assert_eq!(out.len(), 4);
         assert!((out[0] - 0.0).abs() < 1e-6);
         assert!((out[1] - 0.5).abs() < 1e-6, "midpoint should interpolate");
+        Ok(())
     }
 
     /// G.711 decode yields one f32 sample per byte, all within [-1.0, 1.0].
     #[test]
-    fn decode_g711_normalizes_to_unit_range() {
+    fn decode_g711_normalizes_to_unit_range() -> Result<(), TestError> {
         let mut s = stream(0); // PCMU
         s.payload_buffer.push_back((0, vec![0xFFu8; 160]));
         s.payload_buffer.push_back((160, vec![0x00u8; 160]));
@@ -612,6 +618,7 @@ mod tests {
         // A-law decodes the same byte counts (values differ).
         let alaw = decode_g711_to_f32(G711Codec::Alaw, &stream_with_frame());
         assert_eq!(alaw.len(), 160);
+        Ok(())
     }
 
     /// A PCMA stream carrying a single 160-byte A-law frame.
@@ -623,16 +630,18 @@ mod tests {
 
     /// Decoding a stream with no captured frames yields empty PCM.
     #[test]
-    fn decode_g711_empty_stream_is_empty() {
+    fn decode_g711_empty_stream_is_empty() -> Result<(), TestError> {
         assert!(decode_g711_to_f32(G711Codec::Ulaw, &stream(0)).is_empty());
+        Ok(())
     }
 
     /// Opus decode returns `Ok` for an empty stream and skips undecodable
     /// frames without erroring.
     #[test]
-    fn decode_opus_skips_undecodable_frames() {
+    fn decode_opus_skips_undecodable_frames() -> Result<(), TestError> {
         // Empty stream -> Ok(empty).
-        let empty = decode_opus_to_f32(&stream(111)).expect("opus decode ok");
+        let empty =
+            decode_opus_to_f32(&stream(111)).map_err(|e| format!("opus decode ok: {e:?}"))?;
         assert!(empty.is_empty());
 
         // Garbage payloads: each frame fails to decode and is skipped, but the
@@ -641,18 +650,21 @@ mod tests {
         s.payload_buffer
             .push_back((0, vec![0xDE, 0xAD, 0xBE, 0xEF]));
         s.payload_buffer.push_back((20, vec![0xFF; 8]));
-        let pcm = decode_opus_to_f32(&s).expect("opus decode ok despite bad frames");
+        let pcm = decode_opus_to_f32(&s)
+            .map_err(|e| format!("opus decode ok despite bad frames: {e:?}"))?;
         // Undecodable frames produce no samples.
         assert!(pcm.is_empty());
+        Ok(())
     }
 
     /// The plugin filename carries the base name and the platform DLL suffix.
     #[test]
-    fn plugin_filename_is_platform_appropriate() {
+    fn plugin_filename_is_platform_appropriate() -> Result<(), TestError> {
         let name = plugin_filename();
         assert!(name.contains("sipnab_audio"));
         // On Linux this is `libsipnab_audio.so`; on macOS `.dylib`.
         assert!(name.ends_with(std::env::consts::DLL_SUFFIX));
+        Ok(())
     }
 
     /// Sets `SIPNAB_AUDIO_PLUGIN` for the guard's lifetime and restores the
@@ -699,7 +711,7 @@ mod tests {
     impl ScratchDir {
         /// Create a uniquely named directory under the system temp dir.
         #[cfg(unix)]
-        fn new(tag: &str, mode: u32) -> Self {
+        fn new(tag: &str, mode: u32) -> Result<Self, TestError> {
             use std::os::unix::fs::PermissionsExt;
             use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -712,22 +724,23 @@ mod tests {
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
             let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).expect("create scratch dir");
+            std::fs::create_dir_all(&path).map_err(|e| format!("create scratch dir: {e:?}"))?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
-                .expect("set scratch dir mode");
-            Self { path }
+                .map_err(|e| format!("set scratch dir mode: {e:?}"))?;
+            Ok(Self { path })
         }
 
         /// Write a file into the directory with the given mode and return it.
         #[cfg(unix)]
-        fn file(&self, name: &str, mode: u32) -> PathBuf {
+        fn file(&self, name: &str, mode: u32) -> Result<PathBuf, TestError> {
             use std::os::unix::fs::PermissionsExt;
 
             let file = self.path.join(name);
-            std::fs::write(&file, b"not a real shared object").expect("write scratch file");
+            std::fs::write(&file, b"not a real shared object")
+                .map_err(|e| format!("write scratch file: {e:?}"))?;
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode))
-                .expect("set scratch file mode");
-            file
+                .map_err(|e| format!("set scratch file mode: {e:?}"))?;
+            Ok(file)
         }
     }
 
@@ -750,7 +763,7 @@ mod tests {
     /// setting the variable cannot inject a path into it.
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
-    fn trusted_candidates_never_include_the_env_override() {
+    fn trusted_candidates_never_include_the_env_override() -> Result<(), TestError> {
         let injected = OsString::from("/nonexistent/attacker/libsipnab_audio.so");
         let _env = EnvGuard::set(&injected);
 
@@ -763,6 +776,7 @@ mod tests {
             !trusted.is_empty(),
             "there must always be at least the bare soname to try"
         );
+        Ok(())
     }
 
     /// A vetted override is appended after every trusted path, so an installed
@@ -770,14 +784,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
-    fn env_override_is_ordered_behind_every_trusted_path() {
+    fn env_override_is_ordered_behind_every_trusted_path() -> Result<(), TestError> {
         if started_privileged() {
             // A privileged process refuses the override outright; that is the
             // subject of `vet_override_refuses_when_privileges_were_gained`.
-            return;
+            return Ok(());
         }
-        let dir = ScratchDir::new("ordering", 0o700);
-        let plugin = dir.file("libsipnab_audio.so", 0o644);
+        let dir = ScratchDir::new("ordering", 0o700)?;
+        let plugin = dir.file("libsipnab_audio.so", 0o644)?;
         let _env = EnvGuard::set(plugin.as_os_str());
 
         let trusted = trusted_plugin_candidates();
@@ -798,6 +812,7 @@ mod tests {
             &trusted[..],
             "trusted order preserved"
         );
+        Ok(())
     }
 
     /// An override that fails vetting is dropped entirely: the candidate list
@@ -805,102 +820,108 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
-    fn rejected_override_leaves_only_trusted_candidates() {
-        let dir = ScratchDir::new("rejected", 0o700);
+    fn rejected_override_leaves_only_trusted_candidates() -> Result<(), TestError> {
+        let dir = ScratchDir::new("rejected", 0o700)?;
         // World-writable: anyone on the box could rewrite it between the check
         // and the `dlopen`, so it is never a candidate.
-        let plugin = dir.file("libsipnab_audio.so", 0o666);
+        let plugin = dir.file("libsipnab_audio.so", 0o666)?;
         let _env = EnvGuard::set(plugin.as_os_str());
 
         assert_eq!(plugin_candidates(), trusted_plugin_candidates());
+        Ok(())
     }
 
     /// A file only its owner can write, in a directory only its owner can
     /// write, is the one shape the override accepts.
     #[cfg(unix)]
     #[test]
-    fn vet_override_accepts_owner_only_file() {
+    fn vet_override_accepts_owner_only_file() -> Result<(), TestError> {
         if started_privileged() {
-            return;
+            return Ok(());
         }
-        let dir = ScratchDir::new("accept", 0o700);
-        let plugin = dir.file("libsipnab_audio.so", 0o644);
+        let dir = ScratchDir::new("accept", 0o700)?;
+        let plugin = dir.file("libsipnab_audio.so", 0o644)?;
 
         assert_eq!(vet_override(&plugin), Ok(()));
+        Ok(())
     }
 
     /// Group- or world-writable plugins are refused: their content is not
     /// pinned to their owner.
     #[cfg(unix)]
     #[test]
-    fn vet_override_refuses_shared_writable_file() {
+    fn vet_override_refuses_shared_writable_file() -> Result<(), TestError> {
         if started_privileged() {
-            return;
+            return Ok(());
         }
-        let dir = ScratchDir::new("mode", 0o700);
+        let dir = ScratchDir::new("mode", 0o700)?;
 
         assert_eq!(
-            vet_override(&dir.file("world.so", 0o666)),
+            vet_override(&dir.file("world.so", 0o666)?),
             Err(OverrideRefusal::SharedWritable(0o666))
         );
         assert_eq!(
-            vet_override(&dir.file("group.so", 0o664)),
+            vet_override(&dir.file("group.so", 0o664)?),
             Err(OverrideRefusal::SharedWritable(0o664))
         );
+        Ok(())
     }
 
     /// A private file in a world-writable, non-sticky directory is refused:
     /// another user can rename their own file over it.
     #[cfg(unix)]
     #[test]
-    fn vet_override_refuses_swappable_location() {
+    fn vet_override_refuses_swappable_location() -> Result<(), TestError> {
         if started_privileged() {
-            return;
+            return Ok(());
         }
-        let dir = ScratchDir::new("swappable", 0o777);
-        let plugin = dir.file("libsipnab_audio.so", 0o644);
+        let dir = ScratchDir::new("swappable", 0o777)?;
+        let plugin = dir.file("libsipnab_audio.so", 0o644)?;
 
         assert_eq!(
             vet_override(&plugin),
             Err(OverrideRefusal::SwappableLocation(0o777))
         );
+        Ok(())
     }
 
     /// A sticky world-writable directory (the `/tmp` shape) is accepted: the
     /// sticky bit stops non-owners replacing entries.
     #[cfg(unix)]
     #[test]
-    fn vet_override_accepts_sticky_shared_directory() {
+    fn vet_override_accepts_sticky_shared_directory() -> Result<(), TestError> {
         if started_privileged() {
-            return;
+            return Ok(());
         }
-        let dir = ScratchDir::new("sticky", 0o1777);
-        let plugin = dir.file("libsipnab_audio.so", 0o644);
+        let dir = ScratchDir::new("sticky", 0o1777)?;
+        let plugin = dir.file("libsipnab_audio.so", 0o644)?;
 
         assert_eq!(vet_override(&plugin), Ok(()));
+        Ok(())
     }
 
     /// Missing paths and directories are refused rather than handed to `dlopen`.
     #[cfg(unix)]
     #[test]
-    fn vet_override_refuses_missing_path_and_directory() {
+    fn vet_override_refuses_missing_path_and_directory() -> Result<(), TestError> {
         if started_privileged() {
-            return;
+            return Ok(());
         }
-        let dir = ScratchDir::new("shape", 0o700);
+        let dir = ScratchDir::new("shape", 0o700)?;
 
         assert_eq!(
             vet_override(&dir.path.join("absent.so")),
             Err(OverrideRefusal::Unreadable)
         );
         assert_eq!(vet_override(&dir.path), Err(OverrideRefusal::NotAFile));
+        Ok(())
     }
 
     /// Every refusal renders a non-empty, distinct reason, since the log line is
     /// the only place a rejected override is ever visible.
     #[cfg(unix)]
     #[test]
-    fn refusal_reasons_are_distinct_and_non_empty() {
+    fn refusal_reasons_are_distinct_and_non_empty() -> Result<(), TestError> {
         let all = [
             OverrideRefusal::Elevated,
             OverrideRefusal::Unreadable,
@@ -918,23 +939,25 @@ mod tests {
             "the owning uid belongs in the message: {}",
             rendered[3]
         );
+        Ok(())
     }
 
     /// A non-existent explicit plugin path does not `dlopen` successfully.
     #[test]
-    fn explicit_nonexistent_plugin_path_does_not_load() {
+    fn explicit_nonexistent_plugin_path_does_not_load() -> Result<(), TestError> {
         // A non-existent explicit path must not dlopen successfully. We test
         // the candidate directly to stay independent of fallback paths.
         let bad = OsString::from("/nonexistent/path/to/libsipnab_audio.so");
         // SAFETY: loading a (missing) library; the call simply fails.
         let loaded = unsafe { Library::new(&bad) }.is_ok();
         assert!(!loaded, "a non-existent plugin path must not load");
+        Ok(())
     }
 
     /// A missing plugin makes `AudioPlayer::new` return an `Err`, never panic.
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
-    fn new_with_missing_plugin_returns_err_not_panic() {
+    fn new_with_missing_plugin_returns_err_not_panic() -> Result<(), TestError> {
         // A non-existent override is refused by vetting and dropped, so this
         // runs against the trusted candidates alone. None of them is likely to
         // find a real plugin in the test environment, which is what exercises
@@ -956,6 +979,7 @@ mod tests {
             let msg = e.to_string();
             assert!(!msg.is_empty(), "error message should be non-empty");
         }
+        Ok(())
     }
 
     /// The load failure keeps telling the user how to fix it. The message is
@@ -963,7 +987,7 @@ mod tests {
     /// so it must survive changes to the candidate order.
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
-    fn load_failure_still_names_libasound_and_the_wav_fallback() {
+    fn load_failure_still_names_libasound_and_the_wav_fallback() -> Result<(), TestError> {
         let _env = EnvGuard::set(std::ffi::OsStr::new(
             "/nonexistent/path/to/libsipnab_audio.so",
         ));
@@ -976,6 +1000,7 @@ mod tests {
             assert!(msg.contains("apt install"), "missing the command: {msg}");
             assert!(msg.contains("WAV"), "missing the fallback: {msg}");
         }
+        Ok(())
     }
 
     // ── What crosses the plugin's C ABI ─────────────────────────────
@@ -1079,12 +1104,12 @@ mod tests {
     /// plugin is told. A second of audio is reported as a second.
     #[cfg(unix)]
     #[test]
-    fn g711_reaches_the_plugin_as_48k_mono_and_is_reported_in_seconds() {
+    fn g711_reaches_the_plugin_as_48k_mono_and_is_reported_in_seconds() -> Result<(), TestError> {
         let player = stand_in_player();
         // 50 frames of 20 ms is one second.
         let line = player
             .play_stream(&buffered(0, Some("PCMU"), 50, 0x00))
-            .expect("a PCMU stream plays");
+            .map_err(|e| format!("a PCMU stream plays: {e:?}"))?;
         assert_eq!(line, "Playing 1.0s of mu-law audio (50 frames)");
 
         let played = PLAYED.with(|p| p.borrow().clone());
@@ -1095,10 +1120,11 @@ mod tests {
 
         let line = player
             .play_stream(&buffered(8, Some("PCMA"), 1, 0x55))
-            .expect("a PCMA stream plays");
+            .map_err(|e| format!("a PCMA stream plays: {e:?}"))?;
         assert_eq!(line, "Playing 0.0s of A-law audio (1 frames)");
         let a_law = PLAYED.with(|p| p.borrow()[1].0);
         assert_eq!(a_law, 160 * 6);
+        Ok(())
     }
 
     /// Opus is recognized whatever case the SDP spelled it in, and goes to
@@ -1106,74 +1132,84 @@ mod tests {
     /// skipped, so a stream of them plays as nothing rather than failing.
     #[cfg(unix)]
     #[test]
-    fn opus_is_named_in_any_case_and_undecodable_frames_play_as_nothing() {
+    fn opus_is_named_in_any_case_and_undecodable_frames_play_as_nothing() -> Result<(), TestError> {
         let player = stand_in_player();
         let line = player
             .play_stream(&buffered(111, Some("OPUS"), 2, 0xFF))
-            .expect("an Opus stream plays even when its frames do not decode");
+            .map_err(|e| {
+                format!("an Opus stream plays even when its frames do not decode: {e:?}")
+            })?;
         assert_eq!(line, "Playing 0.0s of Opus audio (2 frames)");
         let played = PLAYED.with(|p| p.borrow().clone());
         assert_eq!(played[0].0, 0, "no decodable frame, no samples");
         assert_eq!(played[0].1, 48_000);
+        Ok(())
     }
 
     /// A codec playback cannot decode, or none at all, is refused before
     /// anything reaches the plugin -- and says which it was.
     #[cfg(unix)]
     #[test]
-    fn a_codec_playback_cannot_decode_is_refused_before_the_plugin() {
+    fn a_codec_playback_cannot_decode_is_refused_before_the_plugin() -> Result<(), TestError> {
         let player = stand_in_player();
         let err = player
             .play_stream(&buffered(18, Some("G729"), 1, 0x00))
-            .expect_err("G.729 is not decoded here");
+            .err()
+            .ok_or("G.729 is not decoded here")?;
         assert_eq!(err.to_string(), "Unsupported codec for playback: G729");
 
         let err = player
             .play_stream(&buffered(96, None, 1, 0x00))
-            .expect_err("a stream with no codec cannot be decoded");
+            .err()
+            .ok_or("a stream with no codec cannot be decoded")?;
         assert_eq!(err.to_string(), "Unknown codec");
 
         assert!(
             PLAYED.with(|p| p.borrow().is_empty()),
             "nothing may be handed to the device for a refused stream"
         );
+        Ok(())
     }
 
     /// A stream with nothing buffered gets the exporter's own explanation,
     /// word for word, and the device is never touched.
     #[cfg(unix)]
     #[test]
-    fn an_empty_buffer_gets_the_exporters_explanation() {
+    fn an_empty_buffer_gets_the_exporters_explanation() -> Result<(), TestError> {
         let player = stand_in_player();
         let empty = stream(0);
         let err = player
             .play_stream(&empty)
-            .expect_err("nothing buffered, nothing to play");
+            .err()
+            .ok_or("nothing buffered, nothing to play")?;
         assert_eq!(
             err.to_string(),
             crate::rtp::audio_export::nothing_to_decode(&[&empty])
         );
         assert!(PLAYED.with(|p| p.borrow().is_empty()));
+        Ok(())
     }
 
     /// A plugin that reports failure is an error carrying its code, never a
     /// "Playing" line for audio nobody heard.
     #[cfg(unix)]
     #[test]
-    fn a_plugin_that_fails_to_play_is_an_error_with_its_code() {
+    fn a_plugin_that_fails_to_play_is_an_error_with_its_code() -> Result<(), TestError> {
         let player = stand_in_player();
         PLAY_RC.with(|r| r.set(7));
         let err = player
             .play_stream(&buffered(0, Some("PCMU"), 1, 0xFF))
-            .expect_err("a non-zero return is a failure");
+            .err()
+            .ok_or("a non-zero return is a failure")?;
         assert_eq!(err.to_string(), "audio plugin playback failed (code 7)");
+        Ok(())
     }
 
     /// `stop` and `is_playing` reach the plugin with the device handle, and
     /// dropping the player closes that handle exactly once.
     #[cfg(unix)]
     #[test]
-    fn stop_and_is_playing_reach_the_device_and_drop_closes_it_once() {
+    fn stop_and_is_playing_reach_the_device_and_drop_closes_it_once() -> Result<(), TestError> {
         let player = stand_in_player();
         player.stop();
         assert_eq!(
@@ -1193,6 +1229,7 @@ mod tests {
             vec![stand_in_device().addr()],
             "closed exactly once, with the handle it opened"
         );
+        Ok(())
     }
 
     /// A TOC-only Opus packet is a legitimate one. A code-0 packet carries
@@ -1201,26 +1238,28 @@ mod tests {
     /// ([RFC 6716 section 3.2.1](https://www.rfc-editor.org/rfc/rfc6716#section-3.2.1)). The decoder conceals the absent frame
     /// with a full frame of output, and those samples must be kept, in range.
     #[test]
-    fn a_decodable_opus_frame_contributes_its_samples_in_range() {
+    fn a_decodable_opus_frame_contributes_its_samples_in_range() -> Result<(), TestError> {
         let mut s = stream(111);
         // Config 31: CELT-only, fullband, 20 ms; mono; one frame (code 0).
         s.payload_buffer.push_back((0, vec![0xF8]));
         s.payload_buffer.push_back((960, vec![0xF8]));
-        let pcm = decode_opus_to_f32(&s).expect("opus decode ok");
+        let pcm = decode_opus_to_f32(&s).map_err(|e| format!("opus decode ok: {e:?}"))?;
         assert_eq!(pcm.len(), 2 * 960, "two 20 ms frames at 48 kHz");
         assert!(pcm.iter().all(|v| (-1.0..=1.0).contains(v)));
+        Ok(())
     }
 
     /// Decoded G.711 is normalized by 32768, so a code keeps its value on the
     /// [-1, 1] scale. mu-law 0x00 is the most negative code, which G.711
     /// decodes to -32124 in 16-bit linear.
     #[test]
-    fn g711_decodes_to_the_normalized_code_value() {
+    fn g711_decodes_to_the_normalized_code_value() -> Result<(), TestError> {
         let pcm = decode_g711_to_f32(G711Codec::Ulaw, &buffered(0, Some("PCMU"), 1, 0x00));
         assert!(
             (pcm[0] - (-32124.0 / 32768.0)).abs() < 1e-6,
             "normalized to [-1, 1] from the decoded code: {}",
             pcm[0]
         );
+        Ok(())
     }
 }

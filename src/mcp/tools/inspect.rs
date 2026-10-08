@@ -363,6 +363,9 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// 127.0.0.1 as an `IpAddr`.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
@@ -370,12 +373,15 @@ mod tests {
 
     /// A fixed base timestamp, so every fixture is deterministic.
     fn base_ts() -> chrono::DateTime<chrono::Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     /// Parse `raw` as SIP between localhost endpoints at `ts`.
-    fn parse_at(raw: &[u8], ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
-        parse_sip(
+    fn parse_at(
+        raw: &[u8],
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        Ok(parse_sip(
             raw,
             ts,
             localhost(),
@@ -384,7 +390,7 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("the fixture parses")
+        .map_err(|e| format!("the fixture parses: {e:?}"))?)
     }
 
     /// An INVITE for `call_id` carrying one extra header, at `ts`.
@@ -396,7 +402,7 @@ mod tests {
         call_id: &str,
         extra: &[&str],
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let mut headers = vec![
             format!("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{call_id}"),
             "From: Alice <sip:alice@example.com>;tag=t1".to_string(),
@@ -431,7 +437,7 @@ mod tests {
     }
 
     /// The JSON block of a tool result.
-    fn json_of(result: &CallToolResult) -> serde_json::Value {
+    fn json_of(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let note = crate::mcp::shape::untrusted_note();
         let text = result
             .content
@@ -439,45 +445,45 @@ mod tests {
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block that is not the provenance note");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block that is not the provenance note")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     /// Three legs chained by `X-Call-ID`: a -> b -> c, where a and c share no
     /// header at all. One hop of `find_correlated` cannot see c from a.
-    fn three_leg_chain() -> SipnabMcp {
-        server_with(vec![
-            invite("a@test", &[], base_ts()),
+    fn three_leg_chain() -> Result<SipnabMcp, TestError> {
+        Ok(server_with(vec![
+            invite("a@test", &[], base_ts())?,
             invite(
                 "b@test",
                 &["X-Call-ID: a@test"],
                 base_ts() + chrono::Duration::seconds(60),
-            ),
+            )?,
             invite(
                 "c@test",
                 &["X-Call-ID: b@test"],
                 base_ts() + chrono::Duration::seconds(120),
-            ),
-        ])
+            )?,
+        ]))
     }
 
     /// Two legs hanging off one root, an hour apart so nothing pairs them by
     /// timing. With the cap at two the walk has to abandon a leg it enqueued
     /// but never reached.
-    fn one_root_two_children() -> SipnabMcp {
-        server_with(vec![
-            invite("root@test", &[], base_ts()),
+    fn one_root_two_children() -> Result<SipnabMcp, TestError> {
+        Ok(server_with(vec![
+            invite("root@test", &[], base_ts())?,
             invite(
                 "kid1@test",
                 &["X-Call-ID: root@test"],
                 base_ts() + chrono::Duration::seconds(60),
-            ),
+            )?,
             invite(
                 "kid2@test",
                 &["X-Call-ID: root@test"],
                 base_ts() + chrono::Duration::seconds(120),
-            ),
-        ])
+            )?,
+        ]))
     }
 
     // ── get_call_tree ─────────────────────────────────────────────────
@@ -485,20 +491,20 @@ mod tests {
     /// The whole point of the tool: the third leg is reachable only by
     /// following the second, so a one-hop answer misses it.
     #[tokio::test]
-    async fn call_tree_reaches_a_leg_no_single_hop_can_see() {
-        let srv = three_leg_chain();
+    async fn call_tree_reaches_a_leg_no_single_hop_can_see() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
         let v = json_of(
             &srv.get_call_tree(Parameters(CallTreeParams {
                 call_id: "a@test".to_string(),
                 limit: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
 
         let ids: Vec<&str> = v["legs"]
             .as_array()
-            .expect("legs is an array")
+            .ok_or("legs is an array")?
             .iter()
             .filter_map(|l| l["call_id"].as_str())
             .collect();
@@ -525,27 +531,29 @@ mod tests {
             v["total_messages"], 3,
             "the merged ladder is three messages, one per leg: {v}"
         );
+        Ok(())
     }
 
     /// A timing-heuristic edge is REPORTED and not WALKED. Both halves matter:
     /// dropping it would hide a real link, walking it would let one busy second
     /// of traffic swallow the capture.
     #[tokio::test]
-    async fn call_tree_reports_a_timing_edge_but_does_not_walk_through_it() {
+    async fn call_tree_reports_a_timing_edge_but_does_not_walk_through_it() -> Result<(), TestError>
+    {
         // Three INVITEs a few hundred ms apart between the same endpoints and
         // sharing nothing else — the timing heuristic's exact shape.
         let srv = server_with(vec![
-            invite("t1@test", &[], base_ts()),
+            invite("t1@test", &[], base_ts())?,
             invite(
                 "t2@test",
                 &[],
                 base_ts() + chrono::Duration::milliseconds(200),
-            ),
+            )?,
             invite(
                 "t3@test",
                 &[],
                 base_ts() + chrono::Duration::milliseconds(400),
-            ),
+            )?,
         ]);
         let v = json_of(
             &srv.get_call_tree(Parameters(CallTreeParams {
@@ -553,10 +561,10 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
 
-        let legs = v["legs"].as_array().expect("legs is an array");
+        let legs = v["legs"].as_array().ok_or("legs is an array")?;
         let heuristic: Vec<&serde_json::Value> = legs
             .iter()
             .filter(|l| l["strategy"] == "timing_heuristic")
@@ -586,21 +594,23 @@ mod tests {
             "the count of guessed edges is what tells an agent how much of this \
              tree is inference: {v}"
         );
+        Ok(())
     }
 
     /// The row cap bounds the answer AND says so, and a leg the cap stopped the
     /// walk short of is not reported as searched.
     #[tokio::test]
-    async fn call_tree_truncates_at_the_limit_without_claiming_it_walked_further() {
-        let srv = one_root_two_children();
+    async fn call_tree_truncates_at_the_limit_without_claiming_it_walked_further()
+    -> Result<(), TestError> {
+        let srv = one_root_two_children()?;
         let v = json_of(
             &srv.get_call_tree(Parameters(CallTreeParams {
                 call_id: "root@test".to_string(),
                 limit: Some(2),
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
 
         assert_eq!(v["total_legs"], 2, "the cap includes the root: {v}");
         assert_eq!(
@@ -618,35 +628,38 @@ mod tests {
              never expanded; reporting it as followed would claim its subtree \
              was searched and came back empty: {v}"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID is an error, not an empty tree — the two are
     /// different answers.
     #[tokio::test]
-    async fn call_tree_rejects_an_unknown_call_id() {
-        let srv = three_leg_chain();
+    async fn call_tree_rejects_an_unknown_call_id() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
         let err = srv
             .get_call_tree(Parameters(CallTreeParams {
                 call_id: "nope@test".to_string(),
                 limit: None,
             }))
             .await
-            .expect_err("an unknown root must not return a tree");
+            .err()
+            .ok_or("an unknown root must not return a tree")?;
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        Ok(())
     }
 
     /// A call with no other legs still returns itself, with no edge fields set.
     #[tokio::test]
-    async fn call_tree_of_a_lone_dialog_is_the_dialog() {
-        let srv = server_with(vec![invite("lone@test", &[], base_ts())]);
+    async fn call_tree_of_a_lone_dialog_is_the_dialog() -> Result<(), TestError> {
+        let srv = server_with(vec![invite("lone@test", &[], base_ts())?]);
         let v = json_of(
             &srv.get_call_tree(Parameters(CallTreeParams {
                 call_id: "lone@test".to_string(),
                 limit: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(v["total_legs"], 1, "{v}");
         assert_eq!(v["max_depth"], 0, "{v}");
         assert!(v["legs"][0]["strategy"].is_null(), "{v}");
@@ -654,21 +667,22 @@ mod tests {
             v["legs"][0]["followed"], true,
             "the root is always walked, even when the walk finds nothing: {v}"
         );
+        Ok(())
     }
 
     /// Capture-derived free text in the leg summaries is fenced, and the
     /// response carries the provenance note that explains the marks.
     #[tokio::test]
-    async fn call_tree_fences_the_capture_text_in_its_leg_summaries() {
-        let srv = three_leg_chain();
+    async fn call_tree_fences_the_capture_text_in_its_leg_summaries() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
         let result = srv
             .get_call_tree(Parameters(CallTreeParams {
                 call_id: "a@test".to_string(),
                 limit: None,
             }))
             .await
-            .expect("the call succeeds");
-        let v = json_of(&result);
+            .map_err(|e| format!("the call succeeds: {e:?}"))?;
+        let v = json_of(&result)?;
         assert_eq!(
             v["legs"][0]["dialog"]["from_user"],
             crate::mcp::shape::fence("alice"),
@@ -684,6 +698,7 @@ mod tests {
             "a response carrying fenced text must carry the note that says what \
              the fence means"
         );
+        Ok(())
     }
 
     // ── validate_filter ───────────────────────────────────────────────
@@ -691,15 +706,16 @@ mod tests {
     /// A malformed expression is a successful call reporting the parse error,
     /// never a tool failure.
     #[tokio::test]
-    async fn validate_filter_returns_the_parse_error_rather_than_failing() {
-        let srv = three_leg_chain();
+    async fn validate_filter_returns_the_parse_error_rather_than_failing() -> Result<(), TestError>
+    {
+        let srv = three_leg_chain()?;
         let result = srv
             .validate_filter(Parameters(ValidateFilterParams {
                 expr: "state = ".to_string(),
             }))
             .await
-            .expect("a bad expression must NOT make the tool fail");
-        let v = json_of(&result);
+            .map_err(|e| format!("a bad expression must NOT make the tool fail: {e:?}"))?;
+        let v = json_of(&result)?;
         assert_eq!(v["valid"], false, "{v}");
         assert!(
             v["error"].as_str().is_some_and(|e| !e.is_empty()),
@@ -714,19 +730,20 @@ mod tests {
             v["total_dialogs"], 3,
             "the denominator is reported even on a parse failure: {v}"
         );
+        Ok(())
     }
 
     /// A valid expression is counted against the store, with no rows returned.
     #[tokio::test]
-    async fn validate_filter_counts_matches_without_returning_rows() {
-        let srv = three_leg_chain();
+    async fn validate_filter_counts_matches_without_returning_rows() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
         let v = json_of(
             &srv.validate_filter(Parameters(ValidateFilterParams {
                 expr: "call_id == \"b@test\"".to_string(),
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(v["valid"], true, "{v}");
         assert_eq!(
             v["total_matched"], 1,
@@ -738,28 +755,29 @@ mod tests {
             "the tool exists to avoid paying for rows; it must not return \
              any: {v}"
         );
+        Ok(())
     }
 
     /// Zero matches on a populated store is distinguishable from zero matches
     /// on an empty one, which is what `total_dialogs` is for.
     #[tokio::test]
-    async fn validate_filter_separates_no_matches_from_no_dialogs() {
+    async fn validate_filter_separates_no_matches_from_no_dialogs() -> Result<(), TestError> {
         let populated = json_of(
-            &three_leg_chain()
+            &three_leg_chain()?
                 .validate_filter(Parameters(ValidateFilterParams {
                     expr: "call_id == \"absent@test\"".to_string(),
                 }))
                 .await
-                .expect("the call succeeds"),
-        );
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         let empty = json_of(
             &server_with(Vec::new())
                 .validate_filter(Parameters(ValidateFilterParams {
                     expr: "call_id == \"absent@test\"".to_string(),
                 }))
                 .await
-                .expect("the call succeeds"),
-        );
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
 
         assert_eq!(populated["total_matched"], 0, "{populated}");
         assert_eq!(empty["total_matched"], 0, "{empty}");
@@ -768,24 +786,27 @@ mod tests {
             "both matched nothing; only the denominator tells an agent whether \
              the expression is wrong or the capture is empty"
         );
+        Ok(())
     }
 
     /// The tool compiles through the same path `list_dialogs` does, so a
     /// diagnostic alias resolves here too.
     #[tokio::test]
-    async fn validate_filter_accepts_the_same_aliases_the_other_tools_take() {
+    async fn validate_filter_accepts_the_same_aliases_the_other_tools_take() -> Result<(), TestError>
+    {
         let v = json_of(
-            &three_leg_chain()
+            &three_leg_chain()?
                 .validate_filter(Parameters(ValidateFilterParams {
                     expr: "problems".to_string(),
                 }))
                 .await
-                .expect("the call succeeds"),
-        );
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(
             v["valid"], true,
             "an alias `list_dialogs` accepts must not be reported as a syntax \
              error here, or the tool sends agents away from working filters: {v}"
         );
+        Ok(())
     }
 }

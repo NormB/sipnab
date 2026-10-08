@@ -8,6 +8,26 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+**Held:** the LINT8 test conversion is a branch of separate commits that lands on `main` as one squash-merged pull request; the release follows that merge.
+
+### Changed
+
+- **Unit tests under `src/` return `Result` and use `?` (LINT8).** The
+  `#[cfg(test)]` code no longer calls `.unwrap()`, `.expect(`, `.expect_err(`,
+  `.unwrap_err()` or `panic!(`; a failure returns an error that names what was
+  being done. The test names and count are unchanged. The calls that remain
+  are the ones whose panic is the behavior under test: the three crash-handler
+  probes in `src/crash.rs`, the panicking socket thread in
+  `src/capture/live.rs`, and the `#[should_panic]` power-of-two test in
+  `src/capture/uprobe/perf.rs`. No user-visible behavior changes.
+- **The hardcoded-material gate no longer reports a counter in a test that
+  returns `Result<(), _>`.** `tests/hardcoded_crypto_material_test.rs` treated
+  a function with a material word in its name and a return type as one that
+  returns material; a test returning `Result<(), TestError>` returns no value.
+  A function returning material inside a `Result` is still reported.
+
 ## [0.5.206] - 2026-10-07
 
 ### Security

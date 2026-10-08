@@ -288,6 +288,8 @@ fn render_placeholder(f: &mut Frame, area: Rect, block: Block, theme: &Theme, ms
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     use chrono::Utc;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -333,28 +335,26 @@ mod tests {
     }
 
     /// Render the loss map at `w`x`h` and flatten the buffer to a string.
-    fn render(app: &App, key: &StreamKey, w: u16, h: u16) -> String {
+    fn render(app: &App, key: &StreamKey, w: u16, h: u16) -> Result<String, TestError> {
         let backend = TestBackend::new(w, h);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| render_loss_map(f, app, f.area(), key))
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|f| render_loss_map(f, app, f.area(), key))?;
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                out.push_str(buf.cell((x, y)).ok_or("cell() returned None")?.symbol());
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// A clustered-loss stream renders a dark run (heavy glyph) in the strip
     /// and the framing chrome (title, SSRC, legend).
     #[test]
-    fn clustered_loss_renders_dark_run() {
+    fn clustered_loss_renders_dark_run() -> Result<(), TestError> {
         let mut s = RtpStream::new(make_key(), &make_header(0), Utc::now());
         s.last_seq = 1000;
         s.lost_sequences = (400..440).collect();
@@ -362,7 +362,7 @@ mod tests {
         s.lost_packets = 40;
         let (app, key) = app_on_loss_map(s);
 
-        let out = render(&app, &key, 100, 16);
+        let out = render(&app, &key, 100, 16)?;
         assert!(out.contains("Packet loss map"), "title missing:\n{out}");
         assert!(out.contains("0x0000ABCD"), "ssrc missing:\n{out}");
         assert!(
@@ -370,18 +370,19 @@ mod tests {
             "clustered loss must draw a heavy glyph:\n{out}"
         );
         assert!(out.contains("Density"), "legend missing:\n{out}");
+        Ok(())
     }
 
     /// A loss-free stream renders the centered "no packet loss" message and
     /// no heavy density glyph.
     #[test]
-    fn no_loss_renders_empty_message() {
+    fn no_loss_renders_empty_message() -> Result<(), TestError> {
         let mut s = RtpStream::new(make_key(), &make_header(0), Utc::now());
         s.last_seq = 500;
         s.packet_count = 500;
         let (app, key) = app_on_loss_map(s);
 
-        let out = render(&app, &key, 100, 16);
+        let out = render(&app, &key, 100, 16)?;
         assert!(
             out.contains("No packet loss recorded in the retained window"),
             "empty-window message missing:\n{out}"
@@ -389,23 +390,25 @@ mod tests {
         // The 0% loss rate is shown in the header (only the legend's key
         // glyphs appear, never a strip of them).
         assert!(out.contains("0.00%"), "loss rate missing:\n{out}");
+        Ok(())
     }
 
     /// A missing stream shows the placeholder instead of panicking.
     #[test]
-    fn missing_stream_shows_placeholder() {
+    fn missing_stream_shows_placeholder() -> Result<(), TestError> {
         let app = App::new_test();
         let key = make_key();
-        let out = render(&app, &key, 80, 10);
+        let out = render(&app, &key, 80, 10)?;
         assert!(
             out.contains("Stream no longer available"),
             "placeholder missing:\n{out}"
         );
+        Ok(())
     }
 
     /// A tiny terminal must not panic or underflow the width guards.
     #[test]
-    fn survives_tiny_terminal() {
+    fn survives_tiny_terminal() -> Result<(), TestError> {
         let mut s = RtpStream::new(make_key(), &make_header(0), Utc::now());
         s.last_seq = 100;
         s.lost_sequences = (10..20).collect();
@@ -413,30 +416,33 @@ mod tests {
         s.lost_packets = 10;
         let (app, key) = app_on_loss_map(s);
         // No assertion beyond "did not panic".
-        let _ = render(&app, &key, 6, 3);
-        let _ = render(&app, &key, 1, 1);
+        let _ = render(&app, &key, 6, 3)?;
+        let _ = render(&app, &key, 1, 1)?;
+        Ok(())
     }
 
     /// The sequence axis places the window's start and end labels.
     #[test]
-    fn axis_shows_span_bounds() {
+    fn axis_shows_span_bounds() -> Result<(), TestError> {
         let mut s = RtpStream::new(make_key(), &make_header(0), Utc::now());
         s.last_seq = 1000;
         s.lost_sequences = (400..440).collect();
         s.packet_count = 960;
         s.lost_packets = 40;
         let (app, key) = app_on_loss_map(s);
-        let out = render(&app, &key, 100, 16);
+        let out = render(&app, &key, 100, 16)?;
         // span_end == last_seq == 1000 is on the axis row.
         assert!(out.contains("1000"), "span_end label missing:\n{out}");
+        Ok(())
     }
 
     /// `axis_line` never panics for narrow widths and keeps to the width.
     #[test]
-    fn axis_line_narrow_widths_are_safe() {
+    fn axis_line_narrow_widths_are_safe() -> Result<(), TestError> {
         for w in 0..12usize {
             let s = axis_line(w, "500", "750", "1000");
             assert!(s.chars().count() <= w);
         }
+        Ok(())
     }
 }
