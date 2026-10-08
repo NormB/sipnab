@@ -1144,6 +1144,18 @@ fn limit_probes() -> Vec<LimitProbe> {
             waits_out_a_window: false,
         },
         LimitProbe {
+            key: "mcp_sweep_max_files",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_sweep_max_files,
+            waits_out_a_window: false,
+        },
+        LimitProbe {
+            key: "mcp_sweep_deadline_ms",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_sweep_deadline_ms,
+            waits_out_a_window: false,
+        },
+        LimitProbe {
             key: "max_lost_sequences",
             enabled: true,
             observe: probe_max_lost_sequences,
@@ -2129,6 +2141,144 @@ fn probe_mcp_max_wait_seconds() -> Result<(String, String), TestError> {
 /// probe disabled, so it is never called.
 #[cfg(not(feature = "mcp"))]
 fn probe_mcp_max_wait_seconds() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
+}
+
+/// Run `find_in_captures` once over the MCP stdio server, with `root` as the
+/// file root, and return the tool's JSON answer (`null` when none arrived).
+///
+/// The two `[limits]` sweep keys are visible on no other surface, so their
+/// probes drive this tool the way `probe_mcp_max_wait_seconds` drives
+/// `await_condition`.
+#[cfg(feature = "mcp")]
+fn mcp_find_in_captures(
+    cfg: Option<&std::path::Path>,
+    pcap: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<serde_json::Value, TestError> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut args: Vec<String> = vec![
+        "--mcp".into(),
+        "-N".into(),
+        "-I".into(),
+        pcap.to_str().ok_or("non-UTF-8 path")?.into(),
+        "--mcp-file-root".into(),
+        root.to_str().ok_or("non-UTF-8 path")?.into(),
+        "--quiet".into(),
+    ];
+    match cfg {
+        Some(c) => {
+            args.push("--config".into());
+            args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
+        }
+        None => args.push("--no-config".into()),
+    }
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("stdin")?;
+    let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
+
+    let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
+        writeln!(w, "{v}")?;
+        w.flush()
+    };
+    send(
+        &mut stdin,
+        serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                  "clientInfo":{"name":"probe","version":"0"}}}),
+    )?;
+    let mut line = String::new();
+    out.read_line(&mut line)?;
+    send(
+        &mut stdin,
+        serde_json::json!({
+        "jsonrpc":"2.0","method":"notifications/initialized"}),
+    )?;
+    send(
+        &mut stdin,
+        serde_json::json!({
+        "jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"find_in_captures","arguments":{
+            "filter":"method == 'INVITE'"}}}),
+    )?;
+
+    let mut answer = serde_json::Value::Null;
+    for _ in 0..40 {
+        line.clear();
+        if out.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if v["id"] != serde_json::json!(2) {
+            continue;
+        }
+        let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+        answer = serde_json::from_str(text).unwrap_or_default();
+        break;
+    }
+    let _ = terminate(&mut child);
+    Ok(answer)
+}
+
+/// `mcp_sweep_max_files`: a three-file root against a one-file ceiling.
+///
+/// The observation is `files_examined`, the number of files the sweep read,
+/// not a copy of the setting.
+#[cfg(feature = "mcp")]
+fn probe_mcp_sweep_max_files() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let root = dir.path().join("root");
+    std::fs::create_dir(&root)?;
+    for name in ["a.pcap", "b.pcap", "c.pcap"] {
+        std::fs::copy(&pcap, root.join(name))?;
+    }
+    let cfg = write_config(&dir, "[limits]\nmcp_sweep_max_files = 1\n")?;
+    let examined = |v: serde_json::Value| format!("examined={}", v["sweep"]["files_examined"]);
+    Ok((
+        examined(mcp_find_in_captures(None, &pcap, &root)?),
+        examined(mcp_find_in_captures(Some(&cfg), &pcap, &root)?),
+    ))
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_sweep_max_files() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
+}
+
+/// `mcp_sweep_deadline_ms`: the deadline the sweep reports it ran under.
+///
+/// The tool reports the EFFECTIVE limits, after the clamp, so this observes
+/// the value the sweep loop used without waiting out a deadline.
+#[cfg(feature = "mcp")]
+fn probe_mcp_sweep_deadline_ms() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let root = dir.path().join("root");
+    std::fs::create_dir(&root)?;
+    std::fs::copy(&pcap, root.join("a.pcap"))?;
+    let cfg = write_config(&dir, "[limits]\nmcp_sweep_deadline_ms = 1234\n")?;
+    let deadline = |v: serde_json::Value| format!("deadline_ms={}", v["limits"]["deadline_ms"]);
+    Ok((
+        deadline(mcp_find_in_captures(None, &pcap, &root)?),
+        deadline(mcp_find_in_captures(Some(&cfg), &pcap, &root)?),
+    ))
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_sweep_deadline_ms() -> Result<(String, String), TestError> {
     Ok((String::new(), String::new()))
 }
 

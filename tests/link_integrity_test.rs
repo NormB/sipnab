@@ -1172,7 +1172,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1314 -> 1319: the forwarder's settings and store kinds. Net added links
     // per file, measured from the diff: vcon.md +3, config-reference.md +1,
     // cli-reference.md +1 (+2, -1).
-    const EXPECTED_WIKI_LINKS: usize = 1319;
+    // 1319 -> 1326: the `find_in_captures` job model in docs/mcp-tools.md.
+    // Net added links measured from the diff: +8, -1 (the index row that
+    // gained a column was rewritten), all to the find_in_captures,
+    // find_in_captures_status and cancel_find_in_captures sections.
+    const EXPECTED_WIKI_LINKS: usize = 1326;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

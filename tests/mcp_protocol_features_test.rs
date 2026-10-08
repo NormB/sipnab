@@ -338,6 +338,19 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
                 "max_files": 1
             }),
         ),
+        // A running job's shape and a finished one's: the job id is a
+        // placeholder `probe_args` replaces with a sweep it starts, because a
+        // job id only exists once a sweep does. The poll waits for the end,
+        // so it returns the finished shape with `sweep`; the cancel answers at
+        // once, so it returns the running shape without it.
+        (
+            "find_in_captures_status",
+            json!({"job_id": SWEEP_JOB_PLACEHOLDER, "wait_seconds": 30}),
+        ),
+        (
+            "cancel_find_in_captures",
+            json!({"job_id": SWEEP_JOB_PLACEHOLDER}),
+        ),
         // No `limit`, so the response is the untruncated shape: `truncated`
         // false and `relay_was_consulted` computed over every orphan rather
         // than over a page.
@@ -394,6 +407,40 @@ fn tfps_action_args(fake: &tempfile::TempDir) -> Result<Vec<String>, TestError> 
 
 /// Wait out the one-second address cooldown before the unban probe, which
 /// acts on the address the ban probe just banned.
+/// The `job_id` a probe names when it needs a running `find_in_captures` job.
+const SWEEP_JOB_PLACEHOLDER: &str = "<a running sweep>";
+
+/// `args`, with [`SWEEP_JOB_PLACEHOLDER`] replaced by the id of a sweep this
+/// starts and that is still running.
+///
+/// The sweep reads every capture in `tests/pcap-samples` with `wait_seconds:
+/// 0`, so the starting call answers before the read can end. A start that
+/// nevertheless came back finished has handed its result over and left no job
+/// to poll, so it is tried again, up to five times, and the probe fails with
+/// what it saw rather than polling a job that does not exist.
+fn probe_args(wire: &mut Wire, args: Value) -> Result<Value, TestError> {
+    if args["job_id"] != json!(SWEEP_JOB_PLACEHOLDER) {
+        return Ok(args);
+    }
+    let mut last = Value::Null;
+    for _ in 0..5 {
+        let started = wire.call(
+            "find_in_captures",
+            json!({"filter": "call_id == \"outputschema-probe@example.invalid\"",
+                   "wait_seconds": 0}),
+            None,
+        )?;
+        let answer = text_payload(&started)?;
+        if answer["status"] == "running" {
+            let mut args = args;
+            args["job_id"] = answer["job_id"].clone();
+            return Ok(args);
+        }
+        last = answer;
+    }
+    Err(format!("no sweep was still running when its start answered: {last}").into())
+}
+
 fn before_probe(tool: &str) {
     if tool == "tfps_unban" {
         std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -539,6 +586,7 @@ fn no_tool_answers_with_a_top_level_array() -> Result<(), TestError> {
             continue;
         }
         before_probe(tool);
+        let args = probe_args(&mut wire, args)?;
         let reply = wire.call(tool, args, None)?;
         let payload = text_payload(&reply)?;
         assert!(
@@ -933,7 +981,8 @@ fn every_declared_output_schema_matches_the_payload_it_describes() -> Result<(),
         let validator = jsonschema::validator_for(schema)
             .map_err(|e| format!("{name}'s outputSchema does not compile: {e}"))?;
         before_probe(name);
-        let reply = wire.call(name, args.clone(), None)?;
+        let args = probe_args(&mut wire, args.clone())?;
+        let reply = wire.call(name, args, None)?;
         let structured = &reply["result"]["structuredContent"];
         assert!(
             structured.is_object(),

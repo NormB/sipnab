@@ -46,7 +46,9 @@ ordinary update.
 | [`reconcile_orphans`](#reconcile-orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
-| [`find_in_captures`](#find-in-captures) | `filter`, `max_files?`, `deadline_ms?` | Which capture files hold dialogs matching a filter, without opening any of them |
+| [`find_in_captures`](#find-in-captures) | `filter`, `max_files?`, `deadline_ms?`, `wait_seconds?` | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
+| [`find_in_captures_status`](#find-in-captures-status) | `job_id`, `wait_seconds?` | A `find_in_captures` job's progress, or its result once it finishes |
+| [`cancel_find_in_captures`](#cancel-find-in-captures) | `job_id` | Stops a running `find_in_captures` job |
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
@@ -204,7 +206,7 @@ responses against a declared shape needs them. Turn them on with
 |---|---|---|---|---|
 | core | 9 | 10,985 | 30,964 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
 | signaling | 20 | 21,955 | 36,466 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
-| captures | 9 | 10,524 | 15,996 | `build_evidence_package`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
+| captures | 11 | 12,542 | 30,030 | `build_evidence_package`, `cancel_find_in_captures`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `find_in_captures_status`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
 | security | 6 | 9,938 | 9,938 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
 | media | 4 | 3,113 | 11,400 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
 | relay | 4 | 4,217 | 20,006 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
@@ -212,12 +214,14 @@ responses against a declared shape needs them. Turn them on with
 | server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
 | vcon | 3 | 4,481 | 12,642 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
 | tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
-| full | 70 | 78,920 | 181,691 | Every tool the build carries (the default) |
+| full | 72 | 80,864 | 199,240 | Every tool the build carries (the default) |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.196**, a build with every feature. Sizes, tool
+> **Measured on sipnab 0.5.196**, a build with every feature, except the
+> `captures` and `full` rows, measured after 0.5.206 on the change that added
+> `find_in_captures_status` and `cancel_find_in_captures`. Sizes, tool
 > counts and bundle membership may change in later releases. A build without a
 > feature does not register that feature's tools, so its bundles are smaller.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
@@ -1136,13 +1140,19 @@ archive.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter` | string | A [filter DSL](@/docs/filter-dsl.md) expression, the same vocabulary every other filtering tool takes. Unparseable fails with `invalid_params` before the sweep opens anything | Required |
-| `max_files` | u32? | Files to open before stopping. Clamped to `DEFAULT_MAX_FILES` (20); `0` means the default | 20 |
-| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to `DEFAULT_DEADLINE_MS` (30000); `0` means the default | 30000 |
+| `max_files` | u32? | Files to open before stopping. Clamped to the operator's `--mcp-sweep-max-files` (`[limits] mcp_sweep_max_files`, default 20); `0` means that ceiling | The ceiling |
+| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to the operator's `--mcp-sweep-deadline-ms` (`[limits] mcp_sweep_deadline_ms`, default 30000); `0` means that ceiling | The ceiling |
+| `wait_seconds` | u32? | Seconds this call waits for the sweep to finish before it returns the running job. Clamped to `--mcp-max-wait-seconds` (default 60); `0` returns at once | 30 |
 
 ```jsonc
 // find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"" }
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "job_id": "sweep-1",
+  "status": "done",
+  "limits": { "max_files": 20, "deadline_ms": 30000 },
+  "progress": { "files_examined": 12, "files_total": 12, "elapsed_ms": 840,
+                "cancel_requested": false },
   "sweep": {
     "matches": [
       { "filename": "rotated-03.pcap", "dialogs_matched": 1,
@@ -1156,6 +1166,56 @@ archive.
 }
 ```
 
+#### The sweep is a background job
+
+The sweep reads its files on its own thread, never on the thread that serves
+MCP and REST. While it reads, sipnab answers every other MCP call and every
+REST request as usual.
+
+The call that starts it waits up to `wait_seconds` for it to finish. When the
+sweep finishes in that time, the same call returns `status: "done"` and the
+`sweep` object. When it does not, the call returns its `job_id`,
+`status: "running"` and `progress`, and no `sweep`:
+
+```jsonc
+// find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"", "wait_seconds": 0 }
+{
+  "schema_version": 2,
+  "job_id": "sweep-2",
+  "status": "running",
+  "limits": { "max_files": 40, "deadline_ms": 3600000 },
+  "progress": { "files_examined": 3, "files_total": 40, "elapsed_ms": 112,
+                "cancel_requested": false }
+}
+```
+
+Poll it with [`find_in_captures_status`](#find-in-captures-status) and stop it
+with [`cancel_find_in_captures`](#cancel-find-in-captures). All three tools
+return this one shape. `status` is `running`, `done`, or `canceled`, and
+`sweep` is present only once the job has finished.
+
+The job holds no `--mcp-max-concurrent` slot. A call holds a slot only while it
+waits, and `--mcp-max-wait-seconds` bounds the wait. Constants in the source
+bound the jobs themselves:
+
+| Bound | Value | Name in the source |
+|---|---|---|
+| Sweeps running at once, per server | 4 | `MAX_RUNNING_SWEEPS` |
+| Finished results waiting for a poll, per server | 16 | `MAX_HELD_RESULTS` |
+| How long a finished result waits for a poll | 600 seconds after it finished | `RESULT_RETENTION` |
+
+While four sweeps run, sipnab refuses a fifth with `invalid_request`, and the
+message names the bound and the two tools that end a sweep. One poll hands
+over a finished result. After that poll, after 600 seconds with no poll, or
+once 16 newer results wait, the job id is unknown and sipnab refuses a poll of
+it with `invalid_params`. Past 16 waiting results, sipnab drops the result of
+the earliest-started sweep first.
+
+A sweep stops before its next packet, not only before its next file, when the
+deadline passes, when `cancel_find_in_captures` stops it, and when sipnab
+receives SIGTERM or SIGINT. `stopped_because` then says `deadline`, `canceled` or `shutdown`, and
+the file it was reading is not counted in `files_examined`.
+
 #### Read `complete` before believing an empty result
 
 A sweep runs under bounds, and one that reports no matches has **not**
@@ -1164,7 +1224,7 @@ read. `complete` is true in exactly one case: every candidate examined, and
 every one of them readable.
 
 It is false when the sweep stopped early — `stopped_because` says
-`max-files` or `deadline` — and false when the sweep could not open some
+`max-files`, `deadline`, `canceled` or `shutdown` — and false when the sweep could not open some
 file. `unreadable` names each of those, with its reason, and **never skips one
 silently**: the file nobody could look in is exactly the one that might hold
 the call. A reason comes from the OS and from libpcap, so sipnab strips control
@@ -1174,16 +1234,106 @@ characters and keeps the first `MAX_REASON_CHARS` (200).
 call that spans a rotation is in two files, so finding it in one says nothing
 about the other.
 
+`limits` is what this sweep ran under: the caller's `max_files` and
+`deadline_ms` after sipnab clamped them to the operator's ceilings.
+
+#### The ceilings are the operator's settings
+
+The operator sets both ceilings, and a caller can only ask for less:
+
+| Ceiling | Flag | Config key | Default | Accepted |
+|---|---|---|---|---|
+| Files per sweep | `--mcp-sweep-max-files` | `[limits] mcp_sweep_max_files` | 20 | 1 to 4294967295 |
+| Milliseconds per sweep | `--mcp-sweep-deadline-ms` | `[limits] mcp_sweep_deadline_ms` | 30000 | 1 to 43200000 |
+
+A spool that rotates forty files needs `--mcp-sweep-max-files 40` before one
+sweep can reach the oldest file. With the default, the sweep stops after 20
+files with `stopped_because: "max-files"` and `complete: false`. The flag
+overrides the key.
+
+The defaults are `DEFAULT_MCP_SWEEP_MAX_FILES` (20) and
+`DEFAULT_MCP_SWEEP_DEADLINE_MS` (30000), which `find_in_captures` reads as
+`DEFAULT_MAX_FILES` (20) and `DEFAULT_DEADLINE_MS` (30000). The maxima are
+`MAX_MCP_SWEEP_MAX_FILES` (4294967295), the largest value of the per-call
+`max_files`, a 32-bit unsigned integer, and `MAX_MCP_SWEEP_DEADLINE_MS`
+(43200000), twelve hours. A sweep runs as a background job and holds no MCP
+slot, so the deadline maximum bounds how long one sweep may keep a thread and a
+disk busy. sipnab refuses `0` and any value above the maximum from the flag
+and from the key.
+
 #### Why two bounds and not one
 
 `max_files` makes the cost predictable. `deadline_ms` is the one that matters:
 a file's cost is its size, which the caller cannot see, so twenty small files
 and twenty 2 GB files are the same `max_files` and a very different wait. The
-sweep tests the deadline **before** each file rather than after: a deadline
-tested only afterwards is one the last file can overrun by its whole read.
+sweep tests the deadline before each file and before each packet, so no file
+overruns it by more than one packet.
 
-**There is no cancel.** A tool call has no channel to interrupt it, so the
-sweep bounds itself and always returns with an account of what it covered.
+### `find_in_captures_status`
+
+Polls a [`find_in_captures`](#find-in-captures) job. It waits up to
+`wait_seconds` for the job to finish and answers with the same shape
+`find_in_captures` returns: `status: "running"` with `progress`, or `done` or
+`canceled` with the `sweep` result. It hands the result over once, and sipnab
+refuses the next poll of that id.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `job_id` | string | The `job_id` a `find_in_captures` call returned. An id the server does not hold fails with `invalid_params`, naming the id | Required |
+| `wait_seconds` | u32? | Seconds to wait for the job to finish before answering. Clamped to `--mcp-max-wait-seconds`; `0` answers at once | 30 |
+
+The wait does not block the server: sipnab answers other calls and REST
+requests while it lasts.
+
+```jsonc
+// find_in_captures_status { "job_id": "sweep-2" }
+{
+  "schema_version": 2,
+  "job_id": "sweep-2",
+  "status": "done",
+  "limits": { "max_files": 40, "deadline_ms": 3600000 },
+  "progress": { "files_examined": 40, "files_total": 40, "elapsed_ms": 95210,
+                "cancel_requested": false },
+  "sweep": {
+    "matches": [
+      { "filename": "rotated-39.pcap", "dialogs_matched": 1,
+        "first_call_id": "1-1966@10.0.2.20" }
+    ],
+    "files_examined": 40,
+    "files_total": 40,
+    "unreadable": [],
+    "complete": true
+  }
+}
+```
+
+### `cancel_find_in_captures`
+
+Stops a running [`find_in_captures`](#find-in-captures) job before its next
+packet. It returns at once, with `progress.cancel_requested: true`. A
+following [`find_in_captures_status`](#find-in-captures-status) poll reports
+`status: "canceled"`, with `stopped_because: "canceled"`, `complete: false`,
+and the files read to the end before the cancel. For a job that had already
+finished, this call returns its result and hands it over.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `job_id` | string | The `job_id` a `find_in_captures` call returned. An id the server does not hold fails with `invalid_params`, naming the id | Required |
+
+```jsonc
+// cancel_find_in_captures { "job_id": "sweep-3" }
+{
+  "schema_version": 2,
+  "job_id": "sweep-3",
+  "status": "running",
+  "limits": { "max_files": 40, "deadline_ms": 3600000 },
+  "progress": { "files_examined": 7, "files_total": 40, "elapsed_ms": 18044,
+                "cancel_requested": true }
+}
+```
+
+The tool is `readOnlyHint: true`: it stops a read that `find_in_captures`
+started and changes no capture, store or file.
 
 ### `list_dialogs`
 

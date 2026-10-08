@@ -975,6 +975,7 @@ fn start_tui_servers(
             mcp_row_cap: cli.mcp_row_cap(config),
             mcp_body_cap: cli.mcp_body_cap(config),
             mcp_wait_seconds: cli.mcp_wait_cap(config),
+            mcp_sweep: cli.mcp_sweep_limits(config),
             api_row_cap: cli.api_row_cap(config),
             api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
             max_tracked_peers: cli.tracked_peer_capacity(config),

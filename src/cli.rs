@@ -3394,6 +3394,10 @@ pub struct McpArgs {
     /// sipnab CLAMPS a larger request to it and says so in the response,
     /// which is what `--mcp-max-rows` does with an over-large `limit`.
     ///
+    /// It also bounds `wait_seconds` on `find_in_captures` and
+    /// `find_in_captures_status`: how long one of those calls waits for a
+    /// background sweep before it answers with the running job.
+    ///
     /// No clap `default_value`, for the reason given on
     /// [`Self::mcp_max_rows`]. The default lives in
     /// [`Cli::DEFAULT_MCP_MAX_WAIT_SECONDS`].
@@ -3423,6 +3427,47 @@ pub struct McpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_findings: Option<u64>,
+
+    /// Files one `find_in_captures` sweep may open (default 20, maximum
+    /// 4294967295). Config: `[limits] mcp_sweep_max_files`.
+    ///
+    /// The ceiling on the tool's per-call `max_files`: a larger request is
+    /// clamped to it, and `0` or no request means this value. A rotated spool
+    /// of forty files needs 40 here before one sweep can reach the oldest
+    /// file. The response reports `files_examined`, `files_total` and
+    /// `complete`, so a sweep this stopped early says so.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_FILES`] and the maximum in
+    /// [`crate::config::MAX_MCP_SWEEP_MAX_FILES`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-sweep-max-files",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_MCP_SWEEP_MAX_FILES)
+    )]
+    pub mcp_sweep_max_files: Option<u64>,
+
+    /// Milliseconds one `find_in_captures` sweep may spend (default 30000,
+    /// maximum 43200000). Config: `[limits] mcp_sweep_deadline_ms`.
+    ///
+    /// The ceiling on the tool's per-call `deadline_ms`, applied the same way
+    /// as `--mcp-sweep-max-files`. The sweep runs on its own thread and checks
+    /// it before each file and before each packet; the tool call returns a job
+    /// to poll when the sweep outlasts its wait.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS`] and the maximum in
+    /// [`crate::config::MAX_MCP_SWEEP_DEADLINE_MS`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-sweep-deadline-ms",
+        value_name = "MS",
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_MCP_SWEEP_DEADLINE_MS)
+    )]
+    pub mcp_sweep_deadline_ms: Option<u64>,
 
     /// Maximum MCP tool calls one peer may make per second (`0` = unlimited).
     ///
@@ -4848,6 +4893,49 @@ pub fn parse_destination_list(raw: &str) -> Vec<String> {
     out
 }
 
+/// The two ceilings one MCP `find_in_captures` sweep runs under.
+///
+/// Resolved once per run by [`Cli::mcp_sweep_limits`] from
+/// `--mcp-sweep-max-files` / `--mcp-sweep-deadline-ms` and their `[limits]`
+/// keys, and carried to the MCP server as one value. A per-call request is
+/// reduced to them by [`Self::clamp`], the one place that rule is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpSweepLimits {
+    /// Files one sweep may open.
+    pub max_files: usize,
+    /// Wall-clock one sweep may spend, in milliseconds.
+    pub deadline_ms: u64,
+}
+
+impl Default for McpSweepLimits {
+    /// The shipped ceilings, [`Cli::DEFAULT_MCP_SWEEP_MAX_FILES`] and
+    /// [`Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS`].
+    fn default() -> Self {
+        Self {
+            max_files: usize::try_from(Cli::DEFAULT_MCP_SWEEP_MAX_FILES).unwrap_or(usize::MAX),
+            deadline_ms: Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS,
+        }
+    }
+}
+
+impl McpSweepLimits {
+    /// The limits one call runs under: each requested value clamped to the
+    /// ceiling in `self`, and `0` or no request meaning the ceiling itself.
+    #[must_use]
+    pub fn clamp(self, max_files: Option<u32>, deadline_ms: Option<u64>) -> Self {
+        Self {
+            max_files: match max_files {
+                Some(0) | None => self.max_files,
+                Some(n) => usize::try_from(n).unwrap_or(usize::MAX).min(self.max_files),
+            },
+            deadline_ms: match deadline_ms {
+                Some(0) | None => self.deadline_ms,
+                Some(n) => n.min(self.deadline_ms),
+            },
+        }
+    }
+}
+
 impl Cli {
     /// Built-in caps, used when neither the CLI nor `[limits]` names one.
     ///
@@ -4879,6 +4967,19 @@ impl Cli {
     /// module is compiled into every native build while that one is not, so
     /// a single definition can serve both.
     pub const DEFAULT_MCP_MAX_WAIT_SECONDS: u64 = 60;
+    /// Default ceiling on the files one `find_in_captures` sweep opens — see
+    /// [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// Twenty answers "which of the recent ones" without turning one tool
+    /// call into a read of a spool that may hold months. Lives here for the
+    /// reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records.
+    pub const DEFAULT_MCP_SWEEP_MAX_FILES: u64 = 20;
+    /// Default ceiling on the wall-clock one `find_in_captures` sweep spends,
+    /// in milliseconds — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// Lives here for the reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`]
+    /// records.
+    pub const DEFAULT_MCP_SWEEP_DEADLINE_MS: u64 = 30_000;
     /// Default color mode. `auto` means "color when stdout is a terminal".
     pub const DEFAULT_COLOR: &'static str = "auto";
     /// Default scanner-kill response code. `200 OK` is the conventional default: it
@@ -5099,6 +5200,31 @@ impl Cli {
             .mcp_max_wait_seconds
             .or(config.limits.mcp_max_wait_seconds)
             .unwrap_or(Self::DEFAULT_MCP_MAX_WAIT_SECONDS)
+    }
+
+    /// MCP sweep ceilings: `--mcp-sweep-max-files` / `--mcp-sweep-deadline-ms`,
+    /// else `[limits] mcp_sweep_max_files` / `mcp_sweep_deadline_ms`, else the
+    /// defaults. See [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The ceilings `find_in_captures` clamps a per-call request to, with
+    /// [`McpSweepLimits::clamp`].
+    #[must_use]
+    pub fn mcp_sweep_limits(&self, config: &crate::config::Config) -> McpSweepLimits {
+        let files = self
+            .mcp_args
+            .mcp_sweep_max_files
+            .or(config.limits.mcp_sweep_max_files)
+            .unwrap_or(Self::DEFAULT_MCP_SWEEP_MAX_FILES);
+        McpSweepLimits {
+            // Bounded by `MAX_MCP_SWEEP_MAX_FILES`, which is `u32::MAX`, so
+            // this fits `usize` on every target sipnab builds for.
+            max_files: usize::try_from(files).unwrap_or(usize::MAX),
+            deadline_ms: self
+                .mcp_args
+                .mcp_sweep_deadline_ms
+                .or(config.limits.mcp_sweep_deadline_ms)
+                .unwrap_or(Self::DEFAULT_MCP_SWEEP_DEADLINE_MS),
+        }
     }
 
     /// Per-stream loss-log retention: `--max-lost-sequences`, else
@@ -10590,6 +10716,28 @@ mod tests {
                 resolve: Cli::mcp_findings_cap,
                 requires: &[],
             },
+            Case {
+                key: "mcp_sweep_max_files",
+                flag: "--mcp-sweep-max-files",
+                set_key: |l| l.mcp_sweep_max_files = Some(40),
+                key_value: 40,
+                flag_value: "60",
+                flag_number: 60,
+                shipped: Cli::DEFAULT_MCP_SWEEP_MAX_FILES,
+                resolve: |c, cfg| c.mcp_sweep_limits(cfg).max_files as u64,
+                requires: &[],
+            },
+            Case {
+                key: "mcp_sweep_deadline_ms",
+                flag: "--mcp-sweep-deadline-ms",
+                set_key: |l| l.mcp_sweep_deadline_ms = Some(120_000),
+                key_value: 120_000,
+                flag_value: "5000",
+                flag_number: 5_000,
+                shipped: Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS,
+                resolve: |c, cfg| c.mcp_sweep_limits(cfg).deadline_ms,
+                requires: &[],
+            },
         ];
 
         for c in &cases {
@@ -10749,6 +10897,8 @@ mod tests {
             "--max-gunzip-bytes",
             "--mcp-max-body-bytes",
             "--mcp-max-wait-seconds",
+            "--mcp-sweep-max-files",
+            "--mcp-sweep-deadline-ms",
             // `--api-rate-limit-per-peer` is deliberately absent: 0 DISABLES
             // that cap, the reading every per-peer rate knob here carries.
             "--api-max-rows",
@@ -10779,6 +10929,109 @@ mod tests {
                 "{flag} must refuse 0 and say so: {err}"
             );
         }
+        Ok(())
+    }
+
+    /// Neither sweep ceiling can be raised past its documented maximum from
+    /// the command line, and the maximum itself is accepted.
+    ///
+    /// The file is refused by `LimitsConfig::validate` from the same
+    /// constants; this is the half that keeps the flag from being the lenient
+    /// way in.
+    #[test]
+    fn clap_refuses_a_sweep_ceiling_above_its_maximum() -> Result<(), TestError> {
+        for (flag, max) in [
+            (
+                "--mcp-sweep-max-files",
+                crate::config::MAX_MCP_SWEEP_MAX_FILES,
+            ),
+            (
+                "--mcp-sweep-deadline-ms",
+                crate::config::MAX_MCP_SWEEP_DEADLINE_MS,
+            ),
+        ] {
+            let over = (max + 1).to_string();
+            assert!(
+                Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, &over]).is_err(),
+                "{flag} {over} must be refused by clap, as the file is"
+            );
+            let at = max.to_string();
+            assert!(
+                Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, &at]).is_ok(),
+                "{flag} {at} is the documented maximum and must be accepted"
+            );
+        }
+        Ok(())
+    }
+
+    /// `--mcp-sweep-deadline-ms` accepts twelve hours and refuses one
+    /// millisecond more. Numbers rather than the constant, so a change to the
+    /// constant is a change this test sees.
+    #[test]
+    fn the_sweep_deadline_flag_accepts_twelve_hours_and_no_more() -> Result<(), TestError> {
+        let flag = "--mcp-sweep-deadline-ms";
+        let at = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "43200000"])
+            .map_err(|e| format!("43200000 ms is twelve hours and must be accepted: {e}"))?;
+        assert_eq!(at.mcp_args.mcp_sweep_deadline_ms, Some(43_200_000));
+        assert!(
+            Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "43200001"]).is_err(),
+            "43200001 ms is past twelve hours and must be refused"
+        );
+        Ok(())
+    }
+
+    /// The shipped sweep ceilings are 20 files and 30000 ms, the figures the
+    /// tool enforced before they were settings.
+    #[test]
+    fn the_shipped_sweep_ceilings_are_twenty_files_and_thirty_seconds() -> Result<(), TestError> {
+        assert_eq!(Cli::DEFAULT_MCP_SWEEP_MAX_FILES, 20);
+        assert_eq!(Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS, 30_000);
+        assert_eq!(
+            McpSweepLimits::default(),
+            McpSweepLimits {
+                max_files: 20,
+                deadline_ms: 30_000,
+            }
+        );
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        assert_eq!(
+            bare.mcp_sweep_limits(&crate::config::Config::default()),
+            McpSweepLimits::default(),
+            "with nothing set, the resolver must report the shipped ceilings"
+        );
+        Ok(())
+    }
+
+    /// A per-call `max_files` / `deadline_ms` is clamped to the CONFIGURED
+    /// ceiling, a smaller one is honored, and `0` or absent means the
+    /// configured value.
+    ///
+    /// The ceiling here is above the shipped default on purpose: clamping to
+    /// the constant instead of the setting is the defect this replaces, and
+    /// it would pass a test whose ceiling equals the default.
+    #[test]
+    fn a_per_call_sweep_limit_is_clamped_to_the_configured_ceiling() -> Result<(), TestError> {
+        let ceiling = McpSweepLimits {
+            max_files: 40,
+            deadline_ms: 60_000,
+        };
+        assert_eq!(ceiling.clamp(Some(100), Some(90_000)), ceiling, "above");
+        assert_eq!(
+            ceiling.clamp(Some(30), Some(45_000)),
+            McpSweepLimits {
+                max_files: 30,
+                deadline_ms: 45_000,
+            },
+            "a request inside the ceiling is honored, including one above the \
+             shipped default"
+        );
+        assert_eq!(ceiling.clamp(Some(0), Some(0)), ceiling, "0 = configured");
+        assert_eq!(ceiling.clamp(None, None), ceiling, "absent = configured");
+        assert_eq!(
+            ceiling.clamp(Some(40), Some(60_000)),
+            ceiling,
+            "exactly the ceiling"
+        );
         Ok(())
     }
 

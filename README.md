@@ -184,7 +184,7 @@ client (`--mcp-transport http` serves remote agents instead):
 sipnab --mcp -N -I sip-problem-call.pcap --mcp-tools core
 ```
 
-The server offers 70 tools, and every tool costs the agent context before it
+The server offers 72 tools, and every tool costs the agent context before it
 asks anything. `--mcp-tools core` loads a small set that still answers a whole
 call. Named bundles such as `signaling` and `media`, and bundles of your own in
 the config file, load other sets
@@ -279,7 +279,7 @@ Next: [REST API and metrics](docs/rest-api.md),
   the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and
   splitting; reads directories, tar archives and password-protected ZIP and 7z
-- **MCP server.** 70 tools over stdio or HTTP: 57 only read, and the 13 that
+- **MCP server.** 72 tools over stdio or HTTP: 59 only read, and the 13 that
   write each say what they change. File writes stay inside `--mcp-file-root`;
   swapping the capture, shutting the server down, recording findings and
   asking TFPS to ban a source stay off until you enable them

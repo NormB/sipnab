@@ -77,9 +77,34 @@ pub fn read_into_stores(
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
 ) -> ReadOutcome {
+    read_into_stores_until(path, opts, dialog_store, stream_store, progress, &|| None)
+}
+
+/// [`read_into_stores`], stopping before the next packet once `stop` names a
+/// reason.
+///
+/// `stop` is asked before every packet, beside the SIGTERM check the reader
+/// already makes, so a caller with its own reason to end a read (a deadline, a
+/// cancel) ends it mid-file rather than after the file. A read `stop` ended
+/// reports the reason as its error and `stopped_early`, exactly as a shutdown
+/// does. It is asked often, so it must be cheap: an atomic load and a clock
+/// read are the intended cost.
+///
+/// # Returns
+///
+/// The same [`ReadOutcome`] [`read_into_stores`] returns.
+#[must_use]
+pub fn read_into_stores_until(
+    path: &Path,
+    opts: &crate::pipeline::PipelineOptions,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &AtomicU64,
+    stop: &dyn Fn() -> Option<String>,
+) -> ReadOutcome {
     let holds_members = super::archive::holds_members(path);
     if !holds_members {
-        return read_one(path, opts, dialog_store, stream_store, progress);
+        return read_one(path, opts, dialog_store, stream_store, progress, stop);
     }
     let set = match super::input_set::resolve_set(
         &[path.display().to_string()],
@@ -108,6 +133,7 @@ pub fn read_into_stores(
             dialog_store,
             stream_store,
             &member_progress,
+            stop,
         );
         total.packets = before + one.packets;
         progress.store(total.packets, Ordering::Relaxed);
@@ -127,6 +153,7 @@ fn read_one(
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
+    stop: &dyn Fn() -> Option<String>,
 ) -> ReadOutcome {
     // The guard owns any decompressed temp file (libpcap cannot read gzip) and
     // must outlive the read loop, so keep it bound for the whole function.
@@ -152,6 +179,13 @@ fn read_one(
             return ReadOutcome {
                 packets,
                 error: Some("shutdown requested during the load".to_string()),
+                stopped_early: true,
+            };
+        }
+        if let Some(reason) = stop() {
+            return ReadOutcome {
+                packets,
+                error: Some(reason),
                 stopped_early: true,
             };
         }
@@ -334,6 +368,49 @@ mod tests {
             "a file read to EOF did not stop early"
         );
         assert!(!ds.read().is_empty(), "the read produced dialogs");
+        Ok(())
+    }
+
+    /// A caller's stop reason ends the read before the next packet, mid-file,
+    /// and is reported as the read's error with `stopped_early`.
+    ///
+    /// The stop is asked to fire on its fourth look, so exactly three packets
+    /// are read from a fixture that holds many more: a reader that consulted
+    /// it only between files would read the whole file and report no error.
+    #[test]
+    fn a_stop_reason_ends_the_read_before_the_next_packet() -> Result<(), TestError> {
+        let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pcap-samples/sip-rtp-g711.pcap");
+        let whole = read_into_stores(
+            &path,
+            &PipelineOptions::default(),
+            &ds,
+            &ss,
+            &AtomicU64::new(0),
+        );
+        assert!(
+            whole.packets > 3,
+            "the fixture holds more than three packets"
+        );
+
+        let looks = AtomicU64::new(0);
+        let stop =
+            || (looks.fetch_add(1, Ordering::Relaxed) >= 3).then(|| "asked to stop".to_string());
+        let progress = AtomicU64::new(0);
+        let outcome = read_into_stores_until(
+            &path,
+            &PipelineOptions::default(),
+            &Arc::new(RwLock::new(DialogStore::new(1000, false))),
+            &Arc::new(RwLock::new(StreamStore::new(1000))),
+            &progress,
+            &stop,
+        );
+        assert_eq!(outcome.packets, 3, "three looks passed, the fourth stopped");
+        assert_eq!(progress.load(Ordering::Relaxed), 3);
+        assert_eq!(outcome.error.as_deref(), Some("asked to stop"));
+        assert!(outcome.stopped_early, "a stopped read is a partial read");
         Ok(())
     }
 

@@ -3556,9 +3556,14 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // ban sipnab placed, or every one it holds. It changes another system, so
     // the split stays 57 read-only, now of 70, and the write-capable tools
     // become thirteen.
+    // 70 -> 72 by `find_in_captures_status` and `cancel_find_in_captures`,
+    // which poll and stop the background job a `find_in_captures` sweep now
+    // is. Both change no capture, store, file or other system, so the split
+    // moves to 59 read-only of 72 and the thirteen write-capable tools are
+    // unchanged.
     assert_eq!(
         registered.len(),
-        70,
+        72,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4778,7 +4783,14 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // separator rows per file: docs/config-reference.md 1 (`[vcon_forward]`),
     // docs/vcon.md 1 (the store kinds), and the same 1, 1 in their site
     // copies.
-    const EXPECTED_TABLES: usize = 1076;
+    // 1076 -> 1078: the `find_in_captures` ceilings table. Attributed by
+    // counting added separator rows per file: docs/mcp-tools.md 1, and the
+    // same 1 in its site copy website/content/docs/mcp-tools.md.
+    // 1078 -> 1084: the `find_in_captures` job bounds table and the parameter
+    // tables of `find_in_captures_status` and `cancel_find_in_captures`.
+    // Attributed by counting added separator rows per file: docs/mcp-tools.md
+    // 3, and the same 3 in website/content/docs/mcp-tools.md.
+    const EXPECTED_TABLES: usize = 1084;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

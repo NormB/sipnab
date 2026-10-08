@@ -159,7 +159,7 @@ arguments, and calls one by hand so you can read the answer — what
 <https://sipnab.com/api-reference/> does for the [REST API](@/docs/api.md), for
 this surface instead.
 
-sipnab registers 70 MCP tools, which is more than anyone
+sipnab registers 72 MCP tools, which is more than anyone
 reads in a table, and the Tools tab is the fastest way to find the one you
 want.
 

@@ -720,6 +720,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "aggregate_dialogs",
         "await_condition",
         "build_evidence_package",
+        "cancel_find_in_captures",
         "capture_health",
         "capture_status",
         "check_codec_negotiation",
@@ -737,6 +738,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "export_capture",
         "find_correlated",
         "find_in_captures",
+        "find_in_captures_status",
         "find_problems",
         "generate_fail2ban_rule",
         "generate_repro",
@@ -798,7 +800,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 67 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    let want = 69 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
