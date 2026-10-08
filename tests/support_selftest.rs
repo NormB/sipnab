@@ -396,20 +396,32 @@ fn production_source_line_count_is_the_cut_index() -> Result<(), TestError> {
     Ok(())
 }
 
-/// While the guard lives, a connection to its port is refused: nothing
-/// listens there.
+/// While the guard lives, a connection to its port never succeeds: nothing
+/// listens there. Linux refuses it at once; macOS leaves the SYN unanswered,
+/// so there the connect is bounded and must end in a timeout or a refusal.
 #[test]
 fn a_refused_port_refuses_a_connection() -> Result<(), TestError> {
     let held = ports::refused_tcp_port()?;
-    let err = std::net::TcpStream::connect(held.addr())
+    let err = std::net::TcpStream::connect_timeout(&held.addr(), std::time::Duration::from_secs(3))
         .err()
         .ok_or("a connection to the held port must not succeed")?;
-    assert_eq!(
-        err.kind(),
-        std::io::ErrorKind::ConnectionRefused,
-        "connect to {}: {err}",
-        held.addr()
-    );
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::ConnectionRefused,
+            "connect to {}: {err}",
+            held.addr()
+        );
+    } else {
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+            ),
+            "connect to {}: {err}",
+            held.addr()
+        );
+    }
     Ok(())
 }
 

@@ -10,12 +10,20 @@
 //! or passes for the wrong reason. A parallel test once took a released HEP
 //! port the same way.
 //!
-//! [`refused_tcp_port`] keeps the socket BOUND and never calls `listen`.
-//! Linux answers a SYN to a bound, non-listening socket with a reset, so the
-//! connect fails with `ConnectionRefused`; the socket sets neither
-//! `SO_REUSEADDR` nor `SO_REUSEPORT`, so no other socket can bind the number
-//! while the guard lives. `std` cannot do this (`TcpListener::bind` always
-//! listens), which is why it uses `socket2`.
+//! [`refused_tcp_port`] keeps the socket BOUND and never calls `listen`. The
+//! socket sets neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so no other socket
+//! can bind the number while the guard lives, on every platform. What a
+//! connect to it does differs by platform:
+//!
+//! * Linux answers a SYN to a bound, non-listening socket with a reset, so the
+//!   connect fails at once with `ConnectionRefused`.
+//! * macOS drops the SYN without answering, so the connect never completes and
+//!   ends in a timeout (measured on the macos-latest CI runner: `Operation
+//!   timed out`, os error 60). The connection still never succeeds, but a
+//!   caller that needs a prompt failure must bound its own connect time.
+//!
+//! `std` cannot do this (`TcpListener::bind` always listens), which is why it
+//! uses `socket2`.
 #![allow(dead_code)]
 
 use std::net::SocketAddr;
@@ -25,7 +33,8 @@ use socket2::{Domain, Socket, Type};
 /// The error a fallible helper here returns.
 pub type TestError = Box<dyn std::error::Error>;
 
-/// A TCP port on `127.0.0.1` that refuses connections while this value lives.
+/// A TCP port on `127.0.0.1` that never accepts a connection while this value
+/// lives: refused at once on Linux, unanswered on macOS (see the module docs).
 ///
 /// Hold it for the whole test body: dropping it releases the number.
 pub struct RefusedPort {
