@@ -35,5 +35,8 @@ jobs:
           echo "cargo:  $(cargo --version 2>&1 || echo MISSING)"
           echo "clang:  $(clang --version 2>&1 | head -1 || echo MISSING)"
           echo "libpcap: $(pkg-config --modversion libpcap 2>&1 || echo MISSING)"
+      # The same persistent per-runner target directory the other self-hosted
+      # jobs use, so this proves that path works too.
+      - uses: ./.github/actions/runner-target
       - name: Type-check the default surface
         run: cargo check --features native

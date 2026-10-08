@@ -37,8 +37,10 @@ jobs:
     # failure -- concurrent `apt-get install` racing for a machine-wide lock.
     # Hosted runners remove the constraint instead of widening it.
     #
-    # The self-hosted runner keeps exactly the two jobs that genuinely need THAT box:
-    # bench.yml (its throughput baseline is a property of that hardware) and
+    # The self-hosted runners keep the jobs that need that box or are heavy and
+    # repeatable: this file's feature matrix (`features`, moved there by Norm
+    # on 2026-09-29), bench.yml (its throughput baseline is a property of that
+    # hardware), reproducible.yml (two release builds) and
     # self-hosted-smoke.yml (which exists to prove the box works).
     #
     # macOS cannot run on arm64 Linux, so it stays macos-latest. `matrix.os`
@@ -270,7 +272,7 @@ jobs:
           esac
 
           actual=$(awk -F'[ ;]+' '/^test result/ { p += $4 } END { print p }' test-output.txt)
-          [ -n "$actual" ] && [ "$actual" -gt 0 ] || { echo "could not count tests"; exit 1; }
+          if ! { [ -n "$actual" ] && [ "$actual" -gt 0 ]; }; then echo "could not count tests"; exit 1; fi
 
           echo "published_test_count=$published actual=$actual"
           if [ "$published" != "$actual" ]; then
@@ -795,9 +797,15 @@ jobs:
           packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
-      # A self-hosted runner keeps its workspace, and with it `target`, between
-      # runs, and its ~/.cargo is the machine's own: nothing to restore, and
-      # nothing that should be uploaded.
+      # checkout's clean (`git clean -ffdx`) deletes an in-workspace `target`
+      # at the start of every job, on a self-hosted runner too. So on a
+      # self-hosted runner the build directory lives outside the workspace,
+      # one per runner, bounded in size: see the action for where and why.
+      # It does nothing on a hosted runner.
+      - uses: ./.github/actions/runner-target
+      # The self-hosted runner's ~/.cargo is the machine's own and its target
+      # directory is the one above: nothing to restore, and nothing that
+      # should be uploaded.
       - if: runner.environment == 'github-hosted'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:

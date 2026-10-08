@@ -819,7 +819,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 484 -> 487: docs/internals/build-ci-release.md's commit-msg paragraph
     // links .githooks/commit-msg, scripts/check-message-identity.sh and
     // tests/private_identity_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 487;
+    // 487 -> 490: docs/internals/build-ci-release.md's self-hosted target
+    // directory paragraph links .github/actions/runner-target/action.yml,
+    // scripts/ci-target-cap.sh and tests/ci_runner_target_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 490;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
