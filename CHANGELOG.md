@@ -108,6 +108,15 @@ entry that carries them.
 
 ### Fixed
 
+- **`-H` over UDP no longer loses a datagram to an earlier one's ICMP
+  error.** The sender used a connected UDP socket, so the ICMP
+  port-unreachable answering a datagram sent to a port with no listener made
+  the next send fail with `ECONNREFUSED`, and sipnab lost that datagram: `sipnab
+  -N -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19063` with nothing bound
+  reported "4 packet(s) sent, 3 failed (write 3)". It now sends each datagram
+  from an unconnected socket with `send_to`, and the same run to a port with
+  no listener reports 7 sent and none failed. TCP and TLS export work as
+  before.
 - **A HEP packet that carries no time keeps the receive or capture time.**
   A HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as
   1970-01-01T00:00:00Z, and a HEP v2 packet took the time sipnab parsed it,

@@ -3592,8 +3592,8 @@ pub fn file_export_notice(
 /// finds two permits, not one, and neither is reachable without proving
 /// something first.
 pub struct HepSender {
-    /// Where finished packets go: a connected UDP socket, a TCP stream, or a
-    /// TLS stream over one. Behind a mutex because a stream sink is `&mut` —
+    /// Where finished packets go: an unconnected UDP socket that addresses
+    /// each datagram, a TCP stream, or a TLS stream over one. Behind a mutex because a stream sink is `&mut` —
     /// a half-written packet interleaved with another would desynchronize the
     /// collector's framing for the rest of the connection — while the packet
     /// path holds only `&self`.
@@ -3665,7 +3665,7 @@ pub struct HepSenderOpts<'a> {
 /// not turn the forwarding path into a spin.
 ///
 /// The first connection is made here so an unreachable collector is an error
-/// the operator sees at startup, exactly as the connected UDP socket gives
+/// the operator sees at startup, as the UDP sender's startup connect gives
 /// them. `TCP_NODELAY` is set because these are small packets whose whole
 /// value is timeliness; Nagle would hold a SIP message back waiting for
 /// company.
@@ -3937,15 +3937,24 @@ impl HepSender {
                 let socket = UdpSocket::bind(local).with_context(|| {
                     format!("Failed to bind ephemeral UDP socket ({local}) for HEP sender")
                 })?;
-                socket
-                    .connect(dest)
+                // A destination with no route is still refused at startup:
+                // a second socket connects to it (no packet is sent) and is
+                // dropped.
+                UdpSocket::bind(local)
+                    .and_then(|probe| probe.connect(dest))
                     .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
+                // Unconnected, each datagram addressed with `send_to`. On a
+                // connected UDP socket the kernel reports an ICMP
+                // port-unreachable on the NEXT send, which then fails with
+                // ECONNREFUSED and that datagram is lost; an unconnected
+                // socket is not told, so no datagram is dropped for an
+                // earlier one's error.
                 let bound = socket
                     .local_addr()
                     .with_context(|| "Failed to read the local address of the HEP UDP sender")?;
                 let sink: HepSink = Box::new(move |pkt: &[u8]| {
                     socket
-                        .send(pkt)
+                        .send_to(pkt, dest)
                         .map(|_| Delivery::Direct)
                         .map_err(|e| SinkFailure::at(super::hep_export::ExportFailure::Write, e))
                 });
@@ -4025,7 +4034,7 @@ impl HepSender {
     ///
     /// Builds the HEP v3 envelope from the SIP message's network metadata
     /// (addresses, ports, timestamp) and the raw SIP bytes, then sends it
-    /// over the connected UDP socket.
+    /// through the sender's transport.
     ///
     /// # Errors
     ///
@@ -4033,8 +4042,9 @@ impl HepSender {
     ///
     /// # Side effects
     ///
-    /// Transmits one datagram on the connected UDP socket; in `Hmac` auth
-    /// mode also reads the clock and increments the atomic nonce counter.
+    /// Transmits one packet through the sender's transport (one datagram
+    /// over UDP); in `Hmac` auth mode also reads the clock and increments the
+    /// atomic nonce counter.
     pub fn send(&self, msg: &crate::sip::message::SipMessage) -> Result<()> {
         let endpoint = HepEndpoint {
             src_addr: msg.src_addr,
@@ -4167,7 +4177,8 @@ impl HepSender {
     ///
     /// # Side effects
     ///
-    /// Transmits one datagram on the connected UDP socket.
+    /// Writes one packet to the sink: one datagram on the UDP socket, or a
+    /// write to the TCP or TLS connection.
     fn transmit(&self, _permit: &HepExportPermit, pkt: &[u8]) -> Result<()> {
         let mut sink = self.sink.lock();
         // Counted here, where every packet passes, so no transport can add a
@@ -6385,6 +6396,66 @@ mod tests {
     /// A SIP request as the wire carries it.
     const OPTIONS: &[u8] = b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
 
+    /// A UDP exporter aimed at a port with no listener loses no later
+    /// datagram to the ICMP port-unreachable the kernel gets back
+    /// (HEP-SEND1). The sender used a connected socket, so each ICMP error
+    /// was reported on the NEXT send, which failed with ECONNREFUSED and
+    /// dropped that datagram: `-H` to a closed loopback port reported
+    /// "4 packet(s) sent, 3 failed (write 3)", and the first datagram after
+    /// a collector started was lost the same way.
+    #[test]
+    fn a_udp_exporter_loses_nothing_to_a_closed_port() -> Result<(), TestError> {
+        const EACH: usize = 4;
+        // A loopback port with nothing bound to it: bound to learn a free
+        // number, then closed.
+        let dest = UdpSocket::bind("127.0.0.1:0")
+            .map_err(|e| format!("reserve a port: {e:?}"))?
+            .local_addr()
+            .map_err(|e| format!("reserved addr: {e:?}"))?;
+        let sender = HepSender::new(&dest.to_string(), 7, None, HepAuthMode::Plain)
+            .map_err(|e| format!("build sender: {e:?}"))?;
+        let pp = captured(OPTIONS, TransportProto::Udp, 5060);
+        let mut errors = Vec::new();
+        for _ in 0..EACH {
+            if let Err(e) = sender.forward_parsed(&pp) {
+                errors.push(format!("{e:#}"));
+            }
+        }
+
+        // The collector starts on that port, and every later datagram reaches it.
+        let collector = UdpSocket::bind(dest).map_err(|e| format!("bind collector: {e:?}"))?;
+        collector
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        for _ in 0..EACH {
+            if let Err(e) = sender.forward_parsed(&pp) {
+                errors.push(format!("{e:#}"));
+            }
+        }
+        let mut buf = [0u8; 2048];
+        let mut received = 0;
+        while received < EACH {
+            match collector.recv(&mut buf) {
+                Ok(_) => received += 1,
+                Err(_) => break,
+            }
+        }
+
+        let counted = sender.counters().snapshot();
+        assert!(errors.is_empty(), "no send may fail: {errors:?}");
+        assert_eq!(
+            counted.sent,
+            2 * EACH as u64,
+            "every datagram counts as sent"
+        );
+        assert_eq!(counted.failed(), 0, "none counts as failed");
+        assert_eq!(
+            received, EACH,
+            "every datagram sent after the collector started reaches it"
+        );
+        Ok(())
+    }
+
     /// The failure this shipped with. `-d eth0 --hep-send homer:9060` on a
     /// TCP trunk: the batch loop re-parsed every message with a literal
     /// `TransportProto::Udp` before handing it to the sender, so the IP
@@ -7006,7 +7077,7 @@ mod tests {
         // that this compiles is the assertion.
         sender
             .transmit(&sender.permit, b"HEP3\x00\x06")
-            .map_err(|e| format!("a connected loopback socket must accept a datagram: {e:?}"))?;
+            .map_err(|e| format!("a loopback UDP sender must accept a datagram: {e:?}"))?;
         Ok(())
     }
 
