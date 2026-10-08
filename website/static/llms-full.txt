@@ -41658,8 +41658,17 @@ message written in an editor, and `git commit -m` or `-F` keeps them. Checking
 stops at the scissors line that `git commit -v` writes above the diff. One gap
 remains: git removes the lines below a scissors line only when you edit the
 message in an editor, so a scissors line typed into a `git commit -m` message
-keeps the lines after it in the commit, and they are not checked. The hook
-reuses the test binary that `pre-commit` built, so it does not compile anything.
+keeps the lines after it in the commit, and the hook does not check them. The
+hook reuses the test binary that `pre-commit` built, so it does not compile
+anything. CI checks the same rules again on every pull request
+(`.github/workflows/pr-text.yml`): the title and every commit message in the
+pull request, read in full, scissors line included, and the description as an
+advisory warning. It runs when you open the pull request, on every push, and on
+every edit of the title or description. The workflow runs on
+`pull_request_target`, so the copies of the workflow, the script and the test
+on `main` judge your pull request, and CI reads your pull request's commits as
+data, never checking them out or running them. A change you make to any of
+those three files takes effect only after it reaches `main`.
 
 **`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
@@ -41735,9 +41744,14 @@ never by the machine's name.
 
 Commit messages and pull request descriptions become public too, and they are
 not tracked files, so the scan above does not read them. The `commit-msg`
-hook checks each commit message. A pull request description has no hook, and
-a squash merge makes the pull request's title and description the commit
-message on `main`. Check the description before you post it:
+hook checks each commit message. A squash merge here takes the commit title
+from the commit when the branch has one commit and from the pull request title
+otherwise, and the commit body from the branch's commit messages. CI checks the
+title and each commit message, and a finding fails the check. The pull request
+description does not reach `main`: it stays on the pull request page, where it
+is public from the moment you open the pull request. CI reports a finding in
+it as a warning, but by then the text is already public. Check the description
+before you post it:
 
 ```bash
 scripts/check-message-identity.sh pr-body.md
@@ -44142,7 +44156,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The sixteen workflows
+## The seventeen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -44159,6 +44173,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
+| `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the BASE commit, so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
@@ -44538,7 +44553,8 @@ on the commit message, which runs the private-identity rules of
 [`tests/private_identity_test.rs`](../../tests/private_identity_test.rs) over
 each line, and skips with `NOT CHECKED` on a branch that does not carry the
 script. [CONTRIBUTING.md](../../CONTRIBUTING.md#git-hooks) describes what it
-checks and how to check a pull request description the same way.
+checks, what `pr-text.yml` checks again in CI, and how to check a pull request
+description the same way.
 
 Two of the thirteen cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8

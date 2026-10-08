@@ -1,0 +1,227 @@
+name: Pull request text
+
+# Checks the text a pull request publishes for the lab's private identities,
+# with scripts/check-message-identity.sh: the script the commit-msg hook runs,
+# and the same rules from tests/private_identity_test.rs.
+#
+# What reaches main. This repository's squash merges take the commit title
+# from the commit when the branch has one commit and from the pull request
+# title otherwise (squash_merge_commit_title = COMMIT_OR_PR_TITLE), and the
+# body from the branch's commit messages (squash_merge_commit_message =
+# COMMIT_MESSAGES). A rebase merge keeps the commit messages; a merge commit
+# carries the branch name and the pull request title. The commit-msg hook
+# checks a message only on the machine that wrote it, and only when that
+# machine runs the hook, so the `commits` job reads every message again from
+# the range itself. That job is the one to require.
+#
+# What does not reach main. The pull request description stays on the pull
+# request page, and it is public from the moment the pull request is opened.
+# A failed check cannot unpublish it, so the `description` job reports a
+# finding as a warning and passes.
+#
+# A workflow of its own, not jobs in ci.yml, for two reasons:
+#
+#   - It must run on `edited`, because the title can change after the last
+#     push. ci.yml runs on the default pull_request types, and adding `edited`
+#     there would rerun the whole suite on every edit of the text.
+#   - ci.yml's `CI success` job must list every job in that file
+#     (ci_success_gates_every_job), and `CI success` is the check branch
+#     protection requires. Which of these checks is required is decided in
+#     branch protection, by the repository owner.
+#
+# Main's code judges the pull request. The `commits` job is meant to be a
+# required check, so a pull request must not be able to weaken the rule that
+# judges it. On `pull_request`, GitHub runs the workflow file, the script and
+# the test from the pull request itself. On `pull_request_target` it runs the
+# base branch's workflow file, and each job here checks out the base commit,
+# so the script, tests/private_identity_test.rs and Cargo.lock that run are
+# main's. The pull request's commits are fetched as git objects and read with
+# `git rev-list` and `git log`; nothing switches the tree to them, and nothing
+# from them is built or run. Consequences:
+#
+#   - A pull request that changes this file, the script or the test is judged
+#     by main's versions. Its own changes take effect after it is merged.
+#   - The pull request that added this file was not checked by it: main had
+#     no pr-text.yml for pull_request_target to run. The first pull request
+#     opened after that merge is the first one checked.
+#   - `pull_request_target` runs with a write token and with access to
+#     secrets unless the workflow restricts it. This file grants
+#     `contents: read` at the top level, no job widens it, no step reads a
+#     secret, and no step writes a cache: a cache saved from a
+#     pull_request_target run can be restored by a later run on main. The
+#     test target is built from scratch in each job (no features; under a
+#     minute locally).
+#   - refs/pull/N/head exists for a pull request from a fork as well, and the
+#     repository is public, so the fetch needs no credentials.
+#
+# The title, the description and the branch name are written by whoever opens
+# the pull request. `${{ }}` is substituted as text before the shell reads a
+# `run:` script, so any of them placed there would run as code. They, the
+# pull request number and the two commit SHAs reach the shell only through
+# `env:`, where the runner hands them over as values.
+# m12_ci_checks_the_title_and_every_commit_message_in_the_range and
+# m15_ci_runs_mains_code_and_reads_the_pull_request_as_data hold this file to
+# that.
+#
+# Both jobs set SIPNAB_MESSAGE_WHOLE: the text they read is already published
+# as it stands, so a scissors line in it does not end the scan.
+on:
+  # zizmor flags every pull_request_target trigger (dangerous-triggers). It is
+  # used here so that main's code, not the pull request's, runs; the jobs check
+  # out only the base commit and read the pull request as data. See above.
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- runs main's code only; see the header
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+# A push or an edit supersedes the text the previous run was checking.
+concurrency:
+  group: pr-text-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    # The status context branch protection requires is this name. Renaming
+    # it drops the requirement; tests/private_identity_test.rs pins it.
+    name: Commit messages and PR title name no private identity
+    # Hosted, like the Rust jobs in ci.yml: the aarch64 self-hosted runner is
+    # kept for the jobs that need that machine. Not yet observed on this
+    # runner; locally, a cold build of the test target with no features took
+    # under a minute. This bounds a hang, not the work.
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it.
+          persist-credentials: false
+          # The base commit: main's script and test, never the pull request's.
+          ref: ${{ github.event.pull_request.base.sha }}
+          # The whole history, so base..head excludes everything main has.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+
+      - name: Check the title, the branch name and every commit message
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # tests/private_identity_test.rs uses nothing from the crate, so the
+          # test builds with no features: no `full`, and none of the system
+          # libraries it links. The commit-msg hook keeps `full`, to reuse the
+          # binary the pre-commit hook has just built.
+          SIPNAB_MESSAGE_FEATURES: none
+          SIPNAB_MESSAGE_WHOLE: '1'
+        run: |
+          dir="$RUNNER_TEMP/pr-text"
+          mkdir -p "$dir"
+          for v in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! printf '%s\n' "$v" | grep -qxE '[0-9a-f]{40}'; then
+              echo "::error::The event carries no usable commit SHA, so nothing was checked."
+              exit 1
+            fi
+          done
+          if ! printf '%s\n' "$PR_NUMBER" | grep -qxE '[0-9]+'; then
+            echo "::error::The event carries no usable pull request number, so nothing was checked."
+            exit 1
+          fi
+          # The pull request's commits, as objects only: nothing below puts
+          # their tree on disk, builds it or runs it.
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+          if [ "$(git rev-parse --verify 'refs/remotes/pr/head^{commit}')" != "$HEAD_SHA" ]; then
+            echo "::error::The pull request's head is no longer the commit this run was started for; the run for the newer push checks it."
+            exit 1
+          fi
+          failed=0
+          # $1: what is checked, for the log. $2: the file holding it.
+          check() {
+            bash scripts/check-message-identity.sh "$2" > "$dir/out" 2>&1 && rc=0 || rc=$?
+            case $rc in
+            0) echo "OK: $1" ;;
+            1)
+              echo "::error::$1 names a private identity (class and line below)."
+              cat "$dir/out"
+              failed=1
+              ;;
+            *)
+              echo "::error::$1 was NOT CHECKED: the check did not run."
+              cat "$dir/out"
+              failed=1
+              ;;
+            esac
+          }
+          printf '%s\n' "$PR_TITLE" > "$dir/title"
+          check "The pull request title" "$dir/title"
+          printf '%s\n' "$HEAD_REF" > "$dir/branch"
+          check "The branch name" "$dir/branch"
+          # Not a process substitution: a failed rev-list must end the step.
+          git rev-list --reverse "$BASE_SHA..$HEAD_SHA" > "$dir/shas"
+          mapfile -t shas < "$dir/shas"
+          if [ "${#shas[@]}" -eq 0 ]; then
+            echo "::error::No commit between the base and the head, so no commit message was checked."
+            failed=1
+          fi
+          for sha in "${shas[@]}"; do
+            git log -1 --format=%B "$sha" > "$dir/message"
+            check "Commit $(git log -1 --format='%h %s' "$sha")" "$dir/message"
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "Reword each commit named above (git rebase, then push), or edit the title."
+            exit 1
+          fi
+
+  description:
+    name: PR description names no private identity (advisory)
+    # Same runner and bound as the `commits` job.
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it.
+          persist-credentials: false
+          # The base commit: main's script and test, never the pull request's.
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+
+      - name: Check the description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          SIPNAB_MESSAGE_FEATURES: none
+          SIPNAB_MESSAGE_WHOLE: '1'
+        run: |
+          text="$RUNNER_TEMP/pr-description.md"
+          out="$RUNNER_TEMP/pr-description.out"
+          # An empty description is an empty string. Carriage returns from the
+          # web editor are removed so each line reads as a commit message would.
+          printf '%s\n' "$PR_BODY" | tr -d '\r' > "$text"
+          bash scripts/check-message-identity.sh "$text" > "$out" 2>&1 && rc=0 || rc=$?
+          case $rc in
+          0) echo "The description names no private identity." ;;
+          1)
+            cat "$out"
+            grep '^  line ' "$out" | while IFS= read -r finding; do
+              echo "::warning title=Private identity in the PR description::${finding#  }"
+            done
+            {
+              echo "The pull request description names a private identity. It is"
+              echo "already public; edit it to remove the line."
+              echo
+              echo '```'
+              cat "$out"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            ;;
+          *)
+            cat "$out"
+            echo "::warning title=PR description NOT CHECKED::The check did not run."
+            ;;
+          esac

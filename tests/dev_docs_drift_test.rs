@@ -822,7 +822,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 487 -> 490: docs/internals/build-ci-release.md's self-hosted target
     // directory paragraph links .github/actions/runner-target/action.yml,
     // scripts/ci-target-cap.sh and tests/ci_runner_target_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 490;
+    // 490 -> 491: build-ci-release.md's workflow table row for pr-text.yml
+    // links scripts/check-message-identity.sh.
+    const EXPECTED_CODE_LINKS: usize = 491;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1680,9 +1682,25 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 17] = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    const WORDS: [&str; 18] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?

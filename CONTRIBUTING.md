@@ -165,8 +165,17 @@ message written in an editor, and `git commit -m` or `-F` keeps them. Checking
 stops at the scissors line that `git commit -v` writes above the diff. One gap
 remains: git removes the lines below a scissors line only when you edit the
 message in an editor, so a scissors line typed into a `git commit -m` message
-keeps the lines after it in the commit, and they are not checked. The hook
-reuses the test binary that `pre-commit` built, so it does not compile anything.
+keeps the lines after it in the commit, and the hook does not check them. The
+hook reuses the test binary that `pre-commit` built, so it does not compile
+anything. CI checks the same rules again on every pull request
+(`.github/workflows/pr-text.yml`): the title and every commit message in the
+pull request, read in full, scissors line included, and the description as an
+advisory warning. It runs when you open the pull request, on every push, and on
+every edit of the title or description. The workflow runs on
+`pull_request_target`, so the copies of the workflow, the script and the test
+on `main` judge your pull request, and CI reads your pull request's commits as
+data, never checking them out or running them. A change you make to any of
+those three files takes effect only after it reaches `main`.
 
 **`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
@@ -242,9 +251,14 @@ never by the machine's name.
 
 Commit messages and pull request descriptions become public too, and they are
 not tracked files, so the scan above does not read them. The `commit-msg`
-hook checks each commit message. A pull request description has no hook, and
-a squash merge makes the pull request's title and description the commit
-message on `main`. Check the description before you post it:
+hook checks each commit message. A squash merge here takes the commit title
+from the commit when the branch has one commit and from the pull request title
+otherwise, and the commit body from the branch's commit messages. CI checks the
+title and each commit message, and a finding fails the check. The pull request
+description does not reach `main`: it stays on the pull request page, where it
+is public from the moment you open the pull request. CI reports a finding in
+it as a warning, but by then the text is already public. Check the description
+before you post it:
 
 ```bash
 scripts/check-message-identity.sh pr-body.md

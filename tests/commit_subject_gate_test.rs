@@ -56,12 +56,20 @@ const HISTORY_SIGNALS: [&str; 5] = [
 
 /// Files that query history but are NOT asking about the commit under
 /// judgement, each with the reason.
-const NOT_ABOUT_THIS_COMMIT: [(&str, &str); 1] = [(
-    "repo_hygiene_test.rs",
-    "counts commits in OTHER worktrees to decide whether one is abandoned. \
-     The subject is a different checkout, so the answer does not change when \
-     this commit comes into being.",
-)];
+const NOT_ABOUT_THIS_COMMIT: [(&str, &str); 2] = [
+    (
+        "repo_hygiene_test.rs",
+        "counts commits in OTHER worktrees to decide whether one is abandoned. \
+         The subject is a different checkout, so the answer does not change when \
+         this commit comes into being.",
+    ),
+    (
+        "private_identity_test.rs",
+        "runs no git history query. It names `git rev-list` only as text it \
+         requires .github/workflows/pr-text.yml to contain, where CI walks a \
+         pull request's commits.",
+    ),
+];
 
 /// Every test file asking about HEAD-versus-history must run at push time.
 #[test]

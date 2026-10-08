@@ -181,6 +181,7 @@ fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
         "fuzz.yml",
         "osv-scanner.yml",
         "pages.yml",
+        "pr-text.yml",
         "quality.yml",
         "release.yml",
         "reproducible.yml",
