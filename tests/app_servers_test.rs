@@ -763,3 +763,100 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// Start only the MCP HTTP door for `bind`, returning what `start_servers`
+/// returned.
+#[cfg(feature = "mcp-http")]
+fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.mcp_args.mcp = true;
+    cli.mcp_args.mcp_transport = "http".into();
+    cli.mcp_args.mcp_bind = Some(bind.into());
+    let (ds, ss, alerts) = stores();
+    servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
+            api_allowed_hosts: Vec::new(),
+            api_tls: (None, None),
+            mcp_tls: (None, None),
+            metrics_tls: (None, None),
+            mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
+            mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
+            mcp_sweep: sipnab::cli::McpSweepLimits::default(),
+            mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
+            api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
+            max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
+            metrics_max_conn: sipnab::cli::Cli::DEFAULT_METRICS_MAX_CONN,
+            tfps: Default::default(),
+            actions: Default::default(),
+            mcp_max_findings: sipnab::cli::Cli::DEFAULT_MCP_MAX_FINDINGS,
+            api: false,
+            mcp: true,
+            metrics: false,
+            armed_detections: Vec::new(),
+            pipeline_options: Default::default(),
+        },
+        // No transmit permit: none of these cases opens a live source.
+        None,
+        None,
+    )
+}
+
+/// A busy --mcp-bind port fails `start_servers` on the caller's thread, as a
+/// busy --api port does. MCP over HTTP now serves beside the TUI, and once
+/// the TUI owns the terminal a bind error logged from the detached servers
+/// thread is invisible: the operator would get a TUI with no MCP and no
+/// reason.
+#[cfg(feature = "mcp-http")]
+#[test]
+fn mcp_http_port_in_use_is_a_startup_error() -> Result<(), TestError> {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let addr = occupied.local_addr()?;
+    let err = start_mcp_http(&addr.to_string())
+        .err()
+        .ok_or("busy --mcp-bind port must be a startup error, not a detached-thread log")?;
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains(&addr.to_string()),
+        "error must name the address it could not bind: {msg}"
+    );
+    Ok(())
+}
+
+/// A non-loopback --mcp-bind with no credential is refused on the caller's
+/// thread, for the reason above. The rule itself is unchanged.
+#[cfg(feature = "mcp-http")]
+#[test]
+fn mcp_http_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
+    let err = start_mcp_http("0.0.0.0:0")
+        .err()
+        .ok_or("non-loopback MCP without auth must be a startup error")?;
+    let msg = format!("{err:#}");
+    assert!(msg.contains("refuses to start"), "{msg}");
+    Ok(())
+}
+
+/// The handles carry the address the MCP HTTP server bound, and it is
+/// listening when `start_servers` returns. With `--mcp-bind 127.0.0.1:0` the
+/// port is the kernel's choice, and the TUI shows the operator this address
+/// because a TUI run prints no log line to read it from.
+#[cfg(feature = "mcp-http")]
+#[test]
+fn mcp_http_reports_the_address_it_bound() -> Result<(), TestError> {
+    let handles = start_mcp_http("127.0.0.1:0")?.ok_or("MCP selected, so a servers thread")?;
+    let addr = handles
+        .mcp_http_addr
+        .ok_or("the handles must carry the bound MCP HTTP address")?;
+    assert!(addr.ip().is_loopback(), "{addr}");
+    assert_ne!(addr.port(), 0, "the kernel's port, not the requested 0");
+    std::net::TcpStream::connect(addr)?;
+    Ok(())
+}

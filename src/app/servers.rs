@@ -164,6 +164,10 @@ pub struct ServerHandles {
     /// appeared only alongside a listener would mean the exporter consulted
     /// nothing on the runs that have no listener, and those are most of them.
     pub persistence_gate: Arc<crate::output::persistence::PersistenceGate>,
+    /// The address the MCP HTTP server is listening on, when one runs: the
+    /// kernel's port when `--mcp-bind` asked for port 0. The TUI shows it,
+    /// because a TUI run prints no log line to read it from.
+    pub mcp_http_addr: Option<std::net::SocketAddr>,
 }
 
 /// A server prepared on the caller's thread (address parsing and auth
@@ -197,8 +201,11 @@ enum Prepared {
     McpHttp {
         /// The tool server to expose (boxed to keep the variant small).
         server: Box<crate::mcp::SipnabMcp>,
-        /// Parsed `--mcp-bind` address (default `127.0.0.1:8731`).
-        bind: std::net::SocketAddr,
+        /// The `--mcp-bind` listener (default `127.0.0.1:8731`), bound on the
+        /// caller's thread by `bind_http`, for the reason the API listener
+        /// is: a refused or busy bind logged from the servers thread is
+        /// invisible once the TUI owns the terminal.
+        listener: std::net::TcpListener,
         /// Bearer-token verifier configuration for the HTTP guard.
         auth: crate::auth::VerifierConfig,
         /// `--mcp-allowed-host` additions to the Host-header allowlist.
@@ -234,6 +241,19 @@ impl Prepared {
         }
     }
 
+    /// The address an MCP HTTP server is listening on, or `None` for any
+    /// other server. Every variant is named, as in `stdio_done`.
+    fn http_addr(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            #[cfg(feature = "api")]
+            Prepared::Api { .. } => None,
+            #[cfg(feature = "mcp")]
+            Prepared::McpStdio { .. } => None,
+            #[cfg(feature = "mcp-http")]
+            Prepared::McpHttp { listener, .. } => listener.local_addr().ok(),
+        }
+    }
+
     /// Run this server to completion, logging (not propagating) runtime
     /// errors — one failed server must not tear down the others.
     ///
@@ -264,7 +284,7 @@ impl Prepared {
             #[cfg(feature = "mcp-http")]
             Prepared::McpHttp {
                 server,
-                bind,
+                listener,
                 auth,
                 extra_allowed_hosts,
                 resource,
@@ -273,7 +293,7 @@ impl Prepared {
                 "MCP HTTP",
                 crate::mcp::transport::serve_http(
                     *server,
-                    bind,
+                    listener,
                     auth,
                     extra_allowed_hosts,
                     resource,
@@ -387,9 +407,9 @@ pub fn start_actions(
 /// plain-capture path), `Ok(Some(handle))` for the detached servers thread,
 /// and `Err` for configuration errors the caller should treat as fatal:
 /// an invalid `--api`/`--mcp-bind` address, an unknown or uncompiled
-/// `--mcp-transport`, and any API listener failure (port in use,
-/// unauthenticated non-loopback bind, unsupported TLS flags) — the API
-/// listener is bound HERE, synchronously, so these surface before the TUI
+/// `--mcp-transport`, and any API or MCP HTTP listener failure (port in
+/// use, unauthenticated non-loopback bind, unsupported TLS flags) — both
+/// listeners are bound HERE, synchronously, so these surface before the TUI
 /// takes the terminal instead of dying silently on the servers thread.
 ///
 /// `alerts` feeds the MCP `security_findings` tool; a caller without a
@@ -405,7 +425,8 @@ pub fn start_actions(
 ///
 /// # Side effects
 ///
-/// Binds the API TCP listener synchronously on the caller's thread, then
+/// Binds the API and MCP HTTP TCP listeners synchronously on the caller's
+/// thread, then
 /// spawns one detached OS thread named "servers" that builds a
 /// current-thread tokio runtime and drives every prepared server as a task
 /// until each finishes. Auth resolution may read signing-key/token files
@@ -851,10 +872,12 @@ pub fn start_servers(
                     selection.mcp_tls.0.as_deref(),
                     selection.mcp_tls.1.as_deref(),
                 )?;
+                let auth = resolve_mcp_verifier_config(cli);
+                let listener = crate::mcp::transport::bind_http(bind, &auth, tls.is_some())?;
                 Some(Prepared::McpHttp {
                     server: Box::new(new_server()),
-                    bind,
-                    auth: resolve_mcp_verifier_config(cli),
+                    listener,
+                    auth,
                     extra_allowed_hosts: cli.mcp_args.mcp_allowed_host.clone(),
                     resource,
                     tls,
@@ -896,6 +919,7 @@ pub fn start_servers(
     {
         // Read before the servers move onto their thread.
         let mcp_stdio_done = prepared.iter().find_map(Prepared::stdio_done);
+        let mcp_http_addr = prepared.iter().find_map(Prepared::http_addr);
         let handle = std::thread::Builder::new()
             .name("servers".to_string())
             .spawn(move || {
@@ -923,6 +947,7 @@ pub fn start_servers(
             mcp_stdio_done,
             source_exhausted,
             persistence_gate,
+            mcp_http_addr,
         }))
     }
     // gate: unreachable because `Prepared` has no variants without those

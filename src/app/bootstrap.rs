@@ -107,7 +107,7 @@ pub(crate) fn select_run_mode(cli: &Cli) -> RunMode {
         return RunMode::CoresFile;
     }
     #[cfg(feature = "mcp")]
-    let use_tui = !cli.mode_args.no_tui && !cli.mcp_args.mcp;
+    let use_tui = !cli.mode_args.no_tui && !cli.mcp_owns_stdout();
     #[cfg(all(feature = "tui", not(feature = "mcp")))]
     let use_tui = !cli.mode_args.no_tui;
     #[cfg(not(any(feature = "tui", feature = "mcp")))]
@@ -6146,6 +6146,32 @@ mod tests {
         assert!(
             !p.capture_config.immediate_mode,
             "a headless capture must let libpcap pick TPACKET_V3"
+        );
+        Ok(())
+    }
+
+    /// `--mcp --mcp-transport http` runs the TUI; `--mcp` over stdio does not.
+    ///
+    /// The run mode reads the same rule `Cli::normalize` applies, so a `Cli`
+    /// built by hand without `-N` still cannot raise a TUI over the stdio
+    /// JSON-RPC wire.
+    #[cfg(all(feature = "tui", feature = "mcp"))]
+    #[test]
+    fn mcp_over_http_runs_the_tui_and_stdio_does_not() -> Result<(), TestError> {
+        let http =
+            Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", "--mcp-transport", "http"]);
+        assert!(
+            matches!(select_run_mode(&http), RunMode::Tui),
+            "MCP over HTTP must leave the TUI up"
+        );
+        let stdio = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp"]);
+        assert!(matches!(select_run_mode(&stdio), RunMode::Batch));
+        // Built by hand, skipping `normalize`: no `no_tui`, stdio transport.
+        let mut by_hand = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        by_hand.mcp_args.mcp = true;
+        assert!(
+            matches!(select_run_mode(&by_hand), RunMode::Batch),
+            "stdio MCP owns stdout, so it never shares it with the TUI"
         );
         Ok(())
     }

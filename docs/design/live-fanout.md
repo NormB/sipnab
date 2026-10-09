@@ -85,7 +85,7 @@ wrong at once, and one of them is a test that pins the *complement*:
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:6271`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6271)), which asserts the warning
+  ([`bootstrap.rs:6301`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6301)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N

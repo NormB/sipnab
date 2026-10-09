@@ -87,7 +87,8 @@ pub async fn serve_stdio(server: SipnabMcp) -> anyhow::Result<()> {
 }
 
 /// Streamable-HTTP transport: axum router, bearer-token guard middleware,
-/// and the `serve_http` entry point re-exported at the module root.
+/// and the `bind_http` / `serve_http` entry points re-exported at the module
+/// root.
 #[cfg(feature = "mcp-http")]
 mod http {
     use std::net::SocketAddr;
@@ -515,57 +516,98 @@ mod http {
         .map(Some)
     }
 
-    /// Run an MCP server over Streamable HTTP. Binds the listener inside the
-    /// caller's tokio runtime, mounts `/mcp` plus `/health`, applies the
-    /// bearer-token guard middleware, and serves until SIGINT/SIGTERM trips
-    /// the shutdown flag.
+    /// Apply the bind policy and bind the MCP HTTP listener, on the caller's
+    /// thread.
+    ///
+    /// Separate from [`serve_http`] so a refused or busy bind is a startup
+    /// error the operator reads before anything else starts. Bound inside the
+    /// servers thread, it was logged from there, and with MCP over HTTP now
+    /// serving beside the TUI that log line is never seen: the operator gets
+    /// a TUI with no MCP and no reason. The REST API binds the same way, in
+    /// `crate::output::api::prepare_listener`.
+    ///
+    /// # Arguments
+    ///
+    /// * `bind` — socket address to listen on (default `127.0.0.1:8731`).
+    /// * `auth_config` — the bearer guard's configuration; unconfigured auth
+    ///   is accepted only on a loopback bind.
+    /// * `serves_tls` — whether [`serve_http`] will be handed a TLS
+    ///   configuration, which decides the plain-HTTP warning.
+    ///
+    /// # Errors
+    ///
+    /// The bind is non-loopback with no auth configured, or the listener
+    /// cannot bind or be made non-blocking. The message names the address.
+    ///
+    /// # Side effects
+    ///
+    /// Binds a TCP listener; logs a warning for a non-loopback bind without
+    /// TLS.
+    pub fn bind_http(
+        bind: SocketAddr,
+        auth_config: &VerifierConfig,
+        serves_tls: bool,
+    ) -> anyhow::Result<std::net::TcpListener> {
+        refuse_unsafe_bind(bind, auth_config, serves_tls)?;
+        let listener = std::net::TcpListener::bind(bind)
+            .map_err(|e| anyhow::anyhow!("MCP HTTP cannot bind {bind}: {e}"))?;
+        // tokio's `from_std` requires the listener to be non-blocking already.
+        listener.set_nonblocking(true).map_err(|e| {
+            anyhow::anyhow!("MCP HTTP cannot configure the listener on {bind}: {e}")
+        })?;
+        Ok(listener)
+    }
+
+    /// Run an MCP server over Streamable HTTP on a listener from
+    /// [`bind_http`]: mounts `/mcp` plus `/health`, applies the bearer-token
+    /// guard middleware, and serves until the process-wide shutdown flag
+    /// trips.
     ///
     /// # Arguments
     ///
     /// * `server` — the tool server; cloned per HTTP session.
-    /// * `bind` — socket address to listen on (default `127.0.0.1:8731`).
-    /// * `auth_config` — signing keys / static secrets for the bearer guard;
-    ///   unconfigured auth is only accepted on a loopback bind.
+    /// * `listener` — the bound, non-blocking listener from [`bind_http`].
+    /// * `auth_config` — signing keys / static secrets for the bearer guard.
     /// * `extra_allowed_hosts` — `--mcp-allowed-host` additions to the
     ///   Host-header allowlist ([`crate::host_allowlist`]: loopback names and
     ///   the bound address by default); a literal `*` disables the check.
     /// * `resource` — the validated `--mcp-resource-url`, when one was given.
     ///   `Some` mounts the RFC 9728 metadata document and adds
     ///   `resource_metadata` to every challenge; `None` leaves both off.
-    /// * `tls` — from [`mcp_tls_config`]: `Some` serves HTTPS only on `bind`,
-    ///   through the accept loop the REST API uses
+    /// * `tls` — from [`mcp_tls_config`]: `Some` serves HTTPS only on the
+    ///   listener, through the accept loop the REST API uses
     ///   (`crate::tls_listener::TlsListener`); `None` serves plain HTTP.
     ///
     /// # Errors
     ///
-    /// Fails when the bind is non-loopback with no auth configured, when the
-    /// TCP listener cannot bind, or when axum's serve loop errors.
+    /// Fails when the listener cannot join the tokio runtime, or when axum's
+    /// serve loop errors.
     ///
     /// # Side effects
     ///
-    /// Binds and owns a TCP listener, serves HTTP until shutdown, logs the
-    /// effective bind address and Host allowlist, caps request bodies at
-    /// 2 MiB, and polls the process-wide shutdown flag every 200 ms for
-    /// graceful termination.
+    /// Owns the listener, serves HTTP until shutdown, logs the bound address
+    /// and Host allowlist, caps request bodies at 2 MiB, and polls the
+    /// process-wide shutdown flag every 200 ms.
     pub async fn serve_http(
         server: SipnabMcp,
-        bind: SocketAddr,
+        listener: std::net::TcpListener,
         auth_config: VerifierConfig,
         extra_allowed_hosts: Vec<String>,
         resource: Option<ProtectedResource>,
         tls: Option<Arc<rustls::ServerConfig>>,
     ) -> anyhow::Result<()> {
-        refuse_unsafe_bind(bind, &auth_config, tls.is_some())?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let actual = listener.local_addr()?;
 
         let state = McpHttpState {
             verifier: Arc::new(TokenVerifier::new(auth_config)),
             resource: resource.map(Arc::new),
         };
-        let hosts = host_allowlist(bind, &extra_allowed_hosts);
+        // The bound address: the allowlist reads only its IP, which is the
+        // one `--mcp-bind` named.
+        let hosts = host_allowlist(actual, &extra_allowed_hosts);
         let mcp_router = mcp_router(server, state, hosts)?;
 
-        let listener = tokio::net::TcpListener::bind(bind).await?;
-        let actual = listener.local_addr().unwrap_or(bind);
         if tls.is_some() {
             tracing::info!("MCP HTTP serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)");
         }
@@ -1263,4 +1305,4 @@ mod http {
 #[cfg(feature = "mcp-http")]
 pub(crate) use http::McpAuth;
 #[cfg(feature = "mcp-http")]
-pub use http::{ProtectedResource, mcp_tls_config, serve_http};
+pub use http::{ProtectedResource, bind_http, mcp_tls_config, serve_http};

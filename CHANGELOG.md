@@ -10,6 +10,35 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP over HTTP serves beside the TUI.** `sipnab -I capture.pcap --mcp
+  --mcp-transport http` opens the TUI and serves MCP from the same process, so
+  an operator watches the capture while an agent queries it. Both read the
+  same dialogs and streams. The status line shows the address MCP listens on,
+  including the port the kernel picked for `--mcp-bind 127.0.0.1:0`. Quitting
+  the TUI stops the server. The HTTP rules are unchanged: a non-loopback bind
+  still needs a token. `--mcp-allow-shutdown`, `--mcp-allow-open-capture`,
+  `--mcp-allow-tls-capture`, `--mcp-allow-save-findings` and
+  `--mcp-allow-relay-query` are refused with the TUI up, naming each flag and
+  `-N`, because each acts on the process or the relay that the operator at the
+  terminal owns. MCP `security_findings` beside the TUI reports the detectors
+  the TUI armed, and `source_exhausted` turns `true` once the file is read.
+  See [Query a capture over MCP while the TUI is open](docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+
+### Changed
+
+- **Breaking: `--mcp --mcp-transport http` without `-N` opens the TUI.** It
+  used to imply `-N`. A unit or script that relied on that runs without a
+  terminal and now exits 1 saying the TUI could not start; add `-N`. Every
+  invocation in the shipped documentation, unit files and scripts already
+  carries it. `--mcp` with the stdio transport still implies `-N`.
+- **A refused or busy `--mcp-bind` stops the run at startup, exit 2.** The
+  listener used to be bound on the servers thread, where a port in use or a
+  non-loopback bind with no token was only logged, after the run had started.
+  It is now bound on the calling thread before the servers thread starts,
+  as `--api` already was.
+
 ### Fixed
 
 - **A stdio MCP client receives the reply to a `shutdown_server` that stops

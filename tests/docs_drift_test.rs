@@ -1810,6 +1810,12 @@ fn fenced_blocks(md: &str) -> Vec<String> {
 /// error ("--mcp implies non-interactive mode"). Any fenced example that
 /// starts sipnab with `--mcp` must also pass `-N` or `--no-tui`.
 ///
+/// One exception, on one page: `--mcp --mcp-transport http` without `-N`
+/// opens the TUI beside the server, and the MCP guide's section on doing
+/// that has to show it. Only `mcp.md` may carry such an example, so an HTTP
+/// example that lost its `-N` anywhere else -- a deployment guide whose
+/// server runs without a terminal -- still fails here.
+///
 /// Covers both the wiki-source docs (`docs/`) and the published website
 /// (`website/content/docs/`) — the website's mcp.md carries its own copy of
 /// these examples, so a broken example there must fail this test too.
@@ -1850,7 +1856,12 @@ fn mcp_examples_always_pass_no_tui() -> Result<(), TestError> {
                     .any(|(i, _)| !matches!(line.as_bytes().get(i + 5), Some(b'-')));
                 // No "sipnab" requirement: client-config lines like
                 // `"args": ["--mcp", ...]` name the binary elsewhere.
-                if has_bare_mcp && !(line.contains("-N") || line.contains("--no-tui")) {
+                let tui_beside_http = path.file_name().and_then(|n| n.to_str()) == Some("mcp.md")
+                    && line.contains("--mcp-transport http");
+                if has_bare_mcp
+                    && !tui_beside_http
+                    && !(line.contains("-N") || line.contains("--no-tui"))
+                {
                     offenders.push(format!("{}: {}", path.display(), line.trim()));
                 }
             }
@@ -4797,7 +4808,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1084 -> 1086: the core-03 to core-04 comparison in docs/design/vcon.md.
     // Attributed by counting added separator rows per file: docs/design/vcon.md
     // 2 (the moved-text table and the normative-changes table). Not mirrored.
-    const EXPECTED_TABLES: usize = 1086;
+    // 1086 -> 1088: the opt-ins refused beside the TUI. Attributed by counting
+    // added separator rows per file: docs/mcp.md 1, and the same 1 in its
+    // site copy website/content/docs/mcp.md.
+    const EXPECTED_TABLES: usize = 1088;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
