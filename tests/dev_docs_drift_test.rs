@@ -828,7 +828,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/released_port_scan_test.rs.
     // 493 -> 494: docs/internals/build-ci-release.md's pip paragraph links
     // tests/ci_pip_network_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 494;
+    // 494 -> 495: docs/internals/build-ci-release.md's account of the
+    // generated homepage test count links scripts/published-test-count.py and
+    // scripts/fetch-ci-suite-output.py, and links website/templates/index.html
+    // once where the two paragraphs it replaces linked it twice.
+    const EXPECTED_CODE_LINKS: usize = 495;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

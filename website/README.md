@@ -29,9 +29,27 @@ last built locally rather than what the site serves.
 
 `.github/workflows/pages.yml` builds and publishes sipnab.com on every
 push to `main` that touches a path it watches. It builds the WASM
-analyzer with `wasm-pack`, checks the exported symbols, runs
-`zola build`, deploys to GitHub Pages, and then refreshes the
-Cloudflare CSP hashes against the artifact it just published.
+analyzer with `wasm-pack`, checks the exported symbols, takes the
+homepage's automated-test count from CI's run of the same commit
+(`scripts/fetch-ci-suite-output.py`, then
+`scripts/published-test-count.py`, which writes
+`website/data/test-count.toml`), runs `zola build`, deploys to GitHub
+Pages, and then refreshes the Cloudflare CSP hashes against the
+artifact it just published.
+
+A local `zola build` has no `website/data/test-count.toml`, so the
+homepage shows "Every PR" on the test tile instead of a number. To
+render a number locally, save a full test run:
+
+```bash
+cargo test --all-features 2>&1 | tee test-output.txt
+```
+
+Then write the data file from it, from the repository root:
+
+```bash
+python3 scripts/published-test-count.py test-output.txt --write website/data/test-count.toml
+```
 
 That last step is why an inline `<script>` edit is not finished when
 the deploy goes green: the hash refresh runs AFTER the upload, so the

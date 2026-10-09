@@ -3,7 +3,7 @@
 # Prevents the class of bugs caught by users in this project:
 # - Code that compiles but silently doesn't work
 # - WASM module out of sync with Rust source
-# - Test count on homepage stale
+# - A hand-set test count on the homepage (it is generated at deploy)
 # - Config keys parsed but never wired
 
 set -e
@@ -608,19 +608,6 @@ else
     echo -e "${YELLOW}SKIP (no WASM build)${NC}"
 fi
 
-# ── 5. Homepage test count matches actual ──────────────────────────
-# NOTE: this counts `cargo test --features full` (step 2), while ci.yml counts
-# `cargo test --all-features` — two suites, one published number. They can only
-# both be right while nothing is tested behind a feature outside `full`, which
-# `no_test_hides_behind_a_feature_outside_full` in tests/site_journey_test.rs
-# enforces. The commands differ on purpose: CI needs `--all-features` for
-# `plugins`, whose test builds for wasm32-unknown-unknown, a target CI installs
-# and a contributor may not have.
-#
-# Two independent places on the homepage carry the test count: the stat card
-# (data-count, anchored here to its "Automated tests" label rather than to
-# position so adding another stat can't silently mis-target it) and the prose
-# "N automated tests" in the feature table. Both must equal the real count.
 # ── Backlog status summary is current ──────────────────────────────
 # The file carries several hundred checkbox items. The per-item convention is
 # readable and the aggregate is not, so a generated table answers "what is left
@@ -700,85 +687,42 @@ if git diff --cached --name-only | grep -q "^clients/python/"; then
     fi
 fi
 
-echo -n "  Homepage test count... "
+# ── 5. Homepage test count is generated, not committed ─────────────
+# The homepage's automated-test count used to be a number in
+# website/templates/index.html that this gate held to the step-2 run. Every
+# pull request that added a test edited it, so any two such pull requests
+# conflicted on it. pages.yml now writes it at deploy time, from CI's Linux
+# `cargo test --all-features` run, with scripts/published-test-count.py.
+#
+# What is left to check here is the mechanism, in milliseconds: the rule
+# still counts a real run (the validated step-2 output, NOT a fresh `cargo
+# test`, which could race a concurrent cargo and undercount), the template
+# still reads the generated file, and no literal count has come back. The
+# step-2 run is `--features full`, CI's is `--all-features`;
+# no_test_hides_behind_a_feature_outside_full in tests/site_journey_test.rs
+# keeps them the same suite.
+echo -n "  Homepage test count generated... "
 if [ -f "website/templates/index.html" ]; then
-    # Reuse the validated step-2 run (TEST_RC==0 guarantees every binary
-    # reported), NOT a fresh `cargo test` — a second run can race a
-    # concurrent cargo and undercount. Sum the passed column of every
-    # `test result:` line (lib + integration + doctests).
-    ACTUAL=$(echo "$TEST_OUTPUT" | grep "test result:" | awk '{sum += $4} END {print sum}')
-    STAT=$(grep -B1 'Automated tests' website/templates/index.html | grep -o 'data-count="[0-9]*"' | grep -o '[0-9]*' | head -1)
-    PROSE=$(grep -oE '[0-9]+ automated tests' website/templates/index.html | grep -oE '[0-9]+' | sort -u)
-    # Every one of these can come back EMPTY, and an empty one is the failure
-    # this gate exists to prevent, not a reason to skip it. With both greps
-    # empty the `for` iterated zero times and the gate printed OK — a count
-    # compared against nothing. Demonstrated: setting both numbers to 9999 plus
-    # two benign wording edits ("Automated&nbsp;tests", "9999 automated Rust
-    # tests") printed OK and created the commit.
-    if [ -z "$ACTUAL" ]; then
+    if ! COUNT_OUT=$(printf '%s\n' "$TEST_OUTPUT" | python3 scripts/published-test-count.py - 2>&1); then
         echo -e "${RED}FAIL${NC}"
-        echo "  Could not derive a test count from the step-2 run — refusing to"
-        echo "  report agreement with a number that was never computed."
+        echo "  $COUNT_OUT"
+        echo "  scripts/published-test-count.py cannot count the step-2 run, so the"
+        echo "  deploy could not count CI's either."
         exit 1
     fi
-    if [ -z "$STAT" ] || [ -z "$PROSE" ]; then
+    if ! grep -qF 'load_data(path="data/test-count.toml", required=false)' website/templates/index.html; then
         echo -e "${RED}FAIL${NC}"
-        echo "  Could not find the test count on the homepage"
-        echo "    stat card (data-count near 'Automated tests'): '${STAT:-<none>}'"
-        echo "    prose ('N automated tests'):                   '${PROSE:-<none>}'"
-        echo "  The label or wording changed. Both must be found, or this gate"
-        echo "  compares nothing and reports OK."
+        echo "  website/templates/index.html no longer loads data/test-count.toml,"
+        echo "  the file pages.yml generates the test count into."
         exit 1
     fi
-    CHECKED=0
-    for FOUND in $STAT $PROSE; do
-        CHECKED=$((CHECKED + 1))
-        if [ "$FOUND" != "$ACTUAL" ]; then
-            # The published number is the LINUX count, because that is what
-            # ci.yml compares against and CI is the thing that blocks a merge.
-            # A macOS run cannot reach it: the uprobe and BPF tests are
-            # `#[cfg(target_os = "linux")]`, so they do not compile here and do
-            # not count. Measured 2026-08-18: 5183 locally, 5297 on CI -- 114
-            # tests that exist and simply cannot run on this host.
-            #
-            # The note above this gate says local and CI can both be right so
-            # long as nothing hides behind a feature outside `full`. That is
-            # true and insufficient: it accounts for FEATURES, not PLATFORM.
-            # Failing here would make the gate unsatisfiable on a Mac, the same
-            # way the `capture::uprobe` intra-doc links made `cargo doc` -- and
-            # therefore every push -- impossible until they were unlinked.
-            #
-            # So on a non-Linux host this warns and names both numbers; on
-            # Linux it still fails, which is where the number is authoritative.
-            if [ "$(uname -s)" != "Linux" ]; then
-                # `continue`, never `break`: the loop's own guard below refuses
-                # a run that compared fewer than both figures, and breaking out
-                # after the first mismatch trips it. Warn once, keep counting.
-                if [ -z "$PLATFORM_WARNED" ]; then
-                    PLATFORM_WARNED=1
-                    echo -e "${YELLOW}WARN${NC}"
-                    echo "  Homepage shows $FOUND; this $(uname -s) run counted $ACTUAL."
-                    echo "  The published figure must be the LINUX count (ci.yml checks it),"
-                    echo "  and Linux-only tests do not compile here. Not failing: this gate"
-                    echo "  cannot be satisfied off Linux. Verify against CI before release."
-                fi
-                continue
-            fi
-            echo -e "${RED}FAIL${NC}"
-            echo "  Homepage shows $FOUND tests but actual count is $ACTUAL"
-            echo "  Update website/templates/index.html (stat card + prose)"
-            exit 1
-        fi
-    done
-    if [ "$CHECKED" -lt 2 ]; then
+    if LITERAL=$(grep -oiE '[0-9][0-9,]* automated tests' website/templates/index.html); then
         echo -e "${RED}FAIL${NC}"
-        echo "  Only $CHECKED homepage figure(s) compared; both the stat card and"
-        echo "  the prose must be checked."
+        echo "  website/templates/index.html states a literal test count: $LITERAL"
+        echo "  The count is generated at deploy time. Use {{ suite.automated_tests }}."
         exit 1
     fi
-    if [ -z "$PLATFORM_WARNED" ]; then
-        echo -e "${GREEN}OK ($ACTUAL)${NC}"
-    fi
+    echo -e "${GREEN}OK ($COUNT_OUT)${NC}"
 else
     echo -e "${YELLOW}SKIP (no website)${NC}"
 fi

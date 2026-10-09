@@ -95,3 +95,6 @@ clients/typescript/node_modules/
 
 # The working backlog is local, never committed.
 docs/design/backlog.local.md
+
+# Generated at deploy time by scripts/published-test-count.py; never committed.
+website/data/test-count.toml

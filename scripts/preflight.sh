@@ -9,7 +9,8 @@
 # The pre-commit hook runs the full suite. That is correct and it is not the
 # problem. The problem is that the failures which actually happen are almost
 # never test failures -- they are documentation ratchets, prose linting, and
-# the homepage test count, all of which are decidable in seconds. Over one
+# (until it was generated at deploy time) the homepage test count, all of which
+# are decidable in seconds. Over one
 # release day, four separate commits bounced on exactly these, at ~25 minutes
 # each: Vale twice (on a dictionary the local binary did not share with CI), a
 # table ratchet twice, and the homepage count once. None needed the suite to
@@ -287,34 +288,6 @@ if git diff --name-only HEAD -- docs/benchmarks.md website/content/docs/benchmar
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Test-count change -> the homepage tile moves too.
-#
-#    Deliberately a heuristic on the diff rather than a count. The hook derives
-#    the real number by summing the `passed` column of a full run, which cannot
-#    be reproduced cheaply: `--list` over-counts by including `#[ignore]`d tests
-#    and under-counts doctests, and on this tree the two disagree by 18. Rather
-#    than encode a fragile formula, detect the CONDITION that breaks the gate --
-#    the diff changing how many tests exist -- and say so.
-# ---------------------------------------------------------------------------
-step "homepage test count"
-ADDED=$(git diff HEAD -- '*.rs' | grep -cE '^\+\s*#\[(tokio::)?test\]' || true)
-REMOVED=$(git diff HEAD -- '*.rs' | grep -cE '^-\s*#\[(tokio::)?test\]' || true)
-if [ "$ADDED" = "$REMOVED" ]; then
-    ok
-else
-    NET=$((ADDED - REMOVED))
-    if git diff HEAD -- website/templates/index.html | grep -q 'automated tests'; then
-        ok
-        note "net ${NET} test(s) and the homepage moved with them."
-    else
-        bad
-        note "net ${NET} test(s) added/removed, and website/templates/index.html"
-        note "was not touched. The count lives in THREE places: the prose, the"
-        note "stat card's data-count, and the card's no-JS fallback text."
-    fi
-fi
-
-# ---------------------------------------------------------------------------
 # 4b. Untracked files that the ratchets count.
 #
 #     Several gates count TRACKED files -- `git ls-files`, not the working
@@ -323,10 +296,8 @@ fi
 #     ratchets at once: the two new pages did not exist as far as
 #     `docs_drift_test` was concerned. Stage first, or check here.
 #
-#     `*.rs` is here for the check directly above: `git diff HEAD` does not see
-#     an untracked file either, so a whole new test FILE moves the homepage
-#     count by however many tests it holds while the diff heuristic counts
-#     zero. Same class as a missing tool -- nothing to look at read as nothing
+#     `*.rs` stays: a new test file is as invisible to `git ls-files` as a new
+#     page. Same class as a missing tool -- nothing to look at read as nothing
 #     wrong -- so it degrades the same way.
 # ---------------------------------------------------------------------------
 step "new files staged for the ratchets"
@@ -337,8 +308,8 @@ else
     degraded
     note "untracked files the tracked-file gates cannot see yet:"
     printf '      %s\n' $UNTRACKED
-    note "git add them, then re-run: the file, table, wiki-link, docs-page and"
-    note "homepage-count ratchets all read tracked files and will move."
+    note "git add them, then re-run: the file, table, wiki-link and docs-page"
+    note "ratchets all read tracked files and will move."
 fi
 
 # ---------------------------------------------------------------------------

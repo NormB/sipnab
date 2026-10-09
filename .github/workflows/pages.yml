@@ -34,6 +34,14 @@ on:
       # yang/: the YANG module is copied into the site below, so a new
       # revision has to reach sipnab.com/yang/ when it lands.
       - 'yang/**'
+      # tests/ and the two scripts: the homepage's automated-test count is
+      # derived at deploy time (see the steps before "Build site"), and adding
+      # a test changes it. Without tests/ here, a pull request that only adds
+      # tests would leave the published count behind until something else
+      # rebuilt the site.
+      - 'tests/**'
+      - 'scripts/published-test-count.py'
+      - 'scripts/fetch-ci-suite-output.py'
   workflow_dispatch:
 
 # Read-only for every job. The write scopes live on the one job that deploys
@@ -53,8 +61,17 @@ jobs:
     # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
     # Raised 20 -> 30: this job now compiles the crate for wasm32 on a cold
     # cache. A warm cache is ~1 minute; the ceiling is for the cold case.
-    timeout-minutes: 30
+    # Raised 30 -> 90: the job now waits for CI's run of the same commit to
+    # upload its suite output (fetch-ci-suite-output.py gives up at 60
+    # minutes; CI's Check job is bounded at 40 and can queue first).
+    timeout-minutes: 90
     runs-on: ubuntu-latest
+    # A job-level block replaces the workflow-level one, so contents:read is
+    # restated. actions:read lets the job list CI's run for this commit and
+    # download its suite-output artifact.
+    permissions:
+      contents: read
+      actions: read
     env:
       ZOLA_VERSION: '0.19.2'
       # Pinned like ZOLA_VERSION. Installed with `cargo install --locked`, so
@@ -160,9 +177,54 @@ jobs:
           cp yang/*.yang website/static/yang/
           ls -l website/static/yang
 
+      # The homepage's automated-test count, generated rather than committed.
+      # It used to be a number in website/templates/index.html that every
+      # pull request adding a test had to edit, so any two such pull requests
+      # conflicted on it. Now ci.yml's Check job on Linux runs the suite,
+      # derives the count with scripts/published-test-count.py (failing CI if
+      # it cannot) and uploads the run's output as `suite-output`. This step
+      # waits for that artifact from CI's run of the commit being deployed;
+      # the next applies the same script to it and writes the data file the
+      # template reads. Both run before `zola build`, which reads the file
+      # once. tests/site_journey_test.rs holds the order.
+      - name: Fetch the suite output of CI's run of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/fetch-ci-suite-output.py \
+              --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --dest suite-output; then
+            echo "::error::no suite output from CI's run of $GITHUB_SHA, so no test count to publish"
+            exit 1
+          fi
+
+      - name: Derive the homepage test count
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/published-test-count.py suite-output/test-output.txt --write website/data/test-count.toml; then
+            echo "::error::CI's suite output cannot be counted"
+            exit 1
+          fi
+          cat website/data/test-count.toml
+
       - name: Build site
         working-directory: website
         run: zola build
+
+      # Without the data file the template renders a sentence with no number,
+      # which is right for a local build and wrong for the published site.
+      # Fail here rather than publish it.
+      - name: Check the built homepage states the test count
+        run: |
+          set -euo pipefail
+          n=$(sed -n 's/^automated_tests = \([0-9][0-9]*\)$/\1/p' website/data/test-count.toml)
+          if [ -z "$n" ] \
+            || ! grep -qF "data-count=\"$n\"" website/public/index.html \
+            || ! grep -qF "$n automated tests" website/public/index.html; then
+            echo "::error::the built homepage does not state the generated test count '${n:-<none>}'"
+            exit 1
+          fi
+          echo "The built homepage states $n automated tests"
 
       # AFTER the Zola build, and that ordering is a constraint rather than a
       # style choice: `zola build` recreates its output directory from

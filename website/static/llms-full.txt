@@ -41629,8 +41629,9 @@ git config core.hooksPath .githooks
 --check`, clippy (`--features full`, `-D warnings`), the full
 `cargo test --features full` suite, no `unwrap()`/`expect()` or abort macro
 (`panic!`, `unreachable!`, `todo!`, `unimplemented!`) in production code,
-WASM exports in sync with the site's JS, the homepage test count plus the
-site version matching `Cargo.toml`, no TODO stubs, and an advisory
+WASM exports in sync with the site's JS, the homepage test count still
+generated rather than written into the template, plus the site version
+matching `Cargo.toml`, no TODO stubs, and an advisory
 developer-docs coupling notice. Gates 0-5b block the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto — and
 gate 8 only prints `REVIEW` and a file list.
@@ -41675,7 +41676,7 @@ which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
 |---|---|
-| `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale at CI's pinned version, codespell, both site-mirror generators, the documentation ratchets, and whether a changed test count left the homepage tile behind. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
+| `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale at CI's pinned version, codespell, both site-mirror generators, the and the documentation ratchets. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
 | `cargo fmt --all -- --check` | Formatting is never checked by a build. |
 | `cargo clippy --workspace --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
@@ -43733,7 +43734,7 @@ the thing it guards silently rotted at least once.
 | [`api_guidelines_test`](../../tests/api_guidelines_test.rs) | A growth-prone public enum loses `#[non_exhaustive]`, or a shared store stops being `Debug`. |
 | [`summary_consistency_test`](../../tests/summary_consistency_test.rs) | Two serializing surfaces disagree about a dialog or stream field. |
 | [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The WASM binding loses an export the browser analyzer calls. |
-| [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the two automated-test counts, which must agree with each other and — via `quality.yml` — with the measured total. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Your SIP server" and "Add to your voice stack" groups of the docs navigation, so a guide added to one reaches the other. |
+| [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the automated-test count, which the template must read from the file `pages.yml` generates rather than state as a number. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Your SIP server" and "Add to your voice stack" groups of the docs navigation, so a guide added to one reaches the other. |
 | [`config_examples_test`](../../tests/config_examples_test.rs) | A config sample in the docs no longer parses. |
 | [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block and RUNS 352 of the 383 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
 | [`homepage_claim_truth_test`](../../tests/homepage_claim_truth_test.rs) | A claim the homepage states in PROSE stops being true: the MCP tool counts and their read-only split, which released builds carry the `bpf` feature, what the installer actually puts on a host, a capability the static musl build does not have, the filter language's field and operator counts, a TUI key the page names that nothing binds, and a CLI flag the page names that does not exist, plus the `unsafe` count and the safety claim resting on it — the page said "memory-safe by construction" beside 88 `unsafe` blocks and no `forbid(unsafe_code)`. `site_journey_test` gates the tiles; this gates the sentences, because the two disagreed on one page for months. |
@@ -44179,7 +44180,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
-| `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website. |
+| `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website, with the homepage test count taken from CI's run of the same commit. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
@@ -44510,7 +44511,8 @@ site, and the four macro names are the only ones that marker takes; a generated
 file staged with the inputs it derives from; every feature
 declaring what its own modules import; the privilege-drop
 path still dropping privileges; WASM exports in
-sync with the site's JS; the homepage test count matching the run it just did —
+sync with the site's JS; the homepage test count still generated, not
+written into the template —
 plus the site version matching `Cargo.toml`; no TODO
 stubs; and an
 <!-- vale Google.Semicolons = YES -->
@@ -44598,8 +44600,8 @@ it dies without naming a test at all, gate 2 prints the last twenty lines
 rather than nothing. A passing run still prints one line per gate.
 
 Both gates capture their tool's output rather than let it stream, because gate
-5 reads the test run back for the homepage count and a streamed clippy would
-bury the per-gate summary.
+5 reads the test run back to check the homepage count's rule still counts it,
+and a streamed clippy would bury the per-gate summary.
 
 Capturing without reporting swallows the answer,
 which is what the naming above prevents: a failure that prints only `FAIL` and
@@ -44609,8 +44611,35 @@ break is theirs or already on `HEAD`. Settling that one question once cost an
 extraction of a pristine `HEAD` into a scratch directory.
 
 That means **every commit runs clippy and the whole test suite** and takes
-minutes. It is not optional theatre: the homepage-count gate alone means adding
-a test obliges you to update [`website/templates/index.html`](../../website/templates/index.html) in the same commit.
+minutes.
+
+The homepage's automated-test count is not in the template. It used to be: a
+number in [`website/templates/index.html`](../../website/templates/index.html)
+that gate 5 held to the run, so every pull request that added a test edited
+the same line, and any two such pull requests conflicted on it. It is now
+generated at deploy time:
+
+1. `ci.yml`'s Check job on Linux runs `cargo test --all-features`, applies
+   [`scripts/published-test-count.py`](../../scripts/published-test-count.py)
+   to the output (step "Derive the published test count", which fails CI
+   when the script cannot count the run), and on a push to `main` uploads the
+   output as the `suite-output` artifact.
+2. `pages.yml` waits for that artifact from CI's run of the commit it
+   deploys
+   ([`scripts/fetch-ci-suite-output.py`](../../scripts/fetch-ci-suite-output.py)),
+   applies the same script to it, and writes `website/data/test-count.toml`.
+   It then runs `zola build`, and fails the deploy if the built homepage does
+   not state that number.
+3. The template loads the file with `load_data(..., required=false)`. A local
+   `zola build` has no file, so it renders "Every PR" on the tile and a
+   sentence with no number in the feature table, instead of a stale count.
+
+The script is the one counting rule: it sums the `passed` figure of every
+line that starts with `test result`, and refuses a run with a `FAILED`
+binary, with no result line, or with a total of zero. Gate 5 checks the
+mechanism: the script still counts the gate 2 run, the template still loads
+the file, and no literal count has come back. The data file is in
+`.gitignore`. Adding a test needs no edit to the site.
 
 Two checks stay out of the PRE-COMMIT hook on purpose: the feature matrix and
 rustdoc. That hook already costs minutes and each of those adds more.
@@ -45282,8 +45311,8 @@ something was **measured** on — the benchmarks pages — must not track the cr
 version. A marker forcing them to is what kept a stale benchmark claim looking
 freshly checked for twenty-nine releases.
 
-The same mechanism gates the test count in [`website/templates/index.html`](../../website/templates/index.html), by
-`ci.yml` against the real suite total. That check is Linux-only: platform-gated
+The homepage's test count is not a marker: the deploy generates it from CI's
+Linux run (see [Hooks](#hooks)). It is Linux-only: platform-gated
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
 
