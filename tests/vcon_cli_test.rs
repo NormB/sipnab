@@ -619,3 +619,80 @@ fn a_redacted_export_of_retained_audio_carries_no_empty_recording()
     );
     Ok(())
 }
+
+/// The Asterisk capture whose caller is challenged before the call connects.
+///
+/// The first INVITE draws `401` under To tag `as315a4ef6`; the re-sent INVITE
+/// is answered `200 OK` under `as0b1a917b`, whose SDP names
+/// `192.168.10.40:49848`, and the caller's SDP names `192.168.10.41:64508`.
+/// The two audio streams come from exactly those two sockets.
+#[cfg(feature = "vcon")]
+const CHALLENGED: &str = "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap";
+
+/// The Call-ID of the challenged call in [`CHALLENGED`].
+#[cfg(feature = "vcon")]
+const CHALLENGED_CALL: &str = "ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.";
+
+/// A call challenged for credentials still attributes its audio to both
+/// parties.
+///
+/// Each stream came from the socket one party advertised in its own SDP, which
+/// is the evidence the exporter requires. The export used to carry the audio
+/// with no `parties`, because the dialog kept the `401`'s To tag as the
+/// callee's and so never matched the callee's `200 OK` to the callee.
+/// vcon.store refuses such a Dialog Object, and draft-ietf-vcon-vcon-core-04
+/// section 4.3.4 says `parties` SHOULD be present on a `recording`.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_challenged_call_attributes_its_audio_to_both_parties() -> Result<(), TestError> {
+    let out = run(&[
+        "-N",
+        "-q",
+        "--no-cli-print",
+        "-I",
+        CHALLENGED,
+        "--retain-audio",
+        "--export-vcon",
+        CHALLENGED_CALL,
+    ])?;
+    assert!(
+        out.status.success(),
+        "export failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let recording = v["dialog"]
+        .as_array()
+        .ok_or("dialog is an array")?
+        .iter()
+        .find(|d| d["type"] == "recording" && d.get("body").is_some())
+        .ok_or_else(|| format!("no recording carrying audio: {}", v["dialog"]))?;
+
+    assert_eq!(
+        recording["sip_to_tag"], "as0b1a917b",
+        "the remote tag is the one the answer carried, not the 401's: {}",
+        recording["sip_to_tag"]
+    );
+    assert_eq!(recording["sip_from_tag"], "40580753");
+    assert_eq!(
+        v["parties"][0]["sip"], "sip:10009@192.168.10.2",
+        "party 0 is the caller"
+    );
+    assert_eq!(
+        v["parties"][1]["sip"], "sip:10008@192.168.10.2",
+        "party 1 is the callee"
+    );
+    let parties = recording["parties"]
+        .as_array()
+        .ok_or_else(|| format!("the recording names no parties: {recording:#}"))?;
+    // Channel 0 holds the 778-packet stream from 192.168.10.40:49848, the
+    // socket the callee's `200 OK` advertised, and channel 1 the 204-packet
+    // stream from the caller's 192.168.10.41:64508. Measured outside sipnab:
+    // the WAV's channel 0 carries about 16 s of signal and channel 1 about 4 s.
+    assert_eq!(
+        parties,
+        &[serde_json::json!(1), serde_json::json!(0)],
+        "one channel per observed party, each by its own advertised socket"
+    );
+    Ok(())
+}

@@ -83,6 +83,29 @@ entry that carries them.
   documentation and the vCon design page said a party never carries a
   `name`; it carries the `From` or `To` display name when the wire had one,
   with `validation: "none"` beside it.
+- **A call challenged for credentials keeps its parties on the vCon
+  recording.** A dialog took its remote tag from the first `To` tag it saw,
+  which for a challenged call is the tag of the `401` or `407`. That response
+  creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1)), and the re-sent INVITE is answered
+  under another tag. The vCon exporter attributes an audio channel to the party
+  whose own SDP advertised the stream's sending address, and it identifies the
+  callee's SDP by that tag. So it found no callee endpoint, and
+  `--retain-audio` exported the call audio with no `parties` and with the
+  challenge's tag in `sip_to_tag`. vcon.store refuses that Dialog Object. The
+  remote tag now comes from the strongest evidence seen: a 2xx answer to the
+  opening request, then a 101-199 response to it, then any other tag.
+  `tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` now exports `parties: [1, 0]`
+  and `sip_to_tag: as0b1a917b`.
+  Affected: `--export-vcon`, `--export-vcon-dir`, the MCP `export_vcon` tool
+  and `GET /v1/dialogs/{call_id}/vcon`, for a call whose first response carried a `To` tag that the answer did not.
+- **The vcon.store compat refusal no longer says that a Dialog Object without
+  `parties` carries no audio when it does.** sipnab omits `parties` from a
+  `recording` with audio when a channel came from an address no party
+  advertised in its SDP, such as a media relay's. The refusal for that case
+  now says the audio could not be attributed, and no longer tells the operator
+  to export again with `--retain-audio`. `docs/vcon-store.md` describes both
+  cases, and `docs/vcon.md` states what `parties` on a `recording`, and its
+  absence, let a reader conclude.
 
 ## [0.5.208] - 2026-10-09
 

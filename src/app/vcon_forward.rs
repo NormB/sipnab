@@ -622,12 +622,14 @@ pub struct CompatCopy {
 /// bytes.
 ///
 /// The store also requires `type` and `parties` on every Dialog Object.
-/// sipnab writes a Dialog Object without `parties` when the run kept no audio:
-/// the `recording` placeholder of section 4.3 of core-04, which section 4.3.4
-/// makes `parties` a SHOULD on. Containers sipnab wrote under core-03 lack
-/// `type` there as well. The forwarder does not invent what sipnab did not
+/// sipnab writes a Dialog Object without `parties` in two cases: when the run
+/// kept no audio, the `recording` placeholder of section 4.3 of core-04; and
+/// when it carries audio on a channel no party's advertised media socket sent,
+/// such as a media relay's. Section 4.3.4 makes `parties` a SHOULD on a
+/// `recording`. Containers sipnab wrote under core-03 lack `type` on the
+/// placeholder as well. The forwarder does not invent what sipnab did not
 /// observe, or drop the object and leave dangling indexes. Such a container is
-/// refused here instead, with the reason.
+/// refused here instead, with the reason for the case it is.
 ///
 /// # Errors
 ///
@@ -683,6 +685,20 @@ fn dialog_refusal(index: usize, dialog: &serde_json::Value) -> Result<(), String
         (false, true) => "`type`",
         (true, false) => "`parties`",
     };
+    if has("body") || has("url") {
+        return Err(format!(
+            "vcon.store requires `type` and `parties` on every Dialog Object \
+             (draft-ietf-vcon-vcon-core-02), and dialog[{index}] has no {missing}. It carries \
+             audio that sipnab could not attribute to a party: sipnab names the party on a \
+             channel only when that channel's stream came from the media socket the party \
+             advertised in its own SDP, and at least one channel here came from another socket, \
+             such as a media relay's. Section 4.3.4 of draft-ietf-vcon-vcon-core-04 makes \
+             `parties` a SHOULD on a `recording`, and its null placeholder means no party was on \
+             the channel, which is not what was observed. The forwarder does not invent what \
+             sipnab did not observe, and exporting the same capture again gives the same \
+             container. The container was not sent and was not changed."
+        ));
+    }
     Err(format!(
         "vcon.store requires `type` and `parties` on every Dialog Object \
          (draft-ietf-vcon-vcon-core-02), and dialog[{index}] has no {missing}. sipnab writes \
@@ -2892,6 +2908,44 @@ mod tests {
                 Ok(c) => return Err(format!("accepted: {:?}", c.transforms).into()),
                 Err(e) => assert!(e.contains(needle), "{needle} not in: {e}"),
             }
+        }
+        Ok(())
+    }
+
+    /// A `recording` that carries audio but no `parties` is refused with a
+    /// reason that says so, not with the no-audio reason.
+    ///
+    /// The exporter names a channel's party only from that party's own
+    /// advertised media socket, and omits `parties` when any channel came from
+    /// elsewhere, such as a media relay's allocation. Such a container already
+    /// had `--retain-audio` and no `--redact`, so telling the operator that the
+    /// container carries no audio, or to export it again with those flags,
+    /// states something false and sends them round the same loop.
+    #[test]
+    fn audio_without_parties_is_refused_as_unattributed_audio() -> TestResult {
+        let with_audio = br#"{"dialog":[{"type":"recording","mediatype":"audio/x-wav","encoding":"base64url","body":"UklGRg"}]}"#;
+        let reason = match vcon_store_copy(with_audio) {
+            Ok(c) => return Err(format!("accepted: {:?}", c.transforms).into()),
+            Err(e) => e,
+        };
+        for needle in ["dialog[0]", "`parties`", "carries audio", "advertised"] {
+            assert!(reason.contains(needle), "{needle} not in: {reason}");
+        }
+        for false_claim in ["carries no audio", "Export it again", "--retain-audio"] {
+            assert!(
+                !reason.contains(false_claim),
+                "{false_claim} in the reason for a container that carries audio: {reason}"
+            );
+        }
+
+        // The no-audio case keeps its own reason and its remedy.
+        let placeholder = br#"{"dialog":[{"type":"recording"}]}"#;
+        let reason = match vcon_store_copy(placeholder) {
+            Ok(c) => return Err(format!("accepted: {:?}", c.transforms).into()),
+            Err(e) => e,
+        };
+        for needle in ["carries no audio", "--retain-audio", "--redact"] {
+            assert!(reason.contains(needle), "{needle} not in: {reason}");
         }
         Ok(())
     }

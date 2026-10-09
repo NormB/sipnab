@@ -12,7 +12,9 @@ form both vCon drafts define, so a sipnab container sent unchanged draws `400`.
 `--vcon-forward-kind vcon-store` sends a copy the store accepts, and leaves
 the container on disk unchanged. Even with it, the store refuses a container
 whose Dialog Object has no `parties`, which is what sipnab writes for a call
-whose container carries no audio: the run kept none, or `--redact` withheld it. [The measurements](#the-measurements) are the evidence.
+whose container carries no audio: the run kept none, or `--redact` withheld it.
+sipnab also writes one for a call whose audio it cannot attribute to a party,
+such as audio that a media relay sent. [The measurements](#the-measurements) are the evidence.
 
 ## Before you send anything
 
@@ -26,17 +28,21 @@ another party's system. Decide what may leave the machine first:
 - A redacted container carries no audio, so its Dialog Object has no
   `parties`, and vcon.store refuses it. The compat mode refuses it before sending, with
   that reason. Today the only sipnab container vcon.store accepts is one
-  exported without `--redact` and with audio: the call audio and the
-  identifiers the signaling carried, as captured.
+  exported without `--redact` and with audio that sipnab attributed to the
+  parties: the call audio and the identifiers the signaling carried, as
+  captured.
 - [What may you conclude](vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)
   lists what a container carries.
 
 ## 1. Write the containers
 
 Export the calls from a capture file with their audio. `--retain-audio` makes
-sipnab type each call's Dialog Object `recording`, with the parties, which the
-store requires. This container is not redacted: it carries the audio and the
-identifiers as captured.
+sipnab type each call's Dialog Object `recording`. The object names the
+parties, which the store requires, when each audio channel came from the media
+address and port that one party advertised in its own SDP. Audio from any
+other address, such as a media relay's, gets no `parties`, and the store
+refuses that container. This container is not redacted: it carries the audio
+and the identifiers as captured.
 
 ```sh
 sipnab -N --no-cli-print -I calls.pcap --retain-audio \
@@ -111,7 +117,7 @@ define. The forwarder logs each change, one line per container.
 | In the container | Sent to vcon.store | Why |
 |---|---|---|
 | `"extensions": ["sip-signaling", "CC"]` | `"extensions": {"sip-signaling": true, "CC": true}` | Section 4.1.3 of [draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3), and of every revision since through [-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.3), defines `extensions` as an array of strings. vcon.store refuses that and accepts an object. The copy keeps every name, in its order. |
-| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object without `parties` when the container carries no audio: the `recording` placeholder of [section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), on which [section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) makes `parties` a SHOULD. A container sipnab wrote before it followed -04 lacks `type` there as well. The forwarder does not invent what sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason that names `--retain-audio` and `--redact`. |
+| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object without `parties` when the container carries no audio: the `recording` placeholder of [section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), on which [section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) makes `parties` a SHOULD. A container sipnab wrote before it followed -04 lacks `type` there as well. sipnab also writes a `recording` with audio and no `parties` when an audio channel came from an address no party advertised in its SDP, such as a media relay's. The forwarder does not invent what sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason. For a container with no audio, the reason names `--retain-audio` and `--redact`. For audio sipnab could not attribute, it says so, and that exporting again gives the same container. |
 
 The forwarder sends every other byte of the container as sipnab wrote it. You can
 drop the mode once vcon.store accepts `extensions` as the array of strings the drafts
@@ -185,6 +191,11 @@ A read after the delete answered `404`, and a read with a wrong key `401`. More:
   `parties`.** The container carries no audio: the run kept none for that
   call, or the export ran with `--redact`. Export it again with
   `--retain-audio` and without `--redact`.
+- **A container lands in `spool/failed` with a reason that says it carries
+  audio sipnab could not attribute to a party.** An audio channel came from
+  an address and port that no party advertised in its own SDP, such as a media
+  relay's. Exporting the same capture again gives the same container. vcon.store
+  does not accept it.
 - **The forwarder exits `3` and logs `403` with `error code: 1010`.** The
   Cloudflare front refused the request's client. The forwarder sends
   `User-Agent: sipnab/<version>`. Check that nothing between it and the store
