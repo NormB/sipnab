@@ -163,8 +163,16 @@ pub struct SipDialog {
     pub to_host: Option<String>,
     /// Tag parameter from the From header.
     pub from_tag: Option<String>,
-    /// Tag parameter from the To header.
+    /// The remote end's tag: the `To` tag of the response that established
+    /// the dialog, or the best candidate seen so far when none has.
+    ///
+    /// Not simply the first `To` tag seen. A `401` or `407` challenge carries a
+    /// tag of its own and creates no dialog, and the re-sent request is
+    /// answered under a different one. [`update_state`] keeps the tag from the
+    /// strongest evidence, by `RemoteTagBasis`.
     pub to_tag: Option<String>,
+    /// What [`Self::to_tag`] was taken from.
+    pub(crate) to_tag_basis: RemoteTagBasis,
     /// Display name from the From header.
     pub from_display: Option<String>,
     /// Display name from the To header.
@@ -396,6 +404,7 @@ impl SipDialog {
             to_host: msg.to_host(),
             from_tag: msg.from_tag().map(str::to_string),
             to_tag: msg.to_tag().map(str::to_string),
+            to_tag_basis: remote_tag_basis(&method, msg),
             from_display: msg.from_display(),
             to_display: msg.to_display(),
             state: initial_state,
@@ -447,9 +456,9 @@ impl SipDialog {
 ///
 /// # Side effects
 ///
-/// May rewrite `dialog.state`, and captures the remote tag into
-/// `dialog.to_tag` the first time a To tag appears (typically in the
-/// first response from the far end). No other fields are touched.
+/// May rewrite `dialog.state`, and records the remote tag in `dialog.to_tag`
+/// when this message's `To` tag is stronger evidence of the remote end than
+/// the one held (see `RemoteTagBasis`). No other fields are touched.
 pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
     let family = family_of_seed(&dialog.method);
     let cseq_method = msg.cseq().map(|(_, m)| SipMethod::parse(m));
@@ -487,11 +496,52 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
         dialog.state = next;
     }
 
-    // Always capture the to_tag if we haven't yet (remote tag arrives in responses)
-    if dialog.to_tag.is_none()
-        && let Some(tag) = msg.to_tag()
+    // The remote tag, from the strongest evidence seen. A tag equal to the
+    // local one is the far end answering a request the REMOTE party sent (a
+    // re-INVITE from the callee), which names the caller, never the remote end.
+    if let Some(tag) = msg.to_tag()
+        && dialog.from_tag.as_deref() != Some(tag)
     {
-        dialog.to_tag = Some(tag.to_string());
+        let basis = remote_tag_basis(&dialog.method, msg);
+        if dialog.to_tag.is_none() || basis > dialog.to_tag_basis {
+            dialog.to_tag = Some(tag.to_string());
+            dialog.to_tag_basis = basis;
+        }
+    }
+}
+
+/// What a `To` tag was taken from, weakest first.
+///
+/// [RFC 3261 section 12.1](https://datatracker.ietf.org/doc/html/rfc3261#section-12.1)
+/// creates a dialog only from a 101-199 or 2xx response to the request that
+/// opens it. Any other tag is a candidate at best, so a stronger one replaces
+/// it, and the first tag of a given strength is kept against later ones of the
+/// same strength.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RemoteTagBasis {
+    /// A message that creates no dialog: a request, a response to another
+    /// method, or a final response outside 2xx such as a `401` challenge.
+    #[default]
+    NoDialog,
+    /// A 101-199 response to the opening request: an early dialog.
+    Early,
+    /// A 2xx response to the opening request: the dialog itself.
+    Confirmed,
+}
+
+/// The `RemoteTagBasis` a message's `To` tag would have in a dialog opened
+/// by `opening`.
+fn remote_tag_basis(opening: &SipMethod, msg: &SipMessage) -> RemoteTagBasis {
+    if msg.is_request {
+        return RemoteTagBasis::NoDialog;
+    }
+    let answers_opening = msg
+        .cseq()
+        .is_some_and(|(_, method)| SipMethod::parse(method) == *opening);
+    match msg.status_code {
+        Some(101..=199) if answers_opening => RemoteTagBasis::Early,
+        Some(200..=299) if answers_opening => RemoteTagBasis::Confirmed,
+        _ => RemoteTagBasis::NoDialog,
     }
 }
 
@@ -796,6 +846,146 @@ mod tests {
             5060,
             TransportProto::Udp,
         )?)
+    }
+
+    /// Build and parse a response carrying the given `From` and `To` tags and
+    /// CSeq, so a test can name which side of the dialog answered.
+    fn make_tagged_response(
+        status: u16,
+        cseq: &str,
+        from_tag: &str,
+        to_tag: &str,
+    ) -> Result<SipMessage, TestError> {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} Status"),
+            &[
+                &format!("From: \"Alice\" <sip:alice@example.com>;tag={from_tag}"),
+                &format!("To: \"Bob\" <sip:bob@example.com>;tag={to_tag}"),
+                "Call-ID: dialog-test@example.com",
+                &format!("CSeq: {cseq}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// Feed `responses` to a fresh INVITE dialog from Alice (tag `t1`) and
+    /// return the remote tag it settled on.
+    fn remote_tag_after(
+        responses: &[(u16, &str, &str, &str)],
+    ) -> Result<Option<String>, TestError> {
+        let mut dialog = SipDialog::new(&make_invite()?).ok_or("an INVITE opens a dialog")?;
+        for &(status, cseq, from_tag, to_tag) in responses {
+            update_state(
+                &mut dialog,
+                &make_tagged_response(status, cseq, from_tag, to_tag)?,
+            );
+        }
+        Ok(dialog.to_tag)
+    }
+
+    /// An authentication challenge's tag is not the dialog's remote tag.
+    ///
+    /// [RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1) creates a dialog only from a 101-199 or 2xx
+    /// response; a `401` ends its transaction and creates none, and the
+    /// re-sent INVITE is answered under a fresh tag. Keeping the challenge's
+    /// tag made every consumer of `to_tag` name a dialog that never existed:
+    /// on `Asterisk_ZFONE_XLITE.pcap` the vCon exporter could not match the
+    /// callee's SDP to the callee and exported the call audio with no
+    /// `parties`.
+    #[test]
+    fn the_answer_tag_replaces_an_auth_challenge_tag() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (180, "2 INVITE", "t1", "callee"),
+                (200, "2 INVITE", "t1", "callee"),
+            ])?
+            .as_deref(),
+            Some("callee"),
+        );
+        // No provisional: the 2xx alone establishes the dialog.
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (200, "2 INVITE", "t1", "callee"),
+            ])?
+            .as_deref(),
+            Some("callee"),
+        );
+        Ok(())
+    }
+
+    /// A call that fails after a challenge names the tag of the leg that
+    /// reached the callee, carried by its provisional response.
+    #[test]
+    fn a_provisional_tag_replaces_an_auth_challenge_tag() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (407, "1 INVITE", "t1", "challenge"),
+                (180, "2 INVITE", "t1", "early"),
+                (486, "2 INVITE", "t1", "early"),
+            ])?
+            .as_deref(),
+            Some("early"),
+        );
+        Ok(())
+    }
+
+    /// When forked legs ring under different tags, the leg that answers is
+    /// the dialog, and nothing after the answer moves the tag.
+    #[test]
+    fn the_answering_fork_wins_and_the_tag_then_stays() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (180, "1 INVITE", "t1", "fork-a"),
+                (180, "1 INVITE", "t1", "fork-b"),
+                (200, "1 INVITE", "t1", "fork-b"),
+                (200, "1 INVITE", "t1", "fork-a"),
+            ])?
+            .as_deref(),
+            Some("fork-b"),
+            "the first 2xx establishes the dialog; a later 2xx from another fork \
+             is a second dialog sipnab does not track"
+        );
+        Ok(())
+    }
+
+    /// A 2xx answering a request the CALLEE sent carries the caller's tag in
+    /// `To`, and must not become the remote tag.
+    ///
+    /// The Asterisk capture has this shape: the PBX re-INVITEs the caller,
+    /// and the caller's `200 OK` has `To` tag equal to the dialog's `From` tag.
+    #[test]
+    fn a_reverse_reinvite_answer_keeps_the_callee_tag() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (200, "2 INVITE", "t1", "callee"),
+                (200, "102 INVITE", "callee", "t1"),
+            ])?
+            .as_deref(),
+            Some("callee"),
+        );
+        // Before any answer, too: the caller's own tag is never the remote one.
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (200, "102 INVITE", "callee", "t1"),
+            ])?
+            .as_deref(),
+            Some("challenge"),
+        );
+        Ok(())
     }
 
     /// Build `n` dialogs whose opening method is `method`.

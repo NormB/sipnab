@@ -892,6 +892,8 @@ participant.
 | `analysis[0].body.media_quality` | each RTP stream's MOS and R-factor, computed from the packets sipnab read, with `mos_grounded` saying whether the MOS rests on a published impairment value | that a listener heard that quality |
 | an absent field | the capture did not carry it | that the call lacked it |
 | a `dialog[]` object with no media fields | this export carries no media | that the call had none |
+| `parties` on a `recording` with a `body` | the stream on each channel came from the address and port the named party advertised in its own SDP | that the party spoke, or that the channel holds only that party's audio |
+| a `recording` with a `body` and no `parties` | at least one channel came from an address and port no party advertised in its SDP, such as a media relay's | that nobody was on that channel |
 
 Three rules follow from that table.
 
@@ -979,8 +981,14 @@ answer. The observer party never carries one at all.
 The dialog object carries `sip_from_tag` and `sip_to_tag` when the capture
 observed them. A Call-ID alone cannot distinguish one leg of a forked INVITE
 from another — every fork shares it — so a consumer correlating legs across
-nodes needs the tags. `sip_to_tag` is absent until the callee answers, which is
-itself a signal: nothing established a dialog.
+nodes needs the tags. `sip_to_tag` is the `To` tag of the response that
+established the dialog: a 2xx answer to the opening request, or, when the
+capture holds none, a 101-199 response to it. sipnab falls back to a tag from a
+response that establishes no dialog, such as a `401` or `407` challenge, only
+when the capture holds neither, and an answer under another tag replaces it.
+[RFC 3261 section 12.1](https://datatracker.ietf.org/doc/html/rfc3261#section-12.1)
+is the rule. `sip_to_tag` is absent when no message carried a `To` tag, which
+is itself a signal: nothing established a dialog.
 
 ## What this does not do
 

@@ -474,7 +474,11 @@ pub struct Dialog {
     pub sip_from_tag: Option<String>,
     /// The dialog's `To` tag, when the capture observed one.
     ///
-    /// Absent until the callee answers, which is itself the signal that no
+    /// The tag of the response that established the dialog, a 2xx and then a
+    /// 101-199 to the opening request, ahead of a tag from a response that
+    /// establishes none, such as a `401` challenge (see
+    /// [`SipDialog::to_tag`](crate::sip::dialog::SipDialog::to_tag)). Absent
+    /// when no message carried a `To` tag, which is itself the signal that no
     /// dialog was established.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_to_tag: Option<String>,
