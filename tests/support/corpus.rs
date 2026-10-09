@@ -98,6 +98,50 @@ pub fn notice_line(binary: &str) -> String {
 /// The fragment every notice carries, for tests and for `grep`.
 pub const NOTICE_MARKER: &str = "did NOT run";
 
+// ---- The vCon dataset corpus ----
+//
+// A second opt-in corpus with the same two properties: the skip is audible
+// and it is a skip. A separate variable because it is separate data — public
+// vCon containers fetched by `scripts/fetch-vcon-datasets.py`, not captured
+// traffic — and a contributor may hold one without the other.
+
+/// The environment variable naming the vCon dataset cache.
+pub const VCON_DATASETS_VAR: &str = "SIPNAB_VCON_DATASETS";
+
+/// The vCon dataset cache, or `None` when [`VCON_DATASETS_VAR`] is unset —
+/// announcing the skip on the way out, as [`root`] does.
+///
+/// # Side effects
+/// On the `None` path, writes [`vcon_datasets_notice_line`] to stderr once per
+/// test binary.
+pub fn vcon_datasets_root() -> Option<PathBuf> {
+    match std::env::var(VCON_DATASETS_VAR) {
+        Ok(dir) => Some(PathBuf::from(dir)),
+        Err(_) => {
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                // NOT eprintln!, for the reason `announce_skipped` gives.
+                let line = vcon_datasets_notice_line(env!("CARGO_CRATE_NAME"));
+                let _ = writeln!(std::io::stderr(), "{line}");
+            });
+            None
+        }
+    }
+}
+
+/// The vCon dataset notice, as a string.
+///
+/// # Arguments
+/// * `binary` — the test binary the gates live in.
+#[must_use]
+pub fn vcon_datasets_notice_line(binary: &str) -> String {
+    format!(
+        "NOTICE: {VCON_DATASETS_VAR} is unset — the vCon dataset gates in `{binary}` did NOT run. \
+         This suite being green is not full validation; run scripts/fetch-vcon-datasets.py <dir> \
+         and set {VCON_DATASETS_VAR}=<dir> to run them."
+    )
+}
+
 // ---- Reading the corpus itself ----
 //
 // Lived in `scanner_signature_corpus_test.rs` until a second suite needed it.

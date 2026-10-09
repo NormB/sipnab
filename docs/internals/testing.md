@@ -71,6 +71,77 @@ drifted.
 | [`tests/install-sh/`](../../tests/install-sh) — installer cases | Hand-maintained; exercised by the `install-sh` CI job. |
 | [`fuzz/corpus/`](../../fuzz/corpus) — fuzz seeds | Grown by `cargo fuzz run` (nightly). Note nothing on the stable toolchain reads this directory: `fuzz_corpus_replay` drives its own in-file seed set. To make a reproducer run in every `cargo test`, add it to `smoke_fuzz_test` as well. |
 
+### The public vCon datasets
+
+The vcon-dev community publishes five vCon datasets as git repositories:
+17,443 containers in all, none of which carries SIP signaling.
+[`tests/fixtures/vcon-datasets/PINS.tsv`](../../tests/fixtures/vcon-datasets/PINS.tsv)
+pins each one to a commit and records the license of its LICENSE file at that
+commit. Two tests read them.
+
+- [`vcon_dataset_subset_test`](../../tests/vcon_dataset_subset_test.rs) runs on
+  every build with the `vcon` feature. It reads the four containers committed
+  under [`tests/fixtures/vcon-datasets/`](../../tests/fixtures/vcon-datasets/README.md)
+  and pins the findings `vcon_schema::validate` reports for each. It also
+  checks that the `jsonschema` reference engine agrees, that each container is
+  valid once the test repairs its recorded dataset issues, and that the fetcher
+  (`--vcon-fetch-kind generic`, against a server on `127.0.0.1`) saves each
+  one unchanged. Each dataset directory there carries the LICENSE file of its
+  dataset and a README with the source path and SHA-256 of every file.
+- [`vcon_dataset_corpus_test`](../../tests/vcon_dataset_corpus_test.rs) reads
+  every container in the five datasets. It runs only when
+  `SIPNAB_VCON_DATASETS` names a directory that
+  [`scripts/fetch-vcon-datasets.py`](../../scripts/fetch-vcon-datasets.py)
+  filled. Without it, the binary prints one `NOTICE` line saying its gates did
+  not run, as the capture corpus does. The pre-push corpus gate does not run
+  it: that gate selects tests by the name `SIPNAB_CORPUS`.
+
+Fetch the datasets and run the corpus test:
+
+```sh
+# Run all of these, in order.
+python3 scripts/fetch-vcon-datasets.py "$HOME/vcon-datasets"
+SIPNAB_VCON_DATASETS="$HOME/vcon-datasets" \
+  cargo test --features full --profile corpus --test vcon_dataset_corpus_test
+```
+
+The script runs only `git`: it fetches each pinned commit, checks it out
+detached with hooks and symbolic links turned off, and refuses a checkout
+whose HEAD is not the pinned commit or whose files have changed. A second run
+verifies the cache and moves a dataset whose pin changed. The fetched
+datasets take about 2.3 GB of disk.
+
+The corpus test prints, for each dataset, the number of containers, the number
+the schema accepts, and each finding with the number of containers that carry
+it. It asserts that each dataset is at its pinned commit and that sipnab and
+the reference agree on every container, both on the verdict and on the
+instance paths of the findings. It also asserts the per-dataset counts
+measured on 2026-10-09, which hold for as long as the pins do. Moving a pin in
+`PINS.tsv` means measuring again and rewriting `EXPECTED` in the test.
+
+What the five datasets get, at their pins:
+
+| Dataset | Containers | Valid | Findings, with the number of containers that carry each |
+|---|---|---|---|
+| `vcon-supreme-court-arguments` | 8,503 | 0 | Attachment Object without `mediatype`: 8,503 |
+| `ietf-meeting-vcons` | 8,181 | 0 | Attachment Object without `mediatype`: 8,181. Dialog Object with `url` and no `content_hash`: 4,079 |
+| `vcon-dataset-city-of-newport-ri` | 115 | 0 | Attachment Object without `mediatype`: 115. Dialog Object with `url` and no `content_hash`: 115 |
+| `fake-vcons` | 601 | 0 | Attachment Object without `mediatype`: 601. Attachment Object without `start`: 601. Dialog Object with a `body` and no `encoding`: 264 |
+| `tadhack-2025` | 43 | 0 | Attachment Object without `mediatype`: 43. Attachment Object without `start`: 43 |
+
+Each finding is a rule that draft-ietf-vcon-vcon-core-04 states in its prose
+and in its schema:
+[section 4.4.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.5)
+for an inline attachment's `mediatype`,
+[section 4.4.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.2)
+for `start`,
+[section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
+for `content_hash` beside `url`, and
+[section 2.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+for `encoding`. The reference engine reports the same findings at the same
+paths. With those four repaired, every one of the 17,443 containers is valid
+to sipnab and to the reference engine.
+
 Accepting a snapshot or overwriting a golden is a **decision**, not a fix. Read
 the diff first: these files are the record of what the tool promised its users.
 

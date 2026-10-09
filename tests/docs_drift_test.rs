@@ -4275,7 +4275,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // for contrib/README.md.
     // 268 -> 269: website/content/docs/contributing.md, the generated site
     // page for CONTRIBUTING.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 269;
+    // 269 -> 273: the README.md of tests/fixtures/vcon-datasets/ and of its
+    // three dataset directories.
+    const EXPECTED_MARKDOWN_FILES: usize = 273;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4815,7 +4817,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // separator rows per file: docs/cli-reference.md 1,
     // docs/config-reference.md 1, docs/vcon.md 2, and the same 4 in their
     // site copies.
-    const EXPECTED_TABLES: usize = 1096;
+    // 1096 -> 1102: the public vCon datasets. docs/internals/testing.md 1 and
+    // its site page 1, tests/fixtures/vcon-datasets/README.md 1, and the
+    // README.md of each of its three dataset directories 1.
+    const EXPECTED_TABLES: usize = 1102;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
