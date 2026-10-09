@@ -1526,9 +1526,15 @@ It exists because an edit whose anchor included the heading destroyed it, leavin
 and a full CI run, because the sibling gate searches for the heading naming the
 *current site version* — which was still present further down.
 
-Nothing gates the changelog's contents, which is deliberate — prose would satisfy
-a gate on prose. What *is* gated is the release date: it must match
+Nothing gates the changelog's prose, which is deliberate — prose would satisfy
+a gate on prose. Two checks read it all the same. The release date must match
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml), asserted by `site_release_date_matches_changelog`.
+And the notes must name everything a release adds:
+[`release_surface_test`](https://github.com/NormB/sipnab/blob/main/tests/release_surface_test.rs) reads the
+command-line flags, MCP tools and REST routes at every release tag, and
+requires the notes to name each addition in its release's section or a later
+one. Whatever the working tree adds over the last tag, the notes must name
+above that tag's section, which before a release means under `[Unreleased]`.
 
 ### Re-measuring the benchmarks
 

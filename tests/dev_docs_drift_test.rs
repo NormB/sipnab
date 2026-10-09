@@ -855,7 +855,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/commit_signature_gate_test.rs.
     // +1: docs/internals/walkthroughs.md links src/mcp/budget.rs in the
     // new-tool recipe's step on bounding a paged response.
-    const EXPECTED_CODE_LINKS: usize = 512;
+    // 512 -> 516: docs/internals/testing.md links tests/examples_run_test.rs,
+    // tests/release_surface_test.rs and scripts/lib_markdown.py, and
+    // docs/internals/build-ci-release.md's changelog paragraph links
+    // tests/release_surface_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 516;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

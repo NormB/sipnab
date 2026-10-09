@@ -4604,7 +4604,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 273 -> 276: the overview pages, website/content/features.md,
     // deployments.md and compare.md.
     // 276 -> 275: compare.md removed (Norm, 2026-10-10).
-    const EXPECTED_MARKDOWN_FILES: usize = 275;
+    // 275 -> 276: tests/fixtures/markdown-fences.md, the fence shapes
+    // the_rust_and_python_fence_parsers_agree holds both parsers to.
+    const EXPECTED_MARKDOWN_FILES: usize = 276;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5178,10 +5180,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // +5: `vcon_spool_status`'s parameter and Returns tables, in
     // docs/mcp-tools.md 2 and website/content/docs/mcp-tools.md 2, and the
     // vCon spool status row in docs/design/surface-capability-matrix.md.
-    // +20: ten key tables in docs/keybindings.md (the nine views the F1 help
+    // 1136 -> 1156: ten key tables in docs/keybindings.md (the nine views the F1 help
     // documented and the page did not, and the capture filter editor) and
     // the same ten in its site mirror.
-    const EXPECTED_TABLES: usize = 1136;
+    const EXPECTED_TABLES: usize = 1156;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

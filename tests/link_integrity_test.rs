@@ -1216,7 +1216,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // view sections they open, and the TFPS observe section linking tfps.md)
     // and docs/rest-api.md 1 (the `filter` parameter row linking
     // filter-dsl.md). Measured on the merged tree.
-    const EXPECTED_WIKI_LINKS: usize = 1392;
+    // 1392 -> 1396: the Tested on sections that leave a section out link it,
+    // docs/tfps-sipnab.md section 3 and docs/vcon-sipnab.md's forwarder
+    // section (+2), section 3 links back to #tested-on (+1), and
+    // docs/library.md links client-examples.md for tls_plaintext_records (+1).
+    const EXPECTED_WIKI_LINKS: usize = 1396;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

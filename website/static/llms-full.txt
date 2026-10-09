@@ -149,11 +149,13 @@ downstream literal therefore cannot construct.
 
 ## Worked examples
 
-Four of the six programs in [`examples/`](../examples/) take the library path:
+Four of the seven programs in [`examples/`](../examples/) take the library path:
 they run against a real capture and print a real answer. Each exists because
 it demonstrates something a doctest on this page structurally cannot — state
-accumulated across a whole file. (The other two, `uprobe_discover` and
-`uprobe_sock_offsets`, report on the host rather than a capture.)
+accumulated across a whole file. Of the other three, `uprobe_discover` and
+`uprobe_sock_offsets` report on the host rather than a capture, and
+`tls_plaintext_records` decodes records laid out the way the BPF TLS probe
+writes them, as [Runnable client examples](client-examples.md) describes.
 
 | Example | Run it against | What it is for |
 |---|---|---|
@@ -36202,7 +36204,9 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
+Every block on this page except those under
+[Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnabs-own-forwarder)
+ran as written, in order, on 2026-09-28, with
 sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
 (kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
 machine.
@@ -37144,7 +37148,9 @@ The [REST API reference](rest-api.md) gives every request and response.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
+Every block on this page except those in
+[3. sipnab on the same machine as TFPS](#3-sipnab-on-the-same-machine-as-tfps)
+ran as written, in order, on 2026-09-28, with
 sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
 (kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): sipnab beside TFPS and on a second machine reaching it over SSH, with TFPS
 built from master.
@@ -37186,6 +37192,12 @@ sudo apt-get install -y ./sipnab_${V}_amd64.deb
 The package runs sipnab as the `sipnab` user, capturing on every interface.
 
 ## 3. sipnab on the same machine as TFPS
+
+This section ran as written on 2026-09-29, not with the release in
+[Tested on](#tested-on): on the same Debian 13 and Ubuntu 24.04 machines, with
+a package built from source that day, before the 0.5.196 release, installed
+over the release package that step 2 installs. `--allow-action`,
+`--journal-show` and `--revert-actions` first shipped in 0.5.196.
 
 **Turn on the REST API, and let it ban.** The API key reads everything and
 changes nothing. To ban and unban, sipnab also needs a signing key, from which
@@ -45474,7 +45486,9 @@ the thing it guards silently rotted at least once.
 | [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The WASM binding loses an export the browser analyzer calls. |
 | [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the automated-test count, which the template must read from the file `pages.yml` generates rather than state as a number. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Your SIP server" and "Add to your voice stack" groups of the docs navigation, so a guide added to one reaches the other. |
 | [`config_examples_test`](../../tests/config_examples_test.rs) | A config sample in the docs no longer parses. |
-| [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block and RUNS 352 of the 383 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
+| [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/`, the README or a hand-written page under `website/content/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block, including a fence indented under a list item, through the same CommonMark fence rule as [`scripts/lib_markdown.py`](../../scripts/lib_markdown.py) (it checks the two parsers agree on every page), and RUNS 447 of the 496 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
+| [`examples_run_test`](../../tests/examples_run_test.rs) | A program in `examples/` no longer runs the way its own comment says, or prints something other than the output the comment shows. It runs every `cargo run` command the comments document (12, across all seven programs), except one under `sudo`, and holds `docs/library.md`'s count of the programs to the directory. |
+| [`release_surface_test`](../../tests/release_surface_test.rs) | A release adds a flag, MCP tool or REST route that no release note names, or a guide's Tested on names a sipnab release older than a flag its commands use. It reads the three lists at every release tag, with extractors it first holds to clap and the MCP router. |
 | [`homepage_claim_truth_test`](../../tests/homepage_claim_truth_test.rs) | A claim the homepage states in PROSE stops being true: the MCP tool counts and their read-only split, which released builds carry the `bpf` feature, what the installer actually puts on a host, a capability the static musl build does not have, the filter language's field and operator counts, a TUI key the page names that nothing binds, and a CLI flag the page names that does not exist, plus the `unsafe` count and the safety claim resting on it — the page said "memory-safe by construction" beside 88 `unsafe` blocks and no `forbid(unsafe_code)`. `site_journey_test` gates the tiles; this gates the sentences, because the two disagreed on one page for months. |
 | [`cookbook_recipes_test`](../../tests/cookbook_recipes_test.rs) | A command in [`docs/examples.md`](../../docs/examples.md) no longer runs or names a flag `--help` lacks; or a command it executes has no output golden in [`tests/cli/cookbook/`](../../tests/cli/cookbook) and no reason in the checker's `OUTPUT_UNPINNED` table; or a golden there is one no cookbook command produces. |
 | [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
@@ -47369,9 +47383,15 @@ It exists because an edit whose anchor included the heading destroyed it, leavin
 and a full CI run, because the sibling gate searches for the heading naming the
 *current site version* — which was still present further down.
 
-Nothing gates the changelog's contents, which is deliberate — prose would satisfy
-a gate on prose. What *is* gated is the release date: it must match
+Nothing gates the changelog's prose, which is deliberate — prose would satisfy
+a gate on prose. Two checks read it all the same. The release date must match
 [`website/config.toml`](../../website/config.toml), asserted by `site_release_date_matches_changelog`.
+And the notes must name everything a release adds:
+[`release_surface_test`](../../tests/release_surface_test.rs) reads the
+command-line flags, MCP tools and REST routes at every release tag, and
+requires the notes to name each addition in its release's section or a later
+one. Whatever the working tree adds over the last tag, the notes must name
+above that tag's section, which before a release means under `[Unreleased]`.
 
 ### Re-measuring the benchmarks
 

@@ -77,6 +77,38 @@ entry that carries them.
   `full` row lists all twelve members. The install page's dependency column
   names the `rustls` that `api`, `metrics` and `vcon` pull in, and its `hep`
   row names HEP v1 receive.
+- **The release notes name every flag and REST route a release added.**
+  These shipped without a release note that named them. Each is listed with
+  the release that added it, read from that release's tag:
+  - 0.4.3: `--api-revoked-file`, `--api-signing-key-file`, `--api-token-ttl`,
+    `--mcp-signing-key-file` and `--mcp-token-ttl`.
+  - 0.4.4: `--buffer-budget`.
+  - 0.5.0: `--panic-selftest`, a hidden flag that panics on purpose to test
+    crash handling.
+  - 0.5.96: `--findings-history`.
+  - 0.5.97: `--jitter-bad-ms`, `--jitter-warn-ms`, `--loss-bad-pct`,
+    `--loss-warn-pct`, `--max-grouped-messages`, `--max-groups`,
+    `--max-lost-sequences`, `--max-metadata-file-bytes`, `--mos-bad`,
+    `--mos-warn`, `--rtt-bad-ms` and `--rtt-warn-ms`.
+  - 0.5.98: `--scanner-answer-grace`, `--scanner-behavioral-probes`,
+    `--scanner-enumeration-targets`, `--scanner-established-factor`,
+    `--scanner-rejected-probes`, `--scanner-unanswered-probes` and
+    `--scanner-window`.
+  - 0.5.99: `--cn-suppression-ratio` and `--max-tcp-buffer`.
+  - 0.5.100: `--exec-queue-depth`, `--fraud-volume-window`,
+    `--fraud-wangiri-window` and `--leg-correlation-window`.
+  - 0.5.125: `GET /v1/dialogs/{call_id}/vcon`.
+  - 0.5.130: `--mcp-audit-file`, `--redact-keep-prefix` and
+    `--redact-key-file`.
+  - 0.5.148: `GET /v1/tfps/banned`.
+  - 0.5.170: `GET /v1/relay/stats`, `GET /v1/relay/stats/names`,
+    `GET /v1/relay/stats/call/{call_id}` and
+    `GET /v1/relay/compare/{call_id}`.
+  - 0.5.205: `--vcon-forward-interval` and `--vcon-forward-timeout`.
+
+  `tests/release_surface_test.rs` now fails when a release adds a flag, an
+  MCP tool or a REST route that no release note from that release onward
+  names, and when the working tree adds one that `[Unreleased]` does not name.
 
 ## [0.5.212] - 2026-10-12
 
