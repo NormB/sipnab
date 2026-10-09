@@ -881,6 +881,9 @@ prose_sandbox() { # prose_sandbox <vale-exit> <codespell-exit>; echoes the dir
 	# The pin the stub below must match. prose_vale_pin() reads it from here,
 	# and a mismatch is return 2 (NOT CHECKED), which is neither arm under test.
 	printf "env:\n  VALE_VERSION: '9.9.9'\n" > "$_p/.github/workflows/quality.yml"
+	# The same for codespell: prose_codespell_pin() reads the version from the
+	# requirements file, and the stub below reports it.
+	echo 'codespell==9.9.9 --hash=sha256:0' > "$_p/scripts/requirements-codespell.txt"
 	echo 'docs' > "$_p/.config/vale-paths.txt"
 	echo 'docs' > "$_p/.config/codespell-paths.txt"
 	mkdir -p "$_p/docs"
@@ -894,6 +897,7 @@ prose_sandbox() { # prose_sandbox <vale-exit> <codespell-exit>; echoes the dir
 	EOF
 	cat > "$_p/bin/codespell" <<-EOF
 		#!/bin/sh
+		case "\$1" in --version) echo "9.9.9"; exit 0 ;; esac
 		echo "docs/page.md:1: a findable spelling problem"
 		exit $2
 	EOF

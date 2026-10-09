@@ -82,6 +82,12 @@ jobs:
     # .debs this release ships — so an unpinned one means the artifacts users
     # install came from an image nothing in the repo names. Dependabot's
     # github-actions ecosystem updates `container:` digests, so this stays fresh.
+    # It is Docker Hub's `rust:1-bookworm`, named through mirror.gcr.io,
+    # Google's cache of Docker Hub, with Docker Hub's digest: the runner's
+    # pull of it is anonymous, and on 2026-10-09 Docker Hub answered this
+    # repository's anonymous pulls with 429 and 504. The digest fixes the
+    # bytes whichever registry serves them. tests/ci_docker_hub_test.rs keeps
+    # every job image off Docker Hub.
     container: ${{ matrix.container }}
     strategy:
       fail-fast: false
@@ -89,7 +95,7 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
           # noaudio variants: binary built without the `audio` feature. Both
           # the .deb and the .rpm ship no plugin and no ALSA weak dependency
@@ -99,7 +105,7 @@ jobs:
           # tarball case.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
             variant: noaudio
           - target: x86_64-unknown-linux-musl
@@ -110,11 +116,11 @@ jobs:
           # for the same glibc-2.36 floor as x86_64.
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
             variant: noaudio
           - target: aarch64-unknown-linux-musl

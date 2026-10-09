@@ -6256,7 +6256,17 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // build job plus its `paths:` entry and that entry's comment (4).
     // Attributed by measurement: with HEAD's ci.yml swapped back in the scan
     // reads 172, with HEAD's quality.yml 173, with HEAD's pages.yml 174.
-    const EXPECTED_REFERENCES: usize = 178;
+    // 178 -> 184: six, for pulling no image from Docker Hub. The comments
+    // beside the buildx setup in `.github/workflows/docker.yml` and the
+    // `rust:1-bookworm` containers in `.github/workflows/release.yml` name
+    // `tests/ci_docker_hub_test.rs` (+1 each); `.github/workflows/quality.yml`'s
+    // codespell steps name `scripts/requirements-codespell.txt`,
+    // `scripts/prose-gates.sh` and the test, where the steps they replace
+    // named `.config/codespell-paths.txt` twice, `scripts/preflight.sh` and
+    // `.githooks/pre-push` (+4 net). Attributed by
+    // measurement: with HEAD's docker.yml swapped back in the scan reads 183,
+    // with HEAD's quality.yml 180, with HEAD's release.yml 183.
+    const EXPECTED_REFERENCES: usize = 184;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

@@ -1145,7 +1145,7 @@ case $prose_rc in
 	;;
 *)
 	printf '%bNOT CHECKED -- %s%b\n' "$YELLOW" "$PROSE_REASON" "$NC"
-	printf '    CI runs it and it blocks. `pipx install codespell`, or point\n'
+	printf '    CI runs it and it blocks. `pipx install codespell==%s`, or point\n' "$PROSE_PIN"
 	printf '    CODESPELL_BIN at one in a venv, to check here.\n'
 	;;
 esac

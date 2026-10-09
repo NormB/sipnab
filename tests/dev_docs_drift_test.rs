@@ -837,7 +837,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 496 -> 498: docs/internals/build-ci-release.md's hosted cargo cache
     // paragraph links scripts/ci-cache-prune.sh and
     // tests/ci_cache_policy_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 498;
+    // 498 -> 501: docs/internals/build-ci-release.md's Docker Hub paragraph
+    // links scripts/requirements-codespell.txt, scripts/prose-gates.sh and
+    // tests/ci_docker_hub_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 501;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
