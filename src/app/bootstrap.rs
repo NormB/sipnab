@@ -3416,6 +3416,13 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         return Some(strip_secrets(cli, out));
     }
 
+    // The one-shot file jobs (`--find-in-files`, `--compare-captures`,
+    // `--vcon-validate`): they read a set of files rather than a capture's
+    // stores, so they run and exit here. See `app::queries`.
+    if let Some(code) = crate::app::queries::startup(cli) {
+        return Some(code);
+    }
+
     None
 }
 
@@ -5755,6 +5762,28 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;
         cli
+    }
+
+    /// The startup commands end in the one-shot file-job dispatcher, and a
+    /// job that ran exits with its own code.
+    #[test]
+    fn startup_commands_reach_the_file_job_dispatcher() {
+        let mut cli = base_cli();
+        assert_eq!(
+            run_startup_commands(&cli),
+            None,
+            "no job: the run continues"
+        );
+        cli.test_one_shots.push(crate::cli::OneShot {
+            name: crate::app::queries::TEST_FILE_JOB,
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        });
+        assert_eq!(
+            run_startup_commands(&cli),
+            Some(crate::app::queries::TEST_FILE_JOB_EXIT)
+        );
     }
 
     // ── parse_autostop ─────────────────────────────────────────────────

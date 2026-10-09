@@ -16,8 +16,8 @@
 //!   - every REST route and TUI view is claimed or declared operational,
 //!   - every absence carries a reason (a gap or a decision, never a blank), and
 //!     MCP -- the anchor -- is never itself a gap,
-//!   - the gap count matches a ledger, so closing one is a deliberate edit and
-//!     opening one is visible.
+//!   - the gaps match a ledger of named rows, so closing one is a deliberate
+//!     edit and opening one is visible.
 //!
 //! The inventory sets are read from the generated inventory doc rather than
 //! re-derived from source, because `capability_matrix_test.rs` already holds
@@ -36,16 +36,45 @@ type TestError = Box<dyn std::error::Error>;
 const INVENTORY: &str = "docs/design/surface-capability-inventory.md";
 const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 
-/// The number of `gap:` cells the matrix names. A gap is a capability that
-/// passes a surface's question but is not built there yet. Closing one means
-/// flipping its cell to a present spelling and decrementing this; opening one
-/// (PAR2 naming a new hole) means raising it and adding the hole to PAR3/4/5.
+/// Every `gap:` cell the matrix names, by capability and surface. A gap is a
+/// capability that passes a surface's question but is not built there yet.
+/// Closing one means flipping its cell to a present spelling and deleting its
+/// line here; opening one (PAR2 naming a new hole) means adding a line and the
+/// hole to PAR3/4/5.
 ///
-/// 16 since the RFC 7951 export: writing the whole-capture row found that its
-/// TUI cell named `Statistics`, a view that shows totals, dialog states and
-/// methods and not one finding. The TUI has no view of the capture analysis,
-/// so that cell is a gap, not a present spelling.
-const EXPECTED_GAPS: usize = 16;
+/// A list of names rather than a count, so work that closes different gaps in
+/// parallel deletes different lines and never edits the same one. The gate
+/// compares the two sets, so a gap that appears or disappears without its line
+/// changing here still fails it, and the failure names the row.
+///
+/// The TUI line arrived with the RFC 7951 export: writing the whole-capture
+/// row found that its TUI cell named `Statistics`, a view that shows totals,
+/// dialog states and methods and not one finding. The TUI has no view of the
+/// capture analysis, so that cell is a gap, not a present spelling.
+const GAP_LEDGER: &[(&str, &str)] = &[
+    // CLI query batch B1: aggregates.
+    ("Call-volume histogram", "CLI"),
+    ("Group-by counts", "CLI"),
+    ("Carrier metrics by group", "CLI"),
+    ("Top talkers", "CLI"),
+    // CLI query batch B2: single-call queries.
+    ("B2BUA call tree", "CLI"),
+    ("Correlate legs", "CLI"),
+    ("Compare two dialogs", "CLI"),
+    ("Per-endpoint rollup", "CLI"),
+    ("Export decoded audio", "CLI"),
+    // CLI query batch B3: file jobs.
+    ("Find a Call-ID across files", "CLI"),
+    ("Compare two captures", "CLI"),
+    ("Validate vCon", "CLI"),
+    // CLI query batch B4: gates and the relay.
+    ("Evaluate expectations", "CLI"),
+    ("Relay holdings", "CLI"),
+    // CLI query batch B0: the time window.
+    ("Search by time window", "CLI"),
+    // TUI (PAR4).
+    ("Whole-capture report", "TUI"),
+];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -403,18 +432,42 @@ fn every_absence_carries_a_reason() -> Result<(), TestError> {
 }
 
 #[test]
-fn the_gap_count_matches_the_ledger() -> Result<(), TestError> {
-    let gaps = capabilities()?
+fn the_gaps_match_the_ledger() -> Result<(), TestError> {
+    let named: BTreeSet<(String, String)> = capabilities()?
         .iter()
-        .flat_map(|c| c.cells())
-        .filter(|(_, cell)| cell.status() == Status::Gap)
-        .count();
+        .flat_map(|c| {
+            c.cells()
+                .into_iter()
+                .filter(|(_, cell)| cell.status() == Status::Gap)
+                .map(|(surface, _)| (c.name.clone(), surface.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let ledger: BTreeSet<(String, String)> = GAP_LEDGER
+        .iter()
+        .map(|(cap, surface)| ((*cap).to_string(), (*surface).to_string()))
+        .collect();
     assert_eq!(
-        gaps, EXPECTED_GAPS,
-        "the matrix names {gaps} gaps but the ledger (EXPECTED_GAPS) expects \
-         {EXPECTED_GAPS}. Closing a gap means flipping its cell to a present \
-         spelling and decrementing this. A NEW gap means PAR2 named a hole \
-         PAR3/PAR4/PAR5 must close -- raise this and add it to the plan."
+        ledger.len(),
+        GAP_LEDGER.len(),
+        "GAP_LEDGER names a row twice"
+    );
+    let opened: Vec<String> = named
+        .difference(&ledger)
+        .map(|(cap, surface)| format!("{cap} / {surface}"))
+        .collect();
+    let closed: Vec<String> = ledger
+        .difference(&named)
+        .map(|(cap, surface)| format!("{cap} / {surface}"))
+        .collect();
+    assert!(
+        opened.is_empty() && closed.is_empty(),
+        "the matrix gaps and the ledger (GAP_LEDGER) disagree.\n  \
+         gaps the ledger does not name: {opened:?}\n  \
+         ledger lines the matrix no longer marks a gap: {closed:?}\n\
+         Closing a gap means flipping its cell to a present spelling and \
+         deleting its line. A NEW gap means PAR2 named a hole PAR3/PAR4/PAR5 \
+         must close -- add its line and add it to the plan."
     );
     Ok(())
 }

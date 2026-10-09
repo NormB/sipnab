@@ -1121,7 +1121,9 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
 ///
 /// Returns a ready-to-print reason when a file that was named, or was found on
 /// disk, cannot be read.
-fn lint_suppressions(cli: &Cli) -> Result<Option<crate::sip::lint::SuppressionFile>, String> {
+pub(crate) fn lint_suppressions(
+    cli: &Cli,
+) -> Result<Option<crate::sip::lint::SuppressionFile>, String> {
     if cli.output_args.lint_no_suppress {
         return Ok(None);
     }
@@ -1206,7 +1208,7 @@ pub fn run_cores_file(
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
             // No companion server runs on the --cores path, so there is no
             // gate anyone could have moved and the command line governs.
-            let reports_ok = report_parallel_run(cli, &r, filter, vcon_filter);
+            let reports_ok = report_parallel_run(cli, config, &r, filter, vcon_filter);
             // Same linter, same catalog, same exit code as the batch path.
             // Wired here because a gate that silently passes under `--cores` is
             // worse than no gate: a pipeline adding `--cores 8` for speed would
@@ -1250,6 +1252,7 @@ pub fn run_cores_file(
 /// # Arguments
 ///
 /// * `cli` — the parsed command line: the report flags and `--quiet`.
+/// * `config` — the loaded config, for the thresholds a query resolves.
 /// * `r` — the merged result of the parallel run.
 /// * `filter` / `vcon_filter` — the compiled `--filter` expressions, as
 ///   [`generate_reports`] takes them.
@@ -1261,12 +1264,14 @@ pub fn run_cores_file(
 /// capture-quality and LLMNR notices.
 fn report_parallel_run(
     cli: &Cli,
+    config: &Config,
     r: &crate::parallel::ReconResult,
     filter: Option<&FilterExpr>,
     vcon_filter: Option<&FilterExpr>,
 ) -> bool {
     let reports_ok = generate_reports(
         cli,
+        config,
         CaptureRead {
             dialogs: &r.dialog_store,
             streams: &r.stream_store,
@@ -2554,6 +2559,7 @@ pub fn run(
         // As above: no companion server on this path, so no gate to consult.
         let reports_ok = report_parallel_run(
             &cli,
+            config,
             &result,
             batch.filter_expr.as_ref(),
             batch.vcon_filter_expr.as_ref(),
@@ -4451,6 +4457,7 @@ impl BatchRunner {
         let gate = self.servers.as_ref().map(|s| s.persistence_gate.as_ref());
         if !generate_reports(
             &self.cli,
+            &self.config,
             CaptureRead {
                 dialogs: &ds_guard,
                 streams: &ss_guard,
@@ -6282,7 +6289,7 @@ fn print_hep_senders(roster: Option<&crate::capture::hep_roster::HepRoster>, jso
 /// every other error means the output is incomplete. `print!` would panic on
 /// both, which is how `--report` to a full disk exited 101 with a backtrace
 /// while `-O` and `--json` reported the same condition as a clean failure.
-fn write_stdout(text: &str) -> bool {
+pub(crate) fn write_stdout(text: &str) -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -6318,6 +6325,8 @@ pub struct CaptureRead<'a> {
 ///
 /// # Arguments
 ///
+/// * `config` — the loaded config, for the thresholds the one-shot queries
+///   resolve (see `app::queries`).
 /// * `filter` — the compiled `--filter` expression, or `None` for no filter.
 ///   These reports render the final stores rather than the packet stream, so
 ///   they must apply it themselves: it used to be consulted only as packets
@@ -6332,6 +6341,7 @@ pub struct CaptureRead<'a> {
 /// `SIPNAB_PERF_STATS` environment variable.
 pub fn generate_reports(
     cli: &Cli,
+    config: &Config,
     read: CaptureRead<'_>,
     filter: Option<&FilterExpr>,
     vcon_filter: Option<&FilterExpr>,
@@ -6391,6 +6401,16 @@ pub fn generate_reports(
             gate,
             vcon_end,
         )
+        // The one-shot query flags (`--talkers`, `--call-tree`, `--expect`
+        // and the rest), answered from these same final stores through the
+        // same compiled filter. See `app::queries`.
+        && super::queries::render(&super::queries::QueryContext::new(
+            cli,
+            config,
+            dialog_store,
+            stream_store,
+            filter,
+        ))
 }
 
 /// SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
@@ -6447,7 +6467,7 @@ fn report_tables_print(cli: &Cli) -> bool {
 }
 
 /// The table format `--markdown` picks for the human-readable reports.
-fn table_report_format(cli: &Cli) -> output::ReportFormat {
+pub(crate) fn table_report_format(cli: &Cli) -> output::ReportFormat {
     if cli.output_args.markdown {
         output::ReportFormat::Markdown
     } else {
@@ -13994,6 +14014,40 @@ mod tests {
 
     // ── generate_reports ───────────────────────────────────────────────
 
+    /// The report chain ends in the one-shot query dispatcher, and a query
+    /// that cannot be answered fails the chain the way a failed report does.
+    /// `--cores` reaches the same chain through `report_parallel_run`.
+    #[test]
+    fn the_report_chain_ends_in_the_query_dispatcher() -> Result<(), TestError> {
+        let dialog_store = DialogStore::new(10, false);
+        let stream_store = StreamStore::new(10);
+        let run = |cli: &Cli| {
+            generate_reports(
+                cli,
+                &Config::default(),
+                CaptureRead {
+                    dialogs: &dialog_store,
+                    streams: &stream_store,
+                    frames_read: 0,
+                },
+                None,
+                None,
+                None,
+                VconRunEnd::Whole,
+            )
+        };
+        let mut cli = base_cli();
+        assert!(run(&cli), "no query asked for: the chain succeeds");
+        cli.test_one_shots.push(crate::cli::OneShot {
+            name: crate::app::queries::TEST_FAILING_QUERY,
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        });
+        assert!(!run(&cli), "a query that failed must fail the chain");
+        Ok(())
+    }
+
     /// `--report` and `--call-report` run without panicking on empty stores,
     /// unknown Call-IDs, and a tracked dialog across all report formats.
     #[test]
@@ -14006,6 +14060,7 @@ mod tests {
         cli.output_args.report = true;
         generate_reports(
             &cli,
+            &Config::default(),
             CaptureRead {
                 dialogs: &dialog_store,
                 streams: &stream_store,
@@ -14022,6 +14077,7 @@ mod tests {
         cli.output_args.call_report = Some("does-not-exist".to_string());
         generate_reports(
             &cli,
+            &Config::default(),
             CaptureRead {
                 dialogs: &dialog_store,
                 streams: &stream_store,
@@ -14059,6 +14115,7 @@ mod tests {
             setup(&mut cli);
             generate_reports(
                 &cli,
+                &Config::default(),
                 CaptureRead {
                     dialogs: &dialog_store,
                     streams: &stream_store,

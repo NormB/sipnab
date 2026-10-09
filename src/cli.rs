@@ -9,6 +9,18 @@
 
 use clap::Parser;
 
+mod aggregate_args;
+mod call_query_args;
+mod file_job_args;
+mod gate_args;
+pub mod one_shot;
+
+pub use aggregate_args::AggregateArgs;
+pub use call_query_args::CallQueryArgs;
+pub use file_job_args::FileJobArgs;
+pub use gate_args::GateArgs;
+pub use one_shot::OneShot;
+
 /// The flag that names the relay's control port, as an operator spells it.
 ///
 /// Exported so a message can name it without the spelling being duplicated --
@@ -440,6 +452,28 @@ pub struct Cli {
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
+
+    // ── One-shot queries ──
+    // Each group lives in its own file under `src/cli/` and declares its flags
+    // to `normalize` and `validate` through `one_shots`, so a query flag is
+    // added without editing this struct. See `docs/design/par5-cli-queries.md`.
+    #[command(flatten)]
+    pub aggregate_args: AggregateArgs,
+
+    #[command(flatten)]
+    pub call_query_args: CallQueryArgs,
+
+    #[command(flatten)]
+    pub file_job_args: FileJobArgs,
+
+    #[command(flatten)]
+    pub gate_args: GateArgs,
+
+    /// One-shot declarations a unit test injects, so the registry plumbing in
+    /// `normalize` and `validate` is proved before any real query flag exists.
+    #[cfg(test)]
+    #[arg(skip)]
+    pub(crate) test_one_shots: Vec<OneShot>,
 
     // ── Positional ──
     /// BPF capture filter expression (trailing positional arguments), handed
@@ -7102,6 +7136,7 @@ impl Cli {
             || self.output_args.export_vcon.is_some()
             || self.output_args.export_vcon_when.is_some()
             || self.mcp_owns_stdout()
+            || one_shot::any_implies_no_tui(&self.one_shots())
         {
             self.mode_args.no_tui = true;
         }
@@ -7168,6 +7203,22 @@ impl Cli {
                 refused.join(", ")
             )
         })
+    }
+
+    /// Every one-shot query flag's declaration, from the four query groups.
+    ///
+    /// The single list `normalize` and `validate` read: a flag declared in its
+    /// group's `one_shots` is made headless, required to run with `-N`, or
+    /// refused beside `--mcp` on stdio from that declaration alone.
+    #[must_use]
+    pub fn one_shots(&self) -> Vec<OneShot> {
+        let mut shots = self.aggregate_args.one_shots();
+        shots.extend(self.call_query_args.one_shots());
+        shots.extend(self.file_job_args.one_shots());
+        shots.extend(self.gate_args.one_shots());
+        #[cfg(test)]
+        shots.extend(self.test_one_shots.iter().copied());
+        shots
     }
 
     /// Whether this run serves MCP on stdout: `--mcp` with any transport but
@@ -7404,7 +7455,7 @@ impl Cli {
             ));
         }
 
-        let output_flags_used: Vec<&str> = [
+        let mut output_flags_used: Vec<&str> = [
             (self.output_args.json, "--json"),
             (self.output_args.json_dialogs, "--json-dialogs"),
             (self.output_args.json_pretty, "--json-pretty"),
@@ -7430,6 +7481,9 @@ impl Cli {
         .filter(|(active, _)| *active)
         .map(|(_, name)| *name)
         .collect();
+        // Every one-shot query flag that does not imply -N, from the registry
+        // rather than a line here per flag: see `cli::one_shot`.
+        output_flags_used.extend(one_shot::needing_no_tui(&self.one_shots()));
 
         if !output_flags_used.is_empty()
             && !self.mode_args.no_tui
@@ -7504,7 +7558,7 @@ impl Cli {
             // "Implies --no-tui" means. The stdout conflicts below are a
             // different question -- those flags would write to the wire MCP
             // owns, and the operator asked for them explicitly.
-            let stdout_flags: Vec<&str> = [
+            let mut stdout_flags: Vec<&str> = [
                 (self.output_args.json, "--json"),
                 (self.output_args.json_pretty, "--json-pretty"),
                 (self.output_args.report, "--report"),
@@ -7530,6 +7584,9 @@ impl Cli {
             .filter(|(active, _)| *active)
             .map(|(_, name)| *name)
             .collect();
+            // Every one-shot query flag whose answer goes to stdout, from the
+            // registry: see `cli::one_shot`.
+            stdout_flags.extend(one_shot::writing_stdout(&self.one_shots()));
             if !stdout_flags.is_empty() {
                 return Err(crate::Error::CliValidation(format!(
                     "--mcp uses stdout for the JSON-RPC wire and cannot be combined with \
@@ -12582,6 +12639,107 @@ mod tests {
                 "{flag} without --group-by must name what it needs: {err}"
             );
         }
+        Ok(())
+    }
+}
+
+/// The one-shot registry is what `normalize` and `validate` read, proved with
+/// declarations injected by the test rather than by any real query flag.
+#[cfg(test)]
+mod one_shot_plumbing_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A parsed command line plus one injected declaration, normalized the way
+    /// `parse_from_args` normalizes a real one.
+    fn with_shot(argv: &[&str], shot: OneShot) -> Result<Cli, TestError> {
+        let mut full = vec!["sipnab"];
+        full.extend_from_slice(argv);
+        let mut cli = Cli::try_parse_from(full)?;
+        cli.test_one_shots.push(shot);
+        cli.normalize();
+        Ok(cli)
+    }
+
+    /// An active declaration that implies `-N` makes the run headless.
+    #[test]
+    fn an_implying_one_shot_makes_the_run_headless() -> Result<(), TestError> {
+        let cli = with_shot(
+            &["-I", "x.pcap"],
+            OneShot {
+                name: "--test-implies",
+                active: true,
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        )?;
+        assert!(cli.mode_args.no_tui, "the declaration implies -N");
+        let idle = with_shot(
+            &["-I", "x.pcap"],
+            OneShot {
+                name: "--test-implies",
+                active: false,
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        )?;
+        assert!(!idle.mode_args.no_tui, "an inactive flag implies nothing");
+        Ok(())
+    }
+
+    /// An active declaration that does not imply `-N` is refused without it,
+    /// by name, and accepted with it.
+    #[test]
+    fn a_non_implying_one_shot_needs_no_tui() -> Result<(), TestError> {
+        let shot = OneShot {
+            name: "--test-needs",
+            active: true,
+            implies_no_tui: false,
+            owns_stdout: true,
+        };
+        let err = with_shot(&["-I", "x.pcap"], shot)?
+            .validate()
+            .err()
+            .ok_or("an active one-shot without -N must be refused")?
+            .to_string();
+        assert!(err.contains("--test-needs"), "names the flag: {err}");
+        assert!(err.contains("-N/--no-tui"), "names the remedy: {err}");
+        with_shot(&["-N", "-I", "x.pcap"], shot)?.validate()?;
+        Ok(())
+    }
+
+    /// An active declaration that writes stdout is refused beside `--mcp` on
+    /// stdio, and one that writes elsewhere is not.
+    #[test]
+    fn a_stdout_one_shot_is_refused_beside_mcp() -> Result<(), TestError> {
+        let writes = OneShot {
+            name: "--test-stdout",
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        };
+        let err = with_shot(&["--mcp", "-I", "x.pcap"], writes)?
+            .validate()
+            .err()
+            .ok_or("a stdout one-shot beside --mcp must be refused")?
+            .to_string();
+        assert!(err.contains("--test-stdout"), "names the flag: {err}");
+        assert!(err.contains("JSON-RPC"), "says why: {err}");
+        let elsewhere = OneShot {
+            owns_stdout: false,
+            ..writes
+        };
+        with_shot(&["--mcp", "-I", "x.pcap"], elsewhere)?.validate()?;
+        Ok(())
+    }
+
+    /// The four query groups are flattened in and declare nothing yet, so a
+    /// plain command line carries no one-shot at all.
+    #[test]
+    fn a_plain_command_line_declares_no_active_one_shot() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])?;
+        assert!(cli.one_shots().iter().all(|s| !s.active));
         Ok(())
     }
 }
