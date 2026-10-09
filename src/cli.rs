@@ -3862,8 +3862,9 @@ pub struct HepArgs {
     /// Transport `--hep-send` uses to reach the collector: `udp` (default),
     /// `tcp` or `tls`. Homer's collectors accept all three. HEP v3 carries its
     /// own total length, so a TCP or TLS feed is packets laid end to end with
-    /// no extra framing. Refused without `--hep-send`, which is the side it
-    /// governs.
+    /// no extra framing. Each TCP connect, the first and every reconnect,
+    /// gives up after 3 seconds and counts as a `connect` failure. Refused
+    /// without `--hep-send`, which is the side it governs.
     #[arg(
         help_heading = "HEP",
         long = "hep-send-transport",

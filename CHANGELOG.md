@@ -75,6 +75,20 @@ entry that carries them.
   stream details.` even when the same run had printed the stream report. When
   the run prints the report, the summary now states the counts and leaves out
   the second sentence. Without `--report`, the message is unchanged.
+- **A `tcp` or `tls` `--hep-send` connect no longer waits for the operating
+  system's limit.** The sender dialed the collector, at startup and on every
+  reconnect, with no time limit. A collector whose host or firewall drops the
+  connection request instead of refusing it held the connect for the
+  operating system's own limit: about 127 seconds on Linux with the default
+  six SYN retries. The dial runs on the thread that forwards packets, so for
+  that time nothing was sent, counted or stopped. On the macOS CI runner the
+  test of a refused reconnect took 79 to 82 seconds for this reason. Every
+  connect now gives up after 3 seconds and counts as a `connect` failure, as
+  a refused one does. Three seconds covers the first connection request and
+  one retransmission, which a TCP sender sends one second after the first
+  ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298)); the next packet dials again. The limit is a fixed value with no
+  flag or key, as the 10-second TLS handshake limit is.
+  Affected: `--hep-send` with `--hep-send-transport tcp` or `tls`.
 
 - **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP
   v1.** The version 2 reader took the ports from bytes 2 to 5 and two IPv4

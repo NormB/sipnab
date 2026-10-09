@@ -3467,6 +3467,24 @@ impl SinkFailure {
 /// a collector that answers the TCP SYN and nothing else.
 const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long one `--hep-send` TCP connect may take, over `tcp` and `tls`
+/// alike: the connection made at startup and every redial after a broken one.
+///
+/// Without a bound, a collector whose host or firewall drops the SYN instead
+/// of refusing it holds the connect for the operating system's own limit:
+/// about 127 seconds on Linux with the default six SYN retries. The sender
+/// dials on the thread that forwards packets, so for that whole time nothing
+/// is sent, counted or stopped.
+///
+/// Three seconds, because a TCP sender's first retransmission timeout is one
+/// second and doubles on each expiry (RFC 6298, sections 2.1 and 5.5): the
+/// SYN goes at 0 s and again at 1 s, and the retransmitted SYN has two
+/// seconds to be answered. A collector that answers neither is down or
+/// filtered, and nothing is gained by waiting longer, because the next packet
+/// dials again. A connect that runs out of time is a `connect` failure, as a
+/// refused one is.
+const HEP_SEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// The name a collector's certificate is checked against: the host the
 /// operator dialled, without the port.
 ///
@@ -3870,7 +3888,8 @@ pub struct HepSenderOpts<'a> {
 ///
 /// # Errors
 ///
-/// The first connection cannot be made, or `TCP_NODELAY` cannot be set.
+/// The first connection cannot be made within [`HEP_SEND_CONNECT_TIMEOUT`],
+/// or `TCP_NODELAY` cannot be set.
 ///
 /// # Side effects
 ///
@@ -3884,7 +3903,7 @@ fn hep_tcp_sink(
     use std::net::TcpStream;
 
     fn dial(dest: std::net::SocketAddr) -> std::io::Result<TcpStream> {
-        let s = TcpStream::connect(dest)?;
+        let s = TcpStream::connect_timeout(&dest, HEP_SEND_CONNECT_TIMEOUT)?;
         s.set_nodelay(true)?;
         Ok(s)
     }
@@ -3937,7 +3956,8 @@ fn hep_tcp_sink(
 /// # Errors
 ///
 /// The roots cannot be assembled, `server_name` is not a valid certificate
-/// name, the connection cannot be made, or the handshake fails or exceeds
+/// name, the connection cannot be made within [`HEP_SEND_CONNECT_TIMEOUT`],
+/// or the handshake fails or exceeds
 /// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
 ///
 /// # Side effects
@@ -3978,7 +3998,8 @@ fn hep_tls_sink(
         use super::hep_export::ExportFailure;
         let connect = |e| SinkFailure::at(ExportFailure::Connect, e);
         let handshake = |e| SinkFailure::at(ExportFailure::TlsHandshake, e);
-        let mut sock = TcpStream::connect(dest).map_err(connect)?;
+        let mut sock =
+            TcpStream::connect_timeout(&dest, HEP_SEND_CONNECT_TIMEOUT).map_err(connect)?;
         sock.set_nodelay(true).map_err(connect)?;
         sock.set_read_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))
             .map_err(connect)?;
@@ -5181,6 +5202,244 @@ mod tests {
             0,
             "a plain TCP exporter never fails a handshake: {snap:?}"
         );
+        Ok(())
+    }
+
+    // ── A collector that drops the SYN: every connect is bounded ─────────
+
+    /// A loopback collector that accepts connections until
+    /// [`SynDroppingCollector::start_dropping`], and from then on drops every
+    /// SYN: no RST, no answer, a connect that waits. That is what a
+    /// firewalled collector looks like from the sender. No firewall rule and no
+    /// off-host address are involved.
+    ///
+    /// Which socket state drops a SYN differs by platform, measured in CI:
+    ///
+    /// * Linux drops a SYN to a listener whose accept queue is full, so a
+    ///   backlog of 0 with one connection queued and never accepted drops every
+    ///   further SYN. A socket that is bound but not listening is refused at once.
+    /// * macOS answers a SYN to a full backlog-0 listener (the connect succeeded
+    ///   on the macos-latest runner), and drops a SYN to a socket that is bound
+    ///   but not listening (a connect to one timed out there). So the listener
+    ///   is replaced by such a socket, bound to the same port with
+    ///   `SO_REUSEPORT` before the listener closes, so the port is never free.
+    ///
+    /// [`SynDroppingCollector::start_dropping`] proves the premise on every
+    /// platform with a probe connect that must run out of its own short bound,
+    /// so a host that answered instead fails the fixture with that message.
+    struct SynDroppingCollector {
+        listener: Option<std::net::TcpListener>,
+        addr: std::net::SocketAddr,
+        /// What keeps the port dropping SYNs: the queued connection on Linux,
+        /// the bound non-listening socket on macOS.
+        _hold: Option<Box<dyn std::any::Any>>,
+    }
+
+    impl SynDroppingCollector {
+        fn new() -> Result<Self, TestError> {
+            let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                .map_err(|e| format!("socket: {e:?}"))?;
+            #[cfg(target_os = "macos")]
+            socket
+                .set_reuse_port(true)
+                .map_err(|e| format!("SO_REUSEPORT on the collector: {e:?}"))?;
+            socket
+                .bind(&std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+                .map_err(|e| format!("bind collector: {e:?}"))?;
+            socket.listen(0).map_err(|e| format!("listen: {e:?}"))?;
+            let listener = std::net::TcpListener::from(socket);
+            let addr = listener
+                .local_addr()
+                .map_err(|e| format!("collector addr: {e:?}"))?;
+            Ok(Self {
+                listener: Some(listener),
+                addr,
+                _hold: None,
+            })
+        }
+
+        /// The listener, for a test that accepts a first connection.
+        fn listener(&self) -> Result<&std::net::TcpListener, TestError> {
+            self.listener
+                .as_ref()
+                .ok_or_else(|| "the collector already drops SYNs".into())
+        }
+
+        /// From now on every SYN to [`Self::addr`] is dropped; proven by a probe.
+        fn start_dropping(&mut self) -> Result<(), TestError> {
+            #[cfg(target_os = "macos")]
+            {
+                let hold = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                    .map_err(|e| format!("hold socket: {e:?}"))?;
+                hold.set_reuse_port(true)
+                    .map_err(|e| format!("SO_REUSEPORT on the hold socket: {e:?}"))?;
+                hold.bind(&self.addr.into())
+                    .map_err(|e| format!("bind the hold socket while the listener lives: {e:?}"))?;
+                self.listener = None;
+                self._hold = Some(Box::new(hold));
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let queued = std::net::TcpStream::connect_timeout(&self.addr, MUST_ARRIVE)
+                    .map_err(|e| format!("the connection that fills the accept queue: {e:?}"))?;
+                self._hold = Some(Box::new(queued));
+            }
+            let probe =
+                std::net::TcpStream::connect_timeout(&self.addr, Duration::from_millis(300));
+            assert!(
+                matches!(&probe, Err(e) if e.kind() == std::io::ErrorKind::TimedOut),
+                "fixture: the collector must drop the next SYN on this host, so a \
+                 connect to it times out; got {probe:?}"
+            );
+            Ok(())
+        }
+    }
+
+    /// Run `work` on its own thread and wait at most `bound` for it.
+    ///
+    /// An unbounded connect to a collector that drops the SYN blocks for the
+    /// operating system's limit, about 127 seconds on Linux. Waiting on the
+    /// test thread would turn the defect into a slow pass; this turns it into
+    /// a failure at `bound`. A thread that is still blocked is left behind,
+    /// and its connect ends when the test drops the listener.
+    fn finishes_within<T: Send + 'static>(
+        bound: Duration,
+        what: &str,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, TestError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        rx.recv_timeout(bound)
+            .map_err(|e| format!("{what}: not finished within {bound:?} ({e})").into())
+    }
+
+    /// The kind of the I/O error at the bottom of a sender construction
+    /// error, or the whole chain when there is none.
+    fn root_io_kind(e: &anyhow::Error) -> Result<std::io::ErrorKind, String> {
+        e.root_cause()
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind)
+            .ok_or_else(|| format!("{e:#}"))
+    }
+
+    /// **The startup connect to a collector that drops the SYN fails within
+    /// [`HEP_SEND_CONNECT_TIMEOUT`]**, as a timeout, over `tcp`.
+    ///
+    /// Before the bound, `--hep-send` to such a collector sat in `connect` for
+    /// the operating system's limit before the operator heard anything.
+    #[test]
+    fn a_tcp_startup_connect_to_a_collector_that_drops_the_syn_times_out_within_the_bound()
+    -> Result<(), TestError> {
+        let mut collector = SynDroppingCollector::new()?;
+        let addr = collector.addr;
+        collector.start_dropping()?;
+        let outcome = finishes_within(
+            2 * HEP_SEND_CONNECT_TIMEOUT,
+            "the startup TCP connect to a collector that drops the SYN",
+            move || {
+                HepSender::for_destination(
+                    &OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &addr.to_string()),
+                    HepSenderOpts {
+                        transport: HepTransport::Tcp,
+                        ..HepSenderOpts::default()
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| root_io_kind(&e))
+            },
+        )?;
+        assert_eq!(
+            outcome,
+            Err(Ok(std::io::ErrorKind::TimedOut)),
+            "a collector that never answers the SYN is a connect that timed out"
+        );
+        Ok(())
+    }
+
+    /// **The same bound holds over `tls`**: the TCP connect under the
+    /// handshake is the one that waits, and it gives up as the plain one does.
+    #[test]
+    fn a_tls_startup_connect_to_a_collector_that_drops_the_syn_times_out_within_the_bound()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, _, _) = test_chain(dir.path())?;
+        let mut collector = SynDroppingCollector::new()?;
+        let addr = collector.addr;
+        collector.start_dropping()?;
+        let outcome = finishes_within(
+            2 * HEP_SEND_CONNECT_TIMEOUT,
+            "the startup TLS connect to a collector that drops the SYN",
+            move || {
+                HepSender::for_destination(
+                    &OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &addr.to_string()),
+                    HepSenderOpts {
+                        transport: HepTransport::Tls,
+                        tls_ca: Some(&ca),
+                        ..HepSenderOpts::default()
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| root_io_kind(&e))
+            },
+        )?;
+        assert_eq!(
+            outcome,
+            Err(Ok(std::io::ErrorKind::TimedOut)),
+            "a collector that never answers the SYN is a connect that timed out"
+        );
+        Ok(())
+    }
+
+    /// **A redial that the collector never answers counts as a `connect`
+    /// failure within [`HEP_SEND_CONNECT_TIMEOUT`]**, as a refused one does.
+    ///
+    /// The collector accepts the first connection, then its accept queue is
+    /// filled and the connection dropped, so the sender's redial meets a
+    /// dropped SYN. The redial runs on the thread that forwards packets: for
+    /// as long as it waits nothing is sent, counted or stopped.
+    #[test]
+    fn a_redial_to_a_collector_that_drops_the_syn_counts_as_a_connect_failure_within_the_bound()
+    -> Result<(), TestError> {
+        use crate::capture::hep_export::ExportFailure;
+        let mut collector = SynDroppingCollector::new()?;
+        let addr = collector.addr;
+        let sender = HepSender::for_destination(
+            &OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &addr.to_string()),
+            HepSenderOpts {
+                transport: HepTransport::Tcp,
+                ..HepSenderOpts::default()
+            },
+        )
+        .map_err(|e| format!("connect: {e:?}"))?;
+        send_one(&sender)
+            .map_err(|e| format!("the first packet crosses the live connection: {e:?}"))?;
+        let first = accept_within(collector.listener()?, "the first connection")?;
+        collector.start_dropping()?;
+        drop(first);
+
+        // Stop at the first failure of ANY kind, so a timeout counted under
+        // the wrong kind fails on the assertion that names the kind rather
+        // than on the deadline.
+        let counters = sender.counters();
+        let watched = counters.clone();
+        let failed = finishes_within(
+            2 * HEP_SEND_CONNECT_TIMEOUT,
+            "a redial to a collector that drops the SYN",
+            move || {
+                send_until(&sender, || {
+                    watched.snapshot().failures.iter().sum::<u64>() > 0
+                })
+            },
+        )?;
+        let snap = counters.snapshot();
+        assert!(failed, "the redial never failed: {snap:?}");
+        assert!(
+            snap.failures[ExportFailure::Connect.index()] > 0,
+            "a redial the collector never answers must count as a connect failure: {snap:?}"
+        );
+        assert!(snap.sent >= 1, "the first packet counted as sent: {snap:?}");
         Ok(())
     }
 
