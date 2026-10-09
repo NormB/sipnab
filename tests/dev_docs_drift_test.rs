@@ -832,7 +832,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // generated homepage test count links scripts/published-test-count.py and
     // scripts/fetch-ci-suite-output.py, and links website/templates/index.html
     // once where the two paragraphs it replaces linked it twice.
-    const EXPECTED_CODE_LINKS: usize = 495;
+    // 495 -> 496: docs/internals/vcon.md links the publisher's vCon schema
+    // file, tests/schemas/publisher/vcon_json_schema.json, beside sipnab's copy.
+    const EXPECTED_CODE_LINKS: usize = 496;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

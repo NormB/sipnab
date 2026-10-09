@@ -3243,6 +3243,10 @@ fn every_vendored_file_is_recorded_with_its_version() -> Result<(), TestError> {
         vendored.len()
     );
     vendored.push("tests/schemas/publisher/vcon_json_schema.json".to_string());
+    // The schema sipnab's validator reads. An unmodified copy of the
+    // publisher's file since draft-ietf-vcon-vcon-core-04, so it is
+    // third-party content with a row of its own.
+    vendored.push("tests/schemas/vcon.schema.json".to_string());
 
     for rel in &vendored {
         let (version, sha) = rows.get(rel).ok_or_else(|| {

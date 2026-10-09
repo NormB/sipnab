@@ -342,8 +342,8 @@ no single node holds.
 against
 [`tests/schemas/publisher/vcon_json_schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/publisher/vcon_json_schema.json),
 the vCon working group's schema file exactly as it stands in
-[ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/265e0449004acda56612120b3d6635ffe7822cf1/vcon_json_schema.json)
-at commit `265e0449`. The engine is `jsonschema`, not sipnab. A plain
+[ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/99589dd0b474d95c2feed52165fc2c95b1191d3d/vcon_json_schema.json)
+at commit `99589dd0`, the `draft-ietf-vcon-vcon-core-04` tag. The engine is `jsonschema`, not sipnab. A plain
 `jsonschema` install checks none of the three formats the schema uses, so the
 program brings a checker for each and refuses a schema whose formats it
 cannot check:
@@ -373,13 +373,20 @@ sipnab -N -I capture.pcap --export-vcon 'a84b4c76e66710@pc33.atlanta.example.com
 python3 clients/python/vcon_validate.py call.vcon
 ```
 
-A failed call passes. A call that completed without exported media does not:
-sipnab writes its Dialog Object with no `type`, because none of the five
-types the draft defines describes a call observed without its content. That
-is sipnab's one documented deviation, and its own copy of the schema,
-[`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json), drops `type` from the Dialog Object's
-`required` list. A store that validates against the publisher's file refuses
-the container, and this program says so:
+A failed call passes, and so does a call that completed without exported
+media: sipnab writes its Dialog Object as the `recording` placeholder of
+[section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), a type and no
+content. sipnab's own copy of the schema,
+[`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json),
+has the same bytes as the publisher's file:
+
+```text
+checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (tests/schemas/publisher/vcon_json_schema.json)
+valid    completed.vcon
+```
+
+A container sipnab wrote before it followed core-04 carries a Dialog Object
+with no `type`, and the publisher's file refuses it:
 
 ```text
 invalid  completed.vcon
@@ -3979,32 +3986,31 @@ sipnab -N --mcp -I capture.pcap --quiet
 ```jsonc
 // validate_vcon { "call_id": "1-1966@192.0.2.20" }
 {
+  "schema_version": 2,
   "verdict": "valid",
   "schema_path": "tests/schemas/vcon.schema.json",
-  "errors": [],
-  "deviations": [],
-  "explanations": []
+  "errors": []
 }
 ```
 
 Pass a container somebody else produced — one a store already rejected — as an object rather than a Call-ID:
 
 ```jsonc
-// validate_vcon { "container": { "vcon": "0.4.0", "dialog": [ { "type": "transfer" } ] } }
+// validate_vcon { "container": { "uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde", "created_at": "2026-09-01T12:00:00Z", "dialog": [ { "type": "transfer", "parties": [0, 1] } ] } }
 {
+  "schema_version": 2,
   "verdict": "invalid",
   "errors": [
-    { "instance_path": "/dialog/0", "keyword": "required",
-      "detail": "missing required properties: start" }
-  ],
-  "deviations": []
+    { "instance_path": "/dialog/0", "keyword": "not",
+      "detail": "carries `parties`, which the schema forbids here" }
+  ]
 }
 ```
 
 **What to look for:**
 
-- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: [section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
-- The exemption is **narrow**. Only a Dialog Object with no members at all counts. A typed object missing `start` is an ordinary error, and it is exactly the defect the corpus pass found. Folding the two together would teach a producer that a missing `start` is fine.
+- **There are two verdicts, `valid` and `invalid`.** The schema is the working group's [draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), unchanged. The `transfer` object above breaks a rule core-04 added: `parties` MUST NOT be present on a transfer ([section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)).
+- The empty Dialog Object `{}` that sipnab wrote for an attended transfer's unseen consultation leg under core-03 is now an ordinary error. core-04 replaced it with a placeholder that names its type ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3)), and sipnab writes `{"type": "recording"}` there.
 - A container that disagrees with the schema is an **answer**, not a tool error. The call fails only when the request is wrong: neither argument, both, an unknown Call-ID, or a `container` that is not a JSON object.
 
 **Pitfalls:**
@@ -4012,7 +4018,7 @@ Pass a container somebody else produced — one a store already rejected — as 
 - The validator reads the vendored schema file rather than a transcription of it, and it refuses to guess: a keyword outside the draft-07 subset the file uses makes every validation report `invalid` naming the keyword. Re-vendoring a richer schema fails loudly instead of quietly certifying less than it claims.
 - Needs a build carrying the non-default `vcon` Cargo feature. Without it the tool refuses by name. `server_capabilities` lists what a given binary has.
 
-**Runnable example:** `validate_vcon` is sipnab checking its own work. [Check a vCon against the publisher's schema](client-examples.md#check-a-vcon-against-the-publishers-schema) checks an export with `jsonschema` against the working group's file itself, which refuses a Dialog Object with no `type` that sipnab's copy accepts.
+**Runnable example:** `validate_vcon` is sipnab checking its own work. [Check a vCon against the publisher's schema](client-examples.md#check-a-vcon-against-the-publishers-schema) checks an export with `jsonschema` against the working group's file itself, which sipnab's copy matches byte for byte.
 
 ---
 
@@ -8208,23 +8214,22 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: app
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "verdict": "invalid",
-  "schema_id": "https://sipnab.com/schemas/vcon.schema.json",
-  "schema_path": "schemas/vcon.schema.json",
+  "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
+  "schema_path": "tests/schemas/vcon.schema.json",
   "errors": [
-    { "instance_path": "", "keyword": "required", "detail": "the container is missing the required `vcon` version property" }
-  ],
-  "deviations": [],
-  "explanations": []
+    { "instance_path": "", "keyword": "required", "detail": "missing required properties: uuid, created_at" }
+  ]
 }
 ```
 
-**`verdict` is one of three.** `valid` is a clean pass. `invalid` carries real
-`errors`. `valid-except-documented-deviation` names a shape sipnab emits on
-purpose that the schema rejects on purpose — those sit in `deviations`, each with
-a paragraph in `explanations`, kept apart from the errors so a producer does not
-treat a deliberate shape as a defect.
+**`verdict` is `valid` or `invalid`.** `valid` is a clean pass. `invalid`
+carries every finding in `errors`. The schema is the working group's
+[draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), vendored unchanged. The
+response is `schema_version` 2: version 1 also had `deviations`,
+`explanations` and a `valid-except-documented-deviation` verdict for the empty
+Dialog Object core-03 allowed, which core-04 no longer allows.
 
 The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
@@ -21825,7 +21830,7 @@ ordinary update.
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
-| [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the schema sipnab vendors and names the one documented deviation instead of passing it |
+| [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`generate_repro`](#generate_repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate_wireshark_filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -27584,7 +27589,8 @@ A binary built without the `vcon` Cargo feature refuses this tool with
 
 ### `validate_vcon`
 
-Checks a vCon container against the working group's schema as sipnab vendors it
+Checks a vCon container against the working group's
+[draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), vendored unchanged
 ([`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json)). Backed by
 [`output::vcon_schema`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_schema.rs).
 
@@ -27600,83 +27606,51 @@ nothing on any surface saying so.
 
 Give one, never both.
 
-**Three verdicts, not two.**
+**Two verdicts.**
 
 | `verdict` | What it means |
 |---|---|
 | `valid` | Nothing disagrees with the schema |
-| `valid-except-documented-deviation` | Every finding is a shape sipnab emits on purpose that the schema rejects. `deviations` names each one and `explanations` says why |
-| `invalid` | At least one finding is an ordinary defect. `errors` carries it |
+| `invalid` | At least one finding. `errors` carries each one |
 
-The middle verdict carries the whole point.
-[Section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3)
-says "it is
-possible to have a Dialog Object with no parameters in it", the working group
-agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
-schema forbids it, because every Dialog Object requires a `start`.
-
-sipnab emits
-one: the consultative call of an attended transfer, which the observed leg
-never saw. A validator that folded that into a clean pass would teach a
-producer that a missing `start` is fine — and a missing `start` on a `transfer`
-object is exactly the defect the corpus pass found.
-
-So the exemption is narrow. ONLY a Dialog Object with no members at all counts
-as the documented deviation. A typed object missing `start` is an error, and
-the two never merge.
+Each finding names the JSON Pointer of the offending value, the schema keyword
+that refused it and what was wrong. The response is `schema_version` 2. Version
+1 also had `deviations`, `explanations` and a third verdict,
+`valid-except-documented-deviation`, for the empty Dialog Object `{}` that
+draft-ietf-vcon-vcon-core-03 allowed in its prose and rejected in its schema.
+[Section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) replaced that object by a placeholder
+that names its type, so no deviation remains to excuse, and `{}` is now an ordinary
+error.
 
 ```jsonc
 // validate_vcon { "call_id": "1-1966@10.0.2.20" }
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "verdict": "valid",
   "schema_path": "tests/schemas/vcon.schema.json",
   "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [],
-  "deviations": [],
-  "explanations": [],
   "call_id": "1-1966@10.0.2.20"
 }
 ```
 
-A container carrying an attended transfer's consultation object:
+A rule core-04 added: `parties` MUST NOT be present on a `transfer` Dialog
+Object ([section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)):
 
 ```jsonc
+// validate_vcon { "container": { "uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde", "created_at": "2026-09-01T12:00:00Z", "dialog": [ { "type": "transfer", "parties": [0, 1] } ] } }
 {
-  "verdict": "valid-except-documented-deviation",
-  "errors": [],
-  "deviations": [
-    {
-      "instance_path": "/dialog/2",
-      "keyword": "required",
-      "detail": "missing required properties: start",
-      "deviation": "empty-dialog-object"
-    }
-  ],
-  "explanations": [
-    {
-      "name": "empty-dialog-object",
-      "explanation": "The empty Dialog Object `{}` of section 4.3: ... reported here rather than passed silently ..."
-    }
-  ]
-}
-```
-
-And the defect the corpus pass found, which is an error rather than an
-exemption:
-
-```jsonc
-// validate_vcon { "container": { ..., "dialog": [ { "type": "transfer" } ] } }
-{
+  "schema_version": 2,
   "verdict": "invalid",
+  "schema_path": "tests/schemas/vcon.schema.json",
+  "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [
     {
       "instance_path": "/dialog/0",
-      "keyword": "required",
-      "detail": "missing required properties: start"
+      "keyword": "not",
+      "detail": "carries `parties`, which the schema forbids here"
     }
-  ],
-  "deviations": []
+  ]
 }
 ```
 
@@ -30498,7 +30472,7 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
 
 > **sipnab discards RTP payloads unless you ask for them**
 >
-> Without `--retain-audio` the container carries a Dialog Object with no `type` and zero bytes. That is a run that kept no audio, not a call that was silent, and the completeness caveat is the only thing that says which — read it before concluding anything about the media.
+> Without `--retain-audio` the container carries a Dialog Object typed `recording` with no `body` and zero bytes, the placeholder of draft-ietf-vcon-vcon-core-04 section 4.3. That is a run that kept no audio, not a call that was silent, and the completeness caveat is the only thing that says which — read it before concluding anything about the media.
 >
 > Before 0.5.128 sipnab typed that object `incomplete`, which the vCon draft defines as a call that failed to reach conversation. A signaling-only container therefore reported every answered call as a failure.
 
@@ -30676,7 +30650,7 @@ Every container carries a completeness note built from that run's own counters. 
 |---|---|
 | List what persisted | Query `vcons_observed`. The cache-backed listing route also returns entries that expired and now answer 404. |
 | Fetch one | `GET /vcon/{uuid}` |
-| Play the audio | Base64url-decode `dialog[].body` where `type` is `recording` — it is a WAV. |
+| Play the audio | Base64url-decode `dialog[].body` where `type` is `recording` and `body` is present — it is a WAV. A `recording` with no `body` is a placeholder and carries no audio. |
 | Verify integrity | Check the recording's `content_hash` against the body you hold. |
 | Separate roles | Query the role view. An observation and a recording of one call are two UUIDs and stay that way. |
 
@@ -30979,7 +30953,7 @@ Everything the rest of the page refers to, in one place.
 | Flag | Default | Without it |
 |---|---|---|
 | `--hep-parse` | off | For HEP-encapsulated SIP. Leave OFF on a relay — it strips the wrapper that identifies mirrored ng |
-| `--retain-audio` | off | Containers carry a dialog with no `type` and no bytes |
+| `--retain-audio` | off | Containers carry a `recording` placeholder with no bytes |
 | `--api <addr>` | off | No REST surface. A non-loopback bind requires an API key |
 | `--portrange` | 5060-5061 | Names which ports carry SIP, separate from the capture filter |
 
@@ -31181,7 +31155,7 @@ export writes the same bytes. Pick the door that suits you:
 | At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
 | An agent holding an MCP session, one call | the `export_vcon` tool, with `call_id` | one container, its SHA-256, and what the capture missed |
 | An agent holding an MCP session, a set | the `export_vcon` tool, with `filter` | one entry per matching dialog, bounded by `--mcp-max-rows` |
-| An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the vendored schema, with the one documented deviation named |
+| An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the working group's draft-ietf-vcon-vcon-core-04 schema, with every finding named |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
 
@@ -31594,7 +31568,7 @@ itself. Every value below came off a run against the committed capture.
 
 **One reading convention, stated once.** Every `body` is a JSON-encoded
 *string* on the wire —
-[section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) allows nothing else, and a store
+[section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) allows nothing else, and a store
 normalizes it to one anyway. The blocks below show each `body` **decoded**, as
 an object, because an escaped one-line string is unreadable on a page. What
 sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`,
@@ -31628,6 +31602,7 @@ and a consumer parses it before indexing into it.
   ],
   "dialog": [
     {
+      "type": "recording",
       "sip_call_id": "test-call-1@192.0.2.1"
     }
   ],
@@ -31726,9 +31701,10 @@ one, not that the endpoint has none.
 
 **The Dialog Object describes no media, and that is correct here.** This run
 retained no RTP payload, so there is nothing to describe and inventing a
-`mediatype` or a `url` would name a file that does not exist. The object names
-no `type` at all — see the type rule below — and no `disposition`, because the
-call in this fixture completed and nothing about it failed.
+`mediatype` or a `url` would name a file that does not exist. The object's
+type is `recording` with no content — the placeholder of the type rule below —
+and it has no `disposition`, because the call in this fixture completed and
+nothing about it failed.
 
 **The completeness body appears twice.** Once as an attachment, once inside the
 report. The next section is about why.
@@ -31748,31 +31724,46 @@ five values and no others: `recording`, `recording-set`, `text`, `transfer`,
 names a call that "failed to be setup" — a claim about the conversation rather
 than about the object.
 
-So sipnab types the object by **what it carries**, never by what the call did,
-and where no value is true it names none:
+So sipnab types the object by **what it carries** and by the one outcome it
+can observe, a final failure:
 
 | The object holds | `type` | `disposition` |
 |---|---|---|
 | audio | `recording` | absent — it is an `incomplete` field |
-| no content, no observed failure | absent | absent |
+| no content, no observed failure | `recording`, with no content | absent |
 | no content, an observed final failure | `incomplete` | the reason, always |
 
-The empty row is the one [section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) provides for: "it is possible
-to have a Dialog Object with no parameters in it". Reaching for `incomplete`
-there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
-taste — it made every container for a call that answered assert a setup failure
-that never happened.
+The middle row is the placeholder of
+[section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), for a dialog the producer knows
+occurred but holds little or nothing from. Such a Dialog Object "contains only
+the type parameter", and for a call that reached setup its type is `recording`.
+[Section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8) waives `mediatype` when the content is
+absent. "No observed failure" covers an answered call, a call whose final
+response the capture never saw, and a redirect. sipnab cannot tell from the
+wire whether the second reached setup, and it does not report a failure it did
+not see.
 
-Reaching for `recording` instead is worse still: an object
-typed `recording` carrying neither `url` nor `body` promises content that is
-not there, and a conserver chain link that selects `type == "recording"` reads
-`dialog["url"]` unguarded — it raises, and the conserver dead-letters the
-**whole** container rather than the one step.
+Reaching for `incomplete` in that row is the mistake sipnab shipped until
+0.5.128, and it is not a matter of taste — it made every container for a call
+that answered assert a setup failure that never happened.
 
-The last two rows move together. [Section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
-makes `disposition` a MUST on an incomplete object, and no value in the closed
-set of [section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11) means "not
-observed", so one decision fixes both fields. `disposition` names a failure
+**Changed in this release, for draft-ietf-vcon-vcon-core-04.** Until now that
+row had no `type` at all, because `draft-ietf-vcon-vcon-core-03` allowed "a
+Dialog Object with no parameters in it". `-04` removed that sentence and
+requires `type` on every Dialog Object, so a container for a call with no media
+now carries `"type": "recording"` and no `body` or `url`. A consumer that
+selects `type == "recording"` and then reads the content must check that the
+content is there. Measured in the vcon-server conserver source at commit
+`8ffbfcf`: the `deepgram_link` transcription link reads `dialog["url"]` with a
+bracket and raises on such an object, and the `hugging_face_whisper` and
+`groq_whisper` links read `dialog["duration"]` the same way. The type-free
+object raised in all four transcription links, `openai_transcribe` included,
+at `dialog["type"]`.
+
+The last two rows move together.
+[Section 4.3.11 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) makes `disposition` a MUST
+on an incomplete object, and no value in its closed set means "not observed",
+so one decision fixes both fields. `disposition` names a failure
 **only** when sipnab saw the final response that caused it, and its absence
 never means "the call succeeded".
 
@@ -31848,7 +31839,7 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 the default is the conservative reading: a denied dialog leaves this process
 entirely. `--content-deny-tombstone` makes the narrower reading available — an
 identity-only container carrying a `redacted` object
-([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)), with no message
+([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)), with no message
 trace, no media and no bodies. The trade is explicit, because a tombstone
 reveals that the call existed. Leave it off when the header means "this call
 must leave no trace".
@@ -35545,8 +35536,8 @@ mode, and only when they carry audio.** vcon.store refuses `extensions` in the
 form both vCon drafts define, so a sipnab container sent unchanged draws `400`.
 `--vcon-forward-kind vcon-store` sends a copy the store accepts, and leaves
 the container on disk unchanged. Even with it, the store refuses a container
-whose Dialog Object has no `type`, which is what sipnab writes for a call whose
-container carries no audio: the run kept none, or `--redact` withheld it. [The measurements](#the-measurements) are the evidence.
+whose Dialog Object has no `parties`, which is what sipnab writes for a call
+whose container carries no audio: the run kept none, or `--redact` withheld it. [The measurements](#the-measurements) are the evidence.
 
 ## Before you send anything
 
@@ -35557,8 +35548,8 @@ another party's system. Decide what may leave the machine first:
 - `--redact` replaces identities, addresses and correlation identifiers with
   keyed tokens, and withholds the audio. It works on a capture file (`-I`),
   not on a live capture.
-- A redacted container carries no audio, so its Dialog Object has no `type`,
-  and vcon.store refuses it. The compat mode refuses it before sending, with
+- A redacted container carries no audio, so its Dialog Object has no
+  `parties`, and vcon.store refuses it. The compat mode refuses it before sending, with
   that reason. Today the only sipnab container vcon.store accepts is one
   exported without `--redact` and with audio: the call audio and the
   identifiers the signaling carried, as captured.
@@ -35644,8 +35635,8 @@ define. The forwarder logs each change, one line per container.
 
 | In the container | Sent to vcon.store | Why |
 |---|---|---|
-| `"extensions": ["sip-signaling", "CC"]` | `"extensions": {"sip-signaling": true, "CC": true}` | Section 4.1.3 of both [draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3) and [-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.3) defines `extensions` as an array of strings. vcon.store refuses that and accepts an object. The copy keeps every name, in its order. |
-| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object with neither when the container carries no audio, which section 4.3 of [draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) allows. The forwarder does not invent a `type` sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason that names `--retain-audio` and `--redact`. |
+| `"extensions": ["sip-signaling", "CC"]` | `"extensions": {"sip-signaling": true, "CC": true}` | Section 4.1.3 of [draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3), and of every revision since through [-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.3), defines `extensions` as an array of strings. vcon.store refuses that and accepts an object. The copy keeps every name, in its order. |
+| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object without `parties` when the container carries no audio: the `recording` placeholder of [section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), on which [section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) makes `parties` a SHOULD. A container sipnab wrote before it followed -04 lacks `type` there as well. The forwarder does not invent what sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason that names `--retain-audio` and `--redact`. |
 
 The forwarder sends every other byte of the container as sipnab wrote it. You can
 drop the mode once vcon.store accepts `extensions` as the array of strings the drafts
@@ -47358,7 +47349,7 @@ were wrong in the first cut, and a hand-written test agreed with the wrong
 answer, because the same misreading produced both.
 
 **`body` is a String, never an object.**
-[Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) says so, and
+[Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) says so, and
 `vcon-server`'s own model enforces it: hand its `Vcon` a `dict` and it
 JSON-encodes the value before anything else sees the attachment. So
 [`json_text()`](../../src/output/vcon.rs) serializes every structured body to
@@ -47366,71 +47357,61 @@ text on the way out, and every test that reads one parses it back. A body typed
 as `serde_json::Value` round-trips fine through `serde_json` and fails against a
 real store, which is exactly the class of defect a local test cannot see.
 
-**Two separate defects in the draft meet on this one field.** The first is a
-vocabulary gap: none of the five type values in
-[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) describes a conversation
-known to have occurred whose content the container does not carry or
-reference, which is the ordinary result for an observer that retains no media.
+**core-03 had two defects on this one field, and core-04 settled both.** The
+first was a vocabulary gap: none of the five type values described a
+conversation known to have occurred whose content the container does not carry
+or reference, which is the ordinary result for an observer that retains no
+media. The second was a prose/schema inconsistency: core-03's Dialog Object
+section said "it is possible to have a Dialog Object with no parameters in
+it", and its schema required `type` and `start`
+([section 7.1 of the vCon design page, "Section numbers"](../design/vcon.md#71-section-numbers),
+records where that text went). From 0.5.128 sipnab emitted such an object
+with no `type`, and its vendored schema removed `type` from `required` as a
+documented deviation.
 
-The second is a prose/schema inconsistency:
-[section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to have a
-Dialog Object with no parameters in it", and the schema published beside that
-sentence requires `type` AND `start`, so it forbids that shape twice over.
+[Section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) replaced that sentence. The object
+for a dialog known to have occurred, with little or nothing captured from it,
+is a placeholder "which contains only the type parameter", typed `recording`
+if the call reached setup and `incomplete` if it did not, and `start` became a
+SHOULD ([section 4.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.2)). So sipnab dropped the deviation: both vendored
+schema files are the publisher's core-04 file, byte for byte, and every Dialog
+Object sipnab writes names its type.
 
-sipnab needs only the first requirement relaxed — it knows the start time — so
-the vendored copy removes `type` from `required` and leaves `start`. Read that
-as a documented compatibility deviation rather than a fix: making a required
-field optional changes validation behavior and obliges consumers to handle a
-state the schema used to guarantee away.
+**The `type` follows what sipnab observed.** `incomplete`, from
+[section 4.3.1.5 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.5), names a call that "failed to
+be setup", which is a claim about the CONVERSATION. sipnab emitted it for every
+signaling-only export until 0.5.128, so a successful call shipped a container
+reporting a setup failure — read months later beside a switch's CDR showing a
+connected ninety-second call, the container is the thing that looks wrong.
 
-The cleaner long-term answer is an
-explicit sixth type for the content-unavailable state, which an absent `type`
-cannot distinguish from a producer that simply omitted it. `start`, `party`
-and `dialog` stay mandatory on every attachment.
+sipnab now keeps `incomplete` for a dialog whose final response it OBSERVED to
+be a failure, and every other signaling-only object is the `recording`
+placeholder. `dialog_object()` decides the type and the disposition in one
+expression because [section 4.3.11 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) couples
+them: an incomplete object MUST name a disposition, and a disposition is only
+nameable when sipnab saw a failure. The media path fills the placeholder in
+place when audio actually arrives, and clears `disposition` with it.
 
-**The `type` follows the CONTENT, not the call — and an object carrying nothing
-names no type at all.** Of the five values
-[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) defines, none is true of a
-signaling-only object: four promise content it does not hold, and `incomplete`
-names a call that "failed to be setup", which is a claim about the
-CONVERSATION.
+A `recording` placeholder carries no `body` and no `url`. A conserver
+transcription link that selects `type == "recording"` and reads
+`dialog["url"]` with a bracket raises on it. Under core-03 the type-free
+object raised in the same links at `dialog["type"]`. The converse costs as
+much: every `type == "recording"` selector skips audio left on an
+`incomplete` object, so the WAV would sit in the container unreachable.
 
-sipnab emitted `incomplete` there until 0.5.128, so every
-signaling-only export of a successful call shipped a container reporting a
-setup failure — read months later beside a switch's CDR showing a connected
-ninety-second call, the container is the thing that looks wrong.
-
-sipnab now keeps `incomplete`
-for a dialog whose final response it OBSERVED to be a failure, and `dialog_object()` decides the type and the disposition in one
-expression because
-[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
-couples them: an incomplete object MUST name a
-disposition, and a disposition is only nameable when sipnab saw a failure. The
-media path types the object `recording` when audio actually arrives, and clears
-`disposition` with it.
-
-Typing an object `recording` when it carries no
-content — which this module did until 0.5.125 — is an ingest hazard rather than
-an imprecise label. The conserver's transcription link selects
-`type == "recording"` and then reads `dialog["url"]` with a bracket, so the
-link raises, and the conserver dead-letters the entire container. The converse
-costs as much: every `type == "recording"` selector skips audio left on an
-`incomplete` object, so the WAV sits in the container unreachable.
-
-`audio_never_rides_on_an_object_typed_incomplete`
-and `nothing_is_typed_a_recording_without_content_to_reach` pin both directions,
-and the second lives in the SIGNALING-ONLY test file on purpose: over a media
+`audio_never_rides_on_an_object_typed_incomplete` and
+`a_recording_without_content_is_a_bare_placeholder` pin both directions, and
+the second lives in the SIGNALING-ONLY test file on purpose: over a media
 fixture every object has a body, so the assertion passes vacuously and the
 mutation survives.
 
 **The repository carries the schema, so the gate runs offline.**
 [`tests/schemas/vcon.schema.json`](../../tests/schemas/vcon.schema.json) is the
-working group's own schema, vendored, with the one deviation described above
-recorded in a `$comment` beside the line it changes.
-`the_vendored_schema_deviates_from_the_draft_at_exactly_one_point` is the
-tripwire: re-vendoring the file from the draft is a correct-looking action that
-silently restores the contradiction, and whoever does it lands on that test and
-reads why before deciding.
+working group's core-04 schema, vendored unchanged, and
+[`tests/schemas/publisher/vcon_json_schema.json`](../../tests/schemas/publisher/vcon_json_schema.json)
+holds the same bytes. `the_vendored_vcon_schema_is_the_publishers_core_04_file`
+pins both to the publisher's commit and SHA-256, so a re-vendor is a recorded
+change rather than an edit.
 
 `a_container_validates_against_the_working_group_schema` in
 [`tests/vcon_ingest_contract_test.rs`](../../tests/vcon_ingest_contract_test.rs)
@@ -47511,7 +47492,7 @@ of one dialog days apart therefore share a uuid and differ in `created_at`, and
 on the node ALONE, spending 62 of the 74 available bits on a value identical
 for every dialog on the box. Two dialogs opening in the same
 millisecond on one node had 12 bits between them, so roughly one pair in 4096
-collided — and [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.2) makes the uuid globally unique because a store KEYS on
+collided — and [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2) makes the uuid globally unique because a store KEYS on
 it.
 
 A collision raises nothing. It overwrites the record already there, losing

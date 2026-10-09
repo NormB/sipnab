@@ -280,8 +280,8 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() -> Result<(), T
 /// analysis body sipnab sent as a JSON OBJECT came back as a JSON STRING, with
 /// the content identical once parsed.
 ///
-/// The store is right and sipnab was wrong. `draft-ietf-vcon-vcon-core-03`
-/// §2.3 pairs `body` with an `encoding` of `base64url`, `json` or `none`, and
+/// The store is right and sipnab was wrong. Section 2.3 of
+/// `draft-ietf-vcon-vcon-core-04` pairs `body` with an `encoding` of `base64url`, `json` or `none`, and
 /// that pairing only means anything if the body is a string the encoding tells
 /// you how to read. sipnab already agreed with itself on half of it -- the
 /// recording object's `base64url` body has always been a string -- and
@@ -386,13 +386,13 @@ fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
 /// container that every hand-written test in this repository already passed:
 /// both attachments were missing the required `start` and `dialog`, and the
 /// Dialog Object was missing the required `type` and `start`. None of it was
-/// reachable by reading the prose, because the prose blesses an empty Dialog
-/// Object (§4.3) that the schema rejects.
+/// reachable by reading the prose, because the prose of draft-ietf-vcon-vcon-core-03
+/// blessed an empty Dialog Object that its schema rejected. core-04 removed
+/// that sentence, and the schema here is core-04's.
 ///
-/// Where they disagree, this repository satisfies BOTH where it can and the
-/// SCHEMA where it cannot: a consumer validating a container is the reader who
-/// actually rejects it, and being right about the prose is no comfort when the
-/// container bounces.
+/// Where prose and schema disagree, this repository satisfies BOTH where it can
+/// and the SCHEMA where it cannot: a consumer validating a container is the
+/// reader who actually rejects it.
 #[test]
 fn a_container_validates_against_the_working_group_schema() -> Result<(), TestError> {
     let (store, call_id) = capture_of("sip_call.pcap")?;
@@ -417,21 +417,26 @@ fn a_container_validates_against_the_working_group_schema() -> Result<(), TestEr
     Ok(())
 }
 
-/// An object typed `recording` always carries content a consumer can reach.
+/// A `recording` object without content is the bare placeholder of
+/// draft-ietf-vcon-vcon-core-04 section 4.3, and describes no media.
 ///
-/// This guards a SIGNALING-ONLY container, which is the case where the hazard
-/// lives: a container that carries audio has a body on every object by
-/// construction, so the same assertion over a media fixture passes vacuously.
-/// A mutation that types the signaling object `recording` survives there and
-/// dies here.
+/// Section 4.3 gives a call known to have occurred, with nothing captured from
+/// it, a placeholder typed `recording`; section 4.3.8 waives `mediatype` when
+/// the content is absent. What a contentless object must never do is DESCRIBE
+/// content: a `mediatype`, `encoding`, `content_hash`, `filename` or
+/// `duration` beside no `body` and no `url` promises a consumer media it
+/// cannot reach.
 ///
-/// The failure is not cosmetic. A conserver chain link that selects
-/// `type == "recording"` reads `dialog["url"]` with a bracket rather than a
-/// `get`; an object typed `recording` with neither `url` nor `body` raises
-/// inside the link, and the conserver moves the WHOLE container to the
-/// dead-letter queue — not just the step that raised.
+/// This guards a SIGNALING-ONLY container, which is the case where the
+/// placeholder occurs: over a media fixture every `recording` object has a
+/// body, so the same assertion passes vacuously.
+///
+/// A conserver link that selects `type == "recording"` and then reads
+/// `dialog["url"]` with a bracket raises on this object. That is the
+/// consumer's defect against core-04, which permits the shape; `docs/vcon.md`
+/// records the measured links.
 #[test]
-fn nothing_is_typed_a_recording_without_content_to_reach() -> Result<(), TestError> {
+fn a_recording_without_content_is_a_bare_placeholder() -> Result<(), TestError> {
     let (store, call_id) = capture_of("sip_call.pcap")?;
     let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
@@ -450,18 +455,27 @@ fn nothing_is_typed_a_recording_without_content_to_reach() -> Result<(), TestErr
             .map_err(|e| format!("valid JSON: {e}"))?;
 
     let objects = json["dialog"].as_array().ok_or("dialog is an array")?;
+    let placeholders: Vec<&serde_json::Value> = objects
+        .iter()
+        .filter(|o| o["type"] == "recording" && o.get("body").is_none() && o.get("url").is_none())
+        .collect();
     assert!(
-        !objects.is_empty(),
-        "no dialog object at all, so this test would pass against a container \
-         that described nothing: {json}"
+        !placeholders.is_empty(),
+        "a signaling-only export of an answered call has a `recording` \
+         placeholder, or this test checks nothing: {json}"
     );
-    for object in objects {
-        if object["type"] == "recording" {
+    for object in placeholders {
+        for media_field in [
+            "mediatype",
+            "encoding",
+            "content_hash",
+            "filename",
+            "duration",
+        ] {
             assert!(
-                object.get("body").is_some() || object.get("url").is_some(),
-                "typed `recording` with neither `body` nor `url`: a consumer \
-                 that reaches for the content finds none, and the conserver \
-                 dead-letters the container: {object}"
+                object.get(media_field).is_none(),
+                "a placeholder with no content describes media with \
+                 `{media_field}`: {object}"
             );
         }
     }
@@ -915,19 +929,17 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() -> Result<
 
     let errors = support::schema::openapi_errors("vcon-store-openapi.json", "VCon", &json)?;
 
-    // Divergence 1: their Dialog requires `type`, and a signaling-only object
-    // has no truthful value for it. This is the PV1 decision, and it is the
-    // same disagreement the working group's own schema has with its own prose.
-    // Their schema is not wrong; it faithfully implements a draft whose
-    // `required` list nobody has updated.
+    // Their Dialog requires `type`. Under draft-ietf-vcon-vcon-core-03 a
+    // signaling-only object named none, and this was a second divergence.
+    // core-04 section 4.3 types that object as the `recording` placeholder,
+    // so the requirement is met and must stay met.
     assert!(
-        errors.iter().any(|e| e.contains("type")),
-        "expected the known `type` divergence against vcon.store; if it is \
-         gone, either they relaxed the requirement or sipnab started naming a \
-         type it cannot back — find out which: {errors:#?}"
+        !errors.iter().any(|e| e.contains("type")),
+        "every core-04 Dialog Object names its type, so vcon.store's `type` \
+         requirement must hold: {errors:#?}"
     );
 
-    // Divergence 2: their Dialog requires `parties` on the DIALOG OBJECT.
+    // The divergence: their Dialog requires `parties` on the DIALOG OBJECT.
     // sipnab carries parties at container level and names them per channel
     // only where each channel could be attributed from evidence. Inventing a
     // dialog-level parties array to satisfy a validator would assert an
@@ -941,9 +953,9 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() -> Result<
     // this test asserts the divergence set rather than merely `is_err`.
     assert_eq!(
         errors.len(),
-        2,
-        "a sipnab container diverges from vcon.store in exactly two known \
-         ways; a third is either a regression here or a change there: \
+        1,
+        "a sipnab container diverges from vcon.store in exactly one known \
+         way; a second is either a regression here or a change there: \
          {errors:#?}"
     );
     Ok(())

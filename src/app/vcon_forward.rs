@@ -548,17 +548,19 @@ pub struct CompatCopy {
 /// The copy of `container` to send to vcon.store.
 ///
 /// vcon.store's validator rejects `extensions` in the form both
-/// draft-ietf-vcon-vcon-core-02 and -03 define in section 4.1.3, an array of
+/// draft-ietf-vcon-vcon-core-02, -03 and -04 define in section 4.1.3, an array of
 /// strings, with `400 extensions: Expected object, received array`, and
 /// accepts an object. So the copy carries `extensions` as an object mapping
 /// each name, in its original order, to `true`. Every other member keeps its
 /// bytes.
 ///
 /// The store also requires `type` and `parties` on every Dialog Object.
-/// sipnab writes a Dialog Object with neither when the run kept no audio,
-/// which section 4.3 of core-03 allows, and the forwarder does not invent a
-/// `type` sipnab did not observe or drop the object and leave dangling
-/// indexes. Such a container is refused here instead, with the reason.
+/// sipnab writes a Dialog Object without `parties` when the run kept no audio:
+/// the `recording` placeholder of section 4.3 of core-04, which section 4.3.4
+/// makes `parties` a SHOULD on. Containers sipnab wrote under core-03 lack
+/// `type` there as well. The forwarder does not invent what sipnab did not
+/// observe, or drop the object and leave dangling indexes. Such a container is
+/// refused here instead, with the reason.
 ///
 /// # Errors
 ///
@@ -589,7 +591,7 @@ pub fn vcon_store_copy(container: &[u8]) -> Result<CompatCopy, String> {
         bytes,
         transforms: vec![format!(
             "sent `extensions` as an object of {} name(s) mapped to true, because vcon.store \
-             refuses the String[] form that draft-ietf-vcon-vcon-core-02 and -03 define in \
+             refuses the String[] form that draft-ietf-vcon-vcon-core-02, -03 and -04 define in \
              section 4.1.3",
             names.len()
         )],
@@ -617,9 +619,10 @@ fn dialog_refusal(index: usize, dialog: &serde_json::Value) -> Result<(), String
     Err(format!(
         "vcon.store requires `type` and `parties` on every Dialog Object \
          (draft-ietf-vcon-vcon-core-02), and dialog[{index}] has no {missing}. sipnab writes \
-         a Dialog Object without them when the container carries no audio, which section 4.3 \
-         of draft-ietf-vcon-vcon-core-03 allows, and the forwarder does not invent what sipnab \
-         did not observe. A container carries audio only when the export ran with \
+         a Dialog Object without `parties` when the container carries no audio, the \
+         `recording` placeholder of section 4.3 of draft-ietf-vcon-vcon-core-04 (a container \
+         written under -03 lacks `type` there too), and the forwarder does not invent what \
+         sipnab did not observe. A container carries audio only when the export ran with \
          --retain-audio and without --redact, which withholds it; such a container has a \
          `recording` Dialog Object, which the store accepts. The container was not sent and was \
          not changed."

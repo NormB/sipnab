@@ -479,7 +479,9 @@ fn vcon_validate_answers_over_the_socket() -> Result<(), TestError> {
     let resp = srv.post_json("/v1/vcon/validate", "{}")?;
     assert_eq!(resp.status, 200, "/v1/vcon/validate status");
     let body = resp.json()?;
-    assert_eq!(body["schema_version"], 1);
+    // 2: draft-ietf-vcon-vcon-core-04 left no documented deviation, so the
+    // envelope dropped `deviations` and `explanations`.
+    assert_eq!(body["schema_version"], 2);
     assert_eq!(body["verdict"], "invalid");
     assert!(body["errors"].is_array(), "errors is an array");
     Ok(())

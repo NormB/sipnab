@@ -11,8 +11,8 @@ mode, and only when they carry audio.** vcon.store refuses `extensions` in the
 form both vCon drafts define, so a sipnab container sent unchanged draws `400`.
 `--vcon-forward-kind vcon-store` sends a copy the store accepts, and leaves
 the container on disk unchanged. Even with it, the store refuses a container
-whose Dialog Object has no `type`, which is what sipnab writes for a call whose
-container carries no audio: the run kept none, or `--redact` withheld it. [The measurements](#the-measurements) are the evidence.
+whose Dialog Object has no `parties`, which is what sipnab writes for a call
+whose container carries no audio: the run kept none, or `--redact` withheld it. [The measurements](#the-measurements) are the evidence.
 
 ## Before you send anything
 
@@ -23,8 +23,8 @@ another party's system. Decide what may leave the machine first:
 - `--redact` replaces identities, addresses and correlation identifiers with
   keyed tokens, and withholds the audio. It works on a capture file (`-I`),
   not on a live capture.
-- A redacted container carries no audio, so its Dialog Object has no `type`,
-  and vcon.store refuses it. The compat mode refuses it before sending, with
+- A redacted container carries no audio, so its Dialog Object has no
+  `parties`, and vcon.store refuses it. The compat mode refuses it before sending, with
   that reason. Today the only sipnab container vcon.store accepts is one
   exported without `--redact` and with audio: the call audio and the
   identifiers the signaling carried, as captured.
@@ -110,8 +110,8 @@ define. The forwarder logs each change, one line per container.
 
 | In the container | Sent to vcon.store | Why |
 |---|---|---|
-| `"extensions": ["sip-signaling", "CC"]` | `"extensions": {"sip-signaling": true, "CC": true}` | Section 4.1.3 of both [draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3) and [-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.3) defines `extensions` as an array of strings. vcon.store refuses that and accepts an object. The copy keeps every name, in its order. |
-| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object with neither when the container carries no audio, which section 4.3 of [draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) allows. The forwarder does not invent a `type` sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason that names `--retain-audio` and `--redact`. |
+| `"extensions": ["sip-signaling", "CC"]` | `"extensions": {"sip-signaling": true, "CC": true}` | Section 4.1.3 of [draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3), and of every revision since through [-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.3), defines `extensions` as an array of strings. vcon.store refuses that and accepts an object. The copy keeps every name, in its order. |
+| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object without `parties` when the container carries no audio: the `recording` placeholder of [section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), on which [section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) makes `parties` a SHOULD. A container sipnab wrote before it followed -04 lacks `type` there as well. The forwarder does not invent what sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason that names `--retain-audio` and `--redact`. |
 
 The forwarder sends every other byte of the container as sipnab wrote it. You can
 drop the mode once vcon.store accepts `extensions` as the array of strings the drafts

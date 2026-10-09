@@ -2991,32 +2991,31 @@ sipnab -N --mcp -I capture.pcap --quiet
 ```jsonc
 // validate_vcon { "call_id": "1-1966@192.0.2.20" }
 {
+  "schema_version": 2,
   "verdict": "valid",
   "schema_path": "tests/schemas/vcon.schema.json",
-  "errors": [],
-  "deviations": [],
-  "explanations": []
+  "errors": []
 }
 ```
 
 Pass a container somebody else produced — one a store already rejected — as an object rather than a Call-ID:
 
 ```jsonc
-// validate_vcon { "container": { "vcon": "0.4.0", "dialog": [ { "type": "transfer" } ] } }
+// validate_vcon { "container": { "uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde", "created_at": "2026-09-01T12:00:00Z", "dialog": [ { "type": "transfer", "parties": [0, 1] } ] } }
 {
+  "schema_version": 2,
   "verdict": "invalid",
   "errors": [
-    { "instance_path": "/dialog/0", "keyword": "required",
-      "detail": "missing required properties: start" }
-  ],
-  "deviations": []
+    { "instance_path": "/dialog/0", "keyword": "not",
+      "detail": "carries `parties`, which the schema forbids here" }
+  ]
 }
 ```
 
 **What to look for:**
 
-- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: [section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
-- The exemption is **narrow**. Only a Dialog Object with no members at all counts. A typed object missing `start` is an ordinary error, and it is exactly the defect the corpus pass found. Folding the two together would teach a producer that a missing `start` is fine.
+- **There are two verdicts, `valid` and `invalid`.** The schema is the working group's [draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), unchanged. The `transfer` object above breaks a rule core-04 added: `parties` MUST NOT be present on a transfer ([section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)).
+- The empty Dialog Object `{}` that sipnab wrote for an attended transfer's unseen consultation leg under core-03 is now an ordinary error. core-04 replaced it with a placeholder that names its type ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3)), and sipnab writes `{"type": "recording"}` there.
 - A container that disagrees with the schema is an **answer**, not a tool error. The call fails only when the request is wrong: neither argument, both, an unknown Call-ID, or a `container` that is not a JSON object.
 
 **Pitfalls:**
@@ -3024,7 +3023,7 @@ Pass a container somebody else produced — one a store already rejected — as 
 - The validator reads the vendored schema file rather than a transcription of it, and it refuses to guess: a keyword outside the draft-07 subset the file uses makes every validation report `invalid` naming the keyword. Re-vendoring a richer schema fails loudly instead of quietly certifying less than it claims.
 - Needs a build carrying the non-default `vcon` Cargo feature. Without it the tool refuses by name. `server_capabilities` lists what a given binary has.
 
-**Runnable example:** `validate_vcon` is sipnab checking its own work. [Check a vCon against the publisher's schema](client-examples.md#check-a-vcon-against-the-publishers-schema) checks an export with `jsonschema` against the working group's file itself, which refuses a Dialog Object with no `type` that sipnab's copy accepts.
+**Runnable example:** `validate_vcon` is sipnab checking its own work. [Check a vCon against the publisher's schema](client-examples.md#check-a-vcon-against-the-publishers-schema) checks an export with `jsonschema` against the working group's file itself, which sipnab's copy matches byte for byte.
 
 ---
 

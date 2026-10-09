@@ -111,7 +111,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() -> Result<(), Te
 
     assert_eq!(v["vcon"], VCON_SYNTAX_VERSION);
     // `CC` rides beside `sip-signaling` because `Party.role` is a CC-extension
-    // parameter, not one of the thirteen core-03 §4.2 defines. A container that
+    // parameter, not one of the thirteen core-04 section 4.2 defines. A container that
     // uses the field must declare what defines it.
     assert_eq!(v["extensions"], serde_json::json!(["sip-signaling", "CC"]));
     assert!(v["uuid"].as_str().is_some_and(|u| u.len() == 36));

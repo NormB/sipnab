@@ -195,7 +195,7 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
 
 > **sipnab discards RTP payloads unless you ask for them**
 >
-> Without `--retain-audio` the container carries a Dialog Object with no `type` and zero bytes. That is a run that kept no audio, not a call that was silent, and the completeness caveat is the only thing that says which — read it before concluding anything about the media.
+> Without `--retain-audio` the container carries a Dialog Object typed `recording` with no `body` and zero bytes, the placeholder of draft-ietf-vcon-vcon-core-04 section 4.3. That is a run that kept no audio, not a call that was silent, and the completeness caveat is the only thing that says which — read it before concluding anything about the media.
 >
 > Before 0.5.128 sipnab typed that object `incomplete`, which the vCon draft defines as a call that failed to reach conversation. A signaling-only container therefore reported every answered call as a failure.
 
@@ -373,7 +373,7 @@ Every container carries a completeness note built from that run's own counters. 
 |---|---|
 | List what persisted | Query `vcons_observed`. The cache-backed listing route also returns entries that expired and now answer 404. |
 | Fetch one | `GET /vcon/{uuid}` |
-| Play the audio | Base64url-decode `dialog[].body` where `type` is `recording` — it is a WAV. |
+| Play the audio | Base64url-decode `dialog[].body` where `type` is `recording` and `body` is present — it is a WAV. A `recording` with no `body` is a placeholder and carries no audio. |
 | Verify integrity | Check the recording's `content_hash` against the body you hold. |
 | Separate roles | Query the role view. An observation and a recording of one call are two UUIDs and stay that way. |
 
@@ -676,7 +676,7 @@ Everything the rest of the page refers to, in one place.
 | Flag | Default | Without it |
 |---|---|---|
 | `--hep-parse` | off | For HEP-encapsulated SIP. Leave OFF on a relay — it strips the wrapper that identifies mirrored ng |
-| `--retain-audio` | off | Containers carry a dialog with no `type` and no bytes |
+| `--retain-audio` | off | Containers carry a `recording` placeholder with no bytes |
 | `--api <addr>` | off | No REST surface. A non-loopback bind requires an API key |
 | `--portrange` | 5060-5061 | Names which ports carry SIP, separate from the capture filter |
 

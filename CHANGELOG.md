@@ -25,6 +25,48 @@ entry that carries them.
   its setting, and the refusal of an unknown job id reports the configured
   retention and held bound and names both flags.
 
+### Changed
+
+- **vCon export and validation follow
+  [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04) (7 September 2026) instead of `-03`.**
+  The syntax version stays `"0.4.0"`, which `-04` also requires. What changes
+  for a consumer:
+  - Every Dialog Object now names its `type`. A call with no media and no
+    observed failure was a Dialog Object with no `type`, which `-03` allowed
+    and `-04` does not; it is now the `recording` placeholder of
+    [section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), with no `body`, `url` or `mediatype`. The
+    unseen consultative call of an attended transfer was `{}`; it is now
+    `{"type": "recording"}`. A consumer that selects `type == "recording"`
+    and reads the content has to check that `body` or `url` is present.
+  - The vendored schema, `tests/schemas/vcon.schema.json`, is the working
+    group's `-04` file unchanged, byte for byte the same as
+    `tests/schemas/publisher/vcon_json_schema.json`, which moves to the
+    `draft-ietf-vcon-vcon-core-04` tag (commit `99589dd0`). The local
+    deviation that removed `type` from the Dialog Object's `required` list is
+    gone.
+  - The MCP `validate_vcon` tool, the REST `POST /v1/vcon/validate` route and
+    `clients/python/vcon_validate.py` enforce the rules `-04` added: per-type
+    prohibitions on Dialog Objects (for example `parties` or `session_id` on a
+    `transfer`), `disposition` on `incomplete`, `recordings` on
+    `recording-set`, `encoding` and `mediatype` beside a non-empty `body`,
+    `content_hash` beside a `url`, `button` on `keydown` and `keyup` events,
+    single-integer transfer indices, `redacted` and `amended` never together,
+    and `uuid` on an `amended` object with no `url`. `start` is no longer
+    required on a Dialog Object. sipnab's validator gained the `allOf`, `if`,
+    `then`, `else` and `not` keywords to read that schema.
+  - **Breaking for clients of the validator:** the `validate_vcon` and
+    `POST /v1/vcon/validate` responses move to `schema_version` 2. The
+    `deviations` and `explanations` members and the
+    `valid-except-documented-deviation` verdict are removed; `verdict` is
+    `valid` or `invalid`, and every finding is in `errors`. A container written
+    by an earlier sipnab with a type-free or empty Dialog Object is now
+    `invalid`.
+  - THIRD-PARTY-NOTICES.md records `tests/schemas/vcon.schema.json`, which the
+    binary compiles in, as the working group's file.
+  - Section 7 of `docs/design/vcon.md` inventories the `-03` to `-04` changes,
+    where the new Appendix C CDDL contradicts the prose, and the questions
+    `-04` leaves open.
+
 ### Fixed
 
 - **A run with `--report` on a capture that holds RTP and no SIP told the

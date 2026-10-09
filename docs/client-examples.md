@@ -155,8 +155,8 @@ no single node holds.
 against
 [`tests/schemas/publisher/vcon_json_schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/publisher/vcon_json_schema.json),
 the vCon working group's schema file exactly as it stands in
-[ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/265e0449004acda56612120b3d6635ffe7822cf1/vcon_json_schema.json)
-at commit `265e0449`. The engine is `jsonschema`, not sipnab. A plain
+[ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/99589dd0b474d95c2feed52165fc2c95b1191d3d/vcon_json_schema.json)
+at commit `99589dd0`, the `draft-ietf-vcon-vcon-core-04` tag. The engine is `jsonschema`, not sipnab. A plain
 `jsonschema` install checks none of the three formats the schema uses, so the
 program brings a checker for each and refuses a schema whose formats it
 cannot check:
@@ -186,13 +186,20 @@ sipnab -N -I capture.pcap --export-vcon 'a84b4c76e66710@pc33.atlanta.example.com
 python3 clients/python/vcon_validate.py call.vcon
 ```
 
-A failed call passes. A call that completed without exported media does not:
-sipnab writes its Dialog Object with no `type`, because none of the five
-types the draft defines describes a call observed without its content. That
-is sipnab's one documented deviation, and its own copy of the schema,
-[`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json), drops `type` from the Dialog Object's
-`required` list. A store that validates against the publisher's file refuses
-the container, and this program says so:
+A failed call passes, and so does a call that completed without exported
+media: sipnab writes its Dialog Object as the `recording` placeholder of
+[section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), a type and no
+content. sipnab's own copy of the schema,
+[`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json),
+has the same bytes as the publisher's file:
+
+```text
+checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (tests/schemas/publisher/vcon_json_schema.json)
+valid    completed.vcon
+```
+
+A container sipnab wrote before it followed core-04 carries a Dialog Object
+with no `type`, and the publisher's file refuses it:
 
 ```text
 invalid  completed.vcon

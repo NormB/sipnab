@@ -4,13 +4,16 @@
 page is not a build plan.** It records what sipnab may put in a vCon, what it
 refuses to put in one, and the one structural gap in the format that governs
 both answers.
-**Verified against:** `draft-ietf-vcon-vcon-core-03` (1 July 2026) — an adopted
+**Verified against:** `draft-ietf-vcon-vcon-core-04` (7 September 2026) — an adopted
 IETF working-group document, Standards Track, before working-group last call —
-whose syntax version string is `"0.4.0"`; and the sipnab tree at `1ce2416d`.
+whose syntax version string is `"0.4.0"`; and the sipnab tree at `1ce2416d`
+for sections 1 to 6, and at `da3d0069` for section 7.
 
-This page writes a draft section number as `core-03` section 2.1 and links it
+This page writes a draft section number as `core-04` section 2.1 and links it
 to that section of the draft on the IETF Datatracker. A section number without
-`core-03` names a section of this page, and links to its heading.
+`core-04` names a section of this page, and links to its heading.
+[Section 7](#7-what-changed-between-core-03-and-core-04) compares `core-04`
+with `core-03`, the revision this page was first verified against.
 
 **If you read one section, read [section 3, "The gap"](#3-the-gap-vcon-cannot-say-this-container-is-an-incomplete-record).**
 The five refusals in [section 2](#2-the-five-refusals-and-the-one-role) are each
@@ -43,9 +46,9 @@ party, with these named gaps*. It must never produce one that claims to **be**
 the conversation.
 
 That role is in the specification rather than around it.
-[`core-03` section 2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.1) defines
+[`core-04` section 2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.1) defines
 a party as "an observer or participant to the conversation, either passive or
-active", and [`core-03` section 4.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.4.3) says an organization that processes or constructs the vCon
+active", and [`core-04` section 4.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.3) says an organization that processes or constructs the vCon
 and adds attachments SHOULD be represented as a Party Object. So a passive
 observer contributing to someone else's record is a shape the format already
 names. sipnab occupies that shape and stops there.
@@ -124,7 +127,7 @@ What sipnab holds is the `From` and `To` header fields of an observed dialog.
 That is a claim made by the caller about the caller, unverifiable at the tap
 and trivially spoofed — the whole reason SIP identity mechanisms exist at all.
 
-[`core-03` section 4.2.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.2.7) says `validation` SHOULD be provided if `name` is provided, so
+[`core-04` section 4.2.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.2.7) says `validation` SHOULD be provided if `name` is provided, so
 the format already treats a name as something a producer is expected to stand
 behind. sipnab cannot.
 
@@ -136,7 +139,7 @@ caller's assertion into the producer's.
 
 ### 2.5 Never host artefacts
 
-[`core-03` section 2.4.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.4.1) requires a by-reference `url` to use HTTPS. sipnab hosts
+[`core-04` section 2.4.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1) requires a by-reference `url` to use HTTPS. sipnab hosts
 nothing and is not going to: a URL is a promise that a file is somewhere and
 stays there, and a tool that is *run* rather than *operated* cannot make it.
 
@@ -198,7 +201,7 @@ just absence.
 
 The nearest-looking token is `dialog.type: "incomplete"`, and it means the
 opposite of what an exporter would want it for.
-[`core-03` section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) defines it as
+[`core-04` section 4.3.1.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.5) defines it as
 "the call or conversation failed to be setup to the point of exchanging any
 conversation" — a fact about the traffic.
 
@@ -224,10 +227,10 @@ clauses lands in vCon:
 
 | sipnab clause | vCon home |
 |---|---|
-| ring wrapped (`wrap_clause`) | Partial. Expressible only through a `recording-set` Dialog Object whose `start` and `duration` are the call's while the `recording` object's are the file's ([`core-03` section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.3)). Nothing obliges a consumer to compare the two |
-| streams past two, undecodable codecs (`omitted_clause`) | Partial. [`core-03` section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.4) lets a recording object name only the parties it captured — but only when some object names them all, and sipnab may not know them all. Codec identity has no home at all |
+| ring wrapped (`wrap_clause`) | Partial. Expressible only through a `recording-set` Dialog Object whose `start` and `duration` are the call's while the `recording` object's are the file's ([`core-04` section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3)). Nothing obliges a consumer to compare the two |
+| streams past two, undecodable codecs (`omitted_clause`) | Partial. [`core-04` section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) lets a recording object name only the parties it captured — but only when some object names them all, and sipnab may not know them all. Codec identity has no home at all |
 | decode failure (`decode_failure_clause`) | None |
-| one direction only (`direction_clause`) | None. The null-channel placeholder of [`core-03` section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.4) means "no party on this channel", not "we could not see the other leg" |
+| one direction only (`direction_clause`) | None. The null-channel placeholder of [`core-04` section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) means "no party on this channel", not "we could not see the other leg" |
 | retention off (`--retain-audio` absent) | **None, and this is the dangerous one.** A vCon with an empty `dialog[]` reads as a conversation with no media — a claim about the call |
 | dialog compaction (`messages_evicted`) | **None.** A `sip-message-trace` attachment is a `messages` array with no gap marker, so compaction silently removes its middle |
 
@@ -243,7 +246,7 @@ it by construction.
 The obvious repair is a custom extension carrying a completeness caveat, and it
 does not work, for a reason written into the format.
 
-`core-03` sections [4.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.3) and [4.1.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.4)
+`core-04` sections [4.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.3) and [4.1.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)
 offer exactly two levels. A **Compatible**
 extension is one an unsupporting consumer safely ignores. A **critical**
 extension is one an unsupporting implementation "MUST NOT attempt to process or
@@ -285,7 +288,7 @@ comparing them caught it. Same discipline here, same reason: a container whose
 embedded caveat disagreed with the run that produced it would be worse than one
 with no caveat, because it would look authoritative while contradicting itself.
 
-**Do not put the caveat in `subject`.** [`core-03` section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.7)
+**Do not put the caveat in `subject`.** [`core-04` section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.7)
 defines `subject` as
 the subject or topic of the conversation. Borrowing a content field to carry a
 producer's disclaimer is the kind of misuse that reads as authoritative to
@@ -454,7 +457,7 @@ with an empty `dialog[]` reads as *a conversation with no media*, which is a
 claim about the call rather than about the capture.
 
 `recording-set` is the one in-spec answer, and only for one of the cases.
-[`core-03` section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.3) lets a `recording-set` Dialog Object carry the CALL's `start` and
+[`core-04` section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3) lets a `recording-set` Dialog Object carry the CALL's `start` and
 `duration` while the `recording` object beneath it carries the FILE's. That is
 how "the ring wrapped and the file is shorter than the call" gets said in the
 format's own vocabulary. Nothing obliges a consumer to compare the two, which is
@@ -697,4 +700,63 @@ differ. Read against the prose and Appendix B:
   timestamps; `created_at` added where it was missing; `"group": []` and
   `"redacted": {}` removed; the analysis example's transcription output
   regenerated.
+### 7.7 What sipnab does about each open question
+
+Each choice below is the one the code makes, with the reading it rejected.
+
+1. **The placeholder type.** sipnab types its signaling Dialog Object
+   `recording`, with no content, for every outcome except an observed final
+   failure (an answered call, a call whose final response the capture never
+   saw, and a redirect), and `incomplete` with a disposition for an observed
+   failure, as before. The consultative-call placeholder of an attended
+   transfer is `{"type": "recording"}`: the `Replaces` in the `Refer-To`
+   names an existing dialog, so the call was set up.
+   - Rejected: `incomplete` with `"failed"` (the SHOULD of
+     [section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11)) for a call whose final response
+     was not seen. It would report a failure sipnab did not observe, which
+     [section 3.1](#31-incomplete-means-the-call-failed-not-the-record) refuses.
+   - Rejected: a `recording-set` with `"recordings": []` for a call with no
+     media. It validates, and the conserver transcription links skip it,
+     but [section 4.3.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.2) defines a `recording-set` by
+     the recordings it groups, and an empty set groups none.
+   - The cost, measured in the vcon-server conserver source at commit
+     `8ffbfcf`: `deepgram_link` reads `dialog["url"]`, and
+     `hugging_face_whisper` and `groq_whisper` read `dialog["duration"]`,
+     with a bracket on any object typed `recording`, so they raise on the
+     placeholder. All four transcription links, `openai_transcribe`
+     included, read `dialog["type"]` with a bracket, so they raised on the
+     type-free object sipnab wrote under `core-03`.
+2. **Inline references in section 5.** sipnab's `redacted` object carries
+   neither `uuid` nor `url`, because no unredacted container exists to point
+   at. Neither reading changes what it writes.
+3. **The version string.** sipnab writes `"0.4.0"`, which
+   [section 4.1.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.1) requires. A consumer that has to know
+   which revision a sipnab container follows reads the release notes; the
+   container cannot say.
+4. **`mediatype`.** sipnab writes `mediatype` beside every `body` it emits,
+   and none on a placeholder, which satisfies both readings.
+5. **`duration` on `transfer`.** sipnab writes none, which satisfies both
+   readings.
+6. **The `vcon` parameter.** sipnab always writes it, which satisfies both
+   readings.
+
+Not adopted, and why:
+
+- **CDDL validation.** Appendix C is informative, its wildcard makes it
+  weaker than Appendix B, and validating against it needs a CDDL
+  implementation this repository does not depend on. The validators check the
+  publisher's Appendix B schema instead, which the working group publishes as
+  a file and which matches the draft.
+- **`session_id` on a `recording-set`.** [Section 4.3.12](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.12)
+  calls the set "the appropriate place" for a session identifier of the whole
+  call, without a requirement keyword. sipnab's ring-wrapped export replaces
+  the signaling object with the set and does not carry the observed
+  `session_id` across. Carrying it is a candidate change, not a conformance
+  fix.
+- **`parties` on a `recording-set` or a placeholder.** A SHOULD in
+  [section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4), as it was in `core-03`. sipnab names a
+  party per channel only from evidence, and a placeholder "contains only the
+  type parameter".
+- **gzip identification** ([section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)). sipnab neither
+  writes nor reads a gzip-compressed vCon.
 <!-- vcon-core-03-comparison:end -->

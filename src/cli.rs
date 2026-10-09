@@ -1384,7 +1384,7 @@ pub struct OutputArgs {
     /// Turn it on when a consumer needs to know a call happened and was
     /// deliberately withheld. The container carries the dialog's identity and
     /// a `redacted` object
-    /// ([draft-ietf-vcon-vcon-core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8))
+    /// ([draft-ietf-vcon-vcon-core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8))
     /// saying content was withheld with no unredacted instance to point at. It
     /// carries no message trace, no media and no bodies.
     ///
