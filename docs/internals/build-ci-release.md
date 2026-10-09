@@ -567,6 +567,18 @@ use it. `reproducible.yml` does not: it exists to build twice in fresh trees.
 [`tests/ci_runner_target_test.rs`](../../tests/ci_runner_target_test.rs) holds
 both the use and that exemption, and drives the cap script.
 
+System packages come from `.github/actions/system-deps`. It asks `dpkg -s`
+first and installs only what is missing. The self-hosted machine already has
+every package its jobs name, so there the action does nothing. Four runner
+instances share that machine, and `dpkg` and `debconf` each hold one
+machine-wide lock, so when a package is missing the action holds a `flock` on
+one lock file for the whole install and concurrent jobs take turns. It waits
+at most 15 minutes for the lock and then fails the job with an error that
+says so. A `debconf` answer, such as the Check job's answer for
+`wireshark-common`, is an input of the action, which applies it inside the
+same lock and only when it installs something. No workflow step runs
+`debconf-set-selections` itself.
+
 Python packages in CI come from PyPI through `pip install` in hash-checking
 mode, each from a hash-pinned requirements file. `ci.yml` sets `PIP_TIMEOUT` to 60 seconds
 and `PIP_RETRIES` to 8 at the workflow level, so every install in it uses

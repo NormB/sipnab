@@ -24,6 +24,12 @@ inputs:
   packages:
     description: Space-separated Debian package names.
     required: true
+  debconf:
+    description: >-
+      debconf-set-selections lines to apply before the packages are
+      configured, one per line. Applied only when something is installed.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -97,10 +103,32 @@ runs:
       env:
         NEED: ${{ steps.probe.outputs.need }}
         SLUG: ${{ steps.probe.outputs.slug }}
+        DEBCONF: ${{ inputs.debconf }}
       run: |
         set -euo pipefail
         cache="$HOME/.cache/sipnab-apt/$SLUG"
         mkdir -p "$cache"
+
+        # One install at a time per machine. The self-hosted runners are four
+        # runner instances on one machine, all running as one user, and dpkg
+        # and debconf each hold one machine-wide lock: a second job installing
+        # while the first does fails with "dpkg frontend lock is locked by
+        # another process". The probe step above skips this step when every
+        # package is present, which is the common path there; this covers a
+        # package that is not. On a hosted runner there is one job per machine
+        # and the lock is never contended. Bounded: the slowest install below
+        # is about 10 minutes (two timeouts), so a 15-minute wait means the
+        # holder is stuck, and the job says so.
+        exec 9>"$HOME/.cache/sipnab-apt/.install.lock"
+        if ! flock -w 900 9; then
+          echo "::error::system-deps: another install on this machine held the lock for 15 minutes"
+          exit 1
+        fi
+
+        # Before anything is configured, on either path below.
+        if [ -n "${DEBCONF:-}" ]; then
+          printf '%s\n' "$DEBCONF" | sudo debconf-set-selections
+        fi
 
         # THE COMMON PATH: no network. dpkg cannot reach one.
         if compgen -G "$cache/*.deb" > /dev/null; then
