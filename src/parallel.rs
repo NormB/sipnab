@@ -3529,13 +3529,21 @@ mod tests {
         rx.recv_timeout(limit).is_ok()
     }
 
-    /// Whether `f` finishes. The bound is generous because it is only reached
-    /// when the answer is wrong: a passing run returns as soon as `f` does. A
-    /// 2 s bound failed `only_the_next_file_in_line_may_spend_the_runway` on a
-    /// host at about 2% idle, where a thread can wait that long to be run.
+    /// How long a test waits for something that MUST happen: a thread to
+    /// finish, or a blocked reader to be woken. Generous because it is only
+    /// reached when the answer is wrong: a passing run returns as soon as the
+    /// event arrives. A 2 s bound failed
+    /// `only_the_next_file_in_line_may_spend_the_runway` on a host at about 2%
+    /// idle, and the same 2 s bound on a wake failed
+    /// `the_dispatched_files_reader_waits_when_its_reserve_is_spent` at a load
+    /// average of 24, where a thread can wait that long to be run.
+    #[cfg(feature = "native")]
+    const MUST_HAPPEN_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// Whether `f` finishes within [`MUST_HAPPEN_WITHIN`].
     #[cfg(feature = "native")]
     fn finishes_promptly(f: impl FnOnce() + Send + 'static) -> bool {
-        finishes_within(f, std::time::Duration::from_secs(30))
+        finishes_within(f, MUST_HAPPEN_WITHIN)
     }
 
     /// Whether `f` is still blocked after 2 s. Load can only make a thread
@@ -3600,7 +3608,7 @@ mod tests {
 
         runway.release(4096);
         assert_eq!(
-            rx.recv_timeout(std::time::Duration::from_secs(2)),
+            rx.recv_timeout(MUST_HAPPEN_WITHIN),
             Ok(true),
             "forwarding a batch must hand its bytes back and wake the reader"
         );
@@ -3708,7 +3716,7 @@ mod tests {
         );
         runway.cancel();
         assert_eq!(
-            rx.recv_timeout(std::time::Duration::from_secs(2)),
+            rx.recv_timeout(MUST_HAPPEN_WITHIN),
             Ok(false),
             "a canceled runway must release its waiters, and tell them the \
              run is over rather than admitting them"
