@@ -45,83 +45,6 @@
 
 </section>
 
-<!-- System map: what sipnab reads, works out and serves. Its own section,
-     outside .hero, so the hero's gradient is sized by the hero copy alone and
-     the tint behind the tagline's links stays as it was. -->
-<section class="sysmap-section">
-  {# The system map: what sipnab reads, what it works out, and where you read
-     the answer, above the animation so a visitor sees the whole tool before
-     the terminal UI the animation shows. Plain HTML lists, no script
-     and no image: an AI agent or a screen reader gets every item as text, it
-     renders with scripting off, and it needs no CSP re-pin. The arrows are
-     decorative and hidden from assistive technology; the column headings
-     carry the direction in words. Every flag named here is one the CLI
-     defines (homepage_claim_truth_test). #}
-  <figure class="sysmap" id="how-it-fits" aria-labelledby="sysmap-title">
-    <h2 class="sysmap-title" id="sysmap-title">How sipnab fits together</h2>
-    <div class="sysmap-grid">
-      <section class="sysmap-col sysmap-in" aria-labelledby="sysmap-in-h">
-        <h3 id="sysmap-in-h">What it reads</h3>
-        <ul>
-          <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">A live network interface</a> <code>-d eth0</code></li>
-          <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">pcap and pcapng files, folders, archives</a> <code>-I</code></li>
-          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP copies from OpenSIPS, Kamailio, rtpengine</a> <code>-L</code> <code>-E</code></li>
-          <li><a href="{{ get_url(path='@/docs/tls-capture.md') }}">Encrypted SIP, with TLS keys or eBPF</a> <code>--keylog</code> <code>--uprobe-tls</code></li>
-          <li><a href="{{ get_url(path='@/docs/encapsulations.md') }}">VLAN, MPLS, GTP-U, VXLAN, WebSocket</a> <code>--capture-tunnels</code></li>
-          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Media relay: rtpengine</a> <code>--rtpengine-control</code></li>
-          <li><a href="{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}">Media relay: rtpproxy</a> <code>--rtpproxy-control</code></li>
-        </ul>
-      </section>
-      <span class="sysmap-arrow" aria-hidden="true"></span>
-      <section class="sysmap-col sysmap-core" aria-labelledby="sysmap-core-h">
-        <h3 id="sysmap-core-h">What it works out</h3>
-        <ol class="sysmap-stack">
-          <li><span><strong>Unwrap</strong> link layers, tunnels, IP fragments, TCP streams, TLS</span></li>
-          <li><span><strong>Parse</strong> SIP, SDP, RTP, RTCP, STUN</span></li>
-          <li><span><strong>Track</strong> each dialog, the legs of one call, every media stream</span></li>
-          <li><span><strong>Judge</strong> audio quality (MOS), call-setup problems, attacks, RFC conformance</span></li>
-        </ol>
-        <p class="sysmap-note">One binary. No database, no server to run.</p>
-      </section>
-      <span class="sysmap-arrow" aria-hidden="true"></span>
-      <section class="sysmap-col sysmap-out" aria-labelledby="sysmap-out-h">
-        <h3 id="sysmap-out-h">Where you read it</h3>
-        <ul>
-          <li><a href="{{ get_url(path='@/docs/tui.md') }}">An interactive terminal UI</a> <code>sipnab</code></li>
-          <li><a href="{{ get_url(path='@/docs/output-formats.md') }}">Text, JSON and reports for scripts</a> <code>-N</code> <code>--json</code></li>
-          <li><a href="{{ get_url(path='@/docs/api.md') }}">A REST API</a> <code>--api</code></li>
-          <li><a href="{{ get_url(path='@/docs/mcp.md') }}">An MCP server for AI agents</a> <code>--mcp</code></li>
-          <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Prometheus metrics</a> <code>--metrics</code></li>
-          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP to Homer</a> <code>-H</code></li>
-          <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">vCon records</a> <code>--export-vcon</code></li>
-        </ul>
-        <h3 class="sysmap-subhead" id="sysmap-act-h">What it can act on</h3>
-        <ul aria-labelledby="sysmap-act-h">
-          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Alerts and fail2ban</a> <code>--alert</code> <code>--fail2ban</code></li>
-          <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">TFPS bans, journaled and revertible</a> <code>--allow-action</code></li>
-        </ul>
-      </section>
-    </div>
-    <figcaption class="sysmap-caption">The terminal UI, the scripts&rsquo; output, the REST API and the MCP server all read the same dialog and stream records, so each gives the same answer about the same call. <a href="{{ get_url(path='@/docs/internals/_index.md') }}">How it works inside &rarr;</a></figcaption>
-  </figure>
-</section>
-
-<!-- The animation, below the map -->
-<section class="hero-shot-section">
-  <!-- Hero — static screenshot of the TUI -->
-  <div class="terminal-wrap">
-    <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
-    {# Shown by the script only once the looping animation replaces the still
-       frame. Motion that runs longer than five seconds needs a way to stop it
-       (WCAG 2.2.2), and pausing puts the still frame, and its alt text, back.
-       It ships `visibility: hidden` rather than `hidden`: the box exists from
-       first paint, so revealing it after `load` changes no layout box, which
-       the web-fonts layout-stability check measures. A hidden-visibility
-       button is out of the tab order and the accessibility tree until then. #}
-    <button type="button" class="hero-pause" id="hero-pause" aria-pressed="false">Pause animation</button>
-  </div>
-</section>
-
 <!-- Quick Start -->
 {# Directly under the hero, so the first command a visitor meets is one they
    can run with nothing but the binary. One command per block, because the
@@ -193,121 +116,6 @@
         </button>
       </div>
       <pre><code class="language-bash">sudo sipnab -d eth0</code></pre>
-    </div>
-  </div>
-</section>
-
-<section class="features" id="features">
-  <div class="features-inner">
-    <header class="section-head">
-      <h2>What you can do with it</h2>
-    </header>
-    <div class="features-grid">
-      <a class="feature-card feature-card--amber fade-in-up" href="{{ get_url(path='@/docs/tui.md') }}">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        </div>
-        <h3>Inspect</h3>
-        <p>Read the whole call together with sipnab: ladder diagrams, auth exchanges collapsed, retransmits folded, and mark-and-delta timing to help you follow it at a glance.</p>
-      </a>
-      <a class="feature-card feature-card--green fade-in-up" href="{{ get_url(path='@/docs/cookbook.md') }}">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-        </div>
-        <h3>Diagnose</h3>
-        <p>Per-stream jitter, loss and MOS, with one-way audio, NAT mismatches and post-dial delay pointed out, so you and your team can start from the evidence.</p>
-      </a>
-      <a class="feature-card feature-card--blue fade-in-up" href="{{ get_url(path='@/docs/output-formats.md') }}">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        </div>
-        <h3>Export</h3>
-        <p>Share what you found in the formats your other tools already speak: PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban and WAV. The full list is below.</p>
-      </a>
-    </div>
-  </div>
-</section>
-
-<section class="features stack" id="voice-stack">
-  <div class="features-inner">
-    <header class="section-head">
-      <h2>Add it to your voice stack</h2>
-      <p class="section-sub">Step-by-step guides that install your SIP server, OpenSIPS or Kamailio, and each piece beside it, then connect sipnab to it. Each was run command by command on fresh virtual machines, and each page says which.</p>
-    </header>
-    <div class="features-grid">
-      <div class="feature-card feature-card--green fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><line x1="8" y1="7" x2="8" y2="7"/><line x1="8" y1="17" x2="8" y2="17"/></svg>
-        </div>
-        <h3>SIP proxy</h3>
-        <p>OpenSIPS and Kamailio carry your calls, and every other guide builds on them. Set up either one from its packages, OpenSIPS from source too, or both on one machine, with sipnab watching beside them.</p>
-        <ul class="stack-links">
-          <li><a href="{{ get_url(path='@/docs/opensips.md') }}">Use OpenSIPS</a></li>
-          <li><a href="{{ get_url(path='@/docs/opensips-sipnab.md') }}">Run sipnab beside it</a></li>
-          <li><a href="{{ get_url(path='@/docs/kamailio.md') }}">Use Kamailio</a></li>
-          <li><a href="{{ get_url(path='@/docs/kamailio-sipnab.md') }}">Run sipnab beside it</a></li>
-        </ul>
-      </div>
-      <div class="feature-card feature-card--amber fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v12H7l-3 3z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="12" x2="13" y2="12"/></svg>
-        </div>
-        <h3>Call records</h3>
-        <p>A vCon server keeps every call as a vCon. OpenSIPS records calls into it over SIPREC, and sipnab can send its own vCons, built from what it saw on the wire. Kamailio has no SIPREC module, so on a Kamailio stack sipnab's vCons are the ones the server gets. <code>sipnab --vcon-forward</code> delivers them, to the server or to vcon.store (in the gnu and macOS builds, which carry the <code>vcon</code> feature).</p>
-        <ul class="stack-links">
-          <li><a href="{{ get_url(path='@/docs/vcon-server.md') }}">Use a vCon server</a></li>
-          <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">Run sipnab beside it</a></li>
-          <li><a href="{{ get_url(path='@/docs/vcon-store.md') }}">Send to vcon.store</a></li>
-        </ul>
-      </div>
-      <div class="feature-card feature-card--blue fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
-        </div>
-        <h3>Attack blocking</h3>
-        <p>TFPS stops SIP scanners and fraud in the kernel with XDP, before they reach your SIP proxy, and sipnab shows you what it has blocked. fail2ban bans scanners and password guessers with an nftables rule, from the lines OpenSIPS logs or the ones sipnab writes.</p>
-        <ul class="stack-links">
-          <li><a href="{{ get_url(path='@/docs/tfps.md') }}">Use TFPS</a></li>
-          <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">Run sipnab beside it</a></li>
-          <li><a href="{{ get_url(path='@/docs/fail2ban.md') }}">Use fail2ban</a></li>
-          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Run sipnab beside it</a></li>
-        </ul>
-      </div>
-      <div class="feature-card feature-card--green fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 7 10 7 14 17 20 17"/><polyline points="4 17 10 17 14 7 20 7"/></svg>
-        </div>
-        <h3>Media relay</h3>
-        <p>rtpengine or rtpproxy anchors every call's audio, and sipnab works beside either one to match the media on the relay with the call it belongs to.</p>
-        <ul class="stack-links">
-          <li><a href="{{ get_url(path='@/docs/rtpengine-relay.md') }}">Use rtpengine</a></li>
-          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Run sipnab beside it</a></li>
-          <li><a href="{{ get_url(path='@/docs/rtpproxy-relay.md') }}">Use rtpproxy</a></li>
-          <li><a href="{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}">Run sipnab beside it</a></li>
-        </ul>
-      </div>
-      <div class="feature-card feature-card--amber fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="6"/><line x1="15.5" y1="15.5" x2="20" y2="20"/></svg>
-        </div>
-        <h3>Call history</h3>
-        <p>Homer keeps a searchable history of every call your OpenSIPS or Kamailio sends it over HEP, and sipnab can join the same feed.</p>
-        <ul class="stack-links">
-          <li><a href="{{ get_url(path='@/docs/homer.md') }}">Use Homer</a></li>
-          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">Run sipnab beside it</a></li>
-        </ul>
-      </div>
-      <div class="feature-card feature-card--blue fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
-        </div>
-        <h3>Metrics</h3>
-        <p>Prometheus and Grafana graph your SIP proxy's statistics, and sipnab adds its own call and media series beside them.</p>
-        <ul class="stack-links">
-          <li><a href="{{ get_url(path='@/docs/prometheus.md') }}">Use Prometheus and Grafana</a></li>
-          <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Run sipnab beside it</a></li>
-        </ul>
-      </div>
     </div>
   </div>
 </section>
@@ -540,6 +348,197 @@ Issues Detected:
       <div class="demo-panel" data-demo="11" role="tabpanel" id="demo-panel-11" aria-labelledby="demo-tab-11">
         <p class="demo-desc"><strong>No terminal UI at all.</strong> <kbd>-N</kbd> runs sipnab headless for a script or a pipeline: emit every dialog as JSON with <kbd>--json</kbd>, narrow to the calls that went wrong with <kbd>--problems</kbd>, or print a full call report with <kbd>--report</kbd>.</p>
         <img src="{{ get_url(path='demos/07-rtp-cli.webp') }}?v=8" alt="sipnab CLI demo: JSON dialogs, --problems surfacing failed calls, and a call report" loading="lazy">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- The animation, below the AI-agent demos and above the map -->
+<section class="hero-shot-section">
+  <!-- Hero — static screenshot of the TUI -->
+  <div class="terminal-wrap">
+    <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
+    {# Shown by the script only once the looping animation replaces the still
+       frame. Motion that runs longer than five seconds needs a way to stop it
+       (WCAG 2.2.2), and pausing puts the still frame, and its alt text, back.
+       It ships `visibility: hidden` rather than `hidden`: the box exists from
+       first paint, so revealing it after `load` changes no layout box, which
+       the web-fonts layout-stability check measures. A hidden-visibility
+       button is out of the tab order and the accessibility tree until then. #}
+    <button type="button" class="hero-pause" id="hero-pause" aria-pressed="false">Pause animation</button>
+  </div>
+</section>
+
+<!-- System map: what sipnab reads, works out and serves. Its own section,
+     outside .hero, so the hero's gradient is sized by the hero copy alone and
+     the tint behind the tagline's links stays as it was. -->
+<section class="sysmap-section">
+  {# The system map: what sipnab reads, what it works out, and where you read
+     the answer. Plain HTML lists, no script
+     and no image: an AI agent or a screen reader gets every item as text, it
+     renders with scripting off, and it needs no CSP re-pin. The arrows are
+     decorative and hidden from assistive technology; the column headings
+     carry the direction in words. Every flag named here is one the CLI
+     defines (homepage_claim_truth_test). #}
+  <figure class="sysmap" id="how-it-fits" aria-labelledby="sysmap-title">
+    <h2 class="sysmap-title" id="sysmap-title">How sipnab fits together</h2>
+    <div class="sysmap-grid">
+      <section class="sysmap-col sysmap-in" aria-labelledby="sysmap-in-h">
+        <h3 id="sysmap-in-h">What it reads</h3>
+        <ul>
+          <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">A live network interface</a> <code>-d eth0</code></li>
+          <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">pcap and pcapng files, folders, archives</a> <code>-I</code></li>
+          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP copies from OpenSIPS, Kamailio, rtpengine</a> <code>-L</code> <code>-E</code></li>
+          <li><a href="{{ get_url(path='@/docs/tls-capture.md') }}">Encrypted SIP, with TLS keys or eBPF</a> <code>--keylog</code> <code>--uprobe-tls</code></li>
+          <li><a href="{{ get_url(path='@/docs/encapsulations.md') }}">VLAN, MPLS, GTP-U, VXLAN, WebSocket</a> <code>--capture-tunnels</code></li>
+          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Media relay: rtpengine</a> <code>--rtpengine-control</code></li>
+          <li><a href="{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}">Media relay: rtpproxy</a> <code>--rtpproxy-control</code></li>
+        </ul>
+      </section>
+      <span class="sysmap-arrow" aria-hidden="true"></span>
+      <section class="sysmap-col sysmap-core" aria-labelledby="sysmap-core-h">
+        <h3 id="sysmap-core-h">What it works out</h3>
+        <ol class="sysmap-stack">
+          <li><span><strong>Unwrap</strong> link layers, tunnels, IP fragments, TCP streams, TLS</span></li>
+          <li><span><strong>Parse</strong> SIP, SDP, RTP, RTCP, STUN</span></li>
+          <li><span><strong>Track</strong> each dialog, the legs of one call, every media stream</span></li>
+          <li><span><strong>Judge</strong> audio quality (MOS), call-setup problems, attacks, RFC conformance</span></li>
+        </ol>
+        <p class="sysmap-note">One binary. No database, no server to run.</p>
+      </section>
+      <span class="sysmap-arrow" aria-hidden="true"></span>
+      <section class="sysmap-col sysmap-out" aria-labelledby="sysmap-out-h">
+        <h3 id="sysmap-out-h">Where you read it</h3>
+        <ul>
+          <li><a href="{{ get_url(path='@/docs/tui.md') }}">An interactive terminal UI</a> <code>sipnab</code></li>
+          <li><a href="{{ get_url(path='@/docs/output-formats.md') }}">Text, JSON and reports for scripts</a> <code>-N</code> <code>--json</code></li>
+          <li><a href="{{ get_url(path='@/docs/api.md') }}">A REST API</a> <code>--api</code></li>
+          <li><a href="{{ get_url(path='@/docs/mcp.md') }}">An MCP server for AI agents</a> <code>--mcp</code></li>
+          <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Prometheus metrics</a> <code>--metrics</code></li>
+          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP to Homer</a> <code>-H</code></li>
+          <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">vCon records</a> <code>--export-vcon</code></li>
+        </ul>
+        <h3 class="sysmap-subhead" id="sysmap-act-h">What it can act on</h3>
+        <ul aria-labelledby="sysmap-act-h">
+          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Alerts and fail2ban</a> <code>--alert</code> <code>--fail2ban</code></li>
+          <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">TFPS bans, journaled and revertible</a> <code>--allow-action</code></li>
+        </ul>
+      </section>
+    </div>
+    <figcaption class="sysmap-caption">The terminal UI, the scripts&rsquo; output, the REST API and the MCP server all read the same dialog and stream records, so each gives the same answer about the same call. <a href="{{ get_url(path='@/docs/internals/_index.md') }}">How it works inside &rarr;</a></figcaption>
+  </figure>
+</section>
+
+<section class="features" id="features">
+  <div class="features-inner">
+    <header class="section-head">
+      <h2>What you can do with it</h2>
+    </header>
+    <div class="features-grid">
+      <a class="feature-card feature-card--amber fade-in-up" href="{{ get_url(path='@/docs/tui.md') }}">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>Inspect</h3>
+        <p>Read the whole call together with sipnab: ladder diagrams, auth exchanges collapsed, retransmits folded, and mark-and-delta timing to help you follow it at a glance.</p>
+      </a>
+      <a class="feature-card feature-card--green fade-in-up" href="{{ get_url(path='@/docs/cookbook.md') }}">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <h3>Diagnose</h3>
+        <p>Per-stream jitter, loss and MOS, with one-way audio, NAT mismatches and post-dial delay pointed out, so you and your team can start from the evidence.</p>
+      </a>
+      <a class="feature-card feature-card--blue fade-in-up" href="{{ get_url(path='@/docs/output-formats.md') }}">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <h3>Export</h3>
+        <p>Share what you found in the formats your other tools already speak: PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban and WAV. The full list is below.</p>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="features stack" id="voice-stack">
+  <div class="features-inner">
+    <header class="section-head">
+      <h2>Add it to your voice stack</h2>
+      <p class="section-sub">Step-by-step guides that install your SIP server, OpenSIPS or Kamailio, and each piece beside it, then connect sipnab to it. Each was run command by command on fresh virtual machines, and each page says which.</p>
+    </header>
+    <div class="features-grid">
+      <div class="feature-card feature-card--green fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><line x1="8" y1="7" x2="8" y2="7"/><line x1="8" y1="17" x2="8" y2="17"/></svg>
+        </div>
+        <h3>SIP proxy</h3>
+        <p>OpenSIPS and Kamailio carry your calls, and every other guide builds on them. Set up either one from its packages, OpenSIPS from source too, or both on one machine, with sipnab watching beside them.</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/opensips.md') }}">Use OpenSIPS</a></li>
+          <li><a href="{{ get_url(path='@/docs/opensips-sipnab.md') }}">Run sipnab beside it</a></li>
+          <li><a href="{{ get_url(path='@/docs/kamailio.md') }}">Use Kamailio</a></li>
+          <li><a href="{{ get_url(path='@/docs/kamailio-sipnab.md') }}">Run sipnab beside it</a></li>
+        </ul>
+      </div>
+      <div class="feature-card feature-card--amber fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v12H7l-3 3z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="12" x2="13" y2="12"/></svg>
+        </div>
+        <h3>Call records</h3>
+        <p>A vCon server keeps every call as a vCon. OpenSIPS records calls into it over SIPREC, and sipnab can send its own vCons, built from what it saw on the wire. Kamailio has no SIPREC module, so on a Kamailio stack sipnab's vCons are the ones the server gets. <code>sipnab --vcon-forward</code> delivers them, to the server or to vcon.store (in the gnu and macOS builds, which carry the <code>vcon</code> feature).</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/vcon-server.md') }}">Use a vCon server</a></li>
+          <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">Run sipnab beside it</a></li>
+          <li><a href="{{ get_url(path='@/docs/vcon-store.md') }}">Send to vcon.store</a></li>
+        </ul>
+      </div>
+      <div class="feature-card feature-card--blue fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
+        </div>
+        <h3>Attack blocking</h3>
+        <p>TFPS stops SIP scanners and fraud in the kernel with XDP, before they reach your SIP proxy, and sipnab shows you what it has blocked. fail2ban bans scanners and password guessers with an nftables rule, from the lines OpenSIPS logs or the ones sipnab writes.</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/tfps.md') }}">Use TFPS</a></li>
+          <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">Run sipnab beside it</a></li>
+          <li><a href="{{ get_url(path='@/docs/fail2ban.md') }}">Use fail2ban</a></li>
+          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Run sipnab beside it</a></li>
+        </ul>
+      </div>
+      <div class="feature-card feature-card--green fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 7 10 7 14 17 20 17"/><polyline points="4 17 10 17 14 7 20 7"/></svg>
+        </div>
+        <h3>Media relay</h3>
+        <p>rtpengine or rtpproxy anchors every call's audio, and sipnab works beside either one to match the media on the relay with the call it belongs to.</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/rtpengine-relay.md') }}">Use rtpengine</a></li>
+          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Run sipnab beside it</a></li>
+          <li><a href="{{ get_url(path='@/docs/rtpproxy-relay.md') }}">Use rtpproxy</a></li>
+          <li><a href="{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}">Run sipnab beside it</a></li>
+        </ul>
+      </div>
+      <div class="feature-card feature-card--amber fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="6"/><line x1="15.5" y1="15.5" x2="20" y2="20"/></svg>
+        </div>
+        <h3>Call history</h3>
+        <p>Homer keeps a searchable history of every call your OpenSIPS or Kamailio sends it over HEP, and sipnab can join the same feed.</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/homer.md') }}">Use Homer</a></li>
+          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">Run sipnab beside it</a></li>
+        </ul>
+      </div>
+      <div class="feature-card feature-card--blue fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
+        </div>
+        <h3>Metrics</h3>
+        <p>Prometheus and Grafana graph your SIP proxy's statistics, and sipnab adds its own call and media series beside them.</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/prometheus.md') }}">Use Prometheus and Grafana</a></li>
+          <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Run sipnab beside it</a></li>
+        </ul>
       </div>
     </div>
   </div>

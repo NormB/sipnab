@@ -10840,9 +10840,10 @@ fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
 /// Quick Start sat below a demo wall whose first command
 /// (`demos/mcp-stdio.sh tests/pcap-samples/...`) runs only from a source
 /// checkout, so a visitor who had just installed the binary met something they
-/// could not run before anything they could. The order is: what it is, how to
-/// run it, what it does, what an agent can ask it, what it supports, the
-/// numbers, then the guides.
+/// could not run before anything they could. The order (Norm, 2026-10-09) is:
+/// what it is, how to run it, what an agent can ask it, the animation, how
+/// sipnab fits together, what it does, what it supports, the numbers, then the
+/// guides.
 #[test]
 fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -10850,8 +10851,10 @@ fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestErr
     let want = [
         "hero",
         "quickstart",
-        "features",
         "demos",
+        "hero-shot-section",
+        "sysmap-section",
+        "features",
         "comparison",
         "arch-callout",
         "notes-callout",
