@@ -2170,6 +2170,9 @@ fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String
 ///
 /// * `rtp_packets` / `streams` — RTP parsed this run. Any RTP at all proves
 ///   the capture was readable, so the media-only message stands unchanged.
+/// * `report_printed` — whether this run prints the `--report` tables (see
+///   [`report_tables_print`]). When it does, the media-only message does not
+///   suggest `--report`, because the operator already passed it.
 /// * `undecodable` — the run's undecodable tally.
 /// * `frames_read` — frames handed to the parser.
 /// * `tls` — what TLS decryption achieved. Ciphertext this run could not read
@@ -2182,17 +2185,23 @@ fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String
 fn no_sip_guidance(
     rtp_packets: u64,
     streams: usize,
+    report_printed: bool,
     undecodable: &crate::capture::UndecodableReport,
     frames_read: u64,
     tls: &crate::capture::TlsDecryptReport,
 ) -> Vec<String> {
     // RTP was parsed, so the capture demonstrably decoded: media-only, not
-    // unreadable. Undecodable background here changes nothing.
+    // unreadable. Undecodable background here changes nothing. The hint to
+    // pass `--report` is left out when this run prints the report already.
     if rtp_packets > 0 {
-        return vec![format!(
+        let finding = format!(
             "No SIP signaling found, but {rtp_packets} RTP packets across {streams} \
-             stream(s) were parsed. Use --report to see stream details."
-        )];
+             stream(s) were parsed."
+        );
+        if report_printed {
+            return vec![finding];
+        }
+        return vec![format!("{finding} Use --report to see stream details.")];
     }
 
     if undecodable.frames > 0 {
@@ -4639,6 +4648,7 @@ impl BatchRunner {
             for line in no_sip_guidance(
                 lp.counters.rtp_count,
                 stream_count,
+                report_tables_print(&self.cli),
                 &undecodable,
                 total_count,
                 &tls_report,
@@ -6426,6 +6436,15 @@ fn load_report_plugins(cli: &Cli) -> Vec<crate::plugin::Plugin> {
     plugins
 }
 
+/// Whether this run prints the `--report` dialog and stream tables.
+///
+/// One rule read in two places: [`EndOfRunReports::dialog_table`], which
+/// prints the tables, and the run summary, whose no-SIP guidance must not
+/// tell the operator to pass `--report` when the tables are already printed.
+fn report_tables_print(cli: &Cli) -> bool {
+    cli.output_args.report && cli.mode_args.no_tui
+}
+
 /// The table format `--markdown` picks for the human-readable reports.
 fn table_report_format(cli: &Cli) -> output::ReportFormat {
     if cli.output_args.markdown {
@@ -6467,7 +6486,7 @@ struct EndOfRunReports<'a> {
 impl EndOfRunReports<'_> {
     /// --report: dialog summary table
     fn dialog_table(&self) -> bool {
-        if !(self.cli.output_args.report && self.cli.mode_args.no_tui) {
+        if !report_tables_print(self.cli) {
             return true;
         }
         // Filtered: the matching dialogs and the streams linked to them. With
@@ -12353,7 +12372,14 @@ mod tests {
     /// enforces one layer down.
     #[test]
     fn no_sip_over_undecrypted_tls_is_never_stated_as_a_finding() {
-        let lines = no_sip_guidance(0, 0, &undecodable_of(0, &[]), 42, &tls_report(1, 9, 0));
+        let lines = no_sip_guidance(
+            0,
+            0,
+            false,
+            &undecodable_of(0, &[]),
+            42,
+            &tls_report(1, 9, 0),
+        );
         let joined = lines.join("\n");
         assert!(
             !joined.contains("No SIP traffic found."),
@@ -12369,7 +12395,14 @@ mod tests {
     /// found." stands — that IS the finding.
     #[test]
     fn a_clean_read_with_no_sip_states_it_plainly() {
-        let lines = no_sip_guidance(0, 0, &undecodable_of(0, &[]), 4_212, &tls_report(0, 0, 0));
+        let lines = no_sip_guidance(
+            0,
+            0,
+            false,
+            &undecodable_of(0, &[]),
+            4_212,
+            &tls_report(0, 0, 0),
+        );
         assert!(
             lines.iter().any(|l| l == "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."),
             "a clean read must say so plainly: {lines:?}"
@@ -12384,6 +12417,7 @@ mod tests {
         let lines = no_sip_guidance(
             0,
             0,
+            false,
             &undecodable_of(
                 49,
                 &[(
@@ -12416,6 +12450,7 @@ mod tests {
         let lines = no_sip_guidance(
             120,
             2,
+            false,
             &undecodable_of(3, &[(crate::capture::UndecodableReason::NotIp(None), 3)]),
             500,
             &tls_report(0, 0, 0),
@@ -12427,6 +12462,81 @@ mod tests {
             ),
             "a demonstrably readable capture keeps its message: {joined}"
         );
+    }
+
+    /// A run that prints the `--report` tables must not tell the operator to
+    /// pass `--report`: they passed it, and the stream table is in the same
+    /// run's output. The counts stay, because they are the finding.
+    #[test]
+    fn media_only_capture_with_the_report_printed_does_not_suggest_report() {
+        let lines = no_sip_guidance(
+            40,
+            4,
+            true,
+            &undecodable_of(0, &[]),
+            40,
+            &tls_report(0, 0, 0),
+        );
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("--report"),
+            "the run already prints the report, so the flag must not be suggested: {joined}"
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "No SIP signaling found, but 40 RTP packets across 4 stream(s) were parsed."
+                    .to_string()
+            ],
+        );
+    }
+
+    /// Negative control for the test above: without the report, the hint that
+    /// points at `--report` is still printed, word for word.
+    #[test]
+    fn media_only_capture_without_the_report_still_suggests_report() {
+        let lines = no_sip_guidance(
+            40,
+            4,
+            false,
+            &undecodable_of(0, &[]),
+            40,
+            &tls_report(0, 0, 0),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "No SIP signaling found, but 40 RTP packets across 4 stream(s) were parsed. \
+                 Use --report to see stream details."
+                    .to_string()
+            ],
+        );
+    }
+
+    /// Whether the report prints changes only the media-only message. Every
+    /// branch reached with no RTP prints the same lines either way. Serialized
+    /// with the STUN store because the last branch reads it.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn the_report_flag_changes_no_other_no_sip_branch() {
+        let cases = [
+            (
+                undecodable_of(49, &[(crate::capture::UndecodableReason::NotIp(None), 49)]),
+                50,
+                tls_report(0, 0, 0),
+            ),
+            (undecodable_of(0, &[]), 42, tls_report(1, 9, 0)),
+            (undecodable_of(0, &[]), 4_212, tls_report(0, 0, 0)),
+        ];
+        for (undecodable, frames, tls) in &cases {
+            let with = no_sip_guidance(0, 0, true, undecodable, *frames, tls);
+            let without = no_sip_guidance(0, 0, false, undecodable, *frames, tls);
+            assert!(!with.is_empty(), "every no-SIP branch prints guidance");
+            assert_eq!(
+                with, without,
+                "only the media-only message may depend on the report"
+            );
+        }
     }
 
     /// Kernel-buffer and interface drops must be named SEPARATELY, with their

@@ -27,6 +27,13 @@ entry that carries them.
 
 ### Fixed
 
+- **A run with `--report` on a capture that holds RTP and no SIP told the
+  operator to pass `--report`.** The run summary ended with `No SIP signaling
+  found, but N RTP packets across M stream(s) were parsed. Use --report to see
+  stream details.` even when the same run had printed the stream report. When
+  the run prints the report, the summary now states the counts and leaves out
+  the second sentence. Without `--report`, the message is unchanged.
+
 - **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP
   v1.** The version 2 reader took the ports from bytes 2 to 5 and two IPv4
   addresses from bytes 6 to 13. The header those bytes belong to is the
