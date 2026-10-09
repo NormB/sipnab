@@ -1185,7 +1185,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // count.
     // 1329 -> 1330: docs/internals/vcon.md links section 7.1 of
     // docs/design/vcon.md for where core-03's Dialog Object text went.
-    const EXPECTED_WIKI_LINKS: usize = 1330;
+    // 1330 -> 1336: MCP over HTTP beside the TUI. docs/mcp.md 4 (its new
+    // section's anchor, #see-it-work, and mcp-deploy.md twice), mcp-deploy.md
+    // 1 and cli-reference.md 1, each to the new section or from it.
+    const EXPECTED_WIKI_LINKS: usize = 1336;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

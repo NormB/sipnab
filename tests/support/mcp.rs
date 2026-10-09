@@ -194,7 +194,7 @@ pub fn post_json(
     body: &serde_json::Value,
 ) -> Result<HttpResponse, TestError> {
     let body_str = serde_json::to_string(body)?;
-    send(url, "POST", bearer, Some(&body_str))
+    send(url, "POST", bearer, &[], Some(&body_str))
 }
 
 /// Issue a raw-TCP HTTP `GET` and return the parsed status, headers and body.
@@ -210,7 +210,7 @@ pub fn post_json(
 /// * `bearer` — optional bearer token; `None` sends no `Authorization` header,
 ///   which is what proves an endpoint is reachable unauthenticated.
 pub fn get(url: &str, bearer: Option<&str>) -> Result<HttpResponse, TestError> {
-    send(url, "GET", bearer, None)
+    send(url, "GET", bearer, &[], None)
 }
 
 /// One raw HTTP/1.1 request/response exchange over a fresh connection.
@@ -224,6 +224,7 @@ fn send(
     url: &str,
     method: &str,
     bearer: Option<&str>,
+    extra_headers: &[(&str, &str)],
     body: Option<&str>,
 ) -> Result<HttpResponse, TestError> {
     let parsed = url
@@ -253,6 +254,9 @@ fn send(
     if let Some(b) = bearer {
         req.push_str(&format!("Authorization: Bearer {b}\r\n"));
     }
+    for (name, value) in extra_headers {
+        req.push_str(&format!("{name}: {value}\r\n"));
+    }
     req.push_str("\r\n");
     if let Some(b) = body {
         req.push_str(b);
@@ -278,6 +282,113 @@ fn send(
         headers,
         body: body.to_string(),
     })
+}
+
+// ── HTTP session ───────────────────────────────────────────────────
+
+/// POST `body` to `http://{addr}/mcp` inside the session `session` (none for
+/// `initialize`), returning the reply with a chunked body decoded.
+///
+/// `tools/call` over Streamable HTTP needs the `Mcp-Session-Id` the
+/// `initialize` reply carries, and its answer arrives as a chunked SSE
+/// stream; the sessionless helpers above need neither.
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout and closes it.
+pub fn post_session(
+    addr: &str,
+    session: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<HttpResponse, TestError> {
+    let body_str = serde_json::to_string(body)?;
+    let headers: Vec<(&str, &str)> = session.map(|s| ("Mcp-Session-Id", s)).into_iter().collect();
+    let mut reply = send(
+        &format!("http://{addr}/mcp"),
+        "POST",
+        None,
+        &headers,
+        Some(&body_str),
+    )?;
+    if reply
+        .header("transfer-encoding")
+        .is_some_and(|v| v.eq_ignore_ascii_case("chunked"))
+    {
+        reply.body = dechunk(&reply.body);
+    }
+    Ok(reply)
+}
+
+/// Decode an HTTP/1.1 chunked body. Tolerant of a missing terminal chunk,
+/// because the caller's JSON parse decides whether enough arrived.
+fn dechunk(raw: &str) -> String {
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some((size_line, after)) = rest.split_once("\r\n") {
+        let Ok(size) = usize::from_str_radix(size_line.trim(), 16) else {
+            break;
+        };
+        if size == 0 || after.len() < size {
+            break;
+        }
+        out.push_str(&after[..size]);
+        rest = after[size..].strip_prefix("\r\n").unwrap_or(&after[size..]);
+    }
+    out
+}
+
+/// The last JSON-RPC message in a body that is plain JSON or an SSE stream
+/// of `data:` lines.
+pub fn last_json_message(body: &str) -> Result<serde_json::Value, TestError> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+        return Ok(v);
+    }
+    Ok(body
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d.trim()).ok())
+        .next_back()
+        .ok_or_else(|| format!("no JSON-RPC message in body: {body:?}"))?)
+}
+
+/// `initialize` plus `notifications/initialized` against an unauthenticated
+/// loopback server, returning the session id.
+pub fn establish_session(addr: &str) -> Result<String, TestError> {
+    let init = post_session(addr, None, &initialize_payload())?;
+    if init.status != 200 {
+        return Err(format!("initialize answered {}: {}", init.status, init.body).into());
+    }
+    let session = init
+        .header("mcp-session-id")
+        .ok_or("the initialize reply carries no Mcp-Session-Id")?
+        .to_string();
+    let notify = post_session(
+        addr,
+        Some(&session),
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )?;
+    if notify.status != 202 && notify.status != 200 {
+        return Err(format!("initialized answered {}: {}", notify.status, notify.body).into());
+    }
+    Ok(session)
+}
+
+/// One JSON-RPC request inside `session`, returning the answering message.
+pub fn session_request(
+    addr: &str,
+    session: &str,
+    id: i64,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, TestError> {
+    let reply = post_session(
+        addr,
+        Some(session),
+        &serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+    )?;
+    if reply.status != 200 {
+        return Err(format!("{method} answered {}: {}", reply.status, reply.body).into());
+    }
+    last_json_message(&reply.body)
 }
 
 // ── stdio session ───────────────────────────────────────────────────

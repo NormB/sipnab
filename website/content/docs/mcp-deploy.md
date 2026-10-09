@@ -109,10 +109,13 @@ Two invariants that apply everywhere:
    feature set, so this is only a concern for source builds — but always
    confirm with `sipnab --version`: the features list must include `mcp`
    (stdio) and, for the HTTP scenarios, `mcp-http`.
-2. **`--mcp` requires `-N`.** In stdio mode stdout *is* the JSON-RPC wire,
-   so the TUI and stdout-writing flags (`--json`, `--report`, …) are
-   rejected. Corollary: one sipnab process is either your TUI **or** your
-   MCP server, never both — run two processes if you want both.
+2. **Stdio MCP runs headless.** In stdio mode stdout *is* the JSON-RPC
+   wire, so `--mcp` implies `-N` and sipnab rejects stdout-writing flags
+   (`--json`, `--report`, …). Over HTTP one process can be your TUI and
+   your MCP server at once: see
+   [Query a capture over MCP while the TUI is open](@/docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+   The servers in this guide run without a terminal, so every command here
+   carries `-N`.
 
 ---
 

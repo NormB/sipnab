@@ -520,8 +520,9 @@ pub(crate) fn tui_notes(
 /// channel, drives the shared pipeline into the stores, lazily opens and
 /// writes the `-O` pcap/pcapng file, decrypts SRTP/DTLS-SRTP media when
 /// configured, and sweeps reassembly/idle state every 5 s; starts the REST
-/// API companion via `start_servers` (never MCP stdio — the TUI owns
-/// stdio); takes over the terminal for the TUI main loop; and on TUI exit
+/// API, metrics and MCP-over-HTTP companions via `start_servers` (never MCP
+/// stdio — the TUI owns stdout); takes over the terminal for the TUI main
+/// loop; and on TUI exit
 /// requests process-wide shutdown, joins the processing thread, and drops
 /// the capture handle. Exits the process on thread-spawn or server-start
 /// failure.
@@ -605,6 +606,28 @@ pub fn run_tui_mode(
             )))
         });
 
+    // Actions, with their journal, before any server listens: a journal that
+    // cannot be used refuses the run here.
+    let actions = crate::app::servers::start_actions(&cli, &config).unwrap_or_else(|e| {
+        tracing::error!("{e}");
+        crate::capture::archive::release_run_and_exit(2);
+    });
+
+    // Before the packet thread, which is handed the servers'
+    // `source_exhausted` flag to flip when the input is read to the end.
+    let servers = start_tui_servers(
+        &cli,
+        &config,
+        (&dialog_store, &stream_store),
+        TuiDetections {
+            engine: security_engine.as_ref(),
+            armed: &sec_armed,
+        },
+        &actions,
+        capture_meter,
+    );
+    let source_exhausted = servers.as_ref().and_then(|h| h.source_exhausted.clone());
+
     let processing_thread = spawn_tui_processor(TuiProcessorInputs {
         cli: cli.clone(),
         split: (policy.split_bytes, policy.split_duration, policy.split_keep),
@@ -624,22 +647,8 @@ pub fn run_tui_mode(
         security_engine: security_engine.clone(),
         max_count: capture_config.count,
         duration: capture_config.duration,
+        source_exhausted,
     });
-
-    // Actions, with their journal, before any server listens: a journal that
-    // cannot be used refuses the run here.
-    let actions = crate::app::servers::start_actions(&cli, &config).unwrap_or_else(|e| {
-        tracing::error!("{e}");
-        crate::capture::archive::release_run_and_exit(2);
-    });
-
-    let _servers_thread = start_tui_servers(
-        &cli,
-        &config,
-        (&dialog_store, &stream_store),
-        &actions,
-        capture_meter,
-    );
 
     // Build resolved theme and keymap from config
     let theme = crate::tui::Theme::from_config(&config.theme);
@@ -668,9 +677,10 @@ pub fn run_tui_mode(
             keymap,
             capture_meter: tui_capture_meter,
             config_save: crate::tui::ConfigSave(config_save),
-            startup_notice: crate::config::config_notice(
-                origin.source.as_deref(),
-                &origin.shadowed,
+            startup_notice: startup_notice(
+                crate::config::config_notice(origin.source.as_deref(), &origin.shadowed),
+                servers.as_ref().and_then(|h| h.mcp_http_addr),
+                cli.mcp_tls_files(&config).0.is_some(),
             ),
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
@@ -943,16 +953,62 @@ fn start_relay_reconciler(
     }
 }
 
-/// Start the REST API server if --api is specified. The TUI owns stdio, so
-/// MCP stdio is never selected here.
+/// The TUI's live detectors, for the MCP `security_findings` tool: the
+/// engine the packet thread fires into and the detector kinds it armed.
+struct TuiDetections<'a> {
+    /// The findings engine; `None` when no detector is armed.
+    engine: Option<&'a Arc<RwLock<crate::security::AlertEngine>>>,
+    /// The armed detector kinds, by the name each files findings under.
+    armed: &'a [String],
+}
+
+/// The detector kinds `security_findings` reports, as the static names
+/// `Selection::armed_detections` carries. A name outside the known four is
+/// dropped rather than invented.
+fn armed_kinds(armed: &[String]) -> Vec<&'static str> {
+    const KINDS: [&str; 4] = ["digest", "fraud", "reg_flood", "scanner"];
+    armed
+        .iter()
+        .filter_map(|a| KINDS.iter().copied().find(|k| k == a))
+        .collect()
+}
+
+/// The status-line notice the session opens with: the config notice, and
+/// where MCP over HTTP is listening when it runs beside the TUI.
+///
+/// The address is on screen because nothing else in a TUI run says it: the
+/// run logs only errors, and with `--mcp-bind 127.0.0.1:0` the port is the
+/// kernel's choice.
+fn startup_notice(
+    config: Option<String>,
+    mcp_http: Option<std::net::SocketAddr>,
+    https: bool,
+) -> Option<String> {
+    let mcp = mcp_http.map(|addr| {
+        format!(
+            "MCP over HTTP at {}://{addr}/mcp",
+            if https { "https" } else { "http" }
+        )
+    });
+    let notices: Vec<String> = config.into_iter().chain(mcp).collect();
+    (!notices.is_empty()).then(|| notices.join(" | "))
+}
+
+/// Start the servers the TUI run asked for: the REST API (`--api`), metrics
+/// (`--metrics`) and MCP over HTTP (`--mcp --mcp-transport http`). MCP over
+/// stdio is never started here: the TUI owns stdout, and `Cli::normalize`
+/// sends a stdio run to the headless mode.
 ///
 /// # Side effects
 ///
-/// Exits the process (code 2) when a server cannot start.
+/// Exits the process (code 2) when a server cannot start. Every listener is
+/// bound before this returns, so the refusal is printed before the TUI takes
+/// the terminal.
 fn start_tui_servers(
     cli: &Cli,
     config: &Config,
     (dialog_store, stream_store): (&Arc<RwLock<DialogStore>>, &Arc<RwLock<StreamStore>>),
+    detections: TuiDetections<'_>,
     actions: &crate::security::actions::Actions,
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> Option<crate::app::servers::ServerHandles> {
@@ -960,7 +1016,7 @@ fn start_tui_servers(
         cli,
         dialog_store,
         stream_store,
-        None,
+        detections.engine,
         crate::app::servers::Selection {
             // The TUI does not fill a ring today: its capture loop is a
             // different path, and handing the server an empty ring would make
@@ -986,20 +1042,20 @@ fn start_tui_servers(
             mcp_max_findings: cli.mcp_findings_cap(config),
             tfps: cli.tfps_locator(config),
             api: true,
-            mcp: false,
+            // MCP over HTTP serves beside the TUI. `start_servers` starts it
+            // only for `--mcp`, and stdio never reaches this mode.
+            mcp: true,
             metrics: true,
-            // MCP is never selected here, and `security_findings` is the only
-            // consumer, so there is nothing to declare.
-            armed_detections: Vec::new(),
+            // The detectors the TUI's packet thread runs, so
+            // `security_findings` reports what the security view shows.
+            armed_detections: armed_kinds(detections.armed),
             pipeline_options: crate::app::server_pipeline_options(cli, config),
         },
-        // `mcp: false` above: this door serves no MCP tools, so there is no
-        // `query_relay` here to hold a permit for. The reconciler's own permit
-        // stays with the reconciler. The REST relay routes (ST5) likewise get
-        // no permit in the TUI: this arm's reconciler already took it, so a TUI
-        // run's `GET /v1/relay/...` answers `not_permitted` -- an operator who
-        // wants relay statistics over REST runs the headless API (`-N --api`),
-        // where the permit is threaded to the door.
+        // No transmit permit: the rtpengine reconciler took this run's, so
+        // MCP `query_relay` and the REST relay routes (ST5) both answer
+        // `not_permitted` beside the TUI. An operator who wants relay
+        // statistics from a server runs it headless (`-N`), where the permit
+        // is threaded to the doors.
         #[cfg(any(feature = "api", feature = "mcp"))]
         None,
         capture_meter,
@@ -1038,6 +1094,10 @@ struct TuiProcessorInputs {
     max_count: Option<u64>,
     /// `--duration`.
     duration: Option<std::time::Duration>,
+    /// The servers' flag for "the input has been read to the end", which
+    /// MCP `capture_status`, `list_dialogs` and `tail_dialogs` report.
+    /// `None` when no server runs.
+    source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Spawn the packet processing thread.
@@ -1084,6 +1144,9 @@ struct TuiProcessor {
     /// Whether the run has been asked to stop: the process-wide flag, read
     /// through a function so a test can drive the loop without it.
     shutdown: fn() -> bool,
+    /// Flipped when the loop ends for any reason but a stop; see
+    /// `TuiProcessorInputs::source_exhausted`.
+    source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl TuiProcessor {
@@ -1112,6 +1175,7 @@ impl TuiProcessor {
             max_count: inputs.max_count,
             duration: inputs.duration,
             shutdown: signals::shutdown_requested,
+            source_exhausted: inputs.source_exhausted,
         }
     }
 
@@ -1161,8 +1225,16 @@ impl TuiProcessor {
 
         // A stop (quitting the TUI, a signal) discards what the decrypted
         // export still holds; the end of an input writes it.
-        if let Some(line) = self.thread.output.close((self.shutdown)()) {
+        let stopped = (self.shutdown)();
+        if let Some(line) = self.thread.output.close(stopped) {
             tracing::info!("sipnab: {line}");
+        }
+        // The input is over and no more dialogs arrive, which the servers
+        // report as `source_exhausted` -- the batch run's rule, applied here
+        // so MCP and REST beside the TUI answer as they do headless. A stop is
+        // not an exhausted source: the process is ending.
+        if !stopped && let Some(flag) = self.source_exhausted.as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -2512,9 +2584,73 @@ mod processor_tests {
             security_engine,
             max_count: limits.0,
             duration: limits.1,
+            source_exhausted: None,
         });
         p.shutdown = || false;
         Ok((p, dialogs))
+    }
+
+    /// The end of the input flips the servers' `source_exhausted` flag, so
+    /// MCP beside the TUI reports a finished file as finished; a stop does
+    /// not, because a stopped run is ending rather than drained.
+    #[test]
+    fn the_end_of_the_input_marks_the_source_exhausted_and_a_stop_does_not() -> Result<(), TestError>
+    {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut p, _) = processor(&cli_from(&[]), three_invites()?, (None, None), None)?;
+        p.source_exhausted = Some(Arc::clone(&flag));
+        p.run();
+        assert!(
+            flag.load(std::sync::atomic::Ordering::Relaxed),
+            "a drained input must read as exhausted"
+        );
+
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut p, _) = processor(&cli_from(&[]), three_invites()?, (None, None), None)?;
+        p.source_exhausted = Some(Arc::clone(&flag));
+        p.shutdown = || true;
+        p.run();
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::Relaxed),
+            "a stop is not an exhausted source"
+        );
+        Ok(())
+    }
+
+    /// The status line names where MCP over HTTP listens, beside the config
+    /// notice rather than instead of it, and says https when it serves TLS.
+    #[test]
+    fn the_startup_notice_names_the_mcp_address() -> Result<(), TestError> {
+        let addr: std::net::SocketAddr = "127.0.0.1:43929".parse()?;
+        assert_eq!(startup_notice(None, None, false), None);
+        assert_eq!(
+            startup_notice(None, Some(addr), false).as_deref(),
+            Some("MCP over HTTP at http://127.0.0.1:43929/mcp")
+        );
+        assert_eq!(
+            startup_notice(Some("Reading A.".into()), Some(addr), true).as_deref(),
+            Some("Reading A. | MCP over HTTP at https://127.0.0.1:43929/mcp")
+        );
+        assert_eq!(
+            startup_notice(Some("Reading A.".into()), None, false).as_deref(),
+            Some("Reading A.")
+        );
+        Ok(())
+    }
+
+    /// Every detector kind the TUI arms reaches `security_findings` by the
+    /// same name, and nothing else does.
+    #[test]
+    fn every_armed_kind_reaches_the_mcp_door() -> Result<(), TestError> {
+        let armed: Vec<String> = ["digest", "fraud", "reg_flood", "scanner", "other"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            armed_kinds(&armed),
+            vec!["digest", "fraud", "reg_flood", "scanner"]
+        );
+        Ok(())
     }
 
     /// Three INVITEs, three dialogs.

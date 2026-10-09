@@ -2988,9 +2988,10 @@ pub struct ListenerArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct McpArgs {
-    /// Run sipnab as an MCP server (Model Context Protocol) instead of TUI/CLI.
-    /// Implies --no-tui. Default transport is stdio; --mcp-transport selects
-    /// http (requires the mcp-http feature).
+    /// Run sipnab as an MCP server (Model Context Protocol). Default
+    /// transport is stdio, which owns stdout: Implies --no-tui. With
+    /// --mcp-transport http (requires the mcp-http feature) the TUI stays up
+    /// beside the server unless -N is given.
     #[arg(help_heading = "MCP (Model Context Protocol)", long)]
     pub mcp: bool,
 
@@ -6920,16 +6921,92 @@ impl Cli {
         // says "Implies --no-tui", and it used to refuse the operator for not
         // typing what it had promised to set. An agent host reading that help
         // wrote an invocation that failed on first run.
+        //
+        // Only the stdio transport, though. Its JSON-RPC wire is stdout, which
+        // the TUI draws on; over HTTP the wire is a socket, and the operator
+        // can watch the capture in the TUI while an agent queries it.
         if self.output_args.call_report.is_some()
             || self.output_args.export_vcon.is_some()
             || self.output_args.export_vcon_when.is_some()
-            || self.mcp_args.mcp
+            || self.mcp_owns_stdout()
         {
             self.mode_args.no_tui = true;
         }
         if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
             self.output_args.no_cli_print = true;
         }
+    }
+
+    /// Why an MCP opt-in cannot be used with the TUI up, if one is set.
+    ///
+    /// MCP over HTTP serves beside the TUI, reading the stores the TUI shows.
+    /// Five opt-ins act on the process or on another system rather than read
+    /// the capture, and each is wrong with an operator at the terminal:
+    ///
+    /// - `--mcp-allow-shutdown`: `shutdown_server` stops the capture and the
+    ///   servers, and the TUI, which does not watch that flag, stays on screen
+    ///   showing a run that has stopped.
+    /// - `--mcp-allow-open-capture`: `open_capture` clears the stores the TUI
+    ///   is showing and loads another file into them.
+    /// - `--mcp-allow-tls-capture`: `start_tls_capture` adds a second writer
+    ///   to those stores.
+    /// - `--mcp-allow-save-findings`: `save_findings` writes the annotation to
+    ///   the log, and a TUI run logs only errors, so the annotation would be
+    ///   accepted and lost.
+    /// - `--mcp-allow-relay-query`: `query_relay` transmits to the relay on
+    ///   the run's one transmit permit, and in a TUI run the relay-statistics
+    ///   view holds it; the tool would answer that it needs a live source on
+    ///   a run that has one.
+    ///
+    /// Each is accepted with `-N`, as before.
+    fn mcp_beside_tui_refusal(&self) -> Option<String> {
+        if !self.mcp_args.mcp || self.mode_args.no_tui {
+            return None;
+        }
+        let refused: Vec<&str> = [
+            (self.mcp_args.mcp_allow_shutdown, "--mcp-allow-shutdown"),
+            (
+                self.mcp_args.mcp_allow_open_capture,
+                "--mcp-allow-open-capture",
+            ),
+            (
+                self.mcp_args.mcp_allow_tls_capture,
+                "--mcp-allow-tls-capture",
+            ),
+            (
+                self.mcp_args.mcp_allow_save_findings,
+                "--mcp-allow-save-findings",
+            ),
+            (
+                self.mcp_args.mcp_allow_relay_query,
+                "--mcp-allow-relay-query",
+            ),
+        ]
+        .iter()
+        .filter(|(set, _)| *set)
+        .map(|(_, flag)| *flag)
+        .collect();
+        (!refused.is_empty()).then(|| {
+            format!(
+                "{}: these opt-ins act on the sipnab process or the relay, and \
+                 with the TUI up the operator at the terminal owns both. Add -N \
+                 to serve MCP headless with them, or remove them to query this \
+                 capture beside the TUI",
+                refused.join(", ")
+            )
+        })
+    }
+
+    /// Whether this run serves MCP on stdout: `--mcp` with any transport but
+    /// `http`. Such a run cannot draw the TUI, because stdout is the JSON-RPC
+    /// wire.
+    ///
+    /// The one rule for both readers: `normalize` sets `-N` from it, and
+    /// `bootstrap::select_run_mode` reads it for a `Cli` built without
+    /// passing through `normalize`.
+    #[must_use]
+    pub fn mcp_owns_stdout(&self) -> bool {
+        self.mcp_args.mcp && self.mcp_args.mcp_transport != "http"
     }
 
     /// Whether the dialog store evicts the oldest dialog at `--limit` capacity.
@@ -7234,6 +7311,12 @@ impl Cli {
         // typo — was accepted and silently produced ungrouped output.
         if let Some(ref field) = self.output_args.group_by {
             crate::output::group::GroupField::parse(field).map_err(crate::Error::CliValidation)?;
+        }
+
+        // MCP beside the TUI: the operator at the terminal owns the run, so
+        // the tools that act on the process itself are refused with the TUI up.
+        if let Some(refusal) = self.mcp_beside_tui_refusal() {
+            return Err(crate::Error::CliValidation(refusal));
         }
 
         // MCP mode owns stdout (JSON-RPC wire); reject any flag
@@ -9797,6 +9880,96 @@ mod tests {
                 cli.validate().is_err(),
                 "`--mcp {flag}` must be refused: both write to stdout, and MCP \
                  needs it for the JSON-RPC wire"
+            );
+        }
+        Ok(())
+    }
+
+    /// MCP over HTTP leaves the TUI up.
+    ///
+    /// Only the stdio transport needs the terminal's stdout, because stdout is
+    /// its JSON-RPC wire. Over HTTP the wire is a socket, so an operator can
+    /// watch the capture in the TUI while an agent queries the same stores.
+    #[test]
+    fn mcp_over_http_leaves_the_tui_up() -> Result<(), TestError> {
+        let cli =
+            Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", "--mcp-transport", "http"]);
+        assert!(
+            !cli.mode_args.no_tui,
+            "--mcp --mcp-transport http must not imply -N: stdout is not its wire"
+        );
+        assert!(
+            cli.validate().is_ok(),
+            "--mcp --mcp-transport http without -N must be accepted: {:?}",
+            cli.validate().err()
+        );
+        Ok(())
+    }
+
+    /// MCP over stdio still runs headless, whether the transport is spelled
+    /// out or left at its default.
+    #[test]
+    fn mcp_over_stdio_still_implies_no_tui() -> Result<(), TestError> {
+        for argv in [
+            &["sipnab", "-I", "x.pcap", "--mcp"][..],
+            &[
+                "sipnab",
+                "-I",
+                "x.pcap",
+                "--mcp",
+                "--mcp-transport",
+                "stdio",
+            ][..],
+        ] {
+            let cli = Cli::parse_from_args(argv.iter().copied());
+            assert!(
+                cli.mode_args.no_tui,
+                "{argv:?}: stdio MCP owns stdout, so it must run without the TUI"
+            );
+            assert!(
+                cli.validate().is_ok(),
+                "{argv:?}: {:?}",
+                cli.validate().err()
+            );
+        }
+        Ok(())
+    }
+
+    /// The MCP tools that act on the process itself are refused beside the TUI.
+    ///
+    /// The operator at the terminal owns the run. `shutdown_server` would stop
+    /// the capture and the servers while the TUI stayed on screen;
+    /// `open_capture` and `start_tls_capture` would replace or add to the
+    /// stores the TUI is showing; `save_findings` writes to a log the TUI run
+    /// does not print; `query_relay` transmits on the run's one relay permit,
+    /// which the TUI's relay-statistics view holds. Each is refused at startup
+    /// naming the flag and `-N`, and accepted with `-N`.
+    #[test]
+    fn process_level_mcp_tools_are_refused_beside_the_tui() -> Result<(), TestError> {
+        for flag in [
+            "--mcp-allow-shutdown",
+            "--mcp-allow-open-capture",
+            "--mcp-allow-tls-capture",
+            "--mcp-allow-save-findings",
+            "--mcp-allow-relay-query",
+        ] {
+            let base = ["sipnab", "-I", "x.pcap", "--mcp", "--mcp-transport", "http"];
+            let beside_tui = Cli::parse_from_args(base.iter().copied().chain([flag]));
+            let err = beside_tui
+                .validate()
+                .err()
+                .ok_or_else(|| format!("{flag} beside the TUI must be refused"))?
+                .to_string();
+            assert!(
+                err.contains(flag) && err.contains("-N"),
+                "the refusal must name {flag} and -N: {err}"
+            );
+
+            let headless = Cli::parse_from_args(base.iter().copied().chain([flag, "-N"]));
+            assert!(
+                headless.validate().is_ok(),
+                "{flag} with -N must still be accepted: {:?}",
+                headless.validate().err()
             );
         }
         Ok(())

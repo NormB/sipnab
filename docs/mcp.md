@@ -1,8 +1,8 @@
 # MCP server
 
 sipnab can run as a **Model Context Protocol** server, so an AI agent — Claude
-Code, Claude Desktop, or any MCP-capable client — can ask questions about a
-capture instead of you memorizing CLI flags.
+Code, Claude Desktop, or any MCP-capable client — can read a capture and answer
+your questions about it instead of you memorizing CLI flags.
 
 It is a fourth output mode beside the TUI, the `-N` CLI and `--json`. The same
 parser, dialog state machine, RTP store and diagnostic engine drive all four, so
@@ -117,12 +117,16 @@ sudo sipnab --mcp -N -d eth0
 ```
 
 <details>
-<summary>The one invariant: why every example carries <code>-N</code></summary>
+<summary>Why every stdio example carries <code>-N</code></summary>
 
-`--mcp` requires `-N`/`--no-tui` because **stdout is the JSON-RPC wire**. sipnab
-refuses the TUI and every stdout-writing flag (`--json`, `--report`, …) rather
-than corrupting the wire with report text. sipnab rejects such a combination at
-startup instead of leaving the client to fail on malformed JSON-RPC later.
+With the stdio transport, **stdout is the JSON-RPC wire**, so `--mcp` implies
+`-N`/`--no-tui`. sipnab also refuses every stdout-writing flag (`--json`,
+`--report`, …) at startup rather than corrupting the wire with report text,
+which would leave the client to fail on malformed JSON-RPC later. The `-N` in
+these examples states what `--mcp` already does.
+
+Over HTTP the wire is a socket, so the TUI can stay up beside the server: see
+[Query a capture over MCP while the TUI is open](#query-a-capture-over-mcp-while-the-tui-is-open).
 
 Stdio needs no token — it is a private pipe between client and server. A
 listening transport does need one. See [MCP protocol](mcp-protocol.md).
@@ -144,6 +148,101 @@ surface pays no binary size for it. `sipnab --version` prints the features of
 the binary.
 
 </details>
+
+## Query a capture over MCP while the TUI is open
+
+Use this when you want to watch a capture in the TUI while an agent asks
+questions about the same capture. One sipnab process does both: the TUI and
+the MCP server read the same dialogs and streams, so the agent's answers match
+what is on screen.
+
+Start sipnab with the HTTP transport and without `-N`. This example uses the
+sample capture from [See it work](#see-it-work), and names a port so that it
+does not collide with a headless MCP server already on the default
+`127.0.0.1:8731`:
+
+```bash
+sipnab -I sip-problem-call.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8735
+```
+
+The TUI opens as usual. The status line under the header says where MCP is
+listening:
+
+```text
+ MCP over HTTP at http://127.0.0.1:8735/mcp
+```
+
+With `--mcp-bind 127.0.0.1:0` the kernel picks a free port, and the status line
+shows the port it picked.
+
+Point your agent at that URL. For Claude Code, use the `claude mcp add` command
+in [MCP deployment](mcp-deploy.md). To check the server from a second terminal
+with `curl` and `jq`, open a session, confirm it, and list the dialogs:
+
+```bash
+# Run all of these, in order.
+URL=http://127.0.0.1:8735/mcp
+H=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
+SID=$(curl -s -D - -o /dev/null "${H[@]}" "$URL" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  | tr -d '\r' | awk 'tolower($1) == "mcp-session-id:" {print $2}')
+curl -s "${H[@]}" -H "Mcp-Session-Id: $SID" "$URL" -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+curl -s "${H[@]}" -H "Mcp-Session-Id: $SID" "$URL" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_dialogs","arguments":{}}}' \
+  | sed -n 's/^data: //p' | jq '.result.content[0].text | fromjson | {returned, source_exhausted, call_ids: [.dialogs[].call_id]}'
+```
+
+```json
+{
+  "returned": 5,
+  "source_exhausted": true,
+  "call_ids": [
+    "completed-9f8e7d@192.0.2.10",
+    "busy-3a2b1c@192.0.2.30",
+    "decline-7c6d5e@198.51.100.30",
+    "notfound-1b2c3d@203.0.113.30",
+    "unavail-4e5f60@192.0.2.50"
+  ]
+}
+```
+
+The same five calls are on the TUI's call list. `source_exhausted` is `true`
+once sipnab has read the whole file.
+
+Quit the TUI (`q`, then `y`) and the MCP server stops with it: the port closes
+when the process exits.
+
+What differs from a headless MCP server:
+
+- **It needs a terminal.** Without one the TUI cannot start and sipnab exits
+  with an error. A systemd unit or a container runs `-N`.
+- **The HTTP rules stay the same.** A loopback bind needs no token, and any
+  other bind needs one, as [MCP deployment](mcp-deploy.md) describes. The Host
+  header check, the rate limits and the TLS flags are the ones a headless
+  server reads.
+- **A bind problem stops the run before the TUI opens.** A port already in
+  use, or a non-loopback bind with no token, prints the reason and exits 2.
+- **sipnab refuses five opt-ins with the TUI up.** Each acts on the process or on
+  the relay rather than reading the capture, and the operator at the terminal
+  owns both. Add `-N` to use them:
+
+  | Flag | Why sipnab refuses it beside the TUI |
+  |---|---|
+  | `--mcp-allow-shutdown` | `shutdown_server` stops the capture and the servers, and the TUI stays on screen showing a stopped run. |
+  | `--mcp-allow-open-capture` | `open_capture` replaces the capture the operator is reading. |
+  | `--mcp-allow-tls-capture` | `start_tls_capture` writes a second capture into the stores the TUI shows. |
+  | `--mcp-allow-save-findings` | `save_findings` writes to the log, and a TUI run logs only errors, so nobody would see the finding. |
+  | `--mcp-allow-relay-query` | `query_relay` transmits on the run's one transmit permit, which the TUI's relay statistics view holds. |
+
+- **The server writes nothing over the screen.** A TUI run logs only errors. To keep
+  the server's log lines, send them to a file:
+
+  ```bash
+  SIPNAB_LOG=info sipnab -I sip-problem-call.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8735 2>sipnab.log
+  ```
+
+  `sipnab.log` then holds `MCP HTTP server listening on 127.0.0.1:8735` and
+  the rest of the run's log lines.
 
 ## Explore the tools with MCP Inspector
 
