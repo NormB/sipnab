@@ -43216,6 +43216,13 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    takes that reading. See
    [How `--hep-listen` reads the transport](../cli-reference.md#how---hep-listen-reads-the-transport).
 
+   A stored vCon container read by `-I` arrives pre-parsed too:
+   [`capture/vcon_input.rs`](../../src/capture/vcon_input.rs) rebuilds each
+   stored SIP message as wire text and sets `PreParsed::vcon`, which carries
+   the transport the container named and makes the parsed packet's origin
+   `InputOrigin::Vcon`. The one detection rule is `sniffs_as_container`: the
+   first byte other than whitespace is `{`.
+
    A live device name goes to libpcap untouched, and libpcap picks the
    capture backend from it (`netmap:eth0` selects netmap), so which backends
    a binary reaches is a property of the libpcap it loads, not of sipnab.
@@ -43233,8 +43240,9 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    defragmentation, TCP reassembly, tunnel unwrapping — via
    [`parse_packet()`](../../src/capture/parse.rs). One frame can yield several
    messages, which is why the return type is plural.
-   A HEP message and a uprobe read skip TCP reassembly: each is one whole
-   message and carries no TCP sequence number for the reassembler to order.
+   A HEP message, a uprobe read and a message rebuilt from a vCon skip TCP
+   reassembly: each is one whole message and carries no TCP sequence number
+   for the reassembler to order.
 4. **Classify.** [`classify_packet()`](../../src/pipeline.rs) decides what the
    packet *means* and returns a `PacketAction` — `Sip { msg, sdp_links }`,
    `Rtp { .. }`, `Rtcp(..)` or `None`. WebSocket-SIP unwrap, SDP link
@@ -48149,6 +48157,26 @@ to check. Three tests keep the distinction visible:
 - `no_credential_survives_an_export` is the end-to-end half. It passes on the
   strength of the projection rather than of the filter, and it is what refuses
   the digest response the day that changes.
+
+## Reading a container back
+
+The reader is a separate module,
+[`capture/vcon_input.rs`](../../src/capture/vcon_input.rs), because it is an
+input source rather than part of the exporter. It rebuilds each message of a
+`sip-message-trace` attachment, or each `message/sip` attachment, as wire text
+and hands it to the packet path as a pre-parsed packet, so nothing downstream
+has a vCon branch. What it cannot rebuild it records in a `VconProvenance`,
+which the capture analysis turns into the `rebuilt_from_vcon` finding. The
+inline analysis behind the MCP `analyze_vcon` tool and `POST /v1/vcon/analyze`
+is [`output/vcon_analysis.rs`](../../src/output/vcon_analysis.rs), one function
+for both surfaces.
+
+A schema finding never stops a read: it rides in the provenance. The reader
+refuses only a container whose SIP it cannot rebuild, or a JSON object with
+none of the members a vCon has. A change to the trace the exporter writes is a
+change to what the reader can rebuild, so
+[`tests/vcon_input_test.rs`](../../tests/vcon_input_test.rs) exports a capture
+with the built binary and reads it back, comparing every stored field.
 
 ## What the tests cover
 

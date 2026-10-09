@@ -837,7 +837,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 496 -> 498: docs/internals/build-ci-release.md's hosted cargo cache
     // paragraph links scripts/ci-cache-prune.sh and
     // tests/ci_cache_policy_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 498;
+    // 498 -> 502: the vCon reader. docs/internals/subsystem-guide.md links
+    // src/capture/vcon_input.rs, and docs/internals/vcon.md links it,
+    // src/output/vcon_analysis.rs and tests/vcon_input_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 502;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

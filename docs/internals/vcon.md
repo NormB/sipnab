@@ -360,6 +360,26 @@ to check. Three tests keep the distinction visible:
   strength of the projection rather than of the filter, and it is what refuses
   the digest response the day that changes.
 
+## Reading a container back
+
+The reader is a separate module,
+[`capture/vcon_input.rs`](../../src/capture/vcon_input.rs), because it is an
+input source rather than part of the exporter. It rebuilds each message of a
+`sip-message-trace` attachment, or each `message/sip` attachment, as wire text
+and hands it to the packet path as a pre-parsed packet, so nothing downstream
+has a vCon branch. What it cannot rebuild it records in a `VconProvenance`,
+which the capture analysis turns into the `rebuilt_from_vcon` finding. The
+inline analysis behind the MCP `analyze_vcon` tool and `POST /v1/vcon/analyze`
+is [`output/vcon_analysis.rs`](../../src/output/vcon_analysis.rs), one function
+for both surfaces.
+
+A schema finding never stops a read: it rides in the provenance. The reader
+refuses only a container whose SIP it cannot rebuild, or a JSON object with
+none of the members a vCon has. A change to the trace the exporter writes is a
+change to what the reader can rebuild, so
+[`tests/vcon_input_test.rs`](../../tests/vcon_input_test.rs) exports a capture
+with the built binary and reads it back, comparing every stored field.
+
 ## What the tests cover
 
 Unit tests live in the module and reach its private helpers.

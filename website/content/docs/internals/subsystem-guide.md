@@ -103,6 +103,13 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    takes that reading. See
    [How `--hep-listen` reads the transport](@/docs/cli.md#how-hep-listen-reads-the-transport).
 
+   A stored vCon container read by `-I` arrives pre-parsed too:
+   [`capture/vcon_input.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/vcon_input.rs) rebuilds each
+   stored SIP message as wire text and sets `PreParsed::vcon`, which carries
+   the transport the container named and makes the parsed packet's origin
+   `InputOrigin::Vcon`. The one detection rule is `sniffs_as_container`: the
+   first byte other than whitespace is `{`.
+
    A live device name goes to libpcap untouched, and libpcap picks the
    capture backend from it (`netmap:eth0` selects netmap), so which backends
    a binary reaches is a property of the libpcap it loads, not of sipnab.
@@ -120,8 +127,9 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    defragmentation, TCP reassembly, tunnel unwrapping — via
    [`parse_packet()`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs). One frame can yield several
    messages, which is why the return type is plural.
-   A HEP message and a uprobe read skip TCP reassembly: each is one whole
-   message and carries no TCP sequence number for the reassembler to order.
+   A HEP message, a uprobe read and a message rebuilt from a vCon skip TCP
+   reassembly: each is one whole message and carries no TCP sequence number
+   for the reassembler to order.
 4. **Classify.** [`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) decides what the
    packet *means* and returns a `PacketAction` — `Sip { msg, sdp_links }`,
    `Rtp { .. }`, `Rtcp(..)` or `None`. WebSocket-SIP unwrap, SDP link
