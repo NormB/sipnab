@@ -89,7 +89,8 @@ jobs:
           # libyang2-tools is yanglint, for the YANG validation step below.
           packages: libpcap-dev libasound2-dev libyang2-tools
 
-      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           components: clippy, rustfmt
           # `cargo test --all-features` includes `plugins`, and
@@ -99,15 +100,19 @@ jobs:
           # the target rather than the test getting weakened.
           targets: wasm32-unknown-unknown
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored on every run and saved, at the end of this job, from main
+      # only: tests/ci_cache_policy_test.rs says why.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Test Python examples and documentation tooling
         if: runner.os == 'Linux'
@@ -364,6 +369,21 @@ jobs:
           tmux -V
           cargo test --features tui --test tui_e2e_test -- --ignored
 
+      # The workspace's own executables are rebuilt by any change to the
+      # sources, so they are removed before the save; see the script.
+      - name: Prune the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   # Installer: unit tests for the platform/glibc detection and artifact
   # selection in website/static/install.sh (served at sipnab.com/install.sh).
   # Pure POSIX sh — no Rust toolchain needed.
@@ -407,21 +427,26 @@ jobs:
         with:
           packages: libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           targets: ${{ matrix.target }}
           # llvm-objcopy, which the split uses on Linux.
           components: llvm-tools
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored on every run and saved, at the end of this job, from main
+      # only: tests/ci_cache_policy_test.rs says why.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-symbol-split-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-symbol-split-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-symbol-split-${{ matrix.target }}-
+            cargo-symbol-split-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Build the release profile with the release's symbol flags
         shell: bash
@@ -494,6 +519,21 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The workspace's own executables are rebuilt by any change to the
+      # sources, so they are removed before the save; see the script.
+      - name: Prune the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   install-sh:
     # Bounds how long this job can hold the main-branch concurrency
@@ -811,7 +851,8 @@ jobs:
         with:
           packages: libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
       # checkout's clean (`git clean -ffdx`) deletes an in-workspace `target`
       # at the start of every job, on a self-hosted runner too. So on a
       # self-hosted runner the build directory lives outside the workspace,
@@ -821,19 +862,22 @@ jobs:
       # The self-hosted runner's ~/.cargo is the machine's own and its target
       # directory is the one above: nothing to restore, and nothing that
       # should be uploaded.
-      - if: runner.environment == 'github-hosted'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored on every run and saved, at the end of this job, from main
+      # only: tests/ci_cache_policy_test.rs says why.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           # Cache keys must not contain commas, and matrix.features has them
-          # (e.g. "native,tui,audio"); key on the lockfile only.
-          key: ${{ runner.os }}-features-${{ hashFiles('**/Cargo.lock') }}
+          # (e.g. "native,tui,audio"); the key leaves the feature set out.
+          key: cargo-features-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-features-
-            ${{ runner.os }}-cargo-
+            cargo-features-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       # wasm is lib-only: its test/bin targets are meaningless.
       #
@@ -880,6 +924,21 @@ jobs:
       - name: Test (TUI snapshots without audio)
         if: matrix.features == 'native,tui,tls,hep,api'
         run: cargo test --no-default-features --features "${{ matrix.features }}" --test tui_snapshot_test
+
+      # The workspace's own executables are rebuilt by any change to the
+      # sources, so they are removed before the save; see the script.
+      - name: Prune the cargo cache
+        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # What `cargo publish` would upload, built from its own files alone.
   # `tests/crate_package_test.rs` packages without compiling, so it catches a

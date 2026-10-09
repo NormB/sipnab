@@ -834,7 +834,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // once where the two paragraphs it replaces linked it twice.
     // 495 -> 496: docs/internals/vcon.md links the publisher's vCon schema
     // file, tests/schemas/publisher/vcon_json_schema.json, beside sipnab's copy.
-    const EXPECTED_CODE_LINKS: usize = 496;
+    // 496 -> 498: docs/internals/build-ci-release.md's hosted cargo cache
+    // paragraph links scripts/ci-cache-prune.sh and
+    // tests/ci_cache_policy_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 498;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
