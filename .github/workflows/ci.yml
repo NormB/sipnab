@@ -182,18 +182,16 @@ jobs:
       # package, through the cached installer every hosted job uses. The
       # preseed answers the one question wireshark-common asks (may non-root
       # users capture: no) before dpkg configures it, so nothing waits for a
-      # terminal this job does not have.
-      - name: Answer wireshark-common's install question (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "wireshark-common wireshark-common/install-setuid boolean false" |
-            sudo debconf-set-selections
-
+      # terminal this job does not have. It is the action's `debconf` input,
+      # which the action applies inside its install lock and only when it
+      # installs something, so a machine that already has tshark never takes
+      # debconf's lock for it.
       - name: Install tshark (Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/system-deps
         with:
           packages: tshark
+          debconf: wireshark-common wireshark-common/install-setuid boolean false
 
       # Compiling a client proves it is a program; this proves it does what
       # its page says. scripts/smoke-clients.sh replays two committed captures

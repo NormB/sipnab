@@ -305,6 +305,83 @@ fn the_shared_action_is_self_hosted_only_and_caps_first() -> Result<(), TestErro
 }
 
 // ---------------------------------------------------------------------------
+// What a self-hosted job must not do to the machine.
+// ---------------------------------------------------------------------------
+
+/// The steps of a job body: each starts at a `- ` six spaces in.
+fn steps_of(body: &str) -> Vec<String> {
+    let mut steps: Vec<String> = Vec::new();
+    for line in body.lines() {
+        if line.starts_with("      - ") {
+            steps.push(String::new());
+        }
+        if let Some(s) = steps.last_mut() {
+            s.push_str(line);
+            s.push('\n');
+        }
+    }
+    steps
+}
+
+/// The step's `if:` condition, written on the dash line or its own line.
+fn step_if(step: &str) -> Option<&str> {
+    step.lines().find_map(|l| {
+        let t = l.trim_start();
+        let t = t.strip_prefix("- ").unwrap_or(t);
+        t.strip_prefix("if:").map(str::trim)
+    })
+}
+
+const HOSTED_ONLY: &str = "runner.environment == 'github-hosted'";
+
+fn hosted_only(step: &str) -> bool {
+    step_if(step).is_some_and(|c| c.contains(HOSTED_ONLY))
+}
+
+/// A self-hosted job changes the machine's packages only through the shared
+/// `system-deps` action.
+///
+/// Four runner instances share one machine, and dpkg and debconf each hold
+/// one machine-wide lock. The action installs only what `dpkg -s` reports
+/// missing and serializes the install, so a job that needs nothing does
+/// nothing. A bare `apt-get`, `dpkg -i` or `debconf-set-selections` in a job
+/// does neither, and two concurrent jobs fail on the lock.
+#[test]
+fn self_hosted_jobs_change_packages_only_through_system_deps() -> Result<(), TestError> {
+    let mut scanned = 0;
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !runs_self_hosted(&job.body) {
+            continue;
+        }
+        scanned += 1;
+        for step in steps_of(&job.body) {
+            if hosted_only(&step) {
+                continue;
+            }
+            for line in step.lines() {
+                let t = line.trim_start();
+                if t.starts_with('#') {
+                    continue;
+                }
+                if ["apt-get", "dpkg -i", "debconf-set-selections"]
+                    .iter()
+                    .any(|c| t.contains(c))
+                {
+                    defects.push(format!("{}:{}: {}", job.workflow, job.id, t));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned >= 4,
+        "only {scanned} self-hosted job(s) found; the job scan is wrong"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // scripts/ci-target-cap.sh, driven for real on temporary directories.
 // ---------------------------------------------------------------------------
 

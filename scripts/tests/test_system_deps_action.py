@@ -55,7 +55,20 @@ def _stubs(root: pathlib.Path) -> pathlib.Path:
     bin_dir = root / "bin"
     bin_dir.mkdir()
     scripts = {
-        "sudo": 'exec "$@"\n',
+        # With HOLD set, sudo also records whether another sudo is running:
+        # every machine-wide change goes through it, so two at once is the
+        # dpkg-lock race the concurrency test looks for.
+        "sudo": textwrap.dedent(
+            """\
+            if [ -z "${HOLD:-}" ]; then exec "$@"; fi
+            mkdir "$HOLD" 2>/dev/null || echo overlap >> "$OVERLAP"
+            "$@"; rc=$?
+            sleep 0.2
+            rmdir "$HOLD" 2>/dev/null
+            exit "$rc"
+            """
+        ),
+        "debconf-set-selections": 'sed "s/^/debconf: /" >> "$INSTALLED"\n',
         "timeout": 'shift; exec "$@"\n',
         "chown": "exit 0\n",
         "apt-get": textwrap.dedent(
@@ -86,19 +99,29 @@ def _stubs(root: pathlib.Path) -> pathlib.Path:
     return bin_dir
 
 
-def _install(root: pathlib.Path, packages: str) -> list[str]:
-    """Run the Install step for `packages`; return what dpkg installed."""
-    script = _run_block(_step("Install")).replace(REAL_ARCHIVES, str(root / "archives"))
-    installed = root / f"installed-{_slug(packages)}"
-    env = {
+def _install_env(root: pathlib.Path, packages: str, **extra: str) -> dict[str, str]:
+    return {
         "PATH": f"{_stubs_dir(root)}:{os.environ['PATH']}",
         "HOME": str(root / "home"),
         "NEED": packages,
         "SLUG": _slug(packages),
         "ARCHIVES": str(root / "archives"),
-        "INSTALLED": str(installed),
+        "INSTALLED": str(root / f"installed-{_slug(packages)}"),
+        **extra,
     }
-    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True, text=True)
+
+
+def _install_script(root: pathlib.Path) -> str:
+    return _run_block(_step("Install")).replace(REAL_ARCHIVES, str(root / "archives"))
+
+
+def _install(root: pathlib.Path, packages: str) -> list[str]:
+    """Run the Install step for `packages`; return what dpkg installed."""
+    env = _install_env(root, packages)
+    subprocess.run(
+        ["bash", "-c", _install_script(root)], env=env, check=True, capture_output=True, text=True
+    )
+    installed = pathlib.Path(env["INSTALLED"])
     return installed.read_text().split() if installed.exists() else []
 
 
@@ -185,3 +208,86 @@ def test_a_new_runner_image_misses_the_old_images_cache(tmp_path):
     assert old["base"] != new["base"], "two images with different packages share one cache key"
     key = re.search(r"(?m)^\s+key: (.+?)\s*$", _step("Restore the .deb cache")).group(1)
     assert "steps.probe.outputs.base" in key, f"the cache key ignores the image's packages: {key}"
+
+
+def test_concurrent_installs_on_one_machine_take_turns(tmp_path):
+    """Four runner instances share one machine, and dpkg holds one lock for
+    all of them: a second `dpkg -i` or `apt-get install` while the first runs
+    fails with "dpkg frontend lock is locked by another process". The probe
+    step skips the install when every package is present, which is the
+    common path on the self-hosted machine; when one is missing, two jobs
+    reach this step together, and it must serialize them."""
+    root = _setup(tmp_path)
+    overlap = root / "overlap"
+    procs = [
+        subprocess.Popen(
+            ["bash", "-c", _install_script(root)],
+            env=_install_env(root, pkgs, HOLD=str(root / "held"), OVERLAP=str(overlap)),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for pkgs in ("libpcap-dev", "tshark", "libyang2-tools")
+    ]
+    for proc in procs:
+        _, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err
+    assert not overlap.exists(), (
+        f"{overlap.read_text().count('overlap')} privileged command(s) ran while another "
+        "job's install held the machine"
+    )
+
+
+def _install_with_preseed(root: pathlib.Path, packages: str, preseed: str) -> list[str]:
+    env = _install_env(root, packages, DEBCONF=preseed)
+    subprocess.run(
+        ["bash", "-c", _install_script(root)], env=env, check=True, capture_output=True, text=True
+    )
+    return pathlib.Path(env["INSTALLED"]).read_text().splitlines()
+
+
+def test_a_debconf_preseed_is_applied_before_the_package_is_configured(tmp_path):
+    """wireshark-common asks whether non-root users may capture. The answer
+    must be in debconf before dpkg configures the package, on the cold path
+    and on the cached one, or the install waits for a terminal the job does
+    not have."""
+    root = _setup(tmp_path)
+    answer = "wireshark-common wireshark-common/install-setuid boolean false"
+    for path in ("cold", "cached"):
+        log = _install_with_preseed(root, "tshark", answer)
+        assert log == [f"debconf: {answer}", "tshark"], f"{path} path: {log}"
+        pathlib.Path(_install_env(root, "tshark")["INSTALLED"]).unlink()
+
+
+def test_no_preseed_means_no_debconf_call(tmp_path):
+    root = _setup(tmp_path)
+    log = _install_with_preseed(root, "libpcap-dev", "")
+    assert log == ["libpcap-dev"], log
+
+
+def test_the_preseed_reaches_the_install_step_only_through_the_environment():
+    """Like `packages`, the input is text substituted before bash runs; it
+    reaches the script as an environment value, never inline."""
+    install = _step("Install")
+    assert "DEBCONF: ${{ inputs.debconf }}" in install, install
+    assert "${{ inputs.debconf }}" not in _run_block(install)
+
+
+def test_every_step_that_changes_the_machine_runs_only_when_something_is_missing():
+    for name in ("Restore the .deb cache", "Install", "Verify"):
+        assert "if: steps.probe.outputs.need != ''" in _step(name), name
+
+
+def test_no_workflow_runs_debconf_outside_the_action():
+    """A preseed in its own workflow step runs on every job, installed or not,
+    and takes debconf's machine-wide lock each time; two jobs on the
+    self-hosted machine at once then fail on it. Passed as the action's
+    `debconf` input, it runs inside the install lock and only when something
+    is installed."""
+    workflows = ACTION.parents[2] / "workflows"
+    found = []
+    for wf in sorted(workflows.glob("*.yml")):
+        for n, line in enumerate(wf.read_text().splitlines(), 1):
+            if "debconf-set-selections" in line and not line.lstrip().startswith("#"):
+                found.append(f"{wf.name}:{n}: {line.strip()}")
+    assert not found, "pass the answer as system-deps' `debconf` input:\n" + "\n".join(found)
