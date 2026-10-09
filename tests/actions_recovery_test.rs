@@ -3,9 +3,8 @@
 //! Backing out a bad or stale update, and keeping the journal bounded
 //! (JOURNAL + ACTIONS-HARDEN; approved spec 2026-09-28).
 //!
-//! Written before the behavior exists. Norm, 2026-09-28: "there must be
-//! recovery tests that can back out a bad or stale update". From the approved
-//! journal spec:
+//! Written before the behavior exists. Recovery tests back out a bad or stale
+//! update (Norm, 2026-09-28). From the approved journal spec:
 //!
 //! * revert one action by id, or everything sipnab did that is still in
 //!   effect, newest first, each journaled as its own revert; from the local

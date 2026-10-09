@@ -201,10 +201,9 @@ fn published_host_ports(service: &str) -> Result<Vec<String>, TestError> {
 /// impossible, and `docker compose up rtpengine` beside a running rtpproxy
 /// failed with `Bind for 127.0.0.1:8081 failed: port is already allocated`.
 ///
-/// **Norm, 2026-09-12:** "you must install rtpproxy the same server(es) as
-/// rtpengine. this way, testing rtpengine and/or rtpproxy can be done in a
-/// similar fashion. the rtp port ranges for rtpproxy and rtpengine must not
-/// overlap."
+/// **Requirement (Norm, 2026-09-12):** rtpproxy is installed on the same
+/// servers as rtpengine, so either relay, or both, can be tested the same way,
+/// and the RTP port ranges of the two do not overlap.
 ///
 /// Separating the media ranges and leaving the control doors colliding was half
 /// a fix: the range separation only buys anything if both can run, and they

@@ -1,10 +1,10 @@
 # Editing the capture filter from the TUI, and showing it honestly
 
-**Norm, 2026-09-14:** "when the TUI is started the BPF filter is a very long
-string that is always cut off. Recommend an approach to shorten it or not
-display it at all. Consider the BPF filter field being made similar to the
-search field so that if it is changed, the new BPF filter replaces the current
-one, and a checkbox can add the new filter to the currently running one."
+**Requirement (Norm, 2026-09-14):** when the TUI starts, the BPF filter is a
+very long string that is always cut off, so it is either shortened or not
+displayed. The BPF filter field works like the search field: a changed filter
+replaces the current one, and a checkbox adds the new filter to the one that is
+running instead.
 
 This spec gates the implementation. It covers two problems the operator meets in
 one place — a filter shown so long it reads as a mistake, and a filter an

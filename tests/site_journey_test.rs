@@ -11222,8 +11222,8 @@ fn every_homepage_tile_has_a_color_modifier() -> Result<(), TestError> {
 /// The voice-stack tile for OpenSIPS and Kamailio is headed "SIP proxy".
 ///
 /// Both are proxies that stay in each call's path, and every other guide on
-/// the row assumes exactly that (Norm, 2026-09-28: "SIP server" should be
-/// renamed to "SIP proxy").
+/// the row assumes exactly that. The heading was "SIP server" until
+/// 2026-09-28 (Norm).
 #[test]
 fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -11266,9 +11266,8 @@ fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() -> Result<(), T
 }
 
 /// The home page names no other SIP capture tool, in its text or its
-/// template comments (Norm, 2026-10-05: "remove sipgrep and sngrep from the
-/// homepage"), and the system map gives rtpproxy its own item, linked to its
-/// own guide, beside rtpengine's.
+/// template comments (Norm, 2026-10-05), and the system map gives rtpproxy
+/// its own item, linked to its own guide, beside rtpengine's.
 #[test]
 fn the_home_page_names_no_peer_capture_tool_and_maps_rtpproxy() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -11311,9 +11310,8 @@ fn the_attack_blocking_tile_pairs_each_blocker_with_its_sipnab_guide() -> Result
 }
 
 /// The voice-stack tiles name the role a component plays, not the product
-/// (Norm, 2026-09-28: "homer is a product. maybe the tile title should not say
-/// homer."), and each pairs "Use <product>" with "Run sipnab beside it", as
-/// the SIP proxy tile does.
+/// (Norm, 2026-09-28), and each pairs "Use <product>" with "Run sipnab beside
+/// it", as the SIP proxy tile does.
 #[test]
 fn the_voice_stack_tiles_name_roles_and_pair_their_guides() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;

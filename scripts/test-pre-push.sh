@@ -984,8 +984,8 @@ HOOK_CORPUS_SKIP=
 # The break this covers only appears with a feature OFF: `--features full`
 # (pre-commit) and `--all-features` (the clippy gate) both turn features ON.
 # CI's Features job builds every combo, and since 2026-09-29 it runs on the
-# aarch64 self-hosted runners (Norm: "move the feature matrix to the local
-# runners"), so this hook no longer repeats it on every push.
+# aarch64 self-hosted runners (moved there by Norm), so this hook no longer
+# repeats it on every push.
 # `scripts/check-feature-matrix.py` still runs the same combos with CI's flags
 # by hand, and this scenario holds it to both cases: an ungated item that the
 # combo without the feature reports as dead code, and the same item gated.

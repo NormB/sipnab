@@ -3,7 +3,9 @@
 #
 # Check one commit message or pull request description for the lab's private
 # identities: the development host, the lab's machines, its DNS domain, its LAN
-# and account paths.
+# and account paths. It also refuses AI attribution (class H): a co-author
+# trailer naming an AI assistant, a "Generated with" line, the assistant's
+# noreply address and a session-link trailer.
 #
 #   scripts/check-message-identity.sh <file>
 #

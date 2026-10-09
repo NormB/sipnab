@@ -2,8 +2,8 @@
 
 //! The action rate limit: always on, and not the read limit (ACTIONS-HARDEN).
 //!
-//! Written before the behavior exists. Norm, 2026-09-28: "rate limiting tests
-//! and rate limiting must be enabled". An action changes another system, so a
+//! Written before the behavior exists. Rate limiting is enabled, and tested
+//! (Norm, 2026-09-28). An action changes another system, so a
 //! caller holding a stolen `actions` token must not be able to ban at the rate
 //! the REST read limit allows (100 a second, per peer).
 //!

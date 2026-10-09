@@ -4,9 +4,9 @@
 //!
 //! Written before the behavior exists. Until it did, `POST /v1/tfps/ban` and
 //! `/v1/tfps/unban` ran `tfps_ctl` for any credential that could read, on any
-//! host where TFPS was installed. Norm, 2026-09-28: "Default is secure, sipnab
-//! doesn't update external systems. With config settings, MCP, REST, updates
-//! to fail2ban, tfps, etc can be enabled."
+//! host where TFPS was installed. Defaults are secure: sipnab updates no
+//! external system unless configuration enables it, per surface (MCP, REST)
+//! and per system (TFPS, fail2ban) (Norm, 2026-09-28).
 //!
 //! Two locks, both required to act:
 //!

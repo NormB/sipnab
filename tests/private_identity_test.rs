@@ -22,6 +22,10 @@
 //! | F | A tracked gate transcript, carrying a worktree path verbatim |
 //! | G | Sample output addressed to domains somebody really owns |
 //!
+//! Class H is a rule rather than a leak: no commit message or tracked file
+//! credits an AI assistant as an author. It shares this file because it shares
+//! the message check the commit-msg hook and CI run.
+//!
 //! # Why each class gets controls and not just a scan
 //!
 //! A scan that finds nothing is indistinguishable from a scan that looks at
@@ -359,6 +363,22 @@ mod rule {
             .any(|e| domain == *e || domain.ends_with(&format!(".{e}")));
         !PUBLISHED_IDENTITIES.contains(&low.as_str()) && !reserved && REAL_TLDS.contains(&tld)
     }
+
+    /// H. A line that credits an AI assistant as an author of the work.
+    ///
+    /// Four forms, case-insensitive: a `Co-Authored-By:` trailer naming Claude
+    /// or Anthropic, a "Generated with Claude Code" line (bracketed as a link
+    /// or not), the assistant's noreply address, and a `Claude-Session:`
+    /// trailer. A bare "Claude" is not one of them: Claude Code and Claude
+    /// Desktop are MCP clients the MCP documentation has to name.
+    pub fn ai_attribution(line: &str) -> bool {
+        let l = line.to_ascii_lowercase();
+        (l.contains("co-authored-by:") && (l.contains("claude") || l.contains("anthropic")))
+            || l.contains("generated with [claude code]")
+            || l.contains("generated with claude code")
+            || l.contains("noreply@anthropic.com")
+            || l.contains("claude-session:")
+    }
 }
 
 /// What to write instead, per class. Named in the failure and checked by it.
@@ -373,6 +393,10 @@ mod guidance {
     pub const TRANSCRIPT: &str = "Untrack it and add the pattern to .gitignore.";
     pub const MAILBOX: &str = "RFC 2606 reserves .test, .example and .invalid for addresses \
                                that cannot reach anyone.";
+    pub const AI_ATTRIBUTION: &str = "Delete the line. Commits and files carry no AI \
+                                      attribution: no Co-Authored-By naming an assistant, no \
+                                      `Generated with` line, no session trailer. Naming an MCP \
+                                      client such as Claude Code or Claude Desktop is fine.";
 }
 
 // -- Messages: commit messages and pull request descriptions ----------
@@ -432,12 +456,13 @@ enum Scissors {
 
 /// [`message_findings`], with the scissors line handled as `scissors` says.
 fn message_findings_from(text: &str, scissors: Scissors) -> Vec<Finding> {
-    let classes: [(&'static str, LineRule); 5] = [
+    let classes: [(&'static str, LineRule); 6] = [
         ("A", |l| rule::lab_host(l) || rule::bare_host(l)),
         ("B", rule::lab_machine),
         ("C", rule::private_domain),
         ("D", rule::lab_address),
         ("E", |l| rule::account_path(l) || rule::corpus_path(l)),
+        ("H", rule::ai_attribution),
     ];
     let mut found = Vec::new();
     for (i, line) in text.lines().enumerate() {
@@ -460,6 +485,7 @@ fn guidance_for(class: &str) -> &'static str {
         "B" => guidance::MACHINE,
         "C" => guidance::DOMAIN,
         "D" => guidance::ADDRESS,
+        "H" => guidance::AI_ATTRIBUTION,
         _ => guidance::PATH,
     }
 }
@@ -531,6 +557,7 @@ fn m1_message_findings_reports_each_class_with_its_line() -> Result<(), TestErro
         ("Reached opensips-1.goes.com over TLS", "C"),
         ("The relay at 10.0.0.40 answered", "D"),
         ("Ran against /home/gator/pcaps", "E"),
+        ("Co-Authored-By: Claude <noreply@anthropic.com>", "H"),
     ] {
         let message = format!("Fix the parser\n\nFirst paragraph.\n{planted}\n");
         let found = message_findings(&message);
@@ -2466,6 +2493,211 @@ fn g10_the_guide_names_the_reserved_fixture_domains() -> Result<(), TestError> {
     Ok(())
 }
 
+// -- Class H: AI attribution -----------------------------------------
+//
+// sipnab names Claude where a page is about MCP: Claude Code and Claude
+// Desktop are MCP clients, `claude mcp add` is how one is pointed at sipnab,
+// and a model name appears in an MCP example. What is refused is crediting an
+// assistant as an author of the work: a `Co-Authored-By:` line naming Claude
+// or Anthropic, a "Generated with Claude Code" line, the assistant's noreply
+// address, and a `Claude-Session:` trailer. The rule is case-insensitive,
+// because git and GitHub treat trailer keys that way.
+
+/// The gates that define the class H forms, and so must spell them.
+///
+/// This file is skipped by [`scan`] for every class. `tests/no_commit_attribution_test.rs`
+/// is the older gate over recent commit messages: its predicate and its
+/// positive controls are the forbidden forms, written out so a reader can see
+/// what it refuses. Each entry is checked by `h7` to exist and to be a gate.
+const AI_ATTRIBUTION_GATES: &[&str] = &["tests/no_commit_attribution_test.rs"];
+
+/// Every class H line in `files`, outside [`AI_ATTRIBUTION_GATES`].
+///
+/// One function for the tree scan and for `h8`, so the planted-line control
+/// exercises the same scan the tree gets.
+fn ai_attribution_findings(files: &[(String, String)]) -> Vec<String> {
+    scan(
+        files,
+        |rel| !AI_ATTRIBUTION_GATES.contains(&rel),
+        rule::ai_attribution,
+    )
+}
+
+/// H1. No tracked file credits an AI assistant as an author.
+#[test]
+fn h1_no_tracked_file_attributes_the_work_to_an_ai() -> Result<(), TestError> {
+    let files = tracked_text()?;
+    let found = ai_attribution_findings(&files);
+    assert!(
+        found.is_empty(),
+        "a tracked file credits an AI assistant as an author:\n{}\n\n{}",
+        capped(&found, 25),
+        guidance::AI_ATTRIBUTION
+    );
+    Ok(())
+}
+
+/// H2. The rule flags each trailer form, in any case.
+#[test]
+fn h2_the_ai_attribution_rule_flags_each_trailer_form() -> Result<(), TestError> {
+    for line in [
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+        "Co-Authored-By: Claude Opus 4.5 (1M context) <noreply@anthropic.com>",
+        "co-authored-by: claude <someone@example.org>",
+        "CO-AUTHORED-BY: Anthropic Assistant <a@example.org>",
+        "Claude-Session: https://example.test/session/abc",
+        "claude-session: abc",
+    ] {
+        assert!(rule::ai_attribution(line), "not flagged: {line:?}");
+    }
+    Ok(())
+}
+
+/// H3. It flags the "Generated with" line, with and without its link.
+#[test]
+fn h3_the_ai_attribution_rule_flags_the_generated_with_line() -> Result<(), TestError> {
+    for line in [
+        "Generated with [Claude Code](https://claude.com/claude-code)",
+        "\u{1F916} Generated with [Claude Code](https://claude.com/claude-code)",
+        "Generated with Claude Code",
+        "generated with claude code",
+    ] {
+        assert!(rule::ai_attribution(line), "not flagged: {line:?}");
+    }
+    Ok(())
+}
+
+/// H4. It flags the assistant's noreply address wherever it appears.
+#[test]
+fn h4_the_ai_attribution_rule_flags_the_noreply_address() -> Result<(), TestError> {
+    for line in [
+        "Signed-off-by: x <noreply@anthropic.com>",
+        "contact NOREPLY@ANTHROPIC.COM",
+    ] {
+        assert!(rule::ai_attribution(line), "not flagged: {line:?}");
+    }
+    Ok(())
+}
+
+/// H5. It spares Claude named as an MCP client, a command or a model.
+///
+/// These are the uses the MCP documentation needs, and the half that decides
+/// whether the gate is kept: a rule that flags "connect Claude Code to
+/// sipnab's MCP server" would be suppressed.
+#[test]
+fn h5_the_ai_attribution_rule_spares_mcp_documentation() -> Result<(), TestError> {
+    for line in [
+        "Connect Claude Code to sipnab's MCP server:",
+        "claude mcp add sipnab -- sipnab --mcp-stdio",
+        "Claude Desktop reads `claude_desktop_config.json` at startup.",
+        "| Claude Desktop | stdio | yes |",
+        "Tested with claude-opus-4-5 as the model behind the MCP client.",
+        "An MCP client such as Claude Code generated with `--json` output in mind",
+        "the Anthropic API is not called by sipnab",
+    ] {
+        assert!(!rule::ai_attribution(line), "flagged MCP prose: {line:?}");
+    }
+    Ok(())
+}
+
+/// H6. It spares a human co-author and a project's own "Generated with".
+#[test]
+fn h6_the_ai_attribution_rule_spares_human_trailers() -> Result<(), TestError> {
+    for line in [
+        "Co-Authored-By: A Person <person@example.org>",
+        "Co-Authored-By: Norm Brandinger <n.brandinger@gmail.com>",
+        "Generated with sipnab 0.5.200",
+        "Reported-by: Someone <someone@example.org>",
+    ] {
+        assert!(
+            !rule::ai_attribution(line),
+            "flagged a human line: {line:?}"
+        );
+    }
+    Ok(())
+}
+
+/// H7. The exempt gates exist, are gates, and are the only exemption.
+///
+/// An exemption that outlives its file, or that names a file which is not a
+/// gate, is a hole: the scan would skip whatever later appears at that path.
+#[test]
+fn h7_the_exempt_files_are_the_gates_that_define_the_forms() -> Result<(), TestError> {
+    let files = tracked_text()?;
+    for rel in AI_ATTRIBUTION_GATES {
+        let (_, text) = files
+            .iter()
+            .find(|(r, _)| r == rel)
+            .ok_or(format!("{rel} is exempt from class H but is not tracked"))?;
+        assert!(
+            text.contains("#[test]") && text.to_ascii_lowercase().contains("co-authored-by"),
+            "{rel} is exempt from class H but is not a gate over these forms"
+        );
+    }
+    assert_eq!(AI_ATTRIBUTION_GATES.len(), 1, "the exemption list grew");
+    Ok(())
+}
+
+/// H8. A planted line in a tracked file is reported with its path and line,
+/// and the exempt gate is the only file whose lines are not.
+#[test]
+fn h8_a_planted_line_in_a_file_is_reported() -> Result<(), TestError> {
+    let files = vec![
+        (
+            AI_ATTRIBUTION_GATES[0].to_string(),
+            "// Co-Authored-By: Claude <noreply@anthropic.com>\n".to_string(),
+        ),
+        (
+            "src/planted.rs".to_string(),
+            "fn a() {}\n// Co-Authored-By: Claude <noreply@anthropic.com>\n".to_string(),
+        ),
+        (
+            "docs/mcp.md".to_string(),
+            "Connect Claude Code to sipnab's MCP server.\n".to_string(),
+        ),
+    ];
+    let found = ai_attribution_findings(&files);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("src/planted.rs:2: "), "{found:?}");
+    Ok(())
+}
+
+/// H9. The message script refuses a planted trailer, names class H, and
+/// passes the same message without it.
+#[test]
+fn h9_the_message_script_refuses_an_ai_trailer() -> Result<(), TestError> {
+    let (rc, out) = run_message_script(
+        "Fix the parser\n\nBody.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
+        "ai-trailer",
+    )?;
+    assert_eq!(
+        rc, 1,
+        "an AI co-author trailer must fail the script:\n{out}"
+    );
+    assert!(
+        out.contains("line 5: class H") && out.contains(guidance::AI_ATTRIBUTION),
+        "the failure must name the line, the class and the replacement:\n{out}"
+    );
+    let (rc, out) = run_message_script(
+        "Fix the parser\n\nConnect Claude Code to sipnab's MCP server.\n",
+        "ai-clean",
+    )?;
+    assert_eq!(rc, 0, "an MCP client name must pass the script:\n{out}");
+    Ok(())
+}
+
+/// H10. The guide names the rule.
+#[test]
+fn h10_the_guide_names_the_ai_attribution_rule() -> Result<(), TestError> {
+    let guide = contributing()?;
+    assert!(
+        guide.contains("co-authored-by") && guide.contains("claude code"),
+        "CONTRIBUTING.md must say that no AI attribution is accepted and that \
+         naming an MCP client is"
+    );
+    Ok(())
+}
+
 // -- Structural: the scan itself --------------------------------------
 
 /// The scan reads a real corpus, and the files it exists to cover.
@@ -2531,6 +2763,7 @@ fn the_guide_names_every_class_the_gate_enforces() -> Result<(), TestError> {
         ("E accounts", "$home"),
         ("F transcripts", "gitignore"),
         ("G mailboxes", ".test"),
+        ("H AI attribution", "co-authored-by"),
     ] {
         assert!(
             guide.contains(clause),
@@ -2576,6 +2809,10 @@ fn the_guide_promises_nothing_the_gate_does_not_enforce() -> Result<(), TestErro
     assert!(
         rule::live_address("a@real-domain.com"),
         "the guide promises live mailboxes are caught"
+    );
+    assert!(
+        rule::ai_attribution("Co-Authored-By: Claude <noreply@anthropic.com>"),
+        "the guide promises AI attribution is caught"
     );
     Ok(())
 }

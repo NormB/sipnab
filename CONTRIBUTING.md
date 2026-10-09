@@ -155,8 +155,8 @@ means adding a test obliges you to update the count in
 
 **`commit-msg`** runs after `pre-commit` and refuses a commit message that
 names the lab's development host, one of its machines, its DNS domain, an
-address on its LAN, or a path under an account's home directory. These are
-classes A to E of
+address on its LAN, or a path under an account's home directory, and a message
+that credits an AI assistant as an author. These are classes A to E and H of
 [Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network),
 and the rules are the same predicates in `tests/private_identity_test.rs`,
 run through `scripts/check-message-identity.sh`. The hook checks every line of
@@ -248,6 +248,16 @@ Write what a reader can act on:
 which line to change. It has no exceptions. A workflow reaches the
 self-hosted runner by its hardware label, `runs-on: [self-hosted, jetson]`,
 never by the machine's name.
+
+The same file also refuses AI attribution (class H), in tracked files and in
+commit messages, in any letter case: a `Co-Authored-By:` trailer that names
+an AI assistant or the company that makes it, a "Generated with" line that
+names Claude Code, the assistant's no-reply address, and a session-link
+trailer. Naming an MCP client is not attribution: "connect Claude Code to sipnab's MCP server",
+Claude Desktop, a `claude mcp add` command and a model name in an MCP example
+are all accepted. The one file exempt from the tracked-file scan is
+`tests/no_commit_attribution_test.rs`, the gate over recent commit messages,
+because its controls are the forbidden forms written out.
 
 Commit messages and pull request descriptions become public too, and they are
 not tracked files, so the scan above does not read them. The `commit-msg`

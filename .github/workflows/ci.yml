@@ -728,11 +728,10 @@ jobs:
     name: Features (${{ matrix.features }})
     # The aarch64 self-hosted runners (four of them), not the hosted queue:
     # every push builds these legs, and the pre-push hook no
-    # longer repeats them locally (Norm, 2026-09-29: "move the feature matrix
-    # to the local runners"). This workflow also runs on pull_request, which
-    # is safe on a self-hosted runner only because the repository requires
-    # approval before an external contributor's workflow runs
-    # (fork-pr-contributor-approval = all_external_contributors). The steps
+    # longer repeats them locally (Norm, 2026-09-29). This workflow also runs
+    # on pull_request, which is safe on a self-hosted runner only because the
+    # repository requires approval before an external contributor's workflow
+    # runs (fork-pr-contributor-approval = all_external_contributors). The steps
     # below that assume a disposable hosted VM are skipped here: they would
     # delete software and docker images from a real machine, and upload its
     # cargo registry.
