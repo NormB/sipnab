@@ -4790,7 +4790,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // tables of `find_in_captures_status` and `cancel_find_in_captures`.
     // Attributed by counting added separator rows per file: docs/mcp-tools.md
     // 3, and the same 3 in website/content/docs/mcp-tools.md.
-    const EXPECTED_TABLES: usize = 1084;
+    // 1084 -> 1086: the core-03 to core-04 comparison in docs/design/vcon.md.
+    // Attributed by counting added separator rows per file: docs/design/vcon.md
+    // 2 (the moved-text table and the normative-changes table). Not mirrored.
+    const EXPECTED_TABLES: usize = 1086;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
