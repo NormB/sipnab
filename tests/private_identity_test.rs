@@ -975,8 +975,6 @@ fn m12_ci_checks_the_title_and_every_commit_message_in_the_range() -> Result<(),
         "HEAD_REF: ${{ github.head_ref }}",
         "PR_NUMBER: ${{ github.event.pull_request.number }}",
         "group: pr-text-${{ github.event.pull_request.number }}",
-        // A `with:` input of actions/checkout, not a script.
-        "ref: ${{ github.event.pull_request.base.sha }}",
     ];
     let unsafe_lines: Vec<&str> = wf
         .lines()
@@ -1136,25 +1134,25 @@ fn m15_ci_runs_mains_code_and_reads_the_pull_request_as_data() -> Result<(), Tes
         "no job in {PR_TEXT_WORKFLOW} may restate permissions"
     );
 
-    // Every checkout is the base commit, and nothing switches to the PR.
+    // Every checkout is the base branch, and nothing switches to the PR.
+    // Under pull_request_target, actions/checkout with no `ref:` checks out
+    // the base branch's latest commit: main's code. Naming any ref is
+    // refused, the base SHA included: OpenSSF Scorecard's Dangerous-Workflow
+    // check reports any checkout ref built from `github.event.pull_request`
+    // as an untrusted checkout, and the default already is the trusted one.
     let checkouts = lines
         .iter()
         .filter(|l| l.contains("uses: actions/checkout@"))
         .count();
-    let base_refs = lines
-        .iter()
-        .filter(|l| l.trim() == "ref: ${{ github.event.pull_request.base.sha }}")
-        .count();
     assert!(checkouts >= 2, "both jobs check out the repository");
-    assert_eq!(
-        base_refs, checkouts,
-        "every checkout in {PR_TEXT_WORKFLOW} must name the base SHA as its ref"
-    );
+    let refs: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.trim_start().starts_with("ref:"))
+        .collect();
     assert!(
-        !lines
-            .iter()
-            .any(|l| l.trim_start().starts_with("ref:") && !l.contains("base.sha")),
-        "no checkout may name any ref but the base SHA"
+        refs.is_empty(),
+        "no checkout in {PR_TEXT_WORKFLOW} may name a ref; the pull_request_target \
+         default is the base branch: {refs:?}"
     );
     for verb in [
         "git checkout",
