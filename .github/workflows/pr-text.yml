@@ -33,9 +33,12 @@ name: Pull request text
 # required check, so a pull request must not be able to weaken the rule that
 # judges it. On `pull_request`, GitHub runs the workflow file, the script and
 # the test from the pull request itself. On `pull_request_target` it runs the
-# base branch's workflow file, and each job here checks out the base commit,
-# so the script, tests/private_identity_test.rs and Cargo.lock that run are
-# main's. The pull request's commits are fetched as git objects and read with
+# base branch's workflow file, and each job's checkout names no ref, so it
+# takes the pull_request_target default, the base branch: the script,
+# tests/private_identity_test.rs and Cargo.lock that run are main's. No ref is
+# named at all, not even the base SHA: OpenSSF Scorecard's Dangerous-Workflow
+# check reports any checkout ref built from the pull request event as an
+# untrusted checkout. The pull request's commits are fetched as git objects and read with
 # `git rev-list` and `git log`; nothing switches the tree to them, and nothing
 # from them is built or run. Consequences:
 #
@@ -68,7 +71,7 @@ name: Pull request text
 on:
   # zizmor flags every pull_request_target trigger (dangerous-triggers). It is
   # used here so that main's code, not the pull request's, runs; the jobs check
-  # out only the base commit and read the pull request as data. See above.
+  # out only the base branch and read the pull request as data. See above.
   pull_request_target: # zizmor: ignore[dangerous-triggers] -- runs main's code only; see the header
     branches: [main]
     types: [opened, edited, reopened, synchronize]
@@ -98,8 +101,6 @@ jobs:
           # Do not leave GITHUB_TOKEN in .git/config for later steps or
           # third-party actions to read. Nothing here pushes with it.
           persist-credentials: false
-          # The base commit: main's script and test, never the pull request's.
-          ref: ${{ github.event.pull_request.base.sha }}
           # The whole history, so base..head excludes everything main has.
           fetch-depth: 0
 
@@ -187,8 +188,6 @@ jobs:
           # Do not leave GITHUB_TOKEN in .git/config for later steps or
           # third-party actions to read. Nothing here pushes with it.
           persist-credentials: false
-          # The base commit: main's script and test, never the pull request's.
-          ref: ${{ github.event.pull_request.base.sha }}
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
 
