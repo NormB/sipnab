@@ -16,6 +16,8 @@ pub mod servers;
 #[cfg(feature = "tui")]
 pub mod tui_mode;
 #[cfg(feature = "vcon")]
+pub mod vcon_fetch;
+#[cfg(feature = "vcon")]
 pub mod vcon_forward;
 
 /// The one append-only audit sink, reachable from every build that can write

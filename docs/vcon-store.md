@@ -154,6 +154,26 @@ says `form: unsigned`, `consentStatus: unknown` and `retentionAction: redact`.
 - **`consentStatus: unknown` is accurate.** sipnab records no consent, and a
   container carries none.
 
+## Read a stored vCon back
+
+`sipnab --vcon-fetch` reads a container back by its uuid, with the same key
+file. The `vcon-store` kind reads `/v1/vcons/{uuid}`, sends the key as
+`Authorization: Bearer <key>`, and removes the `_meta` member the store adds,
+so the file holds the container alone:
+
+```sh
+sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched
+```
+
+The container is the copy the store accepted, so its `extensions` is the
+object the compat mode sent, not the array the drafts define. The fetcher
+writes it and reports the schema finding, and the run exits `1`. Measured on
+2026-10-09: a container sipnab exported from
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), sent with `--vcon-forward-kind
+vcon-store` (`201`), read back (`200`, with `_meta`), then deleted (`200`).
+A read after the delete answered `404`, and a read with a wrong key `401`. More:
+[Fetch a stored vCon](vcon.md#fetch-a-stored-vcon).
+
 ## When something does not work
 
 - **Every container lands in `spool/failed` with status `400` and

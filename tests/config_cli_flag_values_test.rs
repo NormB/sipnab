@@ -2332,6 +2332,152 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-fetch",
+        Kind::Text {
+            accept: &["x", "0", "-1", "-", "018bcfe5-6800-8a6b-a667-78f1c5213800"],
+            reject: &[("", 2), (" ", 2), ("a/b", 2), ("../etc", 2), ("a b", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+        ],
+    ),
+    (
+        "vcon-fetch-url",
+        Kind::Text {
+            accept: &[
+                "http://127.0.0.1:9/v/{uuid}",
+                "https://store.example.com/v1/vcons/{uuid}?full=1",
+            ],
+            reject: &[
+                ("x", 2),
+                ("", 2),
+                (" ", 2),
+                ("http://127.0.0.1:9/v", 2),
+                ("ftp://127.0.0.1/x/{uuid}", 2),
+                ("https://user:pw@store.example.com/{uuid}", 2),
+                ("https://store.example.com/v1/{uuid}#part", 2),
+            ],
+        },
+        &[
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-auth-file",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-kind",
+        Kind::Choice,
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-out",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-overwrite",
+        Kind::Switch,
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-timeout",
+        Kind::Int { lo: 1, hi: 600 },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-max-size",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-max-response-head",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
         "config",
         Kind::Text {
             accept: &["x", "", " ", "0"],
@@ -3098,6 +3244,12 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
                 &cli.vcon_forward_args,
                 &config.vcon_forward
             )
+        ),
+        // The fetcher's settings, resolved from its flags and
+        // `[vcon_fetch]`; the credential's file shows by its path alone.
+        format!(
+            "{:?}",
+            sipnab::app::vcon_fetch::FetchPlan::resolve(&cli.vcon_fetch_args, &config.vcon_fetch)
         ),
     ];
     let mut text = parts.join("\n");

@@ -25,6 +25,23 @@ entry that carries them.
   terminal owns. MCP `security_findings` beside the TUI reports the detectors
   the TUI armed, and `source_exhausted` turns `true` once the file is read.
   See [Query a capture over MCP while the TUI is open](docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+- **`--vcon-fetch` reads stored vCons back by uuid.** A separate process, like
+  the forwarder: it captures nothing, and sipnab refuses it beside any capture
+  flag. `--vcon-fetch <UUID>...` (or `-` for uuids on standard input) reads
+  each container from the store at `--vcon-fetch-url` and writes it to
+  `<uuid>.vcon.json` in `--vcon-fetch-out`, mode `0600`, never replacing a file
+  without `--vcon-fetch-overwrite`. `--vcon-fetch-kind` names the store:
+  `vcon-store` (`GET /v1/vcons/{uuid}`, `Authorization: Bearer`, the `_meta`
+  member removed), `conserver` (`GET /vcon/{uuid}`, `x-conserver-api-token`),
+  `vcon-mcp` (`GET /api/v1/vcons/{uuid}`, `Authorization: Bearer`, the `vcon`
+  member of the answer kept), or `generic` (a URL template holding `{uuid}`).
+  Each container is checked against the vendored schema; one the schema
+  refuses is written and reported, and the run exits `1`. Exit codes follow the
+  forwarder's: `0`, `1`, `2` for refused settings, `3` for a refused
+  credential, after which nothing more is fetched. `--vcon-fetch-auth-file`,
+  `--vcon-fetch-ca`, `--vcon-fetch-timeout`, `--vcon-fetch-max-size` and
+  `--vcon-fetch-max-response-head` each have a `[vcon_fetch]` key. See
+  [Fetch a stored vCon](docs/vcon.md#fetch-a-stored-vcon).
 
 ### Changed
 

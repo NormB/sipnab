@@ -84,6 +84,10 @@ const REMOVED: &str = "[auth value removed]";
 /// setting would let the request name other software.
 const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
 
+/// The flag that bounds an answer's status line and headers, quoted when an
+/// answer passes it.
+const MAX_HEAD_FLAG: &str = "--vcon-forward-max-response-head";
+
 /// The flag that names the auth file, quoted in its errors.
 const AUTH_FLAG: &str = "--vcon-forward-auth-file";
 
@@ -436,8 +440,9 @@ impl Compat {
     }
 }
 
-/// The kind of store a forwarder delivers to: what it supplies for a setting
-/// that is not given. One store per forwarder process.
+/// The kind of store a forwarder delivers to, or the fetcher
+/// (`--vcon-fetch`) reads from: what it supplies for a setting that is not
+/// given. One store per process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreKind {
     /// Nothing supplied: every setting is explicit. The default.
@@ -446,15 +451,24 @@ pub enum StoreKind {
     VconStore,
     /// A self-hosted vCon server (conserver), through its external ingress.
     Conserver,
+    /// The vcon-mcp server's REST API. Read only: the forwarder does not
+    /// deliver to it ([`crate::config::FORWARD_KINDS`] does not name it).
+    VconMcp,
 }
 
 impl StoreKind {
-    /// The kind one of [`crate::config::FORWARD_KINDS`] names.
+    /// The kind one of [`crate::config::FETCH_KINDS`] names. The forwarder
+    /// accepts only the ones [`crate::config::FORWARD_KINDS`] names.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Generic, Self::VconStore, Self::Conserver]
-            .into_iter()
-            .find(|k| k.facts().name == name)
+        [
+            Self::Generic,
+            Self::VconStore,
+            Self::Conserver,
+            Self::VconMcp,
+        ]
+        .into_iter()
+        .find(|k| k.facts().name == name)
     }
 
     /// This kind's row of [`STORE_KINDS`].
@@ -464,8 +478,21 @@ impl StoreKind {
             Self::Generic => &STORE_KINDS[0],
             Self::VconStore => &STORE_KINDS[1],
             Self::Conserver => &STORE_KINDS[2],
+            Self::VconMcp => &STORE_KINDS[3],
         }
     }
+}
+
+/// What a store wraps around the container its read endpoint returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Envelope {
+    /// The answer is the container.
+    Bare,
+    /// The answer is the container with this top-level member added; the
+    /// fetcher removes it.
+    AddedMember(&'static str),
+    /// The answer is an object holding the container in this member.
+    Wrapped(&'static str),
 }
 
 /// What a store of one kind needs, as measured. An explicit setting
@@ -489,10 +516,16 @@ pub struct KindFacts {
     pub compat: Compat,
     /// The statuses, inclusive, that count as delivered.
     pub delivered: (u16, u16),
+    /// The path the fetcher appends to a base URL to read one container,
+    /// `{uuid}` standing for its uuid. `None`: the URL is a template that
+    /// holds `{uuid}` itself.
+    pub read_path: Option<&'static str>,
+    /// What the read endpoint wraps around the container.
+    pub envelope: Envelope,
 }
 
-/// One row per store kind, in the order of
-/// [`crate::config::FORWARD_KINDS`]. The one place each kind's facts live.
+/// One row per store kind, in the order of [`crate::config::FETCH_KINDS`].
+/// The one place each kind's facts live.
 ///
 /// vcon.store, measured by the maintainer against `https://api.vcon.store`
 /// on 2026-10-07: `POST /v1/vcons` with `Authorization: Bearer <key>`
@@ -509,7 +542,25 @@ pub struct KindFacts {
 /// `422` for a body that is not JSON and for one without `uuid`; `403` with
 /// no key or a wrong one. `ingress_list=sipnab` names the ingress list the
 /// sipnab setup in `docs/vcon-sipnab.md` creates.
-pub const STORE_KINDS: [KindFacts; 3] = [
+///
+/// The read paths, from each store's own description of its API:
+///
+/// - vcon.store: `GET /v1/vcons/{uuid}` in its OpenAPI document (vendored at
+///   `tests/schemas/vcon-store-openapi.json`), `200` with the vCon, `404`
+///   when no vCon has that uuid. The answer also carries a top-level `_meta`
+///   member the document does not list (measured 2026-10-09), which is the
+///   store's and not the container's, so the fetcher removes it.
+/// - conserver: `GET /vcon/{vcon_uuid}` in `api/api.py` of
+///   `vcon-dev/vcon-server`, behind the same `x-conserver-api-token` check as
+///   every other route of its API router: `200` with the vCon itself, `404`
+///   when it holds none, `403` for a key it does not hold.
+/// - vcon-mcp: `GET /vcons/:uuid` under the REST base path `/api/v1` in
+///   `src/api/routes/vcons.ts` and `src/api/rest-router.ts` of
+///   `vcon-dev/vcon-mcp`, with `Authorization: Bearer <token>` by default
+///   (`src/api/auth.ts`): `200` with `{"success": true, "vcon": {...}}`,
+///   `404` when it holds none, `401` for a missing or unknown token. The
+///   fetcher keeps the `vcon` member.
+pub const STORE_KINDS: [KindFacts; 4] = [
     KindFacts {
         name: "generic",
         ingest_path: None,
@@ -517,6 +568,8 @@ pub const STORE_KINDS: [KindFacts; 3] = [
         duplicate_status: None,
         compat: Compat::Off,
         delivered: (200, 299),
+        read_path: None,
+        envelope: Envelope::Bare,
     },
     KindFacts {
         name: "vcon-store",
@@ -525,6 +578,8 @@ pub const STORE_KINDS: [KindFacts; 3] = [
         duplicate_status: Some(409),
         compat: Compat::VconStore,
         delivered: (200, 299),
+        read_path: Some("/v1/vcons/{uuid}"),
+        envelope: Envelope::AddedMember("_meta"),
     },
     KindFacts {
         name: "conserver",
@@ -533,6 +588,18 @@ pub const STORE_KINDS: [KindFacts; 3] = [
         duplicate_status: None,
         compat: Compat::Off,
         delivered: (200, 299),
+        read_path: Some("/vcon/{uuid}"),
+        envelope: Envelope::Bare,
+    },
+    KindFacts {
+        name: "vcon-mcp",
+        ingest_path: None,
+        auth_header: Some(("Authorization", "Bearer ")),
+        duplicate_status: None,
+        compat: Compat::Off,
+        delivered: (200, 299),
+        read_path: Some("/api/v1/vcons/{uuid}"),
+        envelope: Envelope::Wrapped("vcon"),
     },
 ];
 
@@ -645,7 +712,7 @@ fn names_as_object(names: &[&str]) -> Result<String, String> {
 
 /// The top-level members of a JSON object, in their order, each value's
 /// bytes as written.
-struct Members(Vec<(String, Box<serde_json::value::RawValue>)>);
+pub(crate) struct Members(pub(crate) Vec<(String, Box<serde_json::value::RawValue>)>);
 
 impl<'de> serde::Deserialize<'de> for Members {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
@@ -702,13 +769,20 @@ pub fn container_uuid(container: &[u8]) -> Result<String, String> {
         .get("uuid")
         .and_then(serde_json::Value::as_str)
         .ok_or("the container carries no `uuid` to replace by")?;
-    if uuid.is_empty()
-        || uuid.len() > MAX_UUID_LEN
-        || !uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
+    if !is_path_uuid(uuid) {
         return Err("the container's `uuid` is not one a URL path may carry".into());
     }
     Ok(uuid.to_string())
+}
+
+/// Whether `uuid` is one a URL path may carry: 1 to 64 characters, each in
+/// `[0-9A-Za-z-]`. The one rule for a uuid the forwarder puts into a replace
+/// URL and the fetcher into a read URL and a file name.
+#[must_use]
+pub fn is_path_uuid(uuid: &str) -> bool {
+    !uuid.is_empty()
+        && uuid.len() <= MAX_UUID_LEN
+        && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// The containers waiting in `spool`, by name, sorted.
@@ -1046,6 +1120,7 @@ impl ForwardPlan {
             "[vcon_forward] kind",
         ) {
             Some((name, from)) => StoreKind::from_name(name)
+                .filter(|_| crate::config::FORWARD_KINDS.contains(&name))
                 .ok_or_else(|| other(format!("{from}: {name:?} is not a store kind")))?,
             None => StoreKind::Generic,
         };
@@ -1383,7 +1458,7 @@ impl Forwarder {
                 .tls;
         }
         let tls = if needs_tls {
-            Some(client_config(settings.ca.as_deref())?)
+            Some(client_config(settings.ca.as_deref(), "--vcon-forward-ca")?)
         } else {
             None
         };
@@ -1692,18 +1767,8 @@ impl Forwarder {
 
     /// One request to `endpoint`, over TLS when it is `https://`.
     fn send(&self, endpoint: &Endpoint, method: &str, body: &[u8]) -> Result<Answer, String> {
-        let mut head = format!(
-            "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n\
-             Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-            endpoint.target,
-            endpoint.host_header(),
-            body.len()
-        );
-        head.push_str(&self.settings.auth.name);
-        head.push_str(": ");
-        head.push_str(&self.settings.auth.value);
-        head.push_str("\r\n\r\n");
-        let sock = connect(endpoint, self.settings.timeout)?;
+        let mut request = request_head(endpoint, method, &self.settings.auth, Some(body.len()));
+        request.extend_from_slice(body);
         // Read past the kept part by the most a credential can be, so the
         // credential is removed from the answer before the cut.
         let limits = self.settings.limits;
@@ -1711,20 +1776,81 @@ impl Forwarder {
             error_body: limits.error_body.saturating_add(MAX_AUTH_FILE),
             ..limits
         };
-        if !endpoint.tls {
-            return talk(sock, head.as_bytes(), body, read);
-        }
-        let config = self.tls.clone().ok_or("no TLS configuration")?;
-        let name = rustls::pki_types::ServerName::try_from(endpoint.host.clone())
-            .map_err(|e| format!("'{}' is not a certificate name: {e}", endpoint.host))?;
-        let conn = rustls::ClientConnection::new(config, name).map_err(|e| e.to_string())?;
-        talk(
-            rustls::StreamOwned::new(conn, sock),
-            head.as_bytes(),
-            body,
-            read,
+        exchange(
+            endpoint,
+            self.settings.timeout,
+            self.tls.as_ref(),
+            &request,
+            |reader| answer(reader, read),
         )
     }
+}
+
+/// The status line and headers of one request to `endpoint`, the one auth
+/// header among them, ending in the blank line. `body_len`: the length of
+/// the JSON body that follows, `None` for a request with no body.
+pub(crate) fn request_head(
+    endpoint: &Endpoint,
+    method: &str,
+    auth: &AuthHeader,
+    body_len: Option<usize>,
+) -> Vec<u8> {
+    let mut head = format!(
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n",
+        endpoint.target,
+        endpoint.host_header(),
+    );
+    match body_len {
+        Some(len) => head.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {len}\r\n"
+        )),
+        None => head.push_str("Accept: application/json\r\n"),
+    }
+    head.push_str("Connection: close\r\n");
+    head.push_str(&auth.name);
+    head.push_str(": ");
+    head.push_str(&auth.value);
+    head.push_str("\r\n\r\n");
+    head.into_bytes()
+}
+
+/// Connect to `endpoint`, over TLS with `tls` when it is `https://`, write
+/// `request`, and hand the answer to `read`.
+///
+/// # Errors
+///
+/// No connection, an `https://` endpoint without `tls`, a host that is not a
+/// certificate name, a failed write, or what `read` returns.
+pub(crate) fn exchange<T>(
+    endpoint: &Endpoint,
+    timeout: Duration,
+    tls: Option<&Arc<rustls::ClientConfig>>,
+    request: &[u8],
+    read: impl FnOnce(&mut dyn BufRead) -> Result<T, String>,
+) -> Result<T, String> {
+    let sock = connect(endpoint, timeout)?;
+    if !endpoint.tls {
+        return over(sock, request, read);
+    }
+    let config = tls.cloned().ok_or("no TLS configuration")?;
+    let name = rustls::pki_types::ServerName::try_from(endpoint.host.clone())
+        .map_err(|e| format!("'{}' is not a certificate name: {e}", endpoint.host))?;
+    let conn = rustls::ClientConnection::new(config, name).map_err(|e| e.to_string())?;
+    over(rustls::StreamOwned::new(conn, sock), request, read)
+}
+
+/// [`exchange`] over one stream.
+fn over<T>(
+    stream: impl Read + Write,
+    request: &[u8],
+    read: impl FnOnce(&mut dyn BufRead) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut reader = std::io::BufReader::new(stream);
+    let out = reader.get_mut();
+    out.write_all(request)
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("sending: {e}"))?;
+    read(&mut reader)
 }
 
 /// The endpoint `template` names for `uuid`.
@@ -1745,14 +1871,20 @@ fn replace_endpoint(template: &str, uuid: &str) -> Result<Endpoint, String> {
 
 /// The rustls client configuration: trusting only `ca` when named, else the
 /// host's CA bundle.
-fn client_config(ca: Option<&Path>) -> Result<Arc<rustls::ClientConfig>, String> {
+///
+/// `ca_flag` names the setting that names a CA file, for the refusal when
+/// the host has no bundle.
+pub(crate) fn client_config(
+    ca: Option<&Path>,
+    ca_flag: &str,
+) -> Result<Arc<rustls::ClientConfig>, String> {
     let mut roots = rustls::RootCertStore::empty();
     let (path, strict) = match ca {
         Some(path) => (path.to_path_buf(), true),
         None => (
-            crate::tls_files::host_ca_bundle().ok_or(
-                "no CA bundle found on this host; name the store's CA with --vcon-forward-ca",
-            )?,
+            crate::tls_files::host_ca_bundle().ok_or_else(|| {
+                format!("no CA bundle found on this host; name the store's CA with {ca_flag}")
+            })?,
             false,
         ),
     };
@@ -1813,23 +1945,12 @@ fn connect(endpoint: &Endpoint, timeout: Duration) -> Result<std::net::TcpStream
     Err(last)
 }
 
-/// Write the request and read the answer: at most `limits.response_head`
-/// bytes of status line and headers, and, for an answer other than a `2xx`
-/// (whose body is not read), at most `limits.error_body` bytes of its body.
-fn talk(
-    stream: impl Read + Write,
-    head: &[u8],
-    body: &[u8],
-    limits: ReadLimits,
-) -> Result<Answer, String> {
-    let mut reader = std::io::BufReader::new(stream);
-    let out = reader.get_mut();
-    out.write_all(head)
-        .and_then(|()| out.write_all(body))
-        .and_then(|()| out.flush())
-        .map_err(|e| format!("sending: {e}"))?;
+/// Read the answer: at most `limits.response_head` bytes of status line and
+/// headers, and, for an answer other than a `2xx` (whose body is not read),
+/// at most `limits.error_body` bytes of its body.
+fn answer(reader: &mut dyn BufRead, limits: ReadLimits) -> Result<Answer, String> {
     loop {
-        let headers = read_head(&mut reader, limits.response_head)?;
+        let headers = read_head(reader, limits.response_head, MAX_HEAD_FLAG)?;
         let status = status_of(&headers)?;
         if (100..200).contains(&status) {
             continue;
@@ -1841,7 +1962,7 @@ fn talk(
                 truncated: false,
             });
         }
-        let (body, truncated) = read_body(&mut reader, &headers, limits.error_body);
+        let (body, truncated) = read_body(reader, &headers, limits.error_body);
         return Ok(Answer {
             status,
             body,
@@ -1851,7 +1972,13 @@ fn talk(
 }
 
 /// The status line and headers, as lines, refused past `max` bytes.
-fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, String> {
+///
+/// `flag` names the setting that sets `max`, for the refusal.
+pub(crate) fn read_head(
+    reader: &mut (impl BufRead + ?Sized),
+    max: usize,
+    flag: &str,
+) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     let mut total = 0usize;
     loop {
@@ -1865,8 +1992,7 @@ fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, Strin
         total += n;
         if total > max {
             return Err(format!(
-                "the answer's status line and headers are larger than {max} bytes \
-                 (--vcon-forward-max-response-head)"
+                "the answer's status line and headers are larger than {max} bytes ({flag})"
             ));
         }
         let text = String::from_utf8_lossy(&line).trim_end().to_string();
@@ -1878,7 +2004,7 @@ fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, Strin
 }
 
 /// The status code in a status line.
-fn status_of(head: &[String]) -> Result<u16, String> {
+pub(crate) fn status_of(head: &[String]) -> Result<u16, String> {
     let line = head.first().map(String::as_str).unwrap_or_default();
     let mut words = line.split_whitespace();
     match (
@@ -1891,7 +2017,7 @@ fn status_of(head: &[String]) -> Result<u16, String> {
 }
 
 /// The value of header `name` in `head`, case-insensitively.
-fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
+pub(crate) fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
     head.iter().skip(1).find_map(|line| {
         let (n, v) = line.split_once(':')?;
         n.trim().eq_ignore_ascii_case(name).then_some(v.trim())
@@ -1901,7 +2027,11 @@ fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
 /// At most `keep` bytes of the body, and whether there was more. A body
 /// that ends early or fails to read ends where it ended: it is evidence for
 /// a person, not data the forwarder acts on.
-fn read_body(reader: &mut impl BufRead, head: &[String], keep: usize) -> (Vec<u8>, bool) {
+pub(crate) fn read_body(
+    reader: &mut (impl BufRead + ?Sized),
+    head: &[String],
+    keep: usize,
+) -> (Vec<u8>, bool) {
     let chunked = header_value(head, "transfer-encoding")
         .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     if chunked {
@@ -1917,7 +2047,7 @@ fn read_body(reader: &mut impl BufRead, head: &[String], keep: usize) -> (Vec<u8
 }
 
 /// [`read_body`] for `Transfer-Encoding: chunked`.
-fn read_chunked(reader: &mut impl BufRead, keep: usize) -> (Vec<u8>, bool) {
+fn read_chunked(reader: &mut (impl BufRead + ?Sized), keep: usize) -> (Vec<u8>, bool) {
     let mut body = Vec::new();
     loop {
         let mut size_line = String::new();
@@ -2515,7 +2645,8 @@ mod tests {
     // ── Store kinds ─────────────────────────────────────────────────────
 
     /// Every kind and compat name the flag and key accept is one the
-    /// forwarder knows, and the kind table holds one row per kind name.
+    /// forwarder knows, and the kind table holds one row per kind name the
+    /// fetcher accepts, the forwarder's first.
     #[test]
     fn every_kind_and_compat_name_maps() {
         for name in crate::config::FORWARD_KINDS {
@@ -2524,7 +2655,11 @@ mod tests {
             assert_eq!(kind.map(|k| k.facts().name), Some(*name));
         }
         let names: Vec<&str> = STORE_KINDS.iter().map(|f| f.name).collect();
-        assert_eq!(names, crate::config::FORWARD_KINDS);
+        assert_eq!(names, crate::config::FETCH_KINDS);
+        // vcon-mcp is read from, never delivered to: no ingest path, and the
+        // forwarder's names leave it out.
+        assert!(!crate::config::FORWARD_KINDS.contains(&"vcon-mcp"));
+        assert_eq!(StoreKind::VconMcp.facts().ingest_path, None);
         for name in crate::config::FORWARD_COMPAT {
             assert!(Compat::from_name(name).is_some(), "{name}");
         }

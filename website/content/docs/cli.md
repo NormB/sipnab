@@ -1661,6 +1661,45 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
 
+## vCon fetcher
+
+`--vcon-fetch` runs sipnab as the process that reads stored vCons back from a
+store by uuid and writes each to a file. It captures nothing, and sipnab
+refuses it beside any capture source, listener or export flag, and beside
+`--vcon-forward`. The other flags in this section need it. Each flag but
+`--vcon-fetch`, `--vcon-fetch-out` and `--vcon-fetch-overwrite` has a
+`[vcon_fetch]` key in the config file, which the flag overrides. Needs the
+`vcon` Cargo feature. More:
+[Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon).
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--vcon-fetch` | `<UUID>...` | -- | Read the container with each uuid from the store and write it to `<uuid>.vcon.json` in `--vcon-fetch-out`. `-` reads more uuids from standard input, one per line, and passes over blank lines and lines starting with `#`. The fetcher asks once for a uuid given twice. A uuid is 1 to 64 characters, each a letter, a digit or `-`. Exit `0` when the fetcher wrote every container and the schema accepts each, `1` when it wrote none for some uuid (`404`, another status, a size or shape refusal, a file that exists) or the schema refuses one, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`: the fetcher then asks for nothing more. Needs a URL and a credential, each from its flag or its `[vcon_fetch]` key; without one sipnab refuses the run with exit `2`, naming both |
+| `--vcon-fetch-kind` | `<KIND>` | `generic` | The kind of store: `generic`, `vcon-store`, `conserver` or `vcon-mcp`. A kind supplies the read path after the path the URL names, the header when the credential is a bare key, and the removal of what the store wraps around the container. `generic` supplies nothing. The table: [Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon). Config: `[vcon_fetch] kind` |
+| `--vcon-fetch-url` | `<URL>` | -- | The store, `http://` or `https://`. With a `--vcon-fetch-kind` other than `generic`, the store's base URL: the kind adds its read path after the path the URL names. The fetcher takes a URL holding `{uuid}` as written, the uuid filled in, for any kind, and the `generic` kind needs one. sipnab refuses credentials in the URL. Plain `http://` to a host other than loopback logs a warning. Config: `[vcon_fetch] url` |
+| `--vcon-fetch-auth-file` | `<FILE>` | -- | File holding the credential, as the forwarder's auth file does: one `Header-Name: value` line, or, with a `--vcon-fetch-kind` other than `generic`, the bare key, which the kind sends in its header. Refused when other users can read it (`chmod 600` it). A file sipnab cannot read, or one that holds no credential, stops the fetcher with exit 2; the same file named by `[vcon_fetch] auth_file` exits 1. The value never appears in a log line or an error. Config: `[vcon_fetch] auth_file` |
+| `--vcon-fetch-out` | `<DIR>` | current directory | Where the fetcher writes each container, as `<uuid>.vcon.json`, mode `0600`. The fetcher creates it, mode `0700`, if missing |
+| `--vcon-fetch-overwrite` | -- | off | Replace a `<uuid>.vcon.json` that exists. Without it the fetcher does not ask the store for that uuid, keeps the file, and exits `1`. Neither form writes through a symbolic link |
+| `--vcon-fetch-timeout` | `<SECS>` | `30` | Seconds to wait to connect, and for each read and write, before the fetcher gives up on a container, 1 to 600. Config: `[vcon_fetch] timeout` |
+| `--vcon-fetch-max-size` | `<BYTES>` | `67108864` | The largest answer the fetcher reads for one container, 1 to 4294967295. The fetcher refuses a larger one and writes nothing for it. The default, 64 MiB, holds a container with an hour of inline G.711 audio. Config: `[vcon_fetch] max_size` |
+| `--vcon-fetch-max-response-head` | `<BYTES>` | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The fetcher refuses an answer with more. Config: `[vcon_fetch] max_response_head` |
+| `--vcon-fetch-ca` | `<FILE>` | host bundle | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
+
+Examples:
+
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched` — read one vCon from vcon.store: the kind adds `/v1/vcons/{uuid}`, sends the key as `Authorization: Bearer <key>`, and removes the `_meta` member the store adds
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched` — read one from a self-hosted conserver: the kind adds `/vcon/{uuid}` and sends the key as `x-conserver-api-token`
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-mcp --vcon-fetch-url http://127.0.0.1:3000 --vcon-fetch-auth-file vcon-mcp.key --vcon-fetch-out fetched` — read one from a vcon-mcp server's REST API: the kind adds `/api/v1/vcons/{uuid}`, sends the key as `Authorization: Bearer <key>`, and keeps the `vcon` member of the answer
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-url 'https://vcon.example.com/store/{uuid}' --vcon-fetch-auth-file vcon.auth --vcon-fetch-out fetched` — a store of no listed kind: the URL template says where the uuid goes, and the auth file holds the full header line
+- `sipnab --vcon-fetch - --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched < uuids.txt` — read every uuid listed in `uuids.txt`, one per line
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched --vcon-fetch-overwrite` — read it again, replacing the file an earlier run wrote
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-url 'https://vcon.example.com/store/{uuid}' --vcon-fetch-auth-file vcon.auth --vcon-fetch-ca store-ca.pem --vcon-fetch-timeout 10 --vcon-fetch-max-size 268435456` — a store whose certificate a private CA issued, holding containers up to 256 MiB: trust only that CA, and give up on a silent store after ten seconds
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-url 'https://proxy.example.com/vcon/{uuid}' --vcon-fetch-auth-file vcon.auth --vcon-fetch-max-response-head 131072` — a store behind a proxy that adds large headers: read up to 128 KiB of them
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --config /etc/sipnab/vcon-store.toml` — take every fetcher setting from a config file's `[vcon_fetch]` section
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched --vcon-fetch-overwrite --vcon-fetch-timeout 120` — replace an earlier copy across a slow link, waiting up to two minutes for each read
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url https://conserver.example.com --vcon-fetch-auth-file conserver.key --vcon-fetch-ca conserver-ca.pem --vcon-fetch-max-size 1048576 --vcon-fetch-max-response-head 16384` — a conserver whose certificate a private CA issued, holding containers without inline audio: refuse any answer over 1 MiB, or with more than 16 KiB of headers
+
+
 ## Config
 
 | Flag | Value | Default | Description |

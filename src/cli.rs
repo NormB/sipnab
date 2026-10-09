@@ -433,6 +433,10 @@ pub struct Cli {
     #[command(flatten)]
     pub vcon_forward_args: VconForwardArgs,
 
+    // ── vCon fetcher ──
+    #[command(flatten)]
+    pub vcon_fetch_args: VconFetchArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -4704,6 +4708,175 @@ pub struct VconForwardArgs {
     pub vcon_forward_compat: Option<String>,
 }
 
+/// `vCon fetcher` flags: the mode that reads stored vCons from a store by
+/// uuid and writes each to a file.
+///
+/// A separate process from any capture, like the forwarder: `--vcon-fetch`
+/// conflicts with every capture source, listener and export flag, so the
+/// capture process keeps making no outbound connection.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconFetchArgs {
+    /// Run as the vCon fetcher: read the container with each of these uuids
+    /// from the store at --vcon-fetch-url and write it to
+    /// `<uuid>.vcon.json` in --vcon-fetch-out. `-` reads the uuids from
+    /// standard input, one per line. Captures nothing. Needs a URL and a
+    /// credential, from a flag or from `[vcon_fetch]` in the config file.
+    /// Needs the `vcon` feature.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch",
+        value_name = "UUID",
+        num_args = 1..,
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward",
+        ]
+    )]
+    pub vcon_fetch: Vec<String>,
+
+    /// The store to read from, `http://` or `https://`. With a
+    /// --vcon-fetch-kind other than `generic`, the store's base URL: the
+    /// kind adds its read path after the URL's own path. A URL holding
+    /// `{uuid}` is used as written, the uuid filled in, for any kind, and the
+    /// `generic` kind needs one. Overrides `[vcon_fetch] url`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-url",
+        value_name = "URL",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_url: Option<String>,
+
+    /// File holding the credential, as the forwarder's auth file does: one
+    /// `Header-Name: value` line, or, with a --vcon-fetch-kind other than
+    /// `generic`, the bare key, which the kind sends in its header. Refused
+    /// when other users can read it: chmod 600. The value never appears in a
+    /// log line or an error. Overrides `[vcon_fetch] auth_file`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-auth-file",
+        value_name = "FILE",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_auth_file: Option<std::path::PathBuf>,
+
+    /// What kind of store holds the containers: `generic` (the default:
+    /// --vcon-fetch-url is a template holding `{uuid}`, and the auth file a
+    /// full header line), `vcon-store`, `conserver` or `vcon-mcp`. A kind
+    /// supplies the read path, the header for a bare key, and the removal of
+    /// what the store wraps around the container. Overrides
+    /// `[vcon_fetch] kind`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-kind",
+        value_name = "KIND",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::config::FETCH_KINDS.iter().copied()
+        ),
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_kind: Option<String>,
+
+    /// The directory each container is written to, as `<uuid>.vcon.json`,
+    /// mode 0600. Created, mode 0700, when it does not exist. Default: the
+    /// current directory.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-out",
+        value_name = "DIR",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_out: Option<std::path::PathBuf>,
+
+    /// Replace a `<uuid>.vcon.json` that already exists in --vcon-fetch-out.
+    /// Without it, a uuid whose file exists is not fetched, and the run exits
+    /// 1.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-overwrite",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_overwrite: bool,
+
+    /// Seconds the fetcher waits to connect, and for each read and write,
+    /// before it gives up on a container, 1 to 600. Default: 30. Overrides
+    /// `[vcon_fetch] timeout`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-timeout",
+        value_name = "SECS",
+        value_parser = parse_fetch_timeout,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_timeout: Option<u64>,
+
+    /// The largest container the fetcher reads, in bytes, 1 to 4294967295.
+    /// A larger answer is refused and nothing is written. Default: 67108864
+    /// (64 MiB). Overrides `[vcon_fetch] max_size`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-max-size",
+        value_name = "BYTES",
+        value_parser = parse_fetch_max_size,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_max_size: Option<u64>,
+
+    /// The most bytes of a store's status line and headers the fetcher
+    /// reads, 1 to 4294967295; an answer with more is refused. Default:
+    /// 65536. Overrides `[vcon_fetch] max_response_head`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-max-response-head",
+        value_name = "BYTES",
+        value_parser = parse_fetch_max_response_head,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_max_response_head: Option<u64>,
+
+    /// Trust only the CA certificates in this PEM file for an `https://`
+    /// store. Without it the fetcher trusts the host's CA bundle. Overrides
+    /// `[vcon_fetch] ca`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-ca",
+        value_name = "FILE",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_ca: Option<std::path::PathBuf>,
+}
+
+impl VconFetchArgs {
+    /// The first fetcher option given without `--vcon-fetch`, or `None`.
+    #[must_use]
+    pub fn option_without_the_mode(&self) -> Option<&'static str> {
+        if !self.vcon_fetch.is_empty() {
+            return None;
+        }
+        [
+            ("--vcon-fetch-url", self.vcon_fetch_url.is_some()),
+            (
+                "--vcon-fetch-auth-file",
+                self.vcon_fetch_auth_file.is_some(),
+            ),
+            ("--vcon-fetch-kind", self.vcon_fetch_kind.is_some()),
+            ("--vcon-fetch-out", self.vcon_fetch_out.is_some()),
+            ("--vcon-fetch-overwrite", self.vcon_fetch_overwrite),
+            ("--vcon-fetch-timeout", self.vcon_fetch_timeout.is_some()),
+            ("--vcon-fetch-max-size", self.vcon_fetch_max_size.is_some()),
+            (
+                "--vcon-fetch-max-response-head",
+                self.vcon_fetch_max_response_head.is_some(),
+            ),
+            ("--vcon-fetch-ca", self.vcon_fetch_ca.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag))
+    }
+}
+
 impl VconForwardArgs {
     /// The first forwarder option given without `--vcon-forward`, or `None`.
     /// `--vcon-forward-auth` is not counted: its environment variable may be
@@ -7161,6 +7334,11 @@ impl Cli {
                 "{flag} is a vCon forwarder setting and needs --vcon-forward"
             )));
         }
+        if let Some(flag) = self.vcon_fetch_args.option_without_the_mode() {
+            return Err(crate::Error::CliValidation(format!(
+                "{flag} is a vCon fetcher setting and needs --vcon-fetch"
+            )));
+        }
 
         // Decrypted export needs the decryption it writes out (PCAPX-DEC).
         #[cfg(not(feature = "tls"))]
@@ -7616,6 +7794,22 @@ fn parse_forward_max_response_head(s: &str) -> Result<u64, String> {
 /// rule.
 fn parse_forward_max_error_body(s: &str) -> Result<u64, String> {
     crate::config::FORWARD_MAX_ERROR_BODY.parse(s)
+}
+
+/// `--vcon-fetch-timeout`: [`crate::config::FETCH_TIMEOUT`]'s rule.
+fn parse_fetch_timeout(s: &str) -> Result<u64, String> {
+    crate::config::FETCH_TIMEOUT.parse(s)
+}
+
+/// `--vcon-fetch-max-size`: [`crate::config::FETCH_MAX_SIZE`]'s rule.
+fn parse_fetch_max_size(s: &str) -> Result<u64, String> {
+    crate::config::FETCH_MAX_SIZE.parse(s)
+}
+
+/// `--vcon-fetch-max-response-head`:
+/// [`crate::config::FETCH_MAX_RESPONSE_HEAD`]'s rule.
+fn parse_fetch_max_response_head(s: &str) -> Result<u64, String> {
+    crate::config::FETCH_MAX_RESPONSE_HEAD.parse(s)
 }
 
 /// Parse `--dialog-track`, rejecting anything that is not a known method.

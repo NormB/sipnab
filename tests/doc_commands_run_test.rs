@@ -251,6 +251,10 @@ const LOOPBACK_DISCARD_URL: &str = "http://127.0.0.1:9/v1/vcons";
 /// Where a vCon forwarder PUTs on a `409`, in place of the page's template.
 const LOOPBACK_DISCARD_REPLACE_URL: &str = "http://127.0.0.1:9/v1/vcons/{uuid}";
 
+/// Where a vCon fetcher reads, in place of the store the page names: a
+/// template, which every kind takes as written.
+const LOOPBACK_DISCARD_FETCH_URL: &str = "http://127.0.0.1:9/v1/vcons/{uuid}";
+
 /// URL flags naming a store the vCon forwarder TRANSMITS to, each with the
 /// discard-port URL it is rewritten to. A URL, not an address, so they are
 /// not in [`SEND_FLAGS`]: `127.0.0.1:9` alone is not a URL the forwarder
@@ -258,6 +262,7 @@ const LOOPBACK_DISCARD_REPLACE_URL: &str = "http://127.0.0.1:9/v1/vcons/{uuid}";
 const URL_SEND_FLAGS: &[(&str, &str)] = &[
     ("--vcon-forward-url", LOOPBACK_DISCARD_URL),
     ("--vcon-forward-replace-url", LOOPBACK_DISCARD_REPLACE_URL),
+    ("--vcon-fetch-url", LOOPBACK_DISCARD_FETCH_URL),
 ];
 
 /// Drop a trailing shell redirection or comment: the shell's, not sipnab's.
@@ -286,6 +291,17 @@ fn strip_redirection(cmd: &str) -> String {
                 if out.ends_with('2') && out.len() >= 2 {
                     out.pop();
                 }
+                while chars.peek().is_some() {
+                    chars.next();
+                }
+            }
+            // `< file` at a word boundary, outside quotes, is an input
+            // redirection: the shell's. A placeholder like `<call-id>` has no
+            // space after its `<`, so it stays.
+            (None, '<')
+                if (out.is_empty() || out.ends_with(char::is_whitespace))
+                    && chars.peek().is_some_and(|c| c.is_whitespace()) =>
+            {
                 while chars.peek().is_some() {
                     chars.next();
                 }
@@ -442,7 +458,7 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
             } else {
                 argv[i].clone_from(&fixture);
             }
-        } else if prev == "--vcon-forward-auth-file" {
+        } else if prev == "--vcon-forward-auth-file" || prev == "--vcon-fetch-auth-file" {
             // A header the forwarder accepts, at the mode it requires, so the
             // run reaches the send rather than stopping at the file.
             use std::os::unix::fs::PermissionsExt;
@@ -494,8 +510,11 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
         }
     }
     let names_device = argv.iter().any(|a| a == "-d" || a == "--device");
-    // The forwarder reads a spool, never a capture, and refuses `-I`.
-    let forwards = argv.iter().any(|a| a == "--vcon-forward");
+    // The forwarder reads a spool and the fetcher a store, never a capture,
+    // and both refuse `-I`.
+    let forwards = argv
+        .iter()
+        .any(|a| a == "--vcon-forward" || a == "--vcon-fetch");
     if !names_device && !forwards && !argv.iter().any(|a| a == "-I" || a == "--input") {
         argv.push("-I".to_owned());
         argv.push(fixture);
@@ -1322,7 +1341,63 @@ fn a_forwarder_example_runs_on_loopback_with_no_capture_input()
     Ok(())
 }
 
+/// A documented fetcher command (`--vcon-fetch`) reads only from the
+/// discard port, with an auth file the sandbox wrote, writes into the
+/// sandbox, and is not handed `-I`: the fetcher refuses every capture flag.
+#[test]
+fn a_fetcher_example_runs_on_loopback_with_no_capture_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cmd = "sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 \
+               --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store \
+               --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched";
+    // Removed on drop, so a failing assertion below leaves nothing behind.
+    let sandbox = tempfile::tempdir()?;
+    let p = prepare(cmd, sandbox.path(), 0)?.ok_or("the command does not split")?;
+    let value = |flag: &str| {
+        p.argv
+            .windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        !p.argv.iter().any(|a| a == "-I" || a == "--input"),
+        "the fetcher was handed a capture input: {:?}",
+        p.argv
+    );
+    assert_eq!(value("--vcon-fetch-url"), LOOPBACK_DISCARD_FETCH_URL);
+    let auth = std::fs::read_to_string(value("--vcon-fetch-auth-file")).unwrap_or_default();
+    assert!(
+        auth.starts_with("Authorization: Bearer "),
+        "the sandbox wrote no usable auth file: {auth:?}"
+    );
+    assert!(
+        Path::new(&value("--vcon-fetch-out")).starts_with(sandbox.path()),
+        "the output directory is outside the sandbox: {:?}",
+        p.argv
+    );
+    Ok(())
+}
+
 // ── Three defects this gate shipped, each with a test that would have caught it ──
+
+/// An input redirection (`< uuids.txt`) is the shell's, not sipnab's, and a
+/// `<` that opens a word (a placeholder such as `<call-id`) is not one.
+///
+/// `sipnab --vcon-fetch - ... < uuids.txt` ran with `<` and `uuids.txt` as
+/// trailing BPF-filter positionals, which `--vcon-fetch` refuses.
+#[test]
+fn an_input_redirection_is_not_passed_as_arguments() -> Result<(), TestError> {
+    assert_eq!(
+        strip_redirection("sipnab --vcon-fetch - --vcon-fetch-out fetched < uuids.txt"),
+        "sipnab --vcon-fetch - --vcon-fetch-out fetched"
+    );
+    assert_eq!(
+        strip_redirection("sipnab -N -I a.pcap --call-report <call-id"),
+        "sipnab -N -I a.pcap --call-report <call-id"
+    );
+    Ok(())
+}
 
 /// A trailing shell comment is not handed to sipnab as arguments.
 ///
