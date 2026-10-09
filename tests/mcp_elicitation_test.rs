@@ -511,6 +511,93 @@ fn a_client_without_the_capability_is_never_asked_and_still_works() -> Result<()
     Ok(())
 }
 
+/// The reply to a stop reaches the client before the process ends.
+///
+/// `shutdown_server` used to set the process-wide shutdown flag inside the
+/// handler, before its reply had been written. The keep-alive loop polls that
+/// flag every 100 ms and exits the process, so whether the client ever saw
+/// `would_stop: true` depended on which of two threads ran first. On an idle
+/// host the reply nearly always won; on a loaded one the client read EOF
+/// instead of the answer to the call it had just made.
+///
+/// The race is made deterministic here by holding the reply back: the client
+/// sends requests whose replies it does not read until the stdout pipe is
+/// full, then asks for a stop. The reply to the stop is queued behind the
+/// unread ones, so it cannot be written until the client reads. A server that
+/// stops on the flag exits during that wait, and the reply is lost; a server
+/// that stops once the reply is written is still running when the client
+/// reads, delivers the reply, and only then exits.
+#[test]
+fn the_reply_to_a_stop_is_delivered_before_the_process_exits() -> Result<(), TestError> {
+    let mut wire = Wire::start(json!({}))?;
+
+    // One `tools/list` reply is tens of kilobytes (80,658 bytes measured on
+    // 2026-10-09), so this many of them is several times what a Linux pipe
+    // buffers (64 KiB by default).
+    const UNREAD: usize = 8;
+    let stop_id;
+    {
+        let stdin = wire.child.stdin.as_mut().ok_or("stdin")?;
+        for _ in 0..UNREAD {
+            let id = wire.next_id;
+            wire.next_id += 1;
+            writeln!(
+                stdin,
+                "{}",
+                json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"})
+            )?;
+        }
+        stop_id = wire.next_id;
+        wire.next_id += 1;
+        writeln!(
+            stdin,
+            "{}",
+            json!({
+                "jsonrpc": "2.0", "id": stop_id, "method": "tools/call",
+                "params": {"name": "shutdown_server", "arguments": {"dry_run": false}}
+            })
+        )?;
+        stdin.flush()?;
+    }
+
+    // Long enough for a server that stops on the flag to have exited many
+    // times over: the keep-alive loop notices within 100 ms. A correct server
+    // cannot exit in this window at all, because its reply is not written yet.
+    let deadline = std::time::Instant::now() + test_timeout(2);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = wire.child.try_wait()? {
+            return Err(format!(
+                "sipnab exited ({status}) while its reply to shutdown_server \
+                 (id {stop_id}) was still unwritten; the client never learns \
+                 the stop it asked for happened"
+            )
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let (reply, asked) = wire.await_reply(stop_id, None)?;
+    assert!(asked.is_empty(), "nobody can be asked here: {asked:?}");
+    let payload = text_payload(&reply)?;
+    assert_eq!(payload["would_stop"], json!(true), "{payload}");
+
+    // And the stop still happens once the reply is out.
+    const MAX_POLLS: usize = 400;
+    let mut exited = false;
+    for _ in 0..MAX_POLLS {
+        if wire.child.try_wait()?.is_some() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        exited,
+        "the reply said would_stop, was delivered, and the process is still running"
+    );
+    Ok(())
+}
+
 /// Declining a capture swap keeps the capture, and says which one it kept.
 #[test]
 fn a_declined_swap_keeps_every_dialog() -> Result<(), TestError> {

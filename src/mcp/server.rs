@@ -156,6 +156,10 @@ pub struct SipnabMcp {
     protected_inputs: crate::capture::output_guard::ProtectedInputs,
     /// Whether `shutdown_server` may stop this process.
     allow_shutdown: bool,
+    /// Where a stop `shutdown_server` agreed to is carried out once its reply
+    /// is written, rather than at once. Set by the stdio transport; `None`
+    /// stops at once. See [`super::stop`].
+    stop_after_reply: Option<super::stop::StopAfterReply>,
     /// Whether `open_capture` may replace the loaded capture.
     allow_open_capture: bool,
     /// The run's pipeline options, which every capture file this server reads
@@ -369,6 +373,7 @@ impl SipnabMcp {
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
+            stop_after_reply: None,
             allow_open_capture: false,
             pipeline_options: crate::pipeline::PipelineOptions::default(),
             #[cfg(feature = "archive")]
@@ -858,6 +863,14 @@ impl SipnabMcp {
     /// Permit `shutdown_server` to stop this process.
     pub fn with_shutdown(mut self) -> Self {
         self.allow_shutdown = true;
+        self
+    }
+
+    /// Carry out a stop `shutdown_server` agrees to once its reply has been
+    /// written, through `stop`. The stdio transport sets this; see
+    /// [`super::stop`].
+    pub fn with_stop_after_reply(mut self, stop: super::stop::StopAfterReply) -> Self {
+        self.stop_after_reply = Some(stop);
         self
     }
 
@@ -8254,6 +8267,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ShutdownParams>,
         Extension(confirm): Extension<super::elicit::Confirm>,
+        rmcp::handler::server::common::RequestId(request_id): rmcp::handler::server::common::RequestId,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_shutdown {
             return Err(rmcp::ErrorData::invalid_params(
@@ -8354,7 +8368,14 @@ impl SipnabMcp {
             // the graceful one the process already knows how to perform —
             // writers flushed, files closed — rather than a second mechanism
             // that has to relearn all of that.
-            crate::signals::request_shutdown();
+            //
+            // Over stdio the flag is set only once THIS reply has been
+            // written: set here, the keep-alive loop could exit the process
+            // first and the client would read EOF instead of `would_stop`.
+            match &self.stop_after_reply {
+                Some(stop) => stop.after_reply_to(request_id),
+                None => crate::signals::request_shutdown(),
+            }
         } else if let super::elicit::Answer::Refused(why) = &answer {
             tracing::warn!("MCP shutdown_server: NOT stopping — {why}");
         }

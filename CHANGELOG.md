@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A stdio MCP client receives the reply to a `shutdown_server` that stops
+  the process.** The tool set the shutdown flag before its reply was written,
+  and the keep-alive loop could exit the process first, so the client read
+  end of file in place of `would_stop: true`. Over stdio, sipnab now sets the
+  flag after the reply has been written to stdout. The HTTP transport stops
+  as it did before.
+  Affected: `--mcp` over stdio with `--mcp-allow-shutdown`, on a confirmed or
+  unconfirmed real stop (`dry_run=false`).
+
 ## [0.5.208] - 2026-10-09
 
 ### Added
