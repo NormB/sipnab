@@ -416,6 +416,97 @@ sent, and leaves a newer one in the spool for the next pass.
   consent.
 - **It sends one container at a time**, in name order, one connection each.
 
+## Fetch a stored vCon
+
+`sipnab --vcon-fetch` is the forwarder's counterpart: a separate sipnab
+process that reads containers back from a store by uuid and writes each to a
+file. It needs the `vcon` feature. Like the forwarder it captures nothing, and
+sipnab refuses it beside any capture source, listener or export flag, so the
+capture process keeps making no outbound connection.
+
+### Fetch one
+
+Give the store's base URL, its kind, and a file holding the key, readable only
+by you. The fetcher writes each container to `<uuid>.vcon.json` in
+`--vcon-fetch-out`:
+
+```sh
+# Run all of these, in order.
+umask 077
+printf '%s\n' "$KEY" > conserver.key
+sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 \
+  --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 \
+  --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched
+echo "exit $?"
+```
+
+`$KEY` is the key the store gave you. Give several uuids after `--vcon-fetch`,
+or `-` to read them from standard input, one per line:
+
+```sh
+sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched < uuids.txt
+```
+
+Each fetcher flag but `--vcon-fetch`, `--vcon-fetch-out` and
+`--vcon-fetch-overwrite` has a key in the `[vcon_fetch]` section of the
+[config file](@/docs/config.md#vcon-fetch), which the flag overrides. The
+[CLI reference](@/docs/cli.md#vcon-fetcher) lists every flag.
+
+### The store kinds
+
+| Kind | Read path added after the path in the URL | The header a bare key goes in | What the store wraps around the container |
+|---|---|---|---|
+| `generic` (default) | none: the URL is a template holding `{uuid}` | not accepted: give `Header-Name: value` | nothing |
+| `vcon-store` | `/v1/vcons/{uuid}` | `Authorization: Bearer <key>` | a top-level `_meta` member, which the fetcher removes |
+| `conserver` | `/vcon/{uuid}` | `x-conserver-api-token: <key>` | nothing |
+| `vcon-mcp` | `/api/v1/vcons/{uuid}` | `Authorization: Bearer <key>` | `{"success": true, "vcon": {...}}`; the fetcher keeps the `vcon` member |
+
+Sources:
+
+- vcon.store: its OpenAPI document, and a `GET` on 2026-10-09 that returned
+  the container's members and `_meta`.
+- conserver: `api/api.py` of the vCon server (`vcon-dev/vcon-server`).
+- vcon-mcp: `src/api/routes/vcons.ts`, `src/api/rest-router.ts` and
+  `src/api/auth.ts` of `vcon-dev/vcon-mcp`.
+
+A URL that names a path keeps it, and the kind's read path follows it: for a
+conserver served under `/api`, give `--vcon-fetch-url
+http://127.0.0.1:8000/api`. The fetcher takes a URL holding `{uuid}` as
+written, for any kind.
+
+### What it does with each answer
+
+| The store answers | The fetcher |
+|---|---|
+| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it |
+| `2xx` with a body larger than `--vcon-fetch-max-size`, not JSON, without the kind's envelope, or holding another uuid | writes nothing for that uuid |
+| `404` | writes nothing for that uuid, and logs that the store holds none |
+| `401` or `403` | stops: asks for no further uuid, and exits `3` |
+| another status, a timeout or no connection | writes nothing for that uuid, logs the status and the start of the answer with the credential removed, and goes on to the next uuid. It does not retry |
+
+The fetcher checks each container it writes against the vendored vCon schema.
+A container the schema refuses is still written, as the store holds it: it is
+the store's record, and you need it to see what is wrong. The log line lists
+each finding, and the run exits `1`. A container sent through vcon.store's
+compat mode comes back in the store's form, with `extensions` as an object, so
+the schema refuses it (measured on 2026-10-09).
+
+A file that already exists is not replaced: the fetcher does not ask the store
+for that uuid, and the run exits `1`. `--vcon-fetch-overwrite` replaces it.
+Neither form writes through a symbolic link.
+
+Exit codes: `0` when the fetcher wrote every container and the schema accepts
+each, `1` when it wrote none for some uuid or the schema refuses one, `2` when sipnab
+refuses a setting given on the command line, `3` when the store refused the
+credential or the client. A config file sipnab refuses exits `1`, as on any
+run.
+
+### Read what came back
+
+Each file is one vCon, as JSON. sipnab does not open a vCon file as an input
+in this release: `-I` reads captures. Read the file with a JSON tool, for
+example `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
+
 ## Walk through one, end to end
 
 The capture is [`tests/fixtures/sip_call.pcap`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/sip_call.pcap),

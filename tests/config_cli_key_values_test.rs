@@ -1552,6 +1552,64 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     (
+        "vcon_fetch",
+        "auth_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/lib/sipnab/fetched\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_fetch",
+        "ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/lib/sipnab/fetched\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_fetch",
+        "kind",
+        KeyKind::Literal {
+            accept: &[
+                "\"generic\"",
+                "\"vcon-store\"",
+                "\"conserver\"",
+                "\"vcon-mcp\"",
+            ],
+            reject: &["\"x\"", "\"\"", "\" \"", "\"VCON-MCP\"", "\"none\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_fetch",
+        "max_response_head",
+        KeyKind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+    ),
+    (
+        "vcon_fetch",
+        "max_size",
+        KeyKind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+    ),
+    ("vcon_fetch", "timeout", KeyKind::Int { lo: 1, hi: 600 }),
+    (
+        "vcon_fetch",
+        "url",
+        KeyKind::Literal {
+            accept: &["\"https://api.vcon.store\"", "\"x\"", "\"\""],
+            reject: &[],
+            ctx: "",
+        },
+    ),
+    (
         "vcon_forward",
         "auth_file",
         KeyKind::Literal {

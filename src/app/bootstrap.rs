@@ -3128,7 +3128,9 @@ fn default_log_level(cli: &Cli) -> &'static str {
     // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
     // The vCon forwarder draws no TUI either: it is a headless process whose
     // log lines are its whole report.
-    let tui_active = !cli.mode_args.no_tui && cli.vcon_forward_args.vcon_forward.is_none();
+    let tui_active = !cli.mode_args.no_tui
+        && cli.vcon_forward_args.vcon_forward.is_none()
+        && cli.vcon_fetch_args.vcon_fetch.is_empty();
     if cli.mode_args.quiet {
         "warn"
     } else if tui_active && std::env::var("SIPNAB_LOG").is_err() {
@@ -3964,6 +3966,85 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     }
 }
 
+/// Handle `--vcon-fetch`: read stored vCons by uuid and write each to a
+/// file, and return the exit code, or `None` when the flag is absent. The
+/// body is feature-swapped so the caller contains no `cfg`.
+///
+/// Loads the configuration for `[vcon_fetch]` ([`load_config`]) and opens no
+/// capture: the fetcher is a separate process that reads no packet, and clap
+/// has already refused every capture flag beside it.
+///
+/// # Returns
+///
+/// `Some` exit code from [`crate::app::vcon_fetch::run`]; the exit code of
+/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// credential's file cannot be read or holds no credential, 1 if
+/// `[vcon_fetch] auth_file` named it and 2 if `--vcon-fetch-auth-file` did;
+/// 2 when `-` was given and standard input holds no usable uuid list;
+/// `Some(2)` when the `vcon` feature is not compiled in; `None` when
+/// `--vcon-fetch` was not given.
+///
+/// # Side effects
+///
+/// Reads the config file, the credential's file and, for `-`, standard
+/// input; connects to the store; creates the output directory and writes a
+/// file per container.
+pub fn run_vcon_fetch(cli: &Cli) -> Option<i32> {
+    if cli.vcon_fetch_args.vcon_fetch.is_empty() {
+        return None;
+    }
+    #[cfg(feature = "vcon")]
+    {
+        use crate::app::vcon_fetch::{prepare, run};
+        let loaded = match load_config(cli) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                tracing::error!("{}", e.message);
+                return Some(e.exit_code);
+            }
+        };
+        let read_stdin = || {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut text).map(|_| text)
+        };
+        match prepare(&cli.vcon_fetch_args, &loaded.config.vcon_fetch, read_stdin) {
+            Ok((settings, uuids)) => Some(run(settings, &uuids)),
+            Err((code, msg)) => {
+                tracing::error!("{msg}");
+                Some(code)
+            }
+        }
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        tracing::error!("--vcon-fetch requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
+/// Why a `--vcon-fetch` run's settings cannot be used, or `None` (also when
+/// this is not a fetcher run). Feature-swapped: without the `vcon` feature
+/// [`run_vcon_fetch`] refuses the run before the config is read.
+fn fetcher_settings_problem(
+    cli: &Cli,
+    config: &Config,
+) -> Option<(crate::settings::Origin, String)> {
+    if cli.vcon_fetch_args.vcon_fetch.is_empty() {
+        return None;
+    }
+    #[cfg(feature = "vcon")]
+    {
+        crate::app::vcon_fetch::FetchPlan::resolve_refusal(&cli.vcon_fetch_args, &config.vcon_fetch)
+            .err()
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        // Nothing to resolve: no fetcher is compiled in.
+        let _ = config;
+        None
+    }
+}
+
 /// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
 /// when this is not a forwarder run). Feature-swapped: without the `vcon`
 /// feature [`run_vcon_forward`] refuses the run before the config is read.
@@ -4073,6 +4154,14 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [vcon_fetch] keys likewise: the ranges and the kind name.
+    if let Err(e) = loaded.config.vcon_fetch.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [names] carries dns_cache_entries, which --dns-cache-entries refuses at
     // 0; the file must too, and until now [names] was the one section with no
     // validator wired in here at all.
@@ -4128,6 +4217,11 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // forwarder reads a file or connects. Exit 2 for a flag, 1 for a URL
     // the file alone gave.
     if let Some((origin, problem)) = forwarder_settings_problem(cli, &loaded.config) {
+        return Err(PlanError::refused(origin, problem));
+    }
+
+    // The fetcher's settings, by the fetcher's own resolver, the same way.
+    if let Some((origin, problem)) = fetcher_settings_problem(cli, &loaded.config) {
         return Err(PlanError::refused(origin, problem));
     }
 

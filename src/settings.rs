@@ -709,6 +709,41 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("uprobe-tls", Link::Pending),
     ("user", Link::Key("privilege", "user", Merge::Override)),
     ("vcon-digest", Link::Pending),
+    // The fetcher is a mode of its own, like the forwarder: it captures
+    // nothing. Its standing settings are `[vcon_fetch]` keys; the uuids, the
+    // output directory and `--vcon-fetch-overwrite` are this run's input,
+    // output and intent.
+    ("vcon-fetch", Link::Action),
+    (
+        "vcon-fetch-auth-file",
+        Link::Key("vcon_fetch", "auth_file", Merge::Override),
+    ),
+    (
+        "vcon-fetch-ca",
+        Link::Key("vcon_fetch", "ca", Merge::Override),
+    ),
+    (
+        "vcon-fetch-kind",
+        Link::Key("vcon_fetch", "kind", Merge::Override),
+    ),
+    (
+        "vcon-fetch-max-response-head",
+        Link::Key("vcon_fetch", "max_response_head", Merge::Override),
+    ),
+    (
+        "vcon-fetch-max-size",
+        Link::Key("vcon_fetch", "max_size", Merge::Override),
+    ),
+    ("vcon-fetch-out", Link::Input),
+    ("vcon-fetch-overwrite", Link::PerRun),
+    (
+        "vcon-fetch-timeout",
+        Link::Key("vcon_fetch", "timeout", Merge::Override),
+    ),
+    (
+        "vcon-fetch-url",
+        Link::Key("vcon_fetch", "url", Merge::Override),
+    ),
     // The forwarder is a mode of its own, like `--mint-token`: it captures
     // nothing, so no capture config key applies to it. Its standing settings
     // are `[vcon_forward]` keys; the spool and `--vcon-forward-once` are this

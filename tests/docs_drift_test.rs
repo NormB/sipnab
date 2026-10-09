@@ -4811,7 +4811,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1086 -> 1088: the opt-ins refused beside the TUI. Attributed by counting
     // added separator rows per file: docs/mcp.md 1, and the same 1 in its
     // site copy website/content/docs/mcp.md.
-    const EXPECTED_TABLES: usize = 1088;
+    // 1088 -> 1096: the vCon fetcher's tables. Attributed by counting added
+    // separator rows per file: docs/cli-reference.md 1,
+    // docs/config-reference.md 1, docs/vcon.md 2, and the same 4 in their
+    // site copies.
+    const EXPECTED_TABLES: usize = 1096;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

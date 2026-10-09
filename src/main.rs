@@ -203,6 +203,13 @@ fn run_validation_steps(cli: &Cli) {
     if let Some(code) = bootstrap::run_vcon_forward(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+
+    // 4c. --vcon-fetch: read stored vCons back by uuid, as a process of its
+    //     own, for the same reasons: it loads the config itself, for
+    //     [vcon_fetch], and opens no capture.
+    if let Some(code) = bootstrap::run_vcon_fetch(cli) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
 }
 
 /// Steps 5b to 6b of [`main`]: the crash policy, then the commands that need

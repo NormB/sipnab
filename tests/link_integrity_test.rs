@@ -1188,7 +1188,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1330 -> 1336: MCP over HTTP beside the TUI. docs/mcp.md 4 (its new
     // section's anchor, #see-it-work, and mcp-deploy.md twice), mcp-deploy.md
     // 1 and cli-reference.md 1, each to the new section or from it.
-    const EXPECTED_WIKI_LINKS: usize = 1336;
+    // 1336 -> 1342: the vCon fetcher's sections link each other. Attributed
+    // by counting added `](page.md#anchor)` links per file:
+    // docs/cli-reference.md 2, docs/config-reference.md 1, docs/vcon.md 2,
+    // docs/vcon-store.md 1.
+    const EXPECTED_WIKI_LINKS: usize = 1342;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
