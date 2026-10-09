@@ -1430,6 +1430,7 @@ fn constant_time_eq_different_lengths_still_compares() -> Result<(), TestError> 
 
     let state = ApiState {
         relay_query: Default::default(),
+        alias_thresholds: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(
@@ -1494,6 +1495,7 @@ fn constant_time_eq_matching_strings() -> Result<(), TestError> {
 
     let state = ApiState {
         relay_query: Default::default(),
+        alias_thresholds: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(
@@ -1568,6 +1570,7 @@ fn constant_time_eq_different_strings_same_length() -> Result<(), TestError> {
 
     let state = ApiState {
         relay_query: Default::default(),
+        alias_thresholds: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(

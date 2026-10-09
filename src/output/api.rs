@@ -298,6 +298,15 @@ pub struct ApiState {
     /// (both halves `None`) is a server with no relay access, which answers
     /// those routes `not_configured` -- the state every test here builds.
     pub relay_query: RelayRestConfig,
+    /// The numbers the diagnostic filter aliases compare against, resolved
+    /// from the command line and config by the caller that starts the server,
+    /// as [`Self::max_rows`] is.
+    ///
+    /// Every `filter` query parameter is compiled with
+    /// [`crate::sip::dsl::parse_filter`] and these thresholds, so
+    /// `?filter=slow-setup` selects the dialogs `--filter slow-setup` selects.
+    /// `default()` is the shipped figures, the state every test here builds.
+    pub alias_thresholds: crate::sip::dsl::AliasThresholds,
     /// The SAME alert engine the MCP server holds, for `GET /v1/security/findings`.
     ///
     /// `None` on a build or run with no engine — every test in this module, and
@@ -648,11 +657,14 @@ pub struct DialogListParams {
     pub state: Option<String>,
     /// Filter by From user (regex pattern).
     pub from: Option<String>,
-    /// Filter by a DSL expression — the same language the CLI `--filter` and
-    /// the TUI filter dialog compile (e.g. `problems`, `from.user == '1001'`,
-    /// `payload =~ 'scanner'`, `method == 'INVITE' AND rtp.loss > 2.0`). An
-    /// expression that does not parse is a 400, so a client learns its query
-    /// was rejected rather than receiving every row. ANDed with `state`/`from`.
+    /// Filter by a DSL expression or a diagnostic alias name — what the CLI
+    /// `--filter` and the MCP `filter` argument accept (e.g. `problems`,
+    /// `slow-setup`, `from.user == '1001'`, `payload =~ 'scanner'`,
+    /// `method == 'INVITE' AND rtp.loss > 2.0`). An alias expands with the
+    /// thresholds the server was started with. A value that is neither an
+    /// alias nor an expression that parses is a 400, so a client learns its
+    /// query was rejected rather than receiving every row. ANDed with
+    /// `state`/`from`.
     pub filter: Option<String>,
     /// Only dialogs whose first message is at or after this RFC 3339 instant
     /// (e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.
@@ -686,8 +698,9 @@ pub struct AggregateParams {
     /// `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
     /// `dst.ip`, `rtp.codec`). A key outside that set is a 400. Required.
     pub by: Option<String>,
-    /// A DSL expression narrowing which dialogs are counted, the same language
-    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    /// A DSL expression or diagnostic alias name narrowing which dialogs are
+    /// counted, what `/v1/dialogs?filter=` accepts. A value that is neither an
+    /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
     /// Keep the largest N buckets; the rest fold into `other_count`. Clamped to
     /// the server's row cap.
@@ -752,8 +765,9 @@ pub struct RatesParams {
     /// `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all of
     /// them. An unknown name is a 400.
     pub metrics: Option<String>,
-    /// A DSL expression narrowing which dialogs are grouped, the same language
-    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    /// A DSL expression or diagnostic alias name narrowing which dialogs are
+    /// grouped, what `/v1/dialogs?filter=` accepts. A value that is neither an
+    /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
     /// Keep the largest N groups by dialog count; the rest fold into
     /// `other_count`. Clamped to the server's row cap.
@@ -767,8 +781,9 @@ pub struct TalkersParams {
     /// Which kind of talker to rank: `ip`, `ua` or `prefix` (the dialed
     /// number's leading digits). A key outside that set is a 400. Required.
     pub by: Option<String>,
-    /// A DSL expression narrowing which dialogs count, the same language
-    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    /// A DSL expression or diagnostic alias name narrowing which dialogs count,
+    /// what `/v1/dialogs?filter=` accepts. A value that is neither an alias nor
+    /// an expression that parses is a 400.
     pub filter: Option<String>,
     /// Maximum rows to return, clamped to the server's row cap. `distinct_talkers`
     /// still counts every talker, so a page is never mistaken for the whole rank.
@@ -1967,13 +1982,7 @@ async fn get_aggregate(
     }
 
     // Same DSL and 400-on-parse-failure as `/v1/dialogs?filter=`.
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     let ds = state.dialog_store.read();
@@ -2347,13 +2356,7 @@ async fn get_rates(
         None => all_metrics.clone(),
     };
 
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     let ds = state.dialog_store.read();
@@ -2513,13 +2516,7 @@ async fn get_talkers(
     )
     .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
 
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
     let ds = state.dialog_store.read();
@@ -3454,13 +3451,7 @@ async fn list_dialogs(
     // expression is a 400 with a reason rather than a silent unfiltered page.
     // Deliberately stricter than the `from` regex above, which is best-effort:
     // a structured query a client got wrong is a client error it must see.
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
 
     // Parse the time window up front, so a malformed timestamp is a 400 rather
     // than a silently ignored window a client would read as the answer to its
@@ -4055,6 +4046,29 @@ fn object_body<T: serde::de::DeserializeOwned>(
         return Err(Problem::new(StatusCode::BAD_REQUEST));
     }
     serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
+}
+
+/// Compile a `filter` query parameter: a diagnostic alias name or a DSL
+/// expression, the way `--filter` and every MCP tool's `filter` accept one.
+///
+/// The one place a REST handler turns that parameter into a [`FilterExpr`].
+/// `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers` all
+/// call it, so no route can accept a spelling another refuses.
+///
+/// # Errors
+///
+/// A `400` whose detail is `filter: ` followed by the parse error, which names
+/// the text and the position where it stopped parsing.
+pub(crate) fn compile_query_filter(
+    thresholds: &crate::sip::dsl::AliasThresholds,
+    filter: Option<&str>,
+) -> Result<Option<crate::sip::dsl::FilterExpr>, Problem> {
+    filter
+        .map(|expr| {
+            crate::sip::dsl::parse_filter(expr, thresholds)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))
+        })
+        .transpose()
 }
 
 /// A JSON request body, or the problem that refuses it.
@@ -8967,6 +8981,7 @@ mod tests {
     fn make_state() -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -9839,6 +9854,7 @@ mod tests {
     fn make_state_with_key(key: &str) -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -11237,6 +11253,7 @@ mod tests {
     fn make_state_with_signing_key(key: &[u8]) -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -12175,6 +12192,7 @@ mod tests {
         // Create state with rate_limiter max_rps = 1
         let state = ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -12882,6 +12900,237 @@ mod tests {
         Ok(())
     }
 
+    // ── `filter` accepts a diagnostic alias on every route ────────────
+
+    /// `populate_dialogs` plus answers that separate the aliases: `call-1`
+    /// rings 5 s after its INVITE (post-dial delay 5 s) and `call-2` is
+    /// refused with a 486, so it is `Failed`. `call-0` stays unanswered.
+    ///
+    /// `problems` therefore selects `call-2` alone on the shipped thresholds,
+    /// and `slow-setup` selects `call-1` only when the post-dial-delay
+    /// threshold is under 5 s — each alias picks a strict subset, so a route
+    /// that ignored the filter could not pass by returning everything.
+    fn populate_alias_fixture(state: &ApiState) -> Result<(), TestError> {
+        populate_dialogs(state)?;
+        let mut ds = state.dialog_store.write();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
+        let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        for (i, status, after_secs) in [(1, "180 Ringing", 5), (2, "486 Busy Here", 1)] {
+            let raw = build_sip(
+                &format!("SIP/2.0 {status}"),
+                &[
+                    &format!("From: <sip:user{i}@example.com>;tag=t{i}"),
+                    "To: <sip:bob@example.com>;tag=callee",
+                    &format!("Call-ID: call-{i}@test"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts + chrono::Duration::seconds(after_secs),
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?;
+            ds.process_message(msg);
+        }
+        Ok(())
+    }
+
+    /// Percent-encode a query value, so an expansion's spaces, quotes and
+    /// comparison operators reach the handler as written.
+    fn query_encode(value: &str) -> String {
+        value
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    }
+
+    /// GET `uri` through the full router and return the status and JSON body.
+    async fn get_json(state: &ApiState, uri: &str) -> Result<(StatusCode, Value), TestError> {
+        let resp = build_router(state.clone())
+            .oneshot(test_request(uri)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let status = resp.status();
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON from {uri}: {e:?}"))?;
+        Ok((status, parsed))
+    }
+
+    /// For every diagnostic alias, `{route}filter=<alias>` answers `200` with
+    /// exactly the body `{route}filter=<its expansion>` answers.
+    ///
+    /// The expansion is taken from `expand_alias` with the state's own
+    /// thresholds, so this is a statement about the route, not a second copy
+    /// of the alias table. Returns the `problems` body for the caller's
+    /// route-specific check that the alias narrowed the selection.
+    async fn assert_every_alias_is_its_expansion(
+        state: &ApiState,
+        route: &str,
+    ) -> Result<Value, TestError> {
+        let mut problems = Value::Null;
+        for alias in crate::sip::dsl::DIAGNOSTIC_ALIASES {
+            let expansion = crate::sip::dsl::expand_alias(alias, &state.alias_thresholds)
+                .ok_or_else(|| format!("{alias} is a listed alias"))?;
+            let (alias_status, by_alias) =
+                get_json(state, &format!("{route}filter={alias}")).await?;
+            assert_eq!(
+                alias_status,
+                StatusCode::OK,
+                "{route}filter={alias} must be accepted: {by_alias}"
+            );
+            let (expansion_status, by_expansion) = get_json(
+                state,
+                &format!("{route}filter={}", query_encode(&expansion)),
+            )
+            .await?;
+            assert_eq!(
+                expansion_status,
+                StatusCode::OK,
+                "{expansion}: {by_expansion}"
+            );
+            assert_eq!(
+                by_alias, by_expansion,
+                "{route}filter={alias} must answer what its expansion `{expansion}` answers"
+            );
+            if alias == "problems" {
+                problems = by_alias;
+            }
+        }
+        Ok(problems)
+    }
+
+    /// `GET /v1/dialogs?filter=<alias>` selects the dialogs its expansion
+    /// selects. It answered `400 unexpected input at position 0` for every
+    /// alias, while `--filter problems` and the MCP `filter` accepted them.
+    #[tokio::test]
+    async fn list_dialogs_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems = assert_every_alias_is_its_expansion(&state, "/v1/dialogs?").await?;
+        assert_eq!(
+            problems["total"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        assert_eq!(problems["dialogs"][0]["call_id"], "call-2@test");
+        Ok(())
+    }
+
+    /// `GET /v1/aggregate?filter=<alias>` counts the dialogs its expansion
+    /// counts.
+    #[tokio::test]
+    async fn aggregate_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems =
+            assert_every_alias_is_its_expansion(&state, "/v1/aggregate?by=state&").await?;
+        assert_eq!(
+            problems["total_matched"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/dialogs/rates?filter=<alias>` groups the dialogs its
+    /// expansion groups.
+    #[tokio::test]
+    async fn dialog_rates_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems =
+            assert_every_alias_is_its_expansion(&state, "/v1/dialogs/rates?by=method&").await?;
+        assert_eq!(
+            problems["total_matched"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/talkers?filter=<alias>` ranks the dialogs its expansion
+    /// ranks.
+    #[tokio::test]
+    async fn talkers_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems = assert_every_alias_is_its_expansion(&state, "/v1/talkers?by=ip&").await?;
+        assert_eq!(
+            problems["total_matched"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        Ok(())
+    }
+
+    /// The thresholds an alias compares against are the state's, not the
+    /// shipped figures: `slow-setup` at a 3 s post-dial-delay threshold
+    /// selects the call that rang after 5 s, which the shipped threshold
+    /// does not.
+    #[tokio::test]
+    async fn a_rest_alias_compares_against_the_states_thresholds() -> Result<(), TestError> {
+        let mut state = make_state();
+        populate_alias_fixture(&state)?;
+        let (status, shipped) = get_json(&state, "/v1/dialogs?filter=slow-setup").await?;
+        assert_eq!(status, StatusCode::OK, "{shipped}");
+        assert_eq!(
+            shipped["total"], 0,
+            "5 s is under the shipped threshold: {shipped}"
+        );
+
+        state.alias_thresholds = crate::sip::dsl::AliasThresholds {
+            pdd_secs: 3.0,
+            ..crate::sip::dsl::AliasThresholds::default()
+        };
+        let (status, tuned) = get_json(&state, "/v1/dialogs?filter=slow-setup").await?;
+        assert_eq!(status, StatusCode::OK, "{tuned}");
+        assert_eq!(tuned["total"], 1, "5 s is over a 3 s threshold: {tuned}");
+        assert_eq!(tuned["dialogs"][0]["call_id"], "call-1@test");
+        Ok(())
+    }
+
+    /// A name that is no alias is still a `400` on every route that takes a
+    /// `filter`, and the detail names the text and points at the alias list,
+    /// so a client with a typo learns both what was refused and where the
+    /// accepted names are. Accepting aliases must not turn an unknown word
+    /// into an unfiltered page.
+    #[tokio::test]
+    async fn an_unknown_filter_name_is_still_a_400_naming_it() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for route in [
+            "/v1/dialogs?",
+            "/v1/aggregate?by=state&",
+            "/v1/dialogs/rates?by=method&",
+            "/v1/talkers?by=ip&",
+        ] {
+            let (status, body) = get_json(&state, &format!("{route}filter=slow_setup")).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route}: {body}");
+            let detail = body["detail"].as_str().ok_or("a 400 carries detail")?;
+            assert!(
+                detail.starts_with("filter: ") && detail.contains("'slow_setup'"),
+                "{route}: the detail names the refused text: {detail}"
+            );
+            assert!(
+                detail.contains("diagnostic aliases"),
+                "{route}: the detail points at the alias list: {detail}"
+            );
+        }
+        Ok(())
+    }
+
     // ── list_dialogs time window (PAR3: search_by_time) ───────────────
 
     /// `after` excludes dialogs that opened before it. The fixture's three
@@ -13414,6 +13663,7 @@ mod tests {
     fn make_state_with_gate(gate: &Arc<crate::output::persistence::PersistenceGate>) -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             persistence_gate: Arc::clone(gate),
             ..make_state_with_key(GATE_KEY)
         }
@@ -13547,6 +13797,7 @@ mod tests {
         let tfps = crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None);
         Ok(ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             actions: tfps_rest_service(dir, &tfps)?,
             tfps,
             verifier: tfps_verifier(),
@@ -13560,6 +13811,7 @@ mod tests {
             .with_search_path(dir.path().as_os_str());
         Ok(ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             actions: tfps_rest_service(dir, &tfps)?,
             tfps,
             verifier: tfps_verifier(),
@@ -14348,6 +14600,7 @@ mod archive_password_tests {
     fn tests_make_state() -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(

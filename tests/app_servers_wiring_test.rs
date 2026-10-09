@@ -64,6 +64,7 @@ fn metrics_only() -> Selection {
         metrics: true,
         armed_detections: Vec::new(),
         pipeline_options: Default::default(),
+        alias_thresholds: Default::default(),
     }
 }
 
@@ -562,5 +563,133 @@ fn the_runs_hep_parse_reaches_mcp_compare_captures() -> Result<(), TestError> {
         let (code, log) = run.terminate();
         assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
     }
+    Ok(())
+}
+
+// ── The run's alias thresholds reach both doors ───────────────────────────
+
+/// The post-dial-delay threshold the alias cases run with. `CAPTURE`'s one
+/// call rings 500 ms after its INVITE, so `slow-setup` selects it at this
+/// threshold and not at the shipped one.
+const PDD_THRESHOLD: &str = "0.25";
+
+/// `GET /v1/dialogs?filter=slow-setup` on a run started with
+/// `--pdd-threshold` selects what `filter=pdd > <threshold>` selects, over a
+/// real socket.
+///
+/// REST compiled `filter` with the bare expression parser, so the alias was a
+/// `400`; and the thresholds the alias compares against were not handed to
+/// the REST door, so a fixed parser alone would still have compared against
+/// the shipped figure and selected nothing here.
+#[test]
+fn a_rest_alias_uses_the_runs_thresholds() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = Spawned::start(
+        &[
+            "-N",
+            "-I",
+            CAPTURE,
+            "--api",
+            "127.0.0.1:0",
+            "--api-key",
+            "k",
+            "--pdd-threshold",
+            PDD_THRESHOLD,
+        ],
+        home.path(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let addr = run
+        .after("REST API listening on ", Duration::from_secs(30))
+        .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
+    assert!(
+        run.after("API server active", Duration::from_secs(30))
+            .is_some(),
+        "the run must reach its keep-alive loop:\n{}",
+        run.seen.join("\n")
+    );
+
+    let (status, by_alias) = http_get(&addr, "/v1/dialogs?filter=slow-setup", "k")?;
+    assert_eq!(status, 200, "an alias is a filter REST accepts: {by_alias}");
+    let (status, by_expr) = http_get(
+        &addr,
+        &format!("/v1/dialogs?filter=pdd%20%3E%20{PDD_THRESHOLD}"),
+        "k",
+    )?;
+    assert_eq!(status, 200, "{by_expr}");
+    let alias: serde_json::Value = serde_json::from_str(&by_alias)?;
+    let expr: serde_json::Value = serde_json::from_str(&by_expr)?;
+    assert_eq!(
+        alias["total"], 1,
+        "slow-setup at --pdd-threshold {PDD_THRESHOLD} selects the call: {by_alias}"
+    );
+    assert_eq!(alias, expr, "the alias answers what its expansion answers");
+
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    Ok(())
+}
+
+/// The MCP `list_dialogs` tool's `filter: "slow-setup"` compares against the
+/// run's `--pdd-threshold`, the same number `--filter slow-setup` and the
+/// REST door use.
+///
+/// The server the run builds was never handed the run's alias thresholds, so
+/// every MCP alias compared against the shipped figures whatever the command
+/// line or config said.
+#[test]
+fn an_mcp_alias_uses_the_runs_thresholds() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = Spawned::start(
+        &[
+            "--mcp",
+            "-N",
+            "-I",
+            CAPTURE,
+            "--quiet",
+            "--pdd-threshold",
+            PDD_THRESHOLD,
+        ],
+        home.path(),
+        Stdio::piped(),
+        Stdio::piped(),
+    )?;
+    let mut stdin = run.child.stdin.take().ok_or("stdin")?;
+    let mut reader = BufReader::new(run.child.stdout.take().ok_or("stdout")?);
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}
+        }),
+    )?;
+    let _ = reply(&mut reader, 1);
+    send(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )?;
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_dialogs",
+                       "arguments": {"filter": "slow-setup"}}
+        }),
+    )?;
+    let answer = reply(&mut reader, 2);
+    let text = answer["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("list_dialogs must answer: {answer}"))?;
+    let v: serde_json::Value = serde_json::from_str(text)?;
+    assert_eq!(
+        v["total_matched"], 1,
+        "slow-setup at --pdd-threshold {PDD_THRESHOLD} selects the call: {v}"
+    );
+
+    drop(stdin);
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
     Ok(())
 }

@@ -87,6 +87,7 @@ fn roster() -> Result<HepRoster, TestError> {
 fn rest_state(meter: sipnab::capture::channel::CaptureMeter) -> ApiState {
     ApiState {
         relay_query: Default::default(),
+        alias_thresholds: Default::default(),
         dialog_store: Arc::new(RwLock::new(DialogStore::new(100, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(100))),
         verifier: Arc::new(sipnab::auth::TokenVerifier::new(

@@ -53,7 +53,7 @@ use crate::rtp::stream::RtpStream;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog::SipDialog;
 use crate::sip::dialog_store::DialogStore;
-use crate::sip::dsl::{AliasThresholds, FilterExpr, expand_alias};
+use crate::sip::dsl::{AliasThresholds, FilterExpr, parse_filter};
 use crate::sip::lint::{LintConfig, Linter, ObservedMedia, Severity, SuppressionFile};
 use crate::sip::method::SipMethod;
 
@@ -628,9 +628,7 @@ fn compile<'a>(
         None => Scope::All,
         Some(raw) => {
             if let Some(expr) = raw.strip_prefix("filter:") {
-                let expanded = expand_alias(expr, thresholds);
-                let text = expanded.as_deref().unwrap_or(expr);
-                Scope::Filter(Box::new(FilterExpr::parse(text).map_err(|e| {
+                Scope::Filter(Box::new(parse_filter(expr, thresholds).map_err(|e| {
                     RuleError::BadFilter {
                         index,
                         filter: expr.to_string(),

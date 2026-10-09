@@ -525,8 +525,12 @@ Parentheses `( )` group sub-expressions to override default precedence.
 
 These preset expressions are available as dedicated CLI flags where they exist
 (`--problems`, etc.), as shorthand to `--filter` (e.g. `--filter codec-asym`),
-and as `kinds` entries for the MCP [`find_problems`](@/docs/mcp-tools.md#find-problems)
-tool. They expand to DSL expressions internally.
+as the value of any MCP tool's `filter` argument, as the value of the REST API's
+[`filter` query parameter](@/docs/api.md#get-v1-dialogs) (e.g.
+`/v1/dialogs?filter=codec-asym`), and as `kinds` entries for the MCP
+[`find_problems`](@/docs/mcp-tools.md#find-problems) tool. They expand to DSL
+expressions internally, through one function, with the thresholds the run's
+flags and config set.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|
