@@ -3,7 +3,9 @@
 //! The three status lines and the context-sensitive
 //! F-key bar.
 
-use crate::tui::{App, Line, Modifier, Paragraph, Popup, Rect, Span, Style, Theme, View};
+use crate::tui::{
+    App, BpfSource, Line, Modifier, Paragraph, Popup, Rect, Span, Style, Theme, View,
+};
 use unicode_width::UnicodeWidthStr;
 
 /// Leading indent of status line 1, before the capture source.
@@ -110,9 +112,10 @@ const BPF_DEFAULT_RTP_ONLY: &str = "default (RTP only; SIP from HEP)";
 ///
 /// A `generated` default is shown as its [`default_summary`], not its raw
 /// expression. An operator's own filter is shown verbatim, cut with `…` only
-/// when it overflows the row. `live_only` appends the `[live capture]` marker
-/// for the offline-after-`O` case (the filter belongs to the live half still
-/// running behind an opened file), on either kind.
+/// when it overflows the row. `source` appends its marker, on either kind:
+/// `[live capture]` for the offline-after-`O` case (the filter belongs to the
+/// live half still running behind an opened file), `[file re-scan]` after the
+/// `B` editor re-scanned a file under the filter.
 /// What the generated default in `expr` admits, in words.
 ///
 /// Read from the expression rather than passed alongside it, so the words
@@ -129,12 +132,11 @@ fn default_summary(expr: &str) -> &'static str {
     }
 }
 
-fn bpf_display(generated: bool, bpf: &str, live_only: bool, cols: usize) -> String {
+fn bpf_display(generated: bool, bpf: &str, source: BpfSource, cols: usize) -> String {
     let base = if generated { default_summary(bpf) } else { bpf };
-    let shown = if live_only && !bpf.is_empty() {
-        format!("{base} [live capture]")
-    } else {
-        base.to_string()
+    let shown = match source.marker() {
+        Some(marker) if !bpf.is_empty() => format!("{base} {marker}"),
+        _ => base.to_string(),
     };
     fit_bpf_to_cols(&shown, cols)
 }
@@ -239,7 +241,7 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
     let bpf_text = bpf_display(
         app.bpf_filter_generated,
         &app.bpf_filter,
-        app.bpf_is_live_only(),
+        app.bpf_source(),
         (area.width as usize).saturating_sub(display_cols(L2_PREFIX)),
     );
     let shown = if bpf_text.is_empty() {
@@ -755,7 +757,7 @@ mod tests {
     #[test]
     fn a_generated_default_is_summarized_not_shown_raw() -> Result<(), TestError> {
         let raw = "udp and (portrange 5060-5061 or ip proto 41) or ".repeat(40);
-        let out = bpf_display(true, &raw, false, 200);
+        let out = bpf_display(true, &raw, BpfSource::Session, 200);
         assert_eq!(out, default_summary(&raw));
         assert!(
             !out.contains("portrange"),
@@ -774,18 +776,18 @@ mod tests {
         let both = bpf_display(
             true,
             &auto_capture_filter(5060, 5061, &[], true),
-            false,
+            BpfSource::Session,
             200,
         );
         assert!(both.contains("SIP") && both.contains("RTP"), "{both}");
         let sip = bpf_display(
             true,
             &auto_capture_filter(5060, 5061, &[], false),
-            false,
+            BpfSource::Session,
             200,
         );
         assert!(sip.contains("SIP") && !sip.contains("RTP"), "{sip}");
-        let rtp = bpf_display(true, MEDIA_FILTER_ARM, false, 200);
+        let rtp = bpf_display(true, MEDIA_FILTER_ARM, BpfSource::Session, 200);
         assert!(rtp.contains("RTP only"), "{rtp}");
         Ok(())
     }
@@ -795,7 +797,7 @@ mod tests {
     #[test]
     fn an_operator_filter_is_shown_verbatim() -> Result<(), TestError> {
         assert_eq!(
-            bpf_display(false, "udp port 5060", false, 40),
+            bpf_display(false, "udp port 5060", BpfSource::Session, 40),
             "udp port 5060"
         );
         Ok(())
@@ -808,7 +810,7 @@ mod tests {
         let out = bpf_display(
             false,
             "udp port 5060 and host 192.0.2.5 and portrange 10000-20000",
-            false,
+            BpfSource::Session,
             20,
         );
         assert!(
@@ -822,7 +824,7 @@ mod tests {
     /// offline-after-`O` case reads correctly for a generated default.
     #[test]
     fn the_live_marker_rides_on_the_summary() -> Result<(), TestError> {
-        let out = bpf_display(true, "anything", true, 200);
+        let out = bpf_display(true, "anything", BpfSource::LiveCapture, 200);
         assert!(
             out.starts_with(default_summary("anything")),
             "the summary comes first: {out}"
@@ -838,8 +840,8 @@ mod tests {
     /// was filtered", never a summary.
     #[test]
     fn an_empty_filter_stays_empty() -> Result<(), TestError> {
-        assert_eq!(bpf_display(false, "", false, 40), "");
-        assert_eq!(bpf_display(false, "", true, 40), "");
+        assert_eq!(bpf_display(false, "", BpfSource::Session, 40), "");
+        assert_eq!(bpf_display(false, "", BpfSource::LiveCapture, 40), "");
         Ok(())
     }
 
@@ -1648,6 +1650,123 @@ mod live_only_bpf_tests {
         assert!(
             display_cols(&narrow) <= 10,
             "the fit must respect the budget: {narrow}"
+        );
+        Ok(())
+    }
+
+    /// The source after a load is derived from whether a live capture runs
+    /// behind the session and whether the load was a `B` re-scan. A re-scan
+    /// applied the filter to the file, whatever else runs; an unfiltered open
+    /// leaves the slot showing the live capture's filter when there is one,
+    /// and the session's own filter when there is not.
+    #[test]
+    fn the_source_after_a_load_follows_the_live_capture_and_the_rescan() {
+        assert_eq!(BpfSource::after_load(false, true), BpfSource::FileRescan);
+        assert_eq!(BpfSource::after_load(true, true), BpfSource::FileRescan);
+        assert_eq!(BpfSource::after_load(true, false), BpfSource::LiveCapture);
+        assert_eq!(BpfSource::after_load(false, false), BpfSource::Session);
+    }
+
+    /// Each source's marker names that source, and the session's own capture
+    /// carries none.
+    #[test]
+    fn each_source_names_itself_after_the_filter() {
+        assert_eq!(BpfSource::Session.marker(), None);
+        assert_eq!(BpfSource::LiveCapture.marker(), Some("[live capture]"));
+        assert_eq!(BpfSource::FileRescan.marker(), Some("[file re-scan]"));
+        assert_eq!(
+            bpf_display(false, "host 203.0.113.1", BpfSource::FileRescan, 80),
+            "host 203.0.113.1 [file re-scan]"
+        );
+    }
+
+    /// Run a capture-file load to completion through the event loop's poll.
+    fn finish_load(app: &mut App) -> Result<(), TestError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while app.pcap_load.is_some() {
+            if std::time::Instant::now() > deadline {
+                return Err("the load did not finish within 20 s".into());
+            }
+            crate::tui::controllers::poll_pcap_load(app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
+    /// Status line 2 as the real render path draws it.
+    fn bpf_row(app: &mut App) -> Result<String, TestError> {
+        let text = crate::tui::render::test_support::render_to_string(app, 120, 24)?;
+        text.lines()
+            .find(|l| l.contains("Capture filter (BPF):"))
+            .map(str::to_string)
+            .ok_or_else(|| format!("a BPF row in\n{text}").into())
+    }
+
+    fn fixture() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap")
+    }
+
+    /// `B` on a session started on a capture file re-scans the file, and the
+    /// status line names the file re-scan as the filter's source. It said
+    /// `[live capture]` though no live capture ran.
+    #[test]
+    fn a_rescan_of_an_offline_file_is_labeled_a_file_rescan() -> Result<(), TestError> {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_test();
+        app.set_live_capture(false);
+        app.set_capture_mode("Offline (sip_call.pcap)".to_string());
+        app.rescan_path = Some(fixture());
+        app.current_view = View::BpfFilter;
+        for c in "host 203.0.113.1".chars() {
+            crate::tui::controllers::handle_bpf_filter_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        crate::tui::controllers::handle_bpf_filter_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert!(app.pcap_load.is_some(), "the re-scan started");
+        finish_load(&mut app)?;
+        app.current_view = View::CallList;
+        let row = bpf_row(&mut app)?;
+        assert!(
+            row.contains("host 203.0.113.1 [file re-scan]") && !row.contains("[live capture]"),
+            "the slot names the file re-scan: {row}"
+        );
+        Ok(())
+    }
+
+    /// An `O` open inside a live session still marks the filter as the live
+    /// capture's (#190), which keeps running behind the file.
+    #[test]
+    fn an_open_inside_a_live_session_is_labeled_the_live_capture() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_bpf_filter("udp port 5060".to_string(), false);
+        crate::tui::controllers::begin_pcap_load(&mut app, &fixture().to_string_lossy(), None);
+        finish_load(&mut app)?;
+        let row = bpf_row(&mut app)?;
+        assert!(
+            row.contains("udp port 5060 [live capture]"),
+            "the slot names the live capture: {row}"
+        );
+        Ok(())
+    }
+
+    /// An `O` open inside a session started on capture files has no live
+    /// capture behind it, so the filter carries no `[live capture]` marker.
+    #[test]
+    fn an_open_inside_an_offline_session_has_no_live_marker() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_live_capture(false);
+        app.set_bpf_filter("udp port 5060".to_string(), false);
+        crate::tui::controllers::begin_pcap_load(&mut app, &fixture().to_string_lossy(), None);
+        finish_load(&mut app)?;
+        let row = bpf_row(&mut app)?;
+        assert!(
+            row.contains("udp port 5060") && !row.contains('['),
+            "no source marker without a live capture: {row}"
         );
         Ok(())
     }

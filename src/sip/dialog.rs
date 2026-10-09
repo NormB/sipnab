@@ -288,60 +288,102 @@ pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
     })
 }
 
+/// The final responses of one transaction, folded into its outcome by
+/// [`SipDialog::final_status_code`]'s rule.
+#[derive(Default)]
+struct FinalCodeFold {
+    /// The highest 2xx seen.
+    max_2xx: Option<u16>,
+    /// The highest final code that is not a 401/407 challenge.
+    max_non_auth: Option<u16>,
+    /// The highest final code, challenges included.
+    max_any: Option<u16>,
+}
+
+impl FinalCodeFold {
+    /// Fold in one response code; provisional (`< 200`) codes are ignored.
+    fn observe(&mut self, code: u16) {
+        if code < 200 {
+            return;
+        }
+        self.max_any = self.max_any.max(Some(code));
+        if code != 401 && code != 407 {
+            self.max_non_auth = self.max_non_auth.max(Some(code));
+        }
+        if (200..300).contains(&code) {
+            self.max_2xx = self.max_2xx.max(Some(code));
+        }
+    }
+
+    /// The outcome. A 2xx means the request was accepted — that is its
+    /// outcome, even when a later re-INVITE or a forked leg carries a higher
+    /// code; taking the plain max counted an answered, in-call dialog as
+    /// Failed. Only when no 2xx exists does the highest failure code stand,
+    /// and a request only ever challenged reports the challenge.
+    fn outcome(&self) -> Option<u16> {
+        self.max_2xx.or(self.max_non_auth).or(self.max_any)
+    }
+}
+
 impl SipDialog {
     /// Returns a reference to the current dialog state.
     pub fn state(&self) -> &DialogState {
         &self.state
     }
 
-    /// The final SIP response code of the call's INVITE transaction — the code
-    /// that determined the outcome behind the [`DialogState`] word: 200 for an
-    /// answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a `Failed` one
-    /// (486 busy vs 503 unavailable vs 404 …), 487 for `Canceled`. Returns
-    /// `None` while the call is still in progress (no final response yet), so a
-    /// `Ringing`/`Trying` dialog shows no code.
+    /// The final SIP response code of the transaction that decides the
+    /// dialog's outcome — the code behind the [`DialogState`] word: 200 for
+    /// an answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a
+    /// `Failed` one (486 busy vs 503 unavailable vs 404 …), 487 for
+    /// `Canceled`. Returns `None` while that transaction has no final
+    /// response yet, so a `Ringing`/`Trying` dialog shows no code.
     ///
-    /// Considers final (`>= 200`) responses carrying a CSeq method of `INVITE`
-    /// (responses to CANCEL/BYE — their own CSeq — are excluded, so a canceled
-    /// call reports 487, not the 200 that acknowledged its CANCEL). Auth
-    /// challenges (401/407) are *intermediate* — a call challenged then answered
-    /// reports its real outcome (200), not the 407 — so they are ignored unless
-    /// the call was *only* ever challenged (never authenticated), in which case
-    /// the challenge is the outcome.
+    /// The deciding transaction is the INVITE whenever the dialog holds one —
+    /// including a Call-ID that registered first and then called, which is
+    /// one dialog opened by the REGISTER — and otherwise the dialog's own
+    /// [`method`](Self::method): the `PUBLISH`, `SUBSCRIBE`, `MESSAGE`,
+    /// `OPTIONS` or `REGISTER` that opened it. Only final (`>= 200`)
+    /// responses whose CSeq method is that one count, so a canceled call
+    /// reports 487, not the 200 that acknowledged its CANCEL, and a
+    /// subscription reports the answer to its SUBSCRIBE, not to a NOTIFY.
+    /// Reading INVITE responses alone left every non-INVITE dialog with no
+    /// final status on every surface, a PUBLISH refused with 489 included.
+    ///
+    /// Auth challenges (401/407) are *intermediate* — a request challenged
+    /// then accepted reports its real outcome (200), not the 407 — so they
+    /// are ignored unless the request was *only* ever challenged (never
+    /// authenticated), in which case the challenge is the outcome.
     pub fn final_status_code(&self) -> Option<u16> {
-        // Single scan, no intermediate Vec: track the max final INVITE code
-        // both excluding and including the 401/407 auth challenges. The
-        // non-auth max is the answer when any non-challenge final exists;
-        // otherwise (challenged but never authenticated) the challenge itself
-        // is the outcome.
-        let mut max_2xx: Option<u16> = None;
-        let mut max_non_auth: Option<u16> = None;
-        let mut max_any: Option<u16> = None;
+        // Single scan, no intermediate Vec: fold the INVITE responses and the
+        // own-method responses side by side, and pick the INVITE fold when
+        // the dialog holds any INVITE at all (a call still ringing behind a
+        // REGISTER must report no final status, not the REGISTER's 200).
+        let own_method = self.method.as_str();
+        let mut invite = FinalCodeFold::default();
+        let mut own = FinalCodeFold::default();
+        let mut holds_invite = false;
         for m in &self.messages {
+            let Some((_, method)) = m.cseq() else {
+                continue;
+            };
+            let is_invite = method == "INVITE";
+            holds_invite |= is_invite;
             if m.is_request {
                 continue;
             }
-            if m.cseq().map(|(_, method)| method) != Some("INVITE") {
-                continue;
-            }
             let Some(code) = m.status_code else { continue };
-            if code < 200 {
-                continue;
+            if is_invite {
+                invite.observe(code);
             }
-            max_any = max_any.max(Some(code));
-            if code != 401 && code != 407 {
-                max_non_auth = max_non_auth.max(Some(code));
-            }
-            if (200..300).contains(&code) {
-                max_2xx = max_2xx.max(Some(code));
+            if method == own_method {
+                own.observe(code);
             }
         }
-        // A 2xx means the call was answered — that is its outcome, even when a
-        // later re-INVITE or a forked leg carries a higher code. Taking the
-        // plain max reported that higher failure code and counted an answered,
-        // in-call dialog as Failed. Only when no 2xx exists does the highest
-        // failure code stand; a call only ever challenged reports the challenge.
-        max_2xx.or(max_non_auth).or(max_any)
+        if holds_invite {
+            invite.outcome()
+        } else {
+            own.outcome()
+        }
     }
 
     /// Create a new dialog from the first message in a conversation.
@@ -670,7 +712,8 @@ pub struct DialogSide {
     pub call_id: String,
     /// The dialog state, as the [`DialogState`] variant name.
     pub state: String,
-    /// The final INVITE response code, `None` while the call is in progress.
+    /// The final response code of the dialog's INVITE, or of the request that
+    /// opened a dialog without one, `None` while it has none.
     pub final_status_code: Option<u16>,
     /// How many SIP messages the dialog holds.
     pub msg_count: usize,
@@ -1298,6 +1341,121 @@ mod tests {
             dialog.final_status_code(),
             Some(200),
             "an answered call reports its 2xx, not a later re-INVITE/forked failure"
+        );
+        Ok(())
+    }
+
+    /// A dialog opened by `method`, followed by the given `(code, reason,
+    /// CSeq method)` responses, in order.
+    fn dialog_with_responses(
+        method: &str,
+        responses: &[(u16, &str, &str)],
+    ) -> Result<SipDialog, TestError> {
+        let mut dialog = SipDialog::new(&make_request(method)?).ok_or("dialog")?;
+        for (code, reason, cseq_method) in responses {
+            dialog
+                .messages
+                .push(make_response(*code, reason, cseq_method)?);
+        }
+        Ok(dialog)
+    }
+
+    /// A non-INVITE dialog's final status is the final response to its own
+    /// opening method. `final_status_code` read only responses whose CSeq
+    /// method was `INVITE`, so a PUBLISH refused with 489 reported no final
+    /// status on every surface (compare view, JSON, REST, MCP) while the
+    /// state said `Failed` and the hint named the 489.
+    #[test]
+    fn final_status_code_reports_a_failed_non_invite_request() -> Result<(), TestError> {
+        for (method, code, reason) in [
+            ("PUBLISH", 489, "Bad Event"),
+            ("SUBSCRIBE", 489, "Bad Event"),
+            ("MESSAGE", 403, "Forbidden"),
+            ("OPTIONS", 404, "Not Found"),
+            ("REGISTER", 403, "Forbidden"),
+        ] {
+            let dialog = dialog_with_responses(method, &[(code, reason, method)])?;
+            assert_eq!(
+                dialog.final_status_code(),
+                Some(code),
+                "a {method} answered {code} reports {code}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A non-INVITE request that succeeded reports its 2xx, and a challenge it
+    /// then answered is intermediate, as it is for INVITE.
+    #[test]
+    fn final_status_code_reports_a_non_invite_success_past_its_challenge() -> Result<(), TestError>
+    {
+        for method in ["REGISTER", "SUBSCRIBE", "PUBLISH", "MESSAGE", "OPTIONS"] {
+            let dialog = dialog_with_responses(
+                method,
+                &[(401, "Unauthorized", method), (200, "OK", method)],
+            )?;
+            assert_eq!(
+                dialog.final_status_code(),
+                Some(200),
+                "a challenged then accepted {method} reports 200"
+            );
+            let challenged = dialog_with_responses(method, &[(407, "Proxy Auth", method)])?;
+            assert_eq!(
+                challenged.final_status_code(),
+                Some(407),
+                "a {method} only ever challenged reports the challenge"
+            );
+        }
+        Ok(())
+    }
+
+    /// A Call-ID that registers and then calls is one dialog opened by the
+    /// REGISTER, and its outcome is the call's. The INVITE transaction decides
+    /// whenever the dialog holds one: a call refused 403 reports 403, not the
+    /// registrar's 200, and a call still ringing reports no final status.
+    #[test]
+    fn final_status_code_is_the_invites_when_a_register_opened_the_dialog() -> Result<(), TestError>
+    {
+        let refused = dialog_with_responses(
+            "REGISTER",
+            &[(200, "OK", "REGISTER"), (403, "Forbidden", "INVITE")],
+        )?;
+        assert_eq!(refused.final_status_code(), Some(403));
+
+        let mut ringing = dialog_with_responses("REGISTER", &[(200, "OK", "REGISTER")])?;
+        ringing.messages.push(make_invite()?);
+        ringing
+            .messages
+            .push(make_response(180, "Ringing", "INVITE")?);
+        assert_eq!(
+            ringing.final_status_code(),
+            None,
+            "a call still ringing has no final status, whatever the REGISTER got"
+        );
+        Ok(())
+    }
+
+    /// Only responses to the dialog's own method count: a SUBSCRIBE accepted
+    /// with 200 whose NOTIFY was then refused still reports the SUBSCRIBE's
+    /// 200, and an INVITE dialog ignores the response to a mid-call OPTIONS.
+    #[test]
+    fn final_status_code_ignores_responses_to_other_methods() -> Result<(), TestError> {
+        let subscribe = dialog_with_responses(
+            "SUBSCRIBE",
+            &[(200, "OK", "SUBSCRIBE"), (481, "No Transaction", "NOTIFY")],
+        )?;
+        assert_eq!(subscribe.final_status_code(), Some(200));
+
+        let mut invite = SipDialog::new(&make_invite()?).ok_or("dialog")?;
+        invite.messages.push(make_response(486, "Busy", "INVITE")?);
+        invite.messages.push(make_response(200, "OK", "OPTIONS")?);
+        assert_eq!(invite.final_status_code(), Some(486));
+
+        let publish = dialog_with_responses("PUBLISH", &[(200, "OK", "OPTIONS")])?;
+        assert_eq!(
+            publish.final_status_code(),
+            None,
+            "a PUBLISH dialog with no response to the PUBLISH has no final status"
         );
         Ok(())
     }

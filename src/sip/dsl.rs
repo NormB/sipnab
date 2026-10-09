@@ -292,8 +292,9 @@ enum Field {
     /// rather than the numeric one. Both are useful and they are not the same
     /// question, so neither is named for the other.
     ResponseClass,
-    /// `response_code` (or `final_status_code`) — the dialog's final INVITE
-    /// response code, absent while the call is still in progress.
+    /// `response_code` (or `final_status_code`) — the final response code of
+    /// the dialog's INVITE, or of the request that opened a dialog without
+    /// one, absent while it has none.
     ///
     /// Two spellings, one field, on purpose: `response_code` is what an
     /// operator types and what every CDR calls it, and `final_status_code` is

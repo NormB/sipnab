@@ -4,7 +4,7 @@ Call-ID                          From           To             State        Code
 -------------------------------------------------------------------------------------------------------------------------
 1-1966@10.0.2.20                 sipp           test           InCall       200    0s         3      -        -               
 1-1966@10.0.2.20                 sipp           test           Trying       -      0s         1      -        -               
-1-1966@10.0.2.20                 test           sipp           Completed    -      0s         2      -        -               
+1-1966@10.0.2.20                 test           sipp           Completed    200    0s         2      -        -               
 1-1968@10.0.2.20                 sipp           test           InCall       200    0s         3      -        -               
 1-1968@10.0.2.20                 sipp           test           Trying       -      0s         1      -        -               
 
