@@ -45,6 +45,26 @@ entry that carries them.
   A local build, or a deploy whose API call failed, shows the button without a
   count; the deploy warns in that case rather than failing.
 
+### Changed
+
+- **Breaking: `--vcon-forward-compat` and `[vcon_forward] compat` are
+  removed, and `--vcon-forward-kind vcon-store` sends each container
+  unchanged.** vcon.store accepted the forms the vCon drafts define when
+  measured on 2026-10-09: `extensions` as an array of strings, and the
+  `recording` Dialog Object without `parties` that sipnab writes for a call
+  without audio. The forwarder no longer sends `extensions` as an object or
+  refuses a Dialog Object without `type` or `parties`, for any kind. A command
+  line that names `--vcon-forward-compat` is refused with exit 2, as any
+  unknown flag is. A config file that still holds `[vcon_forward] compat` logs
+  `Unknown config key: vcon_forward.compat`, as any unknown key does, and the
+  forwarder runs without it. A store that still refuses the array form answers
+  `400`, and the container goes to the failed directory with that answer. The
+  same measurement found that vcon.store answers a `POST` of a uuid it already
+  holds with `500`; the forwarder keeps that container in the spool and
+  retries it, as it does every `5xx`.
+  [Send sipnab's vCons to vcon.store](docs/vcon-store.md#the-measurements)
+  has the measurements.
+
 ### Fixed
 
 - **Diagram edge labels on sipnab.com meet WCAG AA contrast.** Flowchart edge

@@ -99,8 +99,8 @@ Each answers "how do I …?" and assumes you already know what you want.
   finished call, forwarded to vcon-server on the same machine or another, and
   the way a Kamailio stack gets vCons.
 - **[Send sipnab's vCons to vcon.store](vcon-store.md)**: the hosted store,
-  through `sipnab --vcon-forward` and the compat mode its validator needs, with
-  what the store's signature and consent fields do and do not mean.
+  through `sipnab --vcon-forward`, with what the store's signature and consent
+  fields do and do not mean.
 - **[Add TFPS to your voice stack](tfps.md)**: block attacking SIP
   sources in the kernel before they reach your SIP server. No sipnab involved.
 - **[Let sipnab see and control TFPS](tfps-sipnab.md)**: what TFPS blocks and

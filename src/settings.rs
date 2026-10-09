@@ -767,10 +767,6 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_forward", "ca", Merge::Override),
     ),
     (
-        "vcon-forward-compat",
-        Link::Key("vcon_forward", "compat", Merge::Override),
-    ),
-    (
         "vcon-forward-done",
         Link::Key("vcon_forward", "done", Merge::Override),
     ),

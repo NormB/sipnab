@@ -198,10 +198,8 @@ after SIGTERM or SIGINT; 1 with
 when a container was refused or is still waiting, and when the config file
 cannot be read or holds a
 .B [vcon_forward]
-number,
+number or
 .B kind
-or
-.B compat
 outside its range or list, or an empty path; 2 when sipnab refuses the
 settings (a refused flag value, no URL or no credential, a refused URL, an
 unreadable credential, or a build without the
@@ -229,8 +227,8 @@ The kind of store:
 .B vcon\-store
 or
 .BR conserver .
-A kind supplies the ingest path for a base URL, the header for a bare key, and
-the payload adaptation; an explicit setting overrides each.
+A kind supplies the ingest path for a base URL and the header for a bare key;
+an explicit setting overrides each. No kind changes the container sent.
 .TP
 .BI \-\-vcon\-forward\-auth\-file " file"
 File holding one line,

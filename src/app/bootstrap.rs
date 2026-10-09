@@ -4149,7 +4149,7 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     }
 
     // [vcon_forward] keys are held to the rules their flags follow: the
-    // ranges, the kind and compat names, and the back-off pair.
+    // ranges, the kind names, and the back-off pair.
     if let Err(e) = loaded.config.vcon_forward.validate() {
         return Err(PlanError {
             exit_code: 1,

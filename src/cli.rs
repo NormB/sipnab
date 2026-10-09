@@ -4549,9 +4549,9 @@ pub struct VconForwardArgs {
 
     /// What kind of store receives the containers: `generic` (the default:
     /// every setting given explicitly), `vcon-store` or `conserver`. A kind
-    /// supplies the ingest path for a base URL, the header for a bare key,
-    /// and the payload adaptation; an explicit setting overrides each.
-    /// Overrides `[vcon_forward] kind`.
+    /// supplies the ingest path for a base URL and the header for a bare
+    /// key; an explicit setting overrides each. No kind changes the
+    /// container sent. Overrides `[vcon_forward] kind`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-kind",
@@ -4693,24 +4693,6 @@ pub struct VconForwardArgs {
         requires = "vcon_forward"
     )]
     pub vcon_forward_ca: Option<std::path::PathBuf>,
-
-    /// Adjust the copy that is SENT for one store's known deviation from the
-    /// vCon drafts. `vcon-store`: send `extensions` as an object, and refuse
-    /// a Dialog Object without `type` and `parties`, the adaptation the
-    /// `vcon-store` kind applies. `none`: send every container byte for
-    /// byte. The container on disk is never changed. Default: the
-    /// --vcon-forward-kind's adaptation, none for `generic`. Overrides
-    /// `[vcon_forward] compat`.
-    #[arg(
-        help_heading = "vCon forwarder",
-        long = "vcon-forward-compat",
-        value_name = "STORE",
-        value_parser = clap::builder::PossibleValuesParser::new(
-            crate::config::FORWARD_COMPAT.iter().copied()
-        ),
-        requires = "vcon_forward"
-    )]
-    pub vcon_forward_compat: Option<String>,
 }
 
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by
@@ -4930,7 +4912,6 @@ impl VconForwardArgs {
                 self.vcon_forward_max_error_body.is_some(),
             ),
             ("--vcon-forward-ca", self.vcon_forward_ca.is_some()),
-            ("--vcon-forward-compat", self.vcon_forward_compat.is_some()),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag))
@@ -7976,8 +7957,6 @@ mod tests {
         argv.extend(FORWARD);
         argv.extend([
             "--vcon-forward-once",
-            "--vcon-forward-compat",
-            "vcon-store",
             "--vcon-forward-replace-url",
             "https://store.example.com/v1/vcons/{uuid}",
             "--vcon-forward-done",
@@ -8018,7 +7997,6 @@ mod tests {
             Some("https://store.example.com/v1/vcons")
         );
         assert!(f.vcon_forward_once);
-        assert_eq!(f.vcon_forward_compat.as_deref(), Some("vcon-store"));
         assert_eq!(f.vcon_forward_interval, Some(7));
         assert_eq!(f.vcon_forward_timeout, Some(9));
         Ok(())
@@ -8125,7 +8103,6 @@ mod tests {
             &["--vcon-forward-url", "http://127.0.0.1:8000/x"][..],
             &["--vcon-forward-auth-file", "/etc/x"],
             &["--vcon-forward-once"],
-            &["--vcon-forward-compat", "vcon-store"],
             &["--vcon-forward-done", "/srv/done"],
             &["--vcon-forward-kind", "conserver"],
             &["--vcon-forward-backoff-first", "3"],
@@ -8149,8 +8126,11 @@ mod tests {
         assert!(Cli::try_parse_from(["sipnab", "--vcon-forward", "/srv/spool"]).is_ok());
         let mut bad = vec!["sipnab"];
         bad.extend(FORWARD);
-        bad.extend(["--vcon-forward-compat", "something-else"]);
-        assert!(Cli::try_parse_from(&bad).is_err(), "unknown compat mode");
+        bad.extend(["--vcon-forward-compat", "vcon-store"]);
+        let e = Cli::try_parse_from(&bad)
+            .err()
+            .ok_or("the removed --vcon-forward-compat was accepted")?;
+        assert_eq!(e.kind(), clap::error::ErrorKind::UnknownArgument, "{e}");
         Ok(())
     }
 
