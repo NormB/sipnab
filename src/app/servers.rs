@@ -143,6 +143,15 @@ pub struct Selection {
     /// `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse` applied to
     /// `-I` and not to the same file opened through a server.
     pub pipeline_options: crate::pipeline::PipelineOptions,
+    /// The numbers the diagnostic filter aliases compare against, resolved by
+    /// the caller with `cli.alias_thresholds(config)`.
+    ///
+    /// Both doors expand `filter: "slow-setup"` and the rest of the alias
+    /// family with them, so an alias over REST or MCP selects the dialogs
+    /// `--filter slow-setup` selects on the same command line and config.
+    /// Without them the doors compared against the shipped figures, and a
+    /// `--pdd-threshold` reached the command line and stopped there.
+    pub alias_thresholds: crate::sip::dsl::AliasThresholds,
 }
 
 /// Handles to the running servers thread.
@@ -638,6 +647,10 @@ pub fn start_servers(
             // address reads as not_configured, a missing permit as not_permitted
             // -- the same two distinctions the CLI draws. `relay_query_permit`
             // is Copy, so the MCP arm below still gets its own.
+            // The run's alias thresholds, so `?filter=slow-setup` compares
+            // against the number `--filter slow-setup` does. The MCP arm
+            // below gets the same value.
+            alias_thresholds: selection.alias_thresholds,
             relay_query: crate::output::api::RelayRestConfig {
                 // The composition root chooses the implementation; the API layer
                 // only holds the trait object. `Copy` permit, so the MCP arm
@@ -775,6 +788,8 @@ pub fn start_servers(
                 .with_sweep_limits(selection.mcp_sweep)
                 .with_sweep_job_limits(selection.mcp_sweep_jobs)
                 .with_findings_cap(selection.mcp_max_findings)
+                // The thresholds REST and `--filter` expand aliases with.
+                .with_alias_thresholds(selection.alias_thresholds)
                 .with_pipeline_options(selection.pipeline_options);
             let s = match audit_sink.as_ref() {
                 Some(sink) => s.with_audit_sink(Arc::clone(sink)),
@@ -1107,6 +1122,7 @@ mod tests {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         }
     }
 

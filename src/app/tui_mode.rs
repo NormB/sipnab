@@ -1053,6 +1053,7 @@ fn start_tui_servers(
             // `security_findings` reports what the security view shows.
             armed_detections: armed_kinds(detections.armed),
             pipeline_options: crate::app::server_pipeline_options(cli, config),
+            alias_thresholds: cli.alias_thresholds(config),
         },
         // No transmit permit: the rtpengine reconciler took this run's, so
         // MCP `query_relay` and the REST relay routes (ST5) both answer

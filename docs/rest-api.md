@@ -478,6 +478,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 |-----------|--------|---------|-------------|
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
+| `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
 
@@ -486,6 +487,63 @@ List all tracked SIP dialogs with optional filtering and pagination.
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   "http://127.0.0.1:8080/v1/dialogs?state=Failed&limit=10" | jq .
+```
+
+**Filter aliases:** `filter` accepts the named aliases that `--filter` and the
+MCP `filter` argument accept, and expands each one to the same expression with
+the same thresholds: the ones the server's flags, such as `--pdd-threshold`, and
+its config file set. `filter=problems` and
+`filter=<the problems expansion>` return the same dialogs. The same rule applies
+to `filter` on `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers`.
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), served with
+`sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api 127.0.0.1:8080`,
+the alias selects the four failed calls out of five dialogs:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs?filter=problems" |
+  jq '{total, dialogs: [.dialogs[] | {call_id, state, final_status_code}]}'
+```
+
+```json
+{
+  "total": 4,
+  "dialogs": [
+    {
+      "call_id": "busy-3a2b1c@192.0.2.30",
+      "state": "Failed",
+      "final_status_code": 486
+    },
+    {
+      "call_id": "decline-7c6d5e@198.51.100.30",
+      "state": "Failed",
+      "final_status_code": 603
+    },
+    {
+      "call_id": "notfound-1b2c3d@203.0.113.30",
+      "state": "Failed",
+      "final_status_code": 404
+    },
+    {
+      "call_id": "unavail-4e5f60@192.0.2.50",
+      "state": "Failed",
+      "final_status_code": 503
+    }
+  ]
+}
+```
+
+sipnab parses a name that is not an alias as an expression, and it fails as
+one, so a misspelled alias is a `400` that names the text. `filter=slow_setup` (underscore
+instead of hyphen) answers:
+
+```text
+filter: unexpected input at position 0: 'slow_setup'
+  slow_setup
+  ^
+valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
 **Python:**
@@ -2807,9 +2865,9 @@ answered over the store rather than the model.
 - `by` (required) — the dimension: one of `state`, `response_code`, `method`,
   `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A key outside
   that set is a `400`.
-- `filter` (optional) — a DSL expression narrowing which dialogs the count
-  includes, the same language `/v1/dialogs?filter=` compiles. A malformed
-  expression is a `400`.
+- `filter` (optional) — a DSL expression or named alias narrowing which
+  dialogs the count includes, what `/v1/dialogs?filter=` accepts. A value that
+  is neither is a `400`.
 - `top_n` (optional) — keep the largest N buckets. The rest fold into
   `other_count`.
 
@@ -2994,9 +3052,9 @@ the MCP `group_dialogs` tool computes.
 - `metrics` (optional) — a comma-separated subset of `count`, `asr`, `ner`,
   `acd`, `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all. An
   unknown name is a `400`.
-- `filter` (optional) — a DSL expression narrowing which dialogs the route
-  groups, the language `/v1/dialogs?filter=` compiles. A malformed expression is
-  a `400`.
+- `filter` (optional) — a DSL expression or named alias narrowing which
+  dialogs the route groups, what `/v1/dialogs?filter=` accepts. A value that is
+  neither is a `400`.
 - `top_n` (optional) — keep the largest N groups by dialog count. The rest fold
   into `other_count`. Clamped to the server's row cap.
 
@@ -3053,8 +3111,9 @@ answers.
 **Query parameters:**
 
 - `by` (required) — `ip`, `ua`, or `prefix`. A key outside that set is a `400`.
-- `filter` (optional) — a DSL expression narrowing which dialogs count, the
-  language `/v1/dialogs?filter=` compiles. A malformed expression is a `400`.
+- `filter` (optional) — a DSL expression or named alias narrowing which
+  dialogs count, what `/v1/dialogs?filter=` accepts. A value that is neither is
+  a `400`.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 - `prefix_digits` (optional) — leading digits that make one `prefix` bucket
   (default 4). Zero is a `400`. Ignored for every other `by`.

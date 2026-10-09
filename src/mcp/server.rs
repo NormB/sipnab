@@ -3867,11 +3867,11 @@ impl SipnabMcp {
         filter: Option<&str>,
     ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
         let Some(f) = filter else { return Ok(None) };
-        let expanded = expand_alias(f, &self.alias_thresholds);
-        let expr_str = expanded.as_deref().unwrap_or(f);
-        FilterExpr::parse(expr_str).map(Some).map_err(|e| {
-            rmcp::ErrorData::invalid_params(format!("invalid filter '{f}': {e}"), None)
-        })
+        crate::sip::dsl::parse_filter(f, &self.alias_thresholds)
+            .map(Some)
+            .map_err(|e| {
+                rmcp::ErrorData::invalid_params(format!("invalid filter '{f}': {e}"), None)
+            })
     }
 
     /// Files under `--mcp-file-root`, as MCP resources.
@@ -10419,6 +10419,7 @@ mod tests {
         use crate::output::api::{ApiState, ArchivePasswordPolicy, RateLimiter};
         crate::output::api::build_router(ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::clone(&srv.dialog_store),
             stream_store: Arc::clone(&srv.stream_store),
             verifier: Arc::new(crate::auth::TokenVerifier::new(

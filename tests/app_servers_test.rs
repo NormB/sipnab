@@ -78,6 +78,7 @@ fn nothing_enabled_spawns_nothing() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -128,6 +129,7 @@ fn selection_gates_configured_servers() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -179,6 +181,7 @@ fn invalid_api_addr_is_an_error() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -228,6 +231,7 @@ fn api_on_ephemeral_port_starts_servers_thread() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -286,6 +290,7 @@ fn api_port_in_use_is_a_startup_error() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -343,6 +348,7 @@ fn api_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -406,6 +412,7 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestE
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -464,6 +471,7 @@ fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestErr
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -520,6 +528,7 @@ fn unknown_mcp_transport_is_a_startup_error() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -577,6 +586,7 @@ fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -694,6 +704,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestErro
             metrics: true,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -750,6 +761,7 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
             metrics: true,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         #[cfg(any(feature = "api", feature = "mcp"))]
@@ -803,6 +815,7 @@ fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> 
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         },
         // No transmit permit: none of these cases opens a live source.
         None,

@@ -12,6 +12,25 @@ entry that carries them.
 
 ### Fixed
 
+- **The REST API's `filter` parameter accepts the named filter aliases.**
+  `GET /v1/dialogs?filter=problems` answered `400 unexpected input at
+  position 0`, although the OpenAPI document gives `problems` as an example
+  and `--filter problems` and the MCP `filter` argument both accept it. The
+  four routes that take `filter` (`/v1/dialogs`, `/v1/aggregate`,
+  `/v1/dialogs/rates`, `/v1/talkers`) now compile it the way the command line
+  and the MCP tools do, through one shared function, so an alias returns the
+  dialogs its expansion returns. A name that is not an alias is still a `400`
+  naming the text.
+  Affected: every `--api` run that passed an alias as `filter`.
+
+- **An alias given to the MCP or REST `filter` uses the run's thresholds.**
+  The servers expanded `slow-setup`, `problems` and `short-calls` with the
+  shipped thresholds, so `--pdd-threshold`, `--loss-bad-pct`,
+  `--jitter-bad-ms`, `--fraud-short-call` and their config keys changed
+  what `--filter` selected and not what the MCP `filter` argument selected.
+  Both servers now receive the thresholds the command line resolves.
+  Affected: `--mcp` and `--api` runs that set any of those thresholds.
+
 - **A non-INVITE dialog reports its final status.** `final_status_code` read
   only responses to INVITE, so a `PUBLISH` refused with 489, a `SUBSCRIBE`, a
   `MESSAGE`, an `OPTIONS` or a `REGISTER` showed no final status while its

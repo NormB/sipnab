@@ -3094,6 +3094,7 @@ fn server_selection(
         // traffic was clean".
         armed_detections: engines.armed_kinds(),
         pipeline_options: crate::app::server_pipeline_options(cli, config),
+        alias_thresholds: cli.alias_thresholds(config),
     }
 }
 

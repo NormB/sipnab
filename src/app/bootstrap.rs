@@ -4421,9 +4421,11 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     // An explicit expression narrows the diagnostic flags. Parse it even
     // when aliases are enabled, so an invalid expression is never hidden.
     let thresholds = cli.alias_thresholds(config);
-    let explicit = cli.matching_args.filter.as_ref().map(|expr| {
-        crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone())
-    });
+    let explicit = cli
+        .matching_args
+        .filter
+        .as_deref()
+        .map(|expr| crate::sip::dsl::resolve_filter_text(expr, &thresholds).into_owned());
     if let Some(expr) = &explicit {
         FilterExpr::parse(expr)
             .map_err(|e| PlanError::arg(format!("Invalid --filter expression: {e}")))?;
@@ -4507,8 +4509,7 @@ fn build_vcon_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExp
         return Ok(None);
     };
     let thresholds = cli.alias_thresholds(config);
-    let resolved = crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone());
-    match FilterExpr::parse(&resolved) {
+    match crate::sip::dsl::parse_filter(expr, &thresholds) {
         Ok(f) => Ok(Some(f)),
         Err(e) => Err(PlanError::arg(format!(
             "--export-vcon-when is not a valid filter expression: {e}"
@@ -5808,6 +5809,56 @@ mod tests {
                 .map_err(|e| format!("{e:?}"))?
                 .is_some()
         );
+        Ok(())
+    }
+
+    /// The command line, the MCP server and the REST API compile every
+    /// diagnostic alias to the same expression, at the same thresholds.
+    ///
+    /// The three surfaces route through `crate::sip::dsl::parse_filter`; this
+    /// pins the outcome rather than the call, so a surface that grew its own
+    /// expansion -- or, as REST did, none -- fails here by name. The
+    /// post-dial-delay threshold is moved off its default so a surface that
+    /// expanded with the shipped figures instead of the run's would disagree.
+    #[cfg(all(feature = "api", feature = "mcp"))]
+    #[test]
+    fn cli_mcp_and_rest_compile_every_alias_identically() -> Result<(), TestError> {
+        let config = Config::default();
+        for alias in crate::sip::dsl::DIAGNOSTIC_ALIASES {
+            let cli =
+                Cli::parse_from_args(["sipnab", "-N", "--pdd-threshold", "3.5", "--filter", alias]);
+            let thresholds = cli.alias_thresholds(&config);
+            assert!(
+                (thresholds.pdd_secs - 3.5).abs() < f64::EPSILON,
+                "the flag moved the threshold the surfaces share"
+            );
+            let expected = crate::sip::dsl::expand_alias(alias, &thresholds)
+                .ok_or_else(|| format!("{alias} is a listed alias"))?;
+
+            let by_cli = build_filter_expr(&cli, &config)
+                .map_err(|e| format!("--filter {alias}: {}", e.message))?
+                .ok_or("--filter compiles to a filter")?;
+
+            let ds = std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::sip::dialog_store::DialogStore::new(4, false),
+            ));
+            let ss = std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::rtp::stream_store::StreamStore::new(4),
+            ));
+            let by_mcp = crate::mcp::SipnabMcp::new(ds, ss)
+                .with_alias_thresholds(thresholds)
+                .compile_filter(Some(alias))
+                .map_err(|e| format!("MCP filter {alias}: {e:?}"))?
+                .ok_or("MCP filter compiles to a filter")?;
+
+            let by_rest = crate::output::api::compile_query_filter(&thresholds, Some(alias))
+                .map_err(|e| format!("REST filter={alias}: {e:?}"))?
+                .ok_or("REST filter compiles to a filter")?;
+
+            assert_eq!(by_cli.source(), expected, "CLI --filter {alias}");
+            assert_eq!(by_mcp.source(), expected, "MCP filter {alias}");
+            assert_eq!(by_rest.source(), expected, "REST filter={alias}");
+        }
         Ok(())
     }
 

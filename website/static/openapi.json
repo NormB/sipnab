@@ -6139,7 +6139,7 @@
             }
           },
           {
-            "description": "A DSL expression narrowing which dialogs are counted, the same language\n`/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.",
+            "description": "A DSL expression or diagnostic alias name narrowing which dialogs are\ncounted, what `/v1/dialogs?filter=` accepts. A value that is neither an\nalias nor an expression that parses is a 400.",
             "in": "query",
             "name": "filter",
             "required": false,
@@ -6436,7 +6436,7 @@
             }
           },
           {
-            "description": "Filter by a DSL expression — the same language the CLI `--filter` and\nthe TUI filter dialog compile (e.g. `problems`, `from.user == '1001'`,\n`payload =~ 'scanner'`, `method == 'INVITE' AND rtp.loss > 2.0`). An\nexpression that does not parse is a 400, so a client learns its query\nwas rejected rather than receiving every row. ANDed with `state`/`from`.",
+            "description": "Filter by a DSL expression or a diagnostic alias name — what the CLI\n`--filter` and the MCP `filter` argument accept (e.g. `problems`,\n`slow-setup`, `from.user == '1001'`, `payload =~ 'scanner'`,\n`method == 'INVITE' AND rtp.loss > 2.0`). An alias expands with the\nthresholds the server was started with. A value that is neither an\nalias nor an expression that parses is a 400, so a client learns its\nquery was rejected rather than receiving every row. ANDed with\n`state`/`from`.",
             "in": "query",
             "name": "filter",
             "required": false,
@@ -6617,7 +6617,7 @@
             }
           },
           {
-            "description": "A DSL expression narrowing which dialogs are grouped, the same language\n`/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.",
+            "description": "A DSL expression or diagnostic alias name narrowing which dialogs are\ngrouped, what `/v1/dialogs?filter=` accepts. A value that is neither an\nalias nor an expression that parses is a 400.",
             "in": "query",
             "name": "filter",
             "required": false,
@@ -8349,7 +8349,7 @@
             }
           },
           {
-            "description": "A DSL expression narrowing which dialogs count, the same language\n`/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.",
+            "description": "A DSL expression or diagnostic alias name narrowing which dialogs count,\nwhat `/v1/dialogs?filter=` accepts. A value that is neither an alias nor\nan expression that parses is a 400.",
             "in": "query",
             "name": "filter",
             "required": false,
