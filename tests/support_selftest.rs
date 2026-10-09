@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Self-tests for the shared test-support `normalize()` helper (M1/T1.1) and
-//! for `source_scan::production_source()`.
+//! Self-tests for the shared test-support `normalize()` helper (M1/T1.1), for
+//! `source_scan::production_source()`, and for `ports::refused_tcp_port()`.
 //!
 //! TDD: these are written against a stubbed `normalize` (red), then the real
 //! implementation makes them pass (green). Per the repo TDD rule, edge cases
@@ -12,6 +12,9 @@ mod support;
 
 #[path = "support/source_scan.rs"]
 mod source_scan;
+
+#[path = "support/ports.rs"]
+mod ports;
 
 use source_scan::production_source;
 use support::normalize;
@@ -390,5 +393,61 @@ fn production_source_line_count_is_the_cut_index() -> Result<(), TestError> {
     assert_eq!(prod.lines().count(), 3);
     let all: Vec<&str> = src.lines().collect();
     assert_eq!(&all[..prod.lines().count()], &["a", "b", "c"]);
+    Ok(())
+}
+
+/// While the guard lives, a connection to its port never succeeds: nothing
+/// listens there. Linux refuses it at once; macOS leaves the SYN unanswered,
+/// so there the connect is bounded and must end in a timeout or a refusal.
+#[test]
+fn a_refused_port_refuses_a_connection() -> Result<(), TestError> {
+    let held = ports::refused_tcp_port()?;
+    let err = std::net::TcpStream::connect_timeout(&held.addr(), std::time::Duration::from_secs(3))
+        .err()
+        .ok_or("a connection to the held port must not succeed")?;
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::ConnectionRefused,
+            "connect to {}: {err}",
+            held.addr()
+        );
+    } else {
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+            ),
+            "connect to {}: {err}",
+            held.addr()
+        );
+    }
+    Ok(())
+}
+
+/// While the guard lives, nothing else can bind its port, so no test running
+/// alongside can be handed the number and start listening on it. A helper
+/// that reads a port and releases it fails here: that release is the race.
+#[test]
+fn a_refused_port_cannot_be_taken_while_held() -> Result<(), TestError> {
+    let held = ports::refused_tcp_port()?;
+    let taken = std::net::TcpListener::bind(held.addr());
+    assert_eq!(
+        taken.as_ref().err().map(std::io::Error::kind),
+        Some(std::io::ErrorKind::AddrInUse),
+        "another socket bound the held port {}: {taken:?}",
+        held.addr()
+    );
+    Ok(())
+}
+
+/// The guard releases its port when it is dropped, and only then.
+#[test]
+fn a_refused_port_is_released_when_the_guard_drops() -> Result<(), TestError> {
+    let held = ports::refused_tcp_port()?;
+    let addr = held.addr();
+    drop(held);
+    let again = std::net::TcpListener::bind(addr)?;
+    assert_eq!(again.local_addr()?, addr);
     Ok(())
 }
