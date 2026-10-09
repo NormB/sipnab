@@ -28,6 +28,9 @@
 //!   export
 //! - `vcon` — one observed dialog as an unsigned, signaling-only vCon
 //!   container (feature-gated: `vcon`)
+//! - `vcon_analysis` — one stored container handed over inline, rebuilt and
+//!   analyzed in stores of its own: what the MCP `analyze_vcon` tool and
+//!   `POST /v1/vcon/analyze` answer (feature-gated: `vcon`)
 //! - `vcon_schema` — a container checked against the vendored working-group
 //!   schema, with the one deviation sipnab emits on purpose named rather than
 //!   waved through (feature-gated: `vcon`)
@@ -63,6 +66,8 @@ pub mod stun_report;
 pub mod synthetic;
 #[cfg(feature = "vcon")]
 pub mod vcon;
+#[cfg(feature = "vcon")]
+pub mod vcon_analysis;
 #[cfg(feature = "vcon")]
 pub mod vcon_schema;
 pub mod wireshark;

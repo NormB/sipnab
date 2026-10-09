@@ -2342,10 +2342,16 @@ fn classify_signaling(
     // assertion, not something sipnab captured, so the gate never applies to
     // it. It used to, and a proxy tracing SIP on 7060 fed `-L` or
     // `--hep-parse` nothing but a NOT ANALYZED notice (issue #301).
-    let sip_port_ok = pp.input_origin == crate::capture::parse::InputOrigin::Hep
-        || opts
-            .sip_portrange
-            .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
+    //
+    // A message rebuilt from a stored vCon is exempt for the same reason: its
+    // producer already chose the SIP, and the ports are the container's
+    // record of a call, not traffic this run is picking signaling out of.
+    let sip_port_ok = matches!(
+        pp.input_origin,
+        crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
+    ) || opts
+        .sip_portrange
+        .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
     if let Some(range) = opts.sip_portrange
         && !sip_port_ok
         && sip_looks_like_sip

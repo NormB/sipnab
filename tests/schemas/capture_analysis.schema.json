@@ -65,6 +65,7 @@
       "properties": {
         "kind": {
           "enum": [
+            "rebuilt_from_vcon",
             "undecodable_frames",
             "sip_discarded_by_portrange",
             "sip_discarded_by_websocket_ports",
@@ -119,7 +120,8 @@
             "transaction",
             "allocation",
             "pair",
-            "error"
+            "error",
+            "container"
           ],
           "description": "What one occurrence is."
         },

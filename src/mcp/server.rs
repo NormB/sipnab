@@ -11892,9 +11892,12 @@ mod tests {
             ("relay", 4_500),
             ("tfps", 6_000),
             ("server", 5_500),
-            ("vcon", 5_000),
+            // 5_000 -> 6_000 and full 81_000 -> 82_500 by `analyze_vcon`,
+            // the analysis of a stored container (vcon measured 5,709, full
+            // 82,134).
+            ("vcon", 6_000),
             ("tls", 3_000),
-            ("full", 81_000),
+            ("full", 82_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

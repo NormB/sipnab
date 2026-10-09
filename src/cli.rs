@@ -583,6 +583,12 @@ pub struct CaptureArgs {
     /// inside joins the set, gzip-compressed members and archives nested in
     /// archives included, and every member that is not a capture is named
     /// with the reason. Layers are recognized by their bytes, not their names.
+    ///
+    /// A stored vCon container (a JSON file, such as one `--export-vcon`
+    /// wrote) is read too: its SIP messages are rebuilt and analyzed, marked
+    /// `origin=vcon`. A vCon stores no RTP, so no media is analyzed from it.
+    /// A schema finding is reported and the container read anyway; one with
+    /// no SIP sipnab can read is skipped with the reason.
     #[arg(
         help_heading = "Capture",
         short = 'I',

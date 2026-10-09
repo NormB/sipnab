@@ -56,7 +56,9 @@ Capture on network interface
 .IR iface .
 .TP
 .BI \-I " file"
-Read packets from a pcap file instead of live capture.
+Read packets from a pcap file instead of live capture. Also takes a
+directory, an archive or a glob, and reads a stored vCon container as the SIP
+messages it stores, with no media.
 .TP
 .BI \-O " file"
 Write captured packets to a pcap file.

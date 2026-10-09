@@ -156,6 +156,10 @@ pub fn kill_response_eligible(origin: InputOrigin, hep_allow_kill: bool) -> bool
         // offered, because an opt-in here would be an invitation to transmit at
         // one. `--hep-allow-kill` deliberately does not reach this arm.
         InputOrigin::Uprobe => false,
+        // A stored record of a conversation that already ended, read back by
+        // `-I`. Its addresses are history, possibly pseudonymized, and no
+        // opt-in makes them a target.
+        InputOrigin::Vcon => false,
     }
 }
 
@@ -273,6 +277,18 @@ mod tests {
         assert!(
             kill_response_eligible(InputOrigin::Hep, true),
             "opt-in re-enables HEP kill"
+        );
+    }
+
+    /// A message rebuilt from a stored vCon carries addresses a container
+    /// recorded about a call that already ended, possibly pseudonymized. No
+    /// opt-in makes them a target, `--hep-allow-kill` included.
+    #[test]
+    fn vcon_origin_is_never_kill_eligible_and_has_no_opt_in() {
+        assert!(!kill_response_eligible(InputOrigin::Vcon, false));
+        assert!(
+            !kill_response_eligible(InputOrigin::Vcon, true),
+            "--hep-allow-kill must not reach addresses read out of a stored vCon"
         );
     }
 

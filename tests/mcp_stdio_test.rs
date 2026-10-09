@@ -792,7 +792,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     // and the two are advertised exactly when they can run, which
     // `mcp_capability_agreement_test` is what gates.
     if cfg!(feature = "vcon") {
-        expected.extend_from_slice(&["export_vcon", "validate_vcon"]);
+        expected.extend_from_slice(&["analyze_vcon", "export_vcon", "validate_vcon"]);
     }
     // `hep_senders` likewise exists only where a HEP listener can.
     if cfg!(feature = "hep") {
@@ -800,7 +800,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 69 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    let want = 69 + if cfg!(feature = "vcon") { 3 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
@@ -870,6 +870,39 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "the hyphenated spelling --alert uses must be an error, not an empty \
          list: {resp}"
     );
+
+    // analyze_vcon over the wire: a container handed over inline is rebuilt
+    // and analyzed, and the answer names its dialog and says it came from a
+    // vCon.
+    if cfg!(feature = "vcon") {
+        let invite = "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\n\
+                      From: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\n\
+                      Call-ID: stdio-vcon\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
+        send(
+            &mut child,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": {"name": "analyze_vcon", "arguments": {"container": {
+                    "vcon": "0.4.0",
+                    "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+                    "created_at": "2026-10-09T12:00:00Z",
+                    "parties": [{"name": "observer"}],
+                    "attachments": [{"purpose": "sip-invite", "start": "2026-10-09T12:00:00Z",
+                                     "party": 0, "dialog": 0, "mediatype": "message/sip",
+                                     "encoding": "none", "body": invite}]
+                }}}
+            }),
+        )?;
+        let resp = read_response_with_id(&mut reader, 6, test_timeout(5))?.ok_or("analyze_vcon")?;
+        assert!(resp.get("error").is_none(), "analyze_vcon errored: {resp}");
+        let answer: serde_json::Value = serde_json::from_str(&payload_text(&resp)?)?;
+        assert_eq!(answer["verdict"], "analyzed", "{answer}");
+        assert_eq!(answer["dialogs"][0]["call_id"], "stdio-vcon", "{answer}");
+        assert_eq!(
+            answer["analysis"]["findings"][0]["kind"], "rebuilt_from_vcon",
+            "{answer}"
+        );
+    }
 
     drop(reader);
     drop(stdout);

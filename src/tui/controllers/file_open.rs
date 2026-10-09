@@ -38,6 +38,7 @@ pub(in crate::tui) fn open_file_dialog(app: &mut App) {
 /// [`crate::capture::archive::is_capture_file_name`]. Case-insensitive.
 pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
     crate::capture::archive::is_capture_file_name(name)
+        || crate::capture::vcon_input::is_container_file_name(name)
 }
 
 /// Rebuild `app.file_open.entries` from the current `app.file_open.dir`,
@@ -333,6 +334,9 @@ pub(in crate::tui) fn expand_tilde(path: &str) -> String {
 /// and stream list states, drops the active filter, resets the call-flow
 /// selection/scroll/fold/mark state, and returns to the call list view.
 fn reset_for_load(app: &mut App) {
+    // The containers the previous file was rebuilt from belong to the stores
+    // being cleared.
+    crate::capture::vcon_input::reset_read_report();
     {
         let mut ds = app.dialog_store.write();
         ds.clear();
@@ -504,10 +508,24 @@ fn run_pcap_load(
         }
         None => String::new(),
     };
+    // The status line is where an operator looks first, so it says the
+    // dialogs came from stored containers and carry no media.
+    let vcon_note = if totals.vcon_containers > 0 {
+        format!(
+            "; rebuilt from {}, no media",
+            crate::tui::count_noun(
+                totals.vcon_containers,
+                "stored vCon container",
+                "stored vCon containers"
+            )
+        )
+    } else {
+        String::new()
+    };
     PcapLoadOutcome {
         message: format!(
             "Loaded {} SIP, {} RTP{rtcp_suffix}{names_suffix} from {} packets across \
-             {} ({filename}{archive_suffix}){key_log_note}",
+             {} ({filename}{archive_suffix}{vcon_note}){key_log_note}",
             totals.sip,
             totals.rtp,
             totals.packets,
@@ -552,6 +570,64 @@ struct LoadTotals {
     file_names: Vec<(std::net::IpAddr, String)>,
     /// Embedded decryption secrets seen.
     embedded_key_logs: usize,
+    /// Stored vCon containers read.
+    vcon_containers: usize,
+}
+
+/// A container to load, and the run's settings it is read with.
+struct ContainerSource<'a> {
+    /// The container file.
+    path: &'a std::path::Path,
+    /// The re-scan's BPF filter, which a container cannot honor.
+    bpf_filter: Option<&'a str>,
+    /// The run's pipeline options.
+    options: &'a crate::pipeline::PipelineOptions,
+}
+
+/// Read one stored vCon container into the stores, adding to `totals`, and
+/// record it on the run's vCon record so the capture analysis names it.
+///
+/// # Errors
+///
+/// The status-line message when a filter is set (a BPF filter selects frames,
+/// and a container holds none), this build cannot read a container, or the
+/// container is unreadable or invalid.
+fn load_one_container(
+    source: &ContainerSource<'_>,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &PcapLoadProgress,
+    totals: &mut LoadTotals,
+) -> Result<(), String> {
+    if source.bpf_filter.is_some() {
+        return Err(
+            "Filter rejected: a BPF filter selects captured frames, and a vCon container \
+             holds rebuilt SIP messages"
+                .to_string(),
+        );
+    }
+    let rebuilt = crate::capture::vcon_input::read_file(source.path)
+        .map_err(|e| format!("Failed to open: {e}"))?;
+    #[cfg(feature = "vcon")]
+    {
+        let routed = crate::capture::vcon_input::into_stores(
+            &rebuilt,
+            source.options,
+            dialog_store,
+            stream_store,
+        );
+        totals.packets += routed;
+        totals.sip += routed;
+        progress
+            .packets
+            .store(totals.packets, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(feature = "vcon"))]
+    let _ = (dialog_store, stream_store, progress, source.options);
+    totals.captures_read += 1;
+    totals.vcon_containers += 1;
+    crate::capture::vcon_input::record_read(rebuilt.provenance);
+    Ok(())
 }
 
 /// Read one capture file into the stores, adding to `totals`.
@@ -569,6 +645,16 @@ fn load_one_capture(
     options: &crate::pipeline::PipelineOptions,
     totals: &mut LoadTotals,
 ) -> Result<(), String> {
+    // A stored vCon container: its messages are rebuilt and routed through
+    // the shared applier, as `-I` reads one. See `crate::capture::vcon_input`.
+    if crate::capture::vcon_input::is_container_file(path) {
+        let source = ContainerSource {
+            path,
+            bpf_filter,
+            options,
+        };
+        return load_one_container(&source, dialog_store, stream_store, progress, totals);
+    }
     // Transparently handles gzip-compressed captures (libpcap cannot). The
     // guard owns any decompressed temp file and must outlive the read loop
     // below, so keep it bound for the rest of the function.
@@ -1425,6 +1511,68 @@ mod tests {
             ds.read().is_empty(),
             "no dialogs survive a filter that matches nothing"
         );
+        Ok(())
+    }
+
+    /// A stored vCon container opens like a capture: its messages reach the
+    /// stores, each says it came from a vCon, and the status line says so.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn run_pcap_load_reads_a_stored_vcon_container() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("call.vcon.json");
+        let message = |at: &str, start: &str| {
+            serde_json::json!({
+                "timestamp": at, "src": "192.0.2.1", "src_port": 5060,
+                "dst": "192.0.2.2", "dst_port": 5060, "transport": "UDP",
+                "is_request": start.starts_with("INVITE"),
+                "method": start.split(' ').next(),
+                "call_id": "tui-vcon-1",
+                "headers": {"Via": ["SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1"],
+                            "From": ["<sip:a@example.com>;tag=1"],
+                            "To": ["<sip:b@example.com>"],
+                            "Call-ID": ["tui-vcon-1"], "CSeq": ["1 INVITE"]}
+            })
+        };
+        let container = serde_json::json!({
+            "vcon": "0.4.0",
+            "uuid": "01928e10-193e-8231-b9a2-0000000000aa",
+            "created_at": "2026-10-09T12:00:00Z",
+            "parties": [{"name": "observer"}],
+            "attachments": [{
+                "purpose": "sip-message-trace", "start": "2026-10-09T12:00:00Z",
+                "party": 0, "dialog": 0, "mediatype": "application/json", "encoding": "json",
+                "body": serde_json::json!({"messages": [
+                    message("2026-10-09T12:00:00+00:00", "INVITE"),
+                    message("2026-10-09T12:00:05+00:00", "INVITE")
+                ]}).to_string()
+            }]
+        });
+        std::fs::write(&path, container.to_string())?;
+        let progress = PcapLoadProgress::new("t");
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let out = run_pcap_load(&path, &ds, &ss, &progress, None, &Default::default());
+        assert!(!out.failed, "{}", out.message);
+        assert_eq!(out.sip_count, 2, "{}", out.message);
+        let store = ds.read();
+        let dialog = store.get("tui-vcon-1").ok_or("the dialog")?;
+        assert!(
+            dialog
+                .messages
+                .iter()
+                .all(|m| m.input_origin == Some(crate::capture::parse::InputOrigin::Vcon))
+        );
+        assert!(
+            out.message
+                .contains("rebuilt from 1 stored vCon container, no media"),
+            "the status line must say where the dialogs came from: {}",
+            out.message
+        );
+        // The file browser lists the name sipnab exports containers under.
+        assert!(is_browsable_capture("call.vcon.json"));
+        assert!(is_browsable_capture("CALL.VCON.JSON"));
+        assert!(!is_browsable_capture("notes.json"));
         Ok(())
     }
 

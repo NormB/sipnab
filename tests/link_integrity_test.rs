@@ -1185,7 +1185,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // count.
     // 1329 -> 1330: docs/internals/vcon.md links section 7.1 of
     // docs/design/vcon.md for where core-03's Dialog Object text went.
-    const EXPECTED_WIKI_LINKS: usize = 1330;
+    // 1330 -> 1341: `analyze_vcon` and reading a vCon with `-I`.
+    // docs/mcp-tools.md 4 (its index row, its REST twin, the vcon.md section
+    // and `validate_vcon`), docs/rest-api.md 2 (the MCP twin and the section
+    // that writes the vcon.store-shaped container), docs/vcon.md 2 (the MCP
+    // tool and the REST route), docs/cli-reference.md 1 (the `-I` row) and
+    // docs/examples.md 2 (recipe 66's index row and its vcon.md link).
+    const EXPECTED_WIKI_LINKS: usize = 1341;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

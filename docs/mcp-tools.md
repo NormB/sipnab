@@ -145,6 +145,7 @@ ordinary update.
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`analyze_vcon`](#analyze_vcon) | `container`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
 | [`generate_repro`](#generate_repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate_wireshark_filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -204,16 +205,17 @@ responses against a declared shape needs them. Turn them on with
 | relay | 4 | 4,217 | 20,006 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
 | tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
 | server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
-| vcon | 3 | 4,481 | 12,642 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
+| vcon | 4 | 5,709 | 16,860 | `analyze_vcon`, `export_vcon`, `siprec_metadata`, `validate_vcon` |
 | tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
-| full | 72 | 80,864 | 199,240 | Every tool the build carries (the default) |
+| full | 73 | 82,134 | 203,518 | Every tool the build carries (the default) |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
 > **Measured on sipnab 0.5.196**, a build with every feature, except the
-> `captures` and `full` rows, measured after 0.5.206 on the change that added
-> `find_in_captures_status` and `cancel_find_in_captures`. Sizes, tool
+> `captures` row, measured after 0.5.206 on the change that added
+> `find_in_captures_status` and `cancel_find_in_captures`, and the `vcon` and
+> `full` rows, measured after 0.5.208 on the change that added `analyze_vcon`. Sizes, tool
 > counts and bundle membership may change in later releases. A build without a
 > feature does not register that feature's tools, so its bundles are smaller.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
@@ -273,11 +275,12 @@ answered with 6 of 18,241 dialogs. `tail_dialogs` and `capture_status` have
 always carried `source_exhausted`. Now every tool that answers from the capture
 does.
 
-Seventeen tools are the exception, because their answer cannot move with
-the load. Nine read something other than the capture store —
+Eighteen tools are the exception, because their answer cannot move with
+the load. Ten read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
-`show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
-and `compare_captures`, which reads two files and never the loaded capture.
+`show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`,
+`compare_captures`, which reads two files and never the loaded capture, and
+`analyze_vcon`, which analyzes a container the caller hands over.
 The other nine ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
 `tfps_labels`, `tfps_ban`, `tfps_unban` and `actions_revert` put it to the
@@ -5984,6 +5987,241 @@ quietly certifying less than it claims.
 A binary built without the `vcon` Cargo feature refuses this tool with
 `invalid_params` and names the feature.
 [`server_capabilities`](#server_capabilities) lists what a given binary carries.
+
+### `analyze_vcon`
+
+Analyzes a stored vCon container you hand over: one sipnab exported, or one
+another producer wrote. Backed by
+[`output::vcon_analysis`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_analysis.rs),
+which [`POST /v1/vcon/analyze`](rest-api.md#post-v1vconanalyze) runs too, so
+the two surfaces answer one container the same way.
+
+sipnab rebuilds the container's SIP messages and analyzes them in stores of
+their own. The tool leaves the loaded capture untouched, records nothing, and
+connects nowhere. It reads two stored forms: a `sip-message-trace` attachment (sipnab's,
+and the trace form of draft-howe-vcon-sip-signaling-00) and `message/sip`
+attachments, one whole message each. To analyze a container on the command
+line, give it to `-I` instead: see
+[Analyze a stored vCon](vcon.md#analyze-a-stored-vcon).
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `container` | object | The container itself, not a string holding it. | Required. The call fails with `invalid_params`. |
+| `limit` | integer | The most dialogs to return. Ceiling `--mcp-max-rows`. | 50. `total_dialogs` counts every dialog the container holds, and `truncated` says whether the limit cut the list. |
+
+**Two verdicts.**
+
+| `verdict` | What it means |
+|---|---|
+| `analyzed` | sipnab rebuilt at least one SIP message, and the answer holds the analysis |
+| `unreadable` | The container stores no SIP message sipnab can rebuild, or is not a vCon at all. `reason` says which, and the answer holds no analysis |
+
+**A schema finding does not stop the analysis.** `schema_findings` lists every
+place the container disagrees with the vendored draft-ietf-vcon-vcon-core-04
+schema, in the shape [`validate_vcon`](#validate_vcon) reports them, beside
+either verdict. A container that went through vcon.store, which hands
+`extensions` back as an object, draws one finding and an analysis.
+
+**The answer lists what a container cannot reproduce, and fills none of it in.**
+`not_recomputed` holds one sentence per gap. A vCon stores no RTP, so sipnab
+computes no stream, MOS, jitter or loss. The producer's own `media_quality`
+rows come back verbatim in `stored_media_quality`, as its numbers. The trace
+stores no request-URI, so a rebuilt request carries
+`sip:request-uri-not-stored.invalid`. It keys headers by name, so header order
+across names does not survive. A body other than SDP, and headers the producer did not
+store, are absent. The capture analysis in `analysis` opens with a
+`rebuilt_from_vcon` finding that says the same, beside the producer's own
+caveat (`producer_note`).
+
+Each rebuilt message carries `input_origin: "vcon"` and no `frame` pointer,
+because it was never a frame anyone can read again.
+
+Real output for the container `--export-vcon 1-1966@10.0.2.20 --node-name tap-a`
+writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// analyze_vcon { "container": <the contents of call.vcon.json> }
+{
+  "analysis": {
+    "complete": false,
+    "dialogs_examined": 1,
+    "findings": [
+      {
+        "evidence": [
+          {
+            "counts": {
+              "messages": 6
+            },
+            "endpoints": [
+              "inline",
+              "vcon 0158a120-0392-857f-8193-d90b5d03d6c4"
+            ],
+            "note": "6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.208 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots."
+          }
+        ],
+        "evidence_omitted": 0,
+        "kind": "rebuilt_from_vcon",
+        "occurrences": 1,
+        "severity": "blind",
+        "unit": "container"
+      }
+    ],
+    "frames_read": 6,
+    "schema_version": 1,
+    "streams_examined": 0
+  },
+  "dialogs": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "dialog": {
+        "call_id": "1-1966@10.0.2.20",
+        "diagnosis": {
+          "hints": [],
+          "nat_mismatch": false,
+          "no_media": false,
+          "one_way_audio": false,
+          "private_media_address": false
+        },
+        "duration_sec": 8.504,
+        "final_status_code": 200,
+        "final_status_reason": "OK",
+        "from": "sipp",
+        "from_display": "PCMU/8000",
+        "input_origin": "vcon",
+        "method": "INVITE",
+        "msg_count": 6,
+        "schema_version": 1,
+        "sdp_timeline": [
+          {
+            "codecs": [
+              "PCMU"
+            ],
+            "direction": "offer",
+            "media_addr": "10.0.2.20",
+            "media_port": 6000,
+            "mode": "recvonly",
+            "timestamp": "2016-11-26T14:52:59.666393+00:00"
+          },
+          {
+            "codecs": [
+              "PCMU",
+              "telephone-event"
+            ],
+            "direction": "answer",
+            "event": "MediaAnchorChange",
+            "media_addr": "10.0.2.15",
+            "media_port": 27942,
+            "mode": "sendonly",
+            "timestamp": "2016-11-26T14:52:59.670743+00:00"
+          }
+        ],
+        "state": "Completed",
+        "streams": [],
+        "termination": {
+          "cause_code": 16,
+          "cause_text": "NORMAL_CLEARING",
+          "frame_ref": 4,
+          "protocol": "Q.850",
+          "source_header": "Reason"
+        },
+        "timing": {
+          "retransmits": 0,
+          "setup_ms": 4,
+          "teardown_ms": 0,
+          "trying_delay_ms": 0
+        },
+        "to": "test",
+        "to_display": "test"
+      },
+      "ladder": [
+        {
+          "dst": "10.0.2.15:5060",
+          "label": "INVITE",
+          "src": "10.0.2.20:5060",
+          "timestamp": "2016-11-26T14:52:59.666393+00:00",
+          "transport": "UDP"
+        },
+        {
+          "dst": "10.0.2.20:5060",
+          "label": "100 Trying",
+          "src": "10.0.2.15:5060",
+          "timestamp": "2016-11-26T14:52:59.666545+00:00",
+          "transport": "UDP"
+        },
+        {
+          "dst": "10.0.2.20:5060",
+          "label": "200 OK",
+          "src": "10.0.2.15:5060",
+          "timestamp": "2016-11-26T14:52:59.670743+00:00",
+          "transport": "UDP"
+        },
+        {
+          "dst": "10.0.2.15:5060",
+          "label": "ACK",
+          "src": "10.0.2.20:5060",
+          "timestamp": "2016-11-26T14:52:59.670837+00:00",
+          "transport": "UDP"
+        },
+        {
+          "dst": "10.0.2.20:5060",
+          "label": "BYE",
+          "src": "10.0.2.15:5060",
+          "timestamp": "2016-11-26T14:53:08.170086+00:00",
+          "transport": "UDP"
+        },
+        {
+          "dst": "10.0.2.15:5060",
+          "label": "200 OK",
+          "src": "10.0.2.20:5060",
+          "timestamp": "2016-11-26T14:53:08.170676+00:00",
+          "transport": "UDP"
+        }
+      ],
+      "signaling": {
+        "abandoned": null,
+        "ack_missing": null,
+        "auth_loop": null,
+        "final_failure": null,
+        "hints": [],
+        "post_dial_delay": null,
+        "registration_failure": null,
+        "retransmissions": null
+      }
+    }
+  ],
+  "messages_rebuilt": 6,
+  "not_recomputed": [
+    "media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it",
+    "the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed",
+    "request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid",
+    "header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent"
+  ],
+  "producer_note": "Produced by sipnab 0.5.208 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+  "schema_findings": [],
+  "schema_version": 1,
+  "stored_media_quality": [
+    {
+      "codec": "PCMU",
+      "jitter_ms": 0.0054046519599899685,
+      "loss_pct": 0.0,
+      "mos": 4.358100599599484,
+      "mos_grounded": true,
+      "mos_grounding": "published",
+      "packets": 425,
+      "r_factor": 90.79987028835296,
+      "ssrc": "0x343da99b"
+    }
+  ],
+  "total_dialogs": 1,
+  "truncated": false,
+  "uuid": "0158a120-0392-857f-8193-d90b5d03d6c4",
+  "verdict": "analyzed"
+}
+```
+
+A container with no readable SIP is an answer with `verdict: unreadable`, not a
+tool error. The call fails with `invalid_params` only when `container` is
+missing or is not a JSON object.
 
 ### `generate_repro`
 

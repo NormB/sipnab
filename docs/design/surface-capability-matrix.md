@@ -512,6 +512,17 @@ Does this vCon container pass sipnab's vendored schema?
 | REST | `/v1/vcon/validate` (POST) |
 | MCP | `validate_vcon` |
 
+### Analyze a stored vCon
+
+What does this stored vCon container say about its calls?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--input` with a container, then `--analyze`, `--json-dialogs` or any report flag |
+| TUI | `CallList` and `CallFlow`, once `--input` or the file browser reads a container; `RawMessage` marks each message `origin=vcon` |
+| REST | `/v1/vcon/analyze` (POST) |
+| MCP | `analyze_vcon` |
+
 ### SIPREC metadata
 
 Who was recorded on this call, in what mode, and which stream carries whom?

@@ -143,11 +143,11 @@ Nothing in section 2 is reachable today, for the reason
 [`deferred-and-declined.md` section 1, *TUI multi-session / multi-capture comparison*](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison)
 established: there is no
 capture provenance anywhere in the data model. `Packet.interface`
-([`packet.rs:50`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L50)) is the only source-identifying
+([`packet.rs:658`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L658)) is the only source-identifying
 field and the file reader hard-codes it to `None`; `ParsedPacket` does not carry
 it forward; `SipMessage` and `SipDialog` have no source field at all. `-I`
 resolves a whole set into **one** store, and `warn_on_overlap`
-([`input_set.rs:1030`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1030)) exists specifically to warn
+([`input_set.rs:1061`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1061)) exists specifically to warn
 operators away from feeding it two captures of the same traffic.
 
 This document assumes an interned `u16` capture index reaching `SipDialog` —

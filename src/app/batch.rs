@@ -6063,7 +6063,13 @@ fn try_tls_decrypt(
     // appended its SIP text to the wire's held partial record, which then
     // never decrypted (issue #301). `InputOrigin::Hep` marks both
     // `--hep-listen` and `--hep-parse` input.
-    if pp.input_origin == crate::capture::parse::InputOrigin::Hep {
+    //
+    // A message rebuilt from a stored vCon is plaintext for the same reason:
+    // the container stored the decoded message.
+    if matches!(
+        pp.input_origin,
+        crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
+    ) {
         return TlsYield {
             recovered,
             decrypted: out,

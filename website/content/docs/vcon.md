@@ -896,6 +896,166 @@ from another — every fork shares it — so a consumer correlating legs across
 nodes needs the tags. `sip_to_tag` is absent until the callee answers, which is
 itself a signal: nothing established a dialog.
 
+## Analyze a stored vCon
+
+`-I` reads a vCon container the way it reads a capture: a file, a directory
+of them, or a glob, alone or beside pcap files. Each SIP message the
+container stores is rebuilt and analyzed by the same code that analyzes
+packets, so the dialog list, the ladder, `--report`, `--analyze`, `--json`,
+`--json-dialogs` and the TUI all work on it. The MCP tool
+[`analyze_vcon`](@/docs/mcp-tools.md#analyze-vcon) and
+[`POST /v1/vcon/analyze`](@/docs/api.md#post-v1-vcon-analyze) do the same for a
+container handed over inline.
+
+### Step 1 — have a container
+
+Any container with SIP in it. This writes one from the committed sample
+capture:
+
+```sh
+sipnab -N -I sip-rtp-g711.pcap --export-vcon 1-1966@10.0.2.20 --vcon-out call.vcon.json --node-name tap-a --no-cli-print --quiet
+```
+
+It prints nothing and exits 0, leaving `call.vcon.json` beside the capture.
+
+### Step 2 — analyze it
+
+```sh
+sipnab -N -I call.vcon.json --analyze --no-cli-print --quiet
+```
+
+```text
+Capture analysis: 1 finding(s) across 1 dialog(s), 0 stream(s), 6 frame(s) read.
+
+THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The findings below describe what it UNDERSTOOD, so their counts are floors and the ABSENCE of a finding is not evidence that the problem is absent. The blind finding(s) are listed first.
+
+1. [BLIND] Rebuilt from a stored vCon — 1 container(s)
+   These dialogs were rebuilt from stored vCon containers, not read from packets. A vCon holds no RTP, so no media statistic here was computed, and whatever its producer did not store is absent. The evidence names each container, what it lacks, and the producer's own caveat.
+   Evidence:
+     - call.vcon.json, vcon 0158a120-0392-857f-8193-d90b5d03d6c4 | messages=6 | 6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.208 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.
+```
+
+The first finding is `rebuilt_from_vcon`, and it is a `blind` finding: the
+analysis is of what the container stored, and the finding names what that
+leaves out, then quotes the producer's own caveat. Every message says where it
+came from:
+
+```sh
+sipnab -N -I call.vcon.json --json --quiet | head -1 | jq '{timestamp, src, dst, transport, method, input_origin}'
+```
+
+```json
+{
+  "timestamp": "2016-11-26T14:52:59.666393+00:00",
+  "src": "10.0.2.20",
+  "dst": "10.0.2.15",
+  "transport": "UDP",
+  "method": "INVITE",
+  "input_origin": "vcon"
+}
+```
+
+The `-N` summary line and the TUI's raw message view mark the same messages
+`origin=vcon`.
+
+### Step 3 — a directory of them
+
+Write one container per INVITE dialog into `stored`. It prints
+`Wrote 2 vCon container(s) to 'stored'.`
+
+```sh
+sipnab -N -I sip-rtp-g711.pcap --export-vcon-when 'method == "INVITE"' --export-vcon-dir stored --node-name tap-a --no-cli-print --quiet
+```
+
+Add a container that stores no SIP at all:
+
+```sh
+printf '{"vcon": "0.4.0", "parties": []}\n' > stored/broken.vcon.json
+```
+
+Read the directory. sipnab names the container it cannot read, with the reason,
+and reads the rest:
+
+```sh
+sipnab -N -I stored --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count, final_status_code, input_origin}'
+```
+
+```text
+2026-10-09T15:22:57.015657Z  WARN sipnab::capture::input_set: Skipping 'stored/broken.vcon.json': not a readable capture (a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment)
+2026-10-09T15:22:57.017252Z  WARN sipnab::capture::input_set: -I resolved to 2 capture file(s), 1 file(s) that are not readable captures
+{"call_id":"1-1966@10.0.2.20","msg_count":6,"final_status_code":200,"input_origin":"vcon"}
+{"call_id":"1-1968@10.0.2.20","msg_count":4,"final_status_code":200,"input_origin":"vcon"}
+```
+
+A container named directly with `-I` that sipnab cannot read stops the run
+instead, with the same reason, because a file you named is one you expected
+sipnab to read.
+
+### A container the schema refuses is still read
+
+What sipnab skips is a container whose SIP it cannot read. A container that
+disagrees with the vendored draft-ietf-vcon-vcon-core-04 schema but stores
+readable SIP still reads, and sipnab reports the finding with it. The common case is a
+container that went through vcon.store, which hands `extensions` back as an
+object rather than the array the schema requires:
+
+```sh
+jq '.extensions = {"sip-signaling": true, "CC": true}' call.vcon.json > store-shape.vcon.json
+```
+
+```sh
+sipnab -N -I store-shape.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count, input_origin}'
+```
+
+```text
+2026-10-09T15:22:57.067344Z  WARN sipnab::capture::file: 'store-shape.vcon.json' fails the draft-ietf-vcon-vcon-core-04 schema (/extensions (type): expected type "array", found object); its SIP is read regardless, and the analysis carries the finding(s)
+{"call_id":"1-1966@10.0.2.20","msg_count":6,"input_origin":"vcon"}
+```
+
+The `rebuilt_from_vcon` finding in `--analyze` carries the same schema finding
+for that container, and the MCP tool and the REST route list it in
+`schema_findings`.
+
+### What sipnab reads, and what cannot come back
+
+- **Two stored forms.** The `sip-message-trace` attachment sipnab writes, and
+  the trace form of draft-howe-vcon-sip-signaling-00 it extends, give each
+  message its time, addresses, ports and transport. `message/sip` attachments,
+  the draft's other form, carry each message whole, timed by the attachment's
+  `start`. That form stores no addressing, so those messages carry
+  `0.0.0.0:0` and the finding says so. A container with neither form, such as
+  the recording-only example in core-04 Appendix A, holds nothing to analyze,
+  and sipnab skips it with that reason.
+- **Detection is by content.** sipnab reads a file whose first character other
+  than whitespace is `{` as a container, whatever its name. A JSON object with
+  none of the members a vCon has (`vcon`, `uuid`, `created_at`, `parties`,
+  `dialog`, `analysis`, `attachments`) is not one, and sipnab skips it with
+  that reason. `extensions` counts in either form, the core-04 array or the
+  vcon.store object.
+- **sipnab skips unreadable SIP, not a schema finding.** It skips a container
+  with no `sip-message-trace` or `message/sip` attachment, or whose attachments
+  hold no message it can rebuild, naming the reason. It reads a container that
+  fails the schema and stores readable SIP, and reports the finding.
+- **No media.** A vCon stores no RTP, so sipnab computes no stream, MOS,
+  jitter or loss from it, and reports no media fault for a call that had none
+  to measure. `analyze_vcon` and `POST /v1/vcon/analyze` return the producer's
+  own `media_quality` numbers verbatim, as its numbers.
+- **No request-URI.** The trace stores the method, not the request line, so a
+  rebuilt request carries `sip:request-uri-not-stored.invalid`, a name in the
+  reserved `.invalid` domain.
+- **Header order across names, bodies other than SDP, and headers the producer
+  did not store** (sipnab removes credential headers) do not come back.
+  `Content-Length` states the body the container holds.
+- **No frame pointers.** A rebuilt message was never a frame anyone can read
+  again, so it carries none.
+- **`--redact`ed containers** read back with their pseudonyms. Nothing can
+  recover the originals from them.
+- **Not with `--cores` or a BPF filter.** `--cores` shards captured frames
+  and a BPF filter selects them, and a container holds neither, so both are
+  refused with the reason. Select dialogs with `--filter` instead.
+- **sipnab sends nothing anywhere.** The addresses in a container are a record
+  of a finished call, so sipnab never transmits a response to them.
+
 ## What this does not do
 
 Stated here rather than discovered later.

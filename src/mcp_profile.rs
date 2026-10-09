@@ -170,7 +170,15 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
             "shutdown_server",
         ],
     ),
-    ("vcon", &["export_vcon", "siprec_metadata", "validate_vcon"]),
+    (
+        "vcon",
+        &[
+            "analyze_vcon",
+            "export_vcon",
+            "siprec_metadata",
+            "validate_vcon",
+        ],
+    ),
     (
         "tls",
         &[

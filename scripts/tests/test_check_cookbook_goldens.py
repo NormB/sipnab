@@ -30,6 +30,23 @@ def test_the_capture_placeholder_becomes_the_repo_relative_fixture():
     assert cc.GOLDEN_FIXTURE == "tests/pcap-samples/sip-rtp-g711.pcap"
 
 
+def test_a_vcon_placeholder_becomes_the_committed_container():
+    _key, argv = golden(["-N", "-I", "call.vcon.json", "--analyze"])
+    assert argv == ["-N", "-I", cc.GOLDEN_VCON_FIXTURE, "--analyze"]
+    assert cc.GOLDEN_VCON_FIXTURE == "tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"
+    assert (cc.REPO / cc.GOLDEN_VCON_FIXTURE).is_file()
+
+
+def test_the_run_mode_reads_the_container_by_its_absolute_path():
+    subbed, replaced = cc.substitute(
+        ["-I", "call.vcon.json", "--analyze"],
+        fixture="/abs/f.pcap", outdir=Path("/tmp/x"), call_ids=CALL_IDS,
+        vcon_fixture="/abs/c.vcon.json",
+    )
+    assert replaced
+    assert subbed == ["-I", "/abs/c.vcon.json", "--analyze"]
+
+
 def test_a_placeholder_call_id_becomes_the_fixtures_first_call_id():
     _key, argv = golden(["-N", "-I", "x.pcap", "--call-report", "abc123@host"])
     assert argv[-1] == CALL_IDS[0]

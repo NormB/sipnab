@@ -86,6 +86,10 @@ pub struct TcpFlags {
 ///   is no address a response could honestly be sent to. Ineligible always,
 ///   with no opt-in, because the opt-in would be an invitation to transmit at a
 ///   guess.
+/// - [`Vcon`](Self::Vcon) — rebuilt from a stored vCon container. The
+///   addressing is what the container's producer recorded about a conversation
+///   that has already ended, possibly pseudonymized by `--redact`, so nothing
+///   is ever sent to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputOrigin {
     /// Addressing observed in an IP header.
@@ -95,9 +99,17 @@ pub enum InputOrigin {
     Hep,
     /// No addressing observed; bytes lifted from a process.
     Uprobe,
+    /// Rebuilt from a stored vCon container; addressing as its producer
+    /// recorded it.
+    Vcon,
 }
 
 impl InputOrigin {
+    /// Every origin. The exhaustive `match` in [`Self::as_str`] makes a fifth
+    /// one a compile error there, and the tests that walk this list are what
+    /// keep it from being missed here.
+    pub const ALL: [Self; 4] = [Self::Wire, Self::Hep, Self::Uprobe, Self::Vcon];
+
     /// The name this origin is written under on every output surface.
     ///
     /// One spelling in one place. Two surfaces naming the same origin
@@ -109,6 +121,7 @@ impl InputOrigin {
             Self::Wire => "wire",
             Self::Hep => "hep",
             Self::Uprobe => "uprobe",
+            Self::Vcon => "vcon",
         }
     }
 
@@ -118,7 +131,7 @@ impl InputOrigin {
     /// [`Wire`](Self::Wire) returns `None` deliberately. It is what every
     /// reader already assumes, so marking it would put a constant token on
     /// every line of every ordinary capture and tell nobody anything. The
-    /// other two are the cases a reader has to be told about, and both look
+    /// other three are the cases a reader has to be told about, and each looks
     /// like a wire capture on the surfaces that render addressing:
     ///
     /// - `hep` — the addresses on this line were asserted by a remote sender,
@@ -127,6 +140,9 @@ impl InputOrigin {
     ///   `0.0.0.0:0 -> 0.0.0.0:0`, which is indistinguishable from a capture
     ///   whose addressing sipnab failed to parse, and the `frame` pointer
     ///   beside it can never be followed to bytes.
+    /// - `vcon` — the message was rebuilt from a stored vCon container. Its
+    ///   addresses are what that container's producer recorded, and nothing
+    ///   about it was observed by this run.
     ///
     /// One function, so the `-N` summary line and the TUI's raw viewer cannot
     /// disagree about the same message. The names it embeds are pinned against
@@ -140,6 +156,7 @@ impl InputOrigin {
             Self::Wire => None,
             Self::Hep => Some(" origin=hep"),
             Self::Uprobe => Some(" origin=uprobe"),
+            Self::Vcon => Some(" origin=vcon"),
         }
     }
 }
@@ -1770,7 +1787,7 @@ pub(crate) fn hep_transport(ip_protocol: u8, payload: &[u8]) -> Option<Transport
 ///
 /// `None` for no Via, a shape it cannot read, or a token other than UDP,
 /// TCP, TLS, SCTP, WS and WSS.
-fn top_via_transport(payload: &[u8]) -> Option<TransportProto> {
+pub(crate) fn top_via_transport(payload: &[u8]) -> Option<TransportProto> {
     let mut lines = payload.split(|&b| b == b'\n').skip(1);
     let value = lines
         .find_map(|line| {
@@ -2534,7 +2551,11 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
         // OpenSIPS and Kamailio name a decrypted TLS or WebSocket leg with 22,
         // 50 or 6, and the top Via narrows it (issue #301, `hep_transport`).
         // A uprobe read has no wrapper and gets no such reading.
-        let transport = if meta.hep.is_some() {
+        // A vCon names its transport in words, TLS and WebSocket included,
+        // and the rebuilt message reports exactly that.
+        let transport = if let Some(vcon) = meta.vcon {
+            Some(vcon.transport)
+        } else if meta.hep.is_some() {
             hep_transport(meta.ip_protocol, &packet.data)
         } else {
             ip_protocol_to_transport(meta.ip_protocol)
@@ -2579,6 +2600,7 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
                 .as_deref()
                 .map(crate::capture::packet::FrameSource::from_source_name)
             {
+                _ if meta.vcon.is_some() => InputOrigin::Vcon,
                 Some(crate::capture::packet::FrameSource::Uprobe { .. }) => InputOrigin::Uprobe,
                 _ => InputOrigin::Hep,
             },
@@ -5222,6 +5244,7 @@ mod tests {
                 dst_port: 5060,
                 ip_protocol: 17, // UDP
                 hep: None,
+                vcon: None,
             },
         );
         let parsed = parse_packet(&pkt)?;
@@ -5248,10 +5271,10 @@ mod tests {
     /// contract is the shape that goes wrong silently: an operator comparing
     /// a `-N` line against the `--json` field would be unable to tell whether
     /// they were looking at the same source. The match is exhaustive, so a
-    /// fourth origin fails this until it has both halves.
+    /// new origin fails this until it has both halves.
     #[test]
     fn the_line_note_and_the_field_name_agree_for_every_origin() -> Result<(), TestError> {
-        for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
+        for origin in InputOrigin::ALL {
             match origin {
                 // Nothing to say: `wire` is what an unmarked line already
                 // means, and a token on every line of every capture is noise.
@@ -5261,7 +5284,7 @@ mod tests {
                     "marking the ordinary case would put a constant token on \
                      every line sipnab prints"
                 ),
-                InputOrigin::Hep | InputOrigin::Uprobe => {
+                InputOrigin::Hep | InputOrigin::Uprobe | InputOrigin::Vcon => {
                     let note = origin
                         .line_note()
                         .ok_or("a non-wire origin must be reported to a human")?;
@@ -5296,6 +5319,7 @@ mod tests {
                 dst_port: 0,
                 ip_protocol: 6,
                 hep: None,
+                vcon: None,
             },
         );
         assert_eq!(
@@ -5325,6 +5349,7 @@ mod tests {
                 dst_port: 5060,
                 ip_protocol: 17,
                 hep: None,
+                vcon: None,
             },
         );
         assert_eq!(
@@ -5372,6 +5397,7 @@ mod tests {
                 dst_port: 5061,
                 ip_protocol: 6, // TCP
                 hep: None,
+                vcon: None,
             },
         );
         let parsed = parse_packet(&pkt)?;
@@ -5421,6 +5447,7 @@ mod tests {
                     protocol: 1,
                     correlation_id: None,
                 }),
+                vcon: None,
             },
         ))
     }
@@ -5709,6 +5736,7 @@ mod tests {
                 dst_port: 5060,
                 ip_protocol: 50, // ESP — not a SIP transport
                 hep: None,
+                vcon: None,
             },
         );
         let result = parse_packet(&pkt);

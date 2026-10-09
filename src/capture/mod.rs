@@ -88,6 +88,7 @@ pub mod replay;
 pub mod session;
 #[cfg(target_os = "linux")]
 pub mod uprobe;
+pub mod vcon_input;
 // Following a frame pointer means re-reading a capture file, which is
 // libpcap's job, so this shares `file`'s gate rather than inventing its own.
 #[cfg(feature = "native")]
@@ -1230,9 +1231,12 @@ impl PacketProcessor {
         // number or flags. The reassembler returns nothing without both, so
         // every message a HEP sender marked TCP (IP protocol 6) vanished
         // without even counting as undecodable.
+        //
+        // A message rebuilt from a stored vCon is whole by construction: the
+        // container stored it as one message.
         if matches!(
             parsed.input_origin,
-            parse::InputOrigin::Uprobe | parse::InputOrigin::Hep
+            parse::InputOrigin::Uprobe | parse::InputOrigin::Hep | parse::InputOrigin::Vcon
         ) {
             return smallvec![parsed];
         }

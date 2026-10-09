@@ -1,0 +1,12 @@
+```
+$ sipnab -N -I tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json --analyze --no-cli-print --quiet
+Capture analysis: 1 finding(s) across 1 dialog(s), 0 stream(s), 6 frame(s) read.
+
+THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The findings below describe what it UNDERSTOOD, so their counts are floors and the ABSENCE of a finding is not evidence that the problem is absent. The blind finding(s) are listed first.
+
+1. [BLIND] Rebuilt from a stored vCon — 1 container(s)
+   These dialogs were rebuilt from stored vCon containers, not read from packets. A vCon holds no RTP, so no media statistic here was computed, and whatever its producer did not store is absent. The evidence names each container, what it lacks, and the producer's own caveat.
+   Evidence:
+     - tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json, vcon 0158a120-0392-8751-9a04-9decf1485b22 | messages=6 | 6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.208 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.
+
+```
