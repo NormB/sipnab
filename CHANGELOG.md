@@ -8,6 +8,30 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A non-INVITE dialog reports its final status.** `final_status_code` read
+  only responses to INVITE, so a `PUBLISH` refused with 489, a `SUBSCRIBE`, a
+  `MESSAGE`, an `OPTIONS` or a `REGISTER` showed no final status while its
+  state read `Failed` and its hint named the code. A dialog without an INVITE
+  now reports the final response to the request that opened it, with an
+  answered challenge skipped as before; a dialog with an INVITE reports the
+  INVITE's outcome, as before.
+  Affected: the TUI compare view (`c`), `--json-dialogs`, `--report`, the REST
+  dialog routes and the MCP dialog tools, and the `response_code` filter
+  field, for every non-INVITE dialog. Call counts (seizures, answered, failed)
+  still count INVITE dialogs only.
+
+- **The TUI names the source of the capture filter after a `B` re-scan.** A
+  filter applied by re-scanning a capture file was marked `[live capture]`
+  though no live capture ran. Status line 2 now marks it `[file re-scan]`,
+  keeps `[live capture]` for a file opened with `O` while a live capture runs
+  behind it, and adds no marker when a session started on files opens another.
+  Affected: the TUI status line, after `B` on a capture file or `O` in a
+  session started with `-I`.
+
 ## [0.5.209] - 2026-10-09
 
 ### Added

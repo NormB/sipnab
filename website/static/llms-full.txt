@@ -5471,8 +5471,8 @@ it has no value for, so the same idea reads as `null` here and as an absent key
 there.
 
 Three list-row keys drop out rather than reading null: `frame` (above),
-`final_status_code` (absent, never a zero, while the call has no final INVITE
-response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
+`final_status_code` (absent, never a zero, while the dialog's INVITE, or the
+request that opened a dialog without one, has no final response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
 source that delivered the message that OPENED the dialog. First and never
 latest, matching `frame`: one process can capture from an interface and a HEP
 mirror at once, so a field reassigned per message would report whichever spoke
@@ -5658,8 +5658,8 @@ on delay alone.
 answered call, so it shows the fields such a call has. Anything sipnab did not
 find is **absent from the object**, not present with a null value: `tags` when
 empty, `from_display` / `to_display` when the headers carried no display name,
-`final_status_code` / `final_status_reason` when there was no final INVITE
-response, and `signaling_diagnosis` when the signaling detections found
+`final_status_code` / `final_status_reason` when the dialog's INVITE, or the
+request that opened a dialog without one, had no final response, and `signaling_diagnosis` when the signaling detections found
 nothing.
 
 Decode into a type with optional fields: a strict decoder that requires every
@@ -5718,7 +5718,7 @@ and the detection threshold behind each.
 
 **Additional dialog fields:**
 
-- **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended. `signaling_diagnosis.final_failure.code` carries the status for any dialog.
+- **`final_status_code` / `final_status_reason`** -- the final response to the dialog's INVITE, or, in a dialog without one, to the `REGISTER`, `PUBLISH`, `SUBSCRIBE`, `MESSAGE` or `OPTIONS` that opened it. Responses to other methods in the dialog (BYE, CANCEL, NOTIFY) do not count. `signaling_diagnosis.final_failure.code` also carries the status for any dialog.
 - **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
 
   `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream.
@@ -9785,14 +9785,15 @@ $ sipnab -N -I demo.pcap | head -4
 $ sipnab -N -I demo.pcap --report --no-cli-print | head -4
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
 -------------------------------------------------------------------------------------------------------------------------
-a84b4c76e66710@192.0.2.5         alice          alice          Registered   -      0s         4      -        -
+a84b4c76e66710@192.0.2.5         alice          alice          Registered   200    0s         4      -        -
 3848276298220188511@192.0.2.6    alice          bob            Completed    200    14s        15     0.7s     -
 ```
 
-Two things surprise people here. The `Code` column reads INVITE transactions
-only, so a `REGISTER` row shows `-` whatever the registrar answered. And
-`Duration` is the span from the dialog's first message to its last, not talk
-time.
+Two things surprise people here. The `Code` column is the final answer to the
+dialog's INVITE, or to the request that opened a dialog without one, with an
+answered challenge skipped, so the `REGISTER` row shows the registrar's 200
+and not its 401. And `Duration` is the
+span from the dialog's first message to its last, not talk time.
 
 ## Upgrade sipnab
 
@@ -11602,10 +11603,10 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 `kind` is `rejected` or `shortened_expiry`. On the second, compare
 `requested_expiry_sec` against `granted_expiry_sec`.
 
-> Do **not** reach for `final_status_code` here: it reads INVITE transactions
-> only, so on a `REGISTER` dialog it is always `null`, however the registration
-> ended. `signaling_diagnosis.final_failure.code` carries the status for any
-> dialog.
+> `final_status_code` on a `REGISTER` dialog is the registrar's final answer to
+> the REGISTER (a challenge that was then answered does not count), so it
+> shows that the registrar refused a registration but not why it granted a
+> short expiry. `registration_failure` names both.
 
 **What to look for:**
 
@@ -12900,7 +12901,10 @@ The three lines above the list say what you are looking at. Line 1 names
 the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
 list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
 is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
-no filter. Line 3 is the view filter from `F7` and any search you kept with
+no filter. When the filter belongs to a different source from the one line 1
+names, line 2 says which after the filter: `[live capture]` when a file opened
+with `O` replaced the screen while the live capture keeps running behind it,
+`[file re-scan]` when `B` re-read a capture file under the filter. Line 3 is the view filter from `F7` and any search you kept with
 Enter, and it also carries status messages, with errors in red.
 
 The key bar
@@ -14148,7 +14152,7 @@ selects only problem calls from user 1001.
 |------|-------|---------|-------------|
 | `--json` | -- | off | Output as NDJSON (one JSON object per line, schema in [output-formats.md](output-formats.md)). Requires `-N` |
 | `--json-pretty` | -- | off | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
-| `--json-dialogs` | -- | off | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two read INVITE transactions only and are `null` on a `REGISTER`/`OPTIONS`/`SUBSCRIBE` dialog, where `signaling_diagnosis.final_failure.code` carries it instead. |
+| `--json-dialogs` | -- | off | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two are the final answer to the dialog's INVITE, or to the `REGISTER`/`OPTIONS`/`SUBSCRIBE`/`PUBLISH` that opened a dialog without one, and are `null` while it has none. |
 | `--plugin` | `<PATH>` | -- | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
@@ -15476,7 +15480,7 @@ All 32 addressable fields, organized by type. They answer to 33 names: `response
 | `dst.port` | Destination port (first message) | port number |
 | `duration` | Dialog duration | seconds (float) |
 | `msg_count` | Number of SIP messages in dialog | count |
-| `response_code` | Final INVITE response code. Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
+| `response_code` | Final response code of the dialog's INVITE, or of the request that opened a dialog without one (`REGISTER`, `PUBLISH`, `SUBSCRIBE` …). Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
 | `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
@@ -17124,15 +17128,17 @@ challenges excluded: a call challenged and then answered reports 200, not the
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
-**Both fields read INVITE transactions only, and are absent from every other
-dialog.** A `REGISTER` rejected `403`, an `OPTIONS` that timed out `408`, a
-failed `SUBSCRIBE` — each carries `state: "Failed"` and no
-`final_status_code` at all, because no INVITE CSeq exists to take a code from.
+**Both fields read the transaction that decides the dialog**: its INVITE
+when it holds one, otherwise the request that opened it. An INVITE dialog
+reports its INVITE's outcome, not the 200 to its BYE, and so does a Call-ID
+that registered first and then called. A `REGISTER` rejected `403`
+reports 403, a `PUBLISH` refused `489` reports 489, and a `SUBSCRIBE` reports
+the answer to the SUBSCRIBE, not to a later NOTIFY. Both are absent while that
+request has no final response.
 
-The recipe above is therefore a *call* recipe: point it at registration or
-keepalive traffic and every row comes back empty. For those, read
-`signaling_diagnosis` instead — `final_failure.code` carries the status for any
-dialog, and `registration_failure` answers the registration question directly:
+For registrations, `signaling_diagnosis` says more than the code:
+`final_failure.code` carries the status for any dialog, and
+`registration_failure` answers the registration question directly:
 
 ```bash
 sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \

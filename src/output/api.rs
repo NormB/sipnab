@@ -6032,7 +6032,8 @@ pub mod schema {
         pub call_id: String,
         /// The dialog state (`InCall`, `Failed`, `Completed`, …).
         pub state: String,
-        /// The final INVITE response code, null while the call is in progress.
+        /// The final response code of the dialog's INVITE, or of the request
+        /// that opened a dialog without one; null while it has none.
         pub final_status_code: Option<u16>,
         /// How many SIP messages the dialog holds.
         pub msg_count: usize,
@@ -6448,8 +6449,8 @@ pub mod schema {
         /// SIP messages in the dialog.
         #[schema(minimum = 0)]
         pub msg_count: usize,
-        /// Final INVITE response code, once the call reached one. Absent —
-        /// never zero — while the call is still in progress.
+        /// Final response code of the dialog's INVITE, or of the request that
+        /// opened a dialog without one. Absent — never zero — while it has none.
         pub final_status_code: Option<u16>,
         /// First to last message, seconds. `0` for a single-message dialog.
         pub duration_sec: f64,
@@ -6981,7 +6982,8 @@ pub mod schema {
         pub to_display: Option<String>,
         /// Current dialog state.
         pub state: String,
-        /// Final INVITE response code, once the call reached one.
+        /// Final response code of the dialog's INVITE, or of the request that
+        /// opened a dialog without one, once it reached one.
         pub final_status_code: Option<u16>,
         /// Reason phrase that came with `final_status_code`.
         pub final_status_reason: Option<String>,

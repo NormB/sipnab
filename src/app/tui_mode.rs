@@ -729,6 +729,9 @@ pub fn run_tui_mode(
             capture_options: tui_pipeline_options(&cli, &config, no_rtp),
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
+            // The same test `tui_capture_mode` uses for its `Offline (...)`
+            // label: any `-I` input means no live capture runs.
+            offline: !cli.capture_args.input.is_empty(),
             notes,
             notes_path,
         },

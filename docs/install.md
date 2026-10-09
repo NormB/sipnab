@@ -953,14 +953,15 @@ $ sipnab -N -I demo.pcap | head -4
 $ sipnab -N -I demo.pcap --report --no-cli-print | head -4
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
 -------------------------------------------------------------------------------------------------------------------------
-a84b4c76e66710@192.0.2.5         alice          alice          Registered   -      0s         4      -        -
+a84b4c76e66710@192.0.2.5         alice          alice          Registered   200    0s         4      -        -
 3848276298220188511@192.0.2.6    alice          bob            Completed    200    14s        15     0.7s     -
 ```
 
-Two things surprise people here. The `Code` column reads INVITE transactions
-only, so a `REGISTER` row shows `-` whatever the registrar answered. And
-`Duration` is the span from the dialog's first message to its last, not talk
-time.
+Two things surprise people here. The `Code` column is the final answer to the
+dialog's INVITE, or to the request that opened a dialog without one, with an
+answered challenge skipped, so the `REGISTER` row shows the registrar's 200
+and not its 401. And `Duration` is the
+span from the dialog's first message to its last, not talk time.
 
 ## Upgrade sipnab
 

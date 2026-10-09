@@ -408,6 +408,7 @@ fn run_pcap_load(
         sip_count: 0,
         capture_mode: capture_mode.clone(),
         file_names: Vec::new(),
+        rescanned: bpf_filter.is_some(),
     };
 
     // An archive is loaded as the set of captures it holds, resolved exactly
@@ -517,6 +518,7 @@ fn run_pcap_load(
         sip_count: totals.sip,
         capture_mode,
         file_names: totals.file_names,
+        rescanned: bpf_filter.is_some(),
         archive_passwords: set.as_ref().and_then(|s| {
             (s.members_decrypted() + s.members_locked() > 0).then(|| {
                 (
@@ -729,11 +731,11 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
         }
     }
     app.set_capture_mode(outcome.capture_mode);
-    // The label now reads `Offline (...)` while the BPF slot still shows the
-    // filter the LIVE capture was compiled with — which keeps running behind
-    // this and keeps writing to the same stores. Unmarked, the two rows read
+    // The label now reads `Offline (...)`. The BPF slot's filter belongs to
+    // the live capture still running behind this when there is one, or to
+    // this file when the load was a `B` re-scan. Unmarked, the two rows read
     // as one statement about one source (#190).
-    app.mark_bpf_live_only();
+    app.note_bpf_source_after_load(outcome.rescanned);
     app.mark_data_updated();
 
     if !outcome.file_names.is_empty() {

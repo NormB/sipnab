@@ -371,7 +371,7 @@ expect "rust tls_plaintext_records (BPF records, no kernel)" \
 	"OPTIONS    0.0.0.0:0 -> 0.0.0.0:0  TCP  uprobe:python3/349147#2" \
 	"record 3 dropped: not a SIP message" \
 	"4 records, 3 SIP messages, 2 dialogs" \
-	"REGISTER  Registered  alice -> alice  (2 messages)  tls-reg-1@127.0.0.1" \
+	"REGISTER  Registered [200]  alice -> alice  (2 messages)  tls-reg-1@127.0.0.1" \
 	"OPTIONS   Trying  alice -> ?  (1 messages)  tls-opt-1@127.0.0.1" \
 	-- "$TLS_EXAMPLE"
 

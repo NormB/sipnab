@@ -632,8 +632,8 @@ it has no value for, so the same idea reads as `null` here and as an absent key
 there.
 
 Three list-row keys drop out rather than reading null: `frame` (above),
-`final_status_code` (absent, never a zero, while the call has no final INVITE
-response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
+`final_status_code` (absent, never a zero, while the dialog's INVITE, or the
+request that opened a dialog without one, has no final response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
 source that delivered the message that OPENED the dialog. First and never
 latest, matching `frame`: one process can capture from an interface and a HEP
 mirror at once, so a field reassigned per message would report whichever spoke
@@ -819,8 +819,8 @@ on delay alone.
 answered call, so it shows the fields such a call has. Anything sipnab did not
 find is **absent from the object**, not present with a null value: `tags` when
 empty, `from_display` / `to_display` when the headers carried no display name,
-`final_status_code` / `final_status_reason` when there was no final INVITE
-response, and `signaling_diagnosis` when the signaling detections found
+`final_status_code` / `final_status_reason` when the dialog's INVITE, or the
+request that opened a dialog without one, had no final response, and `signaling_diagnosis` when the signaling detections found
 nothing.
 
 Decode into a type with optional fields: a strict decoder that requires every
@@ -879,7 +879,7 @@ and the detection threshold behind each.
 
 **Additional dialog fields:**
 
-- **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended. `signaling_diagnosis.final_failure.code` carries the status for any dialog.
+- **`final_status_code` / `final_status_reason`** -- the final response to the dialog's INVITE, or, in a dialog without one, to the `REGISTER`, `PUBLISH`, `SUBSCRIBE`, `MESSAGE` or `OPTIONS` that opened it. Responses to other methods in the dialog (BYE, CANCEL, NOTIFY) do not count. `signaling_diagnosis.final_failure.code` also carries the status for any dialog.
 - **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
 
   `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream.

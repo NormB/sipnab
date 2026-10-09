@@ -582,7 +582,10 @@ The three lines above the list say what you are looking at. Line 1 names
 the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
 list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
 is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
-no filter. Line 3 is the view filter from `F7` and any search you kept with
+no filter. When the filter belongs to a different source from the one line 1
+names, line 2 says which after the filter: `[live capture]` when a file opened
+with `O` replaced the screen while the live capture keeps running behind it,
+`[file re-scan]` when `B` re-read a capture file under the filter. Line 3 is the view filter from `F7` and any search you kept with
 Enter, and it also carries status messages, with errors in red.
 
 The key bar

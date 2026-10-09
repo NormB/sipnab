@@ -784,10 +784,10 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 `kind` is `rejected` or `shortened_expiry`. On the second, compare
 `requested_expiry_sec` against `granted_expiry_sec`.
 
-> Do **not** reach for `final_status_code` here: it reads INVITE transactions
-> only, so on a `REGISTER` dialog it is always `null`, however the registration
-> ended. `signaling_diagnosis.final_failure.code` carries the status for any
-> dialog.
+> `final_status_code` on a `REGISTER` dialog is the registrar's final answer to
+> the REGISTER (a challenge that was then answered does not count), so it
+> shows that the registrar refused a registration but not why it granted a
+> short expiry. `registration_failure` names both.
 
 **What to look for:**
 

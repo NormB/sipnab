@@ -2038,7 +2038,7 @@
             "type": "string"
           },
           "final_status_code": {
-            "description": "The final INVITE response code, null while the call is in progress.",
+            "description": "The final response code of the dialog's INVITE, or of the request\nthat opened a dialog without one; null while it has none.",
             "format": "int32",
             "minimum": 0,
             "type": [
@@ -2174,7 +2174,7 @@
             "type": "number"
           },
           "final_status_code": {
-            "description": "Final INVITE response code, once the call reached one.",
+            "description": "Final response code of the dialog's INVITE, or of the request that\nopened a dialog without one, once it reached one.",
             "format": "int32",
             "minimum": 0,
             "type": [
@@ -2362,7 +2362,7 @@
             "type": "number"
           },
           "final_status_code": {
-            "description": "Final INVITE response code, once the call reached one. Absent —\nnever zero — while the call is still in progress.",
+            "description": "Final response code of the dialog's INVITE, or of the request that\nopened a dialog without one. Absent — never zero — while it has none.",
             "format": "int32",
             "minimum": 0,
             "type": [
