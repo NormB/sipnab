@@ -9,6 +9,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  # Every pip install in this workflow reads these. pip 24.0's defaults are a
+  # 15-second socket timeout and 5 retries. On 2026-10-01 a wheel download
+  # from files.pythonhosted.org ran at 8 kB/s, one read waited longer than 15
+  # seconds, and pip failed the Check job with ReadTimeoutError. A read that
+  # stalls mid-download is not retried, so the timeout is what covers that;
+  # the retries cover connection errors and 5xx responses. Worst case for one
+  # request against an unreachable index: 9 attempts of up to 60 s to connect
+  # plus 60 s to read, and 63.5 s of urllib3 backoff, about 19 minutes, so an
+  # outage still fails the first install well inside the Check job's 40.
+  # tests/ci_pip_network_test.rs holds every install to these settings.
+  PIP_TIMEOUT: '60'
+  PIP_RETRIES: '8'
 
 # Least privilege: CI only needs to read the repository contents.
 permissions:

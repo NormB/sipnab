@@ -5998,7 +5998,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // it in its header comment, and names `tests/private_identity_test.rs`
     // four times in comments. Attributed by measurement: without pr-text.yml
     // the scan reads 146.
-    const EXPECTED_REFERENCES: usize = 153;
+    // 153 -> 154: one, `tests/ci_pip_network_test.rs`, named by the comment
+    // above the PIP_TIMEOUT and PIP_RETRIES settings in
+    // `.github/workflows/ci.yml`. Attributed by measurement: with HEAD's
+    // ci.yml swapped back in, the scan reads 153.
+    const EXPECTED_REFERENCES: usize = 154;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

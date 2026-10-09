@@ -539,6 +539,18 @@ use it. `reproducible.yml` does not: it exists to build twice in fresh trees.
 [`tests/ci_runner_target_test.rs`](../../tests/ci_runner_target_test.rs) holds
 both the use and that exemption, and drives the cap script.
 
+Python packages in CI come from PyPI through `pip install` in hash-checking
+mode, each from a hash-pinned requirements file. `ci.yml` sets `PIP_TIMEOUT` to 60 seconds
+and `PIP_RETRIES` to 8 at the workflow level, so every install in it uses
+them. pip's own defaults are 15 seconds and 5 retries, and on 2026-10-01 a
+wheel download that stalled for longer than 15 seconds failed the Check job
+with `ReadTimeoutError`. The comment above the two settings gives the
+worst-case time they allow before an unreachable index fails the job.
+[`tests/ci_pip_network_test.rs`](../../tests/ci_pip_network_test.rs) finds
+every `pip install` in the workflows and composite actions, works out which
+values reach it from a flag or the step, job or workflow `env:`, and requires
+both to be above pip's defaults and the same everywhere.
+
 [`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
