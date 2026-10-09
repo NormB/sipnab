@@ -30,6 +30,14 @@ entry that carries them.
   - The `[[vcon.enrich]]` failure tests gave every case a one-second `timeout_secs`. On a loaded host the failing command, the HTTP 500 and the malformed answer could take longer than a second, and sipnab correctly recorded a timeout where the test expected `failed` or `malformed`. Those cases now get 120 seconds; the hanging case keeps one second.
   - `polling_ends_at_the_timeout_and_leaves_the_receipt_pending` expects three status polls with no `Retry-After`. The backoff can wait up to 1.75 seconds before the third, which left a quarter of a second of a two-second budget for the requests themselves, and a macOS CI runner polled twice. That case now has four seconds.
 
+- **CI's Linux Check leg and the Coverage job run on the self-hosted runners.**
+  - On GitHub's runners they were two of the three jobs that set the length of a pull request's run.
+  - The macOS leg of Check stays on GitHub.
+  - A self-hosted runner skips the steps written for a disposable GitHub VM: `free-disk`, and the cargo cache restore, prune and save.
+  - The runner-target action takes a `dir` input. Coverage passes `dir: coverage-target`, so the instrumented build has its own capped directory beside the plain builds' `target`.
+  - The client smoke step and the coverage report upload read the build from `CARGO_TARGET_DIR`.
+  - `tests/ci_runner_target_test.rs` requires both jobs on the self-hosted runners, the hosted-only steps guarded, no workspace `target/` path after the runner-target step, and a separate directory for `cargo llvm-cov`. It drives the action's directory selection, including the names it refuses.
+
 ### Dependencies
 
 - `sevenz-rust2` 0.23 → 0.24 (main crate and fuzz targets), `rodio` 0.22 → 0.23, and patch releases of `smallvec`, `serde_json`, `sha2`, `tokio`, `hyper`, `hyper-util`, `futures-core`, `wat` and `proptest`; six GitHub Actions bumped. From Dependabot #515 to #520.

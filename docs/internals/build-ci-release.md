@@ -729,11 +729,45 @@ The self-hosted jobs keep their builds between runs.
 - Before each build, [`scripts/ci-target-cap.sh`](../../scripts/ci-target-cap.sh) removes that
   directory when it is over 64 GiB.
   - The action's header gives the measurements behind the number.
-- The Features job, `bench.yml` and `self-hosted-smoke.yml` use it.
-- `reproducible.yml` does not.
+- The Features job, the Linux leg of the Check job, the Coverage job, `bench.yml` and
+  `self-hosted-smoke.yml` use it.
+- Coverage passes `dir: coverage-target`.
+  - `cargo llvm-cov` compiles every crate with `-C instrument-coverage`.
+  - So its build has its own capped directory beside `target`, and does not invalidate the plain builds.
+- `reproducible.yml` does not use the action.
   It exists to build twice in fresh trees.
 - [`tests/ci_runner_target_test.rs`](../../tests/ci_runner_target_test.rs) holds
   both the use and that exemption, and drives the cap script.
+
+The Linux leg of the Check job and the `Quality` workflow's Coverage job run on the self-hosted runners.
+
+- On GitHub's runners they were two of the three jobs that set the length of a pull request's run.
+  - On pull requests #411 and #410 the Linux Check took 20.2 and 22.1 minutes.
+  - Coverage took 15.3 and 21.2 minutes.
+- The Linux leg ran on the self-hosted runner once before, and left it on 2026-08-10 for two reasons.
+  Each is now handled.
+- **One job per runner instance.**
+  - With one instance, 21 jobs queued one after another.
+  - There are four instances now.
+  - A pull request gives them the eighteen feature legs, the Linux Check and Coverage.
+  - Measured on three pull requests on 2026-10-09, the feature legs took 25.4 to 27.4 runner-minutes in total.
+    The longest leg took 7.7 to 10.2 minutes.
+  - With Check and Coverage on one runner each, the feature legs on the other two need about 14 minutes (27.4 / 2).
+- **Concurrent `apt-get install` raced for the machine-wide `dpkg` lock.**
+  - Every package step goes through `.github/actions/system-deps`, described below.
+  - It installs nothing on the self-hosted machine, and serializes any install it must run.
+  - The workflow-shape test refuses a bare `apt-get`, `dpkg -i` or `debconf-set-selections` in a self-hosted job.
+- A self-hosted runner skips the steps written for a disposable GitHub VM.
+  - `free-disk` deletes preinstalled software, which on the self-hosted machine other work uses.
+  - The cargo cache restore and save run on hosted runners only.
+  - Steps that read the build read it from `CARGO_TARGET_DIR`.
+- Measured on the self-hosted machine on 2026-10-09, with a load average of 20 to 35 on its 14 cores from other work:
+  - The Check job's Test step (`cargo test --all-features`) took 9.9 and 11.9 minutes with a warm build directory.
+    It used 30 CPU-minutes and 16.4 GiB peak resident memory.
+  - Coverage's collection step took 8.6 minutes warm and 16.0 cold.
+  - The directories it left were 31 GiB for the plain builds and 35 GiB for the coverage build.
+- The macOS leg of Check stays on GitHub.
+  It took 20.8 and 24.3 minutes on those two pull requests, so it now bounds the run.
 
 System packages come from `.github/actions/system-deps`.
 

@@ -305,8 +305,114 @@ fn the_shared_action_is_self_hosted_only_and_caps_first() -> Result<(), TestErro
 }
 
 // ---------------------------------------------------------------------------
-// What a self-hosted job must not do to the machine.
+// Which runner each job takes, and what a self-hosted job must not do.
 // ---------------------------------------------------------------------------
+
+/// The labels a `runs-on:` value selects for a job whose matrix `os` is `os`.
+///
+/// Understands the three shapes the workflows use: a literal label
+/// (`ubuntu-latest`), a literal list (`[self-hosted, jetson]`), and the
+/// one-condition expression `${{ matrix.os == 'X' && A || B }}`, where `A`
+/// and `B` are a quoted label or `fromJSON('[...]')`. Anything else is an
+/// error, so a new shape fails here instead of being read as no labels.
+fn runner_labels(runs_on: &str, os: &str) -> Result<Vec<String>, TestError> {
+    fn list(text: &str) -> Vec<String> {
+        text.trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|l| l.trim().trim_matches('"').trim_matches('\'').to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+    fn operand(text: &str) -> Result<Vec<String>, TestError> {
+        let t = text.trim();
+        if let Some(inner) = t
+            .strip_prefix("fromJSON('")
+            .and_then(|r| r.strip_suffix("')"))
+        {
+            return Ok(list(inner));
+        }
+        if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
+            return Ok(vec![t.trim_matches('\'').to_string()]);
+        }
+        Err(format!("unrecognized runs-on operand `{t}`").into())
+    }
+    let value = runs_on.trim();
+    let Some(expr) = value.strip_prefix("${{").and_then(|r| r.strip_suffix("}}")) else {
+        return Ok(if value.starts_with('[') {
+            list(value)
+        } else {
+            vec![value.to_string()]
+        });
+    };
+    let (lhs, otherwise) = expr
+        .split_once(" || ")
+        .ok_or_else(|| format!("runs-on `{value}` has no `||` branch"))?;
+    let (cond, then) = lhs
+        .split_once(" && ")
+        .ok_or_else(|| format!("runs-on `{value}` has no `&&` branch"))?;
+    let wanted = cond
+        .trim()
+        .strip_prefix("matrix.os == '")
+        .and_then(|r| r.strip_suffix('\''))
+        .ok_or_else(|| format!("runs-on `{value}` does not test matrix.os"))?;
+    if wanted == os {
+        operand(then)
+    } else {
+        operand(otherwise)
+    }
+}
+
+/// The `runs-on:` value of a job body.
+fn runs_on(job: &Job) -> Result<&str, TestError> {
+    job.body
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("runs-on:"))
+        .map(str::trim)
+        .ok_or_else(|| format!("{}:{} has no runs-on", job.workflow, job.id).into())
+}
+
+fn job<'a>(jobs: &'a [Job], workflow: &str, id: &str) -> Result<&'a Job, TestError> {
+    jobs.iter()
+        .find(|j| j.workflow == workflow && j.id == id)
+        .ok_or_else(|| format!("{workflow} has no job `{id}`").into())
+}
+
+/// The two slowest Linux jobs of a pull request run on the self-hosted
+/// runners, with their builds kept between runs; macOS stays on GitHub.
+///
+/// Measured on two pull requests on 2026-10-09 (#410, #411): the Linux leg
+/// of Check took 22.1 and 20.2 minutes on GitHub's `ubuntu-24.04-arm`, of
+/// which the Test step alone was 10.9, and Coverage took 21.2 and 15.3, each
+/// rebuilding from a restored cache on a four-core runner. Both were among
+/// the three jobs that set the length of the run.
+#[test]
+fn the_linux_check_leg_and_coverage_run_on_the_self_hosted_runners() -> Result<(), TestError> {
+    let jobs = all_jobs()?;
+    let self_hosted = vec!["self-hosted".to_string(), "jetson".to_string()];
+
+    let check = runs_on(job(&jobs, "ci.yml", "check")?)?;
+    assert_eq!(
+        runner_labels(check, "ubuntu-latest")?,
+        self_hosted,
+        "ci.yml check: the Linux leg must run on [self-hosted, jetson] (runs-on: {check})"
+    );
+    assert_eq!(
+        runner_labels(check, "macos-latest")?,
+        vec!["macos-latest".to_string()],
+        "ci.yml check: the macOS leg must stay on macos-latest; no self-hosted \
+         runner is a Mac (runs-on: {check})"
+    );
+
+    let coverage = runs_on(job(&jobs, "quality.yml", "coverage")?)?;
+    assert_eq!(
+        runner_labels(coverage, "")?,
+        self_hosted,
+        "quality.yml coverage must run on [self-hosted, jetson] (runs-on: {coverage})"
+    );
+    Ok(())
+}
 
 /// The steps of a job body: each starts at a `- ` six spaces in.
 fn steps_of(body: &str) -> Vec<String> {
@@ -336,6 +442,50 @@ const HOSTED_ONLY: &str = "runner.environment == 'github-hosted'";
 
 fn hosted_only(step: &str) -> bool {
     step_if(step).is_some_and(|c| c.contains(HOSTED_ONLY))
+}
+
+/// Steps written for a disposable GitHub VM are skipped on a self-hosted
+/// runner.
+///
+/// `free-disk` runs `sudo rm -rf` over SDK directories and prunes every
+/// docker image: on a hosted VM that is reclaimed space, on the self-hosted
+/// machine it deletes software other work depends on. `actions/cache` of
+/// `target` (its `restore` and `save` halves too) restores and uploads a
+/// build directory the self-hosted job does not use (its own is outside the
+/// workspace) and would upload the machine's cargo registry. The prune step
+/// that precedes the save edits that workspace `target` for the upload.
+#[test]
+fn hosted_only_steps_are_skipped_on_self_hosted_runners() -> Result<(), TestError> {
+    let mut seen = 0;
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !runs_self_hosted(&job.body) {
+            continue;
+        }
+        for step in steps_of(&job.body) {
+            let hosted_kind = step.contains("uses: ./.github/actions/free-disk")
+                || step.contains("uses: actions/cache@")
+                || step.contains("uses: actions/cache/restore@")
+                || step.contains("uses: actions/cache/save@")
+                || step.contains("scripts/ci-cache-prune.sh");
+            if !hosted_kind {
+                continue;
+            }
+            seen += 1;
+            if !hosted_only(&step) {
+                defects.push(format!(
+                    "{}:{}: this step must carry `if: {HOSTED_ONLY}`:\n{step}",
+                    job.workflow, job.id
+                ));
+            }
+        }
+    }
+    assert!(
+        seen >= 8,
+        "found {seen} hosted-only step(s) in self-hosted jobs; the step scan is wrong"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
 }
 
 /// A self-hosted job changes the machine's packages only through the shared
@@ -378,6 +528,196 @@ fn self_hosted_jobs_change_packages_only_through_system_deps() -> Result<(), Tes
         "only {scanned} self-hosted job(s) found; the job scan is wrong"
     );
     assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
+}
+
+/// Whether `line` names the in-workspace `target/` directory as a path.
+fn names_workspace_target(line: &str) -> bool {
+    line.match_indices("target/").any(|(at, _)| {
+        line[..at]
+            .chars()
+            .last()
+            .is_none_or(|c| c.is_whitespace() || "\"'=(:".contains(c))
+    })
+}
+
+/// A self-hosted job that moved its build out of the workspace reads the
+/// build from `CARGO_TARGET_DIR`, not from `target/`.
+///
+/// After the runner-target step, `target/debug/sipnab` does not exist in the
+/// workspace: a step that names it runs nothing, or uploads nothing.
+#[test]
+fn self_hosted_jobs_read_their_build_from_cargo_target_dir() -> Result<(), TestError> {
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !runs_self_hosted(&job.body) || !job.body.contains(ACTION_USE) {
+            continue;
+        }
+        for step in steps_of(&job.body) {
+            if hosted_only(&step) {
+                continue;
+            }
+            for line in step.lines() {
+                let t = line.trim_start();
+                if !t.starts_with('#') && names_workspace_target(t) {
+                    defects.push(format!("{}:{}: {}", job.workflow, job.id, t));
+                }
+            }
+        }
+    }
+    assert!(
+        defects.is_empty(),
+        "these lines name the workspace's target/ in a job whose build is in \
+         CARGO_TARGET_DIR:\n{}",
+        defects.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn the_workspace_target_scan_tells_a_path_from_a_flag() {
+    assert!(names_workspace_target("path: target/llvm-cov/html"));
+    assert!(names_workspace_target(
+        "scripts/smoke-clients.sh target/debug/sipnab"
+    ));
+    assert!(names_workspace_target("bin=\"target/release/sipnab\""));
+    assert!(!names_workspace_target(
+        "scripts/smoke-clients.sh \"${CARGO_TARGET_DIR:-target}/debug/sipnab\""
+    ));
+    assert!(!names_workspace_target(
+        "cargo check --target wasm32-unknown-unknown"
+    ));
+    assert!(!names_workspace_target(
+        "path: ${{ env.CARGO_TARGET_DIR }}/llvm-cov/html"
+    ));
+}
+
+/// The `dir:` input a job passes to the runner-target action, if any.
+fn runner_target_dir_input(body: &str) -> Option<String> {
+    let step = steps_of(body)
+        .into_iter()
+        .find(|s| s.contains(ACTION_USE))?;
+    step.lines()
+        .find_map(|l| l.trim_start().strip_prefix("dir:"))
+        .map(|v| v.trim().trim_matches('\'').trim_matches('"').to_string())
+}
+
+/// An instrumented build keeps its own directory.
+///
+/// `cargo llvm-cov` compiles every crate with `-C instrument-coverage`. In
+/// the directory the plain builds use, each Coverage job and each plain job
+/// on the same runner would invalidate the other's artifacts, and the two
+/// together would reach the 64 GiB cap sooner and lose both.
+#[test]
+fn an_instrumented_build_has_its_own_target_directory() -> Result<(), TestError> {
+    let action = read(ACTION)?;
+    assert!(
+        action.contains("inputs.dir"),
+        "the runner-target action takes no `dir` input, so every job on a \
+         runner shares one directory"
+    );
+    let mut instrumented = 0;
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !runs_self_hosted(&job.body) || !job.body.contains(ACTION_USE) {
+            continue;
+        }
+        let covers = cargo_lines(&job.body).iter().any(|&i| {
+            job.body
+                .lines()
+                .nth(i)
+                .is_some_and(|l| l.contains("llvm-cov"))
+        });
+        let dir = runner_target_dir_input(&job.body);
+        if covers {
+            instrumented += 1;
+            match dir.as_deref() {
+                None | Some("target") => defects.push(format!(
+                    "{}:{}: runs cargo llvm-cov in the plain build's directory; \
+                     pass the runner-target action a `dir:` of its own",
+                    job.workflow, job.id
+                )),
+                Some(_) => {}
+            }
+        } else if let Some(d) = dir.as_deref().filter(|d| *d != "target") {
+            defects.push(format!(
+                "{}:{}: a plain build in directory `{d}`, apart from every other \
+                 plain build on the runner",
+                job.workflow, job.id
+            ));
+        }
+    }
+    assert!(
+        instrumented >= 1,
+        "no self-hosted job runs cargo llvm-cov; this gate is reading the wrong jobs"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
+}
+
+/// Run the action's own selection script with `dir` as its input, in a
+/// temporary home. Returns the exit code and what it wrote to `$GITHUB_ENV`.
+fn select_target_dir(home: &Path, dir: &str) -> Result<(i32, String), TestError> {
+    let action = read(ACTION)?;
+    let start = action
+        .find("run: |\n")
+        .ok_or("the action has no run block")?
+        + "run: |\n".len();
+    let script: String = action[start..]
+        .lines()
+        .take_while(|l| l.starts_with("        ") || l.trim().is_empty())
+        .map(|l| l.strip_prefix("        ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let env_file = home.join("github-env");
+    std::fs::write(&env_file, "")?;
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .env("HOME", home)
+        .env("RUNNER_NAME", "runner-7")
+        .env("GITHUB_WORKSPACE", repo())
+        .env("GITHUB_ENV", &env_file)
+        .env("TARGET_DIR_NAME", dir)
+        .output()?;
+    let code = out.status.code().ok_or("killed by a signal")?;
+    Ok((code, std::fs::read_to_string(&env_file)?))
+}
+
+#[test]
+fn the_action_selects_the_named_directory_under_the_runner() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    for dir in ["target", "coverage-target"] {
+        let (code, env) = select_target_dir(home.path(), dir)?;
+        assert_eq!(code, 0, "dir `{dir}` was refused");
+        let want = format!(
+            "CARGO_TARGET_DIR={}/.cache/sipnab-ci/runner-7/{dir}\n",
+            home.path().display()
+        );
+        assert_eq!(env, want, "dir `{dir}`");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_action_refuses_a_dir_that_leaves_the_runner_directory() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    for dir in [
+        "",
+        "..",
+        "../runner-8/target",
+        "a/b",
+        "/tmp",
+        "Target",
+        "x y",
+    ] {
+        let (code, env) = select_target_dir(home.path(), dir)?;
+        assert_ne!(code, 0, "dir `{dir}` was accepted");
+        assert!(
+            env.is_empty(),
+            "dir `{dir}` was refused but still exported: {env}"
+        );
+    }
     Ok(())
 }
 

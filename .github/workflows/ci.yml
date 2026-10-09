@@ -34,31 +34,43 @@ concurrency:
 jobs:
   check:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 11.7 min ubuntu / 8.0 macos.
+    # group, which never supersedes. Observed on GitHub's runners: 20.2 and
+    # 22.1 min ubuntu-24.04-arm, 20.8 and 24.3 min macos (2026-10-09).
     timeout-minutes: 40
     name: Check (${{ matrix.os }})
-    # The Linux leg runs on ubuntu-24.04-arm: GitHub's hosted aarch64 runner,
-    # free for public repositories. It KEEPS the architecture this project
-    # cares about while running in parallel.
+    # The Linux leg runs on the aarch64 self-hosted runners, as the feature
+    # matrix does. On GitHub's ubuntu-24.04-arm it was one of the three jobs
+    # that set the length of a pull request's run: 20.2 and 22.1 minutes on
+    # 2026-10-09, 10.9 of them in the Test step, each run rebuilding from a
+    # restored cache on four cores.
     #
-    # It used to be the aarch64 self-hosted runner, and that was the whole bottleneck.
-    # That runner executes one job per runner instance, so 21 jobs queued
-    # single-file; a PR took 20-60 minutes, and because branch protection also
-    # requires up-to-date branches, four open PRs meant four sequential full
-    # runs. Adding runner instances widened it and immediately introduced a new
-    # failure -- concurrent `apt-get install` racing for a machine-wide lock.
-    # Hosted runners remove the constraint instead of widening it.
+    # It ran on the self-hosted runner once before and was moved off for two
+    # reasons, and each is now handled:
+    # - One runner instance runs one job, and with one instance 21 jobs queued
+    #   single-file. There are four instances now, and the self-hosted jobs of
+    #   a pull request (eighteen feature legs, this leg and Coverage) are
+    #   counted against them in docs/internals/build-ci-release.md.
+    # - Concurrent `apt-get install` raced for the machine-wide dpkg lock.
+    #   Every package step here goes through ./.github/actions/system-deps,
+    #   which installs only what `dpkg -s` reports missing (on that machine,
+    #   nothing) and serializes an install that is needed.
+    #   tests/ci_runner_target_test.rs refuses a bare apt-get, dpkg -i or
+    #   debconf-set-selections in a self-hosted job.
     #
-    # The self-hosted runners keep the jobs that need that box or are heavy and
-    # repeatable: this file's feature matrix (`features`, moved there by Norm
-    # on 2026-09-29), bench.yml (its throughput baseline is a property of that
-    # hardware), reproducible.yml (two release builds) and
-    # self-hosted-smoke.yml (which exists to prove the box works).
+    # Steps written for a disposable GitHub VM (free-disk, actions/cache of
+    # target) are skipped on a self-hosted runner, and the build lives in the
+    # per-runner directory ./.github/actions/runner-target selects.
+    #
+    # The self-hosted runners also run this file's feature matrix (`features`,
+    # moved there by Norm on 2026-09-29), quality.yml's Coverage, bench.yml
+    # (its throughput baseline is a property of that hardware),
+    # reproducible.yml (two release builds) and self-hosted-smoke.yml (which
+    # exists to prove the box works).
     #
     # macOS cannot run on arm64 Linux, so it stays macos-latest. `matrix.os`
     # keeps its ubuntu-latest / macos-latest values so the step conditionals
     # below (e.g. the published-test-count gate, ubuntu-only) are unchanged.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","jetson"]') || 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -78,8 +90,11 @@ jobs:
           # where it matters most.
           fetch-tags: true
           fetch-depth: 0
+      # GitHub-hosted only: on the self-hosted machine this would delete
+      # software other work uses. The Linux leg is self-hosted today; the
+      # step stays for a hosted Linux leg.
       - name: Free disk space (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         uses: ./.github/actions/free-disk
 
       - name: Install system deps (Linux)
@@ -100,10 +115,18 @@ jobs:
           # the target rather than the test getting weakened.
           targets: wasm32-unknown-unknown
 
-      # Restored on every run and saved, at the end of this job, from main
-      # only: tests/ci_cache_policy_test.rs says why.
+      # On a self-hosted runner, the build directory outside the workspace
+      # that this runner keeps between jobs; nothing on a hosted one. See the
+      # action.
+      - uses: ./.github/actions/runner-target
+      # The hosted macOS leg restores its build from the cache; the
+      # self-hosted leg has its own directory and the machine's ~/.cargo, and
+      # uploads neither.
+      # Restored on every hosted run and saved, at the end of this job, from
+      # main only: tests/ci_cache_policy_test.rs says why.
       - name: Restore the cargo cache
         id: cargo-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
@@ -184,13 +207,13 @@ jobs:
       # tshark and capinfos, for the operator task that exports one customer's
       # calls (cookbook recipe "Open the same evidence in Wireshark"): Wireshark's own engine, not sipnab, must
       # open the export and run the command sipnab printed for it. Ubuntu's
-      # package, through the cached installer every hosted job uses. The
-      # preseed answers the one question wireshark-common asks (may non-root
-      # users capture: no) before dpkg configures it, so nothing waits for a
-      # terminal this job does not have. It is the action's `debconf` input,
-      # which the action applies inside its install lock and only when it
-      # installs something, so a machine that already has tshark never takes
-      # debconf's lock for it.
+      # package, through the shared installer. The preseed answers the one
+      # question wireshark-common asks (may non-root users capture: no)
+      # before dpkg configures it, so nothing waits for a terminal this job
+      # does not have. It is the action's `debconf` input, which the action
+      # applies inside its install lock and only when it installs something,
+      # so on the self-hosted machine, where tshark is installed, debconf's
+      # lock is never taken for it.
       - name: Install tshark (Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/system-deps
@@ -224,7 +247,7 @@ jobs:
           # The site's Python client examples use requests and httpx. Shared
           # packages are pinned to the same versions in both files.
           .venv-mcp/bin/python -m pip install --require-hashes -r clients/python/requirements-examples.txt
-          PYTHON="$PWD/.venv-mcp/bin/python" scripts/smoke-clients.sh target/debug/sipnab
+          PYTHON="$PWD/.venv-mcp/bin/python" scripts/smoke-clients.sh "${CARGO_TARGET_DIR:-target}/debug/sipnab"
 
       # The sipnab-g729 crate's conformance tests and the sipnab tests that decode
       # G.729 read the fetched ITU-T package; a missing one fails them.
@@ -401,10 +424,10 @@ jobs:
       # The workspace's own executables are rebuilt by any change to the
       # sources, so they are removed before the save; see the script.
       - name: Prune the cargo cache
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
       - name: Save the cargo cache
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
