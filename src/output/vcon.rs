@@ -16,10 +16,10 @@
 //! * **No consent record and no lawful-basis attachment.** Nobody gave sipnab
 //!   permission for anything. An empty consent field would be a claim; an
 //!   absent one is the truth.
-//! * **No [`Party`] name, ever.** The struct has no `name` field at all, so
-//!   the rule cannot be broken by a later edit. `From`/`To` display names are
-//!   an unverified assertion by whoever sent the request, which is why every
-//!   party emits `validation: "none"` instead.
+//! * **No [`Party`] name that sipnab vouches for.** [`Party::name`] carries the
+//!   `From`/`To` display name when the wire had one, and that name is an
+//!   unverified assertion by whoever sent the request, which is why every
+//!   party emits `validation: "none"` beside it.
 //! * **No `url` by-reference, ever.**
 //!   [Section 2.4.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1)
 //!   requires HTTPS, and sipnab hosts nothing: a URL here would be a promise
@@ -270,11 +270,10 @@ pub const CREDENTIAL_HEADERS: &[&str] = &[
 
 /// One party to the conversation, or the observer that watched it.
 ///
-/// **There is no `name` field, and that is the design.** sipnab knows what the
-/// `From` and `To` headers said, which is what the sender chose to write in
-/// them; a vCon `name` reads as an identity somebody established. Leaving the
-/// field out of the struct makes "never populate `name`" a property of the
-/// type instead of a rule a later edit can forget.
+/// sipnab knows what the `From` and `To` headers said, which is what the
+/// sender chose to write in them. [`Self::name`] carries that display name,
+/// and [`Self::validation`] is always `"none"`, so the container never
+/// presents the name as an identity somebody established.
 #[derive(Debug, Clone, Serialize)]
 pub struct Party {
     /// The party's SIP URI, rebuilt from the observed `From`/`To` user and

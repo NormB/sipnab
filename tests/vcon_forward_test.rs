@@ -1920,3 +1920,182 @@ fn a_refused_config_file_stops_the_forwarder_with_exit_1() -> Result<(), TestErr
     assert!(store.requests().is_empty());
     Ok(())
 }
+
+// ── A redacted spool ────────────────────────────────────────────────────
+
+/// The capture both redacted-spool tests export: one call between
+/// `sipp@10.0.2.20` and `test@10.0.2.15`, Call-ID `1-1966@10.0.2.20`.
+const REDACT_FIXTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+
+/// What the capture says about the call that a redacted export must not.
+///
+/// The Call-ID in its raw and its filename-sanitized spellings, both host
+/// addresses in both spellings, and the user part of the caller's URI.
+const RAW_IDENTITIES: &[&str] = &[
+    "1-1966",
+    "10.0.2.20",
+    "10_0_2_20",
+    "10.0.2.15",
+    "10_0_2_15",
+    "sipp",
+];
+
+/// Export [`REDACT_FIXTURE`] into `spool`, redacted under `key` when one is
+/// given, with `--vcon-digest`. Returns (stdout, stderr).
+fn export_fixture(spool: &Path, key: Option<&Path>) -> Result<(String, String), TestError> {
+    let fixture = format!("{}/{REDACT_FIXTURE}", env!("CARGO_MANIFEST_DIR"));
+    let spool = spool.display().to_string();
+    let mut args = vec![
+        "-N",
+        "-q",
+        "--no-config",
+        "-I",
+        &fixture,
+        "--export-vcon-when",
+        "state == 'Completed'",
+        "--export-vcon-dir",
+        &spool,
+        "--vcon-digest",
+        // The console rendering of the capture is the operator's own view of
+        // the raw input, which `--redact` does not claim to rewrite; without
+        // this the `--vcon-digest` lines share stdout with it.
+        "--no-cli-print",
+    ];
+    let key_text = key.map(|k| k.display().to_string());
+    if let Some(k) = key_text.as_deref() {
+        args.extend(["--redact", "--redact-key-file", k]);
+    }
+    let (out, err, code) = sipnab(&args)?;
+    assert_eq!(code, Some(0), "the export failed: {err}");
+    Ok((out, err))
+}
+
+/// The raw identities [`RAW_IDENTITIES`] finds in `text`.
+fn leaked_identities(text: &str) -> Vec<&'static str> {
+    RAW_IDENTITIES
+        .iter()
+        .copied()
+        .filter(|raw| text.contains(raw))
+        .collect()
+}
+
+/// A `--redact` export names its spool files after the PSEUDONYMIZED Call-ID,
+/// and the forwarder carries that name everywhere it goes.
+///
+/// The container hid the Call-ID, the host addresses and the user part, and
+/// the file name it was written under carried the raw Call-ID — host address
+/// and all — into the spool, the `--vcon-digest` line, `delivered/`,
+/// `failed/`, the `error.json` record and every forwarder log line. Whoever
+/// receives a redacted spool reads the names before any container.
+///
+/// The name has to be the container's own pseudonym rather than any other
+/// token, so a reader can still match a file to the Call-ID inside it.
+#[test]
+fn a_redacted_spool_names_no_raw_identity_anywhere_the_name_travels() -> Result<(), TestError> {
+    // The first container is accepted, the second refused, so the name passes
+    // through both destinations and both kinds of log line.
+    let store = FakeStore::start(|_, index| {
+        if index == 0 {
+            Reply::Status(201, String::new())
+        } else {
+            Reply::Status(422, "refused".to_string())
+        }
+    })?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    // A fixed key, so both exports produce one name and a failure is readable.
+    let key = rig.dir.path().join("redact.key");
+    std::fs::write(&key, [0x5a_u8; 32])?;
+
+    let (digest_out, export_err) = export_fixture(rig.spool(), Some(&key))?;
+    let names = sipnab::app::vcon_forward::pending(rig.spool())?;
+    assert_eq!(names.len(), 1, "{names:?}");
+    let name = names[0].clone();
+    assert!(
+        leaked_identities(&name).is_empty() && !name.contains("test"),
+        "the redacted container was written as '{name}', which carries {:?}",
+        leaked_identities(&name)
+    );
+
+    // The name is the container's own pseudonymized Call-ID, sanitized.
+    let container: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(rig.spool().join(&name))?)?;
+    let token = container["dialog"][0]["sip_call_id"]
+        .as_str()
+        .ok_or("the container has no sip_call_id")?;
+    let stem: String = token
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    assert!(
+        name.starts_with(&format!("{stem}-")),
+        "'{name}' is not named after the container's Call-ID '{token}'"
+    );
+
+    let args = forward_args(&rig, &store.url("/v1/vcons"));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (out1, err1, code1) = sipnab(&argv)?;
+    assert_eq!(code1, Some(0), "stdout: {out1}\nstderr: {err1}");
+    assert!(rig.settings.done_dir.join(&name).exists(), "{err1}");
+
+    // Re-exporting under the same key reuses the name; the store refuses it.
+    let (digest_out2, export_err2) = export_fixture(rig.spool(), Some(&key))?;
+    assert_eq!(
+        sipnab::app::vcon_forward::pending(rig.spool())?,
+        std::slice::from_ref(&name)
+    );
+    let (out2, err2, code2) = sipnab(&argv)?;
+    assert_eq!(code2, Some(1), "stdout: {out2}\nstderr: {err2}");
+
+    let mut moved = names_in(&rig.settings.done_dir);
+    moved.extend(names_in(&rig.settings.failed_dir));
+    assert!(
+        moved.iter().any(|n| n == &format!("{name}.error.json")),
+        "{moved:?}"
+    );
+    let record =
+        std::fs::read_to_string(rig.settings.failed_dir.join(format!("{name}.error.json")))?;
+
+    // Directory paths are the test's own and not under examination.
+    let spool_path = rig.spool().display().to_string();
+    let texts = [
+        ("moved file names", moved.join("\n")),
+        (
+            "the --vcon-digest lines",
+            format!("{digest_out}{digest_out2}"),
+        ),
+        ("the export's stderr", format!("{export_err}{export_err2}")),
+        ("the error.json record", record),
+        ("the forwarder's stdout", format!("{out1}{out2}")),
+        ("the forwarder's stderr", format!("{err1}{err2}")),
+    ];
+    for (what, text) in texts {
+        let text = text.replace(&spool_path, "<spool>");
+        assert!(
+            leaked_identities(&text).is_empty(),
+            "{what} carry {:?} from the redacted call:\n{text}",
+            leaked_identities(&text)
+        );
+    }
+    Ok(())
+}
+
+/// Without `--redact` the spool name is the Call-ID's, exactly as before: the
+/// fix for the redacted name must not rename every operator's existing spool.
+#[test]
+fn an_unredacted_spool_keeps_its_call_id_name() -> Result<(), TestError> {
+    let spool = tempfile::tempdir()?;
+    let (digest_out, _) = export_fixture(spool.path(), None)?;
+    let names = sipnab::app::vcon_forward::pending(spool.path())?;
+    assert_eq!(names, ["1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json"]);
+    assert!(
+        digest_out.contains("  1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json"),
+        "{digest_out}"
+    );
+    Ok(())
+}

@@ -113,8 +113,8 @@ mod exporting {
             "the container names a different dialog than the one asked for"
         );
 
-        // Two observed parties, then the sipnab observer, and no `name` on any of
-        // them: a From/To display name is what the sender wrote, not an identity.
+        // Two observed parties, then the sipnab observer. A From/To display
+        // name is what the sender wrote, not an identity; see below.
         let parties = v["parties"].as_array().ok_or("parties is an array")?;
         assert_eq!(
             parties.len(),

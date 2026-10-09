@@ -7293,11 +7293,11 @@ fn write_vcon_containers(
                         written,
                         format!(
                             "The {what} for Call-ID '{}' would not serialize: {e}",
-                            dialog.call_id
+                            spool_call_id(&dialog.call_id, redactor)
                         ),
                     )
                 })?;
-        let path = dir.join(vcon_file_name(&dialog.call_id));
+        let path = dir.join(vcon_spool_name(&dialog.call_id, redactor));
         write_container_atomically(&path, json.as_bytes()).map_err(|e| {
             (
                 written,
@@ -7558,6 +7558,39 @@ fn sync_directory_of(destination: &std::path::Path) -> std::io::Result<()> {
         Err(e) if matches!(e.kind(), std::io::ErrorKind::InvalidInput) => Ok(()),
         other => other,
     }
+}
+
+/// The Call-ID a container's spool file is named after: the container's own.
+///
+/// Under `--redact` that is the pseudonym the container carries in
+/// `sip_call_id` ([`crate::output::redact::Redactor::opaque`], the rule the
+/// container's redaction applies), not the Call-ID on the wire. The raw one
+/// embeds the caller's host -- `1-1966@10.0.2.20` -- and the file name travels
+/// further than the container: into `--vcon-digest` lines, the forwarder's
+/// `delivered/` and `failed/` directories, its `error.json` records and every
+/// line it logs. A name built from the raw Call-ID published what the
+/// container hid. Naming the file after the container's token keeps a file
+/// pairable with the Call-ID inside it.
+///
+/// One redactor per run, so one Call-ID gets one token, and a key from
+/// `--redact-key-file` gives it the same token on the next run, which keeps a
+/// re-export overwriting its own file.
+#[cfg(feature = "vcon")]
+fn spool_call_id(call_id: &str, redactor: Option<&crate::output::redact::Redactor<'_>>) -> String {
+    match redactor {
+        Some(r) => r.opaque(call_id),
+        None => call_id.to_owned(),
+    }
+}
+
+/// The spool file name for `call_id`'s container: [`vcon_file_name`] of
+/// [`spool_call_id`].
+#[cfg(feature = "vcon")]
+fn vcon_spool_name(
+    call_id: &str,
+    redactor: Option<&crate::output::redact::Redactor<'_>>,
+) -> String {
+    vcon_file_name(&spool_call_id(call_id, redactor))
 }
 
 /// A Call-ID rendered as one safe filename.
@@ -10488,6 +10521,84 @@ mod tests {
             vcon_file_name("1-1966@10.0.2.20"),
             vcon_file_name("1-1966_10.0.2.20"),
             "a realistic Call-ID and its sanitized twin must stay distinct"
+        );
+    }
+
+    /// The redactor every spool-name test below pseudonymizes under.
+    #[cfg(feature = "vcon")]
+    fn spool_name_policy() -> crate::output::redact::RedactionPolicy {
+        crate::output::redact::RedactionPolicy::new(
+            crate::output::redact::RedactionKey::from_secret(b"spool-name-test"),
+        )
+    }
+
+    /// Without redaction the spool name is the Call-ID's, unchanged.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_unredacted_spool_name_is_the_call_id_name() {
+        for call_id in ["1-1966@10.0.2.20", "a@b", "..", ".hidden@192.0.2.1"] {
+            assert_eq!(vcon_spool_name(call_id, None), vcon_file_name(call_id));
+        }
+    }
+
+    /// Under redaction the spool name carries none of the Call-ID: not its
+    /// local part, not its host, in either spelling the sanitizer produces.
+    /// It is the name of the token the CONTAINER carries, so one rule names
+    /// both and a reader can still pair a file with the Call-ID inside it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_redacted_spool_name_is_the_pseudonymized_call_id_name() {
+        let policy = spool_name_policy();
+        let r = policy.redactor();
+        let call_id = "1-1966@10.0.2.20";
+        let name = vcon_spool_name(call_id, Some(&r));
+        for raw in ["1-1966", "10.0.2.20", "10_0_2_20"] {
+            assert!(!name.contains(raw), "'{name}' carries '{raw}'");
+        }
+        assert_eq!(name, vcon_file_name(&r.opaque(call_id)));
+        // A Call-ID with no `@` takes the other branch of the pseudonym.
+        let bare = vcon_spool_name("abc123xyz", Some(&r));
+        assert!(!bare.contains("abc123xyz"), "'{bare}'");
+    }
+
+    /// The name is stable within a run and across runs under one key: a
+    /// re-export overwrites its own file rather than adding a second one,
+    /// which is what makes the directory a queue.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_redacted_spool_name_is_stable_under_one_key() {
+        let policy = spool_name_policy();
+        let (first, second) = (policy.redactor(), policy.redactor());
+        let call_id = "stable@192.0.2.7";
+        let name = vcon_spool_name(call_id, Some(&first));
+        assert_eq!(name, vcon_spool_name(call_id, Some(&first)));
+        assert_eq!(name, vcon_spool_name(call_id, Some(&second)));
+    }
+
+    /// Call-IDs that sanitize alike still get distinct names when redacted:
+    /// the digest-suffix collision handling holds on the redacted path too.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn redacted_call_ids_that_sanitize_alike_do_not_collide() {
+        let policy = spool_name_policy();
+        let r = policy.redactor();
+        let pairs = [
+            ("a@b", "a_b"),
+            ("1-1966@10.0.2.20", "1-1966_10.0.2.20"),
+            ("x@host.example", "x@host_example"),
+        ];
+        for (one, two) in pairs {
+            assert_ne!(
+                vcon_spool_name(one, Some(&r)),
+                vcon_spool_name(two, Some(&r)),
+                "'{one}' and '{two}' must not share a redacted spool name"
+            );
+        }
+        let long = "p".repeat(300);
+        assert_ne!(
+            vcon_spool_name(&format!("{long}1"), Some(&r)),
+            vcon_spool_name(&format!("{long}2"), Some(&r)),
+            "Call-IDs differing past the truncation must stay distinct"
         );
     }
 
