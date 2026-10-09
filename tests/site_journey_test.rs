@@ -3307,71 +3307,304 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() -> Result<(), Test
     Ok(())
 }
 
-/// The homepage states its automated-test count twice, and both must agree.
+/// The block of the homepage stat tile labeled "Automated tests", from its
+/// opening `<a class="arch-item` to its closing `</a>`.
 ///
-/// `.githooks/pre-commit` already checks both places against a real `cargo
-/// test` run and has for some time, so this is not a missing gate — it is that
-/// gate's coverage moved somewhere it cannot be bypassed. A hook only runs for
-/// a clone with `core.hooksPath` set; a web edit, a contributor who never ran
-/// the setup, or `--no-verify` all skip it, and nothing downstream would
-/// notice. This test plus the `ci.yml` step put the same check on the CI side,
-/// where the tile is pinned to the prose and both to the measured total.
+/// Anchored to the label, not to position, so adding another tile cannot
+/// silently point these checks at the wrong one.
+fn homepage_tests_tile(idx: &str) -> Result<String, TestError> {
+    let label = idx
+        .find(">Automated tests<")
+        .ok_or("homepage has no tile labeled \"Automated tests\"")?;
+    let open = idx[..label]
+        .rfind("<a class=\"arch-item")
+        .ok_or("the \"Automated tests\" label sits in no arch-item tile")?;
+    let close = idx[label..]
+        .find("</a>")
+        .ok_or("the \"Automated tests\" tile never closes")?;
+    Ok(idx[open..label + close].to_string())
+}
+
+/// The homepage carries no hand-set test count.
 ///
-/// The step lives in `ci.yml` because that is where the full suite already
-/// runs, so it parses that run instead of invoking `cargo test` a second time.
-/// The coverage job cannot host it: it runs `--skip cli_goldens`, so its total
-/// is short of the real one by design.
+/// The count used to be a number committed in `website/templates/index.html`,
+/// three times over, held to the suite by `.githooks/pre-commit` and by
+/// `ci.yml`. Every pull request that added a test had to edit it, so any two
+/// such pull requests conflicted on the same line, and the second one paid a
+/// rebase and a full re-gate. The number is now generated at deploy time (see
+/// `pages_writes_the_test_count_before_it_builds_the_site`). A literal number
+/// back in the template would be stale the first time a test lands.
 #[test]
-fn homepage_test_counts_agree_with_each_other() -> Result<(), TestError> {
+fn homepage_template_holds_no_literal_test_count() -> Result<(), TestError> {
     let idx = read("website/templates/index.html")?;
 
-    let tile = regex::Regex::new(r#"data-count="(\d{4,})" data-suffix="">"#)?
-        .captures(&idx)
-        .ok_or("homepage has no automated-test tile")?[1]
-        .to_string();
-
-    let prose = regex::Regex::new(r"(\d{4,}) automated tests")?
-        .captures(&idx)
-        .ok_or("homepage feature table no longer states a test count")?[1]
-        .to_string();
-
-    assert_eq!(
-        tile, prose,
-        "the homepage tile says {tile} automated tests and the feature table says \
-         {prose} — they describe the same suite"
+    let prose = regex::Regex::new(r"(?i)\d[\d,]* automated tests")?;
+    assert!(
+        !prose.is_match(&idx),
+        "website/templates/index.html states a literal test count ({:?}). The \
+         count is generated at deploy time; write `{{{{ suite.automated_tests }}}} \
+         automated tests` instead",
+        prose.find(&idx).map(|m| m.as_str())
     );
 
-    // Not `.contains("published_test_count")`: that string lives inside the
-    // step body and survives continue-on-error, a dropped `exit 1`, and a
-    // widened `if:`. Check the step still enforces.
-    assert_step_enforces(
-        ".github/workflows/ci.yml",
-        "Enforce the published test count",
-        Some("matrix.os == 'ubuntu-latest'"),
+    let tile = homepage_tests_tile(&idx)?;
+    let digits = regex::Regex::new(r"\d{3,}")?;
+    assert!(
+        !digits.is_match(&tile),
+        "the \"Automated tests\" tile carries a literal number ({:?}). Its \
+         data-count and fallback text come from the generated data file:\n{tile}",
+        digits.find(&tile).map(|m| m.as_str())
+    );
+    Ok(())
+}
+
+/// Both places the homepage states the test count read the generated file,
+/// and that file is never committed.
+///
+/// `scripts/published-test-count.py` writes `website/data/test-count.toml` at
+/// deploy time. A local `zola build` has no such file, so the template renders
+/// a sentence with no number instead of a stale or invented one; the deploy
+/// refuses to publish that sentence (`pages.yml`, "Check the built homepage
+/// states the test count").
+#[test]
+fn homepage_test_count_comes_from_the_generated_data_file() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
+    let load = r#"load_data(path="data/test-count.toml", required=false)"#;
+    assert!(
+        idx.contains(load),
+        "website/templates/index.html no longer loads the generated test count \
+         with `{load}`"
+    );
+
+    let tile = homepage_tests_tile(&idx)?;
+    for needle in [
+        r#"data-count="{{ suite.automated_tests }}""#,
+        r#"data-suffix="">{{ suite.automated_tests }}</span>"#,
+    ] {
+        assert!(
+            tile.contains(needle),
+            "the \"Automated tests\" tile does not render `{needle}`:\n{tile}"
+        );
+    }
+    assert!(
+        idx.contains("{{ suite.automated_tests }} automated tests"),
+        "the feature table no longer states the generated count as \
+         `{{{{ suite.automated_tests }}}} automated tests`"
+    );
+    // A number only when it IS one. A malformed data file must fall back to
+    // the sentence without a number, not print whatever the file holds.
+    assert!(
+        idx.contains("suite.automated_tests is number"),
+        "the template renders `suite.automated_tests` without checking it is a number"
+    );
+
+    // Generated, so never committed: a committed copy would be the hand-set
+    // number again under another name.
+    let rel = "website/data/test-count.toml";
+    let tracked = Command::new("git")
+        .args(["ls-files", "--error-unmatch", rel])
+        .current_dir(repo())
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    assert!(
+        !tracked.status.success(),
+        "{rel} is tracked by git. It is generated at deploy time; remove it with \
+         `git rm --cached {rel}`"
+    );
+    let ignored = Command::new("git")
+        .args(["check-ignore", "-q", "--no-index", rel])
+        .current_dir(repo())
+        .status()
+        .map_err(|e| format!("git check-ignore: {e}"))?;
+    assert!(
+        ignored.success(),
+        "{rel} is not in .gitignore, so a local generator run leaves a file \
+         that `git add` would commit"
+    );
+    Ok(())
+}
+
+/// Line index of the first line in `text` containing `needle`.
+fn line_of(text: &str, needle: &str, what: &str) -> Result<usize, TestError> {
+    Ok(text
+        .lines()
+        .position(|l| l.contains(needle))
+        .ok_or_else(|| format!("{what}: no line contains {needle:?}"))?)
+}
+
+/// The deploy writes the test count, from CI's run of the same commit, before
+/// it renders the site, and checks the rendered page states it.
+///
+/// Order is the property. `zola build` reads `website/data/test-count.toml`
+/// once; run before the generator, it renders the sentence with no number and
+/// the published homepage states no count at all.
+#[test]
+fn pages_writes_the_test_count_before_it_builds_the_site() -> Result<(), TestError> {
+    let wf = ".github/workflows/pages.yml";
+    let yaml = read(wf)?;
+
+    let fetch = line_of(&yaml, "python3 scripts/fetch-ci-suite-output.py", wf)?;
+    let derive = line_of(
+        &yaml,
+        "python3 scripts/published-test-count.py suite-output/test-output.txt \
+         --write website/data/test-count.toml",
+        wf,
     )?;
-    // And prove it: a homepage claiming 9999 tests against a run reporting 7
-    // must fail. Structural checks alone were defeated by downgrading
-    // ::error:: to ::warning:: and dropping the exit.
+    let build = line_of(&yaml, "run: zola build", wf)?;
+    let check = line_of(
+        &yaml,
+        "- name: Check the built homepage states the test count",
+        wf,
+    )?;
+    let upload = line_of(&yaml, "- name: Upload Pages artifact", wf)?;
+    assert!(
+        fetch < derive && derive < build && build < check && check < upload,
+        "{wf} must fetch CI's suite output (line {}), derive the count from it \
+         (line {}), build the site (line {}), check the built homepage (line {}) \
+         and only then upload (line {}), in that order",
+        fetch + 1,
+        derive + 1,
+        build + 1,
+        check + 1,
+        upload + 1
+    );
+
+    // The count changes whenever a test is added, which a change to tests/
+    // alone does. Without these the site would not rebuild for it.
+    for path in [
+        "'tests/**'",
+        "'scripts/published-test-count.py'",
+        "'scripts/fetch-ci-suite-output.py'",
+    ] {
+        assert!(
+            yaml.contains(&format!("- {path}")),
+            "{wf}'s push `paths:` filter does not list {path}, so a change to it \
+             does not rebuild the site"
+        );
+    }
+
+    // Reading another run's artifacts needs actions:read on the job.
+    let job = yaml
+        .split("\n  deploy:")
+        .next()
+        .ok_or("pages.yml has no deploy job")?;
+    assert!(
+        job.contains("actions: read"),
+        "{wf}'s build job reads CI's artifacts and must grant `actions: read`"
+    );
+
+    for step in [
+        "Fetch the suite output of CI's run of this commit",
+        "Derive the homepage test count",
+        "Check the built homepage states the test count",
+    ] {
+        assert_step_enforces(wf, step, None)?;
+    }
+    assert_step_fails_on_bad_input(wf, "Derive the homepage test count", &[], &|dir| {
+        std::fs::create_dir_all(dir.join("scripts")).map_err(|e| format!("mkdir: {e}"))?;
+        std::fs::copy(
+            repo().join("scripts/published-test-count.py"),
+            dir.join("scripts/published-test-count.py"),
+        )
+        .map_err(|e| format!("copy generator: {e}"))?;
+        std::fs::create_dir_all(dir.join("suite-output")).map_err(|e| format!("mkdir: {e}"))?;
+        std::fs::create_dir_all(dir.join("website/data")).map_err(|e| format!("mkdir: {e}"))?;
+        std::fs::write(
+            dir.join("suite-output/test-output.txt"),
+            "error[E0425]: cannot find value\n",
+        )
+        .map_err(|e| format!("write output: {e}"))?;
+        Ok(())
+    })?;
     assert_step_fails_on_bad_input(
-        ".github/workflows/ci.yml",
-        "Enforce the published test count",
+        wf,
+        "Check the built homepage states the test count",
         &[],
         &|dir| {
-            std::fs::create_dir_all(dir.join("website/templates"))
+            std::fs::create_dir_all(dir.join("website/data")).map_err(|e| format!("mkdir: {e}"))?;
+            std::fs::create_dir_all(dir.join("website/public"))
                 .map_err(|e| format!("mkdir: {e}"))?;
             std::fs::write(
-                dir.join("website/templates/index.html"),
-                "<td>9999 automated tests</td>",
+                dir.join("website/data/test-count.toml"),
+                "automated_tests = 7\n",
             )
-            .map_err(|e| format!("write index: {e}"))?;
+            .map_err(|e| format!("write data: {e}"))?;
             std::fs::write(
-                dir.join("test-output.txt"),
-                "test result: ok. 7 passed; 0 failed;\n",
+                dir.join("website/public/index.html"),
+                "<td>The full automated test suite runs on every pull request.</td>",
             )
-            .map_err(|e| format!("write output: {e}"))?;
+            .map_err(|e| format!("write page: {e}"))?;
             Ok(())
         },
     )?;
+    Ok(())
+}
+
+/// CI derives the count from its own full run and hands that run's output to
+/// the site build.
+///
+/// The step this replaces compared the run with a number committed in the
+/// template. What it guaranteed that still matters is kept: the published
+/// count comes from a complete, passing `cargo test --all-features` run on
+/// Linux, by the one rule in `scripts/published-test-count.py`, and a run the
+/// rule cannot count fails CI rather than the deploy.
+///
+/// Linux only, deliberately. The suite is not the same size on every platform
+/// (`#[cfg(target_os = "linux")]` tests), and the homepage figure describes
+/// the Linux run.
+#[test]
+fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<(), TestError> {
+    let wf = ".github/workflows/ci.yml";
+    assert_step_enforces(
+        wf,
+        "Derive the published test count",
+        Some("matrix.os == 'ubuntu-latest'"),
+    )?;
+    assert_step_fails_on_bad_input(wf, "Derive the published test count", &[], &|dir| {
+        std::fs::create_dir_all(dir.join("scripts")).map_err(|e| format!("mkdir: {e}"))?;
+        std::fs::copy(
+            repo().join("scripts/published-test-count.py"),
+            dir.join("scripts/published-test-count.py"),
+        )
+        .map_err(|e| format!("copy generator: {e}"))?;
+        std::fs::write(
+            dir.join("test-output.txt"),
+            "test result: FAILED. 6 passed; 1 failed;\n",
+        )
+        .map_err(|e| format!("write output: {e}"))?;
+        Ok(())
+    })?;
+
+    let yaml = read(wf)?;
+    let test = line_of(
+        &yaml,
+        "cargo test --all-features 2>&1 | tee test-output.txt",
+        wf,
+    )?;
+    let derive = line_of(&yaml, "- name: Derive the published test count", wf)?;
+    let upload = line_of(&yaml, "- name: Hand the suite output to the site build", wf)?;
+    assert!(
+        test < derive && derive < upload,
+        "{wf} must run the suite (line {}), derive the count (line {}) and only \
+         then upload the output (line {}): an output the rule refuses must never \
+         reach the site",
+        test + 1,
+        derive + 1,
+        upload + 1
+    );
+    let body = workflow_step_body(wf, "Hand the suite output to the site build")?;
+    for needle in [
+        "uses: actions/upload-artifact@",
+        "name: suite-output",
+        "path: test-output.txt",
+        "matrix.os == 'ubuntu-latest'",
+        "github.event_name == 'push'",
+    ] {
+        assert!(
+            body.contains(needle),
+            "{wf} step \"Hand the suite output to the site build\" lacks {needle:?}:\n{body}"
+        );
+    }
     Ok(())
 }
 
@@ -5793,7 +6026,7 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 5] = [
+            const GENERATED: [&str; 6] = [
                 "website/public",
                 "build/",
                 "target/",
@@ -5801,6 +6034,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
                 // pages.yml copies the YANG module here at deploy; yang/ holds
                 // the one committed copy.
                 "website/static/yang",
+                // pages.yml writes the homepage test count here at deploy
+                // (scripts/published-test-count.py); it is never committed.
+                "website/data/test-count.toml",
             ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
@@ -6002,7 +6238,17 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // above the PIP_TIMEOUT and PIP_RETRIES settings in
     // `.github/workflows/ci.yml`. Attributed by measurement: with HEAD's
     // ci.yml swapped back in, the scan reads 153.
-    const EXPECTED_REFERENCES: usize = 154;
+    // 154 -> 163: nine, for the homepage test count generated at deploy.
+    // `.github/workflows/ci.yml` +2: its count step and comments name
+    // scripts/published-test-count.py twice and scripts/fetch-ci-suite-output.py
+    // once, and no longer name .githooks/pre-commit twice but once.
+    // `.github/workflows/pages.yml` +7: scripts/fetch-ci-suite-output.py twice,
+    // scripts/published-test-count.py three times, tests/site_journey_test.rs
+    // and website/templates/index.html once each. Its three mentions of
+    // website/data/test-count.toml are a deploy output and sit in GENERATED.
+    // Attributed per file by running the extractor over HEAD's copy and the
+    // working tree's.
+    const EXPECTED_REFERENCES: usize = 163;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -7214,16 +7460,17 @@ fn no_test_judges_an_export_from_one_arbitrary_directory_entry() -> Result<(), T
 
 /// No test may hide behind a feature that `--features full` does not enable.
 ///
-/// The homepage advertises one automated-test count, and TWO gates pin it to a
-/// measurement — `.githooks/pre-commit` step 5 against its `cargo test
-/// --features full` run, and `ci.yml`'s "Enforce the published test count"
-/// against `cargo test --all-features`. One number, two suites.
+/// The homepage's automated-test count is generated at deploy time from CI's
+/// `cargo test --all-features` run. The pre-commit hook runs `cargo test
+/// --features full`, and its step 5 counts that run with the same script
+/// (`scripts/published-test-count.py`). Two commands, one suite: the hook is
+/// only a check on what CI publishes while the two run the same tests.
 ///
 /// They agree only while nothing is tested behind a feature `full` leaves out
-/// (`wasm` and `bpf` today). Add one such test and the number becomes
-/// unsatisfiable BY CONSTRUCTION: the hook demands N, CI demands N+1, and no
-/// value of the homepage figure passes both. The fixer for one gate is
-/// guaranteed to break the other.
+/// (`wasm` and `bpf` today). Add one such test and it runs on CI and never
+/// before a commit, and the hook and CI disagree about the size of the suite.
+/// When the count was a committed number, that made it unsatisfiable BY
+/// CONSTRUCTION: the hook demanded N, CI demanded N+1.
 ///
 /// That happened with `bpf`. Nine tests landed in `src/capture/uprobe/bpf.rs`,
 /// whose `mod` declaration carries `#[cfg(all(feature = "bpf", target_os =

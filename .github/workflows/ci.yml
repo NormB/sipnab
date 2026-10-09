@@ -254,43 +254,49 @@ jobs:
           python3 -m pip install --require-hashes -r scripts/requirements-yang.txt
           python3 scripts/check-yang.py --exports "$RUNNER_TEMP/yang-exports"
 
-      # The homepage advertises an automated-test count in two places.
-      # .githooks/pre-commit already compares both to a real test run, but a
-      # hook only fires for a clone that opted into core.hooksPath -- a web
-      # edit, a fresh contributor or --no-verify all bypass it silently.
+      # The homepage's automated-test count is derived from this run, by the
+      # one rule in scripts/published-test-count.py, and never committed.
+      # This step applies the rule here so a run it cannot count (no result
+      # line, a FAILED binary, a total of zero) fails CI on the pull request
+      # rather than the deploy. On a push to main the next step hands the
+      # output to pages.yml, which applies the same rule and writes the data
+      # file the homepage template reads.
+      #
+      # The number used to be committed in website/templates/index.html and
+      # compared with this run. Every pull request that added a test edited
+      # that line, so any two such pull requests conflicted on it.
       #
       # This parses the run above rather than invoking cargo test again. The
-      # coverage job cannot host this check: it runs with `--skip cli_goldens`,
-      # so its total is short of the real one by design.
+      # coverage job cannot host this: it runs with `--skip cli_goldens`, so
+      # its total is short of the real one by design.
       #
       # Linux only, deliberately. The suite is not the same size on every
       # platform -- measured 3015 on ubuntu-latest against 3008 on
       # macos-latest -- so a single advertised number cannot be true of both.
-      # The homepage figure describes the Linux suite; pinning it here and
-      # skipping macOS is the honest version of that, rather than quietly
-      # widening the check until both pass.
-      # Counts `cargo test --all-features` above, while .githooks/pre-commit
-      # counts `cargo test --features full` — two suites, one published number.
-      # Both stay right only while nothing is tested behind a feature outside
-      # `full`; no_test_hides_behind_a_feature_outside_full in
-      # tests/site_journey_test.rs fails the moment that stops holding.
-      - name: Enforce the published test count
+      # The homepage figure describes the Linux suite.
+      # .githooks/pre-commit runs the same script on its `cargo test
+      # --features full` run; no_test_hides_behind_a_feature_outside_full in
+      # tests/site_journey_test.rs keeps that run the same suite as this one.
+      - name: Derive the published test count
         if: matrix.os == 'ubuntu-latest'
         run: |
-          published=$(grep -oE '[0-9]{4,} automated tests' website/templates/index.html \
-            | grep -oE '^[0-9]+' | sort -u)
-          case "$published" in
-            ''|*[!0-9]*) echo "no single published_test_count on the homepage: '$published'"; exit 1 ;;
-          esac
-
-          actual=$(awk -F'[ ;]+' '/^test result/ { p += $4 } END { print p }' test-output.txt)
-          if ! { [ -n "$actual" ] && [ "$actual" -gt 0 ]; }; then echo "could not count tests"; exit 1; fi
-
-          echo "published_test_count=$published actual=$actual"
-          if [ "$published" != "$actual" ]; then
-            echo "::error::homepage advertises $published automated tests; the suite has $actual"
+          set -euo pipefail
+          if ! actual=$(python3 scripts/published-test-count.py test-output.txt); then
+            echo "::error::the suite output cannot be counted, so the homepage would have no test count"
             exit 1
           fi
+          echo "published_test_count=$actual"
+
+      # pages.yml waits for this artifact from CI's run of the commit it
+      # deploys (scripts/fetch-ci-suite-output.py). Pushes only: pull
+      # requests never deploy.
+      - name: Hand the suite output to the site build
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: suite-output
+          path: test-output.txt
+          if-no-files-found: error
 
       - name: Test the sipnab-bpf-types crate
         # The Test step covers the sipnab package only, because `cargo test`

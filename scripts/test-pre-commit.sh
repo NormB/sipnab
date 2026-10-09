@@ -10,7 +10,10 @@
 # SCENARIOS:
 #   1. The hook runs the full suite exactly ONCE (count is derived from the
 #      step-2 output, not a fresh run).
-#   2. A complete captured run sums every `test result:` passed column.
+#   2. A complete captured run is counted by the published rule
+#      (scripts/published-test-count.py), and a literal count in the
+#      homepage template, or a template that stopped loading the generated
+#      count, is rejected.
 #   3. A non-zero test exit is rejected at step 2 (fails "retry"), so a
 #      truncated run can never reach the count comparison.
 #   4. Gate 8 advises and never blocks.
@@ -237,11 +240,13 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		echo "test result: ok. $_n passed; 0 failed; 0 ignored" >> "$_d/canned-test-output"
 		_total=$((_total + _n))
 	done
-	# The homepage the hook will check, carrying the true total.
-	cat > "$_d/website/templates/index.html" <<-EOF
-		<span class="arch-stat" data-count="$_total" data-suffix="">$_total</span>
+	# The homepage the hook will check. It carries no number: the count is
+	# generated at deploy time from the file this loads.
+	cat > "$_d/website/templates/index.html" <<-'EOF'
+		{% set suite = load_data(path="data/test-count.toml", required=false) %}
+		<span class="arch-stat" data-count="{{ suite.automated_tests }}" data-suffix="">{{ suite.automated_tests }}</span>
 		<p>Automated tests</p>
-		<tr><td>$_total automated tests.</td></tr>
+		<tr><td>{{ suite.automated_tests }} automated tests.</td></tr>
 	EOF
 
 	( cd "$_d" && git init -q . && git config user.email t@t && git config user.name t \
@@ -318,55 +323,49 @@ else
 	bad "hook ran the suite without scripts/parallel-tests.py: $(cat "$D/cargo-invocations")"
 fi
 
-# ── Scenario 2: the hook's own summing, exercised end to end ───────────────
-# 264 + 1600 + 974 = 2838, and the sandbox homepage says 2838. If the hook's
-# awk column were wrong the sum would not match and the gate would fail.
+# ── Scenario 2: the hook's count gate, exercised end to end ────────────────
+# 264 + 1600 + 974 = 2838. The gate runs scripts/published-test-count.py, the
+# rule pages.yml publishes with, on the step-2 output; a wrong column or a
+# second rule would not print 2838.
 run_hook "$D"
-if printf '%s' "$HOOK_OUT" | grep -q 'Homepage test count.*OK (2838)'; then
-	ok "hook summed the passed column across three binaries (2838)"
+if printf '%s' "$HOOK_OUT" | grep -q 'Homepage test count generated.*OK (2838)'; then
+	ok "hook counted the step-2 run with the published rule (2838)"
 else
 	bad "hook did not compute 2838 from 264+1600+974; output was: $HOOK_OUT"
 fi
 
-# And it must FAIL when the homepage disagrees — otherwise the above proves
-# only that the gate is quiet, not that it compares.
+# And it must FAIL when a literal count comes back into the template --
+# otherwise the above proves only that the gate is quiet, not that it checks.
+# The hand-set number is what made every pair of test-adding pull requests
+# conflict. Every platform blocks: nothing here depends on the host's suite.
 #
 # Write-to-temp-and-move rather than `sed -i`. `sed -i EXPR FILE` is the GNU
 # spelling; BSD sed takes the backup SUFFIX as -i's argument, so on macOS it
-# read `s/2838/9999/g` as the suffix and the filename as the script, and
+# read the expression as the suffix and the filename as the script, and
 # answered `sed: 1: "/var/folders/...": invalid command code f` (measured
 # 2026-08-19, macOS 26.5.2/aarch64). Under `set -eu` that aborted the whole
-# harness mid-run: scenarios 2b through 6 never executed and the script printed
-# no summary at all. The portable form has no `-i` to disagree about.
-sed 's/2838/9999/g' "$D/website/templates/index.html" >"$D/index.html.new"
+# harness mid-run. The portable form has no `-i` to disagree about.
+sed 's/{{ suite.automated_tests }} automated tests/9999 automated tests/' \
+	"$D/website/templates/index.html" >"$D/index.html.new"
 mv "$D/index.html.new" "$D/website/templates/index.html"
 run_hook "$D"
-# ---- Why this scenario cannot assert a BLOCK off Linux ----------------------
-# The gate under test now warns instead of failing when `uname -s` is not
-# Linux, and that is deliberate: the published number must be the LINUX count
-# because ci.yml compares against it, and the ~114 `#[cfg(target_os = "linux")]`
-# uprobe/bpf tests cannot compile on a Mac, so a local run can never reach it.
-# See the comment at .githooks/pre-commit's step 5.
-#
-# That makes "the hook rejects a disagreeing count" true on Linux and false
-# here, by design. Asserting it anyway would turn a correct hook into a red
-# harness on every Mac; deleting the assertion would drop the only coverage of
-# the comparison. So each host asserts the branch it can actually reach --
-# BLOCK on Linux, WARN-and-name-both-numbers everywhere else -- and neither
-# host is allowed to pass by observing nothing.
-if [ "$(uname -s)" != "Linux" ]; then
-	# The warn arm must still have COMPARED: it prints both figures, and a
-	# gate that skipped the comparison outright would print neither.
-	if printf '%s' "$HOOK_OUT" | grep -q 'Homepage shows 9999.*counted 2838'; then
-		ok "hook warns (not blocks) on a disagreeing homepage count off Linux, naming 9999 vs 2838"
-	else
-		bad "off Linux the hook must WARN and name both numbers; output was: $HOOK_OUT"
-	fi
-	skip "hook rejects a disagreeing homepage count -- blocking is Linux-only by design (ci.yml owns the number)"
-elif [ "$HOOK_RC" -ne 0 ]; then
-	ok "hook rejects a homepage count that disagrees with the run"
+if [ "$HOOK_RC" -ne 0 ] && printf '%s' "$HOOK_OUT" | grep -q 'literal test count: 9999 automated tests'; then
+	ok "hook rejects a literal test count in the homepage template"
 else
-	bad "hook accepted a homepage count of 9999 against a real 2838"
+	bad "hook accepted a literal '9999 automated tests' (rc=$HOOK_RC): $HOOK_OUT"
+fi
+rm -rf "$D"
+
+# ...and a template that stopped loading the generated file.
+D=$(sandbox 5)
+sed 's/load_data(path="data\/test-count.toml", required=false)/false/' \
+	"$D/website/templates/index.html" >"$D/index.html.new"
+mv "$D/index.html.new" "$D/website/templates/index.html"
+run_hook "$D"
+if [ "$HOOK_RC" -ne 0 ] && printf '%s' "$HOOK_OUT" | grep -q 'no longer loads data/test-count.toml'; then
+	ok "hook rejects a template that no longer loads the generated count"
+else
+	bad "hook accepted a template that does not load data/test-count.toml (rc=$HOOK_RC): $HOOK_OUT"
 fi
 rm -rf "$D"
 

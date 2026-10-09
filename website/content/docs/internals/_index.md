@@ -155,7 +155,8 @@ the numbered gates in [`.githooks/pre-commit`](https://github.com/NormB/sipnab/b
 (formatting, Vale and codespell, clippy, the full test suite, no
 `unwrap()`/`expect()` or abort macro in
 production, WASM
-exports in sync, the homepage *test count*, sub-gate 5b for the site version —
+exports in sync, the homepage *test count* still generated rather than
+hand-set, sub-gate 5b for the site version —
 a different claim from the crate version — no TODO stubs, and an
 advisory notice when a commit touches code these pages cite. The TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the

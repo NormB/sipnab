@@ -70,7 +70,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
-| `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website. |
+| `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website, with the homepage test count taken from CI's run of the same commit. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
@@ -401,7 +401,8 @@ site, and the four macro names are the only ones that marker takes; a generated
 file staged with the inputs it derives from; every feature
 declaring what its own modules import; the privilege-drop
 path still dropping privileges; WASM exports in
-sync with the site's JS; the homepage test count matching the run it just did —
+sync with the site's JS; the homepage test count still generated, not
+written into the template —
 plus the site version matching `Cargo.toml`; no TODO
 stubs; and an
 <!-- vale Google.Semicolons = YES -->
@@ -489,8 +490,8 @@ it dies without naming a test at all, gate 2 prints the last twenty lines
 rather than nothing. A passing run still prints one line per gate.
 
 Both gates capture their tool's output rather than let it stream, because gate
-5 reads the test run back for the homepage count and a streamed clippy would
-bury the per-gate summary.
+5 reads the test run back to check the homepage count's rule still counts it,
+and a streamed clippy would bury the per-gate summary.
 
 Capturing without reporting swallows the answer,
 which is what the naming above prevents: a failure that prints only `FAIL` and
@@ -500,8 +501,35 @@ break is theirs or already on `HEAD`. Settling that one question once cost an
 extraction of a pristine `HEAD` into a scratch directory.
 
 That means **every commit runs clippy and the whole test suite** and takes
-minutes. It is not optional theatre: the homepage-count gate alone means adding
-a test obliges you to update [`website/templates/index.html`](../../website/templates/index.html) in the same commit.
+minutes.
+
+The homepage's automated-test count is not in the template. It used to be: a
+number in [`website/templates/index.html`](../../website/templates/index.html)
+that gate 5 held to the run, so every pull request that added a test edited
+the same line, and any two such pull requests conflicted on it. It is now
+generated at deploy time:
+
+1. `ci.yml`'s Check job on Linux runs `cargo test --all-features`, applies
+   [`scripts/published-test-count.py`](../../scripts/published-test-count.py)
+   to the output (step "Derive the published test count", which fails CI
+   when the script cannot count the run), and on a push to `main` uploads the
+   output as the `suite-output` artifact.
+2. `pages.yml` waits for that artifact from CI's run of the commit it
+   deploys
+   ([`scripts/fetch-ci-suite-output.py`](../../scripts/fetch-ci-suite-output.py)),
+   applies the same script to it, and writes `website/data/test-count.toml`.
+   It then runs `zola build`, and fails the deploy if the built homepage does
+   not state that number.
+3. The template loads the file with `load_data(..., required=false)`. A local
+   `zola build` has no file, so it renders "Every PR" on the tile and a
+   sentence with no number in the feature table, instead of a stale count.
+
+The script is the one counting rule: it sums the `passed` figure of every
+line that starts with `test result`, and refuses a run with a `FAILED`
+binary, with no result line, or with a total of zero. Gate 5 checks the
+mechanism: the script still counts the gate 2 run, the template still loads
+the file, and no literal count has come back. The data file is in
+`.gitignore`. Adding a test needs no edit to the site.
 
 Two checks stay out of the PRE-COMMIT hook on purpose: the feature matrix and
 rustdoc. That hook already costs minutes and each of those adds more.
@@ -1173,8 +1201,8 @@ something was **measured** on — the benchmarks pages — must not track the cr
 version. A marker forcing them to is what kept a stale benchmark claim looking
 freshly checked for twenty-nine releases.
 
-The same mechanism gates the test count in [`website/templates/index.html`](../../website/templates/index.html), by
-`ci.yml` against the real suite total. That check is Linux-only: platform-gated
+The homepage's test count is not a marker: the deploy generates it from CI's
+Linux run (see [Hooks](#hooks)). It is Linux-only: platform-gated
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
 

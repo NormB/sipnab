@@ -5,6 +5,15 @@
 {% block og_title %}sipnab -- SIP & RTP analysis tool{% endblock og_title %}
 
 {% block content %}
+{# The automated-test count is generated, never committed. pages.yml takes the
+   output of CI's Linux `cargo test --all-features` run of the commit it
+   deploys, and scripts/published-test-count.py writes data/test-count.toml
+   from it before `zola build`. A local build has no such file and renders the
+   sentences below that carry no number, rather than a stale one; the deploy
+   refuses to publish those. See homepage_test_count_comes_from_the_generated_data_file
+   in tests/site_journey_test.rs. #}
+{% set suite = load_data(path="data/test-count.toml", required=false) %}
+{% set has_test_count = suite and suite.automated_tests is number %}
 <!-- Hero -->
 <section class="hero">
   <div class="hero-bg" aria-hidden="true"></div>
@@ -567,7 +576,7 @@ Issues Detected:
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 72 tools cover dialogs, RTP, diagnostics, and security findings. 59 are read-only, and the thirteen that write stay off until you enable them on the server.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 11357 automated tests. Under 18 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. {% if has_test_count %}{{ suite.automated_tests }} automated tests.{% else %}The full automated test suite runs on every pull request.{% endif %} Under 18 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -608,7 +617,11 @@ Issues Detected:
         <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="11357" data-suffix="">11357</span>
+        {% if has_test_count %}
+        <span class="arch-stat" data-count="{{ suite.automated_tests }}" data-suffix="">{{ suite.automated_tests }}</span>
+        {% else %}
+        <span class="arch-stat">Every PR</span>
+        {% endif %}
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

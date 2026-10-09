@@ -1180,7 +1180,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // status table in cli-reference.md.
     // 1327 -> 1328: docs/internals/build-ci-release.md's commit-msg paragraph
     // links CONTRIBUTING.md#git-hooks.
-    const EXPECTED_WIKI_LINKS: usize = 1328;
+    // 1328 -> 1329: docs/internals/build-ci-release.md's version-marker
+    // section links its own Hooks section for the generated homepage test
+    // count.
+    const EXPECTED_WIKI_LINKS: usize = 1329;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
