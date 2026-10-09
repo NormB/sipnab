@@ -65,6 +65,7 @@ pub mod schema;
 pub mod server;
 pub mod shape;
 pub mod since;
+pub mod stop;
 pub mod structured;
 pub mod subscribe;
 pub mod sweep;

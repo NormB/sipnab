@@ -70,7 +70,17 @@ use rmcp::ServiceExt;
 /// process behind, still capturing. The packet loop now checks the same flag
 /// and requests shutdown; see `app::batch::run`.
 pub async fn serve_stdio(server: SipnabMcp) -> anyhow::Result<()> {
-    let transport = (tokio::io::stdin(), tokio::io::stdout());
+    // A confirmed `shutdown_server` stops the process only once its reply is
+    // on stdout; see `super::stop`.
+    let stop = super::stop::StopAfterReply::new(crate::signals::request_shutdown);
+    let server = server.with_stop_after_reply(stop.clone());
+    let transport = super::stop::StopAfterReplyTransport::new(
+        rmcp::transport::async_rw::AsyncRwTransport::new_server(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+        ),
+        stop,
+    );
     let service = server.serve(transport).await?;
     service.waiting().await?;
     Ok(())
