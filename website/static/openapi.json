@@ -5789,7 +5789,7 @@
         "type": "object"
       },
       "Vcon": {
-        "description": "`GET /v1/dialogs/{call_id}/vcon` — one observed dialog as an unsigned\nOBSERVER vCon container (draft-ietf-vcon-vcon-core).\n\nThe container is serialized as a JSON OBJECT, not as `Vcon::to_json`'s\nstring — a client must not have to parse JSON out of JSON.\n\n`tests/schemas/vcon.schema.json` is the working group's schema and is\ndeliberately NOT reproduced here: it is theirs, it is draft-07, and its\nown text rejects a container shape the working group agreed to at IETF\n124. This describes what sipnab sends.",
+        "description": "`GET /v1/dialogs/{call_id}/vcon` — one observed dialog as an unsigned\nOBSERVER vCon container (draft-ietf-vcon-vcon-core).\n\nThe container is serialized as a JSON OBJECT, not as `Vcon::to_json`'s\nstring — a client must not have to parse JSON out of JSON.\n\n`tests/schemas/vcon.schema.json` is the working group's\ndraft-ietf-vcon-vcon-core-04 schema and is deliberately NOT reproduced\nhere: it is theirs, and it is draft-07. This describes what sipnab\nsends.",
         "properties": {
           "analysis": {
             "description": "The analysis bodies, carrying the same completeness caveat.",
@@ -5851,37 +5851,12 @@
         ],
         "type": "object"
       },
-      "VconExplanation": {
-        "description": "Why a documented deviation is a deviation rather than an error.",
-        "properties": {
-          "explanation": {
-            "description": "One paragraph on why sipnab emits it and the schema rejects it.",
-            "type": "string"
-          },
-          "name": {
-            "description": "The deviation name the findings reference.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "explanation"
-        ],
-        "type": "object"
-      },
       "VconFinding": {
         "description": "One place a vCon container disagrees with the vendored schema.",
         "properties": {
           "detail": {
             "description": "What was wrong, in one sentence.",
             "type": "string"
-          },
-          "deviation": {
-            "description": "The documented deviation this finding IS, when it is one; absent for\nan ordinary error.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "instance_path": {
             "description": "JSON Pointer to the offending value, `/dialog/2` shaped.",
@@ -5902,24 +5877,10 @@
       "VconValidation": {
         "description": "The verdict on a vCon container checked against the vendored schema.",
         "properties": {
-          "deviations": {
-            "description": "Findings that ARE documented deviations, kept apart from the errors.",
-            "items": {
-              "$ref": "#/components/schemas/VconFinding"
-            },
-            "type": "array"
-          },
           "errors": {
-            "description": "Findings that are NOT documented deviations. Empty on a clean pass.",
+            "description": "Every finding. Empty on a clean pass.",
             "items": {
               "$ref": "#/components/schemas/VconFinding"
-            },
-            "type": "array"
-          },
-          "explanations": {
-            "description": "One paragraph per distinct deviation named above.",
-            "items": {
-              "$ref": "#/components/schemas/VconExplanation"
             },
             "type": "array"
           },
@@ -5933,13 +5894,13 @@
           },
           "schema_version": {
             "description": "Version of this response's shape.",
-            "example": 1,
+            "example": 2,
             "format": "int32",
             "minimum": 0,
             "type": "integer"
           },
           "verdict": {
-            "description": "The one-word verdict: `valid`, `valid-except-documented-deviation`\nor `invalid`.",
+            "description": "The one-word verdict: `valid` or `invalid`.",
             "type": "string"
           }
         },
@@ -5948,9 +5909,7 @@
           "verdict",
           "schema_id",
           "schema_path",
-          "errors",
-          "deviations",
-          "explanations"
+          "errors"
         ],
         "type": "object"
       }
@@ -9022,7 +8981,7 @@
     },
     "/v1/vcon/validate": {
       "post": {
-        "description": "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\n`verdict` is `valid`, `valid-except-documented-deviation` (a shape sipnab emits on purpose that the schema rejects on purpose, named in `deviations` with a paragraph in `explanations`) or `invalid` (real `errors`). The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
+        "description": "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\nThe schema is the working group's draft-ietf-vcon-vcon-core-04 schema, unmodified. `verdict` is `valid` or `invalid`, and `errors` names every finding. The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
         "operationId": "post_vcon_validate",
         "requestBody": {
           "content": {

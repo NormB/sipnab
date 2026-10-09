@@ -29,19 +29,16 @@
 //! [`SchemaVerdict::Invalid`] naming it. A re-vendor that outgrows this fails
 //! loudly instead of quietly certifying whatever it is handed.
 //!
-//! # The documented deviation
+//! # No documented deviation
 //!
-//! [Section 4.3 of `draft-ietf-vcon-vcon-core-03`](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to have a Dialog
-//! Object with no parameters in it", the working group agreed that shape in
-//! issue #20 after IETF 124, and the draft's own Appendix B schema rejects it:
-//! `start` is required on every Dialog Object. sipnab emits one — the
-//! consultative call of an attended transfer, which this leg is known not to
-//! have seen.
-//!
-//! That is reported as a DEVIATION with its own name, never folded into the
-//! clean verdict. A validator that quietly tolerates the one shape the schema
-//! forbids teaches a producer the wrong lesson, and the next container it
-//! writes with a genuinely missing `start` will read as fine.
+//! The vendored file is the working group's
+//! [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B) schema, byte for byte. The
+//! core-03 copy removed `type` from the Dialog Object's `required` list so that
+//! a Dialog Object "with no parameters", which core-03's prose allowed and its
+//! schema rejected, could pass as a named deviation. core-04 replaced that
+//! object by a placeholder that names its type
+//! ([core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3)), so the deviation and the verdict
+//! that excused it are gone: a container is valid or it is not.
 
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
@@ -58,31 +55,24 @@ const SCHEMA_TEXT: &str = include_str!("../../tests/schemas/vcon.schema.json");
 /// Where the schema lives, for a report a reader can act on.
 pub const SCHEMA_PATH: &str = "tests/schemas/vcon.schema.json";
 
-/// The name the documented deviation is reported under.
-pub const EMPTY_DIALOG_OBJECT: &str = "empty-dialog-object";
-
-/// What the deviation is, in one paragraph a producer can act on.
-pub const EMPTY_DIALOG_OBJECT_EXPLANATION: &str = "The empty Dialog Object `{}` of section 4.3: \"it is possible to have a Dialog Object with \
-     no parameters in it\". The working group agreed this shape in issue #20 after IETF 124, and \
-     the draft's own Appendix B schema rejects it, because `start` is required on every Dialog \
-     Object. sipnab emits one for the consultative call of an attended transfer -- a call known \
-     to have occurred that this leg never saw. It is reported here rather than passed silently: \
-     a validator that tolerates the one shape the schema forbids would teach a producer that a \
-     missing `start` is fine.";
-
 /// Keywords this validator implements.
 const IMPLEMENTED: &[&str] = &[
     "$ref",
+    "allOf",
     "anyOf",
     "const",
     "dependencies",
+    "else",
     "enum",
     "format",
+    "if",
     "items",
     "minimum",
+    "not",
     "oneOf",
     "properties",
     "required",
+    "then",
     "type",
 ];
 
@@ -105,13 +95,7 @@ const ANNOTATIONS: &[&str] = &[
 pub enum SchemaVerdict {
     /// Nothing to report.
     Valid,
-    /// Every finding is a documented deviation, and there is at least one.
-    ///
-    /// A separate answer from [`Self::Valid`] on purpose. Collapsing the two
-    /// would put the one shape the schema forbids behind a clean verdict, and
-    /// a producer reading that learns the wrong lesson about `start`.
-    ValidExceptDocumentedDeviation,
-    /// At least one finding is not a documented deviation.
+    /// At least one finding.
     Invalid,
 }
 
@@ -123,7 +107,6 @@ impl SchemaVerdict {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Valid => "valid",
-            Self::ValidExceptDocumentedDeviation => "valid-except-documented-deviation",
             Self::Invalid => "invalid",
         }
     }
@@ -140,13 +123,6 @@ pub struct SchemaFinding {
     pub keyword: &'static str,
     /// What was wrong, in one sentence.
     pub detail: String,
-    /// The documented deviation this finding IS, when it is one.
-    ///
-    /// `None` is an ordinary error. `Some` names a shape sipnab emits on
-    /// purpose and the schema rejects on purpose, and
-    /// [`SchemaReport::explanations`] carries the reasoning.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deviation: Option<&'static str>,
 }
 
 /// What a validation pass found.
@@ -160,26 +136,8 @@ pub struct SchemaReport {
     pub schema_id: String,
     /// Where that schema lives in this repository.
     pub schema_path: &'static str,
-    /// Findings that are NOT documented deviations. Empty on a clean pass.
+    /// Every finding. Empty on a clean pass.
     pub errors: Vec<SchemaFinding>,
-    /// Findings that ARE documented deviations, kept apart from the errors.
-    pub deviations: Vec<SchemaFinding>,
-    /// One paragraph per distinct deviation named above.
-    ///
-    /// Beside the findings rather than inside each one: a container with four
-    /// empty Dialog Objects should carry the reasoning once, not four times.
-    pub explanations: Vec<DeviationNote>,
-}
-
-/// Why a deviation is a deviation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
-#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
-pub struct DeviationNote {
-    /// The name the findings reference.
-    pub name: &'static str,
-    /// What it is, and why it is emitted anyway.
-    pub explanation: &'static str,
 }
 
 /// The vendored schema, parsed once.
@@ -201,8 +159,8 @@ fn schema() -> &'static Value {
 /// Keywords the vendored schema uses that this validator does not implement.
 ///
 /// The tripwire on the subset. A re-vendor that introduces `additionalProperties`,
-/// `patternProperties`, `if`/`then`, a tuple-form `items` or anything else in
-/// the draft-07 vocabulary shows up here, and [`validate`] refuses rather than
+/// `patternProperties`, a tuple-form `items` or anything else in the draft-07
+/// vocabulary this file does not implement shows up here, and [`validate`] refuses rather than
 /// quietly ignoring the new constraint.
 ///
 /// # Returns
@@ -253,13 +211,14 @@ fn walk_keywords(node: &Value, out: &mut BTreeSet<String>) {
                     out.insert("items (tuple form)".to_owned());
                 }
             },
-            "anyOf" | "oneOf" => {
+            "allOf" | "anyOf" | "oneOf" => {
                 if let Some(branches) = value.as_array() {
                     for sub in branches {
                         walk_keywords(sub, out);
                     }
                 }
             }
+            "if" | "then" | "else" | "not" => walk_keywords(value, out),
             "dependencies" => {
                 if let Some(deps) = value.as_object() {
                     for sub in deps.values() {
@@ -286,9 +245,7 @@ fn walk_keywords(node: &Value, out: &mut BTreeSet<String>) {
 ///
 /// # Returns
 ///
-/// A [`SchemaReport`]. Errors and documented deviations are kept in separate
-/// lists, and the verdict distinguishes "clean" from "clean apart from the
-/// shape we emit on purpose".
+/// A [`SchemaReport`]: the verdict and every finding.
 #[must_use]
 pub fn validate(container: &Value) -> SchemaReport {
     let schema_id = schema()["$id"].as_str().unwrap_or_default().to_owned();
@@ -298,30 +255,13 @@ pub fn validate(container: &Value) -> SchemaReport {
         return outgrown(&unimplemented, schema_id);
     }
 
-    let mut findings = Vec::new();
-    check(schema(), container, "", &mut findings);
-    classify_deviations(container, &mut findings);
+    let mut errors = Vec::new();
+    check(schema(), container, "", &mut errors);
 
-    let (deviations, errors): (Vec<_>, Vec<_>) =
-        findings.into_iter().partition(|f| f.deviation.is_some());
-
-    let mut explanations = Vec::new();
-    if deviations
-        .iter()
-        .any(|d| d.deviation == Some(EMPTY_DIALOG_OBJECT))
-    {
-        explanations.push(DeviationNote {
-            name: EMPTY_DIALOG_OBJECT,
-            explanation: EMPTY_DIALOG_OBJECT_EXPLANATION,
-        });
-    }
-
-    let verdict = if !errors.is_empty() {
-        SchemaVerdict::Invalid
-    } else if deviations.is_empty() {
+    let verdict = if errors.is_empty() {
         SchemaVerdict::Valid
     } else {
-        SchemaVerdict::ValidExceptDocumentedDeviation
+        SchemaVerdict::Invalid
     };
 
     SchemaReport {
@@ -329,8 +269,6 @@ pub fn validate(container: &Value) -> SchemaReport {
         schema_id,
         schema_path: SCHEMA_PATH,
         errors,
-        deviations,
-        explanations,
     }
 }
 
@@ -363,33 +301,7 @@ fn outgrown(unimplemented: &BTreeSet<String>, schema_id: String) -> SchemaReport
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            deviation: None,
         }],
-        deviations: Vec::new(),
-        explanations: Vec::new(),
-    }
-}
-
-/// Re-label the findings that are the documented deviation.
-///
-/// Narrow on purpose. ONLY a Dialog Object with no members at all is the shape
-/// [draft-ietf-vcon-vcon-core-03 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) blesses; a `transfer` object that happens to be missing `start` is the
-/// real defect the corpus pass found, and folding the two together would hide
-/// it behind the exemption.
-fn classify_deviations(container: &Value, findings: &mut [SchemaFinding]) {
-    let Some(objects) = container.get("dialog").and_then(Value::as_array) else {
-        return;
-    };
-    for (index, object) in objects.iter().enumerate() {
-        if !object.as_object().is_some_and(serde_json::Map::is_empty) {
-            continue;
-        }
-        let path = format!("/dialog/{index}");
-        for finding in findings.iter_mut() {
-            if finding.instance_path == path && finding.keyword == "required" {
-                finding.deviation = Some(EMPTY_DIALOG_OBJECT);
-            }
-        }
     }
 }
 
@@ -407,7 +319,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
                 instance_path: path.to_owned(),
                 keyword: "$ref",
                 detail: format!("the schema references `{reference}`, which it does not define"),
-                deviation: None,
             }),
         }
         return;
@@ -420,7 +331,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
             instance_path: path.to_owned(),
             keyword: "type",
             detail: format!("expected type {expected}, found {}", type_name(instance)),
-            deviation: None,
         });
         // Every keyword below reads the instance as a type it is not, so
         // reporting them too would bury the one finding that matters.
@@ -437,7 +347,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
                 "`{instance}` is not one of {}",
                 Value::Array(allowed.clone())
             ),
-            deviation: None,
         });
     }
 
@@ -448,7 +357,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
             instance_path: path.to_owned(),
             keyword: "const",
             detail: format!("expected `{expected}`, found `{instance}`"),
-            deviation: None,
         });
     }
 
@@ -460,7 +368,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
             instance_path: path.to_owned(),
             keyword: "minimum",
             detail: format!("{actual} is below the minimum {minimum}"),
-            deviation: None,
         });
     }
 
@@ -472,7 +379,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
             instance_path: path.to_owned(),
             keyword: "format",
             detail: format!("`{text}` is not a valid {format}"),
-            deviation: None,
         });
     }
 
@@ -483,7 +389,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
             instance_path: path.to_owned(),
             keyword: "anyOf",
             detail: format!("matches none of the {} permitted shapes", branches.len()),
-            deviation: None,
         });
     }
 
@@ -497,10 +402,11 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
                     "matches {matched} of the {} permitted shapes; exactly one must match",
                     branches.len()
                 ),
-                deviation: None,
             });
         }
     }
+
+    check_conditionals(map, instance, path, out);
 
     if let Some(object) = instance.as_object() {
         if let Some(required) = map.get("required").and_then(Value::as_array) {
@@ -515,7 +421,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
                     instance_path: path.to_owned(),
                     keyword: "required",
                     detail: format!("missing required properties: {}", missing.join(", ")),
-                    deviation: None,
                 });
             }
         }
@@ -550,7 +455,6 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
                             "`{name}` is present, which requires: {}",
                             missing.join(", ")
                         ),
-                        deviation: None,
                     });
                 }
             }
@@ -566,9 +470,81 @@ fn check(node: &Value, instance: &Value, path: &str, out: &mut Vec<SchemaFinding
     }
 }
 
+/// The draft-07 combinators the core-04 schema introduced: `allOf`, `if` with
+/// `then` and `else`, and `not`.
+fn check_conditionals(
+    map: &serde_json::Map<String, Value>,
+    instance: &Value,
+    path: &str,
+    out: &mut Vec<SchemaFinding>,
+) {
+    // Each `allOf` branch is a constraint of its own, so its findings are
+    // reported as they are rather than folded into one "allOf failed": a
+    // producer told "`disposition` is missing" can fix it, and one told
+    // "branch 0 of 9 failed" cannot.
+    if let Some(branches) = map.get("allOf").and_then(Value::as_array) {
+        for branch in branches {
+            check(branch, instance, path, out);
+        }
+    }
+
+    // draft-07 `if`: the condition only selects which of `then` and `else`
+    // applies, and is never itself a finding.
+    if let Some(condition) = map.get("if") {
+        let branch = if passes(condition, instance) {
+            map.get("then")
+        } else {
+            map.get("else")
+        };
+        if let Some(branch) = branch {
+            check(branch, instance, path, out);
+        }
+    }
+
+    if let Some(forbidden) = map.get("not")
+        && passes(forbidden, instance)
+    {
+        out.push(SchemaFinding {
+            instance_path: path.to_owned(),
+            keyword: "not",
+            detail: forbidden_detail(forbidden, instance),
+        });
+    }
+}
+
+/// What a `not` refused, in terms a producer can act on.
+///
+/// The core-04 schema uses `not` for one shape only: a set of properties that
+/// must not be present together, or must not be present on this Dialog Object
+/// type, written as `required` lists. So the detail names the properties the
+/// instance carries from those lists. Any other `not` gets a generic sentence
+/// rather than an invented explanation.
+fn forbidden_detail(forbidden: &Value, instance: &Value) -> String {
+    let mut lists: Vec<&Value> = vec![forbidden];
+    if let Some(branches) = forbidden.get("anyOf").and_then(Value::as_array) {
+        lists.extend(branches.iter().filter(|b| passes(b, instance)));
+    }
+    let present: Vec<String> = lists
+        .iter()
+        .filter_map(|node| node.get("required").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|name| instance.get(*name).is_some())
+        .map(|name| format!("`{name}`"))
+        .collect();
+    if present.is_empty() {
+        "matches a shape the schema forbids here".to_owned()
+    } else {
+        format!(
+            "carries {}, which the schema forbids here",
+            present.join(" and ")
+        )
+    }
+}
+
 /// Does this instance satisfy this subschema, ignoring where it failed?
 ///
-/// The branch test `anyOf` and `oneOf` need. It runs the same [`check`], so a
+/// The branch test `anyOf`, `oneOf`, `if` and `not` need. It runs the same [`check`], so a
 /// branch and a top-level constraint can never be judged by two rules.
 fn passes(node: &Value, instance: &Value) -> bool {
     let mut findings = Vec::new();
@@ -847,18 +823,34 @@ mod tests {
                 c["parties"] = json!([{"name": "Alice", "civicaddress": "US"}]);
                 c
             }),
+            ("core-04 Appendix A.4 example", core_04_example_a4()),
+            (
+                "core-04 placeholder",
+                with_dialog(json!({"type": "recording"})),
+            ),
+            (
+                "recording carrying parties",
+                with_dialog(json!({"type": "recording", "parties": [0, 1]})),
+            ),
+            (
+                "keyup with a button",
+                with_dialog(json!({
+                    "type": "recording",
+                    "party_history": [
+                        {"party": 0, "time": "2026-09-01T12:00:00Z", "event": "keyup", "button": "5"}
+                    ],
+                })),
+            ),
         ]
+        .into_iter()
+        .chain(core_04_violations().into_iter().map(|(label, doc, ..)| (label, doc)))
+        .collect()
     }
 
     /// The verdict this validator would give, reduced to the reference's
     /// question: does anything at all disagree with the schema?
-    ///
-    /// A documented deviation counts as a disagreement HERE, because the
-    /// reference implementation reads the schema and nothing else. Keeping the
-    /// exemption out of the comparison is what makes the comparison mean
-    /// something.
     fn agrees(report: &SchemaReport) -> bool {
-        report.errors.is_empty() && report.deviations.is_empty()
+        report.errors.is_empty()
     }
 
     /// This validator answers what a real draft-07 engine answers.
@@ -931,7 +923,18 @@ mod tests {
 
         // Anti-vacuity: the walk has to actually be reading the file. An
         // extractor that returned early would produce an empty set too.
-        for keyword in ["$ref", "anyOf", "oneOf", "required", "enum", "dependencies"] {
+        for keyword in [
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "required",
+            "enum",
+            "dependencies",
+            "if",
+            "then",
+            "not",
+        ] {
             assert!(
                 SCHEMA_TEXT.contains(&format!("\"{keyword}\"")),
                 "`{keyword}` is not in the vendored schema, so the walk above \
@@ -996,9 +999,10 @@ mod tests {
             "a validator that cannot read the schema must not certify a \
              container against it: {report:?}"
         );
-        assert!(
-            report.deviations.is_empty(),
-            "this is not a deviation, it is a validator that stopped working: \
+        assert_eq!(
+            report.errors.len(),
+            1,
+            "one finding, about the validator rather than the container: \
              {report:?}"
         );
         let detail = &report.errors[0].detail;
@@ -1017,7 +1021,7 @@ mod tests {
         Ok(())
     }
 
-    /// A container sipnab could write, with no deviation in it, is valid.
+    /// A container sipnab could write is valid.
     #[test]
     fn a_container_the_schema_accepts_is_valid() -> Result<(), TestError> {
         let report = validate(&with_dialog(
@@ -1029,11 +1033,6 @@ mod tests {
             "nothing here departs from the schema: {report:?}"
         );
         assert!(report.errors.is_empty(), "{report:?}");
-        assert!(report.deviations.is_empty(), "{report:?}");
-        assert!(
-            report.explanations.is_empty(),
-            "there is nothing to explain: {report:?}"
-        );
         assert_eq!(report.schema_path, SCHEMA_PATH);
         assert!(
             report.schema_id.contains("vcon"),
@@ -1042,88 +1041,63 @@ mod tests {
         Ok(())
     }
 
-    /// RV6: the empty Dialog Object is NAMED, not waved through.
+    /// The core-03 empty Dialog Object is an ordinary error under core-04.
     ///
-    /// It is the one shape the working group agreed and the schema forbids, so
-    /// it can be neither an ordinary error nor part of a clean bill. A
-    /// validator that folded it into `Valid` would teach a producer that a
-    /// missing `start` is acceptable, which is precisely the defect the corpus
-    /// pass found two of.
+    /// core-03's prose allowed it and its schema rejected it, and this
+    /// validator reported it as a named deviation. core-04 removed the prose
+    /// that allowed it, so there is nothing left to excuse: `{}` is a Dialog
+    /// Object missing its required `type`, and the verdict says `invalid`.
     #[test]
-    fn an_empty_dialog_object_is_reported_as_the_documented_deviation() -> Result<(), TestError> {
+    fn the_core_03_empty_dialog_object_is_an_error_under_core_04() -> Result<(), TestError> {
         let report = validate(&with_dialog(json!({})));
-        assert_eq!(
-            report.verdict,
-            SchemaVerdict::ValidExceptDocumentedDeviation,
-            "neither `valid` nor `invalid`: {report:?}"
-        );
-        assert!(
-            report.errors.is_empty(),
-            "the only finding is the deviation: {report:?}"
-        );
-        assert_eq!(report.deviations.len(), 1, "{report:?}");
-        assert_eq!(
-            report.deviations[0].deviation,
-            Some(EMPTY_DIALOG_OBJECT),
-            "the deviation carries its name: {report:?}"
-        );
-        assert_eq!(
-            report.deviations[0].instance_path, "/dialog/0",
-            "and a pointer a reader can follow: {report:?}"
-        );
-        assert_eq!(
-            report.explanations,
-            vec![DeviationNote {
-                name: EMPTY_DIALOG_OBJECT,
-                explanation: EMPTY_DIALOG_OBJECT_EXPLANATION,
-            }],
-            "and the reasoning travels with it, once: {report:?}"
-        );
-        Ok(())
-    }
-
-    /// The corpus defect stays an ERROR: a typed object missing `start`.
-    ///
-    /// This is the discriminating case. A validator that exempted every
-    /// missing `start` would report the 2-in-4,216 real defect as the
-    /// documented deviation and hide it forever.
-    #[test]
-    fn a_typed_dialog_object_missing_start_is_a_real_error() -> Result<(), TestError> {
-        let report = validate(&with_dialog(json!({"type": "transfer", "transferee": 1})));
-        assert_eq!(
-            report.verdict,
-            SchemaVerdict::Invalid,
-            "a REFER that produced a transfer object with no start is the \
-             defect, not the exemption: {report:?}"
-        );
-        assert!(
-            report.deviations.is_empty(),
-            "nothing here is the documented deviation: {report:?}"
-        );
+        assert_eq!(report.verdict, SchemaVerdict::Invalid, "{report:?}");
         assert_eq!(report.errors.len(), 1, "{report:?}");
+        assert_eq!(report.errors[0].instance_path, "/dialog/0");
         assert_eq!(report.errors[0].keyword, "required");
         assert!(
-            report.errors[0].detail.contains("start"),
+            report.errors[0].detail.contains("type"),
             "the error must name the property: {report:?}"
         );
         Ok(())
     }
 
-    /// A container that is both wrong and deviant reports both, separately.
+    /// A `not` finding names the forbidden property in the words the
+    /// documentation quotes.
     ///
-    /// The verdict is `invalid` because an error is present, and the deviation
-    /// does not vanish into it: an operator fixing the error must still know
-    /// the other object is there.
+    /// `docs/mcp-tools.md`, `docs/examples.md` and the REST test show this
+    /// detail verbatim, so it is pinned verbatim here.
     #[test]
-    fn an_error_beside_a_deviation_keeps_both() -> Result<(), TestError> {
-        let mut container = minimal();
-        container["dialog"] = json!([{}, {"type": "transfer"}]);
-        let report = validate(&container);
-        assert_eq!(report.verdict, SchemaVerdict::Invalid, "{report:?}");
-        assert_eq!(report.deviations.len(), 1, "{report:?}");
-        assert_eq!(report.deviations[0].instance_path, "/dialog/0");
+    fn a_forbidden_property_is_named_verbatim() -> Result<(), TestError> {
+        let report = validate(&with_dialog(json!({"type": "transfer", "parties": [0, 1]})));
         assert_eq!(report.errors.len(), 1, "{report:?}");
-        assert_eq!(report.errors[0].instance_path, "/dialog/1");
+        assert_eq!(
+            report.errors[0].detail,
+            "carries `parties`, which the schema forbids here"
+        );
+        Ok(())
+    }
+
+    /// The `if`/`then` pair applies only where its condition holds.
+    ///
+    /// The anti-vacuity half of the per-type rules: a validator that applied
+    /// every `then` unconditionally would refuse `parties` on a `recording`
+    /// because it is forbidden on a `transfer`.
+    #[test]
+    fn a_per_type_prohibition_applies_to_its_type_only() -> Result<(), TestError> {
+        let report = validate(&with_dialog(
+            json!({"type": "recording", "parties": [0, 1]}),
+        ));
+        assert_eq!(
+            report.verdict,
+            SchemaVerdict::Valid,
+            "`parties` is forbidden on `transfer`, not on `recording`: {report:?}"
+        );
+        let report = validate(&with_dialog(json!({"type": "text", "body": ""})));
+        assert_eq!(
+            report.verdict,
+            SchemaVerdict::Valid,
+            "an EMPTY body needs no encoding, per core-04 Table 1 note (3): {report:?}"
+        );
         Ok(())
     }
 
@@ -1173,6 +1147,275 @@ mod tests {
         assert!(!format_matches("uuid", "018f3a2b4c5d8e6f90123456789abcde"));
         assert!(format_matches("uri", "https://example.com/x"));
         assert!(!format_matches("uri", "example.com/x"));
+        Ok(())
+    }
+
+    /// The example of [core-04 Appendix A.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-A.4),
+    /// "Two Party Call vCon With Externally Referenced Recording", verbatim
+    /// from `examples/ab_call_ext_rec.vcon` at the `draft-ietf-vcon-vcon-core-04`
+    /// tag of the working group's repository.
+    ///
+    /// The publisher's own conforming container. A validator that refuses it
+    /// is checking a rule the draft does not have.
+    fn core_04_example_a4() -> Value {
+        json!({
+            "created_at": "2022-06-21T13:53:00-04:00",
+            "parties": [
+                {"tel": "+12345678901", "name": "Alice"},
+                {"tel": "+19876543210", "name": "Bob"}
+            ],
+            "dialog": [
+                {
+                    "type": "recording",
+                    "start": "2022-06-21T17:53:26.000+00:00",
+                    "duration": 33.12,
+                    "parties": [0, 1],
+                    "url": "https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/raw/refs/heads/main/examples/ab_call.mp3",
+                    "mediatype": "audio/x-mp3",
+                    "filename": "ab_call.mp3",
+                    "content_hash": "sha512-GLy6IPaIUM1GqzZqfIPZlWjaDsNgNvZM0iCONNThnH0a75fhUM6cYzLZ5GynSURREvZwmOh54-2lRRieyj82UQ"
+                }
+            ],
+            "analysis": [],
+            "attachments": [],
+            "uuid": "01a07da8-c2bb-83e5-b9a2-279e0d16bc46"
+        })
+    }
+
+    /// One container per rule draft-ietf-vcon-vcon-core-04 added, each
+    /// breaking exactly that rule, with the pointer and keyword the finding
+    /// must carry.
+    ///
+    /// The section each rule comes from is named beside it. Every one of these
+    /// containers was VALID under the `-03` schema, which is what makes the
+    /// set discriminate between a validator reading `-03` and one reading
+    /// `-04`.
+    fn core_04_violations() -> Vec<(
+        &'static str,
+        Value,
+        &'static str,
+        &'static str,
+        &'static str,
+    )> {
+        let t = "2026-09-01T12:00:00Z";
+        vec![
+            (
+                // core-04 section 4.3.4: parties MUST NOT be present on transfer.
+                "transfer carrying parties",
+                with_dialog(json!({"type": "transfer", "start": t, "parties": [0, 1]})),
+                "/dialog/0",
+                "not",
+                "parties",
+            ),
+            (
+                // core-04 section 4.3.12: session_id MUST NOT be present on transfer.
+                "transfer carrying session_id",
+                with_dialog(json!({"type": "transfer", "session_id": {}})),
+                "/dialog/0",
+                "not",
+                "session_id",
+            ),
+            (
+                // core-04 section 4.3.8: mediatype MUST NOT be present on incomplete.
+                "incomplete carrying mediatype",
+                with_dialog(json!({
+                    "type": "incomplete", "disposition": "busy", "mediatype": "audio/x-wav"
+                })),
+                "/dialog/0",
+                "not",
+                "mediatype",
+            ),
+            (
+                // core-04 section 4.3.16: message_id MUST NOT be present on recording-set.
+                "recording-set carrying message_id",
+                with_dialog(json!({"type": "recording-set", "recordings": [], "message_id": "m"})),
+                "/dialog/0",
+                "not",
+                "message_id",
+            ),
+            (
+                // core-04 section 4.3.14: one UnsignedInt, the array form is gone.
+                "transfer_target as an array of indices",
+                with_dialog(json!({"type": "transfer", "transfer_target": [1, 2]})),
+                "/dialog/0/transfer_target",
+                "type",
+                "integer",
+            ),
+            (
+                // core-04 section 4.3.14: original is one UnsignedInt.
+                "original as an array of indices",
+                with_dialog(json!({"type": "transfer", "original": [0]})),
+                "/dialog/0/original",
+                "type",
+                "integer",
+            ),
+            (
+                // core-04 section 4.3.11: an incomplete object MUST carry a disposition.
+                "incomplete without a disposition",
+                with_dialog(json!({"type": "incomplete"})),
+                "/dialog/0",
+                "required",
+                "disposition",
+            ),
+            (
+                // core-04 section 4.3.6: recordings MUST be present on recording-set.
+                "recording-set without recordings",
+                with_dialog(json!({"type": "recording-set"})),
+                "/dialog/0",
+                "required",
+                "recordings",
+            ),
+            (
+                // core-04 Table 1 note (3): a non-empty body needs its encoding.
+                "dialog body without an encoding",
+                with_dialog(json!({"type": "text", "mediatype": "text/plain", "body": "hi"})),
+                "/dialog/0",
+                "required",
+                "encoding",
+            ),
+            (
+                // core-04 section 4.3.8: inline Dialog Content needs a mediatype.
+                "dialog body without a mediatype",
+                with_dialog(json!({"type": "text", "encoding": "none", "body": "hi"})),
+                "/dialog/0",
+                "required",
+                "mediatype",
+            ),
+            (
+                // core-04 section 2.4.2 via Table 1 note (4): a url needs its content_hash.
+                "dialog url without a content_hash",
+                with_dialog(json!({"type": "recording", "url": "https://example.com/a.wav"})),
+                "/dialog/0",
+                "dependencies",
+                "content_hash",
+            ),
+            (
+                "attachment body without a mediatype",
+                {
+                    // core-04 section 4.4.5: inline attachment content needs a mediatype.
+                    let mut c = minimal();
+                    c["attachments"] = json!([{
+                        "start": t, "party": 0, "dialog": 0, "encoding": "none", "body": "x"
+                    }]);
+                    c
+                },
+                "/attachments/0",
+                "required",
+                "mediatype",
+            ),
+            (
+                "analysis body without an encoding",
+                {
+                    // core-04 Appendix B: a non-empty analysis body needs its encoding.
+                    let mut c = minimal();
+                    c["analysis"] = json!([{"type": "report", "vendor": "v", "body": "x"}]);
+                    c
+                },
+                "/analysis/0",
+                "required",
+                "encoding",
+            ),
+            (
+                // core-04 section 4.3.13.1: button is required for keydown and keyup.
+                "keydown without a button",
+                with_dialog(json!({
+                    "type": "recording",
+                    "party_history": [{"party": 0, "time": t, "event": "keydown"}],
+                })),
+                "/dialog/0/party_history/0",
+                "required",
+                "button",
+            ),
+            (
+                "redacted and amended together",
+                {
+                    // core-04 section 4.1.8: redacted is mutually exclusive with amended.
+                    let mut c = minimal();
+                    c["redacted"] = json!({"type": "pii"});
+                    c["amended"] = json!({"uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde"});
+                    c
+                },
+                "",
+                "not",
+                "amended",
+            ),
+            (
+                "amended with neither a uuid nor a url",
+                {
+                    // core-04 section 4.1.9.1: uuid is optional only beside an external reference.
+                    let mut c = minimal();
+                    c["amended"] = json!({});
+                    c
+                },
+                "/amended",
+                "required",
+                "uuid",
+            ),
+            (
+                // core-04 section 4.3.1: every Dialog Object names its type.
+                "the core-03 empty Dialog Object",
+                with_dialog(json!({})),
+                "/dialog/0",
+                "required",
+                "type",
+            ),
+        ]
+    }
+
+    /// The working group's own core-04 example validates.
+    #[test]
+    fn the_core_04_appendix_a4_example_is_valid() -> Result<(), TestError> {
+        let report = validate(&core_04_example_a4());
+        assert_eq!(
+            report.verdict,
+            SchemaVerdict::Valid,
+            "the publisher's example must pass the publisher's schema: {report:?}"
+        );
+        Ok(())
+    }
+
+    /// A core-04 placeholder Dialog Object is valid: `type` alone.
+    ///
+    /// [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3):
+    /// "a placeholder Dialog Object which contains only the type parameter".
+    /// `start` is a SHOULD in core-04 section 4.3.2, so its absence is no
+    /// error; core-03's schema required it.
+    #[test]
+    fn a_core_04_placeholder_dialog_object_is_valid() -> Result<(), TestError> {
+        for placeholder in [
+            json!({"type": "recording"}),
+            json!({"type": "incomplete", "disposition": "failed"}),
+            json!({"type": "transfer", "transferor": 0, "transferee": 1}),
+        ] {
+            let report = validate(&with_dialog(placeholder.clone()));
+            assert_eq!(
+                report.verdict,
+                SchemaVerdict::Valid,
+                "{placeholder} is a shape core-04 permits: {report:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Each rule core-04 added is enforced, at the right place, by name.
+    #[test]
+    fn every_rule_core_04_added_is_enforced() -> Result<(), TestError> {
+        for (label, container, path, keyword, names) in core_04_violations() {
+            let report = validate(&container);
+            assert_eq!(
+                report.verdict,
+                SchemaVerdict::Invalid,
+                "`{label}` breaks a core-04 rule and must be refused: {report:?}"
+            );
+            assert!(
+                report.errors.iter().any(|e| e.instance_path == path
+                    && e.keyword == keyword
+                    && e.detail.contains(names)),
+                "`{label}`: expected a `{keyword}` finding at `{path}` naming \
+                 `{names}`, got {:?}",
+                report.errors
+            );
+        }
         Ok(())
     }
 }

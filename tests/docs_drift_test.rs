@@ -3243,6 +3243,10 @@ fn every_vendored_file_is_recorded_with_its_version() -> Result<(), TestError> {
         vendored.len()
     );
     vendored.push("tests/schemas/publisher/vcon_json_schema.json".to_string());
+    // The schema sipnab's validator reads. An unmodified copy of the
+    // publisher's file since draft-ietf-vcon-vcon-core-04, so it is
+    // third-party content with a row of its own.
+    vendored.push("tests/schemas/vcon.schema.json".to_string());
 
     for rel in &vendored {
         let (version, sha) = rows.get(rel).ok_or_else(|| {
@@ -4790,7 +4794,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // tables of `find_in_captures_status` and `cancel_find_in_captures`.
     // Attributed by counting added separator rows per file: docs/mcp-tools.md
     // 3, and the same 3 in website/content/docs/mcp-tools.md.
-    const EXPECTED_TABLES: usize = 1084;
+    // 1084 -> 1086: the core-03 to core-04 comparison in docs/design/vcon.md.
+    // Attributed by counting added separator rows per file: docs/design/vcon.md
+    // 2 (the moved-text table and the normative-changes table). Not mirrored.
+    const EXPECTED_TABLES: usize = 1086;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

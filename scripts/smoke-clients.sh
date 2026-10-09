@@ -296,12 +296,12 @@ fi
 
 # vCon export, validated against the working group's schema file as its
 # publisher committed it (tests/schemas/publisher/vcon_json_schema.json) by
-# an engine sipnab did not write. A failed call exports a typed Dialog Object
-# and must pass. A completed call with no media exports one with no `type`,
-# sipnab's one documented deviation: the publisher's file must refuse it
-# naming `type`, and sipnab's own copy must accept it. A container whose
-# created_at is not a date-time must be refused, which jsonschema alone
-# would not do.
+# an engine sipnab did not write. A failed call exports an `incomplete`
+# Dialog Object and must pass. A completed call with no media exports the
+# `recording` placeholder of draft-ietf-vcon-vcon-core-04 section 4.3 and must
+# pass too, against the publisher's file and against sipnab's copy, which has
+# the same bytes. A container whose created_at is not a date-time must be
+# refused, which jsonschema alone would not do.
 "$BIN" -N --quiet --no-cli-print -I tests/pcap-samples/sip-problem-call.pcap \
 	--export-vcon "$CALL_ID" --vcon-out "$WORK/failed.vcon" >/dev/null 2>"$WORK/vcon.log" ||
 	fail "sipnab did not export $CALL_ID: $(head -c 400 "$WORK/vcon.log")"
@@ -313,10 +313,9 @@ fi
 PUBLISHED_ID="checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (tests/schemas/publisher/vcon_json_schema.json)"
 expect "python vcon_validate (a failed call)" "$PUBLISHED_ID" "valid    $WORK/failed.vcon" \
 	-- "$PYTHON" clients/python/vcon_validate.py --schema tests/schemas/publisher/vcon_json_schema.json "$WORK/failed.vcon"
-expect_exit "python vcon_validate (no type, publisher's file)" 1 \
-	"invalid  $WORK/completed.vcon" "  /dialog/0: 'type' is a required property" \
+expect "python vcon_validate (a placeholder, publisher's file)" "valid    $WORK/completed.vcon" \
 	-- "$PYTHON" clients/python/vcon_validate.py --schema tests/schemas/publisher/vcon_json_schema.json "$WORK/completed.vcon"
-expect "python vcon_validate (no type, sipnab's copy)" "valid    $WORK/completed.vcon" \
+expect "python vcon_validate (a placeholder, sipnab's copy)" "valid    $WORK/completed.vcon" \
 	-- "$PYTHON" clients/python/vcon_validate.py --schema tests/schemas/vcon.schema.json "$WORK/completed.vcon"
 expect_exit "python vcon_validate (created_at not a date-time)" 1 \
 	"invalid  $WORK/undated.vcon" "  /created_at: 'yesterday' is not a 'date-time'" \

@@ -144,7 +144,7 @@ ordinary update.
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
-| [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the schema sipnab vendors and names the one documented deviation instead of passing it |
+| [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`generate_repro`](#generate_repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate_wireshark_filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -5903,7 +5903,8 @@ A binary built without the `vcon` Cargo feature refuses this tool with
 
 ### `validate_vcon`
 
-Checks a vCon container against the working group's schema as sipnab vendors it
+Checks a vCon container against the working group's
+[draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), vendored unchanged
 ([`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json)). Backed by
 [`output::vcon_schema`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_schema.rs).
 
@@ -5919,83 +5920,51 @@ nothing on any surface saying so.
 
 Give one, never both.
 
-**Three verdicts, not two.**
+**Two verdicts.**
 
 | `verdict` | What it means |
 |---|---|
 | `valid` | Nothing disagrees with the schema |
-| `valid-except-documented-deviation` | Every finding is a shape sipnab emits on purpose that the schema rejects. `deviations` names each one and `explanations` says why |
-| `invalid` | At least one finding is an ordinary defect. `errors` carries it |
+| `invalid` | At least one finding. `errors` carries each one |
 
-The middle verdict carries the whole point.
-[Section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3)
-says "it is
-possible to have a Dialog Object with no parameters in it", the working group
-agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
-schema forbids it, because every Dialog Object requires a `start`.
-
-sipnab emits
-one: the consultative call of an attended transfer, which the observed leg
-never saw. A validator that folded that into a clean pass would teach a
-producer that a missing `start` is fine — and a missing `start` on a `transfer`
-object is exactly the defect the corpus pass found.
-
-So the exemption is narrow. ONLY a Dialog Object with no members at all counts
-as the documented deviation. A typed object missing `start` is an error, and
-the two never merge.
+Each finding names the JSON Pointer of the offending value, the schema keyword
+that refused it and what was wrong. The response is `schema_version` 2. Version
+1 also had `deviations`, `explanations` and a third verdict,
+`valid-except-documented-deviation`, for the empty Dialog Object `{}` that
+draft-ietf-vcon-vcon-core-03 allowed in its prose and rejected in its schema.
+[Section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) replaced that object by a placeholder
+that names its type, so no deviation remains to excuse, and `{}` is now an ordinary
+error.
 
 ```jsonc
 // validate_vcon { "call_id": "1-1966@10.0.2.20" }
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "verdict": "valid",
   "schema_path": "tests/schemas/vcon.schema.json",
   "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [],
-  "deviations": [],
-  "explanations": [],
   "call_id": "1-1966@10.0.2.20"
 }
 ```
 
-A container carrying an attended transfer's consultation object:
+A rule core-04 added: `parties` MUST NOT be present on a `transfer` Dialog
+Object ([section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)):
 
 ```jsonc
+// validate_vcon { "container": { "uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde", "created_at": "2026-09-01T12:00:00Z", "dialog": [ { "type": "transfer", "parties": [0, 1] } ] } }
 {
-  "verdict": "valid-except-documented-deviation",
-  "errors": [],
-  "deviations": [
-    {
-      "instance_path": "/dialog/2",
-      "keyword": "required",
-      "detail": "missing required properties: start",
-      "deviation": "empty-dialog-object"
-    }
-  ],
-  "explanations": [
-    {
-      "name": "empty-dialog-object",
-      "explanation": "The empty Dialog Object `{}` of section 4.3: ... reported here rather than passed silently ..."
-    }
-  ]
-}
-```
-
-And the defect the corpus pass found, which is an error rather than an
-exemption:
-
-```jsonc
-// validate_vcon { "container": { ..., "dialog": [ { "type": "transfer" } ] } }
-{
+  "schema_version": 2,
   "verdict": "invalid",
+  "schema_path": "tests/schemas/vcon.schema.json",
+  "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [
     {
       "instance_path": "/dialog/0",
-      "keyword": "required",
-      "detail": "missing required properties: start"
+      "keyword": "not",
+      "detail": "carries `parties`, which the schema forbids here"
     }
-  ],
-  "deviations": []
+  ]
 }
 ```
 

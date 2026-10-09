@@ -1224,14 +1224,16 @@ fn a_raised_budget_carries_what_the_default_would_refuse() -> Result<(), TestErr
 }
 
 /// A redacted export is built with its audio withheld, and its Dialog Object is
-/// then typed by what it carries: nothing. No observed failure names no `type`;
-/// an observed final failure names `incomplete` with the reason. Never a
-/// `recording`, and never the media fields, because there is no media.
+/// then the placeholder of draft-ietf-vcon-vcon-core-04 section 4.3: no
+/// observed failure gives a `recording` placeholder with no content, which
+/// core-04 section 4.3.10 permits in a redacted vCon; an observed final
+/// failure names `incomplete` with the reason. Never the media fields,
+/// because there is no media.
 #[test]
 fn audio_withheld_by_redaction_leaves_the_signaling_object_typed_by_the_rule()
 -> Result<(), Box<dyn std::error::Error>> {
     for (label, final_line, kind, disposition) in [
-        ("answered", "SIP/2.0 200 OK", None, None),
+        ("answered", "SIP/2.0 200 OK", Some("recording"), None),
         (
             "busy",
             "SIP/2.0 486 Busy Here",

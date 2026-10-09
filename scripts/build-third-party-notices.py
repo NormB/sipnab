@@ -121,11 +121,26 @@ VENDORED = [
         "vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working "
         "group's draft-ietf-vcon-vcon-core repository, unmodified. Test "
         "fixture only; it is in no release artifact.",
-        "commit 265e0449004acda56612120b3d6635ffe7822cf1 (2026-06-30)",
+        "commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag "
+        "draft-ietf-vcon-vcon-core-04 (2026-09-07)",
         "<https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core>",
         "IETF Trust Legal Provisions; code components under the Simplified BSD "
         "License, as the repository's CONTRIBUTING.md states",
-        "c0501eb64fea587db2af43afc80a76d6b094c77694f5f41a92164d04fb926c5d",
+        "b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9",
+    ),
+    (
+        "tests/schemas/vcon.schema.json",
+        "vCon JSON schema: the same file as "
+        "tests/schemas/publisher/vcon_json_schema.json, byte for byte, under "
+        "the name sipnab's validator reads. Compiled into the binary as the "
+        "schema the validate_vcon tool and the REST validate route check "
+        "against.",
+        "commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag "
+        "draft-ietf-vcon-vcon-core-04 (2026-09-07)",
+        "<https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core>",
+        "IETF Trust Legal Provisions; code components under the Simplified BSD "
+        "License, as the repository's CONTRIBUTING.md states",
+        "b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9",
     ),
 ]
 

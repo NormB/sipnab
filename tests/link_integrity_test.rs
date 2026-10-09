@@ -1183,7 +1183,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1328 -> 1329: docs/internals/build-ci-release.md's version-marker
     // section links its own Hooks section for the generated homepage test
     // count.
-    const EXPECTED_WIKI_LINKS: usize = 1329;
+    // 1329 -> 1330: docs/internals/vcon.md links section 7.1 of
+    // docs/design/vcon.md for where core-03's Dialog Object text went.
+    const EXPECTED_WIKI_LINKS: usize = 1330;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

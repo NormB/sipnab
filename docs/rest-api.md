@@ -3375,23 +3375,22 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: app
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "verdict": "invalid",
-  "schema_id": "https://sipnab.com/schemas/vcon.schema.json",
-  "schema_path": "schemas/vcon.schema.json",
+  "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
+  "schema_path": "tests/schemas/vcon.schema.json",
   "errors": [
-    { "instance_path": "", "keyword": "required", "detail": "the container is missing the required `vcon` version property" }
-  ],
-  "deviations": [],
-  "explanations": []
+    { "instance_path": "", "keyword": "required", "detail": "missing required properties: uuid, created_at" }
+  ]
 }
 ```
 
-**`verdict` is one of three.** `valid` is a clean pass. `invalid` carries real
-`errors`. `valid-except-documented-deviation` names a shape sipnab emits on
-purpose that the schema rejects on purpose — those sit in `deviations`, each with
-a paragraph in `explanations`, kept apart from the errors so a producer does not
-treat a deliberate shape as a defect.
+**`verdict` is `valid` or `invalid`.** `valid` is a clean pass. `invalid`
+carries every finding in `errors`. The schema is the working group's
+[draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), vendored unchanged. The
+response is `schema_version` 2: version 1 also had `deviations`,
+`explanations` and a `valid-except-documented-deviation` verdict for the empty
+Dialog Object core-03 allowed, which core-04 no longer allows.
 
 The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.

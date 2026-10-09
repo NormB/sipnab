@@ -497,9 +497,10 @@ fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
 /// `--redact` with `--retain-audio`: sipnab deletes the audio rather than
 /// pseudonymizing it, and then the Dialog Object must be typed by what it
 /// carries, which is nothing. `docs/vcon.md`'s typing rule: no content and no
-/// observed failure names no `type`. So the container may hold no `recording`
-/// or `recording-set` object without a body, its caveat may not claim media is
-/// inline, and its Dialog Objects are the ones a redacted export that never
+/// observed failure is the `recording` placeholder of draft-ietf-vcon-vcon-core-04
+/// section 4.3, which carries no content field at all. So no Dialog Object
+/// without a body may describe media, no `recording-set` may appear, its
+/// caveat may not claim media is inline, and its Dialog Objects are the ones a redacted export that never
 /// kept audio writes for the same call. Checked through both writers: the
 /// single-call `--export-vcon` and the `--export-vcon-dir` spool.
 #[cfg(feature = "vcon")]
@@ -586,12 +587,19 @@ fn a_redacted_export_of_retained_audio_carries_no_empty_recording()
             .as_array()
             .ok_or("dialog is not an array")?;
         for object in dialogs {
-            let typed = object["type"] == "recording" || object["type"] == "recording-set";
-            assert!(
-                !typed || object.get("body").is_some(),
-                "{label}: a {} object with no content: {object}",
-                object["type"]
+            assert_ne!(
+                object["type"], "recording-set",
+                "{label}: a recording-set stands for audio this export deleted: {object}"
             );
+            if object.get("body").is_none() {
+                for media_field in ["mediatype", "encoding", "content_hash", "duration"] {
+                    assert!(
+                        object.get(media_field).is_none(),
+                        "{label}: an object with no content describes media with \
+                         `{media_field}`: {object}"
+                    );
+                }
+            }
         }
         let caveat = body_of(&container["analysis"][0])?["capture_completeness"].clone();
         assert_eq!(

@@ -143,7 +143,7 @@ were wrong in the first cut, and a hand-written test agreed with the wrong
 answer, because the same misreading produced both.
 
 **`body` is a String, never an object.**
-[Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) says so, and
+[Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) says so, and
 `vcon-server`'s own model enforces it: hand its `Vcon` a `dict` and it
 JSON-encodes the value before anything else sees the attachment. So
 [`json_text()`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs) serializes every structured body to
@@ -151,71 +151,61 @@ text on the way out, and every test that reads one parses it back. A body typed
 as `serde_json::Value` round-trips fine through `serde_json` and fails against a
 real store, which is exactly the class of defect a local test cannot see.
 
-**Two separate defects in the draft meet on this one field.** The first is a
-vocabulary gap: none of the five type values in
-[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) describes a conversation
-known to have occurred whose content the container does not carry or
-reference, which is the ordinary result for an observer that retains no media.
+**core-03 had two defects on this one field, and core-04 settled both.** The
+first was a vocabulary gap: none of the five type values described a
+conversation known to have occurred whose content the container does not carry
+or reference, which is the ordinary result for an observer that retains no
+media. The second was a prose/schema inconsistency: core-03's Dialog Object
+section said "it is possible to have a Dialog Object with no parameters in
+it", and its schema required `type` and `start`
+([section 7.1 of the vCon design page, "Section numbers"](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#71-section-numbers),
+records where that text went). From 0.5.128 sipnab emitted such an object
+with no `type`, and its vendored schema removed `type` from `required` as a
+documented deviation.
 
-The second is a prose/schema inconsistency:
-[section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to have a
-Dialog Object with no parameters in it", and the schema published beside that
-sentence requires `type` AND `start`, so it forbids that shape twice over.
+[Section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) replaced that sentence. The object
+for a dialog known to have occurred, with little or nothing captured from it,
+is a placeholder "which contains only the type parameter", typed `recording`
+if the call reached setup and `incomplete` if it did not, and `start` became a
+SHOULD ([section 4.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.2)). So sipnab dropped the deviation: both vendored
+schema files are the publisher's core-04 file, byte for byte, and every Dialog
+Object sipnab writes names its type.
 
-sipnab needs only the first requirement relaxed — it knows the start time — so
-the vendored copy removes `type` from `required` and leaves `start`. Read that
-as a documented compatibility deviation rather than a fix: making a required
-field optional changes validation behavior and obliges consumers to handle a
-state the schema used to guarantee away.
+**The `type` follows what sipnab observed.** `incomplete`, from
+[section 4.3.1.5 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.5), names a call that "failed to
+be setup", which is a claim about the CONVERSATION. sipnab emitted it for every
+signaling-only export until 0.5.128, so a successful call shipped a container
+reporting a setup failure — read months later beside a switch's CDR showing a
+connected ninety-second call, the container is the thing that looks wrong.
 
-The cleaner long-term answer is an
-explicit sixth type for the content-unavailable state, which an absent `type`
-cannot distinguish from a producer that simply omitted it. `start`, `party`
-and `dialog` stay mandatory on every attachment.
+sipnab now keeps `incomplete` for a dialog whose final response it OBSERVED to
+be a failure, and every other signaling-only object is the `recording`
+placeholder. `dialog_object()` decides the type and the disposition in one
+expression because [section 4.3.11 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) couples
+them: an incomplete object MUST name a disposition, and a disposition is only
+nameable when sipnab saw a failure. The media path fills the placeholder in
+place when audio actually arrives, and clears `disposition` with it.
 
-**The `type` follows the CONTENT, not the call — and an object carrying nothing
-names no type at all.** Of the five values
-[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) defines, none is true of a
-signaling-only object: four promise content it does not hold, and `incomplete`
-names a call that "failed to be setup", which is a claim about the
-CONVERSATION.
+A `recording` placeholder carries no `body` and no `url`. A conserver
+transcription link that selects `type == "recording"` and reads
+`dialog["url"]` with a bracket raises on it. Under core-03 the type-free
+object raised in the same links at `dialog["type"]`. The converse costs as
+much: every `type == "recording"` selector skips audio left on an
+`incomplete` object, so the WAV would sit in the container unreachable.
 
-sipnab emitted `incomplete` there until 0.5.128, so every
-signaling-only export of a successful call shipped a container reporting a
-setup failure — read months later beside a switch's CDR showing a connected
-ninety-second call, the container is the thing that looks wrong.
-
-sipnab now keeps `incomplete`
-for a dialog whose final response it OBSERVED to be a failure, and `dialog_object()` decides the type and the disposition in one
-expression because
-[section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
-couples them: an incomplete object MUST name a
-disposition, and a disposition is only nameable when sipnab saw a failure. The
-media path types the object `recording` when audio actually arrives, and clears
-`disposition` with it.
-
-Typing an object `recording` when it carries no
-content — which this module did until 0.5.125 — is an ingest hazard rather than
-an imprecise label. The conserver's transcription link selects
-`type == "recording"` and then reads `dialog["url"]` with a bracket, so the
-link raises, and the conserver dead-letters the entire container. The converse
-costs as much: every `type == "recording"` selector skips audio left on an
-`incomplete` object, so the WAV sits in the container unreachable.
-
-`audio_never_rides_on_an_object_typed_incomplete`
-and `nothing_is_typed_a_recording_without_content_to_reach` pin both directions,
-and the second lives in the SIGNALING-ONLY test file on purpose: over a media
+`audio_never_rides_on_an_object_typed_incomplete` and
+`a_recording_without_content_is_a_bare_placeholder` pin both directions, and
+the second lives in the SIGNALING-ONLY test file on purpose: over a media
 fixture every object has a body, so the assertion passes vacuously and the
 mutation survives.
 
 **The repository carries the schema, so the gate runs offline.**
 [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json) is the
-working group's own schema, vendored, with the one deviation described above
-recorded in a `$comment` beside the line it changes.
-`the_vendored_schema_deviates_from_the_draft_at_exactly_one_point` is the
-tripwire: re-vendoring the file from the draft is a correct-looking action that
-silently restores the contradiction, and whoever does it lands on that test and
-reads why before deciding.
+working group's core-04 schema, vendored unchanged, and
+[`tests/schemas/publisher/vcon_json_schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/publisher/vcon_json_schema.json)
+holds the same bytes. `the_vendored_vcon_schema_is_the_publishers_core_04_file`
+pins both to the publisher's commit and SHA-256, so a re-vendor is a recorded
+change rather than an edit.
 
 `a_container_validates_against_the_working_group_schema` in
 [`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs)
@@ -296,7 +286,7 @@ of one dialog days apart therefore share a uuid and differ in `created_at`, and
 on the node ALONE, spending 62 of the 74 available bits on a value identical
 for every dialog on the box. Two dialogs opening in the same
 millisecond on one node had 12 bits between them, so roughly one pair in 4096
-collided — and [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.2) makes the uuid globally unique because a store KEYS on
+collided — and [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2) makes the uuid globally unique because a store KEYS on
 it.
 
 A collision raises nothing. It overwrites the record already there, losing

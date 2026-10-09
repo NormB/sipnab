@@ -72,7 +72,7 @@ export writes the same bytes. Pick the door that suits you:
 | At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
 | An agent holding an MCP session, one call | the `export_vcon` tool, with `call_id` | one container, its SHA-256, and what the capture missed |
 | An agent holding an MCP session, a set | the `export_vcon` tool, with `filter` | one entry per matching dialog, bounded by `--mcp-max-rows` |
-| An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the vendored schema, with the one documented deviation named |
+| An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the working group's draft-ietf-vcon-vcon-core-04 schema, with every finding named |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
 
@@ -485,7 +485,7 @@ itself. Every value below came off a run against the committed capture.
 
 **One reading convention, stated once.** Every `body` is a JSON-encoded
 *string* on the wire —
-[section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) allows nothing else, and a store
+[section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) allows nothing else, and a store
 normalizes it to one anyway. The blocks below show each `body` **decoded**, as
 an object, because an escaped one-line string is unreadable on a page. What
 sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`,
@@ -519,6 +519,7 @@ and a consumer parses it before indexing into it.
   ],
   "dialog": [
     {
+      "type": "recording",
       "sip_call_id": "test-call-1@192.0.2.1"
     }
   ],
@@ -617,9 +618,10 @@ one, not that the endpoint has none.
 
 **The Dialog Object describes no media, and that is correct here.** This run
 retained no RTP payload, so there is nothing to describe and inventing a
-`mediatype` or a `url` would name a file that does not exist. The object names
-no `type` at all — see the type rule below — and no `disposition`, because the
-call in this fixture completed and nothing about it failed.
+`mediatype` or a `url` would name a file that does not exist. The object's
+type is `recording` with no content — the placeholder of the type rule below —
+and it has no `disposition`, because the call in this fixture completed and
+nothing about it failed.
 
 **The completeness body appears twice.** Once as an attachment, once inside the
 report. The next section is about why.
@@ -639,31 +641,46 @@ five values and no others: `recording`, `recording-set`, `text`, `transfer`,
 names a call that "failed to be setup" — a claim about the conversation rather
 than about the object.
 
-So sipnab types the object by **what it carries**, never by what the call did,
-and where no value is true it names none:
+So sipnab types the object by **what it carries** and by the one outcome it
+can observe, a final failure:
 
 | The object holds | `type` | `disposition` |
 |---|---|---|
 | audio | `recording` | absent — it is an `incomplete` field |
-| no content, no observed failure | absent | absent |
+| no content, no observed failure | `recording`, with no content | absent |
 | no content, an observed final failure | `incomplete` | the reason, always |
 
-The empty row is the one [section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) provides for: "it is possible
-to have a Dialog Object with no parameters in it". Reaching for `incomplete`
-there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
-taste — it made every container for a call that answered assert a setup failure
-that never happened.
+The middle row is the placeholder of
+[section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), for a dialog the producer knows
+occurred but holds little or nothing from. Such a Dialog Object "contains only
+the type parameter", and for a call that reached setup its type is `recording`.
+[Section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8) waives `mediatype` when the content is
+absent. "No observed failure" covers an answered call, a call whose final
+response the capture never saw, and a redirect. sipnab cannot tell from the
+wire whether the second reached setup, and it does not report a failure it did
+not see.
 
-Reaching for `recording` instead is worse still: an object
-typed `recording` carrying neither `url` nor `body` promises content that is
-not there, and a conserver chain link that selects `type == "recording"` reads
-`dialog["url"]` unguarded — it raises, and the conserver dead-letters the
-**whole** container rather than the one step.
+Reaching for `incomplete` in that row is the mistake sipnab shipped until
+0.5.128, and it is not a matter of taste — it made every container for a call
+that answered assert a setup failure that never happened.
 
-The last two rows move together. [Section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1)
-makes `disposition` a MUST on an incomplete object, and no value in the closed
-set of [section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11) means "not
-observed", so one decision fixes both fields. `disposition` names a failure
+**Changed in this release, for draft-ietf-vcon-vcon-core-04.** Until now that
+row had no `type` at all, because `draft-ietf-vcon-vcon-core-03` allowed "a
+Dialog Object with no parameters in it". `-04` removed that sentence and
+requires `type` on every Dialog Object, so a container for a call with no media
+now carries `"type": "recording"` and no `body` or `url`. A consumer that
+selects `type == "recording"` and then reads the content must check that the
+content is there. Measured in the vcon-server conserver source at commit
+`8ffbfcf`: the `deepgram_link` transcription link reads `dialog["url"]` with a
+bracket and raises on such an object, and the `hugging_face_whisper` and
+`groq_whisper` links read `dialog["duration"]` the same way. The type-free
+object raised in all four transcription links, `openai_transcribe` included,
+at `dialog["type"]`.
+
+The last two rows move together.
+[Section 4.3.11 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) makes `disposition` a MUST
+on an incomplete object, and no value in its closed set means "not observed",
+so one decision fixes both fields. `disposition` names a failure
 **only** when sipnab saw the final response that caused it, and its absence
 never means "the call succeeded".
 
@@ -739,7 +756,7 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 the default is the conservative reading: a denied dialog leaves this process
 entirely. `--content-deny-tombstone` makes the narrower reading available — an
 identity-only container carrying a `redacted` object
-([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)), with no message
+([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)), with no message
 trace, no media and no bodies. The trade is explicit, because a tombstone
 reveals that the call existed. Leave it off when the header means "this call
 must leave no trace".

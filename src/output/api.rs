@@ -3342,7 +3342,7 @@ async fn get_lint(
     path = "/v1/vcon/validate",
     tag = "operations",
     summary = "Validate a vCon container",
-    description = "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\n`verdict` is `valid`, `valid-except-documented-deviation` (a shape sipnab emits on purpose that the schema rejects on purpose, named in `deviations` with a paragraph in `explanations`) or `invalid` (real `errors`). The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
+    description = "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\nThe schema is the working group's draft-ietf-vcon-vcon-core-04 schema, unmodified. `verdict` is `valid` or `invalid`, and `errors` names every finding. The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
     request_body(content = serde_json::Value, description = "The vCon container to validate.", content_type = "application/json"),
     security(("bearer" = [])),
     responses(
@@ -3377,24 +3377,17 @@ async fn post_vcon_validate(
         instance_path: f.instance_path.clone(),
         keyword: f.keyword.to_string(),
         detail: f.detail.clone(),
-        deviation: f.deviation.map(str::to_string),
     };
 
     Ok(Json(schema::VconValidation {
-        schema_version: 1,
+        // 2: the core-04 schema left nothing to excuse, so `deviations`,
+        // `explanations` and the `valid-except-documented-deviation` verdict
+        // are gone.
+        schema_version: 2,
         verdict: report.verdict.as_str().to_string(),
         schema_id: report.schema_id.clone(),
         schema_path: report.schema_path.to_string(),
         errors: report.errors.iter().map(finding).collect(),
-        deviations: report.deviations.iter().map(finding).collect(),
-        explanations: report
-            .explanations
-            .iter()
-            .map(|e| schema::VconExplanation {
-                name: e.name.to_string(),
-                explanation: e.explanation.to_string(),
-            })
-            .collect(),
     }))
 }
 
@@ -5984,40 +5977,22 @@ pub mod schema {
         pub keyword: String,
         /// What was wrong, in one sentence.
         pub detail: String,
-        /// The documented deviation this finding IS, when it is one; absent for
-        /// an ordinary error.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub deviation: Option<String>,
-    }
-
-    /// Why a documented deviation is a deviation rather than an error.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct VconExplanation {
-        /// The deviation name the findings reference.
-        pub name: String,
-        /// One paragraph on why sipnab emits it and the schema rejects it.
-        pub explanation: String,
     }
 
     /// The verdict on a vCon container checked against the vendored schema.
     #[derive(Debug, Clone, serde::Serialize, ToSchema)]
     pub struct VconValidation {
         /// Version of this response's shape.
-        #[schema(example = 1)]
+        #[schema(example = 2)]
         pub schema_version: u32,
-        /// The one-word verdict: `valid`, `valid-except-documented-deviation`
-        /// or `invalid`.
+        /// The one-word verdict: `valid` or `invalid`.
         pub verdict: String,
         /// The `$id` the vendored schema declares.
         pub schema_id: String,
         /// Where that schema lives in the repository.
         pub schema_path: String,
-        /// Findings that are NOT documented deviations. Empty on a clean pass.
+        /// Every finding. Empty on a clean pass.
         pub errors: Vec<VconFinding>,
-        /// Findings that ARE documented deviations, kept apart from the errors.
-        pub deviations: Vec<VconFinding>,
-        /// One paragraph per distinct deviation named above.
-        pub explanations: Vec<VconExplanation>,
     }
 
     /// One interval of a call-volume histogram.
@@ -7077,10 +7052,10 @@ pub mod schema {
     /// The container is serialized as a JSON OBJECT, not as `Vcon::to_json`'s
     /// string — a client must not have to parse JSON out of JSON.
     ///
-    /// `tests/schemas/vcon.schema.json` is the working group's schema and is
-    /// deliberately NOT reproduced here: it is theirs, it is draft-07, and its
-    /// own text rejects a container shape the working group agreed to at IETF
-    /// 124. This describes what sipnab sends.
+    /// `tests/schemas/vcon.schema.json` is the working group's
+    /// draft-ietf-vcon-vcon-core-04 schema and is deliberately NOT reproduced
+    /// here: it is theirs, and it is draft-07. This describes what sipnab
+    /// sends.
     #[derive(Debug, Clone, ToSchema)]
     pub struct Vcon {
         /// Version of the vCon container format.
@@ -7360,12 +7335,7 @@ pub fn openapi_json() -> String {
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(get_dialog_vcon, post_vcon_validate),
-    components(schemas(
-        schema::Vcon,
-        schema::VconValidation,
-        schema::VconFinding,
-        schema::VconExplanation
-    ))
+    components(schemas(schema::Vcon, schema::VconValidation, schema::VconFinding))
 )]
 struct VconDoc;
 
@@ -8908,12 +8878,55 @@ mod tests {
         let body = body_to_string(resp.into_body()).await?;
         let parsed: Value =
             serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
-        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["schema_version"], 2);
         assert_eq!(parsed["verdict"], "invalid");
         assert!(
             !parsed["errors"].as_array().ok_or("errors")?.is_empty(),
             "an empty object trips the schema's required fields"
         );
+        Ok(())
+    }
+
+    /// The REST route enforces a rule draft-ietf-vcon-vcon-core-04 added, with
+    /// the same finding the MCP tool and `vcon_schema::validate` give, and the
+    /// version-2 shape: no `deviations`, no `explanations`.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_validate_enforces_a_core_04_rule() -> Result<(), TestError> {
+        let state = make_state();
+        let app = build_router(state);
+        let container = serde_json::json!({
+            "uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde",
+            "created_at": "2026-09-01T12:00:00Z",
+            "dialog": [{"type": "transfer", "parties": [0, 1]}],
+        });
+
+        let resp = app
+            .oneshot(test_post("/v1/vcon/validate", &container.to_string())?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["verdict"], "invalid", "{parsed}");
+        assert_eq!(
+            parsed["errors"][0]["instance_path"], "/dialog/0",
+            "{parsed}"
+        );
+        assert_eq!(parsed["errors"][0]["keyword"], "not", "{parsed}");
+        assert!(
+            parsed["errors"][0]["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("parties")),
+            "core-04 section 4.3.4 forbids `parties` on transfer: {parsed}"
+        );
+        for gone in ["deviations", "explanations"] {
+            assert!(
+                parsed.get(gone).is_none(),
+                "{gone} left the shape: {parsed}"
+            );
+        }
         Ok(())
     }
 

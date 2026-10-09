@@ -5,10 +5,9 @@ A store that refuses a container tells whoever posted it, not whoever built
 it, so check before you send. By default this reads the working group's
 schema file exactly as its publisher committed it,
 tests/schemas/publisher/vcon_json_schema.json (ietf-wg-vcon/
-draft-ietf-vcon-vcon-core at 265e0449, 2026-06-30), not sipnab's copy: sipnab's
-copy drops `type` from the Dialog Object's `required` list, and a store
-validating against the publisher's file does not. Pass --schema to check
-against another file.
+draft-ietf-vcon-vcon-core at 99589dd0, the draft-ietf-vcon-vcon-core-04 tag,
+2026-09-07). sipnab's own copy, tests/schemas/vcon.schema.json, has the same
+bytes. Pass --schema to check against another file.
 
 The engine is jsonschema, not sipnab. sipnab's own `validate_vcon` answers
 with a validator sipnab wrote; this answers with one it did not.

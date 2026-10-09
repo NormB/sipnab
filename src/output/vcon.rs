@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! vCon export — one observed dialog as an unsigned observer vCon container
-//! ([`draft-ietf-vcon-vcon-core-03`], syntax version `0.4.0`).
+//! ([`draft-ietf-vcon-vcon-core-04`], syntax version `0.4.0`).
 //!
 //! # What sipnab is in a vCon, and what it is not
 //!
@@ -21,7 +21,7 @@
 //!   an unverified assertion by whoever sent the request, which is why every
 //!   party emits `validation: "none"` instead.
 //! * **No `url` by-reference, ever.**
-//!   [Section 2.4.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.4.1)
+//!   [Section 2.4.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1)
 //!   requires HTTPS, and sipnab hosts nothing: a URL here would be a promise
 //!   that a file is somewhere and stays there, made by a tool that is run
 //!   rather than operated. Media travels inline or it does not travel.
@@ -74,7 +74,7 @@
 //! authoritative while contradicting itself. `crate::rtp::audio_export`
 //! already learned that the hard way, and this module copies its shape.
 //!
-//! [`draft-ietf-vcon-vcon-core-03`]: https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/
+//! [`draft-ietf-vcon-vcon-core-04`]: https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -105,7 +105,7 @@ pub const SIP_SIGNALING_EXTENSION: &str = "sip-signaling";
 
 /// The extension that defines `Party.role`, declared because sipnab uses it.
 ///
-/// `role` is NOT one of the thirteen Party parameters [core-03 section 4.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.2)
+/// `role` is NOT one of the thirteen Party parameters [core-04 section 4.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.2)
 /// defines — the working group's own schema lists `tel`, `sip`, `stir`,
 /// `mailto`, `name`, `did`, `validation`, `gmlpos`, `civicaddress`, `uuid`,
 /// `type`, `org` and `dept`, and no `role`. `draft-ietf-vcon-cc-extension`
@@ -194,12 +194,12 @@ pub const OBSERVER_ROLE: &str = "observer";
 pub const MAX_INLINE_MEDIA_BYTES: usize = 5 * 1024 * 1024;
 
 /// `dialog.type` of an observed transfer, one of the five values
-/// [core-03 section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) defines.
+/// [core-04 section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1) defines.
 pub const TRANSFER_TYPE: &str = "transfer";
 
 /// `redacted.type` sipnab writes when a deny header suppressed a dialog.
 ///
-/// The `redacted` object of [core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8) normally REFERENCES a
+/// The `redacted` object of [core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8) normally REFERENCES a
 /// less-redacted instance by `uuid` or `url`. Here there is nothing to
 /// reference: sipnab never wrote an unredacted container, so the object carries
 /// `type` alone. That is the format's way of saying content was withheld and no
@@ -210,7 +210,7 @@ pub const CONTENT_WITHHELD: &str = "content-withheld";
 /// pseudonymization.
 ///
 /// Beside [`CONTENT_WITHHELD`] and in the same `redacted` slot of
-/// [core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8) deliberately. The two are the same family of
+/// [core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8) deliberately. The two are the same family of
 /// statement — "sipnab removed something on purpose" — and giving
 /// pseudonymization its own invented mechanism would leave a consumer two
 /// places to look for one fact. It carries `type` alone, for the reason
@@ -226,7 +226,7 @@ pub const RECORDING_TYPE: &str = "recording";
 
 /// `dialog.type` of the wrapper carrying the CALL's clock.
 ///
-/// [Section 4.3.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.3) is the one place the format can say
+/// [Section 4.3.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3) is the one place the format can say
 /// "the file is shorter than the call": the set carries the call's `start` and
 /// `duration` while the [`RECORDING_TYPE`] object beneath it carries the
 /// file's. Emitted ONLY when a payload ring actually wrapped — a wrapper on
@@ -235,7 +235,7 @@ pub const RECORDING_SET_TYPE: &str = "recording-set";
 
 /// `type` for a Dialog Object that carries no content of its own.
 ///
-/// [Section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) calls it "Metadata for failed or
+/// [Section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) calls it "Metadata for failed or
 /// incompleted communications", and a signaling-only export is exactly an
 /// incompleted RECORD of the communication. The prose caveat says which of the
 /// two it is, in words, on two surfaces a consumer walks past anyway — the enum
@@ -243,7 +243,7 @@ pub const RECORDING_SET_TYPE: &str = "recording-set";
 pub const INCOMPLETE_TYPE: &str = "incomplete";
 
 /// Hash algorithm prefix of [`Dialog::content_hash`], per
-/// [section 2.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.2).
+/// [section 2.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2).
 pub const CONTENT_HASH_PREFIX: &str = "sha512-";
 
 /// Header names that must never leave this process inside a vCon.
@@ -283,7 +283,7 @@ pub struct Party {
     pub sip: Option<String>,
     /// RFC 3966 `tel:` URI, when the SIP user part is a global number.
     ///
-    /// A [core-03 section 4.2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.2.1) Party parameter, and one of the three the
+    /// A [core-04 section 4.2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.2.1) Party parameter, and one of the three the
     /// conserver indexes on. It is absent far more often than it is present:
     /// only an RFC 3966 global number qualifies, so a SIP extension yields
     /// nothing.
@@ -303,7 +303,7 @@ pub struct Party {
     /// re-invited, and a wrong role is worse than none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<&'static str>,
-    /// `name` ([core-03 section 4.2.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.2.5)) — the display name the wire carried.
+    /// `name` ([core-04 section 4.2.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.2.5)) — the display name the wire carried.
     ///
     /// It travels under the declared key so a consumer reads it at all: a
     /// container whose only name is under `sip_display_name` is one where
@@ -312,7 +312,7 @@ pub struct Party {
     /// name a header asserted, not a person sipnab identified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// `stir` ([core-03 section 4.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.2.3)) — an observed RFC 8224 PASSporT,
+    /// `stir` ([core-04 section 4.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.2.3)) — an observed RFC 8224 PASSporT,
     /// copied verbatim.
     ///
     /// The JWS ALONE. An `Identity` header carries the token followed by
@@ -344,7 +344,7 @@ pub struct Party {
     pub sip_user_agent: Option<String>,
 }
 
-/// `redacted` ([core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)) — content was withheld from this
+/// `redacted` ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) — content was withheld from this
 /// container.
 ///
 /// Only [`Self::kind`] is ever set. The schema also defines `uuid`, `url` and
@@ -360,7 +360,7 @@ pub struct Redacted {
     pub kind: &'static str,
 }
 
-/// `session_id` ([core-03 section 4.3.12](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.12)) — the two halves of an RFC 7989
+/// `session_id` ([core-04 section 4.3.12](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.12)) — the two halves of an RFC 7989
 /// Session-ID.
 ///
 /// Both halves are optional in the schema and both are optional here for the
@@ -379,23 +379,30 @@ pub struct SessionIdPair {
 
 /// The Dialog Object — deliberately almost empty.
 ///
-/// [Section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) blesses this explicitly: "there are
-/// situations when no information is available for a dialog … and yet it is
-/// known that the dialog occurred". A signaling-only export is exactly that
-/// situation. The alternative — inventing a `mediatype`, a `body` or a `url` so
-/// the object looks complete — would describe media that does not exist.
+/// [Section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) provides for this: "There
+/// are situations when little or no information is available for a dialog …
+/// and yet it is known that the dialog occurred", and the object for it is a
+/// placeholder "which contains only the type parameter". A signaling-only
+/// export is exactly that situation. The alternative — inventing a
+/// `mediatype`, a `body` or a `url` so the object looks complete — would
+/// describe media that does not exist.
 #[derive(Debug, Clone, Serialize)]
 pub struct Dialog {
+    /// Always present: [core-04 section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1) makes `type`
+    /// mandatory on every Dialog Object.
+    ///
     /// `"incomplete"` ONLY when a final failure response was observed;
-    /// [`RECORDING_TYPE`] or [`RECORDING_SET_TYPE`] on the media objects.
+    /// [`RECORDING_TYPE`] otherwise, as the placeholder of core-04 section 4.3
+    /// or on the media objects; [`RECORDING_SET_TYPE`] or [`TRANSFER_TYPE`]
+    /// on the objects of those kinds.
     ///
     /// `"incomplete"` is never set because sipnab failed to capture the
     /// answer. It is a statement about the CALL; "we did not see the rest" is
     /// a statement about the CAPTURE, and the second one travels in
     /// [`CaptureCompleteness`] where it cannot be mistaken for the first.
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub kind: Option<&'static str>,
-    /// `session_id` ([core-03 section 4.3.12](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.12)) — the RFC 7989 pair, when the
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    /// `session_id` ([core-04 section 4.3.12](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.12)) — the RFC 7989 pair, when the
     /// header was observed.
     ///
     /// The draft's own leg-correlation mechanism, and the one identifier that
@@ -409,15 +416,15 @@ pub struct Dialog {
     /// different identifier with the same name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionIdPair>,
-    /// `transferor` ([core-03 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.14)) — party index of whoever sent
+    /// `transferor` ([core-04 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.14)) — party index of whoever sent
     /// the REFER.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transferor: Option<usize>,
-    /// `transferee` ([core-03 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.14)) — party index of the party
+    /// `transferee` ([core-04 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.14)) — party index of the party
     /// being moved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transferee: Option<usize>,
-    /// `transfer_target` ([core-03 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.14)) — party index the
+    /// `transfer_target` ([core-04 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.14)) — party index the
     /// `Refer-To` named.
     ///
     /// Absent when the `Refer-To` URI could not be parsed into a party: the
@@ -425,11 +432,11 @@ pub struct Dialog {
     /// at exists in the array.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transfer_target: Option<usize>,
-    /// `original` ([core-03 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.14)) — dialog index the transfer
+    /// `original` ([core-04 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.14)) — dialog index the transfer
     /// happened in. Always 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original: Option<usize>,
-    /// `consultation` ([core-03 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.14)) — dialog index of the
+    /// `consultation` ([core-04 section 4.3.14](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.14)) — dialog index of the
     /// consultative call.
     ///
     /// Present ONLY for an attended transfer, which a `Replaces` parameter in
@@ -449,10 +456,11 @@ pub struct Dialog {
     /// ties the container back to a capture an operator still holds.
     ///
     /// Skipped when EMPTY, which is not a defaulted value but the one case
-    /// that has no Call-ID to give: the empty Dialog Object of
-    /// [core-03 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3), standing for a call known to have occurred
-    /// with nothing available about it. Every other object sets it, and the
-    /// empty-object constructor is the only one that leaves it blank.
+    /// that has no Call-ID to give: the placeholder of
+    /// [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) for a consultative call this leg
+    /// never saw, which "contains only the type parameter". Every other
+    /// object sets it, and the placeholder constructor is the only one that
+    /// leaves it blank.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub sip_call_id: String,
     /// The dialog's `From` tag, when the capture observed one.
@@ -501,7 +509,7 @@ pub struct Dialog {
     /// Indices into [`Vcon::dialog`] of the objects this set groups.
     ///
     /// Present only on a [`RECORDING_SET_TYPE`] object, and named `recordings`
-    /// on the wire because [core-03 section 4.3.6](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.6) makes that a MUST: "The
+    /// on the wire because [core-04 section 4.3.6](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.6) makes that a MUST: "The
     /// recordings parameter MUST be present in recording-set Dialog Objects."
     /// It serialized as `dialogs` until 0.5.125, which validated cleanly only
     /// because the working group's schema leaves `additionalProperties` open —
@@ -511,7 +519,7 @@ pub struct Dialog {
     pub dialogs: Option<Vec<usize>>,
     /// Index of the [`RECORDING_SET_TYPE`] object this recording belongs to.
     ///
-    /// [Section 4.3.7 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.7): "The recording_set parameter
+    /// [Section 4.3.7 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.7): "The recording_set parameter
     /// SHOULD be present when a recording Dialog Object is part of a
     /// recording-set Dialog Object." Without it the link is one-way, and a
     /// consumer holding the audio cannot reach the call's clock.
@@ -545,21 +553,18 @@ pub struct Dialog {
 }
 
 impl Dialog {
-    /// The EMPTY Dialog Object of [core-03 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) — `{}`, with no
-    /// members at all.
+    /// The placeholder of [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) for a
+    /// consultative call: `{"type": "recording"}`, and nothing else.
     ///
-    /// "There are situations when no information is available for a dialog
-    /// either initially or over the entire life of the vCon and yet it is
-    /// known that the dialog occurred." The working group settled on this
-    /// shape in issue #20 after discussion at IETF 124, and issue #9 raised it
-    /// for exactly the case that produces one here: a transfer whose
-    /// consultative call this leg never saw.
-    ///
-    /// It does not validate against the schema published with the draft, which
-    /// requires `type` and `start`. That contradiction is documented in the
-    /// vendored copy under `tests/schemas/`.
-    fn empty() -> Self {
-        Self::bare(String::new())
+    /// "In such situations, it is possible to have a placeholder Dialog Object
+    /// which contains only the type parameter … As the consultative call is a
+    /// call, a placeholder Dialog Object for it MUST be of type "recording" if
+    /// the call was set up". sipnab writes one for the consultative call of an
+    /// attended transfer, which this leg never saw: the `Replaces` in the
+    /// `Refer-To` names an existing dialog to replace, so that call was set
+    /// up. core-03 used `{}` here, which core-04 no longer allows.
+    fn consultation_placeholder() -> Self {
+        Self::bare(RECORDING_TYPE, String::new())
     }
 
     /// A Dialog Object with every optional field absent.
@@ -568,9 +573,9 @@ impl Dialog {
     /// and a defaulted empty one would emit a container tied to no capture.
     /// Every media field is set explicitly by whoever needs it, so adding a
     /// field cannot silently populate itself on the signaling object.
-    fn bare(sip_call_id: String) -> Self {
+    fn bare(kind: &'static str, sip_call_id: String) -> Self {
         Self {
-            kind: None,
+            kind,
             session_id: None,
             transferor: None,
             transferee: None,
@@ -602,7 +607,7 @@ pub struct Attachment {
     /// Index into [`Vcon::parties`] of whoever contributed it — always the
     /// sipnab observer here.
     ///
-    /// [Section 4.4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.4.3) makes this mandatory "to provide
+    /// [Section 4.4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.3) makes this mandatory "to provide
     /// provenance for the attachment", and the requirement earns its place: an
     /// attachment with no party is a document of unknown origin inside a
     /// container about a conversation, and a reader will attribute it to a
@@ -628,7 +633,7 @@ pub struct Attachment {
     /// The attachment itself, as a JSON string a consumer parses.
     ///
     /// A string rather than an object, and that is the format's rule rather
-    /// than a preference. [Section 2.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3) pairs `body` with
+    /// than a preference. [Section 2.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3) pairs `body` with
     /// an `encoding` of `base64url`, `json` or `none`, and the pairing only
     /// means anything if the body is a string the encoding says how to read.
     /// sipnab already agreed with itself on half of it: [`Dialog::body`] has
@@ -971,13 +976,13 @@ pub struct Vcon {
     pub uuid: String,
     /// When this container was WRITTEN, RFC 3339.
     ///
-    /// Not when the dialog happened. [Section 4.1.5 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.5)
+    /// Not when the dialog happened. [Section 4.1.5 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.5)
     /// defines it as the creation time of the vCon, and stamping the call's
     /// start here would make an export written years later look contemporaneous
     /// with the traffic. The dialog's own clock is reachable through the
     /// message trace, which carries a timestamp per message.
     pub created_at: String,
-    /// `subject` ([core-03 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.7)) — descriptive, and descriptive
+    /// `subject` ([core-04 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.7)) — descriptive, and descriptive
     /// only.
     ///
     /// It names the DIALOG so a store whose search matches subject or UUID can
@@ -986,7 +991,7 @@ pub struct Vcon {
     /// conversation was about, and the completeness caveat has its own two
     /// surfaces for what this run did and did not read.
     pub subject: String,
-    /// `redacted` ([core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)) — present ONLY on a container
+    /// `redacted` ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) — present ONLY on a container
     /// whose content a deny header suppressed. See [`Redacted`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redacted: Option<Redacted>,
@@ -1277,10 +1282,12 @@ impl crate::output::redact::Redact for Dialog {
         // This is the backstop, not the path. sipnab's own redacted exports
         // never reach it with audio: they pass
         // `ObservedAudio::WithheldByRedaction`, so the Dialog Object is the
-        // signaling one, typed by what it carries. Cutting the content out of
-        // a `recording` here leaves an object that names content it does not
-        // hold, which is why the exporter must not hand one over.
-        if *kind == Some(RECORDING_TYPE) {
+        // signaling one, typed by the rule in `dialog_object`. Cutting the
+        // content out of a `recording` here leaves the core-04 section 4.3
+        // placeholder, whose content core-04 section 4.3.10 lets a redacted
+        // vCon omit; `duration` stays, so the exporter still must not hand
+        // one over.
+        if *kind == RECORDING_TYPE {
             *body = None;
             *content_hash = None;
             *mediatype = None;
@@ -1569,7 +1576,7 @@ fn transfer_target_party(uri: &str) -> Party {
 ///
 /// This says it where the format says it. What travels is the dialog's
 /// identity — which call, when, between whom — and a `redacted` object
-/// ([core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)) declaring that its content was withheld and no
+/// ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) declaring that its content was withheld and no
 /// fuller instance exists. What does not travel is everything the deny header
 /// asked sipnab not to keep: no message trace, no media, no bodies.
 ///
@@ -1678,7 +1685,7 @@ pub fn export_dialog_with_audio_at(
 ///
 /// The carrier is inside the container already, twice — in the analysis body
 /// and in the `sipnab-capture-completeness` attachment — but
-/// [section 2.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3) makes both of those JSON TEXT, so a
+/// [section 2.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3) makes both of those JSON TEXT, so a
 /// caller wanting the structured facts would have to parse a string out of a
 /// container it had just built. Worse, it would then hold a second decoding of
 /// a value this module already has.
@@ -1741,21 +1748,22 @@ pub fn export_dialog_and_completeness(
     // media goes after signaling: appending never moves an existing index.
     if let Some(observed) = transfer {
         // An attended transfer's consultative call is known to have happened
-        // and nothing about it was captured on this leg. Issue #9 of the draft
-        // asks this exact question and issue #20 answers it: an EMPTY Dialog
-        // Object. It is pushed first so the transfer object can name its
+        // and nothing about it was captured on this leg. core-04 section 4.3
+        // names this case: a placeholder typed `recording`, because the call
+        // was set up. It is pushed first so the transfer object can name its
         // index.
         let consultation = observed.attended.then(|| {
-            dialog_objects.push(Dialog::empty());
+            dialog_objects.push(Dialog::consultation_placeholder());
             dialog_objects.len() - 1
         });
         dialog_objects.push(Dialog {
-            kind: Some(TRANSFER_TYPE),
-            // Every Dialog Object in the schema requires `start`, and this one
-            // names a type, so omitting it shipped a typed object missing a
-            // mandatory field. The instant is the dialog's own: a transfer is
-            // something that happened DURING this conversation, so a separate
-            // start would assert a second one nobody observed.
+            // core-04 Table 1 marks `start` optional on a transfer; core-03's
+            // schema required it. It is kept because it is known: the instant
+            // is the dialog's own, since a transfer is something that happened
+            // DURING this conversation, and a separate start would assert a
+            // second one nobody observed. The parameters core-04 forbids on a
+            // transfer (`parties`, `session_id` and the rest) start absent in
+            // `bare` and nothing here sets them.
             start: Some(started.clone()),
             // The party that sent the REFER is the caller on this leg, and the
             // party being moved is the other one. Both come from the dialog's
@@ -1766,7 +1774,7 @@ pub fn export_dialog_and_completeness(
             transfer_target: target_party,
             original: Some(0),
             consultation,
-            ..Dialog::bare(dialog.call_id.clone())
+            ..Dialog::bare(TRANSFER_TYPE, dialog.call_id.clone())
         });
     }
 
@@ -1893,7 +1901,7 @@ fn media_objects(
         // it. `disposition` goes with the retype, being an `incomplete` field.
         // What the call DID is not lost: `final_status_code` rides in the
         // analysis body, which is where an outcome belongs.
-        signaling.kind = Some(RECORDING_TYPE);
+        signaling.kind = RECORDING_TYPE;
         signaling.disposition = None;
         signaling.start = Some(decoded.first_retained.to_rfc3339());
         signaling.duration = Some(decoded.duration_secs);
@@ -1919,7 +1927,6 @@ fn recording_object(
     recording_set: usize,
 ) -> Dialog {
     Dialog {
-        kind: Some(RECORDING_TYPE),
         start: Some(audio.first_retained.to_rfc3339()),
         duration: Some(audio.duration_secs),
         // §4.3.7's SHOULD: the member names the set it belongs to, so a
@@ -1930,14 +1937,14 @@ fn recording_object(
         encoding: Some("base64url"),
         content_hash: Some(content_hash(&audio.wav)),
         body: Some(body.to_string()),
-        ..Dialog::bare(dialog.call_id.clone())
+        ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
     }
 }
 
 /// The `recording-set` wrapper — the CALL's clock, for the ring-wrapped case
 /// only.
 ///
-/// [Section 4.3.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.3) is the only place vCon can say "this
+/// [Section 4.3.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3) is the only place vCon can say "this
 /// file is a fragment of that call": the set's `start` and `duration` describe
 /// the media window sipnab observed, while the `recording` it points at
 /// describes the part that survived retention. Nothing obliges a consumer to
@@ -1954,19 +1961,18 @@ fn recording_set_object(dialog: &SipDialog, audio: &DialogAudio, member: usize) 
         .num_milliseconds()
         .max(0);
     Dialog {
-        kind: Some(RECORDING_SET_TYPE),
         start: Some(audio.media_start.to_rfc3339()),
         // Milliseconds to seconds, keeping the fraction: a call rounded to a
         // whole second could equal the file's duration and hide exactly the
         // difference this object exists to show.
         duration: Some(span as f64 / 1000.0),
         dialogs: Some(vec![member]),
-        ..Dialog::bare(dialog.call_id.clone())
+        ..Dialog::bare(RECORDING_SET_TYPE, dialog.call_id.clone())
     }
 }
 
 /// `sha512-` followed by the base64url SHA-512 of the media bytes, per
-/// [section 2.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.2).
+/// [section 2.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2).
 ///
 /// Over the WAV, never over its base64url text. An operator who exported the
 /// same call with the `export_audio` MCP tool can run `sha512sum` on the file and get a
@@ -1985,7 +1991,7 @@ fn content_hash(media: &[u8]) -> String {
 /// what makes that a match rather than a coincidence: an endpoint sends from
 /// the port it told the far end to send to.
 ///
-/// All or nothing, deliberately. [Section 4.3.4 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.4) has a
+/// All or nothing, deliberately. [Section 4.3.4 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) has a
 /// null placeholder and it means "no party on this channel", not "sipnab could
 /// not tell" — using it for the second would state, about a channel full of
 /// audio, that nobody was on it. And a partly-attributed list invites a reader
@@ -2113,7 +2119,7 @@ fn first_response(dialog: &SipDialog) -> Option<&crate::sip::SipMessage> {
 /// participant that never existed. What it does carry is `role: "observer"`
 /// and its own software identity, which together are what an attachment's
 /// `party` index has to resolve to for the provenance
-/// [core-03 section 4.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.4.3) asks for to mean anything.
+/// [core-04 section 4.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.3) asks for to mean anything.
 fn observer_party() -> Party {
     Party {
         sip: None,
@@ -2171,30 +2177,24 @@ fn sip_uri(user: Option<&str>, host: Option<&str>) -> Option<String> {
     })
 }
 
-/// The signaling Dialog Object: always a `type` and a `start`, plus a
-/// disposition when — and only when — the wire carried a final failure.
-///
-/// Both fields are REQUIRED by the working group's own schema
-/// (`definitions/Dialog`), and that requirement is the gap
-/// [section 3 of `docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#3-the-gap-vcon-cannot-say-this-container-is-an-incomplete-record) describes, made machine-enforceable.
-/// The prose of [core-03 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) blesses an empty Dialog Object for a
-/// dialog known to have occurred with nothing else available, and that is the
-/// most honest shape the format offers sipnab — but the schema rejects it, and
-/// a validating consumer is the reader who actually bounces the container.
-/// Being right about the prose is no comfort when nothing arrives.
+/// The signaling Dialog Object: what one observed dialog was, with no content.
 ///
 /// `type` is a closed enum — `recording`, `text`, `transfer`, `incomplete`,
-/// `recording-set` — and for a signaling-only observation NONE of them is true.
-/// `incomplete` is the trap: [core-03 section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) makes it mean the CALL
-/// failed to set up, so emitting it because sipnab did not capture an answer
-/// would state a fact about the conversation from a limit of the capture. That
-/// is the exact collapse this project refuses everywhere else.
+/// `recording-set` — and [core-04 section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1) requires
+/// it on every Dialog Object. [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) gives a
+/// dialog known to have occurred, with little or nothing captured from it, a
+/// placeholder: `recording` if the call was set up, `incomplete` if it was
+/// not. Its content is absent, which core-04 section 4.3.8 and Table 1 note
+/// (1) allow without a `mediatype`.
 ///
-/// So `recording` is chosen as the least-wrong member: it is the only
-/// media-shaped value, the attachments need a dialog to index into, and the
-/// completeness carrier says in plain words when no media traveled. A field
-/// that is imprecise beside a caveat that is exact beats a caveat that cannot
-/// reach the reader at all.
+/// `incomplete` is the trap: [core-04 section 4.3.1.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.5)
+/// makes it mean the CALL failed to set up, so emitting it because sipnab did
+/// not capture an answer would state a fact about the conversation from a
+/// limit of the capture. That is the exact collapse this project refuses
+/// everywhere else. So `incomplete` is kept for an OBSERVED final failure, and
+/// every other outcome — answered, no final response seen, redirected — is the
+/// `recording` placeholder. The completeness carrier says in plain words when
+/// no media traveled.
 fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
     // The failure reason, decided once. `None` covers three different cases
     // -- the call succeeded, no final response was seen, or the final response
@@ -2203,47 +2203,45 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
     let failure = dialog.final_status_code().and_then(failure_disposition);
 
     Dialog {
-        // Typed by what this object CARRIES, not by what the call did. At
-        // construction it carries no content, and §4.3 allows exactly that:
-        // "it is possible to have a Dialog Object with no parameters in it",
-        // which is the shape for a dialog known to have occurred with nothing
-        // available from it. So an object with nothing in it names NO type.
-        // Media enrichment types it `recording` when audio actually arrives.
+        // At construction this object carries no content: it is the core-04
+        // section 4.3 placeholder for a dialog known to have occurred. Media
+        // enrichment fills it in place when audio actually arrives.
         //
-        // `incomplete` was the earlier choice here and is wrong for a call
-        // that connected: §4.3.1 binds that value to a call that "failed to be
-        // setup", so a signaling-only export of a ninety-second conversation
-        // shipped a container asserting the call never happened. It is
-        // reserved now for the case that genuinely is one.
+        // `incomplete` was once the choice for every outcome and is wrong for
+        // a call that connected: core-04 section 4.3.1.5 binds that value to
+        // a call that "failed to be setup", so a signaling-only export of a
+        // ninety-second conversation shipped a container asserting the call
+        // never happened. It is reserved for the case that genuinely is one.
         //
-        // `recording` was the earlier choice for the no-failure case, and it
-        // is an ingest hazard rather than merely an imprecise label: a
-        // conserver chain link that selects `type == "recording"` reads
-        // `dialog["url"]` with a bracket rather than a `get`, so an object
-        // typed `recording` carrying neither `url` nor `body` raises inside
-        // the link — and the conserver dead-letters the WHOLE container on
-        // that, not just the step that raised.
+        // core-03 let this object name no type at all ("a Dialog Object with
+        // no parameters in it"), and sipnab used that from 0.5.128. core-04
+        // removed the sentence and makes the placeholder `recording`. A
+        // conserver link that selects `type == "recording"` and reads
+        // `dialog["url"]` with a bracket raises on it; that link raised on the
+        // type-free object too, at `dialog["type"]`. docs/vcon.md records the
+        // measurement.
         sip_from_tag: dialog.from_tag.clone(),
         sip_to_tag: dialog.to_tag.clone(),
-        // ONE decision drives both fields, because §4.3.1 couples them: an
-        // `incomplete` object MUST carry a disposition, and a disposition is
-        // only nameable when a failure was actually observed. Splitting the
-        // decision across two expressions is how a container comes to claim a
-        // setup failure it cannot name a reason for.
-        kind: failure.map(|_| INCOMPLETE_TYPE),
         session_id: session_id_of(dialog),
-        // Only an OBSERVED final failure names a reason. Its absence says
-        // nothing failed that sipnab saw, which is not the same as success.
+        // ONE decision drives both fields, because core-04 sections 4.3.1.5
+        // and 4.3.11 couple them: an `incomplete` object MUST carry a
+        // disposition, and a disposition is only nameable when a failure was
+        // actually observed. Only an OBSERVED final failure names a reason;
+        // its absence says nothing failed that sipnab saw, which is not the
+        // same as success.
         disposition: failure,
         start: Some(start),
-        ..Dialog::bare(dialog.call_id.clone())
+        ..Dialog::bare(
+            failure.map_or(RECORDING_TYPE, |_| INCOMPLETE_TYPE),
+            dialog.call_id.clone(),
+        )
     }
 }
 
 /// The JWS alone from an RFC 8224 `Identity` header value.
 ///
 /// The header is `<token>;info=<...>;alg=...;ppt=shaken`. The `stir` parameter
-/// of [core-03 section 4.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.2.3) carries the PASSporT "in the JWS Compact
+/// of [core-04 section 4.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.2.3) carries the PASSporT "in the JWS Compact
 /// Serialization form", which is the token and nothing else — a consumer handed
 /// the whole header value cannot parse it as a token, and the parameters
 /// describe where to FETCH the certificate rather than forming part of the
@@ -2287,7 +2285,7 @@ fn session_id_of(dialog: &SipDialog) -> Option<SessionIdPair> {
     (pair.local.is_some() || pair.remote.is_some()).then_some(pair)
 }
 
-/// `subject` ([core-03 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.7)) — what this container is about,
+/// `subject` ([core-04 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.7)) — what this container is about,
 /// descriptively.
 ///
 /// A store whose search matches subject or UUID substring can otherwise find a
@@ -2849,7 +2847,7 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 }
 
 /// A UUIDv8 for one dialog out of one capture, per
-/// [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.2).
+/// [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2).
 ///
 /// Laid out like a UUIDv7 — a 48-bit millisecond timestamp, a 12-bit `rand_a`,
 /// then a 62-bit `rand_b` — with two deliberate choices:
@@ -2862,7 +2860,7 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 ///   clock in there, re-exporting one dialog would mint a new identifier every
 ///   time, and a consumer deduplicating on `uuid` would accumulate copies of
 ///   one conversation. [`Vcon::created_at`] still carries the export time,
-///   where [core-03 section 4.1.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.5) puts it.
+///   where [core-04 section 4.1.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.5) puts it.
 ///
 /// `rand_a` is seeded from the `Call-ID` and `capture_id`, so the whole value
 /// is a function of the observed dialog and the capture it came from.
@@ -3020,7 +3018,7 @@ mod tests {
 
     /// A `json`-encoded body, parsed.
     ///
-    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) makes `body` a STRING, so a read
+    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) makes `body` a STRING, so a read
     /// goes through here rather than indexing a `Value` that is not an object.
     /// The conserver's own model says the same in a comment: a caller handing
     /// it a dict gets it JSON-encoded before anything else sees the attachment.
@@ -3689,7 +3687,7 @@ mod tests {
     }
 
     /// The container's own fields: version, extensions, and the two things
-    /// [core-03 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.7) and the signing decision say must NOT be
+    /// [core-04 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.7) and the signing decision say must NOT be
     /// there.
     #[test]
     fn the_container_declares_its_version_and_signs_nothing() -> Result<(), TestError> {
@@ -3698,7 +3696,7 @@ mod tests {
 
         assert_eq!(v["vcon"], VCON_SYNTAX_VERSION);
         // Both, and CC is not optional decoration: `Party.role` is a CC
-        // parameter, not a core-03 §4.2 one, and the container that uses a
+        // parameter, not a core-04 section 4.2 one, and the container that uses a
         // field must name the extension that defines it.
         assert_eq!(v["extensions"], serde_json::json!(["sip-signaling", "CC"]));
         assert!(
@@ -3846,28 +3844,28 @@ mod tests {
         Ok(())
     }
 
-    /// A dialog sipnab saw succeed carries an EMPTY Dialog Object.
+    /// A dialog sipnab saw succeed carries a core-04 placeholder: typed
+    /// `recording`, with no Dialog Content.
     ///
-    /// The anti-vacuity half matters more than the shape: no media-shaped
-    /// field may appear merely because the object exists, and `incomplete`
-    /// must not appear merely because a signaling-only export has no media.
+    /// [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) replaced core-03's Dialog Object
+    /// "with no parameters" by a placeholder that "contains only the type
+    /// parameter", and a placeholder for a call that was set up "MUST be of
+    /// type "recording"". The anti-vacuity half matters as much as the type:
+    /// no media-shaped field may appear merely because the object is typed,
+    /// and `incomplete` must not appear merely because a signaling-only export
+    /// has no media.
     #[test]
-    fn a_signaling_only_dialog_object_describes_no_media_and_claims_no_recording()
+    fn a_signaling_only_dialog_object_is_a_placeholder_that_describes_no_media()
     -> Result<(), TestError> {
         let dialog = dialog_with(&[response(200, "OK")?])?;
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let object = &v["dialog"][0];
 
         assert_eq!(object["sip_call_id"], "vcon-fixture@example.com");
-        assert_ne!(
+        assert_eq!(
             object["type"], RECORDING_TYPE,
-            "this object carries no audio, and `recording` is the one value \
-             that promises a consumer content it can reach: {object}"
-        );
-        assert!(
-            object.get("type").is_none(),
-            "no value of `type` is true of an object that carries nothing \
-             about a call that connected -- §4.3 lets it name none: {object}"
+            "core-04 section 4.3.1 requires a type on every Dialog Object, and \
+             a placeholder for a call that was set up is `recording`: {object}"
         );
         assert!(
             object.get("disposition").is_none(),
@@ -3884,27 +3882,26 @@ mod tests {
         Ok(())
     }
 
-    /// A Dialog Object that carries nothing and failed at nothing asserts
-    /// NEITHER a type nor a disposition.
+    /// A Dialog Object that carries nothing and failed at nothing is a
+    /// `recording` placeholder and names no disposition.
     ///
-    /// [Section 4.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3): "it is possible to have a Dialog
-    /// Object with no parameters in it" -- the shape for a dialog known to have
-    /// occurred with nothing available from it. That is this object exactly.
-    /// `incomplete` is the wrong reach because [core-03 section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) binds
-    /// it to a call that "failed to be setup", which is a claim about the CALL
-    /// that a successful capture must not make.
+    /// [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3): a placeholder "contains only the
+    /// type parameter" and is `recording` for a call that was set up.
+    /// `incomplete` is the wrong reach because
+    /// [core-04 section 4.3.1.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.5) binds it to a call that
+    /// "failed to be setup", which is a claim about the CALL that a successful
+    /// capture must not make.
     #[test]
-    fn a_dialog_that_carries_nothing_and_failed_at_nothing_asserts_neither() -> Result<(), TestError>
-    {
+    fn a_dialog_that_failed_at_nothing_is_a_recording_placeholder_with_no_reason()
+    -> Result<(), TestError> {
         let dialog = dialog_with(&[response(200, "OK")?])?;
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let object = &v["dialog"][0];
 
-        assert!(
-            object.get("type").is_none(),
-            "the call connected and this object carries no content, so every \
-             value of `type` would assert something untrue -- §4.3 allows the \
-             object to name none: {object}"
+        assert_eq!(
+            object["type"], RECORDING_TYPE,
+            "the call connected; core-04 section 4.3 types its placeholder \
+             `recording`: {object}"
         );
         assert!(
             object.get("disposition").is_none(),
@@ -3929,28 +3926,24 @@ mod tests {
         Ok(schema["definitions"]["Dialog"].clone())
     }
 
-    /// The vendored schema departs from the published one at ONE point, and
-    /// this names it.
+    /// The vendored schema requires `type`, and only `type`, on a Dialog
+    /// Object.
     ///
-    /// [Section 4.3 of draft-ietf-vcon-vcon-core-03](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) says "it is possible to
-    /// have a Dialog Object with no parameters in it". The published `required`
-    /// list says `type` is mandatory. Both cannot hold, the prose is treated as
-    /// normative, and `type` was moved out of `required` locally.
-    ///
-    /// The tripwire matters more than the assertion. Re-vendoring the schema
-    /// from the draft is a correct-looking action that silently restores the
-    /// contradiction and breaks every signaling-only export. Whoever does it
-    /// lands here and reads why before deciding.
+    /// The core-04 schema of [Appendix B](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B). core-03's copy
+    /// carried a local deviation, `type` out of `required`, for the Dialog
+    /// Object "with no parameters" core-03's prose allowed; core-04 replaced
+    /// that object by a typed placeholder and made `start` a SHOULD
+    /// ([core-04 section 4.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.2)). A copy that still reads
+    /// `["start"]` or `["type", "start"]` is the core-03 file.
     #[test]
-    fn the_vendored_schema_deviates_from_the_draft_at_exactly_one_point() -> Result<(), TestError> {
+    fn the_vendored_schema_requires_type_and_only_type() -> Result<(), TestError> {
         let dialog = vendored_dialog_schema()?;
 
         assert_eq!(
             dialog["required"],
-            serde_json::json!(["start"]),
-            "the local deviation is `type` out of `required` and NOTHING \
-             else; if this now reads [\"type\", \"start\"] the schema was \
-             re-vendored and signaling-only exports no longer validate"
+            serde_json::json!(["type"]),
+            "core-04 requires `type` alone; anything else is not the core-04 \
+             schema"
         );
 
         // Everything else about the object must still be the published
@@ -3961,8 +3954,8 @@ mod tests {
         assert_eq!(
             kinds.len(),
             5,
-            "§4.3.1 defines five dialog types; a sixth means the draft moved \
-             and the deviation above may no longer be needed: {kinds:?}"
+            "core-04 section 4.3.1 defines five dialog types; a sixth means \
+             the draft moved and the typing rule needs revisiting: {kinds:?}"
         );
         let dispositions = dialog["properties"]["disposition"]["enum"]
             .as_array()
@@ -3981,7 +3974,7 @@ mod tests {
     /// The mapping and the schema are two independent statements of the same
     /// closed set, and `an_observed_final_failure_maps_to_a_disposition` pins
     /// only the codes someone thought to list. This sweeps the whole status
-    /// space, so a disposition invented outside [core-03 section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11)
+    /// space, so a disposition invented outside [core-04 section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11)
     /// cannot reach a container by way of a code nobody wrote a case for.
     #[test]
     fn every_disposition_the_export_can_emit_is_one_the_schema_admits() -> Result<(), TestError> {
@@ -4019,7 +4012,7 @@ mod tests {
 
     /// An object that names `incomplete` can always name WHY.
     ///
-    /// [Section 4.3.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) makes the disposition a MUST on an
+    /// [Section 4.3.11 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) makes the disposition a MUST on an
     /// incomplete object. The two fields are now decided together for exactly
     /// this reason, and the assertion runs in both directions: the type without
     /// the reason is a spec violation, and the reason without the type is an
@@ -4065,42 +4058,43 @@ mod tests {
             let v = serde_json::to_value(export_with(dialog, &clean_facts())?)?;
             let object = &v["dialog"][0];
             assert!(
-                object.get("type").is_none() && object.get("disposition").is_none(),
-                "{label}: sipnab observed no failure, so the object must \
-                 assert neither a type it cannot back nor a reason it does \
-                 not have: {object}"
+                object["type"] == RECORDING_TYPE && object.get("disposition").is_none(),
+                "{label}: sipnab observed no failure, so the object is the \
+                 `recording` placeholder and names no reason it does not \
+                 have: {object}"
             );
         }
         Ok(())
     }
 
-    /// A type-free object still carries what a consumer indexes on.
+    /// A placeholder object still carries what a consumer indexes on.
     ///
-    /// Dropping `type` buys correctness and costs nothing only while the
+    /// A placeholder carries no content, and costs nothing only while the
     /// object remains addressable. An Analysis Object points at a dialog by
     /// INDEX and the identity fields are how a reader confirms it landed on
     /// the right one, so an object stripped to nothing would make the
     /// reference unverifiable.
     #[test]
-    fn a_type_free_object_still_carries_the_identity_a_consumer_indexes_on() -> Result<(), TestError>
-    {
+    fn a_placeholder_object_still_carries_the_identity_a_consumer_indexes_on()
+    -> Result<(), TestError> {
         let dialog = dialog_with(&[response(200, "OK")?])?;
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let object = &v["dialog"][0];
 
-        assert!(object.get("type").is_none(), "premise: {object}");
+        assert_eq!(object["type"], RECORDING_TYPE, "premise: {object}");
         for required in ["sip_call_id", "start"] {
             assert!(
                 object.get(required).is_some(),
-                "a type-free object is still the anchor an Analysis Object \
+                "a placeholder object is still the anchor an Analysis Object \
                  indexes into; without {required} the reference cannot be \
                  checked against anything: {object}"
             );
         }
         assert!(
             object.as_object().ok_or("an object")?.len() >= 3,
-            "the object collapsed to almost nothing, which is not the empty \
-             shape §4.3 permits but an export that lost its identity: {object}"
+            "the object collapsed to its type alone, which is the bare \
+             placeholder of core-04 section 4.3 rather than an export that \
+             kept its identity: {object}"
         );
         Ok(())
     }
@@ -4454,7 +4448,7 @@ mod tests {
     /// Each SIP response class is handled on its own signaling semantics.
     ///
     /// The sweep beside this proves every disposition sipnab CAN emit is one
-    /// [core-03 section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11) admits. It does not prove the classes are
+    /// [core-04 section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) admits. It does not prove the classes are
     /// told apart, and a mapping that answered "failed" for the whole
     /// `100..=699` range would satisfy it. Only a final failure to set the call
     /// up is `incomplete`, and this states what each class is instead.
@@ -4521,8 +4515,10 @@ mod tests {
                 );
             } else {
                 assert_eq!(
-                    typed, None,
-                    "{code} -- {why} -- must NOT be reported as a setup failure: {object}"
+                    typed,
+                    Some(RECORDING_TYPE),
+                    "{code} -- {why} -- must NOT be reported as a setup failure; it is \
+                     the core-04 section 4.3 `recording` placeholder: {object}"
                 );
                 assert!(
                     object.get("disposition").is_none(),
@@ -4557,7 +4553,7 @@ mod tests {
         ])?;
         let v = serde_json::to_value(export_with(&then_answered, &clean_facts())?)?;
         assert!(
-            v["dialog"][0].get("type").is_none() && v["dialog"][0].get("disposition").is_none(),
+            v["dialog"][0]["type"] == RECORDING_TYPE && v["dialog"][0].get("disposition").is_none(),
             "the challenge was answered and the call was set up; reporting the \
              407 as the outcome would fail every authenticated call: {}",
             v["dialog"][0]
@@ -4589,7 +4585,7 @@ mod tests {
     /// `dialogs_suppressed_by_deny` is a sipnab field inside a sipnab
     /// attachment, and a consumer that reads the format rather than this
     /// implementation will never see it. `redacted`
-    /// ([core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)) is where the format says content was
+    /// ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) is where the format says content was
     /// withheld, and an object carrying `type` with no `uuid` and no `url` says
     /// the thing that is true here: content was withheld and no unredacted
     /// instance exists anywhere to point at.
@@ -4640,10 +4636,11 @@ mod tests {
                 v["dialog"][0]
             );
         }
-        assert!(
-            v["dialog"][0].get("type").is_none(),
-            "no type is true of an object carrying nothing about a call that \
-             connected -- the same rule as any other contentless object: {}",
+        assert_eq!(
+            v["dialog"][0]["type"], RECORDING_TYPE,
+            "a withheld call that connected is the `recording` placeholder, \
+             the same rule as any other contentless object; core-04 section \
+             4.3.10 lets the content be absent from a redacted vCon: {}",
             v["dialog"][0]
         );
 
@@ -4844,16 +4841,19 @@ mod tests {
         Ok(())
     }
 
-    /// An ATTENDED transfer names a consultation dialog that is empty.
+    /// An ATTENDED transfer names a consultation dialog that is a
+    /// `recording` placeholder.
     ///
     /// `Refer-To` carrying `?Replaces=` says the transferor already had a
     /// consultation call with the target. A passive tap on this leg never saw
-    /// it, and issue #9 of the draft asks exactly this question. The working
-    /// group's answer in issue #20 is an EMPTY Dialog Object, so that is what
-    /// `consultation` points at: the call is known to have occurred and
-    /// nothing about it is available.
+    /// it. [core-04 section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3) answers this case by name:
+    /// "As the consultative call is a call, a placeholder Dialog Object for it
+    /// MUST be of type "recording" if the call was set up". `Replaces` names
+    /// an existing dialog to replace, so the call was set up, and the
+    /// placeholder carries the type and nothing else.
     #[test]
-    fn an_attended_transfer_points_consultation_at_an_empty_object() -> Result<(), TestError> {
+    fn an_attended_transfer_points_consultation_at_a_recording_placeholder() -> Result<(), TestError>
+    {
         let dialog = dialog_with_refer(
             "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
         )?;
@@ -4868,12 +4868,13 @@ mod tests {
             .as_u64()
             .ok_or("an attended transfer names its consultation")?
             as usize;
-        let empty = &objects[consultation];
+        let placeholder = &objects[consultation];
         assert_eq!(
-            empty.as_object().ok_or("an object")?.len(),
-            0,
-            "the consultation call happened and sipnab saw nothing of it. The \
-             working group agreed on `{{}}` for exactly this case: {empty}"
+            placeholder,
+            &serde_json::json!({"type": RECORDING_TYPE}),
+            "the consultation call happened and sipnab saw nothing of it. \
+             core-04 section 4.3 gives this case a placeholder holding only \
+             its type: {placeholder}"
         );
         Ok(())
     }
@@ -4904,16 +4905,15 @@ mod tests {
         Ok(())
     }
 
-    /// An attended transfer's container carries the documented deviation, and
-    /// says so.
+    /// An attended transfer's container is valid under core-04.
     ///
-    /// The one shape sipnab emits that the schema rejects. It must reach a
-    /// producer under its own name: neither an ordinary error, which would
-    /// send somebody hunting a bug that is a working-group decision, nor a
-    /// clean bill, which would teach that a missing `start` is fine.
+    /// core-03's schema rejected the empty consultation object, and the
+    /// validator reported it as a documented deviation. core-04's placeholder
+    /// carries its type, so the container sipnab writes for an attended
+    /// transfer is valid with nothing to excuse.
     #[test]
-    fn an_attended_transfer_container_reports_the_documented_deviation() -> Result<(), TestError> {
-        use crate::output::vcon_schema::{EMPTY_DIALOG_OBJECT, SchemaVerdict, validate};
+    fn an_attended_transfer_container_is_valid_under_core_04() -> Result<(), TestError> {
+        use crate::output::vcon_schema::{SchemaVerdict, validate};
 
         let dialog = dialog_with_refer(
             "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
@@ -4923,23 +4923,149 @@ mod tests {
 
         assert_eq!(
             report.verdict,
-            SchemaVerdict::ValidExceptDocumentedDeviation,
-            "the consultation object is the deviation, and nothing else here              departs from the schema: {report:#?}\n{v:#}"
+            SchemaVerdict::Valid,
+            "nothing in an attended transfer's container departs from the \
+             core-04 schema: {report:#?}\n{v:#}"
         );
+        assert!(report.errors.is_empty(), "{report:#?}");
+        Ok(())
+    }
+
+    /// Every branch of the exporter writes a container the PUBLISHER's core-04
+    /// schema accepts, judged by `jsonschema` rather than by sipnab's own
+    /// validator.
+    ///
+    /// Two validators and two schema files would let a defect in one hide
+    /// behind the other. This reads `tests/schemas/publisher/`, the file as the
+    /// working group committed it, and runs the reference engine over every
+    /// shape the exporter has: an answered call, an observed failure, a call
+    /// with no final response, a redirect, a blind and an attended transfer,
+    /// and a withheld dialog.
+    #[test]
+    fn every_export_branch_validates_against_the_publishers_core_04_schema() -> Result<(), TestError>
+    {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/schemas/publisher/vcon_json_schema.json"
+        );
+        let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        let validator = jsonschema::validator_for(&schema)?;
+
+        let attended = dialog_with_refer(
+            "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
+        )?;
+        let cases = [
+            (
+                "answered",
+                serde_json::to_value(export_with(
+                    &dialog_with(&[response(200, "OK")?])?,
+                    &clean_facts(),
+                )?)?,
+            ),
+            (
+                "busy",
+                serde_json::to_value(export_with(
+                    &dialog_with(&[response(486, "Busy Here")?])?,
+                    &clean_facts(),
+                )?)?,
+            ),
+            (
+                "no final response",
+                serde_json::to_value(export_with(
+                    &dialog_with(&[response(180, "Ringing")?])?,
+                    &clean_facts(),
+                )?)?,
+            ),
+            (
+                "redirected",
+                serde_json::to_value(export_with(
+                    &dialog_with(&[response(302, "Moved Temporarily")?])?,
+                    &clean_facts(),
+                )?)?,
+            ),
+            (
+                "blind transfer",
+                serde_json::to_value(export_with(
+                    &dialog_with_refer("<sip:carol@example.org>")?,
+                    &clean_facts(),
+                )?)?,
+            ),
+            (
+                "attended transfer",
+                serde_json::to_value(export_with(&attended, &clean_facts())?)?,
+            ),
+            (
+                "withheld",
+                serde_json::to_value(export_withheld(
+                    &dialog_with(&[response(200, "OK")?])?,
+                    &clean_facts(),
+                    "X-No-Record",
+                )?)?,
+            ),
+        ];
+        for (label, v) in &cases {
+            if let Err(e) = validator.validate(v) {
+                return Err(format!(
+                    "the {label} container fails the publisher's core-04 schema: {e}\n{v:#}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// A `transfer` object carries none of the parameters core-04 prohibits on
+    /// it, even when the dialog it belongs to observed them.
+    ///
+    /// [core-04 section 4.3.1.6](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.6), Table 1, marks these MUST
+    /// NOT on `transfer`. The dialog here carries a `Session-ID`, so the
+    /// signaling object has a `session_id` the transfer object must not copy.
+    #[test]
+    fn a_transfer_object_carries_nothing_core_04_prohibits_on_it() -> Result<(), TestError> {
+        let mut dialog = dialog_with_refer("<sip:carol@example.org>")?;
+        dialog.messages.push(message(
+            "BYE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 3 BYE",
+                "Session-ID: ab30317f1a784dc48ff824d0d3715d86;remote=47755a9de7794ba387653f2099600ef2",
+                "Content-Length: 0",
+            ],
+        )?);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let objects = v["dialog"].as_array().ok_or("dialog array")?;
         assert!(
-            report.errors.is_empty(),
-            "nothing here is an ordinary error: {report:#?}"
+            objects[0].get("session_id").is_some(),
+            "premise: the signaling object carries the observed session_id, or \
+             this test cannot tell a copied one from an absent one: {}",
+            objects[0]
         );
-        assert_eq!(report.deviations.len(), 1, "{report:#?}");
-        assert_eq!(
-            report.deviations[0].deviation,
-            Some(EMPTY_DIALOG_OBJECT),
-            "{report:#?}"
-        );
-        assert!(
-            report.explanations[0].explanation.contains("IETF 124"),
-            "the reasoning has to travel with the finding, or a producer reads              a rejection with no way to tell whether it is theirs: {report:#?}"
-        );
+        let transfer = objects
+            .iter()
+            .find(|o| o["type"] == TRANSFER_TYPE)
+            .ok_or("a transfer object")?;
+        for prohibited in [
+            "parties",
+            "originator",
+            "session_id",
+            "party_history",
+            "message_id",
+            "recordings",
+            "recording_set",
+            "mediatype",
+            "filename",
+            "body",
+            "encoding",
+            "url",
+            "content_hash",
+        ] {
+            assert!(
+                transfer.get(prohibited).is_none(),
+                "core-04 Table 1 marks `{prohibited}` MUST NOT on transfer: {transfer}"
+            );
+        }
         Ok(())
     }
 
@@ -5881,7 +6007,7 @@ mod tests {
     /// VAL14. `capture_id` is the SOURCE half of a frame pointer, which is the
     /// path exactly as it was typed. `-I tests/x.pcap` and
     /// `-I /abs/tests/x.pcap` are the same bytes, and minted different uuids --
-    /// so a consumer deduplicating on `uuid`, which [core-03 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.2)
+    /// so a consumer deduplicating on `uuid`, which [core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2)
     /// says it may, saw two conversations where the content proves there is
     /// one.
     ///
@@ -6225,7 +6351,7 @@ mod tests {
     /// redacted.
     ///
     /// Without it an agent quotes `+1x...` to an operator as the caller's
-    /// number. The `redacted` object ([core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8)) is where a
+    /// number. The `redacted` object ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) is where a
     /// vCon consumer already looks for "content was removed", so
     /// pseudonymization goes there rather than inventing a second place.
     #[test]
@@ -6364,8 +6490,7 @@ mod tests {
     #[test]
     fn redaction_refuses_inline_audio() -> Result<(), TestError> {
         use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
-        let mut object = Dialog::bare("call-1".to_string());
-        object.kind = Some(RECORDING_TYPE);
+        let mut object = Dialog::bare(RECORDING_TYPE, "call-1".to_string());
         object.mediatype = Some(RECORDING_MEDIATYPE);
         object.encoding = Some("base64url");
         object.body = Some("UklGRiQAAABXQVZF".to_string());

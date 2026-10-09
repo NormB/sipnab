@@ -118,7 +118,7 @@ pub struct OmissionRow {
 ///
 /// RV7. The same facts the container carries in its completeness attachment,
 /// in the tool's OWN response — because the attachment's body is a JSON string
-/// per [draft-ietf-vcon-vcon-core-03 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3), and an agent that has to parse a document out of a document to
+/// per [draft-ietf-vcon-vcon-core-04 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3), and an agent that has to parse a document out of a document to
 /// learn that the audio was refused will not do it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -202,19 +202,6 @@ pub struct ValidationFinding {
     pub keyword: String,
     /// What was wrong, in one sentence.
     pub detail: String,
-    /// The documented deviation this finding IS, when it is one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deviation: Option<String>,
-}
-
-/// Why a deviation is a deviation rather than a defect.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct DeviationExplanation {
-    /// The name the findings reference.
-    pub name: String,
-    /// What it is, and why sipnab emits it anyway.
-    pub explanation: String,
 }
 
 /// The answer `validate_vcon` gives.
@@ -223,23 +210,15 @@ pub struct DeviationExplanation {
 pub struct ValidateVconResponse {
     /// Version of this envelope.
     pub schema_version: u32,
-    /// `valid`, `valid-except-documented-deviation`, or `invalid`.
-    ///
-    /// Three answers rather than two. The middle one is the whole point: a
-    /// validator that folded the shape the working group agreed into a clean
-    /// bill would teach a producer that a missing `start` is fine.
+    /// `valid` or `invalid`.
     pub verdict: String,
     /// Where the schema this was checked against lives in the sipnab
     /// repository.
     pub schema_path: String,
     /// The `$id` that schema declares.
     pub schema_id: String,
-    /// Findings that are NOT documented deviations. Empty on a clean pass.
+    /// Every finding. Empty on a clean pass.
     pub errors: Vec<ValidationFinding>,
-    /// Findings that ARE documented deviations, kept apart from the errors.
-    pub deviations: Vec<ValidationFinding>,
-    /// One paragraph per distinct deviation named above.
-    pub explanations: Vec<DeviationExplanation>,
     /// The dialog whose freshly exported container was validated, when the
     /// caller named one rather than supplying a document.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,22 +309,16 @@ impl SipnabMcp {
     #[tool(
         name = "validate_vcon",
         description = "Validates a vCon container against the working group's \
-                       schema as sipnab vendors it \
-                       (tests/schemas/vcon.schema.json). Takes a call_id, \
-                       whose container is exported and then checked, or a \
-                       container supplied verbatim -- one sipnab wrote, or one \
-                       another producer did. Answers valid, \
-                       valid-except-documented-deviation, or invalid, and \
-                       keeps the two kinds of finding apart: ordinary errors, \
-                       and the ONE shape sipnab emits on purpose that the \
-                       schema rejects -- the empty Dialog Object the working \
-                       group agreed at IETF 124, which the draft's own \
-                       Appendix B schema forbids because every Dialog Object \
-                       requires a start. That deviation is reported by name \
-                       with its reasoning, never folded into a clean pass. \
-                       Use it before handing containers to a conserver: a \
-                       store that refuses one tells whoever POSTed it, not \
-                       whoever built it.",
+                       draft-ietf-vcon-vcon-core-04 schema, vendored \
+                       unmodified (tests/schemas/vcon.schema.json). Takes a \
+                       call_id, whose container is exported and then checked, \
+                       or a container supplied verbatim -- one sipnab wrote, \
+                       or one another producer did. Answers valid or invalid, \
+                       with every finding's JSON Pointer, the schema keyword \
+                       that refused it and what was wrong. Use it before \
+                       handing containers to a conserver: a store that \
+                       refuses one tells whoever POSTed it, not whoever built \
+                       it.",
         output_schema = schema_for_output::<ValidateVconResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -599,20 +572,14 @@ impl SipnabMcp {
     ) -> Result<ValidateVconResponse, rmcp::ErrorData> {
         let report = crate::output::vcon_schema::validate(container);
         Ok(ValidateVconResponse {
-            schema_version: 1,
+            // 2: the core-04 schema left nothing to excuse, so `deviations`,
+            // `explanations` and the `valid-except-documented-deviation`
+            // verdict are gone.
+            schema_version: 2,
             verdict: report.verdict.as_str().to_owned(),
             schema_path: report.schema_path.to_owned(),
             schema_id: report.schema_id,
             errors: report.errors.iter().map(finding_row).collect(),
-            deviations: report.deviations.iter().map(finding_row).collect(),
-            explanations: report
-                .explanations
-                .iter()
-                .map(|e| DeviationExplanation {
-                    name: e.name.to_owned(),
-                    explanation: e.explanation.to_owned(),
-                })
-                .collect(),
             call_id: None,
         })
     }
@@ -649,7 +616,6 @@ fn finding_row(finding: &crate::output::vcon_schema::SchemaFinding) -> Validatio
         instance_path: finding.instance_path.clone(),
         keyword: finding.keyword.to_owned(),
         detail: finding.detail.clone(),
-        deviation: finding.deviation.map(str::to_owned),
     }
 }
 
@@ -1179,7 +1145,7 @@ mod tests {
     ///
     /// Not a second sentence written beside it. The container already carries
     /// the completeness note, inside an attachment whose body is JSON TEXT per
-    /// [draft-ietf-vcon-vcon-core-03 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3) -- so an agent would have to parse a document out of a document to
+    /// [draft-ietf-vcon-vcon-core-04 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3) -- so an agent would have to parse a document out of a document to
     /// read it. This is the SAME string, lifted, and the assertion is that it
     /// is the same one rather than a paraphrase that can drift.
     #[cfg(feature = "vcon")]
@@ -1417,7 +1383,7 @@ mod tests {
 
         assert_eq!(v["verdict"], "valid", "{v}");
         assert!(v["errors"].as_array().is_some_and(Vec::is_empty), "{v}");
-        assert!(v["deviations"].as_array().is_some_and(Vec::is_empty), "{v}");
+        assert_eq!(v["schema_version"], 2, "{v}");
         assert_eq!(
             v["call_id"], "valid@x",
             "the answer must name what it judged: {v}"
@@ -1429,52 +1395,43 @@ mod tests {
         Ok(())
     }
 
-    /// RV6: a supplied container missing a required member is INVALID, and the
-    /// finding says where.
+    /// RV6: a supplied container that breaks a rule is INVALID, and the
+    /// finding says where. The rule here is one draft-ietf-vcon-vcon-core-04
+    /// added: `parties` MUST NOT be present on a `transfer` Dialog Object
+    /// (core-04 section 4.3.4).
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn validate_vcon_refuses_a_dialog_object_with_no_start() -> Result<(), TestError> {
+    async fn validate_vcon_refuses_a_transfer_object_carrying_parties() -> Result<(), TestError> {
         let v = validated(
             &empty_server(),
             ValidateVconParams {
                 container: Some(serde_json::json!({
                     "uuid": "018f3a2b-4c5d-8e6f-9012-3456789abcde",
                     "created_at": "2026-09-01T12:00:00Z",
-                    "dialog": [{"type": "transfer"}],
+                    "dialog": [{"type": "transfer", "parties": [0, 1]}],
                 })),
                 ..ValidateVconParams::default()
             },
         )
         .await?;
 
-        assert_eq!(
-            v["verdict"], "invalid",
-            "a REFER that produced a transfer object with no `start` is the \
-             defect a pass over 4,216 real containers found two of: {v}"
-        );
+        assert_eq!(v["verdict"], "invalid", "{v}");
         assert_eq!(v["errors"][0]["instance_path"], "/dialog/0", "{v}");
-        assert_eq!(v["errors"][0]["keyword"], "required", "{v}");
+        assert_eq!(v["errors"][0]["keyword"], "not", "{v}");
         assert!(
             v["errors"][0]["detail"]
                 .as_str()
-                .is_some_and(|d| d.contains("start")),
+                .is_some_and(|d| d.contains("parties")),
             "the finding must name the member: {v}"
-        );
-        assert!(
-            v["deviations"].as_array().is_some_and(Vec::is_empty),
-            "nothing here is the documented deviation: {v}"
         );
         Ok(())
     }
 
-    /// RV6: the documented deviation is reported by name, with its reasoning.
-    ///
-    /// The verdict is neither `valid` nor `invalid`. A validator that answered
-    /// `valid` here would teach a producer that a missing `start` is fine,
-    /// which is the lesson the test above exists to refuse.
+    /// The core-03 empty Dialog Object is an ordinary error, and the response
+    /// carries no deviation fields: core-04 left nothing to excuse.
     #[cfg(feature = "vcon")]
     #[tokio::test]
-    async fn validate_vcon_names_the_documented_deviation_rather_than_passing_it()
+    async fn validate_vcon_reports_the_core_03_empty_dialog_object_as_an_error()
     -> Result<(), TestError> {
         let v = validated(
             &empty_server(),
@@ -1489,24 +1446,12 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(v["verdict"], "valid-except-documented-deviation", "{v}");
-        assert!(
-            v["errors"].as_array().is_some_and(Vec::is_empty),
-            "the empty Dialog Object is not an ordinary error: {v}"
-        );
-        assert_eq!(v["deviations"][0]["instance_path"], "/dialog/0", "{v}");
-        assert_eq!(
-            v["deviations"][0]["deviation"], "empty-dialog-object",
-            "{v}"
-        );
-        let explanation = v["explanations"][0]["explanation"]
-            .as_str()
-            .unwrap_or_default();
-        assert!(
-            explanation.contains("IETF 124") && explanation.contains("start"),
-            "the reasoning has to travel with the finding, or a producer reads \
-             a rejection with no way to tell whether it is theirs: {v}"
-        );
+        assert_eq!(v["verdict"], "invalid", "{v}");
+        assert_eq!(v["errors"][0]["instance_path"], "/dialog/0", "{v}");
+        assert_eq!(v["errors"][0]["keyword"], "required", "{v}");
+        for gone in ["deviations", "explanations"] {
+            assert!(v.get(gone).is_none(), "{gone} left the shape: {v}");
+        }
         Ok(())
     }
 
