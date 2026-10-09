@@ -1232,6 +1232,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // taking the page's word for it.
             "docs/vcon.md",
             "website/content/docs/vcon.md",
+            // CONTRIBUTING names the test binary that regenerates the man
+            // page's generated regions.
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
