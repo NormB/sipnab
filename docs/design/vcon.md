@@ -60,7 +60,7 @@ names. sipnab occupies that shape and stops there.
 | [Section 2.1](#21-observer-never-producer-of-record) | Emit **observer** vCons, never a producer-of-record vCon | sipnab saw a tap, not a conversation |
 | [Section 2.2](#22-never-sign-jws-and-never-encrypt-jwe) | **Never** sign (JWS) and **never** encrypt (JWE) | A signature over an observation is indistinguishable from a signature over a recording |
 | [Section 2.3](#23-never-emit-consent-or-lawful-basis-attachments) | **Never** emit consent or lawful-basis attachments | sipnab obtained no consent, and silence must not read as "none was recorded" |
-| [Section 2.4](#24-never-populate-party-name-and-always-set-validation-none) | **Never** populate Party `name`; always `validation: "none"` | `From` and `To` are a claim by the caller, trivially spoofed |
+| [Section 2.4](#24-never-vouch-for-a-party-name-and-always-set-validation-none) | **Never** vouch for a Party `name`; always `validation: "none"` | `From` and `To` are a claim by the caller, trivially spoofed |
 | [Section 2.5](#25-never-host-artefacts) | **Never** host artefacts; inline base64url only, under a cap | sipnab hosts nothing, so it cannot assert where a file lives |
 | [Section 2.6](#26-parties-come-from-the-observed-dialog-never-from-inference) | Parties come from the observed dialog only, never from inference | Party indices are load-bearing, and a wrong count corrupts every cross-reference |
 
@@ -121,7 +121,7 @@ artefact. Handing them a container whose consent field is empty because sipnab
 never had one is the kind of mistake that gets read years later by someone with
 no access to this page.
 
-### 2.4 Never populate Party `name`, and always set `validation: "none"`
+### 2.4 Never vouch for a Party `name`, and always set `validation: "none"`
 
 What sipnab holds is the `From` and `To` header fields of an observed dialog.
 That is a claim made by the caller about the caller, unverifiable at the tap
@@ -131,11 +131,14 @@ and trivially spoofed — the whole reason SIP identity mechanisms exist at all.
 the format already treats a name as something a producer is expected to stand
 behind. sipnab cannot.
 
-The honest shape is therefore to emit `sip` and `sip_display_name`, leave
-`name` unset, and set `validation: "none"` on every party sipnab writes. A
-consumer then sees exactly what arrived on the wire, marked as unvalidated,
-which is what it is. Promoting a display name into `name` would launder a
-caller's assertion into the producer's.
+sipnab therefore emits `sip` and `sip_display_name`, emits `name` with the
+display name from `From` or `To` when the wire carried one, and sets
+`validation: "none"` on every party it writes. `name` travels under the
+declared key so a generic vCon reader shows a named party rather than an
+anonymous one, and `validation: "none"` beside it states that sipnab did not
+establish the identity. A consumer then sees exactly what arrived on the wire,
+marked as unvalidated. The display name can be anything the sender wrote: in
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) the caller's `name` is `PCMU/8000`.
 
 ### 2.5 Never host artefacts
 

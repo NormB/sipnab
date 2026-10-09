@@ -21,6 +21,23 @@ entry that carries them.
   Affected: `--mcp` over stdio with `--mcp-allow-shutdown`, on a confirmed or
   unconfirmed real stop (`dry_run=false`).
 
+- **A `--redact` export no longer names its files after the original
+  Call-ID.** `--export-vcon-dir` built each file name from the Call-ID on the
+  wire, so a redacted container whose `sip_call_id` was a pseudonym was written
+  as, for example, `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`: the original
+  Call-ID and the host address inside it appeared in the spool, in the
+  `--vcon-digest` lines, and in the forwarder's `delivered/` and `failed/`
+  directories, its `error.json` records and its log lines. Under `--redact`
+  the name now comes from the pseudonymized Call-ID the container carries,
+  with the same SHA-256 suffix that keeps names unique. An export without
+  `--redact` keeps its existing names.
+- **The vCon documentation describes what the exporter does.** `docs/vcon.md`
+  said two Call-IDs that differ only in replaced characters share one file
+  name; the SHA-256 suffix gives them two. The exporter's module
+  documentation and the vCon design page said a party never carries a
+  `name`; it carries the `From` or `To` display name when the wire had one,
+  with `validation: "none"` beside it.
+
 ## [0.5.208] - 2026-10-09
 
 ### Added

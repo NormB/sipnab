@@ -158,14 +158,24 @@ it is safe to delete.
 
 **Names are stable, and sipnab reuses them.** A container's file name comes
 from its Call-ID, with an underscore replacing every character outside
-`[A-Za-z0-9._-]` and a leading dot, so no container name starts with one. Re-exporting
-the same dialog to the same directory overwrites its file rather than
-accumulating a second one, which is what makes the directory a queue and not a
-log.
+`[A-Za-z0-9._-]` and a leading dot, so no container name starts with one. The
+name ends in a hyphen, 16 hexadecimal characters of the SHA-256 of the Call-ID,
+and `.vcon.json`, for example `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`.
+Re-exporting the same dialog to the same directory overwrites its file rather
+than accumulating a second one, which is what makes the directory a queue and
+not a log.
 
-Two dialogs whose Call-IDs differ only outside that character set land on
-one name. If that matters to you, consume the directory rather than trusting
-the name to be unique.
+Two dialogs whose Call-IDs differ only outside that character set, or only
+beyond the first 180 characters, still get two names: the readable part of the
+name can match, and the SHA-256 suffix differs.
+
+**With `--redact`, the name comes from the redacted Call-ID.** sipnab names the
+file after the pseudonym the container carries in `sip_call_id`, so neither the
+original Call-ID nor the host address inside it appears in the spool, in the
+`--vcon-digest` lines, or in the forwarder's `delivered/` and `failed/`
+directories and log lines. The name still matches the Call-ID inside the
+container. With the same `--redact-key-file`, a re-export produces the same
+name and overwrites the file.
 
 **A container is complete when it appears.** There is no partial state, no
 lock file and no sentinel to wait for. Read it, forward it, delete it.

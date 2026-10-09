@@ -48,8 +48,9 @@ and whatever anyone posts to the API.
 That rule resolves the hardest case on its own. A flag in the signaling saying
 "record this session" is an assertion by whoever sent the request, and sipnab
 already refuses to trust that class of claim: every party it emits carries
-`validation: "none"`, and [`Party`](../../src/output/vcon.rs) has no `name`
-field at all so a later edit cannot break the rule. Acting on such an assertion
+`validation: "none"`, including the ones whose
+[`Party`](../../src/output/vcon.rs) `name` carries a display name from the
+wire. Acting on such an assertion
 to be **more** conservative costs at worst a container nobody kept. Acting on
 one to **retain** content hands the retention decision to anyone who can set a
 header.
@@ -233,7 +234,7 @@ Every task's requirements implicitly include the design above, plus:
 
 - **Feature gate:** every item lives behind `#[cfg(feature = "vcon")]`.
   `export_vcon` already has a paired `#[cfg(not(feature = "vcon"))]` stub at
-  [`src/app/batch.rs:7762`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L7762), and a new entry point needs the same pairing or the
+  [`src/app/batch.rs:7795`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L7795), and a new entry point needs the same pairing or the
   crate stops building without the feature.
 - **Toolchain:** Rust 1.97.1 exactly. No new dependencies.
 - **Tests:** failing test first. Every gate mutation-proven against a named
@@ -274,7 +275,7 @@ Every task's requirements implicitly include the design above, plus:
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs) (new fields beside `export_vcon` at line 944)
-- Modify: [`src/app/batch.rs:7762`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L7762) (`export_vcon`)
+- Modify: [`src/app/batch.rs:7795`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L7795) (`export_vcon`)
 - Test: [`src/app/batch.rs`](../../src/app/batch.rs) tests module
 
 **Interfaces:**
@@ -428,7 +429,7 @@ Expected: 2 passed.
 
 - [ ] **Step 9: Write the containers**
 
-Extend `export_vcon` at [`src/app/batch.rs:7762`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L7762): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
+Extend `export_vcon` at [`src/app/batch.rs:7795`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L7795): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
 
 - [ ] **Step 10: Test the path sanitizer**
 
