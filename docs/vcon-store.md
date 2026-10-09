@@ -131,12 +131,14 @@ page's commands did not contact the store.
 | `GET` of a stored vCon | the content unchanged, inside a `_meta` envelope |
 | `DELETE` of a stored vCon | `200`, and a `GET` after it `404` |
 | a request with Python's default HTTP `User-Agent` | `403`, `error code: 1010`, from the Cloudflare front. The front accepted a curl `User-Agent`. The forwarder sends `User-Agent: sipnab/<version>` |
+| on 2026-10-09, sipnab's container with audio, sent by `--vcon-forward-kind vcon-store` | `201`; a `GET` returned it unchanged apart from the compat mode's `extensions` object |
+| on 2026-10-09, the `recording` Dialog Object sipnab writes for a call without audio (no `parties`, no content), with `extensions` as an object | `400`, `dialog.0.parties: expected array, received undefined` |
 
 Not measured: whether vcon.store answers `409` for a uuid it already holds, or
 accepts a `PUT` to `/v1/vcons/{uuid}`. `--vcon-forward-replace-url` exists for a
-store that does, and this page does not use it. Also not measured: whether the
-store accepts a `recording` Dialog Object with no `body`, which is what step 1
-writes under `--redact`.
+store that does, and this page does not use it. The store refuses a `recording` Dialog Object with no
+`body`, which is what step 1 writes under `--redact`, for its missing
+`parties`, as the last row shows.
 
 ## What the store adds, and what it does not mean
 
