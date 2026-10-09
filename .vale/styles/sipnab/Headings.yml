@@ -76,6 +76,9 @@ exceptions:
   - G.722.2
   - NAT
   - PCAP
+  # The IETF's Request for Comments series, named by number on every page
+  # that cites one. "Rfc conformance" would rename it.
+  - RFC
   - RTCP
   - RTP
   - SBC

@@ -637,6 +637,32 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "have fail2ban ban what they find, with the filter and jail that ship "
         "with sipnab.",
     ),
+    # Two pages that were hand-kept copies until the copies drifted: the site's
+    # plugins page went on requiring `sipnab_dealloc` after docs/plugins.md
+    # dropped it, and the site's TLS chooser kept older `bpf` build
+    # requirements. Generated, there is one text to keep right. Titles,
+    # weights and descriptions are the ones the hand-kept pages carried.
+    (
+        "docs/plugins.md",
+        "plugins.md",
+        "WASM plugins",
+        "Add a detection with a WASM plugin",
+        33,
+        "Add your own detection to sipnab's diagnosis without forking it: what "
+        "a sandboxed WebAssembly plugin can and cannot do, what trusting one "
+        "costs you, and a worked example from crate to finding.",
+    ),
+    (
+        "docs/tls-capture.md",
+        "tls-capture.md",
+        "Capture SIP over TLS",
+        "Capture SIP over TLS",
+        29,
+        "Pick the right method for reading SIP over TLS: a key log from the "
+        "endpoint, plaintext read out of the process with no keys at all, eBPF "
+        "with peer addresses, or eCapture — chosen by what access you have, "
+        "plus what does not work and why.",
+    ),
     # The two contributor documents that live outside docs/ (SITE-CONTRIB).
     # Their sources sit at the repo root and in contrib/, where GitHub shows
     # them to a contributor, so their relative links resolve from those

@@ -689,6 +689,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "now",
         &["docs/examples.md", "website/content/docs/cookbook.md"],
     ),
+    // `--data-urlencode` (with `-G`) is curl's. The REST page's `filter`
+    // example uses it because a filter expression carries spaces and quotes
+    // that must be URL-encoded, and a hand-encoded query string is not
+    // something a reader can check by eye. Scoped to that page and its
+    // generated mirror.
+    (
+        "data-urlencode",
+        &["docs/rest-api.md", "website/content/docs/api.md"],
+    ),
     // `--example` is cargo's, on `cargo run --example <name>`. It appears
     // only on the library page, which is the one page whose runnable
     // commands target `examples/*.rs` rather than the `sipnab` binary.
@@ -3095,6 +3104,222 @@ fn feature_tables_cover_every_cargo_feature() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `Cargo.toml`'s `[features]` as name -> direct members, `dep:` prefixes
+/// stripped. `default` is left out: it is a selection, not a feature.
+fn cargo_features() -> Result<std::collections::BTreeMap<String, Vec<String>>, TestError> {
+    let manifest: toml::Table = include_str!("../Cargo.toml").parse()?;
+    let table = manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .ok_or("Cargo.toml has a [features] table")?;
+    let mut out = std::collections::BTreeMap::new();
+    for (name, members) in table {
+        if name == "default" {
+            continue;
+        }
+        let members = members
+            .as_array()
+            .ok_or("a feature is a list")?
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .map(|m| m.strip_prefix("dep:").unwrap_or(m).to_string())
+            .collect();
+        out.insert(name.clone(), members);
+    }
+    Ok(out)
+}
+
+/// The rows of the feature table on `page`, as `(feature, second cell, third
+/// cell)`, in page order.
+fn feature_table_rows(page: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut in_table = false;
+    for line in page.lines() {
+        let trimmed = line.trim();
+        // The install and build pages head it `Feature | Description`, the
+        // README `Flag | What it adds`; the first cell is the feature either way.
+        if trimmed.starts_with("| Feature | Description |")
+            || trimmed.starts_with("| Flag | What it adds |")
+        {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if !trimmed.starts_with('|') {
+            if !out.is_empty() {
+                break;
+            }
+            continue;
+        }
+        let cells: Vec<&str> = trimmed.trim_matches('|').split(" | ").collect();
+        let Some(name) = cells
+            .first()
+            .and_then(|c| c.trim().strip_prefix('`'))
+            .and_then(|c| c.strip_suffix('`'))
+        else {
+            continue;
+        };
+        out.push((
+            name.to_string(),
+            cells
+                .get(1)
+                .map_or_else(String::new, |c| c.trim().to_string()),
+            cells
+                .get(2)
+                .map_or_else(String::new, |c| c.trim().to_string()),
+        ));
+    }
+    out
+}
+
+/// The backticked names in a table cell, outside any parenthesis.
+///
+/// `(plugin: \`rodio\`)` on the `audio` row names what the separate audio
+/// plugin links, not a member of the feature.
+fn backticked_outside_parens(cell: &str) -> std::collections::BTreeSet<String> {
+    let mut depth = 0usize;
+    let mut kept = String::new();
+    for c in cell.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => kept.push(c),
+            _ => {}
+        }
+    }
+    kept.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The install page's feature table states each feature's direct members, and
+/// its `full` row lists exactly what `full` turns on.
+///
+/// The row check above proves a feature is NAMED. It cannot see a row that
+/// names the feature and misstates it: the dependency cells of `api`,
+/// `metrics` and `vcon` all omitted the `rustls` each one pulls in, and a
+/// `full` row can drop a member while every feature keeps its own row.
+#[test]
+fn the_install_feature_table_states_what_cargo_toml_declares() -> Result<(), TestError> {
+    let features = cargo_features()?;
+    let mut wrong = Vec::new();
+    for (page, text) in [
+        ("README.md", include_str!("../README.md")),
+        ("docs/install.md", include_str!("../docs/install.md")),
+    ] {
+        let rows = feature_table_rows(text);
+        let full = rows
+            .iter()
+            .find(|(n, _, _)| n == "full")
+            .ok_or_else(|| format!("{page} has a `full` row"))?;
+        let listed = backticked_outside_parens(&full.1);
+        let want: std::collections::BTreeSet<String> = features
+            .get("full")
+            .ok_or("Cargo.toml declares full")?
+            .iter()
+            .cloned()
+            .collect();
+        if listed != want {
+            wrong.push(format!(
+                "{page} `full` row lists {listed:?}; Cargo.toml's full is {want:?}"
+            ));
+        }
+    }
+    let rows = feature_table_rows(include_str!("../docs/install.md"));
+    assert!(
+        rows.len() >= 15,
+        "read {} rows from docs/install.md's feature table: the reader stopped matching",
+        rows.len()
+    );
+    for (name, _, deps) in &rows {
+        if name == "full" {
+            continue;
+        }
+        let Some(members) = features.get(name) else {
+            wrong.push(format!(
+                "docs/install.md has a row for `{name}`, which Cargo.toml does not declare"
+            ));
+            continue;
+        };
+        let want: std::collections::BTreeSet<String> = members.iter().cloned().collect();
+        let listed = backticked_outside_parens(deps);
+        if listed != want {
+            wrong.push(format!(
+                "docs/install.md `{name}` dependencies list {listed:?}; Cargo.toml declares {want:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a feature table misstates Cargo.toml:\n  {}",
+        wrong.join("\n  ")
+    );
+    Ok(())
+}
+
+/// The website's build page carries the install page's feature table, row for
+/// row.
+///
+/// `website/content/docs/build.md` is a hand-kept page with no `docs/` source,
+/// and its copy of the table fell behind: no `vcon` row, no `archive` row, and
+/// a `full` row two members short. Held equal to the gated table above, it
+/// cannot fall behind again without this failing.
+#[test]
+fn the_build_page_feature_table_is_the_install_page_table() -> Result<(), TestError> {
+    let install = feature_table_rows(include_str!("../docs/install.md"));
+    let build = feature_table_rows(include_str!("../website/content/docs/build.md"));
+    assert!(!install.is_empty(), "docs/install.md has a feature table");
+    let mut diffs = Vec::new();
+    for (i, (want, got)) in install.iter().zip(build.iter()).enumerate() {
+        if want != got {
+            diffs.push(format!(
+                "row {}: install {want:?}\n         build   {got:?}",
+                i + 1
+            ));
+        }
+    }
+    if install.len() != build.len() {
+        diffs.push(format!(
+            "install has {} rows, build has {}: {:?} vs {:?}",
+            install.len(),
+            build.len(),
+            install.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            build.iter().map(|r| r.0.as_str()).collect::<Vec<_>>()
+        ));
+    }
+    assert!(
+        diffs.is_empty(),
+        "website/content/docs/build.md's feature table differs from docs/install.md's:\n{}",
+        diffs.join("\n")
+    );
+    Ok(())
+}
+
+/// The table reader splits cells, and the member reader skips parentheses.
+#[test]
+fn the_feature_table_readers_discriminate() {
+    let page = "x\n\n| Feature | Description | Dependencies |\n|---|---|---|\n| `audio` | Plays | `libc` (plugin: `rodio`) |\n| `full` | All: `a` + `b` | all |\n\nprose\n| `stray` | not a row | of the table |\n";
+    let rows = feature_table_rows(page);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].0, "audio");
+    assert_eq!(
+        backticked_outside_parens(&rows[0].2)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["libc"]
+    );
+    assert_eq!(
+        backticked_outside_parens(&rows[1].1)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
 /// Every `[theme]` color slot must be documented in both theme guides, and the
 /// slot count quoted in both config references must match `ThemeConfig`.
 ///
@@ -4953,6 +5178,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // +5: `vcon_spool_status`'s parameter and Returns tables, in
     // docs/mcp-tools.md 2 and website/content/docs/mcp-tools.md 2, and the
     // vCon spool status row in docs/design/surface-capability-matrix.md.
+    // +20: ten key tables in docs/keybindings.md (the nine views the F1 help
+    // documented and the page did not, and the capture filter editor) and
+    // the same ten in its site mirror.
     const EXPECTED_TABLES: usize = 1136;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

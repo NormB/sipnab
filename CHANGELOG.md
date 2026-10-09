@@ -61,6 +61,22 @@ entry that carries them.
   load --tls-key key.pem: reading TLS private key from key.pem", without
   "No such file or directory" or "Permission denied". `--keylog` already gave
   the reason.
+- **The keybindings page documents every key the F1 help lists.** The Call
+  List keys `g`, `m`, `c`, `e`, `b`, `o`, `f`, `x`, `a`, `B` and `N`, the
+  `Ctrl+L` alias of `F5`, and the relay statistics `H` key had no row, and
+  the nine views those keys open had no section. They do now, with a section
+  for the capture filter editor `B` opens.
+- **The REST reference documents `filter`, `after` and `before` on
+  `GET /v1/dialogs`.** The OpenAPI document declared all three; the page's
+  parameter table listed four parameters and omitted them.
+- **The website's plugin page no longer requires `sipnab_dealloc`**, which the
+  host never looks up, and both plugin pages count three exports, not four.
+  The website's plugin and TLS capture pages are now generated from
+  `docs/`, so the TLS page carries the current `bpf` build requirements.
+- **The build page's feature table lists `vcon` and `archive`**, and its
+  `full` row lists all twelve members. The install page's dependency column
+  names the `rustls` that `api`, `metrics` and `vcon` pull in, and its `hep`
+  row names HEP v1 receive.
 
 ## [0.5.212] - 2026-10-12
 

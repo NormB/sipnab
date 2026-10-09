@@ -6,6 +6,7 @@
 [Ff]ullband
 [Mm]onotic
 [Nn]arrowband
+[Rr]ollup
 [Uu]ndecodable
 [Ww]ideband
 _code_b

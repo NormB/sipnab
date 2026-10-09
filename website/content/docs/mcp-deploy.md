@@ -1930,11 +1930,11 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 
 ## Build a binary with MCP support
 
-```toml
+```text
 mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
 mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
 full      # native + tui + tls + hep + api + audio + mcp + mcp-http
-          #   + metrics + plugins + vcon
+          #   + metrics + plugins + vcon + archive
 ```
 
 The default build does not include `mcp` — operators who'll never
