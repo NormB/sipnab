@@ -31,6 +31,8 @@ on:
       # scripts/check-wasm-exports.py: the analyzer build below runs it, so a
       # change to the check must re-run the check.
       - 'scripts/check-wasm-exports.py'
+      # scripts/ci-cache-prune.sh: the analyzer build's cache save runs it.
+      - 'scripts/ci-cache-prune.sh'
       # yang/: the YANG module is copied into the site below, so a new
       # revision has to reach sipnab.com/yang/ when it lands.
       - 'yang/**'
@@ -132,18 +134,24 @@ jobs:
       # implementation behind it moved. Building here removes the class of bug
       # rather than the instance — a build product that is generated cannot go
       # stale.
-      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           targets: wasm32-unknown-unknown
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored on every run and saved, at the end of this job, from main
+      # only: tests/ci_cache_policy_test.rs says why.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/wasm-pack
             target
-          key: pages-wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: pages-wasm-${{ runner.os }}-
+          key: cargo-pages-wasm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-pages-wasm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
       - name: Install wasm-pack
         run: |
           set -euo pipefail
@@ -263,6 +271,22 @@ jobs:
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: website/public
+
+      # The workspace's own executables are rebuilt by any change to the
+      # sources, so they are removed before the save; see the script.
+      - name: Prune the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-pack
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   deploy:
     # Bounds a wedged job: an unbounded one holds its concurrency group

@@ -6248,7 +6248,15 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // website/data/test-count.toml are a deploy output and sit in GENERATED.
     // Attributed per file by running the extractor over HEAD's copy and the
     // working tree's.
-    const EXPECTED_REFERENCES: usize = 163;
+    // 163 -> 178: fifteen, for the hosted cargo caches saved from main only.
+    // Each restore step's comment names `tests/ci_cache_policy_test.rs` and
+    // each prune step runs `scripts/ci-cache-prune.sh`: ci.yml's check,
+    // symbol-split and features jobs (6), quality.yml's bench and clippy-sarif
+    // jobs plus the coverage job's comment naming the test (5), and pages.yml's
+    // build job plus its `paths:` entry and that entry's comment (4).
+    // Attributed by measurement: with HEAD's ci.yml swapped back in the scan
+    // reads 172, with HEAD's quality.yml 173, with HEAD's pages.yml 174.
+    const EXPECTED_REFERENCES: usize = 178;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

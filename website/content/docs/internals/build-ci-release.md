@@ -588,6 +588,27 @@ says so. A `debconf` answer, such as the Check job's answer for
 same lock and only when it installs something. No workflow step runs
 `debconf-set-selections` itself.
 
+The GitHub-hosted jobs restore their cargo builds from `actions/cache`, which
+keeps at most 10 GB per repository and evicts the least recently used entry
+past that. On 2026-10-09 the entries totaled 15.1 GB. The Check jobs' caches
+missed on 11 (Linux) and 12 (macOS) of 14 runs, while the Cargo.lock hash in
+their keys never changed: every miss saved the entry again and evicted
+another. Pull request runs saved entries that only the same pull request can
+read, the Coverage job saved a 5.0 GB entry that did not shorten the job, and
+the x86_64 jobs restored the aarch64 Check leg's entry through a shared
+restore-key. Each hosted cargo job now restores with `actions/cache/restore`
+and saves with `actions/cache/save` only on `refs/heads/main` and only after a
+miss. Before the save,
+[`scripts/ci-cache-prune.sh`](https://github.com/NormB/sipnab/blob/main/scripts/ci-cache-prune.sh) removes the
+executables built from the workspace crates, which any change to the sources
+rebuilds. Each
+key names the OS, the architecture, the toolchain and Cargo.lock, and each
+restore-key is a prefix of the job's own key. The Coverage jobs keep no cargo
+cache.
+[`tests/ci_cache_policy_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/ci_cache_policy_test.rs) holds
+those rules, lists the cache families with their measured sizes, and drives
+the prune script.
+
 Python packages in CI come from PyPI through `pip install` in hash-checking
 mode, each from a hash-pinned requirements file. `ci.yml` sets `PIP_TIMEOUT` to 60 seconds
 and `PIP_RETRIES` to 8 at the workflow level, so every install in it uses

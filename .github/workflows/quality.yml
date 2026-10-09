@@ -85,17 +85,21 @@ jobs:
         with:
           packages: libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      # Restored on every run and saved, at the end of this job, from main
+      # only: tests/ci_cache_policy_test.rs says why.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-bench-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-bench-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bench-
-            ${{ runner.os }}-cargo-
+            cargo-bench-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       # --profile profiling is what CONTRIBUTING mandates for benchmarks:
       # release codegen with full symbols and no stripping.
@@ -115,6 +119,21 @@ jobs:
         env:
           CARGO_PROFILE_PROFILING_DEBUG: line-tables-only
         run: cargo bench --profile profiling --all-features -- --test
+
+      # The workspace's own executables are rebuilt by any change to the
+      # sources, so they are removed before the save; see the script.
+      - name: Prune the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ---------------------------------------------------------------------------
   # Test coverage via cargo-llvm-cov.
@@ -174,16 +193,13 @@ jobs:
           # for `std`".
           targets: wasm32-unknown-unknown
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-coverage-
-            ${{ runner.os }}-cargo-
+      # No cargo cache. The instrumented target directory was a 5.0 GB entry,
+      # half of the repository's 10 GB, and did not pay for itself: measured
+      # over 14 runs before 2026-10-09, this job took 15.3 to 21.2 minutes
+      # with an exact hit and 15.8 to 20.1 with a miss, because the restore
+      # (1.7 to 2.9 minutes) and the save (1.4 to 3.7) cost what the hit
+      # saved. Its share of the 10 GB evicted the Check jobs' caches.
+      # tests/ci_cache_policy_test.rs keeps it out.
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
@@ -299,15 +315,9 @@ jobs:
           # plugin_example_test builds crates/sipnab-plugin-example for wasm32.
           targets: wasm32-unknown-unknown
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-coverage-branch-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-coverage-branch-
+      # No cargo cache, for the reasons the line coverage job gives; and the
+      # nightly toolchain changes daily, which leaves a cached target
+      # directory nothing to reuse.
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
@@ -381,20 +391,24 @@ jobs:
         with:
           packages: libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           components: clippy
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored on every run and saved, at the end of this job, from main
+      # only: tests/ci_cache_policy_test.rs says why.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-clippy-sarif-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-clippy-sarif-
-            ${{ runner.os }}-cargo-
+            cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install clippy-sarif tooling
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
@@ -414,6 +428,21 @@ jobs:
         with:
           sarif_file: clippy.sarif
           category: clippy
+
+      # The workspace's own executables are rebuilt by any change to the
+      # sources, so they are removed before the save; see the script.
+      - name: Prune the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ---------------------------------------------------------------------------
   # Documentation gates: prose style, spelling, and dead links.
