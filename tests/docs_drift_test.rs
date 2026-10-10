@@ -36,6 +36,16 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The comparison page quotes other tools' own documentation, flags
+    // included: sngrep's `--enable-eep` build option, tshark's
+    // `--ring-buffer`, and `homer search --format`. Each is
+    // the other tool's flag, cited to its source, never sipnab's.
+    ("enable-eep", &["website/content/compare.md"]),
+    ("ring-buffer", &["website/content/compare.md"]),
+    ("format", &["website/content/compare.md"]),
+    // `cargo install sipnab --features full`, the features page's
+    // packaging list. cargo's flag.
+    ("features", &["website/content/features.md"]),
     // `scripts/fetch-vcon-datasets.py --pins <FILE>`, named by the testing
     // page's "The corrected copy": which pins files the dataset fetch script
     // reads. The script's flag, not sipnab's.
@@ -4287,7 +4297,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // page for CONTRIBUTING.md.
     // 269 -> 273: the README.md of tests/fixtures/vcon-datasets/ and of its
     // three dataset directories.
-    const EXPECTED_MARKDOWN_FILES: usize = 273;
+    // 273 -> 276: the overview pages, website/content/features.md,
+    // deployments.md and compare.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 276;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4832,7 +4844,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // README.md of each of its three dataset directories 1.
     // 1102 -> 1104: the corrected copy of the public vCon datasets.
     // docs/internals/testing.md 1 and its site page 1.
-    const EXPECTED_TABLES: usize = 1104;
+    // 1104 -> 1110: the overview pages. website/content/deployments.md 5 (the
+    // topology summary and one "What runs where" per topology) and
+    // website/content/compare.md 1 (the feature matrix).
+    const EXPECTED_TABLES: usize = 1110;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

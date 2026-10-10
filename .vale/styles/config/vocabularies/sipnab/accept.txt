@@ -258,6 +258,7 @@ headlessly
 heaptrack
 HEP
 hep_bind_is_loopback
+heplify
 hexdump
 hmac
 homebrew
@@ -595,6 +596,7 @@ sipsak
 siptrace
 sipvicious
 snaplen
+sngrep
 socat
 softclient
 Solarized
@@ -611,6 +613,7 @@ src
 src_ip
 SSG
 SSH
+sshdump
 ssrc
 SSRCs
 status_code

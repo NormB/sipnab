@@ -10,7 +10,26 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Three overview pages on sipnab.com: Features, Deployments and Compare.**
+  `/features/` lists what sipnab does, the flag or setting that turns each
+  feature on, and the page that documents it. `/deployments/` describes four
+  reference topologies (one host, a fleet of SIP servers sending HEP, an
+  observability stack, and AI agents over MCP) and links each to the guides
+  that set it up; it adds no commands of its own. `/compare/` sets sipnab
+  beside Wireshark, sngrep, Homer and Pcaptix in a feature matrix whose every
+  cell cites the tool's own documentation or reads "not documented", and lists
+  what sipnab does not do. The site footer links all three, and the
+  accessibility scan covers them.
+
 ### Fixed
+
+- **Diagram edge labels on sipnab.com meet WCAG AA contrast.** Flowchart edge
+  labels drew `#cbccc6` text on a `#585858` background mermaid derived on its
+  own, a 4.4:1 ratio under the 4.5:1 minimum. The diagram theme now sets the
+  label background to `#2d3640`, which measures 7.58:1.
+  Affected: every docs page with a flowchart that labels its edges.
 
 - **The REST API's `filter` parameter accepts the named filter aliases.**
   `GET /v1/dialogs?filter=problems` answered `400 unexpected input at

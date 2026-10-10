@@ -6980,6 +6980,13 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist()
              JS string quotes",
         ),
         (
+            "overview.html",
+            "{{ page.content | safe }}",
+            "HTML Zola rendered from a committed .md file (the /features/, \
+             /deployments/ and /compare/ pages); escaping it would show the \
+             page as its own source",
+        ),
+        (
             "page.html",
             "{{ page.content | safe }}",
             "HTML Zola rendered from a committed .md file; escaping it would \
@@ -11655,5 +11662,129 @@ fn the_voice_stack_tiles_name_roles_and_pair_their_guides() -> Result<(), TestEr
             assert!(tile.contains(&link), "missing {link}:\n{tile}");
         }
     }
+    Ok(())
+}
+
+// ---- The overview pages: /features/, /deployments/, /compare/ ----
+
+/// The overview pages, as content files.
+const OVERVIEW_PAGES: &[&str] = &[
+    "website/content/features.md",
+    "website/content/deployments.md",
+    "website/content/compare.md",
+];
+
+/// Each overview page renders through overview.html and is linked from the
+/// footer every page carries, so none of them is reachable only by URL.
+#[test]
+fn the_overview_pages_render_through_their_template_and_the_footer_links_each()
+-> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
+    for page in OVERVIEW_PAGES {
+        let text = read(page)?;
+        assert!(
+            text.contains("template = \"overview.html\""),
+            "{page}: not rendered through overview.html"
+        );
+        let name = page.trim_start_matches("website/content/");
+        assert!(
+            base.contains(&format!("get_url(path='@/{name}')")),
+            "base.html's footer does not link {name}"
+        );
+    }
+    Ok(())
+}
+
+/// Every data cell of the comparison matrix cites its source in a footnote,
+/// or says "not documented"; every footnote it cites is defined. A cell with
+/// neither is a claim about someone else's product with nothing behind it.
+#[test]
+fn every_comparison_cell_cites_a_source_or_says_not_documented() -> Result<(), TestError> {
+    let text = read("website/content/compare.md")?;
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("| ") && !l.starts_with("| Capability"))
+        .collect();
+    assert!(rows.len() >= 15, "found {} matrix rows", rows.len());
+    let mut unsourced = Vec::new();
+    let mut cited = BTreeSet::new();
+    for row in &rows {
+        let cells: Vec<&str> = row.trim_matches('|').split(" | ").map(str::trim).collect();
+        for cell in cells.iter().skip(1) {
+            let mut rest = *cell;
+            while let Some(i) = rest.find("[^") {
+                let label_end = rest[i..].find(']').ok_or("unclosed footnote")?;
+                cited.insert(rest[i + 2..i + label_end].to_owned());
+                rest = &rest[i + label_end..];
+            }
+            if !cell.contains("[^") && *cell != "not documented" {
+                unsourced.push(format!("{} -> {cell}", cells[0]));
+            }
+        }
+    }
+    assert!(unsourced.is_empty(), "cells with no source: {unsourced:#?}");
+    let undefined: Vec<_> = cited
+        .iter()
+        .filter(|label| !text.contains(&format!("[^{label}]:")))
+        .collect();
+    assert!(
+        undefined.is_empty(),
+        "footnotes cited but not defined: {undefined:?}"
+    );
+    Ok(())
+}
+
+/// The features and deployments pages describe sipnab and name no other SIP
+/// capture tool, as the homepage does not (Norm, 2026-10-05). The protocol's
+/// own name, "Homer Encapsulation Protocol", and the URL of the guide for
+/// running sipnab beside a HEP collector are the two exceptions. The
+/// comparison page names other tools by design.
+#[test]
+fn the_features_and_deployments_pages_name_no_peer_capture_tool() -> Result<(), TestError> {
+    for page in [
+        "website/content/features.md",
+        "website/content/deployments.md",
+    ] {
+        let text = read(page)?
+            .to_lowercase()
+            .replace("homer encapsulation protocol", "")
+            .replace("/docs/homer-sipnab/", "");
+        for tool in [
+            "sngrep",
+            "sipgrep",
+            "wireshark",
+            "tshark",
+            "homer",
+            "pcaptix",
+        ] {
+            assert!(!text.contains(tool), "{page} names {tool}");
+        }
+    }
+    Ok(())
+}
+
+/// An overview page that carries a diagram declares `has_diagrams`, which is
+/// what makes overview.html load the mermaid bundle; without it the diagram
+/// renders as its source text.
+#[test]
+fn an_overview_page_with_a_diagram_loads_the_diagram_bundle() -> Result<(), TestError> {
+    let template = read("website/templates/overview.html")?;
+    assert!(template.contains("{% if page.extra.has_diagrams %}"));
+    assert!(template.contains("js/mermaid.min.js"));
+    let mut diagrams = 0;
+    for page in OVERVIEW_PAGES {
+        let text = read(page)?;
+        if text.contains("<pre class=\"mermaid\">") {
+            diagrams += 1;
+            assert!(
+                text.contains("has_diagrams = true"),
+                "{page}: a diagram but no has_diagrams"
+            );
+        }
+    }
+    assert!(
+        diagrams > 0,
+        "no overview page carries a diagram; the check ran on nothing"
+    );
     Ok(())
 }
