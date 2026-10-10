@@ -1,0 +1,10 @@
+# The corrected copy of three of the PINS.tsv datasets, pinned to one commit.
+# NormB/vcon-datasets-core04 adds the mediatype that draft-ietf-vcon-vcon-core-04
+# section 4.4.5 requires on inline attachments, and changes nothing else; its
+# CHANGES.md lists what it leaves open. scripts/fetch-vcon-datasets.py fetches
+# it beside the upstream datasets. Commit recorded 2026-10-09. License: the
+# SPDX identifier of the repository's own LICENSE file; each dataset directory
+# in it keeps its upstream LICENSE.
+#
+# name	url	commit	license
+vcon-datasets-core04	https://github.com/NormB/vcon-datasets-core04	cd0b78f0a606a0f9e173bc99e94e8c9e7e653479	MIT

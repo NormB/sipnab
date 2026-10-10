@@ -840,7 +840,14 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 498 -> 501: docs/internals/build-ci-release.md's Docker Hub paragraph
     // links scripts/requirements-codespell.txt, scripts/prose-gates.sh and
     // tests/ci_docker_hub_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 501;
+    // 501 -> 505: docs/internals/testing.md's public vCon datasets section
+    // links tests/fixtures/vcon-datasets/PINS.tsv,
+    // tests/vcon_dataset_subset_test.rs, tests/vcon_dataset_corpus_test.rs and
+    // scripts/fetch-vcon-datasets.py (its link to the subset README.md is a
+    // page, not code).
+    // 505 -> 506: the same section's corrected-copy paragraph links
+    // tests/fixtures/vcon-datasets/CORRECTED.tsv.
+    const EXPECTED_CODE_LINKS: usize = 506;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

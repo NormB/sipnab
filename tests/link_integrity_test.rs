@@ -1195,7 +1195,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1342 -> 1345: REST `filter` accepts aliases. docs/rest-api.md 2 (the
     // `filter` row to filter-dsl.md and its #named-aliases section) and
     // docs/filter-dsl.md 1 (Named aliases to rest-api.md#get-v1dialogs).
-    const EXPECTED_WIKI_LINKS: usize = 1345;
+    // 1345 -> 1347: the public vCon datasets. docs/internals/testing.md 1
+    // (to tests/fixtures/vcon-datasets/README.md) and docs/internals/vcon.md 1
+    // (to testing.md#the-public-vcon-datasets).
+    const EXPECTED_WIKI_LINKS: usize = 1347;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
