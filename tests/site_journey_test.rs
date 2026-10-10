@@ -6053,7 +6053,7 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 6] = [
+            const GENERATED: [&str; 7] = [
                 "website/public",
                 "build/",
                 "target/",
@@ -6064,6 +6064,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
                 // pages.yml writes the homepage test count here at deploy
                 // (scripts/published-test-count.py); it is never committed.
                 "website/data/test-count.toml",
+                // pages.yml writes the GitHub star count here at deploy
+                // (scripts/github-stars.py); it is never committed.
+                "website/data/github.toml",
             ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
@@ -6293,7 +6296,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `.githooks/pre-push` (+4 net). Attributed by
     // measurement: with HEAD's docker.yml swapped back in the scan reads 183,
     // with HEAD's quality.yml 180, with HEAD's release.yml 183.
-    const EXPECTED_REFERENCES: usize = 184;
+    // 184 -> 186: pages.yml's star-count steps name scripts/github-stars.py
+    // twice (the paths filter and the run). The file they write,
+    // website/data/github.toml, is on the GENERATED list and not counted.
+    const EXPECTED_REFERENCES: usize = 186;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -11785,6 +11791,98 @@ fn an_overview_page_with_a_diagram_loads_the_diagram_bundle() -> Result<(), Test
     assert!(
         diagrams > 0,
         "no overview page carries a diagram; the check ran on nothing"
+    );
+    Ok(())
+}
+
+// ---- The homepage's GitHub star count ----
+
+/// The star count beside "View on GitHub" comes from the file the deploy
+/// generates, `website/data/github.toml`, and nothing commits it.
+///
+/// `scripts/github-stars.py` writes the file at deploy time from the GitHub
+/// API's answer. A local `zola build`, or a deploy whose API call failed, has
+/// no such file, and the button renders without a count rather than with a
+/// stale one.
+#[test]
+fn homepage_star_count_comes_from_the_generated_data_file() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
+    let load = r#"load_data(path="data/github.toml", required=false)"#;
+    assert!(
+        idx.contains(load),
+        "index.html does not load the star count with `{load}`"
+    );
+    assert!(
+        idx.contains("gh.stars is number"),
+        "index.html renders `gh.stars` without checking it is a number"
+    );
+    let button = idx
+        .lines()
+        .find(|l| l.contains("<a ") && l.contains(">View on GitHub"))
+        .ok_or("no \"View on GitHub\" button on the homepage")?;
+    assert!(
+        button.contains(r#"data-stars="{{ gh.stars }}""#),
+        "the \"View on GitHub\" button does not carry the generated count:\n{button}"
+    );
+    let rel = "website/data/github.toml";
+    let tracked = Command::new("git")
+        .args(["ls-files", "--error-unmatch", rel])
+        .current_dir(repo())
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    assert!(
+        !tracked.status.success(),
+        "{rel} is tracked; it is generated at deploy time"
+    );
+    let ignored = Command::new("git")
+        .args(["check-ignore", "-q", "--no-index", rel])
+        .current_dir(repo())
+        .status()
+        .map_err(|e| format!("git check-ignore: {e}"))?;
+    assert!(ignored.success(), "{rel} is not in .gitignore");
+    Ok(())
+}
+
+/// The deploy writes the star count before it builds the site, and when it
+/// wrote one, checks the built homepage states it. A failed API call is a
+/// warning, not a failed deploy: the homepage then states no count.
+#[test]
+fn pages_writes_the_star_count_before_it_builds_the_site() -> Result<(), TestError> {
+    let wf = ".github/workflows/pages.yml";
+    let yaml = read(wf)?;
+    let derive = line_of(&yaml, "python3 scripts/github-stars.py", wf)?;
+    let build = line_of(&yaml, "run: zola build", wf)?;
+    let check = line_of(
+        &yaml,
+        "- name: Check the built homepage states the star count it was given",
+        wf,
+    )?;
+    let upload = line_of(&yaml, "- name: Upload Pages artifact", wf)?;
+    assert!(
+        derive < build && build < check && check < upload,
+        "{wf} must write the star count (line {}), build (line {}), check (line {}) \
+         and upload (line {}), in that order",
+        derive + 1,
+        build + 1,
+        check + 1,
+        upload + 1
+    );
+    let fetch = workflow_step_body(wf, "Fetch the GitHub star count")?;
+    assert!(
+        fetch.contains("--repo \"$GITHUB_REPOSITORY\""),
+        "the fetch does not hold the answer to this repository:\n{fetch}"
+    );
+    assert!(
+        fetch.contains("::warning::") && !fetch.contains("exit 1"),
+        "a failed star-count fetch must warn and publish without a count:\n{fetch}"
+    );
+    let check_body = workflow_step_body(
+        wf,
+        "Check the built homepage states the star count it was given",
+    )?;
+    assert!(
+        check_body.contains("data-stars=") && check_body.contains("website/data/github.toml"),
+        "the check does not compare the built homepage with the generated file:\n{check_body}"
     );
     Ok(())
 }

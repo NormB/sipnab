@@ -22,6 +22,12 @@ entry that carries them.
   cell cites the tool's own documentation or reads "not documented", and lists
   what sipnab does not do. The site footer links all three, and the
   accessibility scan covers them.
+- **The homepage shows sipnab's GitHub star count on its "View on GitHub"
+  button.** The deploy reads the count from the GitHub API with
+  `scripts/github-stars.py`, which accepts only a whole number for this
+  repository, and writes `website/data/github.toml`, which is never committed.
+  A local build, or a deploy whose API call failed, shows the button without a
+  count; the deploy warns in that case rather than failing.
 
 ### Fixed
 

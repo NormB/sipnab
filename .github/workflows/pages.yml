@@ -43,6 +43,7 @@ on:
       # rebuilt the site.
       - 'tests/**'
       - 'scripts/published-test-count.py'
+      - 'scripts/github-stars.py'
       - 'scripts/fetch-ci-suite-output.py'
   workflow_dispatch:
 
@@ -215,6 +216,24 @@ jobs:
           fi
           cat website/data/test-count.toml
 
+      # The homepage's GitHub star count, fetched at deploy time and never
+      # committed. A failed fetch publishes the homepage without a count, which
+      # the template renders as the plain "View on GitHub" button, rather than
+      # blocking the deploy over that figure; the step says so as a warning.
+      # Before `zola build`, which reads the file once.
+      - name: Fetch the GitHub star count
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY" > github-repo.json \
+            && python3 scripts/github-stars.py github-repo.json --repo "$GITHUB_REPOSITORY" --write website/data/github.toml; then
+            cat website/data/github.toml
+          else
+            echo "::warning::no GitHub star count; the homepage is published without one"
+            rm -f website/data/github.toml
+          fi
+
       - name: Build site
         working-directory: website
         run: zola build
@@ -233,6 +252,20 @@ jobs:
             exit 1
           fi
           echo "The built homepage states $n automated tests"
+
+      - name: Check the built homepage states the star count it was given
+        run: |
+          set -euo pipefail
+          if [ -f website/data/github.toml ]; then
+            n=$(sed -n 's/^stars = \([0-9][0-9]*\)$/\1/p' website/data/github.toml)
+            if [ -z "$n" ] || ! grep -qF "data-stars=\"$n\"" website/public/index.html; then
+              echo "::error::the built homepage does not state the generated star count '${n:-<none>}'"
+              exit 1
+            fi
+            echo "The built homepage states $n stars"
+          else
+            echo "No star count was fetched; the homepage states none"
+          fi
 
       # AFTER the Zola build, and that ordering is a constraint rather than a
       # style choice: `zola build` recreates its output directory from
