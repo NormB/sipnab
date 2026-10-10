@@ -2038,7 +2038,8 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
     pub sandbox: Option<SandboxModeArg>,
 
-    /// Record every system call this process makes, and allow every one.
+    /// Record every system call (`log`), or refuse the ones outside a
+    /// host-derived allowlist (`enforce`).
     ///
     /// `off` (the default) changes nothing. `log` installs a seccomp filter
     /// whose only action is `SECCOMP_RET_LOG`: the kernel writes one audit
@@ -2068,8 +2069,12 @@ pub struct SecurityArgs {
     /// Point it at a bounded offline run and turn it off afterwards: a live
     /// capture emits one record per received packet and will flood the log.
     ///
-    /// It cannot end a run. `SECCOMP_RET_LOG` allows; the killing action a
-    /// derived allowlist would use is deliberately not implemented yet.
+    /// `log` cannot end a run: `SECCOMP_RET_LOG` allows every call. `enforce`
+    /// can. It kills the process on a call outside the allowlist that
+    /// `SIPNAB_SECCOMP_ALLOWLIST` names, which you derive on the host that runs
+    /// the capture with `scripts/derive-seccomp-allowlist.sh`. Without that
+    /// variable, `enforce` installs no filter, logs a warning, and the run
+    /// continues unfiltered.
     #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
     pub seccomp: Option<SeccompModeArg>,
 

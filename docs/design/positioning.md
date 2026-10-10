@@ -55,7 +55,7 @@ to leave the box and Homer never tried to avoid the database.
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |
 | Agent access | MCP | ships |
-| Bounded on-disk retention | `--split` rotates files; **nothing caps the set** | absent |
+| Bounded on-disk retention | `--split` rotates files and `--split-keep N` keeps the newest N ([`cli.rs:818`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L818)); **nothing indexes the set for search** | partial: a file ring buffer since 0.5.100 |
 
 The single most useful fact here: for OpenSIPS and Kamailio, **sipnab does not
 go on the production host at all** — the proxy's own HEP module points at a
@@ -89,8 +89,9 @@ and it needs provenance, which
 missing for the two-capture view. Same prerequisite, so do not solve it twice.
 
 **Bounded on-disk retention.** the terminal viewer keeps nothing, Homer keeps weeks, the
-middle keeps *this shift*. Today `--split` rotates output files and nothing
-bounds the set, so "keep the last 2 GB and let me search it" does not exist.
+middle keeps *this shift*. Since 0.5.100 `--split-keep N` bounds
+the set `--split` rotates, so the newest N files stay on disk. Nothing indexes
+them, so "keep the last 2 GB and let me search it" still does not exist.
 This is the feature that makes it a scope with a memory rather than a live view
 you had to already be watching.
 

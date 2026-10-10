@@ -2262,7 +2262,7 @@ histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))
 **Pitfalls:**
 
 - The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the Prometheus metrics reference](prometheus-metrics.md).
-- Some metrics (`sipnab_responses_total`, `sipnab_security_alerts_total`) exist in name only, with nothing wired — they'll stay empty until upstream populates them. Don't put alerts on them today.
+- `sipnab_security_alerts_total{type}` carries only the alert types that have fired, and is absent from the scrape until the first one does. An absent series means no alert of that type fired since the process started, not that the metric is unavailable. `sipnab_responses_total{code}` reports every response class on every scrape, at `0` where the capture saw none. [The Prometheus metrics reference](prometheus-metrics.md) describes both.
 
 ---
 
@@ -14484,7 +14484,7 @@ report a healthy network in the middle of an outage.
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
 | `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
 | `--sandbox` | `<MODE>` | `off` | Bound which files this process may reach, using Landlock. `best-effort` installs what the kernel supports and captures either way; `required` refuses to capture when no sandbox is in force. Reads and writes outside the input set, the output directory, the keylog and the crash directory come back `EACCES`. **Sockets are not bounded**: Landlock's network rules reach TCP bind and connect only, which would miss the HEP UDP listener and the pre-drop raw socket, so this ruleset governs the filesystem alone. Nothing here can end a run — Landlock denies an open, it does not signal — and a kernel without it degrades to a warning unless `required` says otherwise |
-| `--seccomp` | `<MODE>` | `off` | Record every system call this process makes, and allow every one. `log` installs a seccomp filter whose only action is `SECCOMP_RET_LOG`. **It denies nothing and protects nothing** — it exists to derive an allowlist from evidence rather than a guess, which is why no enforcing mode exists yet. Where the records land depends on the host: `auditctl -s` prints a connected audit daemon's pid and the records are then in `ausearch -m SECCOMP`; a pid of 0 means no daemon and they are in `dmesg \| grep 'type=1326'`. Point it at a bounded offline run — a live capture emits one record per received packet and floods the log |
+| `--seccomp` | `<MODE>` | `off` | Record every system call (`log`), or refuse the ones outside a host-derived allowlist (`enforce`). `log` installs a seccomp filter whose only action is `SECCOMP_RET_LOG`. **It denies nothing and protects nothing** — it exists to derive an allowlist from evidence rather than a guess. `enforce` kills the process on a call outside the allowlist `SIPNAB_SECCOMP_ALLOWLIST` names, derived on the capture host with [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh); without that variable it installs no filter, logs a warning, and the run continues unfiltered. Where the records land depends on the host: `auditctl -s` prints a connected audit daemon's pid and the records are then in `ausearch -m SECCOMP`; a pid of 0 means no daemon and they are in `dmesg \| grep 'type=1326'`. Point it at a bounded offline run — a live capture emits one record per received packet and floods the log |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics. Config: `[security] fraud_detect` |
 | `--no-fraud-detect` | -- | off | Do not run fraud detection even when `[security] fraud_detect = true`. The last of `--fraud-detect` / `--no-fraud-detect` typed wins. Config: `[security] fraud_detect` |
 | `--evidence-out` | `<PATH\|->` | off | Publish every security finding that names a source as JSON Lines, for a system that decides what to do with it. `-` is standard output, for a pipe; a path receives one appended line per finding, and sipnab opens it at startup, so a path it cannot write is an error before the first packet. sipnab takes no action on these lines: the system reading them decides. A finding carried by HEP publishes nothing without `--hep-allow-kill`, for the reason `--fail2ban` gives: the inner address is the sender's claim |
@@ -15040,7 +15040,7 @@ CoreAudio the moment anything touches it.
 - `sipnab -N -I calls.pcap --lint --lint-no-suppress --no-cli-print` — the full catalog, ignoring every suppression file, for auditing what the project has agreed to live with
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --report` — read the embedded names and TLS secrets out of an 8 GiB ring member you captured yourself, which the shipped ceiling refuses outright
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitized.pcapng` — the same file, sanitized for handover. The copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
-- `sipnab -N -L 0.0.0.0:9060 --config collector.toml --max-capture-sources 100000` — a HEP collector whose `collector.toml` sets `[limits] max_tracked_peers = 100000` for a large agent fleet: at the shipped 65536 sipnab refuses to start, exit 2, because the table could not hold every sender the listener may admit
+- `sipnab -N -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --config collector.toml --max-capture-sources 100000` — a HEP collector whose `collector.toml` sets `[limits] max_tracked_peers = 100000` for a large agent fleet: at the shipped 65536 sipnab refuses to start, exit 2, because the table could not hold every sender the listener may admit
 - `sipnab -N -I a.pcap -I b.pcap --max-capture-sources 2 --report` — the smallest table two input files can run with; one less and sipnab refuses to start, naming the setting
 - `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitized.pcapng` — sanitize an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
 - `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
@@ -20835,7 +20835,7 @@ Type=simple
 ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
     --mcp-bind 127.0.0.1:8731 \
     --mcp-token-file /etc/sipnab/mcp.token \
-    -L 0.0.0.0:9060 --hep-parse
+    -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24
 User=sipnab
 Group=sipnab
 NoNewPrivileges=true
@@ -20847,6 +20847,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+Replace `192.0.2.0/24` with the addresses your SIP proxies send HEP from.
+sipnab refuses to start a HEP listener on a routable address unless it has a
+source allowlist (`--hep-allow`) or a shared secret (`--hep-auth-file`).
 
 Then start it, in this order:
 
@@ -21312,7 +21316,7 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    Type=simple
    ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
        --mcp-bind 127.0.0.1:8731 \
-       -L 0.0.0.0:9063 --hep-parse
+       -L 0.0.0.0:9063 --hep-allow 192.0.2.0/24
    User=sipnab
    Group=sipnab
    NoNewPrivileges=true
@@ -21324,6 +21328,11 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    [Install]
    WantedBy=multi-user.target
    ```
+
+   Replace `192.0.2.0/24` with the addresses your proxies send HEP from.
+   sipnab refuses to start a HEP listener on a routable address unless it
+   has a source allowlist (`--hep-allow`) or a shared secret
+   (`--hep-auth-file`).
 
    ```bash
    sudo systemctl daemon-reload && sudo systemctl enable --now sipnab-mcp

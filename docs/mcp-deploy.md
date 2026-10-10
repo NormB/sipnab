@@ -1877,7 +1877,7 @@ Type=simple
 ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
     --mcp-bind 127.0.0.1:8731 \
     --mcp-token-file /etc/sipnab/mcp.token \
-    -L 0.0.0.0:9060 --hep-parse
+    -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24
 User=sipnab
 Group=sipnab
 NoNewPrivileges=true
@@ -1889,6 +1889,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+Replace `192.0.2.0/24` with the addresses your SIP proxies send HEP from.
+sipnab refuses to start a HEP listener on a routable address unless it has a
+source allowlist (`--hep-allow`) or a shared secret (`--hep-auth-file`).
 
 Then start it, in this order:
 
