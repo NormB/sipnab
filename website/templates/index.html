@@ -13,6 +13,13 @@
    refuses to publish those. See homepage_test_count_comes_from_the_generated_data_file
    in tests/site_journey_test.rs. #}
 {% set suite = load_data(path="data/test-count.toml", required=false) %}
+{#- The GitHub star count beside "View on GitHub", written at deploy time by
+    scripts/github-stars.py and never committed; a build without the file
+    shows the button without a count. See
+    homepage_star_count_comes_from_the_generated_data_file in
+    tests/site_journey_test.rs. #}
+{% set gh = load_data(path="data/github.toml", required=false) %}
+{% set has_stars = gh and gh.stars is number %}
 {% set has_test_count = suite and suite.automated_tests is number %}
 <!-- Hero -->
 <section class="hero">
@@ -24,7 +31,7 @@
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get started &rarr;</a>
       <a href="{{ get_url(path='@/analyze/_index.md') }}" class="btn btn-secondary">Try a sample capture &rarr;</a>
-      <a href="{{ config.extra.github_url }}" class="btn btn-secondary">View on GitHub &rarr;</a>
+      <a href="{{ config.extra.github_url }}" class="btn btn-secondary"{% if has_stars %} aria-label="View on GitHub, {{ gh.stars }} stars"{% endif %}>View on GitHub{% if has_stars %} <span class="gh-stars" data-stars="{{ gh.stars }}"><span aria-hidden="true">&#9733;</span> {{ gh.stars }}</span>{% endif %} &rarr;</a>
     </div>
     {# The zero-install path. It is in the nav and the footer and was, until
        now, mentioned on the homepage only as one row of the capability table
