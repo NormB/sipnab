@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--seccomp enforce` refuses to start when no enforcing filter is in
+  force.** With no `SIPNAB_SECCOMP_ALLOWLIST`, an unreadable or invalid list,
+  or a kernel that refused the filter, it used to warn "No filter is in force"
+  and capture unfiltered. It now prints the reason and exits with status 1,
+  as `--sandbox required` does without a sandbox. 0.5.166 described it as
+  refusing without a list; the code did not.
+  Affected: any run that passed `--seccomp enforce` without a usable
+  allowlist, which now stops instead of capturing.
+
 ### Added
 
 - **Three overview pages on sipnab.com: Features, Deployments and Compare.**

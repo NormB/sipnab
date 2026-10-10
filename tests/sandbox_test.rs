@@ -582,3 +582,46 @@ fn required_refuses_only_when_no_sandbox_is_in_force() -> Result<(), TestError> 
     }
     Ok(())
 }
+
+/// `--seccomp enforce` with no allowlist named refuses to capture, exits
+/// non-zero, and says why; `--seccomp log` on the same capture still runs.
+///
+/// Before 2026-10-10 an enforce run with no list warned "No filter is in
+/// force" and captured unfiltered, the one fail-open path among sipnab's
+/// controls (a routable HEP or MCP bind without auth refuses to start, and so
+/// does `--sandbox required` without a sandbox).
+#[test]
+fn seccomp_enforce_without_an_allowlist_refuses_to_capture() -> Result<(), TestError> {
+    let bin = sipnab_bin()?;
+    if !bin.is_file() {
+        announce_skip(
+            "seccomp_enforce_without_an_allowlist_refuses_to_capture",
+            "the sipnab binary is not built beside this test",
+        );
+        return Ok(());
+    }
+    let run = |mode: &str| -> Result<(bool, String), TestError> {
+        let out = Command::new(&bin)
+            .args(["-N", "-I"])
+            .arg(fixture_capture())
+            .args(["--seccomp", mode])
+            .env_remove("SIPNAB_SECCOMP_ALLOWLIST")
+            .output()?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Ok((out.status.success(), text))
+    };
+    let (ok, log) = run("enforce")?;
+    assert!(!ok, "enforce with no allowlist must not exit 0:\n{log}");
+    assert!(
+        log.contains("--seccomp enforce") && log.contains("Refusing"),
+        "the refusal must name the flag and say it refused:\n{log}"
+    );
+    assert!(
+        !log.contains("packets captured"),
+        "nothing may be captured unfiltered:\n{log}"
+    );
+    let (ok, log) = run("off")?;
+    assert!(ok, "--seccomp off must still capture:\n{log}");
+    Ok(())
+}

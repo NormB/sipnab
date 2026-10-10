@@ -2478,9 +2478,9 @@ fn confine_after_capture_start(
 
     // 19. Record what this run asks the kernel for, if asked to.
     //
-    // After the path sandbox, and last of all, because it is an instrument
-    // rather than a control: it denies nothing, so its position cannot affect
-    // what any other step is allowed to do. Placing it here also means the
+    // After the path sandbox, and last of all: `log` denies nothing, and
+    // `enforce` must not deny a call a later startup step needs, so neither
+    // can affect what any other step is allowed to do. Placing it here also means the
     // records describe a CAPTURE — the syscalls a steady-state run makes —
     // rather than the wider set a startup needs, which is the set an allowlist
     // has to cover.
@@ -2493,9 +2493,12 @@ fn confine_after_capture_start(
     // libpcap, which is the thread it exists to characterize. Measured, not
     // assumed: `seccomp_child_test` fails if the flag is dropped.
     //
-    // Nothing here can end a run: the only action installed is
-    // `SECCOMP_RET_LOG`, which allows.
-    install_syscall_logging(cli);
+    // `--seccomp enforce` ends the run here when no enforcing filter is in
+    // force, exactly as `--sandbox required` does above: a run that asked for
+    // a control and did not get one must not capture as if it had.
+    let seccomp_status = install_syscall_logging(cli);
+    crate::seccomp::requirement_verdict(seccomp_mode(cli), &seccomp_status)
+        .map_err(|refusal| PlanError::new(1, refusal))?;
 
     Ok(Confined {
         kill_worker,

@@ -2072,9 +2072,9 @@ pub struct SecurityArgs {
     /// `log` cannot end a run: `SECCOMP_RET_LOG` allows every call. `enforce`
     /// can. It kills the process on a call outside the allowlist that
     /// `SIPNAB_SECCOMP_ALLOWLIST` names, which you derive on the host that runs
-    /// the capture with `scripts/derive-seccomp-allowlist.sh`. Without that
-    /// variable, `enforce` installs no filter, logs a warning, and the run
-    /// continues unfiltered.
+    /// the capture with `scripts/derive-seccomp-allowlist.sh`. When sipnab
+    /// cannot install an enforcing filter (no list named, a list it cannot
+    /// read, a kernel that refuses), `enforce` refuses to start, exit status 1.
     #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
     pub seccomp: Option<SeccompModeArg>,
 
