@@ -529,21 +529,42 @@ jobs:
         # Paths from the shared list -- see .config/vale-paths.txt.
         run: vale $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ')
 
-      # The path list lives in .config/codespell-paths.txt, which this hook,
-      # scripts/preflight.sh and .githooks/pre-push all read. It was three
-      # copies before, and they had already drifted -- the hook omitted
-      # `bench`, so a misspelling in the operator harness passed locally and
-      # failed here. The action needs the paths as an input rather than from
-      # config, so the file is read into one here instead of pasted.
-      - name: Codespell paths
-        id: codespell_paths
-        run: echo "paths=$(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # codespell runs as a step rather than through
+      # codespell-project/actions-codespell. That action is a Docker container
+      # action built FROM python:3.13-alpine, an anonymous Docker Hub pull, and
+      # on 2026-10-09 Docker Hub answered it with 429 Too Many Requests and,
+      # earlier the same day, a 504 from auth.docker.io on three attempts. The
+      # version is pinned by hash in scripts/requirements-codespell.txt, and
+      # the run goes through scripts/prose-gates.sh, the function the hooks and
+      # scripts/preflight.sh call: one binary check, one path list
+      # (.config/codespell-paths.txt), one set of arguments. The function also
+      # refuses a codespell whose version is not the pin, so a wrong install
+      # here fails the step instead of checking against another dictionary.
+      # tests/ci_docker_hub_test.rs holds both.
+      - name: Install codespell
+        env:
+          # The values ci.yml sets for every pip install; see the comment there.
+          PIP_TIMEOUT: '60'
+          PIP_RETRIES: '8'
+        # A venv, as every pip install in ci.yml uses, and outside the
+        # checkout so it does not sit beside the trees codespell reads.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/codespell"
+          "$RUNNER_TEMP/codespell/bin/python" -m pip install --require-hashes -r scripts/requirements-codespell.txt
 
       - name: Spelling (codespell)
-        uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
-        with:
-          # Reads .codespellrc for skips and the ignore list.
-          path: ${{ steps.codespell_paths.outputs.paths }}
+        env:
+          CODESPELL_BIN: ${{ runner.temp }}/codespell/bin/codespell
+        run: |
+          . scripts/prose-gates.sh
+          rc=0
+          # The empty argument selects the shared list, .config/codespell-paths.txt.
+          prose_codespell_run '' || rc=$?
+          case $rc in
+          0) cat "$PROSE_OUTPUT" ;;
+          1) cat "$PROSE_OUTPUT"; exit 1 ;;
+          *) echo "::error::codespell did not run: $PROSE_REASON"; exit 1 ;;
+          esac
 
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #

@@ -612,6 +612,40 @@ every `pip install` in the workflows and composite actions, works out which
 values reach it from a flag or the step, job or workflow `env:`, and requires
 both to be above pip's defaults and the same everywhere.
 
+CI pulls no container image from Docker Hub. Every such pull was anonymous,
+and Docker Hub limits anonymous pulls by source address, which GitHub's
+hosted runners share. On 2026-10-09 it failed two workflows on main with
+`429 Too Many Requests` and timeouts from `auth.docker.io`. Four places
+pulled from it, and each now does something else:
+
+- The codespell step in `quality.yml` was a Docker container action whose
+  image builds `FROM python:3.13-alpine`. It is now a step that installs
+  codespell into a Python virtual environment from the hash-pinned
+  [`scripts/requirements-codespell.txt`](../../scripts/requirements-codespell.txt)
+  and runs it through `prose_codespell_run` in
+  [`scripts/prose-gates.sh`](../../scripts/prose-gates.sh), the function the
+  hooks call. That file is also where the hooks read the version from: a
+  local codespell of another version reports `NOT CHECKED`, because its
+  dictionary is not the one CI uses.
+- `docker/setup-buildx-action` in `docker.yml` pulled its BuildKit engine,
+  `moby/buildkit:buildx-stable-1`. `driver-opts` now names that engine on
+  `mirror.gcr.io`, pinned by version and digest.
+- BuildKit resolved the `Dockerfile`'s `FROM rust:...` and
+  `FROM debian:...` against Docker Hub. A `[registry."docker.io"]` mirror in
+  `buildkitd-config-inline` sends those pulls to `mirror.gcr.io`, Google's
+  cache of Docker Hub. The change leaves the `Dockerfile` text and its
+  digests as they were, so Dependabot and `rust_toolchain_pins_agree` read what they read before
+  and the image content is the same bytes.
+- `release.yml` names its `rust:1-bookworm` build containers as
+  `mirror.gcr.io/library/rust:1-bookworm` with Docker Hub's digest.
+
+[`tests/ci_docker_hub_test.rs`](../../tests/ci_docker_hub_test.rs) holds all
+of it: no job or service image on Docker Hub, no action that runs in a
+container from Docker Hub (with a table of what each action runs as, read from
+its `action.yml` at the pinned commit), a digest-pinned engine and the mirror
+on every `docker/setup-buildx-action` step, no Docker Hub image in what `cross` builds in, and one
+codespell pin that CI and the hooks share.
+
 [`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
@@ -675,9 +709,9 @@ The prose pair arrived last and for cause: on
 followed with two spelling hits in `src/` doc comments, each found only after
 a push.
 
-A missing Vale or codespell binary reports `NOT CHECKED` rather than
-passing, because a gate that goes quiet when its tool is absent is worse than
-no gate.
+A missing Vale or codespell binary, or one whose version is not the one CI
+pins, reports `NOT CHECKED` rather than passing, because a gate that goes quiet when
+its tool is absent is worse than no gate.
 
 `SKIP_FMT_HOOK=1` bypasses all of them. If you use it, expect CI to
 notice.

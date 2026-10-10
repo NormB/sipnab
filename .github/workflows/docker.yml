@@ -51,8 +51,32 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
+      # Nothing in this job pulls from Docker Hub. Every pull was anonymous
+      # (the login below is to GHCR only), and on 2026-10-09 Docker Hub failed
+      # both kinds: auth.docker.io timed out five times on this action's own
+      # `docker pull moby/buildkit:buildx-stable-1`, and on another attempt
+      # registry-1.docker.io answered 429 Too Many Requests for the
+      # Dockerfile's `FROM` images.
+      #
+      # `driver-opts: image=` names the BuildKit engine, which the Docker
+      # daemon pulls before any BuildKit configuration applies: v0.33.1, the
+      # release `buildx-stable-1` pointed at on 2026-10-09, pinned by the
+      # same digest Docker Hub serves for it, from mirror.gcr.io.
+      #
+      # The `[registry."docker.io"]` mirror sends BuildKit's pulls for the
+      # Dockerfile's `FROM rust:...` and `FROM debian:...` to mirror.gcr.io,
+      # Google's cache of Docker Hub. The Dockerfile keeps its text, which
+      # Dependabot and rust_toolchain_pins_agree read, and its digests, so
+      # the image content is the same bytes; BuildKit verifies each digest.
+      # tests/ci_docker_hub_test.rs holds every buildx setup to both.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver-opts: |
+            image=mirror.gcr.io/moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - name: Login to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:

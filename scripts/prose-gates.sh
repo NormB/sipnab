@@ -42,7 +42,7 @@
 PROSE_OUTPUT=''
 #: Why the tool did not run. Set on return 2.
 PROSE_REASON=''
-#: The version CI pins, and what the local binary reports. Set for vale.
+#: The version CI pins, and what the local binary reports. Set by both runners.
 PROSE_PIN=''
 PROSE_HAVE=''
 
@@ -118,31 +118,53 @@ prose_vale_run() {
 	return 1
 }
 
+# The codespell version scripts/requirements-codespell.txt pins, or empty when
+# the file does not say. quality.yml installs codespell from that file, so this
+# is the version CI runs.
+prose_codespell_pin() {
+	sed -n 's/^codespell==\([0-9.]*\).*/\1/p' scripts/requirements-codespell.txt 2>/dev/null |
+		head -1
+}
+
 # Run codespell over .config/codespell-paths.txt. See CONTRACT above.
 #
-# PATH first here, unlike vale, and deliberately: codespell has no version pin,
-# so any install is as good as another and CODESPELL_BIN is only a fallback for
-# a venv rather than an override.
+# CODESPELL_BIN is checked BEFORE the PATH, for the reason VALE_BIN is: it
+# exists to override a PATH binary of the wrong version. The version is pinned
+# because codespell's dictionary changes between releases, so a run on another
+# version can pass a word CI rejects or reject one CI passes. CI runs this same
+# function, after installing the pinned version, so the arguments are the same
+# in both places as well.
 prose_codespell_run() {
 	PROSE_OUTPUT=''
 	PROSE_REASON=''
+	PROSE_PIN=$(prose_codespell_pin)
+	PROSE_HAVE=''
 
 	_cs=''
-	if command -v codespell >/dev/null 2>&1; then
-		_cs=codespell
-	elif [ -n "${CODESPELL_BIN:-}" ] && [ -x "${CODESPELL_BIN}" ]; then
+	if [ -n "${CODESPELL_BIN:-}" ] && [ -x "${CODESPELL_BIN}" ]; then
 		_cs="$CODESPELL_BIN"
+	elif command -v codespell >/dev/null 2>&1; then
+		_cs=codespell
 	fi
 
 	if [ -z "$_cs" ]; then
 		PROSE_REASON='codespell is not installed'
 		return 2
 	fi
+	if [ -z "$PROSE_PIN" ]; then
+		PROSE_REASON='no codespell== pin in scripts/requirements-codespell.txt'
+		return 2
+	fi
+	PROSE_HAVE=$("$_cs" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+	if [ "$PROSE_HAVE" != "$PROSE_PIN" ]; then
+		PROSE_REASON="codespell ${PROSE_HAVE:-unknown}, CI pins $PROSE_PIN"
+		return 2
+	fi
 
 	PROSE_OUTPUT="/tmp/.sipnab-prose-cs.$$"
 	_targets="${1:-$(prose_paths .config/codespell-paths.txt)}"
 	# shellcheck disable=SC2086
-	if $_cs $_targets --skip ./.git >"$PROSE_OUTPUT" 2>&1; then
+	if "$_cs" $_targets --skip ./.git >"$PROSE_OUTPUT" 2>&1; then
 		return 0
 	fi
 	return 1
