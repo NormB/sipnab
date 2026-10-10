@@ -20,6 +20,14 @@ entry that carries them.
   refusing without a list; the code did not.
   Affected: any run that passed `--seccomp enforce` without a usable
   allowlist, which now stops instead of capturing.
+- **The homepage explains how sipnab works first.** "How sipnab fits
+  together" (what sipnab reads, what it works out, where you read the answer)
+  now follows the hero. The sections after it run in a visitor's order: the
+  terminal UI animation, what you can do with it, install and first capture,
+  what an AI agent can ask, the voice stack, what sipnab supports, production
+  details, and the guides. Install still comes before the AI-agent demos,
+  which need a source checkout. The hero heading is still the page's largest
+  paint, and the screenshot stays below the first screen on desktop and phone.
 
 ### Added
 

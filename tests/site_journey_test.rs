@@ -501,15 +501,15 @@ fn anchors(haystack: &str) -> Result<Vec<(String, String)>, TestError> {
 /// The homepage hero offers the zero-install browser analyzer, above the fold.
 ///
 /// "Above the fold" is read structurally: everything before `<section
-/// class="demos"`, the first thing after the hero. A CTA that slides below
+/// class="sysmap-section">`, the first thing after the hero. A CTA that slides below
 /// that is a CTA the visitor scrolls past, and the capability-table row that
 /// used to be the page's only mention of /analyze/ lives far below it — so a
 /// move back to that row must fail this, not pass it.
 #[test]
 fn homepage_offers_a_zero_install_path() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
-    let fold = page.find("<section class=\"demos\"").ok_or(
-        "index.html no longer has a `<section class=\"demos\"` — this test locates the fold by it",
+    let fold = page.find("<section class=\"sysmap-section\"").ok_or(
+        "index.html no longer has a `<section class=\"sysmap-section\"` — this test locates the fold by it",
     )?;
 
     // The hero ELEMENT, not merely "the bytes before the demos section". Those
@@ -521,7 +521,7 @@ fn homepage_offers_a_zero_install_path() -> Result<(), TestError> {
     let hero_span = element_span(&page, "<section class=\"hero\">", "section")?;
     assert!(
         hero_span.end <= fold,
-        "the hero section no longer closes before `<section class=\"demos\"` — \
+        "the hero section no longer closes before `<section class=\"sysmap-section\"` — \
          the page order this test reads has changed"
     );
     let hero = &page[hero_span.start..hero_span.end];
@@ -5046,7 +5046,7 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
             // animation plays, and the button puts the
             // still frame and its alt text back.
             "index.html",
-            "sha256-4EtNIlF9DO8gMmdk1ck4fUI5rjLfFUX7mA43gMvteYY=",
+            "sha256-C3t70aWIcgs61geUxcir+3slG/ENjPVHrSnh7nY2C48=",
         ),
         (
             "page.html",
@@ -10880,21 +10880,29 @@ fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
 /// Quick Start sat below a demo wall whose first command
 /// (`demos/mcp-stdio.sh tests/pcap-samples/...`) runs only from a source
 /// checkout, so a visitor who had just installed the binary met something they
-/// could not run before anything they could. The order (Norm, 2026-10-09) is:
+/// could not run before anything they could. The order (Norm, 2026-10-09) was:
 /// what it is, how to run it, what an agent can ask it, the animation, how
 /// sipnab fits together, what it does, what it supports, the numbers, then the
 /// guides.
+///
+/// Norm, 2026-10-10, moved "How sipnab fits together" to the top and asked
+/// for the rest in a sensible order. It reads as a visitor's path: what it is
+/// (the hero), how it works (the system map), what it looks like (the
+/// animation), what it does for you, how to install it, what an agent can ask
+/// it, then the voice stack, what it supports, the numbers and the guides.
+/// Quick Start still comes before the agent demos, which need a source
+/// checkout, so the rule above still holds.
 #[test]
-fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestError> {
+fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
     let order = homepage_section_order(&page)?;
     let want = [
         "hero",
+        "sysmap-section",
+        "hero-shot-section",
+        "features",
         "quickstart",
         "demos",
-        "hero-shot-section",
-        "sysmap-section",
-        "features",
         "comparison",
         "arch-callout",
         "notes-callout",

@@ -1190,19 +1190,19 @@ fn content_page(rel: &str) -> Option<String> {
     std::fs::read_to_string(repo().join("website/content").join(rel)).ok()
 }
 
-/// Norm, 2026-10-09: the animation moved below Quick Start and the AI-agent
-/// demos, so the system map now follows it. The map sat above the animation
-/// from 2026-10-02 until then.
+/// Norm, 2026-10-10: "How sipnab fits together" is the first section after
+/// the hero, so the map now comes before the animation. It sat above the
+/// animation from 2026-10-02, below it from 2026-10-09.
 #[test]
-fn the_system_map_sits_below_the_hero_animation() -> Result<(), TestError> {
+fn the_system_map_sits_above_the_hero_animation() -> Result<(), TestError> {
     let page = homepage()?;
     let map = page
         .find(r#"<figure class="sysmap""#)
         .ok_or("no system map")?;
     let shot = page.find(r#"id="hero-shot""#).ok_or("no hero animation")?;
     assert!(
-        shot < map,
-        "the system map must come after the hero animation"
+        map < shot,
+        "the system map must come before the hero animation"
     );
     Ok(())
 }
