@@ -1128,6 +1128,36 @@ pub struct MatchingArgs {
     /// docs/filter-dsl.md.
     #[arg(help_heading = "Matching", long, value_name = "EXPR")]
     pub filter: Option<String>,
+
+    /// Keep only dialogs whose first message is at or after this RFC 3339
+    /// instant (e.g. 2026-10-09T10:00:00Z). The window is half-open
+    /// [--since, --until), the one REST /v1/dialogs spells after/before and
+    /// the MCP search_by_time tool spells start/end. ANDed with --filter;
+    /// needs -N.
+    #[arg(
+        help_heading = "Matching",
+        long,
+        value_name = "RFC3339",
+        value_parser = parse_time_bound
+    )]
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// Keep only dialogs whose first message is BEFORE this RFC 3339 instant;
+    /// a dialog at exactly --until belongs to the next window. Must be after
+    /// --since. ANDed with --filter; needs -N.
+    #[arg(
+        help_heading = "Matching",
+        long,
+        value_name = "RFC3339",
+        value_parser = parse_time_bound
+    )]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Parse a `--since`/`--until` value through the one parser every surface
+/// reads a time bound with.
+fn parse_time_bound(s: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    crate::cursor::parse_instant(s)
 }
 
 /// `Diagnostic aliases` flags.
@@ -7205,6 +7235,37 @@ impl Cli {
         })
     }
 
+    /// Why `--since`/`--until` cannot be used as given, if they cannot.
+    ///
+    /// Two refusals. An `--until` at or before `--since` is an empty window by
+    /// construction, and a run that answered it would report "nothing matched"
+    /// for a typo. And the window narrows the batch outputs (`--report`,
+    /// `--json-dialogs`, the per-message stream, the queries), none of which
+    /// the TUI shows, so a run that would raise the TUI refuses it rather than
+    /// ignore it; the TUI's own time range is the call-list filter dialog.
+    fn time_window_refusal(&self) -> Option<String> {
+        let m = &self.matching_args;
+        if let (Some(since), Some(until)) = (m.since, m.until)
+            && until <= since
+        {
+            return Some(format!(
+                "--until {} is not after --since {}: the window [--since, --until) \
+                 would hold no instant",
+                until.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+                since.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+            ));
+        }
+        if (m.since.is_some() || m.until.is_some()) && !self.mode_args.no_tui {
+            return Some(
+                "--since/--until narrow the batch outputs and require -N/--no-tui \
+                 mode. In the TUI, set the time range in the call list's filter \
+                 dialog"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
     /// Every one-shot query flag's declaration, from the four query groups.
     ///
     /// The single list `normalize` and `validate` read: a flag declared in its
@@ -7453,6 +7514,10 @@ impl Cli {
                  a headless run was invoked, or drop -N"
                     .to_string(),
             ));
+        }
+
+        if let Some(refusal) = self.time_window_refusal() {
+            return Err(crate::Error::CliValidation(refusal));
         }
 
         let mut output_flags_used: Vec<&str> = [

@@ -4425,6 +4425,22 @@ pub(crate) fn parse_autostop(
 /// expanded diagnostic alias, or the config-file expression fails to parse.
 /// Returning (rather than exiting) keeps planning testable and composable.
 fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+    // The `--since`/`--until` window joins the one compiled filter, so every
+    // output that honors `--filter` honors the window.
+    Ok(FilterExpr::with_time_window(
+        build_selection_expr(cli, config)?,
+        cli.matching_args.since,
+        cli.matching_args.until,
+    ))
+}
+
+/// [`build_filter_expr`] before the time window: `--filter`, the diagnostic
+/// alias flags, or the config fallback.
+///
+/// # Errors
+///
+/// As [`build_filter_expr`].
+fn build_selection_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
     // An explicit expression narrows the diagnostic flags. Parse it even
     // when aliases are enabled, so an invalid expression is never hidden.
     let thresholds = cli.alias_thresholds(config);
@@ -4517,7 +4533,13 @@ fn build_vcon_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExp
     };
     let thresholds = cli.alias_thresholds(config);
     match crate::sip::dsl::parse_filter(expr, &thresholds) {
-        Ok(f) => Ok(Some(f)),
+        // The `--since`/`--until` window narrows which dialogs are exported,
+        // as it narrows every other listing.
+        Ok(f) => Ok(FilterExpr::with_time_window(
+            Some(f),
+            cli.matching_args.since,
+            cli.matching_args.until,
+        )),
         Err(e) => Err(PlanError::arg(format!(
             "--export-vcon-when is not a valid filter expression: {e}"
         ))),

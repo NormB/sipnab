@@ -70,6 +70,24 @@ pub fn in_time_window(
     after.is_none_or(|a| t >= a) && before.is_none_or(|b| t < b)
 }
 
+/// Parse one RFC 3339 instant, as every surface takes a time bound.
+///
+/// The one parser behind the CLI's `--since`/`--until`, the REST
+/// `/v1/dialogs` `after`/`before` query parameters, the MCP `search_by_time`
+/// `start`/`end` arguments, the timestamp half of a [`Cursor`], and the filter
+/// DSL's `time` literals. An offset other than `Z` is accepted and converted:
+/// `2026-10-09T12:00:00+02:00` is `2026-10-09T10:00:00Z`.
+///
+/// # Errors
+///
+/// A message quoting the value and naming the format, without the name of the
+/// flag or parameter: each caller prefixes its own.
+pub fn parse_instant(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .map_err(|e| format!("'{raw}' is not RFC 3339: {e}"))
+}
+
 /// Parse `<RFC 3339>` or `<RFC 3339>|<identity>` into a [`Cursor`].
 ///
 /// # Errors
@@ -82,12 +100,9 @@ pub fn parse_cursor(raw: &str) -> Result<Cursor, String> {
         Some((ts, id)) => (ts, Some(id.to_string())),
         None => (raw, None),
     };
-    match chrono::DateTime::parse_from_rfc3339(ts) {
-        Ok(dt) => Ok(Cursor {
-            at: dt.with_timezone(&chrono::Utc),
-            id,
-        }),
-        Err(e) => Err(format!("cursor must be RFC 3339: {e}")),
+    match parse_instant(ts) {
+        Ok(at) => Ok(Cursor { at, id }),
+        Err(e) => Err(format!("cursor timestamp {e}")),
     }
 }
 
@@ -219,6 +234,44 @@ mod tests {
         let parsed =
             parse_cursor("2026-07-31T10:00:00Z|a|b").map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(parsed.id.as_deref(), Some("a|b"));
+        Ok(())
+    }
+
+    /// An RFC 3339 instant parses, in any offset, to the same UTC instant.
+    #[test]
+    fn parse_instant_reads_rfc3339_in_any_offset() -> Result<(), TestError> {
+        assert_eq!(
+            parse_instant("2026-10-09T10:00:00Z")?,
+            at("2026-10-09T10:00:00Z")?
+        );
+        assert_eq!(
+            parse_instant("2026-10-09T12:00:00+02:00")?,
+            at("2026-10-09T10:00:00Z")?
+        );
+        assert_eq!(
+            parse_instant("2026-10-09T10:00:00.250Z")?,
+            at("2026-10-09T10:00:00.250Z")?
+        );
+        Ok(())
+    }
+
+    /// Anything else is refused with the value quoted and the format named,
+    /// so a caller's prefix is all the message needs.
+    #[test]
+    fn parse_instant_refuses_what_is_not_rfc3339() -> Result<(), TestError> {
+        for bad in [
+            "yesterday",
+            "2026-10-09",
+            "2026-10-09 10:00:00",
+            "2026-10-09T10:00:00",
+            "",
+        ] {
+            let err = parse_instant(bad)
+                .err()
+                .ok_or(format!("{bad:?} must fail"))?;
+            assert!(err.contains("RFC 3339"), "{bad:?}: {err}");
+            assert!(err.contains(&format!("'{bad}'")), "{bad:?}: {err}");
+        }
         Ok(())
     }
 

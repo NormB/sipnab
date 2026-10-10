@@ -6573,15 +6573,10 @@ impl SipnabMcp {
         Parameters(params): Parameters<SearchByTimeParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         use chrono::{DateTime, Utc};
+        // The one parser every surface reads a time bound with.
         let parse = |s: &str, which: &str| -> Result<DateTime<Utc>, rmcp::ErrorData> {
-            DateTime::parse_from_rfc3339(s)
-                .map(|d| d.with_timezone(&Utc))
-                .map_err(|e| {
-                    rmcp::ErrorData::invalid_params(
-                        format!("{which} '{s}' is not RFC 3339: {e}"),
-                        None,
-                    )
-                })
+            crate::cursor::parse_instant(s)
+                .map_err(|e| rmcp::ErrorData::invalid_params(format!("{which} {e}"), None))
         };
         let start = parse(&params.start, "start")?;
         let end = match &params.end {

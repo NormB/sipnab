@@ -1195,7 +1195,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1342 -> 1345: REST `filter` accepts aliases. docs/rest-api.md 2 (the
     // `filter` row to filter-dsl.md and its #named-aliases section) and
     // docs/filter-dsl.md 1 (Named aliases to rest-api.md#get-v1dialogs).
-    const EXPECTED_WIKI_LINKS: usize = 1345;
+    // 1345 -> 1348: the --since/--until time window. Anchored links added:
+    // docs/cli-reference.md 1 (the --since row to #scope-a-run-to-a-time-window),
+    // docs/filter-dsl.md 1 (to cli-reference.md#scope-a-run-to-a-time-window)
+    // and docs/examples.md 1 (the index row to recipe 66).
+    const EXPECTED_WIKI_LINKS: usize = 1348;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

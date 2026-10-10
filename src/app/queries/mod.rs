@@ -45,8 +45,8 @@ pub struct QueryContext<'a> {
     pub dialogs: &'a DialogStore,
     /// The RTP streams this run read.
     pub streams: &'a StreamStore,
-    /// The one compiled filter: `--filter` and the diagnostic alias flags,
-    /// ANDed. `None` selects every dialog.
+    /// The one compiled filter: `--filter`, the diagnostic alias flags and the
+    /// `--since`/`--until` window, ANDed. `None` selects every dialog.
     pub filter: Option<&'a FilterExpr>,
     /// The thresholds a diagnostic alias expands with, resolved from the
     /// command line and the config the way `--filter <alias>` resolves them.

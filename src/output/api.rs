@@ -3456,16 +3456,16 @@ async fn list_dialogs(
     // Parse the time window up front, so a malformed timestamp is a 400 rather
     // than a silently ignored window a client would read as the answer to its
     // question. `after`/`before` bound the dialog's first-message instant.
-    let parse_ts = |name: &str,
-                    v: Option<&str>|
-     -> Result<Option<chrono::DateTime<chrono::Utc>>, Problem> {
-        match v {
-            Some(s) => chrono::DateTime::parse_from_rfc3339(s)
-                .map(|t| Some(t.with_timezone(&chrono::Utc)))
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("{name}: {e}"))),
-            None => Ok(None),
-        }
-    };
+    let parse_ts =
+        |name: &str, v: Option<&str>| -> Result<Option<chrono::DateTime<chrono::Utc>>, Problem> {
+            match v {
+                // The one parser every surface reads a time bound with.
+                Some(s) => crate::cursor::parse_instant(s).map(Some).map_err(|e| {
+                    Problem::detailed(StatusCode::BAD_REQUEST, format!("{name}: {e}"))
+                }),
+                None => Ok(None),
+            }
+        };
     let after = parse_ts("after", params.after.as_deref())?;
     let before = parse_ts("before", params.before.as_deref())?;
 

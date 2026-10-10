@@ -20,6 +20,10 @@ A filter selects **dialogs**, and every output that lists dialogs honors it:
 - `--call-report <CALL-ID>` is **not** narrowed: it names one call, and a lookup
   by name is not a listing.
 
+The [`--since`/`--until` time window](cli-reference.md#scope-a-run-to-a-time-window)
+joins the filter: the run's filter is `(<your filter>) AND time >= '<since>' AND
+time < '<until>'`, and `--json-analyze` reports it in that form.
+
 ## Examples
 
 Each entry below is one complete expression, and `--filter` takes exactly one:
@@ -464,16 +468,35 @@ because then it was the outcome.
 > `--report`, or the REST API's `/v1/streams?orphaned=true`, both of which model
 > streams rather than dialogs.
 
+### Time field
+
+| Field | Description | Value |
+|-------|-------------|-------|
+| `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instant, such as `'2026-10-09T10:00:00Z'` |
+
+`time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else: `!=`, `=~` and
+`in_subnet` are parse errors, and so is a literal that is not a quoted RFC 3339
+instant. sipnab converts an offset other than `Z`, so `'2026-10-09T12:00:00+02:00'`
+is the same instant as `'2026-10-09T10:00:00Z'`.
+
+It is the instant the REST `/v1/dialogs` `after`/`before` window, the MCP
+`search_by_time` tool and the `--since`/`--until` flags bound. Write a window
+half-open, `>=` at the start and `<` at the end, to select what those select:
+
+```text
+time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
+```
+
 ## Operators
 
 | Operator | Applies To | Description |
 |----------|------------|-------------|
-| `==` | string, numeric, boolean | Equal |
+| `==` | string, numeric, boolean, `time` | Equal |
 | `!=` | string, numeric, boolean | Not equal |
-| `<` | string, numeric | Less than |
-| `>` | string, numeric | Greater than |
-| `<=` | string, numeric | Less than or equal |
-| `>=` | string, numeric | Greater than or equal |
+| `<` | string, numeric, `time` | Less than (for `time`, earlier) |
+| `>` | string, numeric, `time` | Greater than (for `time`, later) |
+| `<=` | string, numeric, `time` | Less than or equal |
+| `>=` | string, numeric, `time` | Greater than or equal |
 | `=~` | string | Regex match (Rust regex syntax) |
 | `in_subnet` | address-valued string | The left address falls inside the right CIDR block |
 
@@ -493,6 +516,7 @@ Notes:
 | Number | Numeric (f64) | `3.0`, `100`, `0.5` |
 | `true` / `false` | Boolean (case-insensitive) | `true`, `FALSE` |
 | `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
+| `'...'` after `time` | RFC 3339 instant | `'2026-10-09T10:00:00Z'`, `'2026-10-09T12:00:00+02:00'` |
 
 Inside a quoted string a backslash escapes the next character, so the
 delimiter itself is expressible: `\'` and `\"` yield a literal quote

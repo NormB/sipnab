@@ -25,8 +25,10 @@ model is `--hep-senders`: `capture::hep_roster::senders_report` builds the
 answer, `GET /v1/hep/senders` and the `hep_senders` tool serialize it, and
 `app::batch::print_hep_senders` prints it.
 
-Every query honors the one compiled filter: `--filter` and the diagnostic alias
-flags (`--problems` and the rest), ANDed by `app::bootstrap::build_filter_expr`. A query reads its dialogs through
+Every query honors the one compiled filter: `--filter`, the diagnostic alias
+flags (`--problems` and the rest) and the `--since`/`--until` window, ANDed by
+`app::bootstrap::build_filter_expr` (the window through
+`FilterExpr::with_time_window`, evaluated by `cursor::in_time_window`). A query reads its dialogs through
 `QueryContext::selection`, which applies that filter, so it narrows a query
 exactly as it narrows `--report`.
 
@@ -136,3 +138,15 @@ Beyond those files, each flag edits only lines that belong to it:
   disappears without its line changing;
 - its own `###` subsection under `## Queries` in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md), its
   rows, and its regenerated mirrors.
+
+## Testing a query against REST and MCP
+
+[`tests/support/surface_parity.rs`](../../tests/support/surface_parity.rs) runs
+one capture through all three surfaces: the CLI binary, a
+`sipnab -N -I <pcap> --api 127.0.0.1:0` server, and an MCP session. It
+normalizes the MCP answer to the REST shape by dropping the fields only MCP
+carries (`capture_identity`, `timing_clock`, and the untrusted-content note,
+which is a second content block) and unwrapping fenced values. A query's parity
+test asserts that the three agree on the same capture;
+[`tests/cli_time_window_test.rs`](../../tests/cli_time_window_test.rs) is the
+first one.

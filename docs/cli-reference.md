@@ -654,6 +654,8 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 | `--contact` | `<PATTERN>` | -- | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | Filter by User-Agent header (regex pattern) |
 | `--filter` | `<EXPR>` | -- | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). Config: `[filter] expression` |
+| `--since` | `<RFC3339>` | -- | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
+| `--until` | `<RFC3339>` | -- | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
 **Examples**
 
@@ -663,7 +665,53 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 - `sudo sipnab -d eth0 --ua "friendly-scanner" --contact "203\.0\.113\." --ignore-case` — flag scanner traffic live: a known scanner User-Agent (any case) with a Contact pointing into 203.0.113.0/24
 - `sipnab -N -I capture.pcap --ua "sipcli" --contact "192\.0\.2\." --single-line` — filter a pcap by User-Agent and a Contact in 192.0.2.0/24, restricting payload regex dots to a single line
 - `sipnab -N -I capture.pcap --match "OPTIONS" --word --invert` — suppress keep-alive noise: show messages that do not contain the whole word OPTIONS
+- `sipnab -N -I capture.pcap --report --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z` — report only the calls that started between 10:00 and 11:00 UTC
 
+
+## Queries
+
+A query flag answers one question about the capture and exits. Each one
+prints the same answer as the REST route and the MCP tool for that question,
+because all three call the same function: a table by default, Markdown with
+`--markdown`, and with `--json` one JSON object on the last line of stdout, in
+exactly the shape the REST route returns. Every query honors `--filter` and the
+time window below.
+
+### Scope a run to a time window
+
+`--since` and `--until` keep the dialogs whose first message falls in the
+half-open window `[--since, --until)`: a dialog at exactly `--since` is in, a
+dialog at exactly `--until` is in the next window, so adjacent windows never
+count a call twice. Either bound alone leaves the other side open. Values are
+[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instants, and sipnab converts an offset other than `Z` to UTC.
+
+The window is the one every surface applies, under three spellings:
+
+| Surface | Spelling |
+|---|---|
+| CLI | `--since <RFC3339>` / `--until <RFC3339>` |
+| REST | `GET /v1/dialogs?after=<RFC3339>&before=<RFC3339>` |
+| MCP | `search_by_time` with `start` / `end` |
+| Filter DSL | `time >= '<RFC3339>' AND time < '<RFC3339>'` |
+
+The CLI cannot use REST's names because `-A`/`--after` already sets the
+context lines printed after a match.
+
+The window joins `--filter` and the diagnostic alias flags in one compiled
+filter, so `--report`, `--json-dialogs`, `--analyze`, the per-message stream,
+`--export-vcon-when` and every query see the same dialogs. `--call-report` and
+`--export-vcon` name one call by Call-ID and are not narrowed.
+
+A window that holds none of the capture's dialogs exits 0 with empty listings,
+and says so on stderr, naming the window and the span the capture's dialogs
+cover. An `--until` that is not after `--since`, or a value that is not RFC
+3339, exits 2. The flags need `-N`: in the TUI, set the time range in the call
+list's filter dialog.
+
+**Examples**
+
+- `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z` — one JSON line per call that started between 10:00 and 11:00 UTC
+- `sipnab -N -I capture.pcap --report --filter "state == 'Failed'" --since 2026-10-09T10:00:00Z` — the failed calls that started at or after 10:00 UTC
 
 ## Name resolution
 

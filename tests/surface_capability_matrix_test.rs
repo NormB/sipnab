@@ -70,8 +70,6 @@ const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B4: gates and the relay.
     ("Evaluate expectations", "CLI"),
     ("Relay holdings", "CLI"),
-    // CLI query batch B0: the time window.
-    ("Search by time window", "CLI"),
     // TUI (PAR4).
     ("Whole-capture report", "TUI"),
 ];

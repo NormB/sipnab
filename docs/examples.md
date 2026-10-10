@@ -22,6 +22,7 @@ are new, [1. Triage a pcap fast](#1-triage-a-pcap-fast) is the broadest starting
 | Work out why a capture shows almost no SIP | [29. Read a capture whose SIP is not on port 5060](#29-read-a-capture-whose-sip-is-not-on-port-5060) |
 | Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#47-follow-a-load-generators-traffic-by-transaction-not-by-call) |
 | Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#27-compare-the-same-call-at-two-nodes) |
+| Look only at the hour the problem happened | [66. Narrow a capture to when the problem happened](#66-narrow-a-capture-to-when-the-problem-happened) |
 
 **Chase audio and quality complaints**
 
@@ -3561,6 +3562,35 @@ In the TUI, `C` on a message types the note there, and a PCAP-NG save writes it.
 - The copy carries no decryption secrets, no name resolution blocks and none of the input's own comments. If the carrier needs to decrypt TLS, send the key log on purpose, separately.
 - A note is text you typed, and sipnab never reads it back: `--json`, the REST API and MCP never show it. That is the design (Invariant 13), not a gap.
 - sipnab refuses a note holding an SDES key, a TLS key-log line or a digest `response=` value. Describe the message that carried the key, and leave the key out.
+
+---
+
+## 66. Narrow a capture to when the problem happened
+
+**Problem:** The complaint says the calls failed "between ten and eleven this morning". The capture covers the whole day, and every report you run lists the calls from before and after the window too.
+
+Give the window with `--since` and `--until`, in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339):
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z
+```
+
+Each line is one call whose first message falls in the window. The window joins `--filter`, so the failed calls in that hour are:
+
+```bash
+sipnab -N -I capture.pcap --report --filter "state == 'Failed'" --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z
+```
+
+**What to look for:**
+
+- **The window is half-open.** A call that started at exactly 10:00:00 is in; one at exactly 11:00:00 belongs to the next hour. Back-to-back windows count every call once.
+- **The same window on every surface.** REST's `GET /v1/dialogs?after=...&before=...` and the MCP `search_by_time` tool return the same calls for the same capture.
+- **An empty answer says why.** When no call in the capture started inside the window, the run exits 0 with an empty listing and prints the span the capture's calls do cover on stderr, so a window typed in local time instead of UTC is visible at once.
+
+**Pitfalls:**
+
+- Write the instant in UTC (`Z`) or with its offset (`+02:00`). sipnab refuses a time with no offset, exit 2, because it names no instant.
+- The window bounds when a call **started**. A call that started at 09:59 and failed at 10:05 is outside it.
 
 ---
 

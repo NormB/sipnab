@@ -6354,6 +6354,11 @@ pub fn generate_reports(
         frames_read,
     } = read;
     report_perf_stats(dialog_store, stream_store);
+    // A window holding none of the capture's dialogs leaves every listing
+    // below empty; say why on stderr, where it cannot corrupt a JSON stream.
+    if let Some(notice) = time_window_notice(cli, dialog_store) {
+        stderr_line!("{notice}");
+    }
 
     // Idle compaction throws away messages sipnab captured, which makes the
     // ladder for those calls short in every report below. Recorded, not
@@ -6411,6 +6416,46 @@ pub fn generate_reports(
             stream_store,
             filter,
         ))
+}
+
+/// What `--since`/`--until` found when the window itself holds no dialog of
+/// the capture: the explicit empty answer, naming the window and the span the
+/// capture's dialogs do cover, so an empty listing is not mistaken for a
+/// capture with nothing in it or a filter that matched nothing.
+///
+/// `None` when no window was given, or when some dialog falls inside it (an
+/// empty answer then comes from `--filter`, not from the window).
+fn time_window_notice(cli: &Cli, dialogs: &DialogStore) -> Option<String> {
+    let (since, until) = (cli.matching_args.since, cli.matching_args.until);
+    if since.is_none() && until.is_none() {
+        return None;
+    }
+    let mut span: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> = None;
+    for d in dialogs.iter() {
+        if crate::cursor::in_time_window(d.created_at, since, until) {
+            return None;
+        }
+        span = Some(match span {
+            None => (d.created_at, d.created_at),
+            Some((lo, hi)) => (lo.min(d.created_at), hi.max(d.created_at)),
+        });
+    }
+    let instant =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+    let window = format!(
+        "[{}, {})",
+        since.map_or_else(|| "unbounded".to_string(), instant),
+        until.map_or_else(|| "unbounded".to_string(), instant),
+    );
+    Some(match span {
+        Some((first, last)) => format!(
+            "--since/--until: no dialog's first message falls in {window}; this \
+             capture's dialogs begin between {} and {}",
+            instant(first),
+            instant(last),
+        ),
+        None => format!("--since/--until: no dialog in {window}; the capture holds no dialog"),
+    })
 }
 
 /// SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
@@ -14045,6 +14090,54 @@ mod tests {
             owns_stdout: true,
         });
         assert!(!run(&cli), "a query that failed must fail the chain");
+        Ok(())
+    }
+
+    /// A window that holds none of the capture's dialogs says so, with the
+    /// window and the span the dialogs cover; a window holding one says
+    /// nothing, and so does a run with no window.
+    #[test]
+    fn a_window_holding_no_dialog_is_an_explicit_empty_answer() -> Result<(), TestError> {
+        let mut store = DialogStore::new(10, false);
+        for (id, when) in [
+            ("a@example.com", "2023-11-14T22:13:20Z"),
+            ("b@example.com", "2023-11-14T22:13:32Z"),
+        ] {
+            let data = bytes::Bytes::from(invite_bytes(id));
+            store.process_message(sip::parser::parse_sip_bytes(
+                &data,
+                crate::cursor::parse_instant(when)?,
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )?);
+        }
+        let with = |args: &[&str]| {
+            let mut argv = vec!["sipnab", "-N", "-I", "x.pcap"];
+            argv.extend_from_slice(args);
+            Cli::parse_from_args(argv)
+        };
+        let notice = time_window_notice(&with(&["--since", "2030-01-01T00:00:00Z"]), &store)
+            .ok_or("a window past the capture must say so")?;
+        assert!(notice.contains("2030-01-01T00:00:00Z"), "{notice}");
+        assert!(
+            notice.contains("2023-11-14T22:13:20Z") && notice.contains("2023-11-14T22:13:32Z"),
+            "names the span the dialogs cover: {notice}"
+        );
+        // The upper bound is exclusive: a window ending AT the first dialog
+        // holds none of them.
+        assert!(time_window_notice(&with(&["--until", "2023-11-14T22:13:20Z"]), &store).is_some());
+        assert_eq!(
+            time_window_notice(&with(&["--until", "2023-11-14T22:13:21Z"]), &store),
+            None
+        );
+        assert_eq!(time_window_notice(&with(&[]), &store), None);
+        let empty = DialogStore::new(10, false);
+        let none = time_window_notice(&with(&["--since", "2030-01-01T00:00:00Z"]), &empty)
+            .ok_or("an empty capture in a window says so too")?;
+        assert!(none.contains("no dialog"), "{none}");
         Ok(())
     }
 

@@ -4820,7 +4820,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1096 -> 1098: docs/design/par5-cli-queries.md, 2 separator rows (the
     // one-shot declaration table and the file-ownership table); a design doc
     // has no site copy.
-    const EXPECTED_TABLES: usize = 1098;
+    // 1098 -> 1102: the --since/--until time window. Attributed by counting
+    // added separator rows per file: docs/cli-reference.md 1 (the surface
+    // spelling table), docs/filter-dsl.md 1 (the time field table), and the
+    // same 2 in their site copies.
+    const EXPECTED_TABLES: usize = 1102;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
