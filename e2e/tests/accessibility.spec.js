@@ -5,8 +5,8 @@
 // WHY A BROWSER AND NOT A TEMPLATE TEST
 //
 // tests/site_journey_test.rs already reads website/templates/*.html by regular
-// expression and asserts on individual attributes -- the hero's
-// `fetchpriority`, the demo disclosure's `aria-expanded`. Those are the checks
+// expression and asserts on individual attributes -- the hero image's
+// `src`, the demo disclosure's `aria-expanded`. Those are the checks
 // static analysis can make. What it structurally cannot do is compute a
 // contrast ratio, resolve which element is actually focusable after CSS, or
 // notice that a heading level was skipped once four templates and a Markdown

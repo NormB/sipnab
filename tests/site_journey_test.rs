@@ -5046,7 +5046,7 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
             // animation plays, and the button puts the
             // still frame and its alt text back.
             "index.html",
-            "sha256-0v4G6tae2tjaEo7PTkg590b1RvJLQSjgRyGf13h3DrA=",
+            "sha256-4EtNIlF9DO8gMmdk1ck4fUI5rjLfFUX7mA43gMvteYY=",
         ),
         (
             "page.html",
@@ -5103,20 +5103,27 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The hero swaps a static screenshot for an animated demo after `load`. Four
-/// properties make that safe, and each is one careless edit from being lost.
+/// The hero swaps a static screenshot for an animated demo after `load`. Each
+/// property below is one careless edit from being lost.
 ///
-/// The animated file is 350 KiB against the static frame's 206 KiB. If the
-/// swap ever moves off `load`, or the `fetchpriority` moves onto the animated
-/// URL, the hero stops being a cheap LCP element and starts being the reason
-/// the page scores badly — a regression that looks like nothing in review and
-/// shows up only in field data.
+/// The animated file is 360 KiB against the static frame's 193 KiB. The
+/// screenshot sits below the install steps and the AI-agent demos, so it is
+/// below the first viewport at desktop and phone widths, and the measured
+/// Largest Contentful Paint element is the hero heading (`h1.hero-title`), not
+/// this image (Lighthouse desktop and mobile, 2026-10-09). A
+/// `fetchpriority="high"` hint asks the browser to fetch an image ahead of
+/// other resources; on an image below the fold it competes with the resources
+/// the first viewport needs, so nothing after the hero section may carry it.
+/// Removing it from this image moved the measured LCP from 826-839 ms to
+/// 591-657 ms (Lighthouse desktop preset) and from 4285-4489 ms to
+/// 3003-3210 ms (Lighthouse mobile preset), three runs each, before and
+/// after the change.
 ///
 /// Video was measured and rejected: 18 frames of terminal text over 14.2s is a
 /// slideshow, and every encode smaller than the lossless WebP blurs the text
 /// the demo exists to show.
 #[test]
-fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError> {
+fn hero_swap_keeps_the_static_frame_off_the_critical_path() -> Result<(), TestError> {
     let html = std::fs::read_to_string(repo().join("website/templates/index.html"))
         .map_err(|e| format!("read index.html: {e}"))?;
 
@@ -5126,10 +5133,30 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError
         .ok_or("hero <img> must carry id=\"hero-shot\" — the swap looks it up by id")?;
 
     assert!(
-        hero_line.contains("demos/hero-static.webp")
-            && hero_line.contains("fetchpriority=\"high\""),
-        "the STATIC frame must be the src with fetchpriority=\"high\"; putting \
-         either on the animated file makes a 350 KiB asset the LCP element:\n{hero_line}"
+        hero_line.contains("demos/hero-static.webp") && !hero_line.contains("demos/01-intro.webp"),
+        "the STATIC frame must be the src; the 360 KiB animated file is \
+         fetched only by the script, after `load`:\n{hero_line}"
+    );
+
+    // Above the fold is the hero section and nothing after it. A
+    // high-priority hint is allowed only inside it.
+    let hero_start = html
+        .find("<section class=\"hero\">")
+        .ok_or("index.html has no <section class=\"hero\">")?;
+    let hero_end = html[hero_start..]
+        .find("</section>")
+        .map(|i| hero_start + i)
+        .ok_or("the hero section is not closed")?;
+    let below_fold: Vec<&str> = html[hero_end..]
+        .lines()
+        .filter(|l| l.trim_start().starts_with('<') && l.contains("fetchpriority=\"high\""))
+        .collect();
+    assert!(
+        below_fold.is_empty(),
+        "fetchpriority=\"high\" below the hero section: the hint makes a \
+         below-the-fold fetch compete with the content the first viewport \
+         paints:\n{}",
+        below_fold.join("\n")
     );
     // The animated URL must NOT ride on the element. Storing it in a
     // data-attribute and assigning it to `hero.src` is js/xss-through-dom
@@ -5159,8 +5186,8 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError
     );
     assert!(
         html.contains("window.addEventListener('load'"),
-        "the swap must wait for `load`; running it earlier puts the animated \
-         fetch in contention with the LCP image"
+        "the swap must wait for `load`; running it earlier puts the 360 KiB \
+         animated fetch in contention with the first viewport's resources"
     );
     assert!(
         html.contains("pre.onload"),
@@ -10840,9 +10867,10 @@ fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
 /// Quick Start sat below a demo wall whose first command
 /// (`demos/mcp-stdio.sh tests/pcap-samples/...`) runs only from a source
 /// checkout, so a visitor who had just installed the binary met something they
-/// could not run before anything they could. The order is: what it is, how to
-/// run it, what it does, what an agent can ask it, what it supports, the
-/// numbers, then the guides.
+/// could not run before anything they could. The order (Norm, 2026-10-09) is:
+/// what it is, how to run it, what an agent can ask it, the animation, how
+/// sipnab fits together, what it does, what it supports, the numbers, then the
+/// guides.
 #[test]
 fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -10850,8 +10878,10 @@ fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestErr
     let want = [
         "hero",
         "quickstart",
-        "features",
         "demos",
+        "hero-shot-section",
+        "sysmap-section",
+        "features",
         "comparison",
         "arch-callout",
         "notes-callout",
