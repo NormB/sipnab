@@ -858,9 +858,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # Lighthouse CI: performance budgets over the built site.
   #
-  # Scoped to what the Rust suite does NOT already cover. Hero LCP and the
-  # hero-swap layout shift are gated by
-  # site_journey_test::hero_swap_keeps_the_static_frame_as_the_lcp_element,
+  # Scoped to what the Rust suite does NOT already cover. The hero swap's
+  # fetch order and layout shift are gated by
+  # site_journey_test::hero_swap_keeps_the_static_frame_off_the_critical_path,
   # which reads the template and is a stronger check than a timing measurement:
   # it fails on the attribute that would cause the shift rather than on the
   # shift showing up in one sampled run. What no existing gate covers is total

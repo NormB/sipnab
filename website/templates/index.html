@@ -357,7 +357,7 @@ Issues Detected:
 <section class="hero-shot-section">
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
-    <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
+    <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
     {# Shown by the script only once the looping animation replaces the still
        frame. Motion that runs longer than five seconds needs a way to stop it
        (WCAG 2.2.2), and pausing puts the still frame, and its alt text, back.
@@ -728,10 +728,11 @@ document.querySelectorAll('.copy-btn').forEach(function(btn) {
 
 // Hero: static screenshot first, animation second.
 //
-// The static frame is the LCP element and keeps fetchpriority="high" — the
-// animated WebP is 350 KiB and must not compete with it, so nothing here runs
-// until `load`, by which point LCP is already recorded. Both files are
-// 1200x700, so the swap cannot shift layout.
+// The screenshot sits below the install steps and the AI-agent demos, so it
+// is not the Largest Contentful Paint element (the hero heading is) and
+// carries no fetchpriority hint. The animated WebP is 360 KiB and must not
+// compete with the first viewport's resources, so nothing here runs until
+// `load`. Both files are 1200x700, so the swap cannot shift layout.
 //
 // Video was measured and rejected for this: 18 frames of terminal text over
 // 14.2s is a slideshow, and the encodes that beat 350 KiB (h264 crf 28, 265
