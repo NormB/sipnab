@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} -- {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description }}{% endblock description %}
+{% block og_title %}{{ page.title }} -- {{ config.title }}{% endblock og_title %}
+{% block og_description %}{{ page.description }}{% endblock og_description %}
+
+{# Overview pages: /features/, /deployments/ and /compare/. Long-form prose
+   about sipnab as a whole, so they take the docs typography (.doc-content,
+   .doc-body) without the docs sidebar, which belongs to the documentation
+   set these pages link into. A page with a diagram sets `has_diagrams` in
+   its [extra] table and loads the mermaid bundle exactly as page.html does. #}
+{% block head_extra %}
+{% if page.extra.has_diagrams %}
+<script src="{{ get_url(path='js/mermaid.min.js', cachebust=true) }}" defer></script>
+<script src="{{ get_url(path='js/diagram-viewer.js', cachebust=true) }}" defer></script>
+{% endif %}
+{% endblock head_extra %}
+
+{% block content %}
+<div class="overview-layout">
+  <article class="doc-content" data-pagefind-body>
+    <header class="doc-header">
+      <h1>{{ page.title }}</h1>
+      {% if page.description %}
+      <p class="doc-lead">{{ page.description }}</p>
+      {% endif %}
+    </header>
+    <div class="doc-body">
+      {# `| safe`: page.content is the HTML Zola rendered at build time from a
+         Markdown file committed to this repository, the same trust boundary
+         as page.html's. #}
+      {{ page.content | safe }}
+    </div>
+  </article>
+</div>
+{% endblock content %}

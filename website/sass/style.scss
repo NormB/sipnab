@@ -1974,6 +1974,18 @@ input:focus-visible,
 // Documentation
 // =============================================================================
 
+// The overview pages (/features/, /deployments/, /compare/): the docs column
+// and its typography, centered, with no sidebar.
+.overview-layout {
+  max-width: min(94vw, 1200px);
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 5rem;
+
+  // /compare/ cites its sources as bare URLs, which have no break points; on
+  // a phone a single one widened the whole page.
+  .doc-body a { overflow-wrap: anywhere; }
+}
+
 .doc-layout {
   // Fluid, not a fixed 1220px. The old cap left a 1920px window with ~700px of
   // empty margin while the text column wrapped early — the same on every page,
