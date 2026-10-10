@@ -43,7 +43,7 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
     // printed beside it say the same thing, because they are the same string.
     let partial = format!(
         "{}{}",
-        wrap_clause(stream.payload_frames_dropped),
+        retention_clauses(&RetentionLoss::of(&[stream])),
         decode_failure_clause(decode_failures)
     );
     write_wav_with_provenance(
@@ -69,20 +69,76 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
 
 /// A clause naming the ring wrap, or nothing when the buffer held everything.
 ///
-/// Appended to every export summary. Without it the duration reads as a fact
-/// about the CALL: a ten-minute call whose ring keeps the last 1500 frames
-/// exports as "30.0s", byte-identical to a genuinely thirty-second call. The
-/// number was never wrong about the FILE; it was silent about what the file
-/// left out.
+/// Only an explicit `[limits] max_audio_frames` makes a ring; unset, the
+/// whole stream is kept. Appended to every export summary. Without it the
+/// duration reads as a fact about the CALL: a ten-minute call whose ring
+/// keeps the last 1500 frames exports as "30.0s", byte-identical to a
+/// genuinely thirty-second call. The number was never wrong about the FILE;
+/// it was silent about what the file left out.
 fn wrap_clause(dropped: u64) -> String {
     if dropped == 0 {
         return String::new();
     }
     format!(
         " — PARTIAL: the payload ring wrapped and dropped {dropped} earlier frame(s), \
-         so this file holds the END of the stream, not all of it. Raise \
-         [limits] max_audio_frames to keep more."
+         so this file holds the END of the stream, not all of it. Raise or \
+         remove [limits] max_audio_frames to keep more."
     )
+}
+
+/// Frames missing from the START of a file's streams, by why they are gone.
+///
+/// Each of the three removes the earliest frames, so a file with any of them
+/// holds the end of its streams and not the call's beginning.
+#[derive(Debug, Default, Clone, Copy)]
+struct RetentionLoss {
+    /// Dropped by an explicit `[limits] max_audio_frames` ring.
+    dropped: u64,
+    /// Released to stay inside the `[limits] max_audio_bytes` budget.
+    released: u64,
+    /// Released after the call's vCon container was written live.
+    after_export: u64,
+}
+
+impl RetentionLoss {
+    /// The losses summed over `streams`.
+    fn of(streams: &[&RtpStream]) -> Self {
+        streams.iter().fold(Self::default(), |acc, s| Self {
+            dropped: acc.dropped.saturating_add(s.payload_frames_dropped),
+            released: acc.released.saturating_add(s.payload_frames_released),
+            after_export: acc
+                .after_export
+                .saturating_add(s.payload_frames_released_after_export),
+        })
+    }
+
+    /// Whether any frame is missing from the start.
+    fn any(self) -> bool {
+        self.dropped > 0 || self.released > 0 || self.after_export > 0
+    }
+}
+
+/// The clauses naming every frame missing from the start of a file, by
+/// reason and count, or nothing when none is.
+fn retention_clauses(loss: &RetentionLoss) -> String {
+    let mut out = wrap_clause(loss.dropped);
+    if loss.released > 0 {
+        out.push_str(&format!(
+            " — PARTIAL: the [limits] max_audio_bytes retention budget was reached and \
+             released {} earlier frame(s), oldest stream first, so this file holds the \
+             END of the stream, not all of it. Raise [limits] max_audio_bytes to keep more.",
+            loss.released
+        ));
+    }
+    if loss.after_export > 0 {
+        out.push_str(&format!(
+            " — PARTIAL: {} earlier frame(s) were released after this call's vCon \
+             container was written, so this file holds only the audio that arrived \
+             after that. The written container carries the audio released.",
+            loss.after_export
+        ));
+    }
+    out
 }
 
 /// Export multiple streams (dialog) to a WAV file.
@@ -134,7 +190,8 @@ pub struct DialogAudio {
     /// How long the FILE is, in seconds.
     ///
     /// A fact about the file, never about the call. A ten-minute call whose
-    /// ring kept the last 1500 frames lands here as 30 seconds, and
+    /// `[limits] max_audio_frames = 1500` ring kept its last 1500 frames
+    /// lands here as 30 seconds, and
     /// [`Self::partial`] is what stops that reading as a thirty-second call.
     pub duration_secs: f64,
     /// The clauses naming every way this file falls short of the call, or
@@ -149,7 +206,9 @@ pub struct DialogAudio {
     /// Exposed rather than left inside the bytes so a consumer that cannot
     /// parse a RIFF chunk still reads it. Same string, not a second one.
     pub note: String,
-    /// `true` when a payload ring dropped frames this file therefore lacks.
+    /// `true` when frames are missing from the start of this file's streams:
+    /// a payload ring dropped them, the retention budget released them, or
+    /// they were released after the call's vCon container was written.
     ///
     /// The signal that the file is shorter than the call it came from, which
     /// is the one gap vCon can state in its own vocabulary
@@ -276,15 +335,12 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         .unwrap_or(DEFAULT_WAV_RATE);
     let (samples, channels, frames_per_channel) = interleave_channels(&mut decoded, output_rate);
 
-    let dropped: u64 = carried
-        .iter()
-        .map(|s| s.payload_frames_dropped)
-        .fold(0u64, u64::saturating_add);
+    let loss = RetentionLoss::of(&carried);
     let failures: u64 = decoded.iter().map(|d| d.3).fold(0u64, u64::saturating_add);
 
     let partial = format!(
         "{}{}{}{}",
-        wrap_clause(dropped),
+        retention_clauses(&loss),
         omitted_clause(distinct_sources, carried.len(), &skipped_codecs),
         decode_failure_clause(failures),
         direction_clause(streams)
@@ -324,7 +380,7 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         duration_secs,
         partial,
         note,
-        ring_wrapped: dropped > 0,
+        ring_wrapped: loss.any(),
         sources: carried.iter().map(|s| s.key.clone()).collect(),
         first_retained: carried
             .iter()
@@ -616,6 +672,32 @@ pub(crate) fn nothing_to_decode(streams: &[&RtpStream]) -> String {
             "No stream on this call carries a codec that decodes to WAV (found: {}). \
              Supported: PCMU, PCMA, Opus.",
             found.join(", "),
+        );
+    }
+
+    // Audio that WAS retained and then released is not "retention was off".
+    let loss = RetentionLoss::of(&decodable.iter().map(|s| **s).collect::<Vec<_>>());
+    if loss.after_export > 0 || loss.released > 0 {
+        let mut why = Vec::new();
+        if loss.after_export > 0 {
+            why.push(format!(
+                "sipnab released {} frame(s) after this call's vCon container was written, \
+                 which carries them",
+                loss.after_export
+            ));
+        }
+        if loss.released > 0 {
+            why.push(format!(
+                "the [limits] max_audio_bytes retention budget released {} frame(s) to \
+                 make room for newer calls; raise it to keep more",
+                loss.released
+            ));
+        }
+        return format!(
+            "No audio payload held now: this run retained the call's audio and then {}. \
+             This is a statement about what this run holds, not a finding that the call \
+             was silent.",
+            why.join(", and ")
         );
     }
 
@@ -943,6 +1025,73 @@ mod tests {
         assert!(
             !text.contains("No omissions recorded"),
             "a partial file must not also claim completeness"
+        );
+        Ok(())
+    }
+
+    /// Frames the retention budget released are named in the file, with the
+    /// budget's key and the count, and mark the start of the call missing.
+    #[test]
+    fn a_budget_release_names_the_budget_and_the_count() -> Result<(), TestError> {
+        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        stream.payload_frames_released = 1319;
+        let audio = decode_dialog_audio(&[&stream]).map_err(|e| format!("decode: {e:?}"))?;
+        assert!(
+            audio.partial.contains(
+                "PARTIAL: the [limits] max_audio_bytes retention budget was reached and \
+                 released 1319 earlier frame(s)"
+            ),
+            "the reason and the count: {}",
+            audio.partial
+        );
+        assert!(
+            audio.note.contains("1319"),
+            "the file's own note carries it"
+        );
+        assert!(
+            audio.ring_wrapped,
+            "released frames are the START of the stream, so the file is a fragment"
+        );
+        Ok(())
+    }
+
+    /// Frames released after the call's vCon was written are named too.
+    #[test]
+    fn a_release_after_export_is_named() -> Result<(), TestError> {
+        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        stream.payload_frames_released_after_export = 3000;
+        let audio = decode_dialog_audio(&[&stream]).map_err(|e| format!("decode: {e:?}"))?;
+        assert!(
+            audio.partial.contains(
+                "PARTIAL: 3000 earlier frame(s) were released after this call's vCon \
+                 container was written"
+            ),
+            "{}",
+            audio.partial
+        );
+        assert!(audio.ring_wrapped);
+        Ok(())
+    }
+
+    /// A stream whose audio was all released does not blame retention.
+    ///
+    /// An empty buffer reads as "retention was off" otherwise, which is false
+    /// for a run that retained the call and then gave the memory back.
+    #[test]
+    fn nothing_to_decode_names_audio_that_was_released() -> Result<(), TestError> {
+        let mut stream = make_stream(Some("PCMU"), Vec::new())?;
+        stream.payload_frames_released_after_export = 3000;
+        let message = nothing_to_decode(&[&stream]);
+        assert!(
+            message.contains("released 3000 frame(s) after this call's vCon container was written"),
+            "{message}"
+        );
+        let mut budget = make_stream(Some("PCMU"), Vec::new())?;
+        budget.payload_frames_released = 40;
+        let message = nothing_to_decode(&[&budget]);
+        assert!(
+            message.contains("[limits] max_audio_bytes retention budget released 40 frame(s)"),
+            "{message}"
         );
         Ok(())
     }

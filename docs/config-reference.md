@@ -517,7 +517,8 @@ Resource limits to prevent unbounded memory growth.
 | `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
 | `idle_compact_after_secs` | integer | `600` | Seconds of silence before sipnab compacts a dialog's stored messages. `0` fails validation and names the key |
 | `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
-| `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
+| `max_audio_frames` | integer | unset | Maximum RTP payload frames retained per stream for WAV and vCon export. Unset keeps the whole call. When set, the oldest frame goes first, and the export says PARTIAL and counts the frames dropped. At 20 ms packetization, 1500 frames is 30 seconds. `0` fails validation and names the key |
+| `max_audio_bytes` | integer | `1073741824` | Bytes of retained RTP payload across every stream, the bound on audio retention. See [Audio retention budget](#audio-retention-budget). Below `1048576` (1 MiB) fails validation and names the key |
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
 | `exec_queue_depth` | integer | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. `--exec-queue-depth` overrides it. `0` fails validation and names the key |
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
@@ -552,15 +553,16 @@ max_headers_per_message = 200
 max_messages_per_dialog = 500
 idle_compact_after_secs = 600
 keep_messages_per_idle_dialog = 20
-max_audio_frames = 1500
+max_audio_bytes = 1073741824
 ```
 
 The compaction pair — `idle_compact_after_secs` and
 `keep_messages_per_idle_dialog` — is where a limit discards a ladder sipnab
 already holds, so a call that went quiet shows fewer messages than crossed the
 wire. sipnab warns once per run when this first happens. The retention logs
-(`max_audio_frames`, `max_lost_sequences`) drop their oldest entries as they
-fill. Every other key here refuses to take something in.
+(`max_audio_frames` when set, `max_audio_bytes`, `max_lost_sequences`) drop
+their oldest entries as they fill. Every other key here refuses to take
+something in.
 
 Raise both when the ladder matters more than the footprint — a call parked on
 hold, a dialog waiting on a slow PSTN leg, or a capture you paused all go quiet
@@ -571,6 +573,57 @@ for longer than ten minutes while still being the thing under investigation:
 idle_compact_after_secs = 3600
 keep_messages_per_idle_dialog = 500
 ```
+
+#### Audio retention budget
+
+The terminal UI, and any run with `--retain-audio`, keeps each RTP stream's
+G.711 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
+default sipnab keeps the whole call, from the first frame. `max_audio_bytes`
+bounds the memory this uses, across every stream at once.
+
+sipnab charges each retained frame against the budget:
+
+- the payload, plus a quarter of its length, plus 32 bytes: an upper bound on
+  what the memory allocator spends on it;
+- 32 bytes for each slot of the stream's frame buffer, spare capacity
+  included.
+
+For 20 ms G.711 (160 bytes a frame) that is 264 bytes a frame: 13,200 bytes a
+second for each direction, and 26,400 bytes a second for a call with media both
+ways. The default of 1 GiB (1,073,741,824 bytes) therefore holds 40,672
+call-seconds, which is:
+
+| Calls held at once | Each lasting |
+|---|---|
+| 1 | 11.3 hours |
+| 67 | 10 minutes |
+| 225 | 3 minutes |
+
+The charge is an upper bound. Measured on aarch64 Linux with the allocator
+the sipnab binary ships with (mimalloc), a 20 ms G.711 frame used 192.6 bytes,
+so at the budget the heap the audio really holds is about 0.73 GiB. With
+`--cores N`, each worker gets 1/N of the budget, so the run as a whole stays
+inside it.
+
+When retained audio reaches the budget, sipnab releases the earliest frames of the oldest
+stream that still holds audio, one frame at a time, until the total is back
+inside it. On a live capture the oldest stream is normally a call that has
+already ended. sipnab counts the frames released on the stream. That call's
+WAV export, its vCon `media_note`, and the note inside the WAV then say
+`PARTIAL: the [limits] max_audio_bytes retention budget was reached and
+released N earlier frame(s)`, and its vCon wraps the recording in a
+`recording-set` that carries the call's own start and duration. sipnab never
+drops audio without counting it.
+
+A live capture that writes vCon containers (`--export-vcon-when` or
+`--export-vcon` with a device) releases each call's audio once it writes the
+call's container, because the container carries it. An export of that call
+made later says how many frames sipnab released and why.
+
+Raise `max_audio_bytes` for a host that keeps more or longer calls in memory at
+once. In the source, the default is `DEFAULT_MAX_AUDIO_BYTES` (1073741824) and
+the minimum is `MIN_MAX_AUDIO_BYTES` (1048576). Set `max_audio_frames` to cap each stream as well. For example, 1500
+frames is the last 30 seconds of a 20 ms stream.
 
 ### [mcp]
 

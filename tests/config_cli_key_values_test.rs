@@ -677,6 +677,14 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "limits",
+        "max_audio_bytes",
+        KeyKind::Int {
+            lo: 1_048_576,
+            hi: i64::MAX as i128,
+        },
+    ),
+    (
+        "limits",
         "max_capture_sources",
         KeyKind::Int {
             lo: 1,

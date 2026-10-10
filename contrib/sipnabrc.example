@@ -66,8 +66,12 @@ max_streams = 4096
 max_reassembly = 10000
 # HEP listener inbound rate limit (packets/second).
 hep_rate_limit = 50000
-# Audio frames retained per stream for WAV export (TUI mode).
-max_audio_frames = 1500
+# Bytes of call audio retained across every stream, for WAV and vCon export
+# (the TUI, and --retain-audio). This one matches the default, 1 GiB. Calls are
+# kept whole; at the budget the oldest stream's earliest frames are released
+# first and that call's export says PARTIAL. Leave max_audio_frames unset to
+# keep whole calls.
+max_audio_bytes = 1073741824
 
 # -- TLS for the listeners -------------------------------------------------
 # Each listener is still started on the command line (--api, --mcp

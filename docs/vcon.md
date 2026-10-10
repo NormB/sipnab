@@ -14,8 +14,10 @@ diagnosis of the call, and — in two places, deliberately — a statement of wh
 the capture missed.
 
 When the run retained the RTP payload, the container also
-carries the audio, inline. None of them carries a signature or any claim that
-somebody consented to anything.
+carries the audio, inline: the whole call, from its first frame, unless a
+retention limit cut it, and then the container says so (see
+[Audio retention budget](config-reference.md#audio-retention-budget)). None of
+them carries a signature or any claim that somebody consented to anything.
 
 **A sipnab vCon records what an instrument
 saw, not what the parties said.** [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
@@ -1007,6 +1009,13 @@ Stated here rather than discovered later.
   roughly 12 MB, wrote it to its database, and had its own file spool refuse the
   payload with neither side reporting the partial write. `0` refuses every
   inline body without turning the exporter off.
+
+  sipnab retains whole calls, so a call's audio grows with its length. A
+  two-way 20 ms G.711 call exports as 8 kHz stereo, 32,000 bytes of WAV a
+  second, and fits the 5 MiB default for up to 122 seconds. At 123 seconds the
+  container carries the refusal instead. Raise `--vcon-max-inline-media` to
+  what the store you send to accepts, or write the WAV beside the container
+  with the `export_audio` MCP tool.
 
   A `--redact` export carries no audio at all, because redaction deletes
   audio rather than replacing it with a token. Its Dialog Object is the signaling one,

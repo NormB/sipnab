@@ -209,6 +209,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "idle_compact_after_secs",
             "keep_messages_per_idle_dialog",
             "max_audio_frames",
+            "max_audio_bytes",
             "mcp_max_rows",
             "mcp_max_body_bytes",
             "mcp_max_wait_seconds",
@@ -2248,8 +2249,14 @@ pub struct LimitsConfig {
     pub idle_compact_after_secs: Option<u64>,
     /// Messages an idle dialog keeps after compaction (default: 20).
     pub keep_messages_per_idle_dialog: Option<u64>,
-    /// Maximum audio frames retained per RTP stream for WAV export (default: 1500).
+    /// Maximum audio frames retained per RTP stream for WAV export (default:
+    /// unset, the whole stream). The oldest frame is dropped first and counted.
     pub max_audio_frames: Option<u64>,
+    /// Bytes of retained audio across every RTP stream (default: 1 GiB,
+    /// minimum 1 MiB). At the budget, the oldest stream's earliest frames are
+    /// released first and counted on that stream. See
+    /// [`crate::rtp::stream_store::DEFAULT_MAX_AUDIO_BYTES`] for the arithmetic.
+    pub max_audio_bytes: Option<u64>,
     /// Findings one lint rule may raise for one dialog (default: 25).
     ///
     /// A dialog retransmitting an `INVITE` eleven times trips a message rule
@@ -2411,6 +2418,17 @@ pub struct LimitsConfig {
 }
 
 impl LimitsConfig {
+    /// The audio retention limits `max_audio_frames` and `max_audio_bytes`
+    /// set: THE place either key is read, so every mode that builds a stream
+    /// store retains under the same rule and the same defaults.
+    #[must_use]
+    pub fn audio_limits(&self) -> crate::rtp::stream_store::AudioLimits {
+        crate::rtp::stream_store::AudioLimits::from_config(
+            self.max_audio_frames,
+            self.max_audio_bytes,
+        )
+    }
+
     /// Validate limit values are within sane ranges.
     ///
     /// Unset (`None`) fields are always valid — they fall back to the
@@ -2467,6 +2485,19 @@ impl LimitsConfig {
             self.max_messages_per_dialog,
         )?;
         refuse_zero("[limits] max_audio_frames", self.max_audio_frames)?;
+        // Below the minimum is refused rather than read as "retain nothing":
+        // `--retain-audio` off is the setting that means no retention, and a
+        // budget smaller than one large frame would release every frame it
+        // was handed.
+        if let Some(v) = self.max_audio_bytes
+            && v < crate::rtp::stream_store::MIN_MAX_AUDIO_BYTES
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] max_audio_bytes must be >= {} (1 MiB), got {v}; to keep no \
+                 audio at all, leave --retain-audio off",
+                crate::rtp::stream_store::MIN_MAX_AUDIO_BYTES
+            )));
+        }
         // `LintConfig` reads 0 as "uncapped", which is the permissive
         // direction and therefore the wrong thing for a typo to reach — the
         // same judgement `mcp_max_rows` above records.
@@ -4818,6 +4849,7 @@ column_selector = "F10"
             idle_compact_after_secs: Some(600),
             keep_messages_per_idle_dialog: Some(20),
             max_audio_frames: Some(1500),
+            max_audio_bytes: Some(1024 * 1024 * 1024),
             mcp_max_rows: Some(1000),
             lint_max_per_rule: Some(25),
             exec_queue_depth: Some(100),
@@ -5409,6 +5441,31 @@ column_selector = "F10"
             .err()
             .ok_or("validate() must refuse this")?;
         assert!(err.to_string().contains("max_messages_per_dialog"));
+        Ok(())
+    }
+
+    /// `max_audio_bytes` below 1 MiB, zero included, is rejected naming the
+    /// key and the minimum; 1 MiB itself is accepted.
+    #[test]
+    fn limits_max_audio_bytes_below_the_minimum_rejected() -> Result<(), TestError> {
+        for bad in [0u64, 1, 1024 * 1024 - 1] {
+            let limits = LimitsConfig {
+                max_audio_bytes: Some(bad),
+                ..Default::default()
+            };
+            let err = limits
+                .validate()
+                .err()
+                .ok_or_else(|| format!("validate() must refuse {bad}"))?;
+            let text = err.to_string();
+            assert!(text.contains("max_audio_bytes"), "{text}");
+            assert!(text.contains("1048576"), "names the minimum: {text}");
+        }
+        let ok = LimitsConfig {
+            max_audio_bytes: Some(1024 * 1024),
+            ..Default::default()
+        };
+        ok.validate()?;
         Ok(())
     }
 

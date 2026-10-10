@@ -841,6 +841,7 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("limits", "idle_compact_after_secs", FileOnly::Tuning),
     ("limits", "keep_messages_per_idle_dialog", FileOnly::Tuning),
     ("limits", "max_audio_frames", FileOnly::Tuning),
+    ("limits", "max_audio_bytes", FileOnly::Tuning),
     ("limits", "max_tracked_peers", FileOnly::Tuning),
     ("mcp", "bundles", FileOnly::Table),
     ("names", "manual", FileOnly::Table),

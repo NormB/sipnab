@@ -697,7 +697,7 @@ fn parallel_config(
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
         retain_audio: audio_retention_wanted(cli),
-        max_audio_frames: config.limits.max_audio_frames.unwrap_or(1500) as usize,
+        audio_limits: config.limits.audio_limits(),
         reassembly: !cli.capture_args.no_reassembly,
         parse_limit: cli.capture_args.limitlen,
     }
@@ -2408,9 +2408,7 @@ fn build_live_stream_store(
     relay_snapshot: &crate::relay::reconcile::RelaySnapshot,
 ) -> StreamStore {
     let mut ss = StreamStore::new(cli.max_streams_limit(config));
-    if let Some(max_frames) = config.limits.max_audio_frames {
-        ss.set_max_audio_frames(max_frames as usize);
-    }
+    ss.set_audio_limits(config.limits.audio_limits());
     // RE4: what the relay said it was holding when sipnab started, so a call
     // already in progress is named by its first packet rather than arriving as
     // an orphan.
@@ -2418,15 +2416,26 @@ fn build_live_stream_store(
     if apply_audio_retention(&mut ss, cli) {
         // Retention changes this run's memory profile, so state the bound
         // rather than letting an operator discover it under load.
-        let frames = config.limits.max_audio_frames.unwrap_or(1500);
-        let streams = cli.max_streams_limit(config);
-        tracing::info!(
-            "RTP payload retention is on so the MCP export_audio tool can decode it: \
-             up to {frames} frame(s) per stream across at most {streams} stream(s). \
-             Lower [limits] max_audio_frames or --max-streams to bound it further."
-        );
+        tracing::info!("{}", retention_bound_message(ss.audio_limits()));
     }
     ss
+}
+
+/// The line a live run logs when it turns audio retention on: what it keeps
+/// and what bounds it, so the bound is stated rather than discovered under
+/// load.
+fn retention_bound_message(limits: crate::rtp::stream_store::AudioLimits) -> String {
+    let per_stream = limits.max_frames.map_or_else(
+        || "whole calls".to_owned(),
+        |f| format!("up to {f} frame(s) per stream"),
+    );
+    format!(
+        "RTP payload retention is on so the MCP export_audio tool can decode it: \
+         {per_stream}, inside a budget of {} byte(s) across every stream. At the \
+         budget the oldest stream's earliest frames are released first, and its \
+         export says so. Set [limits] max_audio_bytes to change the budget.",
+        limits.max_bytes
+    )
 }
 
 /// Print the ICMP evidence summary for a finished run.
@@ -3904,6 +3913,17 @@ impl BatchRunner {
             #[cfg(not(feature = "vcon"))]
             let _ = ds;
         });
+        // After the sweep, which held the stream store for reading: the calls
+        // it wrote give their retained audio back.
+        #[cfg(feature = "vcon")]
+        if let Some(tracker) = lp.live_vcon.as_mut() {
+            let released = release_exported_audio(tracker, &mut self.stream_store.write());
+            if released > 0 {
+                tracing::debug!(
+                    "released {released} retained audio frame(s) of calls whose vCon was written"
+                );
+            }
+        }
         if compacted.messages_evicted > 0 {
             tracing::debug!(
                 "idle-dialog compaction: dropped {} messages from {} dialogs",
@@ -6850,6 +6870,9 @@ pub struct LiveVconTracker {
     /// Set when a sweep could not write a container it owed, so the run can
     /// end non-zero instead of reporting an export that did not happen.
     failed: bool,
+    /// Call-IDs written since their retained audio was last released, for
+    /// [`release_exported_audio`].
+    unreleased: Vec<String>,
 }
 
 impl LiveVconTracker {
@@ -6862,6 +6885,7 @@ impl LiveVconTracker {
     /// Record that `call_id`'s container was written at `updated_at`.
     pub fn record(&mut self, call_id: &str, updated_at: chrono::DateTime<chrono::Utc>) {
         self.written.insert(call_id.to_owned(), updated_at);
+        self.unreleased.push(call_id.to_owned());
     }
 
     /// Forget every dialog `still_held` says the store no longer holds.
@@ -6894,6 +6918,23 @@ impl LiveVconTracker {
         tracing::error!("{message}");
         self.failed = true;
     }
+}
+
+/// Release the retained audio of every call a live sweep wrote since the last
+/// release, and return how many frames were released.
+///
+/// The written container carries the audio, so holding it until the stream
+/// store evicts the stream would grow retention with the length of the run.
+/// Each stream counts what it released, so a later export of the same call
+/// (the call changed and is written again, or `export_audio` is asked for it)
+/// says the audio was released and why, rather than reading as a call with
+/// none.
+#[cfg(feature = "vcon")]
+fn release_exported_audio(tracker: &mut LiveVconTracker, streams: &mut StreamStore) -> u64 {
+    std::mem::take(&mut tracker.unreleased)
+        .iter()
+        .map(|call_id| streams.release_audio_for(call_id))
+        .fold(0u64, u64::saturating_add)
 }
 
 /// What the end-of-run vCon export owes, given how the run went.
@@ -8278,6 +8319,100 @@ mod tests {
             later,
         );
         assert_eq!(again, 0, "a written call is not written again unchanged");
+        Ok(())
+    }
+
+    /// One 20 ms PCMU frame from `10.0.0.1:src_port`, sequence `seq`.
+    #[cfg(feature = "vcon")]
+    fn pcmu_frame(
+        src_port: u16,
+        ssrc: u32,
+        seq: u16,
+    ) -> (ParsedPacket, crate::rtp::parser::RtpHeader) {
+        let mut payload = vec![0x80, 0x00];
+        payload.extend_from_slice(&seq.to_be_bytes());
+        payload.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+        payload.extend_from_slice(&ssrc.to_be_bytes());
+        payload.extend_from_slice(&[0x55; 160]);
+        let header = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: seq,
+            timestamp: u32::from(seq) * 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        let packet = ParsedPacket {
+            src_port,
+            payload: bytes::Bytes::from(payload),
+            ..rtp_dtmf_packet(30000, 0, ssrc, 0, 0)
+        };
+        (packet, header)
+    }
+
+    /// A live sweep's written calls release their retained audio, and only
+    /// theirs, so ended calls do not accumulate audio for the whole run.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_releases_the_audio_of_the_calls_it_wrote() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed()?;
+        let mut streams = StreamStore::new(16);
+        for (port, ssrc) in [(40010u16, 0xF001u32), (40011, 0xF002)] {
+            for seq in 0..50u16 {
+                let (packet, header) = pcmu_frame(port, ssrc, seq);
+                streams.process_rtp(&packet, &header, packet.timestamp);
+            }
+        }
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        streams.link_to_dialog(caller, 40010, "failed-call@example.com");
+        streams.link_to_dialog(caller, 40011, "ok-call@example.com");
+        let mut tracker = LiveVconTracker::default();
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+
+        let written = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
+        assert_eq!(written, 1, "only the ended call is written");
+        assert_eq!(
+            release_exported_audio(&mut tracker, &mut streams),
+            50,
+            "the written call's 50 frames are released"
+        );
+        let ended = streams
+            .streams_for("failed-call@example.com")
+            .next()
+            .ok_or("the ended call's stream")?;
+        assert!(ended.payload_buffer.is_empty());
+        assert_eq!(ended.payload_frames_released_after_export, 50);
+        let ongoing = streams
+            .streams_for("ok-call@example.com")
+            .next()
+            .ok_or("the ongoing call's stream")?;
+        assert_eq!(
+            ongoing.payload_buffer.len(),
+            50,
+            "a call not written keeps its audio"
+        );
+        assert_eq!(
+            release_exported_audio(&mut tracker, &mut streams),
+            0,
+            "a call is released once"
+        );
         Ok(())
     }
 
@@ -12921,6 +13056,46 @@ mod tests {
             "the relay asserted this allocation; no party's SDP did"
         );
         Ok(())
+    }
+
+    /// `[limits] max_audio_frames` and `max_audio_bytes` reach the store a
+    /// live capture builds, and unset means the whole call inside the default
+    /// budget.
+    #[test]
+    fn the_live_store_takes_the_configured_audio_limits() {
+        use crate::relay::reconcile::RelaySnapshot;
+        use crate::rtp::stream_store::{AudioLimits, MIN_MAX_AUDIO_BYTES};
+        let unset =
+            build_live_stream_store(&base_cli(), &Config::default(), &RelaySnapshot::default());
+        assert_eq!(unset.audio_limits(), AudioLimits::default());
+        assert_eq!(unset.audio_limits().max_frames, None, "the whole call");
+        let mut config = Config::default();
+        config.limits.max_audio_frames = Some(700);
+        config.limits.max_audio_bytes = Some(MIN_MAX_AUDIO_BYTES * 3);
+        let set = build_live_stream_store(&base_cli(), &config, &RelaySnapshot::default());
+        assert_eq!(
+            set.audio_limits(),
+            AudioLimits {
+                max_frames: Some(700),
+                max_bytes: (MIN_MAX_AUDIO_BYTES * 3) as usize,
+            }
+        );
+    }
+
+    /// The `--cores` paths take the same audio limits from the same keys.
+    #[test]
+    fn parallel_config_takes_the_configured_audio_limits() {
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let mut config = Config::default();
+        config.limits.max_audio_bytes = Some(5 * 1024 * 1024);
+        assert_eq!(
+            parallel_config(&cli, &config, (1, 65535), false).audio_limits,
+            config.limits.audio_limits()
+        );
+        assert_eq!(
+            parallel_config(&cli, &Config::default(), (1, 65535), false).audio_limits,
+            crate::rtp::stream_store::AudioLimits::default()
+        );
     }
 
     /// A run that never asked registers nothing, rather than registering an

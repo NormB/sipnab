@@ -898,3 +898,116 @@ pub fn hep_frame_with_ip_proto(ip_proto: u8) -> Result<Vec<u8>, Box<dyn std::err
         &datagram,
     ))
 }
+
+/// One answered G.711 call lasting `secs` seconds, timed: INVITE, 200 and ACK
+/// with SDP for PCMU at 20 ms, then media both ways (caller `10.0.0.1:20000`,
+/// SSRC `0x11111111`, stream 0; callee `10.0.0.2:30000`, SSRC `0x22222222`,
+/// stream 1), then BYE and its 200.
+///
+/// Byte `i` of frame `frame` on stream `stream` is
+/// `payload_byte(stream, frame, i)`, so a test that knows the function knows
+/// every sample on the wire. RTP sequence `frame` and timestamp `frame * 160`.
+pub fn g711_call_both_ways(
+    call_id: &str,
+    secs: usize,
+    payload_byte: fn(usize, usize, usize) -> u8,
+) -> Vec<(Vec<u8>, u64)> {
+    let rtp = |stream: usize, seq: usize, ssrc: u32| {
+        let mut p = vec![0x80, 0x00];
+        p.extend_from_slice(&((seq & 0xffff) as u16).to_be_bytes());
+        p.extend_from_slice(&((seq * 160) as u32).to_be_bytes());
+        p.extend_from_slice(&ssrc.to_be_bytes());
+        p.extend((0..160).map(|i| payload_byte(stream, seq, i)));
+        p
+    };
+    const A: [u8; 4] = [10, 0, 0, 1];
+    const B: [u8; 4] = [10, 0, 0, 2];
+    let sdp = |ip: &str, port: u16| {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=ptime:20\r\n"
+        )
+    };
+    let offer = sdp("10.0.0.1", 20000);
+    let answer = sdp("10.0.0.2", 30000);
+    let via = "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKwhole\r\n";
+    let from = "From: <sip:a@10.0.0.1>;tag=t1\r\n";
+    let to = "To: <sip:b@10.0.0.2>\r\n";
+    let to_tagged = "To: <sip:b@10.0.0.2>;tag=t2\r\n";
+    let cid = format!("Call-ID: {call_id}\r\n");
+    let sip = |src, dst, text: String| udp_frame(src, dst, 5060, 5060, text.as_bytes());
+
+    let mut frames: Vec<(Vec<u8>, u64)> = vec![
+        (
+            sip(
+                A,
+                B,
+                format!(
+                    "INVITE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}{cid}\
+                     CSeq: 1 INVITE\r\nContact: <sip:a@10.0.0.1:5060>\r\n\
+                     Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{offer}",
+                    offer.len()
+                ),
+            ),
+            0,
+        ),
+        (
+            sip(
+                B,
+                A,
+                format!(
+                    "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 1 INVITE\r\n\
+                     Contact: <sip:b@10.0.0.2:5060>\r\nContent-Type: application/sdp\r\n\
+                     Content-Length: {}\r\n\r\n{answer}",
+                    answer.len()
+                ),
+            ),
+            1_000,
+        ),
+        (
+            sip(
+                A,
+                B,
+                format!(
+                    "ACK sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+                     CSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+                ),
+            ),
+            2_000,
+        ),
+    ];
+    let media_start = 10_000u64;
+    let total = secs * 50;
+    for seq in 0..total {
+        let at = media_start + seq as u64 * 20_000;
+        frames.push((udp_frame(A, B, 20000, 30000, &rtp(0, seq, 0x1111_1111)), at));
+        frames.push((
+            udp_frame(B, A, 30000, 20000, &rtp(1, seq, 0x2222_2222)),
+            at + 500,
+        ));
+    }
+    let end = media_start + total as u64 * 20_000;
+    frames.push((
+        sip(
+            A,
+            B,
+            format!(
+                "BYE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+                 CSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+            ),
+        ),
+        end,
+    ));
+    frames.push((
+        sip(
+            B,
+            A,
+            format!(
+                "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 2 BYE\r\n\
+                 Content-Length: 0\r\n\r\n"
+            ),
+        ),
+        end + 1_000,
+    ));
+    frames
+}

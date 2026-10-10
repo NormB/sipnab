@@ -41,8 +41,9 @@ another party's system. Decide what may leave the machine first:
 
 ## 1. Write the containers
 
-Export the calls from a capture file with their audio. `--retain-audio` makes
-sipnab type each call's Dialog Object `recording`. The object names the
+Export the calls from a capture file with their audio. `--retain-audio` keeps
+each call's audio whole, from the first frame, and makes sipnab type each
+call's Dialog Object `recording`. The object names the
 parties, which the store requires, when each audio channel came from the media
 address and port that one party advertised in its own SDP. Audio from any
 other address, such as a media relay's, gets no `parties`, and the store

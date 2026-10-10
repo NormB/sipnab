@@ -179,15 +179,30 @@ pub struct ParallelConfig {
     /// silently kept nothing, and the export then told them retention was off.
     /// It was -- but not because they had left it off.
     pub retain_audio: bool,
-    /// Per-stream payload frame cap, applied per worker.
+    /// The audio retention limits, `[limits] max_audio_frames` and
+    /// `max_audio_bytes`. Each worker takes [`AudioLimits::per_worker`] of
+    /// them, so the budget bounds the whole run rather than each worker.
     ///
-    /// The bound is PER WORKER, so the run's ceiling is this times `cores`
-    /// times `max_streams`. Stated rather than discovered under load.
-    pub max_audio_frames: usize,
+    /// [`AudioLimits::per_worker`]: crate::rtp::stream_store::AudioLimits::per_worker
+    pub audio_limits: crate::rtp::stream_store::AudioLimits,
     /// Reassemble IP fragments / TCP segments (`--no-reassembly` sets false).
     pub reassembly: bool,
     /// Cap on parsed bytes per packet (`-S`/`--limitlen`).
     pub parse_limit: Option<usize>,
+}
+
+/// The stream store one `--cores` worker reconstructs into.
+///
+/// One function for both worker loops, so the two cannot apply different
+/// retention. Retention is honored rather than hard-disabled: `merge` inserts
+/// whole streams, so a worker's payload buffers survive into the merged store
+/// and `export_audio` can reach them. The budget is split across the workers
+/// so the merged run stays inside it.
+fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
+    let mut ss = StreamStore::new(cfg.max_streams);
+    ss.set_audio_capture(cfg.retain_audio);
+    ss.set_audio_limits(cfg.audio_limits.per_worker(cfg.cores));
+    ss
 }
 
 /// Merged reconstruction output of all workers.
@@ -454,14 +469,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                 }
                 .with_xcid_headers(cfg.xcid_headers.clone())
                 .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
-                let mut ss = StreamStore::new(cfg.max_streams);
-                // Honored rather than hard-disabled. `merge` inserts whole
-                // streams, so a worker's payload buffers survive into the
-                // merged store and `export_audio` can reach them.
-                ss.set_audio_capture(cfg.retain_audio);
-                if cfg.retain_audio {
-                    ss.set_max_audio_frames(cfg.max_audio_frames);
-                }
+                let mut ss = worker_stream_store(&cfg);
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
                 for packet in wrx.iter() {
@@ -541,7 +549,11 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     }
     .with_xcid_headers(cfg.xcid_headers.clone())
     .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
+    // The merged store carries the run's whole budget and the workers'
+    // retained totals (see `StreamStore::merge`).
     let mut ss = StreamStore::new(cfg.max_streams);
+    ss.set_audio_capture(cfg.retain_audio);
+    ss.set_audio_limits(cfg.audio_limits);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
         if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
@@ -2045,11 +2057,7 @@ pub fn run_offline_parallel_file(
                 }
                 .with_xcid_headers(cfg.xcid_headers.clone())
                 .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
-                let mut ss = StreamStore::new(cfg.max_streams);
-                ss.set_audio_capture(cfg.retain_audio);
-                if cfg.retain_audio {
-                    ss.set_max_audio_frames(cfg.max_audio_frames);
-                }
+                let mut ss = worker_stream_store(&cfg);
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
                 for batch in wrx.iter() {
@@ -2144,7 +2152,11 @@ pub fn run_offline_parallel_file(
     }
     .with_xcid_headers(cfg.xcid_headers.clone())
     .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
+    // The merged store carries the run's whole budget and the workers'
+    // retained totals (see `StreamStore::merge`).
     let mut ss = StreamStore::new(cfg.max_streams);
+    ss.set_audio_capture(cfg.retain_audio);
+    ss.set_audio_limits(cfg.audio_limits);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
         if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
@@ -2785,8 +2797,33 @@ mod tests {
             reassembly: true,
             parse_limit: None,
             retain_audio: false,
-            max_audio_frames: 1500,
+            audio_limits: crate::rtp::stream_store::AudioLimits::default(),
         }
+    }
+
+    /// Each worker's store gets its share of the audio budget, so a
+    /// `--cores N` run as a whole stays inside `[limits] max_audio_bytes`,
+    /// and keeps the per-stream frame cap unsplit.
+    #[test]
+    fn each_worker_store_gets_its_share_of_the_audio_budget() {
+        use crate::rtp::stream_store::AudioLimits;
+        let mut cfg = pcfg(4);
+        cfg.retain_audio = true;
+        cfg.audio_limits = AudioLimits {
+            max_frames: Some(7),
+            max_bytes: 4 * 1024 * 1024,
+        };
+        let ss = worker_stream_store(&cfg);
+        assert!(ss.audio_capture());
+        assert_eq!(
+            ss.audio_limits(),
+            AudioLimits {
+                max_frames: Some(7),
+                max_bytes: 1024 * 1024,
+            }
+        );
+        let off = worker_stream_store(&pcfg(4));
+        assert!(!off.audio_capture(), "retention stays opt-in");
     }
 
     /// `--cores N` must honor `--retain-audio`, or the operator who asked

@@ -4815,7 +4815,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // separator rows per file: docs/cli-reference.md 1,
     // docs/config-reference.md 1, docs/vcon.md 2, and the same 4 in their
     // site copies.
-    const EXPECTED_TABLES: usize = 1096;
+    // 1096 -> 1098: whole-call audio retention. Attributed by counting added
+    // separator rows per file: docs/config-reference.md 1 (the call-seconds
+    // table under Audio retention budget), and the same 1 in its site copy.
+    const EXPECTED_TABLES: usize = 1098;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

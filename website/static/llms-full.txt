@@ -2609,7 +2609,9 @@ and names the reason, because these are different problems:
 
 | The note says | What happened | What to do |
 |---|---|---|
-| `the payload ring wrapped and dropped N earlier frame(s)` | The call was longer than the buffer. The file holds the END of it. | Raise `[limits] max_audio_frames` |
+| `the payload ring wrapped and dropped N earlier frame(s)` | The call was longer than the `[limits] max_audio_frames` cap. The file holds the END of it. | Raise or remove `[limits] max_audio_frames` |
+| `the [limits] max_audio_bytes retention budget was reached and released N earlier frame(s)` | The audio retained across every call reached the budget, and the oldest stream gave up its earliest frames. The file holds the END of it. | Raise `[limits] max_audio_bytes` |
+| `N earlier frame(s) were released after this call's vCon container was written` | A live capture wrote this call's vCon, which carries the audio, and then released it | Read the audio from the vCon container |
 | `N of M stream(s) on this call are NOT in this file` | A WAV carries two channels; a three-legged call does not fit | Export the legs separately |
 | `(G729)` beside that | A stream's codec is not one sipnab decodes | Nothing — the audio is not recoverable from this capture |
 | `N frame(s) failed to decode` | The decoder rejected individual Opus frames | Check for truncation (`--snaplen`) |
@@ -14895,7 +14897,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-allow-relay-query` | -- | off | Permit the `query_relay` MCP tool to ask the configured relay what calls it holds right now. Off by default because this tool **transmits**: every other MCP tool answers from bytes sipnab already has, and this one puts a packet on the network at the address `--rtpengine-control` names. That address comes from the flag and from nowhere else, never from a tool argument — an agent that could name the destination would turn the MCP surface into a way to send packets to a host of its own choosing. Without `--rtpengine-control`, or on a run reading a file, the tool refuses and names which of the two is missing. sipnab refuses it with the TUI up, because the TUI's relay statistics view holds the run's one transmit permit; add `-N`. Feature: `mcp` |
 | `--mcp-allow-tls-capture` | -- | off | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](mcp-tools.md#start_tls_capture), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. sipnab refuses it with the TUI up, because the capture would write into the stores the operator is reading; add `-N`. Feature: `mcp` |
 | `--mcp-allow-save-findings` | -- | off | Permit the `save_findings` MCP tool to record an agent's conclusion. The only write verb on sipnab's network surface, and off by default. A finding goes to sipnab's log and nowhere else: no tool reads it back, it appears in no query result, and no analysis consumes it, so it cannot return as evidence in a later answer. Clipped at 500 characters of summary and bounded at 1000 findings per process, both reported rather than silent. sipnab refuses it with the TUI up, because a TUI run logs only errors and nobody would see the finding; add `-N`. Feature: `mcp` |
-| `--retain-audio` | -- | off | Retain RTP audio payload in memory, so sipnab can look at the audio itself. Two things read it back: the `export_audio` MCP tool, which decodes a WAV, and the amplitude measurement in the media diagnosis, which reports dead-air spans and hard-clip runs on `--call-report` and `--json-dialogs`. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of running a capture. It used to require `--mcp`, back when the MCP server was the only reader; that would now keep the one finding that needs samples behind a server nobody analyzing a pcap wants to start. Costs a per-packet payload clone, bounded by `[limits] max_audio_frames` per stream across `--max-streams` streams. Without it `export_audio` refuses and names this flag, and the amplitude object is absent — both describe what the run kept, never whether the call carried audio. `--cores` honors this flag: the parallel workers used to discard payload regardless, so a run could accept the flag and keep nothing |
+| `--retain-audio` | -- | off | Retain RTP audio payload in memory, so sipnab can look at the audio itself. Two things read it back: the `export_audio` MCP tool, which decodes a WAV, and the amplitude measurement in the media diagnosis, which reports dead-air spans and hard-clip runs on `--call-report` and `--json-dialogs`. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of running a capture. It used to require `--mcp`, back when the MCP server was the only reader; that would now keep the one finding that needs samples behind a server nobody analyzing a pcap wants to start. Keeps whole calls, from the first frame. Costs a per-packet payload clone, bounded by one budget across every stream, `[limits] max_audio_bytes` (default 1 GiB, which holds 67 concurrent ten-minute G.711 calls; see [Audio retention budget](config-reference.md#audio-retention-budget)). At the budget sipnab releases the oldest stream's earliest frames first, and that call's export and vCon say PARTIAL with the count. `[limits] max_audio_frames` caps each stream as well when set. Without it `export_audio` refuses and names this flag, and the amplitude object is absent — both describe what the run kept, never whether the call carried audio. `--cores` honors this flag: the parallel workers used to discard payload regardless, so a run could accept the flag and keep nothing |
 
 ## TLS / decryption
 
@@ -15024,7 +15026,7 @@ CoreAudio the moment anything touches it.
 | `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--lint-suppress-file` | `<FILE>` | discovered | Read lint suppressions from this file instead of discovering one. Without it the binary looks for a `.sipnablint` beside the capture and climbs toward the project root — the nearest ancestor holding a `.git` — which is exactly what the MCP lint tools already do. Until this shipped the two surfaces disagreed about the same file on disk: the MCP tools honored a `.sipnablint` checked in beside a capture while the binary silently ignored it, so the CI user was on the side that could not see it. A named file sipnab cannot open fails hard rather than falling back to a full-catalog run. sipnab names whatever applies on stderr, with a count of what it silenced. Needs `--lint` |
 | `--lint-no-suppress` | -- | off | Ignore any `.sipnablint`, including one named by `--lint-suppress-file`. The "show me everything, including what we have agreed to live with" switch; it wins over both the explicit file and discovery, so a wrapper script that always passes a suppression file can still be overridden from the command line. Needs `--lint` |
-| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At 2 or more cores sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead, exactly as before. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way. With `--retain-audio` the payload cap applies PER WORKER, so the run's ceiling is `[limits] max_audio_frames` times this number times `--max-streams` |
+| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At 2 or more cores sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead, exactly as before. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way. With `--retain-audio` each worker gets an equal share of `[limits] max_audio_bytes`, so the run as a whole stays inside the budget |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
 | `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes sipnab may inflate out of one gzip-compressed input: a `-I capture.pcap.gz`, every gzip layer of an archive summed across the layers of one input, the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM or disk. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
 | `--max-tcp-buffer` | `<BYTES>` | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
@@ -18131,7 +18133,8 @@ Resource limits to prevent unbounded memory growth.
 | `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
 | `idle_compact_after_secs` | integer | `600` | Seconds of silence before sipnab compacts a dialog's stored messages. `0` fails validation and names the key |
 | `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
-| `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
+| `max_audio_frames` | integer | unset | Maximum RTP payload frames retained per stream for WAV and vCon export. Unset keeps the whole call. When set, the oldest frame goes first, and the export says PARTIAL and counts the frames dropped. At 20 ms packetization, 1500 frames is 30 seconds. `0` fails validation and names the key |
+| `max_audio_bytes` | integer | `1073741824` | Bytes of retained RTP payload across every stream, the bound on audio retention. See [Audio retention budget](#audio-retention-budget). Below `1048576` (1 MiB) fails validation and names the key |
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
 | `exec_queue_depth` | integer | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. `--exec-queue-depth` overrides it. `0` fails validation and names the key |
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
@@ -18166,15 +18169,16 @@ max_headers_per_message = 200
 max_messages_per_dialog = 500
 idle_compact_after_secs = 600
 keep_messages_per_idle_dialog = 20
-max_audio_frames = 1500
+max_audio_bytes = 1073741824
 ```
 
 The compaction pair — `idle_compact_after_secs` and
 `keep_messages_per_idle_dialog` — is where a limit discards a ladder sipnab
 already holds, so a call that went quiet shows fewer messages than crossed the
 wire. sipnab warns once per run when this first happens. The retention logs
-(`max_audio_frames`, `max_lost_sequences`) drop their oldest entries as they
-fill. Every other key here refuses to take something in.
+(`max_audio_frames` when set, `max_audio_bytes`, `max_lost_sequences`) drop
+their oldest entries as they fill. Every other key here refuses to take
+something in.
 
 Raise both when the ladder matters more than the footprint — a call parked on
 hold, a dialog waiting on a slow PSTN leg, or a capture you paused all go quiet
@@ -18185,6 +18189,57 @@ for longer than ten minutes while still being the thing under investigation:
 idle_compact_after_secs = 3600
 keep_messages_per_idle_dialog = 500
 ```
+
+#### Audio retention budget
+
+The terminal UI, and any run with `--retain-audio`, keeps each RTP stream's
+G.711 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
+default sipnab keeps the whole call, from the first frame. `max_audio_bytes`
+bounds the memory this uses, across every stream at once.
+
+sipnab charges each retained frame against the budget:
+
+- the payload, plus a quarter of its length, plus 32 bytes: an upper bound on
+  what the memory allocator spends on it;
+- 32 bytes for each slot of the stream's frame buffer, spare capacity
+  included.
+
+For 20 ms G.711 (160 bytes a frame) that is 264 bytes a frame: 13,200 bytes a
+second for each direction, and 26,400 bytes a second for a call with media both
+ways. The default of 1 GiB (1,073,741,824 bytes) therefore holds 40,672
+call-seconds, which is:
+
+| Calls held at once | Each lasting |
+|---|---|
+| 1 | 11.3 hours |
+| 67 | 10 minutes |
+| 225 | 3 minutes |
+
+The charge is an upper bound. Measured on aarch64 Linux with the allocator
+the sipnab binary ships with (mimalloc), a 20 ms G.711 frame used 192.6 bytes,
+so at the budget the heap the audio really holds is about 0.73 GiB. With
+`--cores N`, each worker gets 1/N of the budget, so the run as a whole stays
+inside it.
+
+When retained audio reaches the budget, sipnab releases the earliest frames of the oldest
+stream that still holds audio, one frame at a time, until the total is back
+inside it. On a live capture the oldest stream is normally a call that has
+already ended. sipnab counts the frames released on the stream. That call's
+WAV export, its vCon `media_note`, and the note inside the WAV then say
+`PARTIAL: the [limits] max_audio_bytes retention budget was reached and
+released N earlier frame(s)`, and its vCon wraps the recording in a
+`recording-set` that carries the call's own start and duration. sipnab never
+drops audio without counting it.
+
+A live capture that writes vCon containers (`--export-vcon-when` or
+`--export-vcon` with a device) releases each call's audio once it writes the
+call's container, because the container carries it. An export of that call
+made later says how many frames sipnab released and why.
+
+Raise `max_audio_bytes` for a host that keeps more or longer calls in memory at
+once. In the source, the default is `DEFAULT_MAX_AUDIO_BYTES` (1073741824) and
+the minimum is `MIN_MAX_AUDIO_BYTES` (1048576). Set `max_audio_frames` to cap each stream as well. For example, 1500
+frames is the last 30 seconds of a 20 ms stream.
 
 ### [mcp]
 
@@ -27521,7 +27576,11 @@ call carries no audio it can decode, rather than writing an empty file.
 
 Requires `--retain-audio` on the server command line: call audio is
 content, not signaling, so holding it in memory is an operator decision
-rather than a side effect of enabling MCP. Without the flag the tool refuses,
+rather than a side effect of enabling MCP. The run keeps whole calls, inside
+the `[limits] max_audio_bytes` budget
+([Audio retention budget](config-reference.md#audio-retention-budget)). A
+file missing the start of a call says PARTIAL in its `summary` with the count
+and the reason. Without the flag the tool refuses,
 and its refusal reports the media it measured and names the flag — a capture
 setting, not a finding that the call was silent.
 
@@ -27625,8 +27684,11 @@ it writes says "not a recording made by the endpoints".
 So audio the run RETAINED travels inline -- base64url, `mediatype:
 "audio/x-wav"`, and a `content_hash` of `sha512-` plus the base64url SHA-512 of
 the DECODED bytes, which `sha512sum` on the exported `.wav` reproduces. The
-`duration` on that object is the FILE's, never the call's. When a payload ring
-dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
+`duration` on that object is the FILE's, never the call's. sipnab keeps whole
+calls by default. When frames are missing from the start of the file (an
+explicit `[limits] max_audio_frames` cap dropped them, or the
+`[limits] max_audio_bytes` budget released them), a `recording-set` wraps it
+carrying the CALL's media window, so
 the two clocks stand side by side -- that is the only way the format can say
 "this file is a fragment of that call".
 
@@ -31339,8 +31401,10 @@ diagnosis of the call, and — in two places, deliberately — a statement of wh
 the capture missed.
 
 When the run retained the RTP payload, the container also
-carries the audio, inline. None of them carries a signature or any claim that
-somebody consented to anything.
+carries the audio, inline: the whole call, from its first frame, unless a
+retention limit cut it, and then the container says so (see
+[Audio retention budget](config-reference.md#audio-retention-budget)). None of
+them carries a signature or any claim that somebody consented to anything.
 
 **A sipnab vCon records what an instrument
 saw, not what the parties said.** [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
@@ -32332,6 +32396,13 @@ Stated here rather than discovered later.
   roughly 12 MB, wrote it to its database, and had its own file spool refuse the
   payload with neither side reporting the partial write. `0` refuses every
   inline body without turning the exporter off.
+
+  sipnab retains whole calls, so a call's audio grows with its length. A
+  two-way 20 ms G.711 call exports as 8 kHz stereo, 32,000 bytes of WAV a
+  second, and fits the 5 MiB default for up to 122 seconds. At 123 seconds the
+  container carries the refusal instead. Raise `--vcon-max-inline-media` to
+  what the store you send to accepts, or write the WAV beside the container
+  with the `export_audio` MCP tool.
 
   A `--redact` export carries no audio at all, because redaction deletes
   audio rather than replacing it with a token. Its Dialog Object is the signaling one,
@@ -35532,7 +35603,10 @@ three things to what it does:
   the failed ones instead.
 - **`--export-vcon-dir /var/spool/sipnab-vcon`** is where the files go.
 - **`--retain-audio`** keeps each call's audio so that the vCon can carry it.
-  Without it the vCon holds the signaling only.
+  sipnab keeps the whole call, inside a budget of 1 GiB across all calls held
+  at once ([Audio retention budget](config-reference.md#audio-retention-budget)),
+  and releases a call's audio once it writes the call's vCon. Without it the vCon
+  holds the signaling only.
 
 For the audio to be there at all, sipnab has to capture it. Up to 0.5.192 it
 captured only the SIP ports by default, and later versions capture the media
@@ -35907,8 +35981,9 @@ another party's system. Decide what may leave the machine first:
 
 ## 1. Write the containers
 
-Export the calls from a capture file with their audio. `--retain-audio` makes
-sipnab type each call's Dialog Object `recording`. The object names the
+Export the calls from a capture file with their audio. `--retain-audio` keeps
+each call's audio whole, from the first frame, and makes sipnab type each
+call's Dialog Object `recording`. The object names the
 parties, which the store requires, when each audio channel came from the media
 address and port that one party advertised in its own SDP. Audio from any
 other address, such as a media relay's, gets no `parties`, and the store

@@ -3720,9 +3720,13 @@ pub struct McpArgs {
     /// should be a decision an operator makes rather than a side effect of
     /// running a capture.
     ///
-    /// Costs a per-packet payload clone and buffers up to `[limits]
-    /// max_audio_frames` frames (default 1500) per stream across at most
-    /// `--max-streams` streams.
+    /// Keeps whole calls: every frame of every stream, from the first. Costs
+    /// a per-packet payload clone, bounded by one budget across every stream,
+    /// `[limits] max_audio_bytes` (default 1 GiB, about 67 concurrent
+    /// ten-minute G.711 calls). At the budget the oldest stream's earliest
+    /// frames are released first, and that call's export and vCon say
+    /// PARTIAL with the count. `[limits] max_audio_frames` caps each stream
+    /// as well when set.
     ///
     /// It used to require `--mcp`, because the MCP server was the only
     /// batch-mode consumer and retaining without it would have spent the

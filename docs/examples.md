@@ -1614,7 +1614,9 @@ and names the reason, because these are different problems:
 
 | The note says | What happened | What to do |
 |---|---|---|
-| `the payload ring wrapped and dropped N earlier frame(s)` | The call was longer than the buffer. The file holds the END of it. | Raise `[limits] max_audio_frames` |
+| `the payload ring wrapped and dropped N earlier frame(s)` | The call was longer than the `[limits] max_audio_frames` cap. The file holds the END of it. | Raise or remove `[limits] max_audio_frames` |
+| `the [limits] max_audio_bytes retention budget was reached and released N earlier frame(s)` | The audio retained across every call reached the budget, and the oldest stream gave up its earliest frames. The file holds the END of it. | Raise `[limits] max_audio_bytes` |
+| `N earlier frame(s) were released after this call's vCon container was written` | A live capture wrote this call's vCon, which carries the audio, and then released it | Read the audio from the vCon container |
 | `N of M stream(s) on this call are NOT in this file` | A WAV carries two channels; a three-legged call does not fit | Export the legs separately |
 | `(G729)` beside that | A stream's codec is not one sipnab decodes | Nothing — the audio is not recoverable from this capture |
 | `N frame(s) failed to decode` | The decoder rejected individual Opus frames | Check for truncation (`--snaplen`) |
