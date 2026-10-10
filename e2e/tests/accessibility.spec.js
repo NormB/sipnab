@@ -86,10 +86,10 @@ const INCOMPLETE_NOT_GATED = ['color-contrast'];
 //                                 sidebar, in-page table of contents)
 //   /download/    download.html -- platform tables, checksums, copy buttons
 //   /standards/   standards.html -- the standards cards behind the numbers
-//   /features/, /deployments/, /compare/
+//   /features/, /deployments/
 //                 overview.html  -- long-form pages in the docs typography,
 //                                 with no sidebar; /deployments/ carries
-//                                 diagrams and /compare/ a wide matrix
+//                                 diagrams
 //
 // Adding a template to the site without adding it here leaves it ungated, so
 // the list is asserted against the rendered site by
@@ -102,7 +102,6 @@ const PAGES = [
   { url: '/standards/', template: 'standards.html' },
   { url: '/features/', template: 'overview.html' },
   { url: '/deployments/', template: 'overview.html' },
-  { url: '/compare/', template: 'overview.html' },
 ];
 
 /** Render one axe finding as something a reader can act on without opening a report. */

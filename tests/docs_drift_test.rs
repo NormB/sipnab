@@ -36,13 +36,6 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
-    // The comparison page quotes other tools' own documentation, flags
-    // included: sngrep's `--enable-eep` build option, tshark's
-    // `--ring-buffer`, and `homer search --format`. Each is
-    // the other tool's flag, cited to its source, never sipnab's.
-    ("enable-eep", &["website/content/compare.md"]),
-    ("ring-buffer", &["website/content/compare.md"]),
-    ("format", &["website/content/compare.md"]),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
     ("features", &["website/content/features.md"]),
@@ -4299,7 +4292,8 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // three dataset directories.
     // 273 -> 276: the overview pages, website/content/features.md,
     // deployments.md and compare.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 276;
+    // 276 -> 275: compare.md removed (Norm, 2026-10-10).
+    const EXPECTED_MARKDOWN_FILES: usize = 275;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4847,7 +4841,8 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1104 -> 1110: the overview pages. website/content/deployments.md 5 (the
     // topology summary and one "What runs where" per topology) and
     // website/content/compare.md 1 (the feature matrix).
-    const EXPECTED_TABLES: usize = 1110;
+    // 1110 -> 1109: compare.md's matrix, with the page (Norm, 2026-10-10).
+    const EXPECTED_TABLES: usize = 1109;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
