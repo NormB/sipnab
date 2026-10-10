@@ -845,7 +845,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/vcon_dataset_subset_test.rs, tests/vcon_dataset_corpus_test.rs and
     // scripts/fetch-vcon-datasets.py (its link to the subset README.md is a
     // page, not code).
-    const EXPECTED_CODE_LINKS: usize = 505;
+    // 505 -> 506: the same section's corrected-copy paragraph links
+    // tests/fixtures/vcon-datasets/CORRECTED.tsv.
+    const EXPECTED_CODE_LINKS: usize = 506;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

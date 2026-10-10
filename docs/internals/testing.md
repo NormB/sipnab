@@ -108,8 +108,9 @@ SIPNAB_VCON_DATASETS="$HOME/vcon-datasets" \
 The script runs only `git`: it fetches each pinned commit, checks it out
 detached with hooks and symbolic links turned off, and refuses a checkout
 whose HEAD is not the pinned commit or whose files have changed. A second run
-verifies the cache and moves a dataset whose pin changed. The fetched
-datasets take about 2.3 GB of disk.
+verifies the cache and moves a dataset whose pin changed. The five datasets
+take about 2.3 GB of disk, and the corrected copy described below about
+2.2 GB more.
 
 The corpus test prints, for each dataset, the number of containers, the number
 the schema accepts, and each finding with the number of containers that carry
@@ -141,6 +142,35 @@ for `content_hash` beside `url`, and
 for `encoding`. The reference engine reports the same findings at the same
 paths. With those four repaired, every one of the 17,443 containers is valid
 to sipnab and to the reference engine.
+
+#### The corrected copy
+
+[`tests/fixtures/vcon-datasets/CORRECTED.tsv`](../../tests/fixtures/vcon-datasets/CORRECTED.tsv)
+pins [NormB/vcon-datasets-core04](https://github.com/NormB/vcon-datasets-core04),
+a copy of the first three datasets with `mediatype` added to every inline
+attachment and nothing else changed. Its CHANGES.md lists what it leaves
+open and why. fake-vcons and tadhack-2025 are not in it, for the contact data
+described in the subset README. The fetch script fetches both pins files
+unless `--pins` names others, and accepts `--pins` more than once.
+
+The corpus test holds the corrected copy to three things, beside the tests
+above that pin the upstream findings. It is at its pinned commit. Each
+corrected dataset gets the answer measured on 2026-10-09, with sipnab and the
+reference agreeing on every container. Each corrected container is its
+upstream container with `mediatype` added: repairing both with the test's own
+repair gives the same document, and the corrected one needs no `mediatype`
+repair. That last check compares this repository's repair rule with the
+corrected repository's own, on all 16,799 containers.
+
+| Dataset | Containers | Valid | Findings, with the number of containers that carry each |
+|---|---|---|---|
+| `vcon-supreme-court-arguments` | 8,503 | 8,503 | None |
+| `ietf-meeting-vcons` | 8,181 | 4,102 | Dialog Object with `url` and no `content_hash`: 4,079 |
+| `vcon-dataset-city-of-newport-ri` | 115 | 0 | Dialog Object with `url` and no `content_hash`: 115 |
+
+The remaining finding needs a hash of each recording, and no fetch returned
+a recording to hash: the IETF recordings are YouTube pages or audio behind
+the IETF login, and the Newport video host refused the download.
 
 Accepting a snapshot or overwriting a golden is a **decision**, not a fix. Read
 the diff first: these files are the record of what the tool promised its users.

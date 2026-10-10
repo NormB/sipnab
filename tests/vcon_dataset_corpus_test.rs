@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The public vCon datasets, every container, against sipnab's vCon schema
-//! validator. Opt-in: the datasets take about 2.3 GB of disk once fetched and are
-//! not committed.
+//! validator, and the corrected copy of three of them that `CORRECTED.tsv`
+//! pins. Opt-in: the datasets take about 2.3 GB of disk once fetched, the
+//! corrected copy about 2.2 GB more, and neither is committed.
 //!
 //! ```sh
 //! python3 scripts/fetch-vcon-datasets.py ~/vcon-datasets
@@ -407,5 +408,170 @@ fn the_committed_subset_is_a_copy_of_the_pinned_files() -> Result<(), TestError>
         }
     }
     assert!(compared > 0, "no subset file was compared");
+    Ok(())
+}
+
+// ---- The corrected corpus ----
+//
+// NormB/vcon-datasets-core04, pinned in CORRECTED.tsv, is three of the
+// datasets above with `mediatype` added to every inline attachment
+// (core-04 section 4.4.5) and nothing else changed. Its own CHANGES.md lists
+// what it leaves open. These tests hold it to that, with sipnab's validator
+// and the reference as the judges, beside the tests above that pin the
+// upstream findings.
+
+/// The corrected corpus's directory in the cache.
+const CORRECTED_DIR: &str = "vcon-datasets-core04";
+
+/// What each corrected dataset was measured to hold on 2026-10-09. Every
+/// remaining finding is a recording `url` without `content_hash`, which the
+/// data cannot settle (CHANGES.md in the corrected repository says why).
+const CORRECTED_EXPECTED: &[Measured] = &[
+    Measured {
+        name: "vcon-supreme-court-arguments",
+        files: 8503,
+        valid: 8503,
+        findings: &[],
+    },
+    Measured {
+        name: "ietf-meeting-vcons",
+        files: 8181,
+        valid: 4102,
+        findings: &[(
+            "/dialog/* (dependencies): `url` is present, which requires: content_hash",
+            4079,
+        )],
+    },
+    Measured {
+        name: "vcon-dataset-city-of-newport-ri",
+        files: 115,
+        valid: 0,
+        findings: &[(
+            "/dialog/* (dependencies): `url` is present, which requires: content_hash",
+            115,
+        )],
+    },
+];
+
+/// The corrected corpus is present and at its pinned commit.
+#[test]
+fn the_corrected_corpus_is_at_its_pinned_commit() -> Result<(), TestError> {
+    let Some(root) = cache() else {
+        return Ok(());
+    };
+    let pin = vcon_datasets::corrected_pin()?;
+    assert_eq!(pin.name, CORRECTED_DIR);
+    let head = head_of(&root.join(&pin.name))?;
+    assert_eq!(
+        head, pin.commit,
+        "{}: the cache is at {head}, CORRECTED.tsv pins {}; run \
+         scripts/fetch-vcon-datasets.py again",
+        pin.name, pin.commit
+    );
+    Ok(())
+}
+
+/// Each corrected dataset gets exactly the answer it was measured to get,
+/// and sipnab agrees with the reference on every container.
+#[test]
+fn each_corrected_dataset_gets_its_measured_answer() -> Result<(), TestError> {
+    let Some(root) = cache() else {
+        return Ok(());
+    };
+    let pin = vcon_datasets::corrected_pin()?;
+    let datasets = root.join(&pin.name).join("datasets");
+    let mut present: Vec<String> = std::fs::read_dir(&datasets)
+        .map_err(|e| format!("{}: {e}", datasets.display()))?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
+    let mut want: Vec<&str> = CORRECTED_EXPECTED.iter().map(|e| e.name).collect();
+    want.sort_unstable();
+    assert_eq!(present, want, "the corrected corpus holds other datasets");
+    let reference = vcon_datasets::reference()?;
+    for Measured {
+        name,
+        files,
+        valid,
+        findings,
+    } in CORRECTED_EXPECTED
+    {
+        let tree = datasets.join(name);
+        let tally = vcon_datasets::tally(&tree, &vcon_datasets::containers(&tree), &reference)?;
+        vcon_datasets::report(&vcon_datasets::render(&format!("corrected {name}"), &tally));
+        assert!(
+            tally.disagreements.is_empty() && tally.not_json.is_empty(),
+            "corrected {name}: {} disagreement(s), {} not JSON",
+            tally.disagreements.len(),
+            tally.not_json.len()
+        );
+        let want: std::collections::BTreeMap<String, usize> = findings
+            .iter()
+            .map(|(k, n)| ((*k).to_owned(), *n))
+            .collect();
+        assert_eq!(
+            (tally.files, tally.valid, &tally.by_finding),
+            (*files, *valid, &want),
+            "corrected {name}: the answer changed\n{}",
+            vcon_datasets::render(name, &tally)
+        );
+    }
+    Ok(())
+}
+
+/// Each corrected container is its upstream container with `mediatype` added
+/// where sipnab's own repair adds it, and nothing else: repairing both gives
+/// the same document, and the corrected one needs no `mediatype` repair.
+/// Two implementations of the rule, this one and the corrected repository's
+/// `tools/core04.py`, agree on all 16,799 containers.
+#[test]
+fn the_corrected_corpus_is_its_upstream_with_only_mediatype_added() -> Result<(), TestError> {
+    let Some(root) = cache() else {
+        return Ok(());
+    };
+    let pin = vcon_datasets::corrected_pin()?;
+    let mut compared = 0usize;
+    let mut wrong = Vec::new();
+    for Measured { name, .. } in CORRECTED_EXPECTED {
+        let upstream_tree = root.join(name);
+        let corrected_tree = root.join(&pin.name).join("datasets").join(name);
+        let upstream = vcon_datasets::containers(&upstream_tree);
+        let corrected = vcon_datasets::containers(&corrected_tree);
+        let rel = |tree: &Path, files: &[std::path::PathBuf]| -> Vec<std::path::PathBuf> {
+            files
+                .iter()
+                .map(|p| p.strip_prefix(tree).unwrap_or(p).to_path_buf())
+                .collect()
+        };
+        assert_eq!(
+            rel(&upstream_tree, &upstream),
+            rel(&corrected_tree, &corrected),
+            "{name}: the corrected copy does not hold the same files as upstream"
+        );
+        for (u, c) in upstream.iter().zip(&corrected) {
+            let mut up: serde_json::Value = serde_json::from_slice(&std::fs::read(u)?)?;
+            let mut fixed: serde_json::Value = serde_json::from_slice(&std::fs::read(c)?)?;
+            vcon_datasets::repair_recorded_issues(&mut up);
+            let still = vcon_datasets::repair_recorded_issues(&mut fixed);
+            if still.contains("attachment-mediatype") || up != fixed {
+                wrong.push(c.display().to_string());
+            }
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 16_799, "every corrected container is compared");
+    assert!(
+        wrong.is_empty(),
+        "{} corrected container(s) differ from upstream by more than mediatype:\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     Ok(())
 }

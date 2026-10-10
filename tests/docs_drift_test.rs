@@ -36,6 +36,16 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `scripts/fetch-vcon-datasets.py --pins <FILE>`, named by the testing
+    // page's "The corrected copy": which pins files the dataset fetch script
+    // reads. The script's flag, not sipnab's.
+    (
+        "pins",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
     // `curl --cacert <FILE>`, named by the REST API page's "API TLS" section,
     // the MCP page's "MCP TLS" and the metrics page's "Metrics TLS": how a
     // client trusts the CA behind `--api-tls-cert`, `--mcp-tls-cert` and
@@ -4820,7 +4830,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1096 -> 1102: the public vCon datasets. docs/internals/testing.md 1 and
     // its site page 1, tests/fixtures/vcon-datasets/README.md 1, and the
     // README.md of each of its three dataset directories 1.
-    const EXPECTED_TABLES: usize = 1102;
+    // 1102 -> 1104: the corrected copy of the public vCon datasets.
+    // docs/internals/testing.md 1 and its site page 1.
+    const EXPECTED_TABLES: usize = 1104;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -75,12 +75,26 @@ pub fn parse_pins(text: &str) -> Result<Vec<Pin>, TestError> {
     Ok(out)
 }
 
-/// The committed pins.
-pub fn pins() -> Result<Vec<Pin>, TestError> {
-    let path = repo().join(SUBSET_DIR).join("PINS.tsv");
+/// The pins in one committed pins file under `SUBSET_DIR`.
+fn read_pins(file: &str) -> Result<Vec<Pin>, TestError> {
+    let path = repo().join(SUBSET_DIR).join(file);
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     parse_pins(&text)
+}
+
+/// The committed pins.
+pub fn pins() -> Result<Vec<Pin>, TestError> {
+    read_pins("PINS.tsv")
+}
+
+/// The corrected corpus's pin, from `CORRECTED.tsv`.
+pub fn corrected_pin() -> Result<Pin, TestError> {
+    let mut pins = read_pins("CORRECTED.tsv")?;
+    match (pins.pop(), pins.is_empty()) {
+        (Some(pin), true) => Ok(pin),
+        _ => Err("CORRECTED.tsv: expected exactly one pin".into()),
+    }
 }
 
 /// Every `*.vcon.json` under `dir`, sorted, outside `.git`, symbolic links

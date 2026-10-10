@@ -22,6 +22,7 @@ from conftest import load
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO / "scripts/fetch-vcon-datasets.py"
 PINS = REPO / "tests/fixtures/vcon-datasets/PINS.tsv"
+CORRECTED = REPO / "tests/fixtures/vcon-datasets/CORRECTED.tsv"
 
 fetch = load("fetch-vcon-datasets")
 
@@ -90,6 +91,20 @@ def test_the_committed_pins_name_five_datasets_at_full_commits():
         assert re.fullmatch(r"[0-9a-f]{40}", pin.commit), pin
         assert pin.url == f"https://github.com/vcon-dev/{pin.name}", pin
         assert pin.license in {"MIT", "BSD-3-Clause"}, pin
+
+
+def test_the_corrected_pin_names_the_corrected_corpus_at_a_full_commit():
+    pins = fetch.read_pins(CORRECTED)
+    assert [(p.name, p.url, p.license) for p in pins] == [(
+        "vcon-datasets-core04",
+        "https://github.com/NormB/vcon-datasets-core04",
+        "MIT",
+    )]
+    assert re.fullmatch(r"[0-9a-f]{40}", pins[0].commit), pins
+
+
+def test_by_default_both_pin_files_are_fetched():
+    assert fetch.DEFAULT_PINS == [PINS, CORRECTED]
 
 
 def test_a_pin_is_checked_out_at_exactly_its_commit(tmp_path):
@@ -177,3 +192,17 @@ def test_the_script_exits_1_when_a_pin_cannot_be_fetched(tmp_path):
     run = _run("--pins", str(pins), str(tmp_path / "cache"))
     assert run.returncode == 1, run.stdout + run.stderr
     assert "ds" in run.stderr
+
+
+def test_pins_may_be_given_more_than_once(tmp_path):
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    url_a, (sha_a,) = _remote(one, [{"a.vcon.json": "{}"}])
+    url_b, (sha_b,) = _remote(two, [{"b.vcon.json": "{}", "c.vcon.json": "{}"}])
+    pins_a = _pins(one, [("first", url_a, sha_a, "MIT")])
+    pins_b = _pins(two, [("second", url_b, sha_b, "MIT")])
+    run = _run("--pins", str(pins_a), "--pins", str(pins_b), str(tmp_path / "cache"))
+    assert run.returncode == 0, run.stderr
+    assert re.search(r"first\s+" + sha_a[:12] + r".*\b1\b", run.stdout), run.stdout
+    assert re.search(r"second\s+" + sha_b[:12] + r".*\b2\b", run.stdout), run.stdout

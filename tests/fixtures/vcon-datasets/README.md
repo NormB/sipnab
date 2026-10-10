@@ -6,7 +6,9 @@ five of them to one commit each. The full datasets take about 2.3 GB of disk onc
 are not committed: `scripts/fetch-vcon-datasets.py` fetches them, and
 `tests/vcon_dataset_corpus_test.rs` reads them when `SIPNAB_VCON_DATASETS`
 names the directory. [The public vCon datasets](../../../docs/internals/testing.md#the-public-vcon-datasets)
-says how to fetch and run them.
+says how to fetch and run them. [`CORRECTED.tsv`](CORRECTED.tsv) pins a
+corrected copy of the first three, which the same script fetches and the same
+test reads.
 
 This directory holds four containers copied byte for byte from three of the
 datasets, so the same checks run on every build. `tests/vcon_dataset_subset_test.rs`

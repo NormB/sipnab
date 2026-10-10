@@ -5,7 +5,8 @@ The vcon-dev community publishes real and synthetic vCon containers as git
 repositories (listed at https://www.conserver.io/tools/vcon-datasets).
 `tests/vcon_dataset_corpus_test.rs` reads every `*.vcon.json` in them when
 SIPNAB_VCON_DATASETS names the directory this script fills. The datasets take
-about 2.3 GB of disk once fetched, so they are not committed; a small subset is, under
+about 2.3 GB of disk once fetched, and their corrected copy (CORRECTED.tsv)
+about 2.2 GB more, so they are not committed; a small subset is, under
 tests/fixtures/vcon-datasets/.
 
 What a fetch guarantees:
@@ -20,7 +21,11 @@ What a fetch guarantees:
   an inherited GIT_DIR would point every command at the hook's repository.
 
 Usage:
-    fetch-vcon-datasets.py [--pins FILE] [DEST]
+    fetch-vcon-datasets.py [--pins FILE]... [DEST]
+
+Without --pins, both tests/fixtures/vcon-datasets/PINS.tsv (the upstream
+datasets) and CORRECTED.tsv (their corrected copy) are fetched. Each --pins
+replaces that default; give it more than once to fetch several files.
 
 DEST defaults to $SIPNAB_VCON_DATASETS. Each dataset lands in DEST/<name>.
 Exit codes: 0 every dataset fetched and verified, 1 one or more failed,
@@ -36,8 +41,8 @@ import sys
 from typing import NamedTuple
 
 ENV_VAR = "SIPNAB_VCON_DATASETS"
-DEFAULT_PINS = (pathlib.Path(__file__).resolve().parent.parent
-                / "tests/fixtures/vcon-datasets/PINS.tsv")
+_FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "tests/fixtures/vcon-datasets"
+DEFAULT_PINS = [_FIXTURES / "PINS.tsv", _FIXTURES / "CORRECTED.tsv"]
 
 # Settings every git call carries, so nothing in a dataset can run.
 SAFE_CONFIG = [
@@ -145,7 +150,8 @@ def count_containers(tree):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("dest", nargs="?", help=f"cache directory (default ${ENV_VAR})")
-    parser.add_argument("--pins", default=str(DEFAULT_PINS))
+    parser.add_argument("--pins", action="append",
+                        help="a pins file; repeatable (default: PINS.tsv and CORRECTED.tsv)")
     args = parser.parse_args(argv)
 
     dest = args.dest or os.environ.get(ENV_VAR)
@@ -154,7 +160,8 @@ def main(argv=None):
         return 2
 
     failed = 0
-    for pin in read_pins(args.pins):
+    pins = [pin for path in (args.pins or DEFAULT_PINS) for pin in read_pins(path)]
+    for pin in pins:
         try:
             fetch_one(pin, dest)
         except FetchError as err:
