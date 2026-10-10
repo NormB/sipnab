@@ -842,7 +842,7 @@ jobs:
           mv "sipnab-${rpm_version}-1.${rpm_arch}${suffix}.rpm" dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sipnab-${{ matrix.target }}${{ steps.features.outputs.suffix }}
           path: dist/
@@ -870,7 +870,7 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts/
           merge-multiple: true
@@ -903,7 +903,7 @@ jobs:
       # flag stops covering the union.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-cyclonedx
 
