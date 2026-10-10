@@ -44,7 +44,7 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    Type=simple
    ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
        --mcp-bind 127.0.0.1:8731 \
-       -L 0.0.0.0:9063 --hep-parse
+       -L 0.0.0.0:9063 --hep-allow 192.0.2.0/24
    User=sipnab
    Group=sipnab
    NoNewPrivileges=true
@@ -56,6 +56,11 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    [Install]
    WantedBy=multi-user.target
    ```
+
+   Replace `192.0.2.0/24` with the addresses your proxies send HEP from.
+   sipnab refuses to start a HEP listener on a routable address unless it
+   has a source allowlist (`--hep-allow`) or a shared secret
+   (`--hep-auth-file`).
 
    ```bash
    sudo systemctl daemon-reload && sudo systemctl enable --now sipnab-mcp

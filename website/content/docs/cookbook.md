@@ -1275,7 +1275,7 @@ histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))
 **Pitfalls:**
 
 - The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the Prometheus metrics reference](@/docs/metrics.md).
-- Some metrics (`sipnab_responses_total`, `sipnab_security_alerts_total`) exist in name only, with nothing wired — they'll stay empty until upstream populates them. Don't put alerts on them today.
+- `sipnab_security_alerts_total{type}` carries only the alert types that have fired, and is absent from the scrape until the first one does. An absent series means no alert of that type fired since the process started, not that the metric is unavailable. `sipnab_responses_total{code}` reports every response class on every scrape, at `0` where the capture saw none. [The Prometheus metrics reference](@/docs/metrics.md) describes both.
 
 ---
 

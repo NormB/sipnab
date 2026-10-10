@@ -30,6 +30,28 @@ entry that carries them.
   own, a 4.4:1 ratio under the 4.5:1 minimum. The diagram theme now sets the
   label background to `#2d3640`, which measures 7.58:1.
   Affected: every docs page with a flowchart that labels its edges.
+- **Four documented commands that start a HEP listener now start.** The
+  `sipnab-mcp.service` units in "Keep a capture running between agent
+  sessions" (`docs/mcp-deploy.md`) and "Collect captures from several SIP
+  servers in one place" (`docs/mcp-estate.md`), the HEP-plus-metrics command
+  in `contrib/observability/README.md`, and the collector example in the CLI
+  reference each bound `-L 0.0.0.0:<port>` with neither `--hep-allow` nor
+  `--hep-auth-file`, so sipnab refused to start: "HEP listener refuses to
+  start: --hep-listen 0.0.0.0:9060 is non-loopback". Each now passes
+  `--hep-allow 192.0.2.0/24` and says to replace it with the proxies'
+  addresses. The two units also dropped `--hep-parse`, which unwraps HEP inside
+  captured traffic and does nothing beside `-L`. Each corrected command was
+  run and stayed up.
+  Affected: anyone who copied one of those four commands.
+- **`--seccomp`'s help and the CLI reference describe `enforce`.** Both said
+  the killing mode was not implemented; `enforce` shipped in 0.5.166. They
+  now say what it does, and that without
+  `SIPNAB_SECCOMP_ALLOWLIST` it installs no filter, logs a warning, and the
+  run continues unfiltered.
+- **The cookbook's Grafana recipe no longer calls two wired metrics empty.**
+  It said `sipnab_responses_total` and `sipnab_security_alerts_total` exist in
+  name only. Both are recorded: every response class appears on every scrape
+  at `0` or above, and an alert type appears once it has fired.
 
 - **The REST API's `filter` parameter accepts the named filter aliases.**
   `GET /v1/dialogs?filter=problems` answered `400 unexpected input at
