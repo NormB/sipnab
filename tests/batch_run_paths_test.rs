@@ -195,7 +195,8 @@ fn write_raw_pcap(path: &Path, records: &[(Vec<u8>, u32, u32, usize)]) -> Result
 
 /// A record whose microseconds field is out of range is stamped with the wall
 /// clock, and the capture-quality summary says so: every timing figure drawn
-/// from that capture is unreliable, even though every frame decoded.
+/// from that capture is unreliable, even though every frame decoded. The same
+/// on every reader: the default one, which maps the file, and `--cores`.
 #[test]
 fn a_misdated_record_is_named_in_the_capture_quality_summary() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
@@ -215,16 +216,20 @@ fn a_misdated_record_is_named_in_the_capture_quality_summary() -> Result<(), Tes
             (frame, 1_700_000_001, 1_500_000, usize::MAX),
         ],
     )?;
-    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
-    assert_eq!(run.code, Some(0), "{}", run.dump());
-    assert!(
-        run.stderr.contains(
-            "capture quality: 1 packet(s) had a corrupt capture timestamp and were stamped \
-             with the wall clock"
-        ),
-        "{}",
-        run.dump()
-    );
+    for extra in [&[][..], &["--cores", "2"][..]] {
+        let mut args = vec!["-N", "-I", s(&pcap)?];
+        args.extend_from_slice(extra);
+        let run = sipnab(&args)?;
+        assert_eq!(run.code, Some(0), "{extra:?}\n{}", run.dump());
+        assert!(
+            run.stderr.contains(
+                "capture quality: 1 packet(s) had a corrupt capture timestamp and were stamped \
+                 with the wall clock"
+            ),
+            "{extra:?}\n{}",
+            run.dump()
+        );
+    }
     Ok(())
 }
 
