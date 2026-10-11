@@ -8,21 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.211] - 2026-10-11
 
 ### Changed
 
-- **Breaking: `--vcon-forward-compat` and `[vcon_forward] compat` are
-  removed, and `--vcon-forward-kind vcon-store` sends each container
-  unchanged.** vcon.store accepted the forms the vCon drafts define when
+- **`--vcon-forward-kind vcon-store` sends each container unchanged.**
+  vcon.store accepted the forms the vCon drafts define when
   measured on 2026-10-09: `extensions` as an array of strings, and the
   `recording` Dialog Object without `parties` that sipnab writes for a call
   without audio. The forwarder no longer sends `extensions` as an object or
-  refuses a Dialog Object without `type` or `parties`, for any kind. A command
-  line that names `--vcon-forward-compat` is refused with exit 2, as any
-  unknown flag is. A config file that still holds `[vcon_forward] compat` logs
-  `Unknown config key: vcon_forward.compat`, as any unknown key does, and the
-  forwarder runs without it. A store that still refuses the array form answers
+  refuses a Dialog Object without `type` or `parties`, for any kind. A store that still refuses the array form answers
   `400`, and the container goes to the failed directory with that answer. The
   `vcon-store` kind now names `409` as the store's answer for a uuid it
   already holds, as measured on 2026-10-11: without a replace URL the
@@ -14530,7 +14525,7 @@ The drop counters added above are the instrument that measurement needs.
 - **The release runbook documents the order.** It opened with "a release is a
   pushed `v*` tag" and its diagram started at the tag push, so a reader
   following it literally would publish from an unverified commit.
-- **The `## [Unreleased]` convention is written down**, next to the gate that
+- **The `## [0.5.211] - 2026-10-11` convention is written down**, next to the gate that
   depends on it: `no_changelog_entry_precedes_its_version_heading` accepts that
   heading, which is what lets work accumulate between releases without
   orphaning entries under no version at all.
