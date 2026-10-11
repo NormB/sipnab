@@ -803,6 +803,13 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     let want = 69 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
+    // Wait for the replay to be read to its end. Until then the store-reading
+    // tools withhold `truncated: false` (src/mcp/completeness.rs), so a page
+    // asked for mid-load legitimately has no `truncated`; macOS CI run
+    // 38172136789 called find_problems before the read finished and got
+    // `source_exhausted: false` without it.
+    list_dialogs_until_nonempty(&mut child, &mut reader, 90, test_timeout(10))?;
+
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(
         &mut child,
