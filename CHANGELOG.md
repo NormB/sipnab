@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.211] - 2026-10-11
 
 ### Changed
 
@@ -14530,7 +14530,7 @@ The drop counters added above are the instrument that measurement needs.
 - **The release runbook documents the order.** It opened with "a release is a
   pushed `v*` tag" and its diagram started at the tag push, so a reader
   following it literally would publish from an unverified commit.
-- **The `## [Unreleased]` convention is written down**, next to the gate that
+- **The `## [0.5.211] - 2026-10-11` convention is written down**, next to the gate that
   depends on it: `no_changelog_entry_precedes_its_version_heading` accepts that
   heading, which is what lets work accumulate between releases without
   orphaning entries under no version at all.
