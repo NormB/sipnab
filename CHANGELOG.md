@@ -31,16 +31,13 @@ entry that carries them.
 
 ### Added
 
-- **Three overview pages on sipnab.com: Features, Deployments and Compare.**
+- **Two overview pages on sipnab.com: Features and Deployments.**
   `/features/` lists what sipnab does, the flag or setting that turns each
   feature on, and the page that documents it. `/deployments/` describes four
   reference topologies (one host, a fleet of SIP servers sending HEP, an
   observability stack, and AI agents over MCP) and links each to the guides
-  that set it up; it adds no commands of its own. `/compare/` sets sipnab
-  beside Wireshark, sngrep, Homer and Pcaptix in a feature matrix whose every
-  cell cites the tool's own documentation or reads "not documented", and lists
-  what sipnab does not do. The site footer links all three, and the
-  accessibility scan covers them.
+  that set it up; it adds no commands of its own. The site footer links both,
+  and the accessibility scan covers them.
 - **The homepage shows sipnab's GitHub star count on its "View on GitHub"
   button.** The deploy reads the count from the GitHub API with
   `scripts/github-stars.py`, which accepts only a whole number for this
