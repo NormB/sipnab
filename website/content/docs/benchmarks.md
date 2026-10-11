@@ -8,10 +8,12 @@ How fast sipnab is, measured honestly — and what that speed is for. The number
 is not a race against the local capture tools. It is the headroom that decides
 how much of an estate one binary can take at once, and therefore whether you
 stand up a collector tier at all. **The multi-core and carrier-scale tables on
-this page come from one session on 2026-09-09.**
+this page come from one session on 2026-10-11.**
 
-Taken on a local release build of 0.5.160 (`4641f323`), 2026-09-09, on an idle
-host — `vmstat` idle at 98% with no toolchain build running. A local build
+Taken on a local release build of 0.5.211 (`15e5e7bd`), 2026-10-11, on an idle host
+— main after the v0.5.211 tag, which adds the single-core reader change to the
+tag. `vmstat` was idle at 99% before every run, with no CI job or toolchain
+build running. A local build
 rather than a published artifact, deliberately: the nightly throughput gate has
 to catch a regression the day it lands, not once it has shipped, so the number
 this page publishes is the number that gate measures.
@@ -50,7 +52,7 @@ exists to skip.
 
 Put the figures next to the load. A proxy running 100 calls per second at
 roughly ten SIP messages per call emits about 1,000 signaling packets per
-second. The tables below measure 1.05M packets per second on one core and 3.56M
+second. The tables below measure 1.18M packets per second on one core and 3.52M
 on four, on a corpus that is 93.5% RTP — media a signaling-only HEP feed never
 carries at all. Three orders of magnitude separate that proxy from a single
 core's budget.
@@ -74,9 +76,11 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.160, local release build `4641f323`.
-  **Date:** 2026-09-09.
-- **Published figure:** the LOWEST of three replicates, per core count.
+- **Version:** sipnab 0.5.211, local release build `15e5e7bd` (main after
+  the v0.5.211 tag), with every feature, built as the nightly gate builds it.
+  **Date:** 2026-10-11.
+- **Published figure:** the LOWEST of three replicates, per core count. The
+  peak RSS cell is the HIGHEST of the three, the figure to plan memory against.
   [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)
   commits every replicate, so each cell below resolves to a recorded run rather
   than a remembered one.
@@ -92,16 +96,16 @@ all three, so a reader sees the noise rather than taking the word for it.
 
 | cores | pkts/s | replicates | peak RSS |
 |------:|-------:|-----------:|---------:|
-| 1 | 1.05M | 1.07 / 1.06 / 1.05M | 168.2 MiB |
-| 2 | 2.63M | 2.63 / 2.64 / 2.64M | 100.5 MiB |
-| 4 | **3.56M** | 3.62 / 3.61 / 3.56M | 97.5 MiB |
-| 8 | 3.13M | 3.14 / 3.13 / 3.15M | 101.2 MiB |
+| 1 | 1.18M | 1.18 / 1.18 / 1.18M | 168.4 MiB |
+| 2 | 2.57M | 2.59 / 2.57 / 2.60M | 107.9 MiB |
+| 4 | **3.52M** | 3.56 / 3.56 / 3.52M | 103.4 MiB |
+| 8 | 3.15M | 3.15 / 3.16 / 3.17M | 107.0 MiB |
 
 **Four cores is the peak, and eight is slower** — in every replicate, not in one
-bad run. The single-core row is the outlier in memory as well as in speed:
-`--cores 1` and a run with no `--cores` use the single-threaded reader, which
-goes through libpcap and holds more of the capture at once. Only `--cores 2` and
-above reach the mapped reader.
+bad run. The single-core row holds the most memory, 168.4 MiB against about
+105 MiB on two or more cores. It did so through libpcap as well, and it still
+does now that the single-threaded reader maps the file. This page does not yet
+have a measured cause for it.
 
 The 4-core cell is the figure
 [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)
@@ -115,10 +119,12 @@ libpcap's buffer *and* a copy out of it. 0.5.108 maps the capture file
 instead, so it parses records in place out of page cache and copies only the
 frame.
 
-That moves where the curve stops, and the mechanism is why one and two cores do
-not move with it: `--cores 1` and a run with no `--cores` use the
-single-threaded reader, which still goes through libpcap. Only `--cores 2` and
-above reach the mapped reader.
+That moves where the curve stops, and the mechanism is why one and two cores
+did not move with it: until the change after 0.5.211, `--cores 1` and a run
+with no `--cores` used the single-threaded reader through libpcap, and on two
+cores nothing needs unblocking until enough workers pile up behind the reader.
+The single-threaded reader now maps the file too, and the 2026-10-11
+continuation below measures what that did on one core.
 
 **The A/B that measured this is not on this page**, and this page drops the
 sentences that used to quote its spread and its per-core gaps rather than
@@ -216,6 +222,37 @@ erosion, diffuse across two hundred commits of added analysis, that a profiler
 could not pin to any single function — found, bounded, and overtaken by the
 batching change rather than chased line by line.
 
+**Continued, 2026-10-11: 0.5.160, 0.5.211 and main after 0.5.211.** Local
+release builds of the v0.5.160 tag (`6df351b8`), the v0.5.211 tag
+(`1d81503a`) and main at `15e5e7bd`, same idle host, same session, the three
+interleaved in every replicate. Each cell is the three replicates, lowest
+first:
+
+| cores | 0.5.160 | 0.5.211 | `15e5e7bd` |
+|------:|--------:|--------:|-----------:|
+| 1 | 1.06 / 1.06 / 1.07M | 0.97 / 0.97 / 0.98M | **1.16 / 1.19 / 1.19M** |
+| 2 | 2.63 / 2.68 / 2.69M | 2.58 / 2.59 / 2.59M | 2.59 / 2.61 / 2.64M |
+| 4 | 3.50 / 3.55 / 3.55M | 3.41 / 3.48 / 3.55M | 3.45 / 3.49 / 3.56M |
+| 8 | 3.07 / 3.12 / 3.18M | 3.05 / 3.05 / 3.17M | 3.11 / 3.12 / 3.18M |
+
+`vmstat` idle fell to 90-91% during the second replicate of 0.5.211 and of
+`15e5e7bd`, below the 96% this page requires. The conclusions below hold with
+or without those two replicates.
+
+**One core lost about 8% between 0.5.160 and 0.5.211, and the change after
+0.5.211 more than recovered it.** `perf` on main after 0.5.210 put 9.6% of
+cycles in glibc's `fread` lock on the libpcap reader thread and 7.6% in
+`clock_gettime`, called once per packet by the keylog poll even with no
+keylog watch. `15e5e7bd` reads the file through the same mapping
+`--cores` uses, cutting frames from shared 64 KiB blocks, and reads the clock
+only for `--keylog-watch` or `--keylog-fd`. One core is now about 20%
+above 0.5.211 and about 10% above 0.5.160. Two, four and eight cores are the
+same within the spread of each version's replicates.
+
+The single-core runs of `15e5e7bd` produce byte-identical `--json-dialogs`
+output to 0.5.211's on this corpus. Peak RSS on one core rose from 160.9 to
+168.4 MiB, and 0.5.160 measured 167.9-168.2 MiB.
+
 The same A/B settles what the pre-0.5.47 tables mean: they measure an
 unpublished corpus nobody can rebuild, so nothing below them compares to them
 and this page does not restate them. This paragraph used to carry a
@@ -248,23 +285,32 @@ volume. Measured at `--cores 4`:
 
 | calls | pkts | dialogs | streams | pkts/s | peak RSS |
 |------:|-----:|--------:|--------:|-------:|---------:|
-| 500 | 53.5k | 500 | 1,000 | 2.19M | 29.5 MiB |
-| 2,000 | 214k | 2,000 | 4,000 | 2.80M | 69.2 MiB |
-| 8,000 | 856k | 8,000 | 16,000 | 3.28M | 226.7 MiB |
-| 20,000 | 2.14M | 20,000 | 40,000 | 3.26M | 495.0 MiB |
+| 500 | 53.5k | 500 | 1,000 | 2.08M | 33.5 MiB |
+| 2,000 | 214k | 2,000 | 4,000 | 2.74M | 73.6 MiB |
+| 8,000 | 856k | 8,000 | 16,000 | 3.05M | 233.2 MiB |
+| 20,000 | 2.14M | 20,000 | 40,000 | 3.06M | 531.1 MiB |
 
 [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)
-commits every row under `carrier_scale_sweep`, from the same 2026-09-09 session
+commits every row under `carrier_scale_sweep`, from the same 2026-10-11 session
 and the same host as the table above.
+
+**This table moves more between sessions than within one.** Two more sessions
+the same evening measured `15e5e7bd` at 3.14-3.31M at 20,000 calls, against
+3.06M here, and 0.5.160's 2026-09-09 session published 3.26M. Interleaved in
+one session, 0.5.160, 0.5.211 and `15e5e7bd` were within 5% of each other at
+every size: 0.5.160 was fastest at 500 calls and slowest at 20,000. The lower
+figures here are the session, not a regression. Memory did grow: at 20,000
+calls 0.5.160 peaked at 493-499 MiB in that session, 0.5.211 at 517-531 MiB
+and `15e5e7bd` at 527-537 MiB.
 
 **Honest read:** throughput is flat from 8k calls up — reconstruction cost is
 per-packet, not per-dialog, and 40k concurrent streams do not degrade it. The
 smaller corpora post lower figures because startup is inside the clock and a
-53.5k-packet read is over in ~24 ms.
+53.5k-packet read is over in ~26 ms.
 
 Memory grows close to linearly with
-tracked state, about 25 KiB per call (dialog + two RTP streams + jitter/loss
-accounting), reaching 495 MiB at 20k calls. That linearity is the useful property: it is predictable, so capacity
+tracked state, about 27 KiB per call (dialog + two RTP streams + jitter/loss
+accounting), reaching 531 MiB at 20k calls. That linearity is the useful property: it is predictable, so capacity
 planning is arithmetic rather than guesswork.
 
 ## A note on the `-N --json` export path

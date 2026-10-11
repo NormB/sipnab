@@ -4844,7 +4844,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1110 -> 1109: compare.md's matrix, with the page (Norm, 2026-10-10).
     // 1109 -> 1111: the 2026-10-11 vcon.store measurements. docs/vcon-store.md
     // 1 and its site page 1.
-    const EXPECTED_TABLES: usize = 1111;
+    // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
+    // and in website/content/docs/benchmarks.md.
+    const EXPECTED_TABLES: usize = 1113;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
