@@ -503,19 +503,19 @@ pub struct KindFacts {
 /// One row per store kind, in the order of [`crate::config::FETCH_KINDS`].
 /// The one place each kind's facts live.
 ///
-/// vcon.store, measured by the maintainer against `https://api.vcon.store`
-/// on 2026-10-09: `POST /v1/vcons` with `Authorization: Bearer <key>`
-/// answered `201` for `extensions` as the array of strings the drafts define
-/// and for a `recording` Dialog Object with no `parties` and no content, and
-/// stored each as sent; it answered `500` with an `internal-error` problem
-/// body for a uuid it already held. The forwarder retries a `500` like any
-/// other `5xx`: the same status is what a store in trouble answers, and
-/// refusing it would move a container the store never received to the failed
-/// directory. So the kind names no duplicate status, and the container stays
-/// in the spool until it is removed by hand. On 2026-10-07 the same store
-/// answered `400` for the array and for a Dialog Object without `type` and
-/// `parties`, and `409` for a held uuid. A `PUT` to `/v1/vcons/{uuid}` was
-/// not measured, so the kind sets no replace URL.
+/// vcon.store, measured against `https://api.vcon.store` on 2026-10-11:
+/// `POST /v1/vcons` with `Authorization: Bearer <key>` answered `201` for a
+/// new uuid, including a `recording` Dialog Object with no `parties` and no
+/// content, and `409` with `{"error":"vCon already exists",...}` naming
+/// `use PUT to replace it` for a uuid it already held. `PUT /v1/vcons/{uuid}`
+/// with a body of that uuid answered `200` and replaced the held container,
+/// as a read-back showed. So the kind names `409` as its duplicate status, and
+/// `--vcon-forward-replace-url <base>/v1/vcons/{uuid}` turns that refusal
+/// into a replace; without it the container goes to the failed directory.
+/// The replace stays opt-in: overwriting a held container is the operator's
+/// decision. On 2026-10-09 the same store answered `500` for a held uuid, and
+/// on 2026-10-07 `400` for the `extensions` array and for a Dialog Object
+/// without `type` and `parties`.
 ///
 /// conserver, measured against the self-hosted vCon server in the development lab on
 /// 2026-10-07: `POST /vcon/external-ingress?ingress_list=sipnab` with
@@ -557,7 +557,7 @@ pub const STORE_KINDS: [KindFacts; 4] = [
         name: "vcon-store",
         ingest_path: Some("/v1/vcons"),
         auth_header: Some(("Authorization", "Bearer ")),
-        duplicate_status: None,
+        duplicate_status: Some(409),
         delivered: (200, 299),
         read_path: Some("/v1/vcons/{uuid}"),
         envelope: Envelope::AddedMember("_meta"),
@@ -2185,16 +2185,22 @@ mod tests {
         }
     }
 
-    /// vcon.store answered a POST of a uuid it already held with `500`
-    /// `internal-error` when measured on 2026-10-09. The forwarder keeps it
-    /// retryable on purpose: a `500` is also what a store in trouble answers,
-    /// and refusing it would move a container a recovering store never
-    /// received to the failed directory. The kind names no duplicate status,
-    /// so no replace URL applies to that answer either.
+    /// vcon.store answers a POST of a uuid it already holds with `409`
+    /// (measured 2026-10-11). Without a replace URL that is a refusal; with
+    /// one, the container is PUT there.
     #[test]
-    fn a_vcon_store_500_for_a_held_uuid_is_retried() {
+    fn the_vcon_store_kind_names_409_for_a_held_uuid() {
         let facts = StoreKind::VconStore.facts();
-        assert_eq!(facts.duplicate_status, None);
+        assert_eq!(facts.duplicate_status, Some(409));
+        assert_eq!(classify(409, false, facts.delivered), Verdict::Refused);
+        assert_eq!(classify(409, true, facts.delivered), Verdict::Replace);
+    }
+
+    /// A `500` from vcon.store is retried, replace URL or not: it is what a
+    /// store in trouble answers.
+    #[test]
+    fn a_vcon_store_500_is_retried() {
+        let facts = StoreKind::VconStore.facts();
         assert_eq!(classify(500, false, facts.delivered), Verdict::Retry);
         assert_eq!(classify(500, true, facts.delivered), Verdict::Retry);
     }

@@ -6,10 +6,11 @@ with `sipnab --vcon-forward`, the forwarder that
 [Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store)
 describes.
 
-**Status on 2026-10-09: vcon.store accepts the two forms it refused on
+**Status on 2026-10-11: vcon.store accepts the two forms it refused on
 2026-10-07**: `extensions` as the array of strings both vCon drafts define, and
 the `recording` Dialog Object without `parties` that sipnab writes for a call
-whose container carries no audio. The forwarder sends each container byte for
+whose container carries no audio. It answers `409` for a uuid it already holds,
+and `PUT /v1/vcons/{uuid}` replaces the held copy. The forwarder sends each container byte for
 byte. sipnab no longer has the compat mode that changed the copy it sent to the
 store. Not measured: a `recording` that carries audio but no
 `parties`, which sipnab writes when an audio channel came from an address no
@@ -100,7 +101,7 @@ forwarder stops, moves nothing, logs the status and the start of the answer,
 and exits `3`.
 
 sipnab's tests run the `vcon-store` kind against a stand-in that answers as the
-maintainer measured vcon.store answering on 2026-10-09, and against one that
+maintainer measured vcon.store answering on 2026-10-11, and against one that
 answers as it did on 2026-10-07
 ([`tests/vcon_forward_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_forward_test.rs)), not
 against vcon.store itself.
@@ -118,10 +119,20 @@ exported from
 |---|---|
 | `POST /v1/vcons`, the container with audio, `"extensions": ["sip-signaling", "CC"]`, sent unchanged | `201`; a `GET` returned `extensions` as the same array |
 | the `recording` Dialog Object sipnab writes for a call without audio (no `parties`, no content) | `201`, stored as sent |
-| a `POST` of a uuid the store already held | `500`, a problem document of type `https://vcon.store/errors/internal-error`, `An unexpected error occurred`, twice |
+| a `POST` of a uuid the store already held | `500`, a problem document of type `https://vcon.store/errors/internal-error`, `An unexpected error occurred`, twice. Changed by 2026-10-11; see below |
 | a `GET` with Python's default HTTP `User-Agent`, with Go's, with none, and with `sipnab/0.5.209` | `200` for each |
 | a `GET` of a stored vCon | the content, with a top-level `_meta` member added |
 | `DELETE /v1/vcons/{uuid}` | `200`, `{"deleted":true,...}`; a `GET` after it `404`, `{"error":"vCon not found"}` |
+
+On 2026-10-11, with a container exported from the same capture, sent with curl:
+
+| Sent | vcon.store answered |
+|---|---|
+| `POST /v1/vcons`, a new uuid | `201`, `{"uuid":...,"stored_at":...}` |
+| a second `POST` of the same uuid | `409`, `{"error":"vCon already exists","details":[{"path":["uuid"],"message":"a vCon with uuid ... already exists; use PUT to replace it"}]}` |
+| `PUT /v1/vcons/{uuid}` with a changed `subject`, same uuid | `200`; a `GET` returned the changed `subject` |
+| the `recording` Dialog Object without `parties` and content | `201` |
+| `DELETE /v1/vcons/{uuid}` | `200`; a `GET` after it `404` |
 
 On 2026-10-07, kept as history:
 
@@ -141,13 +152,19 @@ because section 4.1.3 of
 and every revision since define `extensions` as an array of strings, which the
 store then refused.
 
-The forwarder treats the `500` for a held uuid as it treats every `5xx`: the
-container stays in `spool`, the forwarder sends it again after a back-off, and
-`--vcon-forward-once` exits `1`. A `500` is also what a store in trouble
-answers, so the forwarder does not refuse it. Not measured: whether
-vcon.store accepts a `PUT` to `/v1/vcons/{uuid}`. `--vcon-forward-replace-url`
-exists for a store that answers `409` for a held uuid, and this page does not
-use it.
+A `409` for a held uuid is a refusal: the container goes to `spool/failed`
+with the store's answer in its `.error.json` record, and
+`--vcon-forward-once` exits `1`. To replace the held copy instead, name the
+`PUT` endpoint with `--vcon-forward-replace-url`. The forwarder then sends the
+container there after the `409`:
+
+```sh
+sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key --vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}'
+```
+
+Replacing is off by default: it overwrites what the store holds, which is the
+operator's decision. The forwarder retries a `500` after a back-off, as it
+retries every `5xx`.
 
 ## What the store adds, and what it does not mean
 
@@ -189,11 +206,14 @@ the schema finding, and the run exits `1`. More:
   `extensions: Expected object, received array`.** The store refuses the form
   the drafts define, as vcon.store did on 2026-10-07. sipnab no longer changes
   the copy it sends, so such a store does not accept sipnab's containers.
+- **A container lands in `spool/failed` with status `409` and `vCon already
+  exists`.** The store already holds that uuid (`--vcon-fetch` reads it
+  back). To replace the held copy, move the file back into `spool` and run
+  the forwarder with
+  `--vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}'`.
 - **A container stays in `spool`, and the log says `answered 500; will
-  retry`.** If the store already holds that uuid (`--vcon-fetch` reads it
-  back), vcon.store answers every new `POST` of it with `500`. Move the file
-  out of `spool` by hand. Otherwise the store is in trouble, and the
-  forwarder tries again after its back-off.
+  retry`.** The store is in trouble; the forwarder tries again after its
+  back-off.
 - **The forwarder exits `3` and logs `403` with `error code: 1010`.** The
   Cloudflare front refused the request's client, as it refused Python's
   default `User-Agent` on 2026-10-07. The forwarder sends

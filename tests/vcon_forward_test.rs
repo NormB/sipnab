@@ -1615,41 +1615,6 @@ fn vcon_store_stand_in(key: String) -> Result<FakeStore, TestError> {
 /// The bodies a stand-in stored, in the order it accepted them.
 type Held = Arc<Mutex<Vec<Vec<u8>>>>;
 
-/// A stand-in for vcon.store as measured against `https://api.vcon.store` on
-/// 2026-10-09: `POST /v1/vcons` with `Authorization: Bearer <key>`; `201` for
-/// `extensions` as the array of strings the drafts define and for a
-/// `recording` Dialog Object with no `parties` and no content, each stored as
-/// sent; `500` with an `internal-error` problem body for a uuid it already
-/// holds. Every container it accepted is kept, by uuid, as the bytes sent.
-fn vcon_store_2026_10_09_stand_in(key: String) -> Result<(FakeStore, Held), TestError> {
-    let held: Held = Arc::new(Mutex::new(Vec::new()));
-    let kept = held.clone();
-    let store = FakeStore::start(move |req, _| {
-        if req.method != "POST" || req.target != "/v1/vcons" {
-            return Reply::Status(404, "not found".into());
-        }
-        if req.header("authorization") != [format!("Bearer {key}").as_str()] {
-            return Reply::Status(401, "unauthorized".into());
-        }
-        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
-            return Reply::Status(400, "invalid JSON".into());
-        };
-        let uuid = doc["uuid"].clone();
-        let mut stored = kept.lock();
-        if stored.iter().any(|b| {
-            serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|d| d["uuid"] == uuid)
-        }) {
-            return Reply::Status(
-                500,
-                r#"{"type":"https://vcon.store/errors/internal-error","title":"Internal Server Error","status":500,"detail":"An unexpected error occurred"}"#.into(),
-            );
-        }
-        stored.push(req.body.clone());
-        Reply::Status(201, "{}".into())
-    })?;
-    Ok((store, held))
-}
-
 /// The `recording` Dialog Object sipnab writes for a call without audio:
 /// typed, with no `parties` and no content.
 const PLACEHOLDER: &str = r#"{"type":"recording","start":"2026-10-07T12:00:00+00:00"}"#;
@@ -1657,12 +1622,12 @@ const PLACEHOLDER: &str = r#"{"type":"recording","start":"2026-10-07T12:00:00+00
 /// `--vcon-forward-kind vcon-store` with the store's base URL and the bare key
 /// in the environment posts to `/v1/vcons` with `Authorization: Bearer <key>`
 /// and sends each container byte for byte, the array `extensions` and a
-/// parties-less `recording` placeholder included; the 2026-10-09 stand-in
+/// parties-less `recording` placeholder included; the 2026-10-11 stand-in
 /// stores both as sent. The key appears in no output.
 #[test]
 fn the_vcon_store_kind_sends_the_container_unchanged_by_default() -> Result<(), TestError> {
     let key = secret();
-    let (store, held) = vcon_store_2026_10_09_stand_in(key.clone())?;
+    let (store, held) = vcon_store_2026_10_11_stand_in(key.clone())?;
     let rig = Rig::new(&store.url("/"), "Authorization")?;
     let with_audio = container("018bcfe5-6800-8a6b-a667-78f1c5213871", RECORDING);
     let without = container("018bcfe5-6800-8a6b-a667-78f1c5213872", PLACEHOLDER);
@@ -1737,16 +1702,62 @@ fn the_2026_10_07_stand_in_refuses_the_default_copy() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A second POST of a uuid the 2026-10-09 stand-in holds draws `500`. The
-/// forwarder treats it as it treats every `5xx`: the container stays in the
-/// spool for a retry, nothing moves to the failed directory, the log names
-/// the status, and `--vcon-forward-once` exits `1`.
+/// A stand-in for vcon.store as measured against `https://api.vcon.store` on
+/// 2026-10-11, after its maintainer fixed the duplicate case: `POST /v1/vcons`
+/// answers `201` for a new uuid and `409` with this body for one it holds;
+/// `PUT /v1/vcons/{uuid}` with a body of the same uuid answers `200` and
+/// replaces the held container. Every container it holds is kept, by uuid, as the bytes sent.
+fn vcon_store_2026_10_11_stand_in(key: String) -> Result<(FakeStore, Held), TestError> {
+    let held: Held = Arc::new(Mutex::new(Vec::new()));
+    let kept = held.clone();
+    let store = FakeStore::start(move |req, _| {
+        if req.header("authorization") != [format!("Bearer {key}").as_str()] {
+            return Reply::Status(401, "unauthorized".into());
+        }
+        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
+            return Reply::Status(400, "invalid JSON".into());
+        };
+        let uuid = doc["uuid"].as_str().unwrap_or_default().to_owned();
+        let mut stored = kept.lock();
+        let position = stored.iter().position(|b| {
+            serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|d| d["uuid"] == uuid.as_str())
+        });
+        match (req.method.as_str(), req.target.as_str()) {
+            ("POST", "/v1/vcons") => {
+                if position.is_some() {
+                    return Reply::Status(
+                        409,
+                        format!(
+                            r#"{{"error":"vCon already exists","details":[{{"path":["uuid"],"message":"a vCon with uuid {uuid} already exists; use PUT to replace it"}}]}}"#
+                        ),
+                    );
+                }
+                stored.push(req.body.clone());
+                Reply::Status(201, "{}".into())
+            }
+            ("PUT", target) if target == format!("/v1/vcons/{uuid}") => {
+                match position {
+                    Some(i) => stored[i] = req.body.clone(),
+                    None => stored.push(req.body.clone()),
+                }
+                Reply::Status(200, "{}".into())
+            }
+            _ => Reply::Status(404, "not found".into()),
+        }
+    })?;
+    Ok((store, held))
+}
+
+/// A second POST of a uuid the 2026-10-11 stand-in holds draws `409`. With no
+/// replace URL that is a refusal a retry will not change: the container moves
+/// to the failed directory with the store's answer in its record, it is not
+/// sent again, and `--vcon-forward-once` exits `1`.
 #[test]
-fn a_vcon_store_500_for_a_held_uuid_keeps_the_container_for_a_retry() -> Result<(), TestError> {
+fn a_vcon_store_409_for_a_held_uuid_is_refused_not_retried() -> Result<(), TestError> {
     let key = secret();
-    let (store, _held) = vcon_store_2026_10_09_stand_in(key.clone())?;
+    let (store, _held) = vcon_store_2026_10_11_stand_in(key.clone())?;
     let rig = Rig::new(&store.url("/"), "Authorization")?;
-    let bytes = container("018bcfe5-6800-8a6b-a667-78f1c5213875", RECORDING);
+    let bytes = container("018bcfe5-6800-8a6b-a667-78f1c5213881", RECORDING);
     let spool = rig.spool().display().to_string();
     let base = format!("http://{}", store.addr);
     let args = [
@@ -1765,14 +1776,53 @@ fn a_vcon_store_500_for_a_held_uuid_keeps_the_container_for_a_retry() -> Result<
     rig.drop_in("again.vcon.json", &bytes)?;
     let (out, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    assert!(rig.spool().join("again.vcon.json").exists(), "{err}");
-    assert!(names_in(&rig.settings.failed_dir).is_empty(), "{err}");
+    assert!(!rig.spool().join("again.vcon.json").exists(), "{err}");
+    let record =
+        std::fs::read_to_string(rig.settings.failed_dir.join("again.vcon.json.error.json"))?;
     assert!(
-        err.lines()
-            .any(|l| l.contains("again.vcon.json") && l.contains("answered 500; will retry")),
-        "{err}"
+        record.contains("409") && record.contains("already exists"),
+        "{record}"
     );
-    assert_eq!(store.requests().len(), 2);
+    assert_eq!(store.requests().len(), 2, "the refusal was retried: {err}");
+    Ok(())
+}
+
+/// With `--vcon-forward-replace-url` naming `PUT /v1/vcons/{uuid}`, a `409`
+/// from the 2026-10-11 stand-in is PUT there, and the store then holds the
+/// copy sent second.
+#[test]
+fn a_vcon_store_409_with_the_replace_url_replaces_the_held_copy() -> Result<(), TestError> {
+    let key = secret();
+    let (store, held) = vcon_store_2026_10_11_stand_in(key.clone())?;
+    let rig = Rig::new(&store.url("/"), "Authorization")?;
+    let uuid = "018bcfe5-6800-8a6b-a667-78f1c5213882";
+    let first = container(uuid, RECORDING);
+    let second = container(uuid, PLACEHOLDER);
+    let spool = rig.spool().display().to_string();
+    let base = format!("http://{}", store.addr);
+    let replace = format!("{base}/v1/vcons/{{uuid}}");
+    let args = [
+        "--vcon-forward",
+        &spool,
+        "--no-config",
+        "--vcon-forward-kind",
+        "vcon-store",
+        "--vcon-forward-url",
+        &base,
+        "--vcon-forward-replace-url",
+        &replace,
+        "--vcon-forward-once",
+    ];
+    rig.drop_in("a.vcon.json", &first)?;
+    let (_, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
+    assert_eq!(code, Some(0), "{err}");
+    rig.drop_in("b.vcon.json", &second)?;
+    let (out, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(rig.settings.done_dir.join("b.vcon.json").exists(), "{err}");
+    let methods: Vec<String> = store.requests().iter().map(|r| r.method.clone()).collect();
+    assert_eq!(methods, ["POST", "POST", "PUT"], "{err}");
+    assert_eq!(held.lock().clone(), vec![second.into_bytes()]);
     Ok(())
 }
 
