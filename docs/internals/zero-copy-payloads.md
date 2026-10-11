@@ -83,12 +83,19 @@ Measured on the 535k corpus (median-of-7, idle host, same binary either way via
 | 4     | 3.27M  | 2.38M   | +37% |
 | 8     | 3.30M  | 2.18M   | +51% |
 
-Read the one-core row as a control: `--cores 1` and a run with no `--cores` use
-the single-threaded reader in `crate::capture::file`, which does not map, so
-that row is libpcap against itself and its spread is the harness noise floor.
-Only `--cores 2` and up reach the mapped reader, and the gain arrives at four —
-the point where the serial reader is what the workers wait on. The default
-offline read therefore does not benefit yet.
+Read the one-core row as a control: at the time of that measurement,
+`--cores 1` and a run with no `--cores` used the single-threaded reader in
+`crate::capture::file` through libpcap, so that row is libpcap against itself
+and its spread is the harness noise floor. The gain arrives at four cores, the point where the serial
+reader is what the workers wait on.
+
+Since 2026-10-11 the single-threaded reader maps too, through the same
+`crate::capture::frames::Frames` the `--cores` reader uses. On a 535k-packet
+corpus of 5,000 calls from [`bench/carrier.py`](../../bench/carrier.py) (median-of-5, two sessions, idle
+host), a run with no `--cores` went from 0.95M to 1.16M pkts/s. On
+one core the gain is not the `read` the mapping saves but what libpcap's path
+cost per packet: glibc's `fread` lock (9% of cycles in `perf`) and a fresh
+allocation per frame, which the shared 64 KiB blocks replace.
 
 **What failed, and why it looked right.** The natural design — hand each frame
 out as a refcounted slice of the mapping, copying nothing at all — measures

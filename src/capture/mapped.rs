@@ -25,17 +25,19 @@
 //! as "high thirties to low forties percent" and the eight-core one as "about
 //! half again"; the pair quoted is the least flattering measured.
 //!
-//! Read the one-core row as a CONTROL, not a result: `--cores 1` and a run with
-//! no `--cores` at all use the single-threaded reader in
-//! [`crate::capture::file`], which does not map, so that row is libpcap against
-//! itself and its ~2% spread is the harness noise floor. Only `--cores 2` and
-//! above reach this module. Two cores is within that floor; the gain arrives at
-//! four, which is the point at which the serial reader is what the workers are
-//! waiting on.
+//! Read the one-core row of that table as a CONTROL, not a result: at the time
+//! of that measurement, `--cores 1` and a run with no `--cores` at all used the
+//! single-threaded reader in [`crate::capture::file`] through libpcap, so that
+//! row is libpcap against itself and its ~2% spread is the harness noise floor.
+//! Two cores is within that floor; the gain arrives at four, which is the point
+//! at which the serial reader is what the workers are waiting on.
 //!
-//! It follows that the DEFAULT offline read does not benefit yet. Teaching
-//! [`crate::capture::file`] to map as well is the obvious next step and is not
-//! done here.
+//! Since 2026-10-11 the single-threaded reader maps as well, through the same
+//! `crate::capture::frames::Frames`. On a 535k-packet corpus built with
+//! `bench/carrier.py --calls 5000` (median-of-5, two sessions, idle host), a run
+//! with no `--cores` went from 0.95M to 1.16M pkts/s; the keylog-poll fix in
+//! the same change alone measured 1.01-1.03M. Peak RSS rose from 161.8 to
+//! 168.9 MiB. Two, four and eight cores stayed within the ~2% noise floor.
 //!
 //! Peak resident memory stays within ~10 MiB of the libpcap path, because
 //! `release_behind` hands pages back as the read passes them; without it the
@@ -371,15 +373,16 @@ impl MappedPcap {
     }
 
     /// Convert a record's seconds/fraction pair to an instant, honoring the
-    /// file's timestamp resolution. A fraction too large for its unit is
-    /// clamped rather than rejected: libpcap hands such a record to the caller,
-    /// so dropping it here would lose a frame libpcap keeps.
+    /// file's timestamp resolution, by the rule every reader shares
+    /// ([`crate::capture::live::capture_time`]): a fraction too large for its
+    /// unit is stamped with the wall clock and counted, so the capture-quality
+    /// summary names it, and the record is kept, as libpcap keeps it.
     fn frame_time(&self, ts_sec: u32, ts_frac: u32) -> DateTime<Utc> {
-        let nanos = match self.ts_resolution {
-            pcap_file::TsResolution::MicroSecond => ts_frac.saturating_mul(1_000),
-            pcap_file::TsResolution::NanoSecond => ts_frac,
+        let units_per_sec = match self.ts_resolution {
+            pcap_file::TsResolution::MicroSecond => 1_000_000,
+            pcap_file::TsResolution::NanoSecond => 1_000_000_000,
         };
-        DateTime::from_timestamp(i64::from(ts_sec), nanos.min(999_999_999)).unwrap_or_else(Utc::now)
+        crate::capture::live::capture_time(ts_sec, ts_frac, units_per_sec)
     }
 
     /// Where a slice the parser handed back sits within the mapping, or `None`
@@ -675,19 +678,32 @@ mod tests {
         Ok(())
     }
 
-    /// A fraction too large for its unit is clamped to the last nanosecond of
-    /// the second, not dropped: libpcap hands that record over, so must this.
+    /// A fraction too large for its unit follows the rule every reader shares:
+    /// the record is kept, stamped with the wall clock, and counted, so the
+    /// capture-quality summary names it.
     #[test]
-    fn a_fraction_past_one_second_is_clamped_not_dropped() -> Result<(), TestError> {
+    #[serial_test::serial(invalid_timestamps)]
+    fn a_fraction_past_one_second_is_stamped_and_counted_not_dropped() -> Result<(), TestError> {
+        use std::sync::atomic::Ordering;
         let bad = Rec {
             frac: 2_000_000,
             ..rec(b"late")
         };
         let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[bad]))?;
+        let counter = &crate::capture::live::INVALID_PCAP_TIMESTAMPS;
+        let before = counter.load(Ordering::Relaxed);
+        let read_at = Utc::now();
         let frame = mapped.ok_or("maps")?.next_frame().ok_or("still a frame")?;
-        assert_eq!(frame.timestamp.timestamp(), 1_700_000_000, "same second");
-        assert_eq!(frame.timestamp.timestamp_subsec_nanos(), 999_999_999);
         assert_eq!(&frame.data[..], b"late");
+        assert!(
+            counter.load(Ordering::Relaxed) > before,
+            "the record was not counted"
+        );
+        assert!(
+            frame.timestamp >= read_at,
+            "not the wall clock: {}",
+            frame.timestamp
+        );
         Ok(())
     }
 

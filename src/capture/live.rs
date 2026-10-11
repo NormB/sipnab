@@ -1266,18 +1266,37 @@ fn drop_warning(device: &str, stat: &pcap::Stat, buffer_mb: u32) -> String {
     )
 }
 
-/// Convert a pcap `libc::timeval` to a chrono UTC datetime.
+/// Convert a pcap `libc::timeval` to a chrono UTC datetime, by the rule in
+/// [`capture_time`].
+pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
+    capture_time(ts.tv_sec, ts.tv_usec, 1_000_000)
+}
+
+/// A record's capture time from its seconds and its fraction of a second,
+/// `units_per_sec` fractions to the second (`1_000_000` for microseconds,
+/// `1_000_000_000` for nanoseconds). Every reader converts through this one
+/// rule, so a record means the same time whichever reader read it.
 ///
-/// A corrupt timeval (out-of-range seconds, or microseconds outside
-/// `0..1_000_000`) falls back to the current wall clock — but loudly:
+/// A corrupt time (out-of-range seconds, or a fraction outside
+/// `0..units_per_sec`) falls back to the current wall clock — but loudly:
 /// the event is counted in [`INVALID_PCAP_TIMESTAMPS`] and warned about
 /// (rate-limited), because silently substituted timestamps corrupt every
 /// downstream timing computation.
-pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
-    let sec = ts.tv_sec;
-    let usec = ts.tv_usec;
-    let converted = if (0..1_000_000).contains(&usec) {
-        Utc.timestamp_opt(sec, usec as u32 * 1000).single()
+///
+/// `sec` and `frac` take any integer that widens to `i64`: `time_t` and
+/// `suseconds_t` are aliases whose width varies by target (`suseconds_t` is
+/// `i32` on macOS), and a file's fields are `u32`.
+pub(crate) fn capture_time(
+    sec: impl Into<i64>,
+    frac: impl Into<i64>,
+    units_per_sec: i64,
+) -> DateTime<Utc> {
+    let (sec, frac) = (sec.into(), frac.into());
+    let converted = if (0..units_per_sec).contains(&frac) {
+        let nanos = frac * (1_000_000_000 / units_per_sec);
+        u32::try_from(nanos)
+            .ok()
+            .and_then(|n| Utc.timestamp_opt(sec, n).single())
     } else {
         None
     };
@@ -1285,7 +1304,7 @@ pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
         let n = INVALID_PCAP_TIMESTAMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if n == 1 || n.is_multiple_of(10_000) {
             tracing::warn!(
-                "invalid pcap timestamp (tv_sec={sec}, tv_usec={usec}); \
+                "invalid pcap timestamp (seconds={sec}, fraction={frac} of {units_per_sec}); \
                  stamping packet with current time ({n} occurrence(s) so far) — \
                  timing analysis for this capture is unreliable"
             );

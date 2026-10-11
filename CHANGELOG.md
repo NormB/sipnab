@@ -8,6 +8,30 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Reading a capture file on one core is about 20% faster.** A run with no
+  `--cores` maps an unfiltered classic pcap and reads it in place, as
+  `--cores 2` and above already did, instead of reading it through libpcap,
+  whose `fread` took a lock and whose frame was copied into a fresh allocation
+  per packet. pcapng, compressed files, pipes and a run with a BPF filter
+  still read through libpcap. The receive loop also no longer reads the clock
+  per packet for the keylog poll unless `--keylog-watch` or `--keylog-fd` is
+  set. On a 535k-packet corpus built with `bench/carrier.py --calls 5000`, a
+  single-core run went from 0.95M to 1.16M packets per second (median of
+  five, interleaved with the previous build, two sessions); peak memory rose
+  from 161.8 to 168.9 MiB. Two, four and eight cores stayed within the
+  benchmark's ~2% noise floor.
+  A nanosecond-resolution pcap now keeps all nine digits of each timestamp
+  on one core, as it did with `--cores`; libpcap dropped the last three.
+- **`--cores` names a record with a corrupt capture timestamp in the
+  capture-quality summary.** The mapped reader clamped a fraction of a second
+  past its range into the same second and counted nothing, so a `--cores` run
+  reported no corrupt timestamp where the default reader reported one. Both
+  readers now stamp such a record with the wall clock, count it, and keep it.
+
 ## [0.5.211] - 2026-10-11
 
 ### Changed
@@ -26,6 +50,7 @@ entry that carries them.
   `PUT`, which the store answered `200`.
   [Send sipnab's vCons to vcon.store](docs/vcon-store.md#the-measurements)
   has the measurements.
+
 
 ## [0.5.210] - 2026-10-10
 
