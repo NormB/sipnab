@@ -11,8 +11,7 @@ describes.
 the `recording` Dialog Object without `parties` that sipnab writes for a call
 whose container carries no audio. It answers `409` for a uuid it already holds,
 and `PUT /v1/vcons/{uuid}` replaces the held copy. The forwarder sends each container byte for
-byte. sipnab no longer has the compat mode that changed the copy it sent to the
-store. Not measured: a `recording` that carries audio but no
+byte. Not measured: a `recording` that carries audio but no
 `parties`, which sipnab writes when an audio channel came from an address no
 party advertised in its SDP, such as a media relay's.
 [The measurements](#the-measurements) are the evidence.
@@ -144,14 +143,6 @@ On 2026-10-07, kept as history:
 | the same with `extensions` removed | `201` |
 | a request with Python's default HTTP `User-Agent` | `403`, `error code: 1010`, from the Cloudflare front. The front accepted a curl `User-Agent` |
 
-Until the release after 0.5.209, sipnab's `vcon-store` kind, and the compat
-flag that release removed, sent `extensions` as an object of names
-mapped to `true`, and refused a Dialog Object without `type` or `parties`,
-because section 4.1.3 of
-[draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3)
-and every revision since define `extensions` as an array of strings, which the
-store then refused.
-
 A `409` for a held uuid is a refusal: the container goes to `spool/failed`
 with the store's answer in its `.error.json` record, and
 `--vcon-forward-once` exits `1`. To replace the held copy instead, name the
@@ -196,8 +187,7 @@ The container is the copy the store accepted, as sipnab sent it. Measured on
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), sent with `--vcon-forward-kind
 vcon-store` (`201`), read back with `--vcon-fetch` (the file held `extensions`
 as the array and no `_meta`), then deleted (`200`). A read after the delete
-answered `404`. A container sent through the removed compat mode comes back with `extensions` as an object: the fetcher writes it, reports
-the schema finding, and the run exits `1`. More:
+answered `404`. More:
 [Fetch a stored vCon](vcon.md#fetch-a-stored-vcon).
 
 ## When something does not work

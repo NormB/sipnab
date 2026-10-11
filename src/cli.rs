@@ -8124,13 +8124,6 @@ mod tests {
         // startup check that does is
         // `the_forwarder_needs_a_url_and_a_credential_from_some_source`.
         assert!(Cli::try_parse_from(["sipnab", "--vcon-forward", "/srv/spool"]).is_ok());
-        let mut bad = vec!["sipnab"];
-        bad.extend(FORWARD);
-        bad.extend(["--vcon-forward-compat", "vcon-store"]);
-        let e = Cli::try_parse_from(&bad)
-            .err()
-            .ok_or("the removed --vcon-forward-compat was accepted")?;
-        assert_eq!(e.kind(), clap::error::ErrorKind::UnknownArgument, "{e}");
         Ok(())
     }
 
