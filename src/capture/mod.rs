@@ -28,6 +28,8 @@ pub mod evidence_ring;
 pub mod fanout;
 #[cfg(feature = "native")]
 pub mod file;
+#[cfg(feature = "native")]
+pub(crate) mod frames;
 #[cfg(feature = "hep")]
 pub mod hep;
 // Not behind `hep`: the listener writes this state, but the TUI, REST and MCP

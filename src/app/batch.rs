@@ -3929,8 +3929,8 @@ impl BatchRunner {
     /// nothing — the failure this area has already been bitten by.
     #[cfg(feature = "tls")]
     fn poll_keylog_if_due(&mut self, lp: &mut ReceiveLoop) {
-        if lp.keylog_poll_clock.elapsed() >= KEYLOG_POLL_INTERVAL
-            && (self.cli.tls_args.keylog_watch || self.cli.tls_args.keylog_fd.is_some())
+        let watching = self.cli.tls_args.keylog_watch || self.cli.tls_args.keylog_fd.is_some();
+        if keylog_poll_due(watching, || lp.keylog_poll_clock.elapsed())
             && let Some(ref mut decryptor) = self.tls_decryptor
         {
             lp.keylog_poll_clock = std::time::Instant::now();
@@ -4672,6 +4672,16 @@ impl BatchRunner {
 /// packet rate, not one per packet against a stated >=100K pps target).
 #[cfg(feature = "tls")]
 const KEYLOG_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Whether the keylog poll is due: a watch is set and
+/// [`KEYLOG_POLL_INTERVAL`] has passed since the last poll. `since_last` reads
+/// the clock, and is called only when a watch is set: the receive loop asks
+/// once per packet, and a clock read per packet cost 7.6% of the cycles of a
+/// single-core file run.
+#[cfg(feature = "tls")]
+fn keylog_poll_due(watching: bool, since_last: impl FnOnce() -> std::time::Duration) -> bool {
+    watching && since_last() >= KEYLOG_POLL_INTERVAL
+}
 
 /// What the receive loop carries from one packet to the next, and what the
 /// steps after it read.
@@ -8046,6 +8056,32 @@ fn apply_plugins(
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    /// Without `--keylog-watch` or `--keylog-fd` the keylog poll reads no
+    /// clock: the receive loop asks once per packet, and the clock read cost
+    /// 7.6% of the cycles of a single-core file run (perf, 2026-10-11).
+    #[cfg(feature = "tls")]
+    #[test]
+    fn keylog_poll_reads_no_clock_when_not_watching() {
+        let read = std::cell::Cell::new(0);
+        let since = || {
+            read.set(read.get() + 1);
+            KEYLOG_POLL_INTERVAL
+        };
+        assert!(!keylog_poll_due(false, since));
+        assert_eq!(read.get(), 0, "the clock was read with no watch set");
+        assert!(keylog_poll_due(true, since));
+        assert_eq!(read.get(), 1);
+    }
+
+    /// With a watch set, the poll is due once the interval has passed.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn keylog_poll_is_due_after_the_interval() {
+        let short = KEYLOG_POLL_INTERVAL - std::time::Duration::from_millis(1);
+        assert!(!keylog_poll_due(true, || short));
+        assert!(keylog_poll_due(true, || KEYLOG_POLL_INTERVAL));
+    }
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;

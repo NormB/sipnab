@@ -847,7 +847,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // page, not code).
     // 505 -> 506: the same section's corrected-copy paragraph links
     // tests/fixtures/vcon-datasets/CORRECTED.tsv.
-    const EXPECTED_CODE_LINKS: usize = 506;
+    // 506 -> 507: docs/internals/zero-copy-payloads.md links bench/carrier.py
+    // in the single-threaded mapped-read measurement.
+    const EXPECTED_CODE_LINKS: usize = 507;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

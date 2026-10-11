@@ -15024,7 +15024,7 @@ CoreAudio the moment anything touches it.
 | `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--lint-suppress-file` | `<FILE>` | discovered | Read lint suppressions from this file instead of discovering one. Without it the binary looks for a `.sipnablint` beside the capture and climbs toward the project root — the nearest ancestor holding a `.git` — which is exactly what the MCP lint tools already do. Until this shipped the two surfaces disagreed about the same file on disk: the MCP tools honored a `.sipnablint` checked in beside a capture while the binary silently ignored it, so the CI user was on the side that could not see it. A named file sipnab cannot open fails hard rather than falling back to a full-catalog run. sipnab names whatever applies on stderr, with a count of what it silenced. Needs `--lint` |
 | `--lint-no-suppress` | -- | off | Ignore any `.sipnablint`, including one named by `--lint-suppress-file`. The "show me everything, including what we have agreed to live with" switch; it wins over both the explicit file and discovery, so a wrapper script that always passes a suppression file can still be overridden from the command line. Needs `--lint` |
-| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At 2 or more cores sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead, exactly as before. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way. With `--retain-audio` the payload cap applies PER WORKER, so the run's ceiling is `[limits] max_audio_frames` times this number times `--max-streams` |
+| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At any core count sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way, except that libpcap reads a nanosecond-resolution pcap's timestamps to the microsecond. With `--retain-audio` the payload cap applies PER WORKER, so the run's ceiling is `[limits] max_audio_frames` times this number times `--max-streams` |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
 | `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes sipnab may inflate out of one gzip-compressed input: a `-I capture.pcap.gz`, every gzip layer of an archive summed across the layers of one input, the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM or disk. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
 | `--max-tcp-buffer` | `<BYTES>` | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
@@ -46473,12 +46473,19 @@ Measured on the 535k corpus (median-of-7, idle host, same binary either way via
 | 4     | 3.27M  | 2.38M   | +37% |
 | 8     | 3.30M  | 2.18M   | +51% |
 
-Read the one-core row as a control: `--cores 1` and a run with no `--cores` use
-the single-threaded reader in `crate::capture::file`, which does not map, so
-that row is libpcap against itself and its spread is the harness noise floor.
-Only `--cores 2` and up reach the mapped reader, and the gain arrives at four —
-the point where the serial reader is what the workers wait on. The default
-offline read therefore does not benefit yet.
+Read the one-core row as a control: at the time of that measurement,
+`--cores 1` and a run with no `--cores` used the single-threaded reader in
+`crate::capture::file` through libpcap, so that row is libpcap against itself
+and its spread is the harness noise floor. The gain arrives at four cores, the point where the serial
+reader is what the workers wait on.
+
+Since 2026-10-11 the single-threaded reader maps too, through the same
+`crate::capture::frames::Frames` the `--cores` reader uses. On a 535k-packet
+corpus of 5,000 calls from [`bench/carrier.py`](../../bench/carrier.py) (median-of-5, two sessions, idle
+host), a run with no `--cores` went from 0.95M to 1.16M pkts/s. On
+one core the gain is not the `read` the mapping saves but what libpcap's path
+cost per packet: glibc's `fread` lock (9% of cycles in `perf`) and a fresh
+allocation per frame, which the shared 64 KiB blocks replace.
 
 **What failed, and why it looked right.** The natural design — hand each frame
 out as a refcounted slice of the mapping, copying nothing at all — measures
