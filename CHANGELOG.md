@@ -20,10 +20,11 @@ entry that carries them.
   still read through libpcap. The receive loop also no longer reads the clock
   per packet for the keylog poll unless `--keylog-watch` or `--keylog-fd` is
   set. On a 535k-packet corpus built with `bench/carrier.py --calls 5000`, a
-  single-core run went from 0.95M to 1.16M packets per second (median of
-  five, interleaved with the previous build, two sessions); peak memory rose
-  from 161.8 to 168.9 MiB. Two, four and eight cores stayed within the
-  benchmark's ~2% noise floor.
+  single-core run of a release build went from 0.96M (0.5.211) to 1.18M
+  packets per second, the lowest of three interleaved replicates each; peak
+  memory rose from 160.9 to 168.4 MiB. Two, four and eight cores stayed
+  within the spread of the replicates. [Check how fast sipnab
+  is](docs/benchmarks.md) has the tables.
   A nanosecond-resolution pcap now keeps all nine digits of each timestamp
   on one core, as it did with `--cores`; libpcap dropped the last three.
 - **`--cores` names a record with a corrupt capture timestamp in the

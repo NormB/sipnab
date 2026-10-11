@@ -51,38 +51,41 @@
   "of the benchmarks page and to the homepage tile, so moving any one of them",
   "alone is a red test rather than a discovery six releases later."
  ],
- "cores_4_pkts_per_s": 3560000,
+ "cores_4_pkts_per_s": 3520000,
  "measured": {
-  "version": "0.5.160",
-  "date": "2026-09-09",
-  "commit": "4641f323",
+  "version": "0.5.211",
+  "_version": "main after the v0.5.211 tag, which reports 0.5.211: the tag plus the single-core reader change (#451).",
+  "date": "2026-10-11",
+  "commit": "15e5e7bd",
   "host": "NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT, idle",
   "corpus": "bench/carrier.py --calls 5000 (535000 packets, 93.5% RTP)",
   "method": "median-of-5 after one discarded warmup, three replicates",
   "idle_gate": "vmstat id >= 96% and no toolchain build process; 90% would permit 1.4 busy cores on a 14-core host",
   "replicates_pkts_per_s": [
-   3620000,
-   3610000,
-   3560000
+   3560000,
+   3560000,
+   3520000
   ],
   "cores_replicates_pkts_per_s": {
-   "1": [1070000, 1060000, 1050000],
-   "2": [2630000, 2640000, 2640000],
-   "4": [3620000, 3610000, 3560000],
-   "8": [3140000, 3130000, 3150000]
+   "1": [1180000, 1180000, 1180000],
+   "2": [2590000, 2570000, 2600000],
+   "4": [3560000, 3560000, 3520000],
+   "8": [3150000, 3160000, 3170000]
   },
   "cores_published_pkts_per_s": {
-   "1": 1050000,
-   "2": 2630000,
-   "4": 3560000,
-   "8": 3130000
+   "1": 1180000,
+   "2": 2570000,
+   "4": 3520000,
+   "8": 3150000
   },
   "peak_rss_mib_replicates": {
-   "1": [168.2, 168.2, 168.2],
-   "2": [101.9, 100.8, 100.5],
-   "4": [98.0, 97.5, 98.3],
-   "8": [101.2, 104.5, 103.2]
+   "1": [168.4, 168.4, 168.4],
+   "2": [106.4, 103.4, 107.9],
+   "4": [103.0, 101.7, 103.4],
+   "8": [106.8, 107.0, 106.8]
   },
+  "_peak_rss_published": "The page's peak RSS cell is the HIGHEST of the three replicates, the figure to plan memory against.",
+  "_session": "vmstat idle 99% before every run; no runner job, rustc or cargo process.",
   "_note": "Baseline and every published figure are the LOWEST replicate, not the median, so the floor derived from them cannot sit above a figure this host actually produces.",
   "_eight_cores": "Eight cores is SLOWER than four on this host and this corpus, in all three replicates. That is the shape of the curve here, not a bad run, and the page says so rather than quoting the peak and leaving the shoulder off."
  },
@@ -99,11 +102,12 @@
   "generator": "bench/carrier.py --calls N --call-ids 0 --stream-pairs 0",
   "cores": 4,
   "rows": [
-   { "calls": 500, "packets": 53500, "dialogs": 500, "streams": 1000, "pkts_per_s": 2190000, "peak_rss_mib": 29.5 },
-   { "calls": 2000, "packets": 214000, "dialogs": 2000, "streams": 4000, "pkts_per_s": 2800000, "peak_rss_mib": 69.2 },
-   { "calls": 8000, "packets": 856000, "dialogs": 8000, "streams": 16000, "pkts_per_s": 3280000, "peak_rss_mib": 226.7 },
-   { "calls": 20000, "packets": 2140000, "dialogs": 20000, "streams": 40000, "pkts_per_s": 3260000, "peak_rss_mib": 495.0 }
-  ]
+   { "calls": 500, "packets": 53500, "dialogs": 500, "streams": 1000, "pkts_per_s": 2080000, "peak_rss_mib": 33.5 },
+   { "calls": 2000, "packets": 214000, "dialogs": 2000, "streams": 4000, "pkts_per_s": 2740000, "peak_rss_mib": 73.6 },
+   { "calls": 8000, "packets": 856000, "dialogs": 8000, "streams": 16000, "pkts_per_s": 3050000, "peak_rss_mib": 233.2 },
+   { "calls": 20000, "packets": 2140000, "dialogs": 20000, "streams": 40000, "pkts_per_s": 3060000, "peak_rss_mib": 531.1 }
+  ],
+  "_session_spread": "Two more sessions the same evening measured this build at 3.14-3.31M at 20,000 calls: the sweep moves about 8% between sessions, more than within one. In an interleaved session, 0.5.160, 0.5.211 and this build were within 5% of each other at every size: 0.5.160 was fastest at 500 calls and slowest at 20,000."
  },
  "floor_pct": 80,
  "_floor_rationale": [
@@ -112,9 +116,9 @@
   "of both. A tighter band on a runner that also serves CI would be flaky in",
   "the direction that gets a gate muted, and a muted gate catches nothing.",
   "",
-  "The floor is 2.85M. Checked against the numbers that matter here: the",
-  "0.5.118 regression measured 2.40M, which is 67% and trips it -- the whole",
-  "point of keeping the baseline current. 0.5.122's 3.25M is 91% and does",
+  "The floor is 2.82M. Checked against the numbers that matter here: the",
+  "0.5.118 regression measured 2.40M, which is 68% and trips it -- the whole",
+  "point of keeping the baseline current. 0.5.122's 3.25M is 92% and does",
   "not, which is correct: 0.5.122 was not a regression, it was an older tool.",
   "",
   "Note what the raise fixed, three times now. While this file baselined",
@@ -123,6 +127,14 @@
   "baselined 0.5.104's 2.28M, a tool running at 3.30M could lose 27% and",
   "pass. While it baselined 0.5.122's 3.25M, a tool running at 3.56M could",
   "lose 27% and pass. A stale baseline does not merely under-report; it",
-  "silently widens the band it advertises."
+  "silently widens the band it advertises.",
+  "",
+  "The 2026-10-11 re-measure moved the baseline DOWN, from 3.56M to 3.52M,",
+  "and that is not the move the warning above forbids. Nothing was red: it",
+  "is the lowest replicate of a full re-measure (3.56 / 3.56 / 3.52M), 1.1%",
+  "under the old figure and inside the ~2% noise floor, and the same session",
+  "measured 0.5.211 at 3.43 / 3.53 / 3.56M. Publishing the lowest replicate",
+  "is the rule this file states; keeping 3.56M would publish a figure this",
+  "run did not produce at its floor."
  ]
 }
