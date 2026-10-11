@@ -147,30 +147,32 @@ to sipnab and to the reference engine.
 
 [`tests/fixtures/vcon-datasets/CORRECTED.tsv`](../../tests/fixtures/vcon-datasets/CORRECTED.tsv)
 pins [NormB/vcon-datasets-core04](https://github.com/NormB/vcon-datasets-core04),
-a copy of the first three datasets with `mediatype` added to every inline
-attachment and nothing else changed. Its CHANGES.md lists what it leaves
-open and why. fake-vcons and tadhack-2025 are not in it, for the contact data
+a copy of the first three datasets with two kinds of key added and nothing
+else changed: `mediatype` on every inline attachment, and `content_hash` on
+the 425 IETF audio recordings whose files it downloaded, with an IETF login,
+and hashed. Its CHANGES.md lists what it leaves open and why. fake-vcons and tadhack-2025 are not in it, for the contact data
 described in the subset README. The fetch script fetches both pins files
 unless `--pins` names others, and accepts `--pins` more than once.
 
 The corpus test holds the corrected copy to three things, beside the tests
 above that pin the upstream findings. It is at its pinned commit. Each
-corrected dataset gets the answer measured on 2026-10-09, with sipnab and the
+corrected dataset gets the answer measured on 2026-10-11, with sipnab and the
 reference agreeing on every container. Each corrected container is its
-upstream container with `mediatype` added: repairing both with the test's own
-repair gives the same document, and the corrected one needs no `mediatype`
-repair. That last check compares this repository's repair rule with the
+upstream container with keys added: the test counts the added `content_hash`
+values (425) and requires each to be a SHA-512 token, and with them set aside,
+repairing both containers with the test's own repair gives the same document
+and the corrected one needs no `mediatype` repair. That last check compares this repository's repair rule with the
 corrected repository's own, on all 16,799 containers.
 
 | Dataset | Containers | Valid | Findings, with the number of containers that carry each |
 |---|---|---|---|
 | `vcon-supreme-court-arguments` | 8,503 | 8,503 | None |
-| `ietf-meeting-vcons` | 8,181 | 4,102 | Dialog Object with `url` and no `content_hash`: 4,079 |
+| `ietf-meeting-vcons` | 8,181 | 4,527 | Dialog Object with `url` and no `content_hash`: 3,654 |
 | `vcon-dataset-city-of-newport-ri` | 115 | 0 | Dialog Object with `url` and no `content_hash`: 115 |
 
-The remaining finding needs a hash of each recording, and no fetch returned
-a recording to hash: the IETF recordings are YouTube pages or audio behind
-the IETF login, and the Newport video host refused the download.
+The remaining finding needs a hash of each recording, and no fetch returns
+these recordings to hash: the IETF ones are YouTube pages, and the Newport
+video host refused the download.
 
 Accepting a snapshot or overwriting a golden is a **decision**, not a fix. Read
 the diff first: these files are the record of what the tool promised its users.

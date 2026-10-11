@@ -423,9 +423,11 @@ fn the_committed_subset_is_a_copy_of_the_pinned_files() -> Result<(), TestError>
 /// The corrected corpus's directory in the cache.
 const CORRECTED_DIR: &str = "vcon-datasets-core04";
 
-/// What each corrected dataset was measured to hold on 2026-10-09. Every
-/// remaining finding is a recording `url` without `content_hash`, which the
-/// data cannot settle (CHANGES.md in the corrected repository says why).
+/// What each corrected dataset was measured to hold on 2026-10-11, at the
+/// commit `CORRECTED.tsv` pins. Every remaining finding is a recording `url`
+/// without `content_hash`: the IETF recordings on YouTube and the Newport
+/// videos, whose bytes could not be fetched to hash (CHANGES.md in the
+/// corrected repository says why).
 const CORRECTED_EXPECTED: &[Measured] = &[
     Measured {
         name: "vcon-supreme-court-arguments",
@@ -436,10 +438,10 @@ const CORRECTED_EXPECTED: &[Measured] = &[
     Measured {
         name: "ietf-meeting-vcons",
         files: 8181,
-        valid: 4102,
+        valid: 4527,
         findings: &[(
             "/dialog/* (dependencies): `url` is present, which requires: content_hash",
-            4079,
+            3654,
         )],
     },
     Measured {
@@ -521,18 +523,55 @@ fn each_corrected_dataset_gets_its_measured_answer() -> Result<(), TestError> {
     Ok(())
 }
 
-/// Each corrected container is its upstream container with `mediatype` added
-/// where sipnab's own repair adds it, and nothing else: repairing both gives
-/// the same document, and the corrected one needs no `mediatype` repair.
-/// Two implementations of the rule, this one and the corrected repository's
-/// `tools/core04.py`, agree on all 16,799 containers.
+/// Dialogs whose IETF audio the corrected repository fetched and hashed
+/// (its `hashes/ietf-audio.tsv`), each now carrying a `content_hash`.
+const CORRECTED_CONTENT_HASHES: usize = 425;
+
+/// Remove from `fixed` each dialog `content_hash` that `up` does not have, and
+/// return the removed values.
+fn take_added_content_hashes(up: &serde_json::Value, fixed: &mut serde_json::Value) -> Vec<String> {
+    let mut added = Vec::new();
+    let up_dialogs = up["dialog"].as_array().cloned().unwrap_or_default();
+    if let Some(dialogs) = fixed
+        .get_mut("dialog")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for (d, u) in dialogs.iter_mut().zip(&up_dialogs) {
+            if u.get("content_hash").is_none()
+                && let Some(obj) = d.as_object_mut()
+                && let Some(h) = obj.remove("content_hash")
+            {
+                added.push(h.as_str().unwrap_or_default().to_owned());
+            }
+        }
+    }
+    added
+}
+
+/// A core-04 section 2.2 SHA-512 token: `sha512-` and 86 base64url characters.
+fn is_sha512_token(s: &str) -> bool {
+    s.strip_prefix("sha512-").is_some_and(|d| {
+        d.len() == 86
+            && d.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
+/// Each corrected container is its upstream container with keys added and
+/// nothing else changed. Its added dialog `content_hash` values are taken
+/// out, counted and checked for form; what remains is the upstream container
+/// with `mediatype` added where sipnab's own repair adds it: repairing both
+/// gives the same document, and the corrected one needs no `mediatype`
+/// repair. Two implementations of the rule, this one and the corrected
+/// repository's `tools/core04.py`, agree on all 16,799 containers.
 #[test]
-fn the_corrected_corpus_is_its_upstream_with_only_mediatype_added() -> Result<(), TestError> {
+fn the_corrected_corpus_is_its_upstream_with_keys_added_only() -> Result<(), TestError> {
     let Some(root) = cache() else {
         return Ok(());
     };
     let pin = vcon_datasets::corrected_pin()?;
     let mut compared = 0usize;
+    let mut hashes_added = 0usize;
     let mut wrong = Vec::new();
     for Measured { name, .. } in CORRECTED_EXPECTED {
         let upstream_tree = root.join(name);
@@ -553,18 +592,25 @@ fn the_corrected_corpus_is_its_upstream_with_only_mediatype_added() -> Result<()
         for (u, c) in upstream.iter().zip(&corrected) {
             let mut up: serde_json::Value = serde_json::from_slice(&std::fs::read(u)?)?;
             let mut fixed: serde_json::Value = serde_json::from_slice(&std::fs::read(c)?)?;
+            let added = take_added_content_hashes(&up, &mut fixed);
+            hashes_added += added.len();
+            let malformed = added.iter().any(|h| !is_sha512_token(h));
             vcon_datasets::repair_recorded_issues(&mut up);
             let still = vcon_datasets::repair_recorded_issues(&mut fixed);
-            if still.contains("attachment-mediatype") || up != fixed {
+            if malformed || still.contains("attachment-mediatype") || up != fixed {
                 wrong.push(c.display().to_string());
             }
             compared += 1;
         }
     }
     assert_eq!(compared, 16_799, "every corrected container is compared");
+    assert_eq!(
+        hashes_added, CORRECTED_CONTENT_HASHES,
+        "dialogs that gained a content_hash"
+    );
     assert!(
         wrong.is_empty(),
-        "{} corrected container(s) differ from upstream by more than mediatype:\n{}",
+        "{} corrected container(s) differ from upstream by more than added keys:\n{}",
         wrong.len(),
         wrong
             .iter()
