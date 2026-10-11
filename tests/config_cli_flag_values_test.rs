@@ -2320,18 +2320,6 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
-        "vcon-forward-compat",
-        Kind::Choice,
-        &[
-            "--vcon-forward-url",
-            "http://127.0.0.1:9/x",
-            "--vcon-forward-auth-file",
-            "/nonexistent/auth",
-            "--vcon-forward",
-            "/var/tmp",
-        ],
-    ),
-    (
         "vcon-fetch",
         Kind::Text {
             accept: &["x", "0", "-1", "-", "018bcfe5-6800-8a6b-a667-78f1c5213800"],

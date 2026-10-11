@@ -15065,14 +15065,14 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--vcon-forward` | `<SPOOL_DIR>` | -- | Deliver each container in this spool to `--vcon-forward-url`, byte for byte, and move it out of the spool by the store's answer: `2xx` to `--vcon-forward-done`, another `4xx` to `--vcon-forward-failed` beside a `<name>.error.json` record, `5xx`, a timeout or no connection left in place and retried after `--vcon-forward-backoff-first` (2 s), doubling to at most `--vcon-forward-backoff-cap` (5 minutes). A `401` or `403` refuses the credentials or the client for every container, so the forwarder stops instead: it sends nothing more, moves no file, logs the status and the first 200 bytes of the answer, and exits `3`, in either mode. Skips dot-prefixed names and names that do not end in `.json`. A container sipnab rewrites under the same name goes again. A `2xx` means the store accepted the container, not that it stored it. Needs a URL and a credential, each from its flag or its `[vcon_forward]` key; without one sipnab refuses the run with exit `2`, naming both |
-| `--vcon-forward-kind` | `<KIND>` | `generic` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when the URL names no path, the header when the credential is a bare key, and the payload adaptation; an explicit setting overrides each. `generic` supplies nothing. The table: [Choose the store kind](vcon.md#choose-the-store-kind). Config: `[vcon_forward] kind` |
+| `--vcon-forward-kind` | `<KIND>` | `generic` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when the URL names no path and the header when the credential is a bare key; an explicit setting overrides each. No kind changes the container sent. `generic` supplies nothing. The table: [Choose the store kind](vcon.md#choose-the-store-kind). Config: `[vcon_forward] kind` |
 | `--vcon-forward-url` | `<URL>` | -- | Where the forwarder POSTs each container, `http://` or `https://`, with its path and query. With a `--vcon-forward-kind` other than `generic`, a URL with no path is the store's base URL and the kind adds its ingest path. sipnab refuses credentials in the URL: they belong in the auth file. Plain `http://` to a host other than loopback logs a warning. Config: `[vcon_forward] url` |
 | `--vcon-forward-auth` | `<HEADER>` | -- | The credential itself, also read from `SIPNAB_VCON_FORWARD_AUTH`, as the auth file would hold it: one `Header-Name: value` line, or the bare key with a `--vcon-forward-kind` other than `generic`. A flag's value is visible in the process list to other users of the host: prefer the environment variable or `--vcon-forward-auth-file`. Refused when empty, beside `--vcon-forward-auth-file`, and beside `[vcon_forward] auth_file`. `--help` names the variable and never shows its value. The value never appears in a log line, an error or a failure record. A capture run ignores the variable |
 | `--vcon-forward-auth-file` | `<FILE>` | -- | File holding one line, `Header-Name: value`, sent with every request: `Authorization: Bearer <token>`, or `x-conserver-api-token: <key>`. With a `--vcon-forward-kind` other than `generic` it may hold the bare key instead. Refused when other users can read it (`chmod 600` it), by the rule sipnab applies to its other secret files. A file sipnab cannot read, or one that holds no credential, stops the forwarder with exit 2. The same file named by `[vcon_forward] auth_file` exits 1. The value never appears in a log line, an error or a failure record. Config: `[vcon_forward] auth_file` |
 | `--vcon-forward-done` | `<DIR>` | `<SPOOL_DIR>/delivered` | Where a delivered container goes, under its own name. Created mode `0700` if missing. Must be on the spool's file system. Config: `[vcon_forward] done` |
 | `--vcon-forward-failed` | `<DIR>` | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`: the status, the method and URL, and the first `--vcon-forward-max-error-body` bytes (8 KiB) of the store's answer with the auth value removed, or the forwarder's own reason. Created mode `0700` if missing. Must be on the spool's file system. Config: `[vcon_forward] failed` |
 | `--vcon-forward-replace-url` | `<TEMPLATE>` | -- | When the POST answers `409`, PUT the same bytes to this URL with `{uuid}` replaced by the container's `uuid`. Without it a `409` is a refusal like any other `4xx`. Config: `[vcon_forward] replace_url` |
-| `--vcon-forward-once` | -- | off | Make one pass and exit: `0` when the store accepted every container or the spool held none, `1` when the store refused one or one is still waiting, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`. A config file sipnab cannot read, or one that holds a `[vcon_forward]` number, `kind` or `compat` outside its range or list, an empty path, or a `url` or `replace_url` sipnab refuses, exits `1` before the pass, as any run does; the same refusal of `--vcon-forward-url` or `--vcon-forward-replace-url` exits `2`. Without it the forwarder passes over the spool every `--vcon-forward-interval` seconds until SIGTERM or SIGINT, and sends nothing after the signal |
+| `--vcon-forward-once` | -- | off | Make one pass and exit: `0` when the store accepted every container or the spool held none, `1` when the store refused one or one is still waiting, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`. A config file sipnab cannot read, or one that holds a `[vcon_forward]` number or `kind` outside its range or list, an empty path, or a `url` or `replace_url` sipnab refuses, exits `1` before the pass, as any run does; the same refusal of `--vcon-forward-url` or `--vcon-forward-replace-url` exits `2`. Without it the forwarder passes over the spool every `--vcon-forward-interval` seconds until SIGTERM or SIGINT, and sends nothing after the signal |
 | `--vcon-forward-interval` | `<SECS>` | `5` | Seconds between passes, 1 to 3600. Config: `[vcon_forward] interval` |
 | `--vcon-forward-timeout` | `<SECS>` | `30` | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600. Config: `[vcon_forward] timeout` |
 | `--vcon-forward-ca` | `<FILE>` | host bundle | Trust only the CA certificates in this PEM file for an `https://` store. Without it the forwarder trusts the host's CA bundle. Config: `[vcon_forward] ca` |
@@ -15080,12 +15080,11 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
 | `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
-| `--vcon-forward-compat` | `<none\|vcon-store>` | the kind's | Change the copy SENT for one store's known deviation from the drafts, and log each change. `none` sends every container byte for byte, the `generic` and `conserver` kinds' default. `vcon-store` sends `extensions` as an object of names mapped to `true`, because vcon.store refuses the array of strings section 4.1.3 of the drafts defines, and refuses a container whose Dialog Object lacks `type` or `parties`: the adaptation the `vcon-store` kind applies. The container on disk never changes. More: [Send sipnab's vCons to vcon.store](vcon-store.md). Config: `[vcon_forward] compat` |
 
 **Examples**
 
 - `sipnab --vcon-forward spool --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once` — deliver what is in `spool` to a self-hosted conserver's `sipnab` ingress list once, and exit `0` when the conserver accepted all of it
-- `sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key` — keep delivering to vcon.store until stopped: the kind adds `/v1/vcons`, sends the key in the file as `Authorization: Bearer <key>`, and applies the adaptation its validator needs
+- `sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key` — keep delivering to vcon.store until stopped: the kind adds `/v1/vcons`, and sends the key in the file as `Authorization: Bearer <key>`
 - `sipnab --vcon-forward spool --vcon-forward-kind conserver --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-auth-file conserver.key --vcon-forward-once` — deliver to a self-hosted conserver's `sipnab` ingress list once: the kind adds `/vcon/external-ingress?ingress_list=sipnab` and sends the key as `x-conserver-api-token`
 - `sipnab --vcon-forward spool --config /etc/sipnab/vcon-store.toml` — take every forwarder setting from a config file's `[vcon_forward]` section
 - `sipnab --vcon-forward spool --vcon-forward-url http://127.0.0.1:8000/v1/vcons --vcon-forward-auth 'Authorization: Bearer test-token' --vcon-forward-once` — a test against a store on this machine, with the credential on the command line, where every user of the host can read it in the process list; for anything else, export `SIPNAB_VCON_FORWARD_AUTH` instead
@@ -15095,8 +15094,6 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-max-error-body 65536 --vcon-forward-once` — keep up to 64 KiB of each refusal's answer in its `<name>.error.json` record
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-max-error-body 512 --vcon-forward-max-response-head 16384` — keep 512 bytes of each refusal, and treat an answer whose headers exceed 16 KiB as no answer
 - `sipnab --vcon-forward spool --vcon-forward-url https://proxy.example.com/vcon --vcon-forward-auth-file vcon.auth --vcon-forward-max-response-head 131072 --vcon-forward-once` — a store behind a proxy that adds large headers: read up to 128 KiB of them
-- `sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key --vcon-forward-compat none --vcon-forward-once` — send containers to vcon.store unchanged, without the kind's adaptation, to see what the store answers for the form the drafts define
-- `sipnab --vcon-forward spool --vcon-forward-url https://api.vcon.store/v1/vcons --vcon-forward-auth-file vcon-store.auth --vcon-forward-compat vcon-store --vcon-forward-once` — the vcon.store adaptation with every other setting explicit, as before `--vcon-forward-kind` existed
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-timeout 10` — a store whose certificate a private CA issued: trust only that CA, and give up on a silent store after ten seconds rather than thirty
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-interval 60 --vcon-forward-timeout 120` — a store across a slow link: pass over the spool once a minute and wait up to two minutes for each answer
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
@@ -18299,7 +18296,7 @@ other than `generic` supplies the value, and then the default applies.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path, the header when the credential is a bare key, and the payload adaptation. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
+| `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path and the header when the credential is a bare key; no kind changes the container sent. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
 | `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows: sipnab refuses a URL with a user name or password in it, and the message shows that part as `[redacted]`. A URL refused from this key exits `1`, as every refused config value does; the same URL from `--vcon-forward-url` exits `2`. `--vcon-forward-url` overrides it |
 | `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. A template refused from this key exits `1`; from `--vcon-forward-replace-url`, `2`. `--vcon-forward-replace-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. A file sipnab cannot read, or one that holds no credential, stops the forwarder with exit 1, as any refused key does. `--vcon-forward-auth-file` overrides it |
@@ -18308,7 +18305,6 @@ other than `generic` supplies the value, and then the default applies.
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
 | `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-forward-timeout` overrides it |
-| `compat` | string | the kind's | `none` or `vcon-store`: the adaptation of the copy sent. `vcon-store` is the adaptation the `vcon-store` kind applies. `--vcon-forward-compat` overrides it |
 | `backoff_first` | integer | `2` | Seconds a container waits after its first failed try, 1 to 4294967295; each failed try doubles the wait. No longer than `backoff_cap`. `--vcon-forward-backoff-first` overrides it |
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
@@ -31585,22 +31581,22 @@ had not reached stays in the spool for the next run.
 
 ### Choose the store kind
 
-Stores differ in where they take a container, how they authenticate, what they
-answer for a uuid they hold, and which parts of the drafts they accept.
+Stores differ in where they take a container, how they authenticate, and what
+they answer for a uuid they hold.
 `--vcon-forward-kind` (or `[vcon_forward] kind`) names the kind of store, and
 the kind supplies those values, so you give the store's base URL and the bare
 key:
 
-| Kind | Ingest path added to a base URL | The header a bare key goes in | A uuid it holds | Copy sent |
-|---|---|---|---|---|
-| `generic` (default) | none: the URL is the endpoint | not accepted: give `Header-Name: value` | not measured | unchanged |
-| `vcon-store` | `/v1/vcons` | `Authorization: Bearer <key>` | `409`; set `--vcon-forward-replace-url` to PUT it instead | `extensions` as an object, as `--vcon-forward-compat vcon-store` does |
-| `conserver` | `/vcon/external-ingress?ingress_list=sipnab` | `x-conserver-api-token: <key>` | `204`, and the store replaces its copy | unchanged |
+| Kind | Ingest path added to a base URL | The header a bare key goes in | A uuid it holds |
+|---|---|---|---|
+| `generic` (default) | none: the URL is the endpoint | not accepted: give `Header-Name: value` | not measured |
+| `vcon-store` | `/v1/vcons` | `Authorization: Bearer <key>` | `500`, which the forwarder retries like any `5xx` |
+| `conserver` | `/vcon/external-ingress?ingress_list=sipnab` | `x-conserver-api-token: <key>` | `204`, and the store replaces its copy |
 
-Each value is what the store did when measured on 2026-10-07. vcon.store:
-the measurements in
-[Send sipnab's vCons to vcon.store](vcon-store.md#the-measurements). conserver:
-a self-hosted vCon server, sent a synthetic container from sipnab's test
+No kind changes the container sent. Each value is what the store did when
+measured: vcon.store on 2026-10-09, in
+[Send sipnab's vCons to vcon.store](vcon-store.md#the-measurements). conserver
+on 2026-10-07: a self-hosted vCon server, sent a synthetic container from sipnab's test
 fixtures. It answered `204` for a new container, and `GET /vcon/{uuid}` then
 returned the container with an `amended` member added. It answered `204` for
 the same uuid sent again, and the read-back then showed the second copy. It
@@ -31617,10 +31613,6 @@ An explicit setting overrides each value the kind supplies:
 - The forwarder sends a credential that is a full `Header-Name: value` line as
   written. The kind forms the header only from a bare key, so give a key that
   itself holds a colon as the full line.
-- `--vcon-forward-compat` (or `[vcon_forward] compat`) replaces the kind's
-  adaptation: `none` sends the container unchanged to a `vcon-store` kind, and
-  `vcon-store` adapts it for a `generic` one. `--vcon-forward-compat vcon-store`
-  means what it meant before kinds existed.
 - `--vcon-forward-replace-url` applies to any kind. No kind sets one: nobody has
   measured a `PUT` to vcon.store.
 
@@ -31723,11 +31715,8 @@ sent, and leaves a newer one in the spool for the next pass.
   forwarder logs `delivered`, never `stored`. A self-hosted conserver once
   answered `204` for a container it then failed to write, and nothing in the
   answer said so. To know the store kept a container, look in the store.
-- **The bytes are sipnab's.** Without `--vcon-forward-compat` the forwarder
-  never changes a container. With it, only the copy it sends changes, and the
-  file on disk keeps the form the drafts define.
-  [Send sipnab's vCons to vcon.store](vcon-store.md) explains the one compat
-  mode there is.
+- **The bytes are sipnab's.** The forwarder never changes a container: it
+  sends the file's bytes, whatever the kind.
 - **It does not retry a refusal.** A `4xx` other than a `401`, a `403` or a
   `409` it can replace stays in the failed directory until a person reads the
   record and decides.
@@ -31816,9 +31805,9 @@ written, for any kind.
 The fetcher checks each container it writes against the vendored vCon schema.
 A container the schema refuses is still written, as the store holds it: it is
 the store's record, and you need it to see what is wrong. The log line lists
-each finding, and the run exits `1`. A container sent through vcon.store's
-compat mode comes back in the store's form, with `extensions` as an object, so
-the schema refuses it (measured on 2026-10-09).
+each finding, and the run exits `1`. A container sent to vcon.store through
+the compat mode that earlier releases of sipnab had comes back with `extensions`
+as an object, so the schema refuses it (measured on 2026-10-09).
 
 A file that already exists is not replaced: the fetcher does not ask the store
 for that uuid, and the run exits `1`. `--vcon-fetch-overwrite` replaces it.
@@ -35886,15 +35875,16 @@ with `sipnab --vcon-forward`, the forwarder that
 [Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store)
 describes.
 
-**Status on 2026-10-07: sipnab's containers work only through a compat
-mode, and only when they carry audio.** vcon.store refuses `extensions` in the
-form both vCon drafts define, so a sipnab container sent unchanged draws `400`.
-`--vcon-forward-kind vcon-store` sends a copy the store accepts, and leaves
-the container on disk unchanged. Even with it, the store refuses a container
-whose Dialog Object has no `parties`, which is what sipnab writes for a call
-whose container carries no audio: the run kept none, or `--redact` withheld it.
-sipnab also writes one for a call whose audio it cannot attribute to a party,
-such as audio that a media relay sent. [The measurements](#the-measurements) are the evidence.
+**Status on 2026-10-11: vcon.store accepts the two forms it refused on
+2026-10-07**: `extensions` as the array of strings both vCon drafts define, and
+the `recording` Dialog Object without `parties` that sipnab writes for a call
+whose container carries no audio. It answers `409` for a uuid it already holds,
+and `PUT /v1/vcons/{uuid}` replaces the held copy. The forwarder sends each container byte for
+byte. sipnab no longer has the compat mode that changed the copy it sent to the
+store. Not measured: a `recording` that carries audio but no
+`parties`, which sipnab writes when an audio channel came from an address no
+party advertised in its SDP, such as a media relay's.
+[The measurements](#the-measurements) are the evidence.
 
 ## Before you send anything
 
@@ -35905,32 +35895,30 @@ another party's system. Decide what may leave the machine first:
 - `--redact` replaces identities, addresses and correlation identifiers with
   keyed tokens, and withholds the audio. It works on a capture file (`-I`),
   not on a live capture.
-- A redacted container carries no audio, so its Dialog Object has no
-  `parties`, and vcon.store refuses it. The compat mode refuses it before sending, with
-  that reason. Today the only sipnab container vcon.store accepts is one
-  exported without `--redact` and with audio that sipnab attributed to the
-  parties: the call audio and the identifiers the signaling carried, as
-  captured.
+- A redacted container carries no audio, so its `recording` Dialog Object has
+  no `parties` and no content. vcon.store accepted that form when measured on
+  2026-10-09.
+- A container exported without `--redact` and with `--retain-audio` carries
+  the call audio and the identifiers the signaling carried, as captured.
 - [What may you conclude](vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)
   lists what a container carries.
 
 ## 1. Write the containers
 
 Export the calls from a capture file with their audio. `--retain-audio` makes
-sipnab type each call's Dialog Object `recording`. The object names the
-parties, which the store requires, when each audio channel came from the media
-address and port that one party advertised in its own SDP. Audio from any
-other address, such as a media relay's, gets no `parties`, and the store
-refuses that container. This container is not redacted: it carries the audio
-and the identifiers as captured.
+sipnab put each call's audio in its `recording` Dialog Object. The object names
+the parties when each audio channel came from the media address and port that
+one party advertised in its own SDP, and has no `parties` otherwise. This
+container is not redacted: it carries the audio and the identifiers as
+captured.
 
 ```sh
 sipnab -N --no-cli-print -I calls.pcap --retain-audio \
   --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
 ```
 
-With `--redact` added, the same command writes containers without audio, and
-step 3 moves each one to `spool/failed` with the reason.
+With `--redact` added, and `--retain-audio` removed, the same command writes
+redacted containers without audio.
 
 sipnab prints `Wrote N vCon container(s) to 'spool'.`
 
@@ -35962,9 +35950,9 @@ sipnab --vcon-forward spool --vcon-forward-kind vcon-store \
 echo "exit $?"
 ```
 
-`--vcon-forward-kind vcon-store` adds `/v1/vcons` to the base URL, forms the
-header from the token, and applies the compat mode below. The same settings
-can live in `sipnab.toml`:
+`--vcon-forward-kind vcon-store` adds `/v1/vcons` to the base URL and forms
+the header from the token. It does not change the container. The same
+settings can live in `sipnab.toml`:
 
 ```toml
 [vcon_forward]
@@ -35973,58 +35961,79 @@ url = "https://api.vcon.store"
 auth_file = "/etc/sipnab/vcon-store.key"
 ```
 
-For each container the forwarder logs one line naming the change it made to
-the copy it sent, then a `delivered` line with the store's status, and moves
-the file to `spool/delivered`. The exit status is `0` when the store accepted
-every container. A container the store or the compat mode refused is in
+For each container the forwarder logs a `delivered` line with the store's
+status, and moves the file to `spool/delivered`. The exit status is `0` when
+the store accepted every container. A container the store refused is in
 `spool/failed`, beside a `.error.json` record that says why. A `401` or `403`
 is different: it refuses the token or the client for every container, so the
 forwarder stops, moves nothing, logs the status and the start of the answer,
 and exits `3`.
 
 sipnab's tests run the `vcon-store` kind against a stand-in that answers as the
-maintainer measured vcon.store answering ([`tests/vcon_forward_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_forward_test.rs)), not
+maintainer measured vcon.store answering on 2026-10-11, and against one that
+answers as it did on 2026-10-07
+([`tests/vcon_forward_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_forward_test.rs)), not
 against vcon.store itself.
-
-## What the compat mode changes, and why
-
-The `vcon-store` kind changes the copy the forwarder SENDS, as
-`--vcon-forward-compat vcon-store` does: the flag is the same adaptation for
-any kind, and `--vcon-forward-compat none` turns it off for this one. The
-file in the spool, and the copy in `spool/delivered`, keep the form the drafts
-define. The forwarder logs each change, one line per container.
-
-| In the container | Sent to vcon.store | Why |
-|---|---|---|
-| `"extensions": ["sip-signaling", "CC"]` | `"extensions": {"sip-signaling": true, "CC": true}` | Section 4.1.3 of [draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3), and of every revision since through [-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.3), defines `extensions` as an array of strings. vcon.store refuses that and accepts an object. The copy keeps every name, in its order. |
-| a Dialog Object with no `type` or no `parties` | nothing: the container is not sent | vcon.store requires both on every Dialog Object, as draft-ietf-vcon-vcon-core-02 did. sipnab writes a Dialog Object without `parties` when the container carries no audio: the `recording` placeholder of [section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), on which [section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) makes `parties` a SHOULD. A container sipnab wrote before it followed -04 lacks `type` there as well. sipnab also writes a `recording` with audio and no `parties` when an audio channel came from an address no party advertised in its SDP, such as a media relay's. The forwarder does not invent what sipnab did not observe, and does not drop the object, which would leave other indexes pointing at nothing. It moves the container to `spool/failed` with a reason. For a container with no audio, the reason names `--retain-audio` and `--redact`. For audio sipnab could not attribute, it says so, and that exporting again gives the same container. |
-
-The forwarder sends every other byte of the container as sipnab wrote it. You can
-drop the mode once vcon.store accepts `extensions` as the array of strings the drafts
-define.
 
 ## The measurements
 
-The maintainer measured these against vcon.store's API on 2026-10-07. This
-page's commands did not contact the store.
+The maintainer measured these against vcon.store's API. This page's commands
+did not contact the store.
+
+On 2026-10-09, with the sipnab 0.5.209 release binary and a container
+exported from
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+| Sent | vcon.store answered |
+|---|---|
+| `POST /v1/vcons`, the container with audio, `"extensions": ["sip-signaling", "CC"]`, sent unchanged | `201`; a `GET` returned `extensions` as the same array |
+| the `recording` Dialog Object sipnab writes for a call without audio (no `parties`, no content) | `201`, stored as sent |
+| a `POST` of a uuid the store already held | `500`, a problem document of type `https://vcon.store/errors/internal-error`, `An unexpected error occurred`, twice. Changed by 2026-10-11; see below |
+| a `GET` with Python's default HTTP `User-Agent`, with Go's, with none, and with `sipnab/0.5.209` | `200` for each |
+| a `GET` of a stored vCon | the content, with a top-level `_meta` member added |
+| `DELETE /v1/vcons/{uuid}` | `200`, `{"deleted":true,...}`; a `GET` after it `404`, `{"error":"vCon not found"}` |
+
+On 2026-10-11, with a container exported from the same capture, sent with curl:
+
+| Sent | vcon.store answered |
+|---|---|
+| `POST /v1/vcons`, a new uuid | `201`, `{"uuid":...,"stored_at":...}` |
+| a second `POST` of the same uuid | `409`, `{"error":"vCon already exists","details":[{"path":["uuid"],"message":"a vCon with uuid ... already exists; use PUT to replace it"}]}` |
+| `PUT /v1/vcons/{uuid}` with a changed `subject`, same uuid | `200`; a `GET` returned the changed `subject` |
+| the `recording` Dialog Object without `parties` and content | `201` |
+| `DELETE /v1/vcons/{uuid}` | `200`; a `GET` after it `404` |
+
+On 2026-10-07, kept as history:
 
 | Sent | vcon.store answered |
 |---|---|
 | `POST /v1/vcons` with `"extensions": ["sip-signaling", "CC"]` | `400`, `extensions: Expected object, received array` |
 | the same with `extensions` as an object of names mapped to `true` | `201`, stored as sent |
-| a vCon with no audio, whose Dialog Object is `{}` | `400`: the store requires `type` and `parties` |
+| a vCon with no audio, whose Dialog Object is `{}` | `400`: the store required `type` and `parties` |
 | the same with `extensions` removed | `201` |
-| `GET` of a stored vCon | the content unchanged, inside a `_meta` envelope |
-| `DELETE` of a stored vCon | `200`, and a `GET` after it `404` |
-| a request with Python's default HTTP `User-Agent` | `403`, `error code: 1010`, from the Cloudflare front. The front accepted a curl `User-Agent`. The forwarder sends `User-Agent: sipnab/<version>` |
-| on 2026-10-09, sipnab's container with audio, sent by `--vcon-forward-kind vcon-store` | `201`; a `GET` returned it unchanged apart from the compat mode's `extensions` object |
-| on 2026-10-09, the `recording` Dialog Object sipnab writes for a call without audio (no `parties`, no content), with `extensions` as an object | `400`, `dialog.0.parties: expected array, received undefined` |
+| a request with Python's default HTTP `User-Agent` | `403`, `error code: 1010`, from the Cloudflare front. The front accepted a curl `User-Agent` |
 
-Not measured: whether vcon.store answers `409` for a uuid it already holds, or
-accepts a `PUT` to `/v1/vcons/{uuid}`. `--vcon-forward-replace-url` exists for a
-store that does, and this page does not use it. The store refuses a `recording` Dialog Object with no
-`body`, which is what step 1 writes under `--redact`, for its missing
-`parties`, as the last row shows.
+Until the release after 0.5.209, sipnab's `vcon-store` kind, and the compat
+flag that release removed, sent `extensions` as an object of names
+mapped to `true`, and refused a Dialog Object without `type` or `parties`,
+because section 4.1.3 of
+[draft-ietf-vcon-vcon-core-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-02#section-4.1.3)
+and every revision since define `extensions` as an array of strings, which the
+store then refused.
+
+A `409` for a held uuid is a refusal: the container goes to `spool/failed`
+with the store's answer in its `.error.json` record, and
+`--vcon-forward-once` exits `1`. To replace the held copy instead, name the
+`PUT` endpoint with `--vcon-forward-replace-url`. The forwarder then sends the
+container there after the `409`:
+
+```sh
+sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key --vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}'
+```
+
+Replacing is off by default: it overwrites what the store holds, which is the
+operator's decision. The forwarder retries a `500` after a back-off, as it
+retries every `5xx`.
 
 ## What the store adds, and what it does not mean
 
@@ -36051,33 +36060,32 @@ so the file holds the container alone:
 sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched
 ```
 
-The container is the copy the store accepted, so its `extensions` is the
-object the compat mode sent, not the array the drafts define. The fetcher
-writes it and reports the schema finding, and the run exits `1`. Measured on
+The container is the copy the store accepted, as sipnab sent it. Measured on
 2026-10-09: a container sipnab exported from
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), sent with `--vcon-forward-kind
-vcon-store` (`201`), read back (`200`, with `_meta`), then deleted (`200`).
-A read after the delete answered `404`, and a read with a wrong key `401`. More:
+vcon-store` (`201`), read back with `--vcon-fetch` (the file held `extensions`
+as the array and no `_meta`), then deleted (`200`). A read after the delete
+answered `404`. A container sent through the removed compat mode comes back with `extensions` as an object: the fetcher writes it, reports
+the schema finding, and the run exits `1`. More:
 [Fetch a stored vCon](vcon.md#fetch-a-stored-vcon).
 
 ## When something does not work
 
 - **Every container lands in `spool/failed` with status `400` and
-  `extensions: Expected object, received array`.** Use
-  `--vcon-forward-kind vcon-store` (or `--vcon-forward-compat vcon-store`, and
-  no `--vcon-forward-compat none`), move the files from `spool/failed` back
-  to `spool`, and run the forwarder again.
-- **A container lands in `spool/failed` with a reason about `type` and
-  `parties`.** The container carries no audio: the run kept none for that
-  call, or the export ran with `--redact`. Export it again with
-  `--retain-audio` and without `--redact`.
-- **A container lands in `spool/failed` with a reason that says it carries
-  audio sipnab could not attribute to a party.** An audio channel came from
-  an address and port that no party advertised in its own SDP, such as a media
-  relay's. Exporting the same capture again gives the same container. vcon.store
-  does not accept it.
+  `extensions: Expected object, received array`.** The store refuses the form
+  the drafts define, as vcon.store did on 2026-10-07. sipnab no longer changes
+  the copy it sends, so such a store does not accept sipnab's containers.
+- **A container lands in `spool/failed` with status `409` and `vCon already
+  exists`.** The store already holds that uuid (`--vcon-fetch` reads it
+  back). To replace the held copy, move the file back into `spool` and run
+  the forwarder with
+  `--vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}'`.
+- **A container stays in `spool`, and the log says `answered 500; will
+  retry`.** The store is in trouble; the forwarder tries again after its
+  back-off.
 - **The forwarder exits `3` and logs `403` with `error code: 1010`.** The
-  Cloudflare front refused the request's client. The forwarder sends
+  Cloudflare front refused the request's client, as it refused Python's
+  default `User-Agent` on 2026-10-07. The forwarder sends
   `User-Agent: sipnab/<version>`. Check that nothing between it and the store
   replaces that header. It moved no file, so run it again once you fix that.
 - **The forwarder exits `3` and logs `401`.** The token in `vcon-store.key` is

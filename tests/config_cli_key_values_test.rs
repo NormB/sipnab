@@ -1642,15 +1642,6 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "vcon_forward",
-        "compat",
-        KeyKind::Literal {
-            accept: &["\"none\"", "\"vcon-store\""],
-            reject: &["\"x\"", "\"\"", "\" \"", "\"VCON-STORE\"", "\"off\""],
-            ctx: "",
-        },
-    ),
-    (
-        "vcon_forward",
         "done",
         KeyKind::Literal {
             accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],

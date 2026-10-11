@@ -4842,7 +4842,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // topology summary and one "What runs where" per topology) and
     // website/content/compare.md 1 (the feature matrix).
     // 1110 -> 1109: compare.md's matrix, with the page (Norm, 2026-10-10).
-    const EXPECTED_TABLES: usize = 1109;
+    // 1109 -> 1111: the 2026-10-11 vcon.store measurements. docs/vcon-store.md
+    // 1 and its site page 1.
+    const EXPECTED_TABLES: usize = 1111;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

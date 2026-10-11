@@ -542,7 +542,7 @@ fn the_vcon_store_description_leaves_redaction_to_the_operator() -> Result<(), T
 /// third-party stores, names the flag that does it and links the vcon.store
 /// guide. Each part of that claim is held to the code: the flags exist with
 /// the value the guide names, and the forwarder's tests deliver to a store
-/// and exercise the vcon.store mode.
+/// and to a vcon.store stand-in.
 #[test]
 fn the_homepage_vcon_forwarding_claim_is_backed_by_the_forwarder() -> Result<(), TestError> {
     let row = enclosing_block(&strip_comments(&homepage()?)?, "Call records")?;
@@ -555,25 +555,19 @@ fn the_homepage_vcon_forwarding_claim_is_backed_by_the_forwarder() -> Result<(),
     let cli = read("src/cli.rs")?;
     for flag in [
         r#"long = "vcon-forward","#,
-        r#"long = "vcon-forward-compat","#,
         r#"long = "vcon-forward-kind","#,
-        "crate::config::FORWARD_COMPAT.iter()",
         "crate::config::FORWARD_KINDS.iter()",
     ] {
         assert!(cli.contains(flag), "src/cli.rs has no {flag}");
     }
-    // The names the two flags accept, declared once in src/config.rs.
+    // The names the kind flag accepts, declared once in src/config.rs.
     let config = read("src/config.rs")?;
-    for names in [
-        r#"pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];"#,
-        r#"pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];"#,
-    ] {
-        assert!(config.contains(names), "src/config.rs has no {names}");
-    }
+    let names = r#"pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];"#;
+    assert!(config.contains(names), "src/config.rs has no {names}");
     let tests = read("tests/vcon_forward_test.rs")?;
     for test in [
         "fn a_container_is_posted_byte_for_byte_with_one_auth_header(",
-        "fn vcon_store_mode_sends_extensions_as_an_object_and_keeps_the_file(",
+        "fn the_vcon_store_kind_sends_the_container_unchanged_by_default(",
         "fn a_spool_sipnab_wrote_is_delivered_byte_for_byte(",
     ] {
         assert!(
