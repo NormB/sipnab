@@ -202,7 +202,7 @@ jobs:
       # tests/ci_cache_policy_test.rs keeps it out.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-llvm-cov
 
@@ -249,7 +249,7 @@ jobs:
           cargo llvm-cov report --html --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
 
       - name: Upload HTML coverage artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-html
           path: target/llvm-cov/html
@@ -320,7 +320,7 @@ jobs:
       # directory nothing to reuse.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-llvm-cov
 
@@ -411,7 +411,7 @@ jobs:
             cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: clippy-sarif,sarif-fmt
 
@@ -849,7 +849,7 @@ jobs:
       # the trace is how that is read without reproducing the run locally.
       - name: Upload Playwright traces
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: axe-playwright-traces
           path: e2e/test-results
@@ -971,7 +971,7 @@ jobs:
 
       - name: Upload Lighthouse reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lighthouse-reports
           path: e2e/.lighthouseci
