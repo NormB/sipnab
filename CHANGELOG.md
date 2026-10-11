@@ -31,6 +31,11 @@ entry that carries them.
   past its range into the same second and counted nothing, so a `--cores` run
   reported no corrupt timestamp where the default reader reported one. Both
   readers now stamp such a record with the wall clock, count it, and keep it.
+- **The vCon guides describe only what the forwarder does now.**
+  `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier
+  releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
+  entries below no longer list that behavior: vcon.store accepts every
+  container as sipnab writes it.
 
 ## [0.5.211] - 2026-10-11
 
@@ -248,14 +253,6 @@ entry that carries them.
   and `sip_to_tag: as0b1a917b`.
   Affected: `--export-vcon`, `--export-vcon-dir`, the MCP `export_vcon` tool
   and `GET /v1/dialogs/{call_id}/vcon`, for a call whose first response carried a `To` tag that the answer did not.
-- **The vcon.store compat refusal no longer says that a Dialog Object without
-  `parties` carries no audio when it does.** sipnab omits `parties` from a
-  `recording` with audio when a channel came from an address no party
-  advertised in its SDP, such as a media relay's. The refusal for that case
-  now says the audio could not be attributed, and no longer tells the operator
-  to export again with `--retain-audio`. `docs/vcon-store.md` describes both
-  cases, and `docs/vcon.md` states what `parties` on a `recording`, and its
-  absence, let a reader conclude.
 
 ## [0.5.208] - 2026-10-09
 
@@ -548,11 +545,8 @@ entry that carries them.
   2026-10-07: the ingest path for a base URL (`/v1/vcons` for vcon.store,
   `/vcon/external-ingress?ingress_list=sipnab` for a conserver), the header
   for a bare key (`Authorization: Bearer <key>`, `x-conserver-api-token:
-  <key>`), and the payload adaptation (`vcon-store` sends `extensions` as an
-  object). An explicit URL path, a full header line or `--vcon-forward-compat`
-  overrides each. `generic`, the default, supplies nothing, as before.
-  `--vcon-forward-compat vcon-store` keeps its meaning, and takes `none` to turn
-  a kind's adaptation off. `docs/vcon.md` shows how to chain two forwarders to
+  <key>`). An explicit URL path or a full header line overrides each.
+  `generic`, the default, supplies nothing, as before. `docs/vcon.md` shows how to chain two forwarders to
   deliver to two stores.
 - **The forwarder's credential from the environment.** `SIPNAB_VCON_FORWARD_AUTH`
   (or `--vcon-forward-auth`, whose value the process list shows) holds what
@@ -669,14 +663,6 @@ entry that carries them.
   after it. HTTPS uses rustls with the host's CA bundle or
   `--vcon-forward-ca`; no new crate. A `2xx` is reported as delivered, never
   as stored.
-- **`--vcon-forward-compat vcon-store`.** vcon.store refuses `extensions` in
-  the array-of-strings form section 4.1.3 of draft-ietf-vcon-vcon-core-02 and
-  -03 defines. In this mode the copy sent carries `extensions` as an object of
-  names mapped to `true`, in order, and a container whose Dialog Object lacks
-  `type` or `parties` is refused with a reason naming `--retain-audio` and
-  `--redact` rather than rewritten. The container on disk never changes, and each change is
-  logged. [Send sipnab's vCons to vcon.store](docs/vcon-store.md) has the
-  measurements.
 - **sipnab.com publishes the `contrib/` index (SITE-CONTRIB).** `/docs/contrib/`
   is generated from `contrib/README.md` by `scripts/build-site-pages.py` and is
   listed in the docs navigation, `llms.txt` and `llms-full.txt`. The generator

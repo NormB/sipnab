@@ -1200,9 +1200,8 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // (to testing.md#the-public-vcon-datasets).
     // 1347 -> 1348: docs/examples.md 1, the Grafana recipe's metrics pitfall
     // linking prometheus-metrics.md.
-    // 1348 -> 1346: --vcon-forward-compat removed. docs/vcon.md's bullet on
-    // the compat mode and the flag's row in docs/cli-reference.md each linked
-    // vcon-store.md, and both went with the flag.
+    // 1348 -> 1346: a bullet in docs/vcon.md and a row in
+    // docs/cli-reference.md, each linking vcon-store.md, were removed.
     const EXPECTED_WIKI_LINKS: usize = 1346;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md

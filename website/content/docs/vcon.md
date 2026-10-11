@@ -323,8 +323,8 @@ sipnab --vcon-forward /var/spool/sipnab-vcon --config /etc/sipnab/vcon-forward.t
 ```
 
 sipnab checks each key by the rule its flag follows. A number out of range, an
-unknown kind or compat name, or a first back-off longer than the cap stops any
-run that loads the file. A URL or a credential the forwarder cannot use stops the
+unknown kind, or a first back-off longer than the cap stops any run that loads
+the file. A URL or a credential the forwarder cannot use stops the
 forwarder at startup, naming the key.
 
 ### Deliver to two stores
@@ -480,9 +480,7 @@ written, for any kind.
 The fetcher checks each container it writes against the vendored vCon schema.
 A container the schema refuses is still written, as the store holds it: it is
 the store's record, and you need it to see what is wrong. The log line lists
-each finding, and the run exits `1`. A container sent to vcon.store through
-the compat mode that earlier releases of sipnab had comes back with `extensions`
-as an object, so the schema refuses it (measured on 2026-10-09).
+each finding, and the run exits `1`.
 
 A file that already exists is not replaced: the fetcher does not ask the store
 for that uuid, and the run exits `1`. `--vcon-fetch-overwrite` replaces it.
