@@ -489,7 +489,7 @@ jobs:
           VALE_SHA256: '1049f4a585ccd1af96dcf4bdc16800cb3ce426b432da2b27893def42dcfe0ccb'
         run: |
           set -euo pipefail
-          curl -fsSL -o vale.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o vale.tar.gz \
             "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
           echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
           tar xzf vale.tar.gz vale
@@ -512,7 +512,7 @@ jobs:
           VALE_GOOGLE_SHA256: 'dddb3dca035a067fe9ab13a1d8d8f89cb63e8b83ab4cf1934a935d60cd91d697'
         run: |
           set -euo pipefail
-          curl -fsSL -o Google.zip "${VALE_GOOGLE_URL}"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o Google.zip "${VALE_GOOGLE_URL}"
           echo "${VALE_GOOGLE_SHA256}  Google.zip" | sha256sum -c -
           # No post-condition check on the extracted directory, deliberately. The
           # checksum already fixes the archive, so its layout is not in question,
@@ -617,7 +617,7 @@ jobs:
           ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
-          curl -fsSL -o zola.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
@@ -646,7 +646,7 @@ jobs:
           PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
         run: |
           set -euo pipefail
-          curl -fsSL -o pagefind.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o pagefind.tar.gz \
             "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
           echo "${PAGEFIND_SHA256}  pagefind.tar.gz" | sha256sum -c -
           tar xzf pagefind.tar.gz
@@ -745,7 +745,7 @@ jobs:
           ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
-          curl -fsSL -o zola.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
@@ -893,7 +893,7 @@ jobs:
           ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
-          curl -fsSL -o zola.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
