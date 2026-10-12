@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **CI runs the test binaries side by side.** The Check job's Test step ran
+  `cargo test --all-features`, which runs its 406 test binaries one at a time:
+  460 s of the Linux job's 12.8-minute step on 2026-10-12. It now runs them
+  through `scripts/parallel-tests.py`, the runner the pre-commit hook already
+  uses, in a pool of one job per core. The output keeps `cargo test`'s format,
+  so the published test count is derived from it unchanged.
+
 ### Fixed
 
 - **CI and the site deploy survive one failed request to github.com.** The
