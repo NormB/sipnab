@@ -16,6 +16,11 @@
 //! internals instead, which is how a reference becomes a table of contents for
 //! the code.
 //!
+//! The reference was later split into one page per tool bundle, because
+//! `--mcp-tools` loads tools by bundle (`mcp_tool_bundle_pages_test` holds
+//! each page to its bundle). Each bundle page keeps these question groups for
+//! the tools it holds, so this gate reads every page of the reference.
+//!
 //! # What this gate is for
 //!
 //! A grouping is only useful while it is complete, and the failure mode is
@@ -40,6 +45,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
 
 /// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
 type TestError = Box<dyn std::error::Error>;
@@ -75,34 +83,40 @@ fn registered_tools() -> Result<BTreeSet<String>, TestError> {
     Ok(out)
 }
 
-/// `tool name -> the `##` groups it appears under` in the reference.
+/// `tool name -> the `##` groups it appears under` across the reference.
 ///
-/// Headings inside fenced code blocks are skipped. The page renders a sample
-/// call report that contains `## Summary`, `## Timing`, `## Media Streams` and
-/// `## Issues`; counting those as groups would put ten tools in a section
-/// called "Timing".
+/// The reference is an index page plus one page per tool bundle
+/// (`tests/support/mcp_reference.rs` derives the list), and each bundle page
+/// keeps the reader's-question groups for the tools it holds. A page's groups
+/// end where the page does: a tool at the top of one page is never counted
+/// under the last group of the page before it.
+///
+/// Headings inside fenced code blocks are skipped. The reference renders a
+/// sample call report that contains `## Summary`, `## Timing`, `## Media
+/// Streams` and `## Issues`; counting those as groups would put ten tools in a
+/// section called "Timing".
 fn tool_groups() -> Result<BTreeMap<String, Vec<String>>, TestError> {
-    let src = std::fs::read_to_string(repo().join("docs/mcp-tools.md"))
-        .map_err(|e| format!("docs/mcp-tools.md is readable: {e}"))?;
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut group: Option<String> = None;
-    let mut in_fence = false;
-    for line in src.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("## ") {
-            group = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("### ") {
-            let t = rest.trim();
-            if let Some(name) = t.strip_prefix('`').and_then(|s| s.strip_suffix('`'))
-                && let Some(g) = &group
-            {
-                out.entry(name.to_string()).or_default().push(g.clone());
+    for (_, src) in mcp_reference::read_pages(&repo())? {
+        let mut group: Option<String> = None;
+        let mut in_fence = false;
+        for line in src.lines() {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("## ") {
+                group = Some(rest.trim().to_string());
+            } else if let Some(rest) = line.strip_prefix("### ") {
+                let t = rest.trim();
+                if let Some(name) = t.strip_prefix('`').and_then(|s| s.strip_suffix('`'))
+                    && let Some(g) = &group
+                {
+                    out.entry(name.to_string()).or_default().push(g.clone());
+                }
             }
         }
     }
@@ -126,7 +140,7 @@ fn the_grouping_scanners_read_a_real_page_and_a_real_tool_set() -> Result<(), Te
     assert!(
         grouped.len() >= 40,
         "found only {} tool section(s) under a group heading in \
-         docs/mcp-tools.md; the heading scan is not matching the page",
+         the MCP tool reference pages; the heading scan is not matching them",
         grouped.len()
     );
     Ok(())
@@ -146,7 +160,7 @@ fn every_registered_tool_is_in_exactly_one_group() -> Result<(), TestError> {
     assert!(
         ungrouped.is_empty(),
         "these registered tools have no section under any group heading in \
-         docs/mcp-tools.md: {ungrouped:?}\n\nA tool outside every group cannot \
+         the MCP tool reference pages: {ungrouped:?}\n\nA tool outside every group cannot \
          be found by a reader navigating by question, and the page reverts to \
          the flat list this grouping replaced."
     );
@@ -177,7 +191,7 @@ fn every_grouped_tool_is_actually_registered() -> Result<(), TestError> {
     let stale: Vec<&String> = grouped.keys().filter(|t| !tools.contains(*t)).collect();
     assert!(
         stale.is_empty(),
-        "docs/mcp-tools.md groups these tools, and `src/mcp/` registers none \
+        "the MCP tool reference groups these tools, and `src/mcp/` registers none \
          of them: {stale:?}"
     );
     Ok(())
@@ -264,7 +278,7 @@ fn the_reference_carries_exactly_the_expected_groups() -> Result<(), TestError> 
     let missing: Vec<&String> = expected.difference(&found).collect();
     assert!(
         missing.is_empty(),
-        "these groups are gone from docs/mcp-tools.md: {missing:?}\n\nDeleting \
+        "these groups are gone from the MCP tool reference: {missing:?}\n\nDeleting \
          a heading does not orphan its tools -- it silently moves them into the \
          group above, where a reader looking for them will not think to look."
     );

@@ -964,7 +964,7 @@ On a call that said why it ended, the report also carries a `termination`
 object — `cause_code`, `cause_text`, `protocol`, `source_header` and
 `frame_ref`. It comes from the same assembler as the MCP answer, so this route
 and `get_dialog_report` cannot report different causes for one call. The field
-reference is in [mcp-tools.md](mcp-tools.md#why-the-call-ended). sipnab omits
+reference is in [Why the call ended](mcp-tools-core.md#why-the-call-ended). sipnab omits
 the block, and never sends `null`, when nothing on the wire named a cause.
 
 **curl:**

@@ -27,6 +27,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
+
 /// The error a fallible test or helper returns: any error, boxed, so `?`
 /// works on I/O, parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
@@ -2411,8 +2414,8 @@ struct Corpora<'a> {
     /// mirrored pages alone.
     mirror: &'a str,
     /// The output schema: `docs/output-formats.md` and the two references it
-    /// points at for per-field detail, `docs/rest-api.md` and
-    /// `docs/mcp-tools.md`.
+    /// points at for per-field detail, `docs/rest-api.md` and the MCP tool
+    /// reference (`docs/mcp-tools.md` and its per-bundle pages).
     output_docs: &'a str,
 }
 
@@ -2811,9 +2814,11 @@ fn site_mirror() -> Result<String, TestError> {
 /// The output schema as the docs describe it. `output-formats.md` describes
 /// the shapes and points at the REST and MCP references for the per-field
 /// tables, so the three together are where a field is documented or is not.
+/// The MCP reference is an index plus one page per tool bundle, and
+/// `output-formats.md` may link any of them, so every page is read.
 fn output_schema_docs() -> Result<String, TestError> {
     let formats = read("docs/output-formats.md")?;
-    for pointed_at in ["rest-api.md", "mcp-tools.md"] {
+    for pointed_at in ["rest-api.md", "mcp-tools"] {
         assert!(
             formats.contains(pointed_at),
             "docs/output-formats.md no longer points at {pointed_at} — the field \
@@ -2823,7 +2828,7 @@ fn output_schema_docs() -> Result<String, TestError> {
     Ok(format!(
         "{formats}\n{}\n{}",
         read("docs/rest-api.md")?,
-        read("docs/mcp-tools.md")?
+        mcp_reference::read_all(repo())?
     ))
 }
 

@@ -293,8 +293,112 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "MCP tool reference",
         "Look up an MCP tool",
         17,
-        "Every MCP tool sipnab exposes, what question each answers, and the "
-        "fields it returns.",
+        "The MCP tool bundles, every tool by name with the page that "
+        "documents it, and the rules every tool follows.",
+    ),
+    # One page per built-in MCP tool bundle (src/mcp_profile.rs BUNDLES).
+    # `mcp_tool_bundle_pages_test` holds each page to the tools its bundle
+    # holds. 72-81 were the next free weights on the SITE side.
+    (
+        "docs/mcp-tools-core.md",
+        "mcp-tools-core.md",
+        "MCP tool reference: core bundle",
+        "Look up a tool in the MCP core bundle",
+        72,
+        "The MCP tools in the core bundle. The smallest set that answers "
+        "what happened on one call, and whether the fault was in signaling "
+        "or media, from listing the calls to the bytes that prove it.",
+    ),
+    (
+        "docs/mcp-tools-signaling.md",
+        "mcp-tools-signaling.md",
+        "MCP tool reference: signaling bundle",
+        "Look up a tool in the MCP signaling bundle",
+        73,
+        "The MCP tools in the signaling bundle. Follow-up questions about "
+        "SIP signaling: single messages, call flows, SDP negotiation, "
+        "related call legs, RFC conformance, time windows, and reproducing "
+        "a call.",
+    ),
+    (
+        "docs/mcp-tools-captures.md",
+        "mcp-tools-captures.md",
+        "MCP tool reference: captures bundle",
+        "Look up a tool in the MCP captures bundle",
+        74,
+        "The MCP tools in the captures bundle. Capture files in the file "
+        "root: listing, searching, comparing, opening and exporting them, "
+        "and the evidence that ties a finding to captured bytes.",
+    ),
+    (
+        "docs/mcp-tools-security.md",
+        "mcp-tools-security.md",
+        "MCP tool reference: security bundle",
+        "Look up a tool in the MCP security bundle",
+        75,
+        "The MCP tools in the security bundle. Who sent what: scanner and "
+        "fraud findings, the busiest sources, one endpoint's activity, "
+        "registration problems, pass/fail expectations, and fail2ban rules.",
+    ),
+    (
+        "docs/mcp-tools-media.md",
+        "mcp-tools-media.md",
+        "MCP tool reference: media bundle",
+        "Look up a tool in the MCP media bundle",
+        76,
+        "The MCP tools in the media bundle. Where a call's media endpoints "
+        "came from, why a stream has no dialog, the facts under a quality "
+        "score, and audio export.",
+    ),
+    (
+        "docs/mcp-tools-relay.md",
+        "mcp-tools-relay.md",
+        "MCP tool reference: relay bundle",
+        "Look up a tool in the MCP relay bundle",
+        77,
+        "The MCP tools in the relay bundle. Questions put to the configured "
+        "media relay, and decoding the relay control messages sipnab "
+        "captured.",
+    ),
+    (
+        "docs/mcp-tools-tfps.md",
+        "mcp-tools-tfps.md",
+        "MCP tool reference: tfps bundle",
+        "Look up a tool in the MCP tfps bundle",
+        78,
+        "The MCP tools in the tfps bundle. The toll-fraud prevention peer "
+        "(TFPS): what it blocks and logs, and the operator's ban, unban and "
+        "revert actions.",
+    ),
+    (
+        "docs/mcp-tools-server.md",
+        "mcp-tools-server.md",
+        "MCP tool reference: server bundle",
+        "Look up a tool in the MCP server bundle",
+        79,
+        "The MCP tools in the server bundle. The sipnab process and its "
+        "capture path: capture health, HEP senders, resource use, build "
+        "capabilities, and shutdown.",
+    ),
+    (
+        "docs/mcp-tools-vcon.md",
+        "mcp-tools-vcon.md",
+        "MCP tool reference: vcon bundle",
+        "Look up a tool in the MCP vcon bundle",
+        80,
+        "The MCP tools in the vcon bundle. vCon conversation containers, "
+        "exported and validated, and the SIPREC recording metadata a call "
+        "carried.",
+    ),
+    (
+        "docs/mcp-tools-tls.md",
+        "mcp-tools-tls.md",
+        "MCP tool reference: tls bundle",
+        "Look up a tool in the MCP tls bundle",
+        81,
+        "The MCP tools in the tls bundle. Reading SIP inside TLS without "
+        "keys through kernel uprobes, and which TLS libraries this host "
+        "runs.",
     ),
     (
         "docs/mcp-protocol.md",

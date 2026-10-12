@@ -31,6 +31,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
+
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
 
@@ -562,13 +565,15 @@ fn every_exclusion_names_a_path_that_exists_and_says_why() -> Result<(), TestErr
 /// thing would be parked.
 #[test]
 fn every_wire_exemption_is_a_published_name() -> Result<(), TestError> {
+    // The MCP tool reference is an index plus one page per bundle; every
+    // page of it publishes tool and field names.
     let published = [
-        "src/output/api.rs",
-        "src/mcp/server.rs",
-        "docs/api.md",
-        "docs/mcp-tools.md",
+        "src/output/api.rs".to_string(),
+        "src/mcp/server.rs".to_string(),
+        "docs/api.md".to_string(),
     ]
-    .iter()
+    .into_iter()
+    .chain(mcp_reference::pages())
     .filter_map(|f| std::fs::read_to_string(repo().join(f)).ok())
     .collect::<Vec<_>>()
     .join("\n");

@@ -1202,7 +1202,21 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // linking prometheus-metrics.md.
     // 1348 -> 1346: a bullet in docs/vcon.md and a row in
     // docs/cli-reference.md, each linking vcon-store.md, were removed.
-    const EXPECTED_WIKI_LINKS: usize = 1346;
+    // 1346 -> 1524: the MCP tool reference split into an index and one page
+    // per tool bundle. Attributed per file against HEAD: docs/mcp-tools.md
+    // 234 -> 170 (-64), and the new bundle pages +242 -- signaling 72,
+    // core 46, captures 40, security 24, relay 12, server 11, media 10,
+    // tfps 10, vcon 9, tls 8. Every other changed page held its count:
+    // their links were retargeted, not added. Net +178. Where it comes
+    // from: the index's eight group links went (-8); the index gained the
+    // bundle table (+10), two links per row of the alphabetical lookup
+    // (+144) and two same-page links in its bundle sections (+2); each
+    // bundle page opens with three links back to the index (+30). The old
+    // index's 72 tool rows moved to the bundle pages' own tool tables (0), and
+    // a tool section that links a tool now on another page still counts once.
+    // 1524 -> 1534: docs/README.md +10, one entry per bundle page under the
+    // MCP tool reference entry, so every page is reachable from the index.
+    const EXPECTED_WIKI_LINKS: usize = 1534;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2435,7 +2449,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 71 -> 73: docs/rtpproxy-relay.md and docs/rtpproxy-sipnab.md.
     // 73 -> 75: docs/fail2ban.md and docs/fail2ban-sipnab.md.
     // 75 -> 76: docs/vcon-store.md.
-    const EXPECTED_DOCS_PAGES: usize = 76;
+    // 76 -> 86: the ten MCP tool bundle pages, docs/mcp-tools-{core,
+    // signaling,captures,security,media,relay,tfps,server,vcon,tls}.md.
+    const EXPECTED_DOCS_PAGES: usize = 86;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

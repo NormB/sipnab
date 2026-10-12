@@ -159,8 +159,19 @@ Complete and dry. Consult them rather than reading them through.
   it is a counter or a gauge, and the scrape config.
 - [MCP server](mcp.md): what an agent gets from sipnab, and a first working
   example.
-- [MCP tool reference](mcp-tools.md): every tool, its arguments and its
-  response.
+- [MCP tool reference](mcp-tools.md): the tool bundles, and every tool by
+  name with a link to its page, which gives its arguments and its response.
+  One page per bundle documents each tool's arguments and response:
+  - [core bundle](mcp-tools-core.md)
+  - [signaling bundle](mcp-tools-signaling.md)
+  - [captures bundle](mcp-tools-captures.md)
+  - [security bundle](mcp-tools-security.md)
+  - [media bundle](mcp-tools-media.md)
+  - [relay bundle](mcp-tools-relay.md)
+  - [tfps bundle](mcp-tools-tfps.md)
+  - [server bundle](mcp-tools-server.md)
+  - [vcon bundle](mcp-tools-vcon.md)
+  - [tls bundle](mcp-tools-tls.md)
 - [MCP protocol](mcp-protocol.md): the wire contract, security model and error
   semantics.
 - [Runnable client examples](client-examples.md): Python clients and their

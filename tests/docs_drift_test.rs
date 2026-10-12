@@ -21,6 +21,8 @@ use std::collections::BTreeSet;
 
 #[path = "support/markdown.rs"]
 mod markdown;
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
@@ -2365,24 +2367,25 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
             include_str!("../website/content/docs/mcp-deploy.md"),
             r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
-        // The same server_capabilities sample appears in the MCP reference.
+        // The same server_capabilities sample appears in the MCP reference,
+        // on the page for the `server` bundle that holds the tool.
         // Gating only the walkthrough left this one drifting: it still named
         // 0.5.69 after the crate moved to 0.5.70, in the same release that
         // added the gate. Two copies of one sample, one of them watched.
         //
-        // Anchored on the `features` key that follows it, because this page
-        // also carries the `tfps_status` sample, whose `version` is the
-        // toll-fraud prevention peer's own (0.1.0) and must never track this
-        // crate. The bare pattern read that one as sipnab's and demanded
+        // Anchored on the `features` key that follows it, because the
+        // reference also carries the `tfps_status` sample, whose `version` is
+        // the toll-fraud prevention peer's own (0.1.0) and must never track
+        // this crate. The bare pattern read that one as sipnab's and demanded
         // 0.5.147 of a program that is not sipnab.
         (
-            "docs/mcp-tools.md",
-            include_str!("../docs/mcp-tools.md"),
+            "docs/mcp-tools-server.md",
+            include_str!("../docs/mcp-tools-server.md"),
             r#""version":\s*"(\d+\.\d+\.\d+)",\s*"features""#,
         ),
         (
-            "website/content/docs/mcp-tools.md",
-            include_str!("../website/content/docs/mcp-tools.md"),
+            "website/content/docs/mcp-tools-server.md",
+            include_str!("../website/content/docs/mcp-tools-server.md"),
             r#""version":\s*"(\d+\.\d+\.\d+)",\s*"features""#,
         ),
     ];
@@ -3599,13 +3602,14 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     );
 
     let doc = std::fs::read_to_string("docs/mcp-tools.md")?;
-    // The index is EIGHT tables now, one per group, so the old slice -- from
+    // The index was EIGHT tables, one per group, so the old slice -- from
     // the first header to the first blank line -- read the first group and
-    // reported the other 41 tools missing. The index runs from the first table
-    // header to the first `## ` section heading; take all of it.
+    // reported the other 41 tools missing. The tools now sit on one page per
+    // bundle, and the index keeps one alphabetical lookup table naming every
+    // tool. Read from its header to the next `## ` section heading.
     let table_start = doc
-        .find("| Tool | Parameters | Returns |")
-        .ok_or("docs/mcp-tools.md has no tool table")?;
+        .find("| Tool | Bundle | Returns |")
+        .ok_or("docs/mcp-tools.md has no tool lookup table")?;
     let table_end = doc[table_start..]
         .find("\n## ")
         .map_or(doc.len(), |i| table_start + i);
@@ -4293,7 +4297,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 273 -> 276: the overview pages, website/content/features.md,
     // deployments.md and compare.md.
     // 276 -> 275: compare.md removed (Norm, 2026-10-10).
-    const EXPECTED_MARKDOWN_FILES: usize = 275;
+    // 275 -> 295: the MCP tool reference split into one page per tool
+    // bundle. Ten new pages, docs/mcp-tools-{core,signaling,captures,
+    // security,media,relay,tfps,server,vcon,tls}.md, and their ten
+    // generated mirrors under website/content/docs/. No file was removed.
+    const EXPECTED_MARKDOWN_FILES: usize = 295;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4846,7 +4854,15 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1121: the MCP tool reference split into an index and one page
+    // per tool bundle. Attributed per file against HEAD by counting table
+    // separator lines outside fences: docs/mcp-tools.md 105 -> 6 (-99) and
+    // the ten docs/mcp-tools-*.md pages +103 -- the 93 tables inside the
+    // moved tool sections, plus one tool table at the top of each page.
+    // The index lost its eight per-group tool tables and gained the bundle
+    // table and the alphabetical lookup. Net +4, doubled by the generated
+    // mirrors under website/content/docs/ to +8.
+    const EXPECTED_TABLES: usize = 1121;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -5572,8 +5588,9 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
         "the walk over src/mcp read nothing; this gate would then certify a \
          page against an empty tool set"
     );
-    let page = std::fs::read_to_string(repo.join("docs/mcp-tools.md"))?;
-
+    // The reference is an index plus one page per tool bundle. Each page is
+    // split on its own, so a section ends where its page does.
+    let pages = mcp_reference::read_pages(repo)?;
     let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z0-9_]+)""#)?;
     let tools: std::collections::BTreeSet<String> = name_re
         .captures_iter(&server)
@@ -5586,15 +5603,20 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
         tools.len()
     );
 
-    // Split the page into h3 sections so an example can be attributed to the
+    // Split each page into h3 sections so an example can be attributed to the
     // tool whose heading it sits under, rather than merely existing somewhere.
-    let heads: Vec<(usize, String)> = page
-        .match_indices("\n### ")
-        .map(|(i, _)| {
-            let start = i + 1;
-            let end = page[start..].find('\n').map_or(page.len(), |n| start + n);
-            (start, page[start..end].to_string())
-        })
+    let heads_of = |page: &str| -> Vec<(usize, String)> {
+        page.match_indices("\n### ")
+            .map(|(i, _)| {
+                let start = i + 1;
+                let end = page[start..].find('\n').map_or(page.len(), |n| start + n);
+                (start, page[start..end].to_string())
+            })
+            .collect()
+    };
+    let split: Vec<(&str, Vec<(usize, String)>)> = pages
+        .iter()
+        .map(|(_, page)| (page.as_str(), heads_of(page)))
         .collect();
 
     let mut missing_section = Vec::new();
@@ -5602,7 +5624,12 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
 
     for tool in &tools {
         let needle = format!("`{tool}`");
-        let Some(idx) = heads.iter().position(|(_, h)| h.contains(&needle)) else {
+        let Some((page, heads, idx)) = split.iter().find_map(|(page, heads)| {
+            heads
+                .iter()
+                .position(|(_, h)| h.contains(&needle))
+                .map(|idx| (*page, heads, idx))
+        }) else {
             missing_section.push(tool.clone());
             continue;
         };
@@ -5617,7 +5644,8 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
 
     assert!(
         missing_section.is_empty(),
-        "these MCP tools have no `### ` section in docs/mcp-tools.md: {missing_section:?}. \
+        "these MCP tools have no `### ` section in the MCP tool reference pages: \
+         {missing_section:?}. \
          A table row says a tool exists; it does not say how to call it or how to \
          read the answer. Give each one a heading naming it."
     );

@@ -420,7 +420,7 @@ The same document is what you get from:
 - the REST `GET /v1/dialogs/{call_id}` and
   `GET /v1/dialogs/{call_id}/report` endpoints,
 - MCP tool responses (`get_dialog_report` with `format: "json"` — see the
-  [MCP tool reference](@/docs/mcp-tools.md#get-dialog-report)), and
+  [MCP tool reference](@/docs/mcp-tools-signaling.md#get-dialog-report)), and
 - `SIPNAB_JSON` in [`--on-dialog-exec`](@/docs/cli.md#event-execution)
   hooks. Note the dialog hook fills `streams: []` and a default `diagnosis`
   — it fires on a dialog event, when media analysis for that call may not be

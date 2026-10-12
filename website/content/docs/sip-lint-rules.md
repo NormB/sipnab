@@ -64,7 +64,7 @@ both, and the MUST is the one worth acting on.
 ## Rulesets
 
 Run a named subset instead of the whole catalog. Name it in the `rulesets`
-parameter of the MCP [`lint_dialog`](@/docs/mcp-tools.md#lint-dialog) tool, or in
+parameter of the MCP [`lint_dialog`](@/docs/mcp-tools-signaling.md#lint-dialog) tool, or in
 `LintConfig::with_ruleset` when you drive the linter from Rust:
 
 | Name | Contents |
@@ -129,7 +129,7 @@ Suppression never hides itself. Every `lint_dialog` and `validate_message`
 response names the file it applied and counts what that file silenced, next to
 separate counts for the severity floor and the per-rule cap. A short finding
 list always says why it is short — the
-[MCP tool reference](@/docs/mcp-tools.md#lint-dialog) names the exact fields.
+[MCP tool reference](@/docs/mcp-tools-signaling.md#lint-dialog) names the exact fields.
 
 One further guard rail keeps CI readable: a single rule reports at most 25
 findings per dialog by default. A dialog retransmitting an `INVITE` eleven
