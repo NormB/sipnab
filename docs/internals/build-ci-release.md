@@ -664,9 +664,11 @@ only at merge time: pull request #333 carried four unsigned commits and stayed
 blocked with every check green and no reason shown.
 [`scripts/commit-signature-check.sh`](../../scripts/commit-signature-check.sh)
 reads the hook's input, one `<local ref> <local sha> <remote ref> <remote sha>`
-line per ref. A deleted ref pushes nothing to check, a new ref pushes the
-commits no remote branch has, and an update pushes the commits between the
-remote and local commit IDs. For each commit, the letter that
+line per ref. A deleted ref pushes nothing to check. Any other ref pushes
+the commits no remote-tracking branch has and, for an update, that the old
+remote commit does not reach either. A commit already on the remote is not
+the push's to sign: a branch rebased onto a newer `main` reaches main's
+squash merges, which GitHub signs with its own key. For each commit, the letter that
 `git log --format=%G?` prints decides, checked the way
 [`scripts/tag-signature-check.sh`](../../scripts/tag-signature-check.sh)
 verifies a tag, against [`.github/allowed_signers`](../../.github/allowed_signers):
