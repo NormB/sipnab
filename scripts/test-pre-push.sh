@@ -567,12 +567,19 @@ EOF
 # becomes the commit it marks. A synthetic sha would make that resolution fail
 # and the gate skip the ref -- the scenarios below would then pass by not
 # running, which is the failure mode this suite exists to avoid.
+#
+# The fixture commit is signed with the throwaway trusted key: the hook's first
+# gate refuses a push carrying an unsigned commit, and every scenario below
+# pushes this one. Signing it explicitly also keeps a machine's global
+# commit.gpgsign from signing it with that machine's own key.
+ssh-keygen -q -t ed25519 -N "" -C trusted -f "$TMP/trusted" </dev/null
+ssh-keygen -q -t ed25519 -N "" -C untrusted -f "$TMP/untrusted" </dev/null
 ( cd "$CRATE" \
 	&& git init -q . \
 	&& git config user.email t@example.com \
 	&& git config user.name test \
 	&& git add -A \
-	&& git commit -qm fixture ) >/dev/null 2>&1
+	&& git -c gpg.format=ssh -c "user.signingkey=$TMP/trusted.pub" commit -S -qm fixture ) >/dev/null 2>&1
 TAGGED=$( cd "$CRATE" && git rev-parse HEAD )
 
 # A v* tag must also be signed by a key in .github/allowed_signers, and that
@@ -580,8 +587,6 @@ TAGGED=$( cd "$CRATE" && git rev-parse HEAD )
 # push a tag that passes it, and the signature scenarios below push the tags it
 # must refuse. tag.gpgSign is forced off for the unsigned ones: a machine whose
 # global config signs every tag would otherwise sign them with its own key.
-ssh-keygen -q -t ed25519 -N "" -C trusted -f "$TMP/trusted" </dev/null
-ssh-keygen -q -t ed25519 -N "" -C untrusted -f "$TMP/untrusted" </dev/null
 mkdir -p "$CRATE/.github"
 printf 't@example.com namespaces="git" %s\n' "$(cat "$TMP/trusted.pub")" >"$CRATE/.github/allowed_signers"
 sign_tag() { # $1 = tag name, $2 = key
@@ -740,6 +745,22 @@ if PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/main $TAGGED refs/heads/main 0
 else
 	bad "tag gate blocked an ordinary branch push"
 	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# UNSIGNED COMMIT: a branch push carrying a commit with no signature is
+# blocked by the commit-signature gate, which names the commit. commit-tree
+# makes the commit without moving HEAD, so the scenarios after this one still
+# push the signed fixture.
+UNSIGNED=$( cd "$CRATE" && git commit-tree --no-gpg-sign -p HEAD -m unsigned "HEAD^{tree}" )
+UNSIGNED_SHORT=$(printf '%s' "$UNSIGNED" | cut -c1-7)
+if PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/topic $UNSIGNED refs/heads/topic 0000000000000000000000000000000000000000"; then
+	bad "commit-signature gate ALLOWED an unsigned commit"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "$UNSIGNED_SHORT not signed"; then
+	bad "commit-signature gate blocks an unsigned commit: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "commit-signature gate blocks an unsigned commit and names it"
 fi
 
 # TAG DELETION: an all-zero local sha has no commit to verify.

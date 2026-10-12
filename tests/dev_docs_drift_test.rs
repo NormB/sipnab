@@ -849,7 +849,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/fixtures/vcon-datasets/CORRECTED.tsv.
     // 506 -> 507: docs/internals/zero-copy-payloads.md links bench/carrier.py
     // in the single-threaded mapped-read measurement.
-    const EXPECTED_CODE_LINKS: usize = 507;
+    // 507 -> 511: docs/internals/build-ci-release.md's commit-signature gate
+    // paragraph links scripts/commit-signature-check.sh,
+    // scripts/tag-signature-check.sh, .github/allowed_signers and
+    // tests/commit_signature_gate_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 511;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

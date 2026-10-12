@@ -36,6 +36,37 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `git commit --amend -S --no-edit` and
+    // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
+    // contributing guide and the build page say to re-sign a commit the
+    // pre-push commit-signature gate refused. git's flags, not sipnab's.
+    (
+        "amend",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "exec",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "no-edit",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
     ("features", &["website/content/features.md"]),
@@ -1305,7 +1336,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // command to spawn.
     ("cli", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     ("method", &["docs/mcp.md", "website/content/docs/mcp.md"]),
-    ("format", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    // Also `git log --format=%G?`, the letter the pre-push commit-signature
+    // gate decides by, in the build page. git's flag, not sipnab's.
+    (
+        "format",
+        &[
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     ("tool-name", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     ("tool-arg", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     (
@@ -4846,7 +4887,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1115: the `%G?` verdict table for the pre-push commit-signature
+    // gate, in docs/internals/build-ci-release.md and its site mirror.
+    const EXPECTED_TABLES: usize = 1115;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -6461,6 +6504,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         12 => "twelve",
         13 => "thirteen",
         14 => "fourteen",
+        15 => "fifteen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -6483,7 +6527,8 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // Each of these names a count of pre-push gates somewhere. Any OTHER
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
-            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+            "fourteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -7404,6 +7449,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (12, "twelve"),
         (13, "thirteen"),
         (14, "fourteen"),
+        (15, "fifteen"),
     ];
     let want = spellings
         .iter()
