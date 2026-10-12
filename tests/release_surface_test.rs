@@ -411,6 +411,47 @@ fn unnamed_additions(
     Ok(out)
 }
 
+/// The part of `release` the working tree still has.
+fn still_present(release: &Surface, current: &Surface) -> Surface {
+    Surface {
+        flags: release
+            .flags
+            .intersection(&current.flags)
+            .cloned()
+            .collect(),
+        tools: release
+            .tools
+            .intersection(&current.tools)
+            .cloned()
+            .collect(),
+        routes: release
+            .routes
+            .intersection(&current.routes)
+            .cloned()
+            .collect(),
+    }
+}
+
+/// A removed addition is not owed a release note; a kept one still is.
+#[test]
+fn only_additions_the_tree_still_has_are_owed_a_note() {
+    let set = |xs: &[&str]| xs.iter().map(|x| (*x).to_owned()).collect::<BTreeSet<_>>();
+    let release = Surface {
+        flags: set(&["--kept", "--removed"]),
+        tools: set(&["kept_tool", "gone_tool"]),
+        routes: set(&["/v1/kept"]),
+    };
+    let current = Surface {
+        flags: set(&["--kept", "--newer"]),
+        tools: set(&["kept_tool"]),
+        routes: BTreeSet::new(),
+    };
+    let kept = still_present(&release, &current);
+    assert_eq!(kept.flags, set(&["--kept"]));
+    assert_eq!(kept.tools, set(&["kept_tool"]));
+    assert!(kept.routes.is_empty());
+}
+
 /// Everything in the changelog above the section for `version`: that
 /// section's successors, and `[Unreleased]`.
 ///
@@ -442,21 +483,23 @@ fn notes_after(changelog: &str, version: Version) -> &str {
 fn every_addition_is_named_in_the_release_notes() -> Result<(), TestError> {
     let changelog = std::fs::read_to_string(repo().join("CHANGELOG.md"))?;
     let releases = release_surfaces()?;
+    let current = working_tree_surface()?;
     let mut gaps = Vec::new();
     let mut additions = 0_usize;
     for pair in releases.windows(2) {
         let ((prev, _, before), (_, tag, after)) = (&pair[0], &pair[1]);
         additions += after.flags.difference(&before.flags).count();
-        for gap in unnamed_additions(before, after, notes_after(&changelog, *prev))? {
+        // Only what this tree still has must be named. A flag, tool or route
+        // a later release removed may be left out of the notes on purpose:
+        // --vcon-forward-compat (0.5.205) was removed in 0.5.211, with every
+        // mention of it, at the maintainer's decision.
+        let kept = still_present(after, &current);
+        for gap in unnamed_additions(before, &kept, notes_after(&changelog, *prev))? {
             gaps.push(format!("{tag}: {gap}"));
         }
     }
     let (last, last_tag, released) = releases.last().ok_or("no releases")?;
-    for gap in unnamed_additions(
-        released,
-        &working_tree_surface()?,
-        notes_after(&changelog, *last),
-    )? {
+    for gap in unnamed_additions(released, &current, notes_after(&changelog, *last))? {
         gaps.push(format!("since {last_tag}: {gap}"));
     }
     assert!(

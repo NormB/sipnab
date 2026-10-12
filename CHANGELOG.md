@@ -46,6 +46,12 @@ entry that carries them.
   by the parser, so the second check in `Cli::validate` and the third in
   `start_servers` could not print; with the enum no other transport can be
   built and both are gone. `--help` now describes each value.
+- **CI runs the test binaries side by side.** The Check job's Test step ran
+  `cargo test --all-features`, which runs its 406 test binaries one at a time:
+  460 s of the Linux job's 12.8-minute step on 2026-10-12. It now runs them
+  through `scripts/parallel-tests.py`, the runner the pre-commit hook already
+  uses, in a pool of one job per core. The output keeps `cargo test`'s format,
+  so the published test count is derived from it unchanged.
 
 ### Fixed
 
