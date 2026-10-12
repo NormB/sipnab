@@ -405,6 +405,146 @@ fn the_document_and_the_written_reference_agree() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The body of each `### METHOD /path` section of the written reference,
+/// keyed the way [`written_operations`] keys it. A section runs to the next
+/// `## ` or `### ` heading; `####` subsections belong to it.
+fn written_sections() -> Result<BTreeMap<(String, String), String>, TestError> {
+    let text = std::fs::read_to_string(repo().join(WRITTEN))?;
+    let mut out: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut current: Option<(String, String)> = None;
+    for line in text.lines() {
+        if let Some(heading) = line.strip_prefix("### ") {
+            current = None;
+            let mut parts = heading.split_whitespace();
+            if let (Some(method), Some(path), None) = (parts.next(), parts.next(), parts.next())
+                && path.starts_with('/')
+                && METHODS.contains(&method.to_ascii_lowercase().as_str())
+            {
+                let normalized = path
+                    .split('/')
+                    .map(|seg| {
+                        seg.strip_prefix(':')
+                            .map_or_else(|| seg.to_string(), |name| format!("{{{name}}}"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let key = (method.to_ascii_lowercase(), normalized);
+                out.insert(key.clone(), String::new());
+                current = Some(key);
+            }
+            continue;
+        }
+        if line.starts_with("## ") {
+            current = None;
+            continue;
+        }
+        if let Some(key) = &current
+            && let Some(body) = out.get_mut(key)
+        {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a section names query or header parameter `name` the way the page
+/// names one: in backticks (`` `limit` ``, `` `limit=50` ``) or in a query
+/// string (`?limit=`, `&limit=`). A bare word does not count — `before` and
+/// `filter` are English words the page uses in prose about other things.
+fn section_names_parameter(section: &str, name: &str) -> bool {
+    [
+        format!("`{name}`"),
+        format!("`{name}="),
+        format!("?{name}="),
+        format!("&{name}="),
+    ]
+    .iter()
+    .any(|form| section.contains(form.as_str()))
+}
+
+/// Every parameter the document declares for an operation is documented in
+/// that operation's section of the written reference.
+///
+/// The route gate above holds headings to the router. Nothing held a section's
+/// parameters to anything, and `GET /v1/dialogs` gained `filter`, `after` and
+/// `before` — a query language and a time window — with the page's parameter
+/// table still listing four. A reader of the page could not learn the
+/// endpoint could be filtered at all.
+///
+/// A path parameter is documented by the heading itself (`:call_id`); a query
+/// or header parameter must be named in the section body.
+#[test]
+fn every_documented_parameter_is_in_its_routes_written_section() -> Result<(), TestError> {
+    let doc = document()?;
+    let sections = written_sections()?;
+    let paths = doc["paths"]
+        .as_object()
+        .ok_or("the document declares paths")?;
+    let mut checked = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+    for (path, item) in paths {
+        for method in METHODS {
+            let Some(op) = item.get(method) else { continue };
+            let key = (method.to_string(), path.clone());
+            let Some(section) = sections.get(&key) else {
+                missing.push(format!(
+                    "{} {path}: no `### {} ...` section to hold its parameters",
+                    method.to_uppercase(),
+                    method.to_uppercase()
+                ));
+                continue;
+            };
+            for param in op["parameters"].as_array().into_iter().flatten() {
+                let name = param["name"].as_str().ok_or("a parameter has a name")?;
+                let place = param["in"].as_str().ok_or("a parameter has a location")?;
+                checked += 1;
+                let named = if place == "path" {
+                    path.contains(&format!("{{{name}}}"))
+                } else {
+                    section_names_parameter(section, name)
+                };
+                if !named {
+                    missing.push(format!(
+                        "{} {path}: {place} parameter `{name}`",
+                        method.to_uppercase()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        // 54 when written; a floor, so adding a parameter never trips it.
+        checked >= 50,
+        "only {checked} parameters were read from the document: the scan stopped \
+         matching and this gate is comparing nothing"
+    );
+    assert!(
+        missing.is_empty(),
+        "the OpenAPI document declares these parameters and {WRITTEN} never \
+         names them in the route's section — a reader of the page cannot learn \
+         they exist:\n  {}",
+        missing.join("\n  ")
+    );
+    Ok(())
+}
+
+/// The parameter matcher rejects prose and accepts the page's real forms.
+#[test]
+fn the_parameter_matcher_discriminates() {
+    assert!(section_names_parameter("| `after` | string |", "after"));
+    assert!(section_names_parameter(
+        "curl \"x/v1/runtime?sample_seconds=5\"",
+        "sample_seconds"
+    ));
+    assert!(section_names_parameter("x?state=Failed&limit=10", "limit"));
+    assert!(!section_names_parameter(
+        "read this before you page",
+        "before"
+    ));
+    assert!(!section_names_parameter("a `filter_text` field", "filter"));
+}
+
 /// The document is a valid OpenAPI 3.1 document.
 ///
 /// Structural, not meta-schema: the OpenAPI 3.1 meta-schema lives at
@@ -751,7 +891,35 @@ fn every_documented_response_matches_what_the_server_sends() -> Result<(), TestE
         .and_then(Value::as_object)
         .ok_or("components.schemas")?;
 
-    let srv = server::ApiServer::spawn_with_pcap(G711, &[])?;
+    // A vCon export spool holding one refused container and its record, so
+    // `GET /v1/vcon/spool` answers 200 with a record to validate rather than
+    // the 503 a run without `--export-vcon-dir` earns. The filter matches no
+    // dialog, so the run adds nothing to it.
+    let spool = tempfile::tempdir()?;
+    let failed = spool.path().join("failed");
+    std::fs::create_dir_all(&failed)?;
+    std::fs::write(failed.join("refused.vcon.json"), "{}")?;
+    std::fs::write(
+        failed.join("refused.vcon.json.error.json"),
+        serde_json::json!({
+            "at": "2026-10-11T11:58:02Z", "body": "{\"error\":\"vCon already exists\"}",
+            "body_truncated": false, "file": "refused.vcon.json", "method": "POST",
+            "reason": null, "status": 409, "url": "https://vcon.example.com/v1/vcons",
+        })
+        .to_string(),
+    )?;
+    let spool_path = spool.path().to_str().ok_or("utf-8 spool path")?;
+    let spool_args: &[&str] = if cfg!(feature = "vcon") {
+        &[
+            "--export-vcon-when",
+            "response_code >= 700",
+            "--export-vcon-dir",
+            spool_path,
+        ]
+    } else {
+        &[]
+    };
+    let srv = server::ApiServer::spawn_with_pcap(G711, spool_args)?;
 
     // Identifiers that exist in THIS capture, taken from the collections the
     // same way a client would.

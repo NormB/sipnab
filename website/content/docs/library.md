@@ -151,11 +151,13 @@ downstream literal therefore cannot construct.
 
 ## Worked examples
 
-Four of the six programs in [`examples/`](https://github.com/NormB/sipnab/blob/main/examples) take the library path:
+Four of the seven programs in [`examples/`](https://github.com/NormB/sipnab/blob/main/examples) take the library path:
 they run against a real capture and print a real answer. Each exists because
 it demonstrates something a doctest on this page structurally cannot — state
-accumulated across a whole file. (The other two, `uprobe_discover` and
-`uprobe_sock_offsets`, report on the host rather than a capture.)
+accumulated across a whole file. Of the other three, `uprobe_discover` and
+`uprobe_sock_offsets` report on the host rather than a capture, and
+`tls_plaintext_records` decodes records laid out the way the BPF TLS probe
+writes them, as [Runnable client examples](@/docs/examples.md) describes.
 
 | Example | Run it against | What it is for |
 |---|---|---|

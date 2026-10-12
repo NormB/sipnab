@@ -29,14 +29,22 @@ An orphaned stream is media with no dialog. `rtp_stats` names which streams
 have none. This tool says why each one has none, which is the part an incident
 needs.
 
-**Parameters:** `limit` (`u32?`) — maximum rows to return, bounded by
-`--mcp-max-rows` and defaulting to 50. There is no cursor: read `total_orphans`
-against the rows you received, and raise `limit` to reach the rest.
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. `0` returns one row. | 50 rows. |
+| `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`, the shape the [`rtp_stats`](mcp-tools-core.md#rtp_stats) sweep uses). A malformed timestamp half fails with `invalid_params`. | Starts at the earliest orphan. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"`. | The ceiling. |
 
-**Returns** `orphans`, `total_orphans` (the count before `limit` bit),
-`truncated`, `relay_was_consulted`, `relay_control`, `capture_identity` and
-`schema_version`. Each `orphans` row carries `ssrc`, `src`, `dst`,
+**Returns** `orphans`, `returned`, `total_orphans` (every orphan in the store,
+whatever `limit` and `cursor` say), `truncated`, `truncated_by` (present only
+when a bound cut the page), `next_cursor` (`null` on the final page),
+`relay_was_consulted`, `relay_control`, `capture_identity` and
+`schema_version`. Rows run oldest first, by first packet, ties broken by
+`0xSSRC@src>dst`. Each `orphans` row carries `ssrc`, `src`, `dst`,
 `named_endpoint`, `asserted_by`, `reason` and `note`.
+
+`relay_was_consulted` reads every orphan in the store, not only the page, so a
+relay assertion on a later page still counts.
 
 `relay_control` has one row per relay control socket this capture read
 (`--rtpproxy-control`), and is empty when the capture read none. It counts retried
@@ -97,9 +105,13 @@ which carries four streams and no dialogs at all:
       "note": "nothing in this capture named this endpoint. A relay could answer it and none was asked: that is an absence of evidence, not evidence of absence"
     }
   ],
+  "returned": 2,
   "total_orphans": 4,
   "truncated": true,
+  "truncated_by": "rows",
+  "next_cursor": "2026-07-08T18:35:27.408614Z|0x0e330af3@127.0.0.1:5084>127.0.0.1:5094",
   "relay_was_consulted": false,
+  "relay_control": [],
   "capture_identity": {
     "node": "capture-01",
     "instance": "ece9518d2bf67680750b4-2",
@@ -235,6 +247,12 @@ that fails authentication, so everything still in the store arrived under
 whatever posture the run configured. With no posture configured it
 reports the **weakest** reading — a tool whose job is telling you what a claim
 is worth must not round up in the absence of information.
+
+The configured posture is the HEP listener's, so it covers only what the
+listener delivered (`input_origin: hep`). A relay datagram sipnab read off a
+capture interface (`input_origin: wire`) never reached the listener: it is
+`port-gated-only` on every run, `--hep-auth-mode hmac` included. A run with
+`-d` and `-L` holds both kinds side by side.
 
 The endpoints are the call's streams, so the tool answers on a media-relay host
 that never saw the SIP dialog. `dialog_seen` is then `false` and

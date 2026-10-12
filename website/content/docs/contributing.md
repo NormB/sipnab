@@ -141,7 +141,8 @@ git config core.hooksPath .githooks
 ```
 
 **`pre-commit`** runs nine numbered gates, starting at 0: `cargo fmt --all --
---check`, clippy (`--features full`, `-D warnings`), the full
+--check`, clippy (`--workspace --all-features --all-targets`, `-D warnings`),
+the full
 `cargo test --features full` suite, no `unwrap()`/`expect()` or abort macro
 (`panic!`, `unreachable!`, `todo!`, `unimplemented!`) in production code,
 WASM exports in sync with the site's JS, the homepage test count still
@@ -186,14 +187,14 @@ on `main` judge your pull request, and CI reads your pull request's commits as
 data, never checking them out or running them. A change you make to any of
 those three files takes effect only after it reaches `main`.
 
-**`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
+**`pre-push`** adds fourteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
 |---|---|
 | `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale and codespell at CI's pinned versions, both site-mirror generators, the and the documentation ratchets. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
 | `cargo fmt --all -- --check` | Formatting is never checked by a build. |
-| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
+| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | The same command as pre-commit's clippy gate and CI's, run again before the push. It lints tests, benches, examples, every workspace crate and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
 | `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
@@ -202,6 +203,7 @@ which blocks the push:
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
 | `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
 | `scripts/tag-signature-check.sh` on every pushed `v*` tag | A release tag carries the name of the maintainer who publishes it. The tag must be an annotated tag with a good SSH signature from a key in `.github/allowed_signers`. Nothing in `cargo test` sees a tag. |
+| `scripts/commit-signature-check.sh` on every pushed commit, before any other gate | Branch protection on `main` requires signed commits, and GitHub applies that only at merge time: a pull request with an unsigned commit shows every check green and stays blocked with no reason given. The gate refuses a commit without a good signature, names it, and prints the command that re-signs it. A good signature from a key that `.github/allowed_signers` does not list passes with a note, because GitHub checks the key against the GitHub account that owns the committer email of the commit. Nothing in `cargo test` sees the commits a push carries. |
 
 CI's full feature matrix (every combination `.github/workflows/ci.yml` lists,
 with its `RUSTFLAGS=-Dwarnings`) is not in the hook: the Features job builds it
@@ -347,6 +349,21 @@ Two pages outside `docs/` publish to the site the same way:
 this file and `website/content/docs/contrib.md` from `contrib/README.md`, and
 `contributor_docs_are_generated_site_pages` fails if either page is missing.
 Edit the source, then regenerate.
+
+The man page, `man/sipnab.1`, is partly generated. Its OPTIONS section comes
+from the clap definitions in `src/cli.rs`, its ENVIRONMENT section from the
+`ENVIRONMENT` table in the same file (the list `--help` prints), and its EXIT
+STATUS section from the exit-code table in `docs/cli-reference.md`.
+`tests/man_page_test.rs` fails when any of the three is stale. Regenerate them
+with:
+
+```bash
+SIPNAB_MAN_APPLY=1 cargo test --features full --test man_page_test
+```
+
+The rest of the page is hand-written. The same test checks that it names only
+flags sipnab has, that it names every environment variable sipnab reads, and
+that `groff -man -ww` formats it without a warning.
 
 `docs/internals/` *does* publish to the site — ten pages under
 `website/content/docs/internals/`, rendered by
@@ -635,7 +652,10 @@ A pull request is acceptable when all of these hold:
    branch has signed the CLA.
 2. **Every commit carries a signature.** Branch protection on `main` requires signed
    commits, so GitHub refuses a merge that contains an unsigned or unverified
-   one.
+   one. The `pre-push` hook refuses an unsigned commit before it leaves your
+   machine. To re-sign the last commit, run `git commit --amend -S --no-edit`.
+   To re-sign every commit since `<base>`, run
+   `git rebase --exec 'git commit --amend --no-edit -S' <base>`.
 3. **No review conversation stays open.** Branch protection blocks the merge
    until someone marks each one resolved.
 4. **The reviewer agrees** that the change meets the pull request template

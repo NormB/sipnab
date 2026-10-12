@@ -79,9 +79,10 @@ sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062
 ```
 
 A call through each proxy then appears in the report, one row per call. The
-two test calls send their audio from the same ports with the same RTP SSRC, so
-the `RTP Streams:` table counts both calls' audio as one stream per direction
-and codec: 472 `PCMA` packets each way, not two streams of 236 for each call.
+two test calls send their audio from the same ports with the same RTP SSRC.
+sipnab starts a new stream when the second call's SDP renegotiates those ports,
+so the `RTP Streams:` table lists each call's streams on rows of their own:
+236 `PCMA` packets each way for each call, not one stream of 472 across both.
 
 ## When something does not work
 

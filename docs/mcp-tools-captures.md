@@ -787,7 +787,7 @@ disclaimers`.
 
 ### `save_findings`
 
-**The only write verb on sipnab's network surface.** Requires
+**Writes one line to sipnab's log and nothing else.** Requires
 `--mcp-allow-save-findings`, which is off by default.
 
 | Name | Type | Legal values | If omitted |

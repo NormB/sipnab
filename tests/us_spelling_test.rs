@@ -2,7 +2,7 @@
 
 //! US spellings, enforced by a RULE rather than by a list of known words.
 //!
-//! `the_tree_spells_in_us_english` has guarded this since 0.5.105, and it
+//! `the_tree_spells_in_us_english` has guarded this since 0.5.123, and it
 //! guards a list: about seventy words somebody thought of. On 2026-09-01 it
 //! caught `recognize` in a comment written minutes earlier — which is the
 //! system working, and also the whole problem. It can only ever catch a word

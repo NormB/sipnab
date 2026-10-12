@@ -1,137 +1,115 @@
 +++
-title = "A tool list that advertised what the build could not run"
+title = "MCP tool list and capability report match the features a build has"
 date = 2026-09-01
-description = "One feature combination shipped an MCP server listing two tools, with full schemas, that refused every call. The report the refusal told operators to consult had never named the feature it was about."
+updated = 2026-10-11
+description = "Since 0.5.142, an MCP client sees only the tools a sipnab build can run, and the capability report names every optional feature the build contains. This note shows how to check both."
 
 [extra]
-kind = "postmortem"
+kind = "feature"
 +++
 
-On 2026-09-01 CI went red on exactly one feature combination. A build of
-`native,hep,api,mcp,mcp-http` — no `vcon` — listed `export_vcon` and
-`validate_vcon` in `tools/list`, complete with input and output schemas, and
-refused every call to them.
+## In short
 
-`tools/list` is the only contract MCP gives an agent. Everything the agent
-knows about what a server can do arrives there. A tool in that list that can
-never run is worse than an absent one: the agent plans around it, calls it, and
-gets an error naming nothing it could have chosen differently.
+A sipnab binary may include or leave out optional parts, called features. One of
+them, `vcon`, provides the tools that export and check call records in the
+vCon format. Before version 0.5.142, a sipnab binary without `vcon` still
+offered those two tools to AI agents and then refused every request to use
+them. Since 0.5.142, such a build does not offer them at all, and sipnab's
+capability report names every optional feature the build contains, so an
+agent or an operator can see why a tool is absent.
 
-## Two facts, hundreds of lines apart
+## Who this is for
 
-The router composed unconditionally in `src/mcp/server.rs`. Only the inner
-helpers carried the feature split, in `src/mcp/tools/vcon.rs`:
+Anyone who runs sipnab as an MCP server for an AI agent, especially from a
+build with a reduced feature set, and anyone who needs to know which features
+a given sipnab binary has.
 
-```rust
-#[cfg(not(feature = "vcon"))]
-fn export_containers(
-    &self,
-    _selection: &Selection,
-    _limit: usize,
-) -> Result<ExportVconResponse, rmcp::ErrorData> {
-    Err(no_exporter())
-}
+## What it does
+
+An MCP client (the AI agent's side of the connection) asks a server for its
+tools with a `tools/list` request. The answer is the whole of what the agent
+knows about what the server can do. Since 0.5.142:
+
+- **Tools follow the build.** sipnab registers `export_vcon` and
+  `validate_vcon` only when the binary includes the `vcon` feature. A build
+  without it leaves both out of `tools/list`.
+- **`server_capabilities` names every feature.** The MCP tool
+  `server_capabilities` returns a `features` list read from the same function
+  that produces the `--version` line and the REST `GET /v1/capabilities`
+  answer, so all three agree. Before 0.5.142 that list could name only ten
+  features and never named `vcon`, `bpf` or `wasm`.
+
+### What users saw before 0.5.142
+
+A build with the features `native,hep,api,mcp,mcp-http` (one of the reduced
+feature sets sipnab's CI builds) listed `export_vcon` and `validate_vcon` in
+`tools/list`, with their input and output schemas. It refused every call to
+either tool with this message:
+
+```text
+this sipnab was built without the 'vcon' Cargo feature, so it has no vCon exporter. Rebuild with --features vcon (or --features full); server_capabilities lists what this binary carries
 ```
 
-Read on its own that arm looks careful. Its doc comment even argued the case:
-the tools stay registered rather than disappearing, so an agent asking for a
-container learns which build it is talking to instead of getting "no such
-tool", which reads as sipnab not supporting vCon at all.
+The message pointed to `server_capabilities`, but that report did not name
+`vcon` in any build, so it could not confirm whether the feature was present.
 
-The argument is coherent. It is also the whole defect: a registration and a
-refusal that live in different files leave nobody a file to read that shows
-both.
+The cause was that two different places in the code decided the list of
+tools and the code behind them. Every build assembled the same tool list, and
+only the code that would do the work changed with the feature. Now the tool
+definitions themselves exist only in a build with the feature, so a build that
+lists the tools without being able to run them no longer compiles.
 
-Nothing local could see it. The build under test here is `full`, and `full`
-carries `vcon`, so every tool that could ever run did run. The combination that
-failed is one only CI builds.
+## How to check a build
 
-## The advice the refusal gave
+It needs no setting. To see which features a binary contains, run:
 
-The refusal ended by pointing somewhere:
-
-> `server_capabilities` lists what this binary carries
-
-That report named ten features — `native`, `tui`, `tls`, `hep`, `api`, `mcp`,
-`mcp-http`, `metrics`, `audio`, `plugins` — and had never named `vcon`, `bpf`
-or `wasm`. So an operator who followed sipnab's own error message, to the
-surface sipnab's own error message nominated, learned nothing about the feature
-the error was about.
-
-The report's comment explained why a reader should trust it. It reads from
-`cfg!`, so it "cannot claim a feature the binary does not have". That is true
-and it is half the rule. Nothing stopped it from omitting a feature the binary
-does have, which is the direction that failed.
-
-Both halves went in together. Removing the advertisement is only safe once the
-report can answer the question that removal raises — a client that notices two
-tools missing needs somewhere to learn why.
-
-## The gate is the agreement, not the tool
-
-`tests/mcp_capability_agreement_test.rs` states the rule in a form that holds
-in every build rather than only under `full`:
-
-```rust
-assert!(
-    present == 0 || present == tools.len(),
-    "{module} declares {} tool(s) and {present} of them are \
-     registered. A feature-gated module is all or nothing ...",
-    tools.len()
-);
+```bash
+sipnab --version
 ```
 
-That test deliberately does not consult `cfg!`. A module behind one feature
-advertises all of its tools or none of them, whichever features happen to be
-on, so the assertion cannot rot into something that only means anything on one
-build.
+```text
+sipnab 0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive
+libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
+```
 
-Half a module is exactly what shipped — the tools listed, the exporter absent
-— and no test that checks one tool name at a time can see it.
+An agent connected over MCP gets the same list, in alphabetical order, from
+`server_capabilities`, and the REST API serves it on `GET /v1/capabilities`.
+On the binary above, the `features` field of the `server_capabilities` answer
+was:
 
-Two of the mutations written against these tests turned out to be compile
-errors rather than failing tests, which is a stronger result and worth
-reporting as one. Gating a single method out of a `#[tool_router]` impl does
-not build at all. Forcing the half-registered state took removing a route after
-composition, and that does kill the test.
+```text
+"features":["api","archive","audio","hep","mcp","mcp-http","metrics","native","plugins","tls","tui","vcon"]
+```
 
-## What the matrix run found next
+When `vcon` is in that list, `tools/list` includes `export_vcon` and
+`validate_vcon`. When it is not, the server offers neither tool.
 
-The lesson taken from all of this was to stop building one feature set. Running
-CI's whole matrix locally before the next push turned up a second defect
-immediately.
+## Limits
 
-`scripts/check-feature-deps.py` read `all(a, b)` the way it reads `any(a, b)`.
-For `any`, treating each alternative as independent is correct and strict:
-`any(api, mcp, vcon)` means a build enabling only `vcon` compiles that file, so
-`vcon` alone has to declare what the file imports. Reading those as a union is
-the reasoning that let a `--features vcon` build break at 0.5.130.
+- Build features and the `--mcp-tools` option are separate. `--mcp-tools`
+  selects which registered tools the server offers (for example only the
+  `vcon` bundle). It does not change which features the binary contains.
+- The tests that hold this rule in place,
+  `tests/mcp_capability_agreement_test.rs`, require that every tool module
+  tied to a feature registers all of its tools or none of them, and that
+  `server_capabilities` can name every feature that `Cargo.toml` declares.
 
-For `all`, the same reading is wrong. No build compiles `src/mcp/tools/vcon.rs`
-with half of `all(mcp, vcon)`, so the pair supplies the imports together.
-Demanding that `vcon` declare `rmcp` satisfies a build that cannot exist.
+## Terms used here
 
-The fix splits the two readings and keeps the strict one strict:
+- **MCP**: Model Context Protocol, the interface sipnab offers to AI agents.
+- **Tool**: one operation an MCP server offers, such as `export_vcon`.
+- **`tools/list`**: the MCP request a client sends to learn which tools a
+  server offers.
+- **Feature**: an optional part of sipnab that a build includes or leaves out.
+- **Build**: one compiled sipnab binary with a particular set of features.
+- **vCon**: a standard JSON format for a record of a conversation.
+- **CI**: continuous integration, the automated jobs that build and test
+  sipnab, including builds with reduced feature sets.
 
-<!-- vale off -->
-> Anything mixing the two, or shaped in a way this does not recognize, falls
-> back to the STRICT reading — one alternative per feature. A parser that
-> guesses permissively when it is confused is a gate that opens when it stops
-> understanding what it is looking at.
-<!-- vale on -->
+## Related guides
 
-The `any` strictness that caught 0.5.130 survives untouched, and it now has a
-test that fails if anybody relaxes it. Loosening one half of a gate is the
-moment to prove the other half still catches things.
-
-## Worth stealing
-
-Two rules came out of this.
-
-A conditional advertisement and the condition it advertises belong in one
-place. If they cannot be, something has to compare them, because a reviewer
-reading either file alone finds a defensible design in front of them.
-
-And an error message that tells the reader where to look has made a promise
-about that destination. This one sent operators to a report that could not
-answer, and the report had a comment explaining why it was trustworthy.
+- [`server_capabilities`](@/docs/mcp-tools.md#server-capabilities)
+- [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load)
+- [`export_vcon`](@/docs/mcp-tools.md#export-vcon) and [`validate_vcon`](@/docs/mcp-tools.md#validate-vcon)
+- [REST API: `GET /v1/capabilities`](@/docs/api.md#get-v1-capabilities)
+- [Feature flags](@/docs/build.md#feature-flags)

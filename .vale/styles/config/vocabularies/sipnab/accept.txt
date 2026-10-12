@@ -6,6 +6,7 @@
 [Ff]ullband
 [Mm]onotic
 [Nn]arrowband
+[Rr]ollup
 [Uu]ndecodable
 [Ww]ideband
 _code_b
@@ -777,3 +778,9 @@ zeroizing
 zsh
 nftables
 iptables
+[Mm]ebibytes?
+softswitch
+spandsp
+FFmpeg
+[Dd]ialplan
+[Dd]ialplan's

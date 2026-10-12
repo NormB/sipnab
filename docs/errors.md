@@ -330,6 +330,14 @@ A `--hep-allow` value is not a valid address range. `--hep-allow` lists the send
 
 **Exit code:** 2.
 
+### `Invalid --ws-portrange: {e}`
+
+The SIP over WebSocket port range that `--ws-portrange` gives is not usable. `{e}` says what is wrong: the value is not two ports joined by `-`, one side is not a port number from 0 to 65535, or the start is higher than the end.
+
+**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`, or remove the flag for the shipped ports.
+
+**Exit code:** 2.
+
 ### `is a MOS and must be at most {}, got {v}`
 
 `--mos-warn` and `--mos-bad` set MOS (Mean Opinion Score, a call-quality score) boundaries for the quality color column. No score can reach a boundary above the top of the scale. `{}` is that maximum, 5, and `{v}` is the value you gave.
@@ -1156,13 +1164,13 @@ A `${NAME}` reference to an environment variable in a configuration file string 
 
 **Exit code:** 1.
 
-### `{source}: {e}`
+### `[capture] ws_ports: {e}`
 
-The SIP over WebSocket port range is not usable. `{source}` names where it came from: `--ws-portrange` on the command line, or `[capture] ws_ports` in the configuration file. `{e}` says what is wrong: the value is not two ports joined by `-`, one side is not a port number from 0 to 65535, or the start is higher than the end. The printed line starts with `invalid config value: ` in both cases.
+The SIP over WebSocket port range that `[capture] ws_ports` in the configuration file gives is not usable. `{e}` says what is wrong: the value is not two ports joined by `-`, one side is not a port number from 0 to 65535, or the start is higher than the end. The printed line starts with `invalid config value: `. `--ws-portrange` on the command line replaces the key, and sipnab does not read the key when you give the flag.
 
-**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`, or remove the flag or key for the shipped ports.
+**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`, or remove the key for the shipped ports.
 
-**Exit code:** 2 when the value came from `--ws-portrange`, and 1 when it came from `[capture] ws_ports`.
+**Exit code:** 1.
 
 ## Capture and input files
 
@@ -1666,14 +1674,6 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
-### `--mcp-transport must be 'stdio' or 'http', got '{}'`
-
-`--mcp-transport` accepts only `stdio` or `http`, and `{}` is the value you gave. The command-line parser refuses any other value before this check runs, with its own error message, so a run started from the command line does not print this text.
-
-**What to do:** Use `--mcp-transport stdio` or `--mcp-transport http`.
-
-**Exit code:** 2.
-
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
 `--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp`. The list includes `--export-vcon` only when you did not give `--vcon-out`.
@@ -1735,14 +1735,6 @@ The listed options (from `--mcp-allow-shutdown`, `--mcp-allow-open-capture`, `--
 `--mint-token` uses the lifetime from `--api-token-ttl` when the configuration has a REST API signing key, otherwise from `--mcp-token-ttl`, and that value is 0 or negative. `{ttl}` is the value in seconds. Both flags default to 3600.
 
 **What to do:** Give a positive number of seconds to the flag that applies, for example `--api-token-ttl 3600`.
-
-**Exit code:** 2.
-
-### `unknown --mcp-transport '{other}', expected stdio or http`
-
-You gave `--mcp-transport` a value other than `stdio` or `http`. The flag's parser accepts only those two values and refuses any other with its own error before this check runs, so the command line does not reach this message.
-
-**What to do:** Use `--mcp-transport stdio` (the default) or `--mcp-transport http`.
 
 **Exit code:** 2.
 
@@ -2006,9 +1998,9 @@ The remedy for a capture that missed the TLS handshake.
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `Failed to load --dtls-keylog {keylog}: {e}`
+### `Failed to load --dtls-keylog {keylog}: {e:#}`
 
-In the TUI, sipnab could not load the key log named by `--dtls-keylog`. That file supplies keys for decrypting DTLS-SRTP media (encrypted RTP whose keys come from a DTLS handshake). `{keylog}` is the path, and `{e}` is the reason. The TUI keeps running without DTLS-SRTP decryption. A headless run (`-N`) prints the same text and exits 1.
+In the TUI, sipnab could not load the key log named by `--dtls-keylog`. That file supplies keys for decrypting DTLS-SRTP media (encrypted RTP whose keys come from a DTLS handshake). `{keylog}` is the path, and `{e:#}` is the reason with its causes: when sipnab could not read the file, `Loading DTLS keylog from` followed by the path and the operating system's reason, such as `No such file or directory` or `Permission denied`. The TUI keeps running without DTLS-SRTP decryption. A headless run (`-N`) prints the same text and exits 1.
 
 **What to do:** Correct the path or the file permissions, or point `--dtls-keylog` at an NSS key log file (the `SSLKEYLOGFILE` format).
 
@@ -2022,17 +2014,17 @@ sipnab could not read the TLS key log file named by `--keylog`. `{}` is that pat
 
 **Exit code:** 1.
 
-### `Failed to load --srtp-keys {keyfile}: {e}`
+### `Failed to load --srtp-keys {keyfile}: {e:#}`
 
-In the TUI, sipnab could not load the SRTP master-key file named by `--srtp-keys`. `{keyfile}` is the path, and `{e}` is the reason. The TUI keeps running with no SRTP decryption context. A headless run (`-N`) prints the same text and exits 1.
+In the TUI, sipnab could not load the SRTP master-key file named by `--srtp-keys`. `{keyfile}` is the path, and `{e:#}` is the reason with its causes: when sipnab could not read the file, `Failed to read SRTP key file:` followed by the path and the operating system's reason, such as `No such file or directory` or `Permission denied`. The TUI keeps running with no SRTP decryption context. A headless run (`-N`) prints the same text and exits 1.
 
 **What to do:** Correct the path or the file permissions, or fix the file's contents so that sipnab accepts each key line. Without `--srtp-keys`, sipnab still decrypts with SDES keys it reads from SDP `a=crypto` lines.
 
 **Exit code:** None in the TUI, where the run continues without SRTP decryption. 1 in a headless run.
 
-### `Failed to load --tls-key {keyfile}: {e}`
+### `Failed to load --tls-key {keyfile}: {e:#}`
 
-sipnab could not load the RSA private key named by `--tls-key`, which it uses to decrypt TLS 1.2 connections that use RSA key exchange. `{keyfile}` is the path. `{e}` is either `reading TLS private key from` followed by the path, when sipnab could not read the file, or a statement that the file is not a PKCS#1 or PKCS#8 PEM RSA private key.
+sipnab could not load the RSA private key named by `--tls-key`, which it uses to decrypt TLS 1.2 connections that use RSA key exchange. `{keyfile}` is the path. `{e:#}` is the reason with its causes: either `reading TLS private key from` followed by the path and the operating system's reason, such as `No such file or directory` or `Permission denied`, when sipnab could not read the file, or a statement that the file is not a PKCS#1 or PKCS#8 PEM RSA private key.
 
 **What to do:** Check that the path is correct and readable by the user sipnab runs as, and that the file is an RSA private key in PEM format, the text format whose first line names `RSA PRIVATE KEY` or `PRIVATE KEY`.
 
@@ -2776,6 +2768,54 @@ You gave `--vcon-forward` with no credential for the store from any source. The 
 
 **Exit code:** 2.
 
+### `--vcon-spool-status requires the 'vcon' feature (not compiled in)`
+
+`--vcon-spool-status` counts the vCon export spool: the containers pending, delivered and failed. This build does not include the `vcon` feature, so it cannot read the spool.
+
+**What to do:** Use a sipnab build that includes the `vcon` feature.
+
+**Exit code:** 2.
+
+### `--vcon-spool-status: {e}`
+
+`--vcon-spool-status` could not report on the spool. `{e}` is the reason: `cannot read '{path}': {e}` when the spool directory, or its `delivered/` or `failed/` directory, exists but sipnab cannot list it, or the reason sipnab could not write the report as JSON. A directory that does not exist is not an error: it counts as empty.
+
+**What to do:** Check the path, and check that the user sipnab runs as can list the spool directory and the `delivered/` and `failed/` directories beside it.
+
+**Exit code:** 1.
+
+### `cannot read '{path}': {e}`
+
+The spool status could not list a directory. `{path}` is the spool directory, or its `delivered/` or `failed/` directory, and `{e}` is the operating system's reason. The command line prints it after `--vcon-spool-status: `.
+
+**What to do:** Check that the user sipnab runs as can list that directory.
+
+**Exit code:** 1.
+
+### `{shown} is missing beside the container`
+
+The spool status found a container in `failed/` with no failure record beside it. `{shown}` is the record's file name, the container's name followed by `.error.json`. This is not an error message: it is the `record_problem` value for that container in the status report, and the report continues.
+
+**What to do:** Read the container itself to find out why the forwarder moved it to `failed/`, or run the forwarder again on it.
+
+**Exit code:** None. It is a field in the report.
+
+### `{shown} cannot be read: {e}`
+
+The spool status found a failure record beside a container in `failed/` and could not read it. `{shown}` is the record's file name, and `{e}` is the operating system's reason. It is the `record_problem` value for that container in the status report, and the report continues.
+
+**What to do:** Check that the user sipnab runs as can read the record.
+
+**Exit code:** None. It is a field in the report.
+
+### `{shown} is {size} bytes, past the {MAX_RECORD_READ}-byte bound this reads; read the file on the host`
+
+The spool status found a failure record larger than it reads. `{shown}` is the record's file name, `{size}` its size, and `{MAX_RECORD_READ}` the bound, 1048576 bytes. It is the `record_problem` value for that container in the status report, and the report continues.
+
+**What to do:** Read the record on the host with a text viewer.
+
+**Exit code:** None. It is a field in the report.
+
 ### `writing --redact-map '{}': {e}`
 
 sipnab created the `--redact-map` file, but a write to it failed part way. The text after the path is the operating system's reason.
@@ -2906,9 +2946,9 @@ sipnab lacks the permission to open the capture device. `{}` names the interface
 
 **Exit code:** 1.
 
-### `Processing thread panicked: {:?}`
+### `Processing thread panicked: {}`
 
-When the TUI closed, sipnab found that the packet-processing thread had ended with a panic (an internal failure). `{:?}` is the panic payload. Release builds use `panic = "abort"`, which ends the whole process at the panic, so this line appears only in builds that unwind on panic.
+When the TUI closed, sipnab found that the packet-processing thread had ended with a panic (an internal failure). `{}` is the panic message, or `<non-string panic payload>` when the panic carried no text. Release builds use `panic = "abort"`, which ends the whole process at the panic, so this line appears only in builds that unwind on panic.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 

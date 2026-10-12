@@ -1506,6 +1506,7 @@ mod tests {
             ssrc: 0x12345678,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src_ip)), src_port),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(dst_ip)), dst_port),
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,
@@ -2206,6 +2207,7 @@ mod tests {
             ssrc: 0xABCDEF00 ^ pt as u32,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src_ip)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(dst_ip)), 30000),
+            session: 0,
         };
         let header = RtpHeader {
             version: 2,
@@ -3176,6 +3178,7 @@ mod media_relay_tests {
             ssrc,
             src: client()?,
             dst: server()?,
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,

@@ -70,6 +70,7 @@ mod tests {
             ssrc: 7,
             src: std::net::SocketAddr::new(addr_a(), 20000),
             dst: std::net::SocketAddr::new(addr_b(), 30000),
+            session: 0,
         }
     }
 

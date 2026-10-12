@@ -1221,8 +1221,9 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() -> Result<(), Test
 /// That was live. `download.html` used `config.extra.version`, which the Pages
 /// step overwrites from `Cargo.toml` on every build, so the moment a release
 /// COMMIT landed on main the site advertised assets for a tag nobody had pushed
-/// yet. The window is the whole commit → CI → tag → release-build cycle, and on
-/// 0.5.61 it ran far longer: that release commit went red and was never tagged.
+/// yet. The window is the whole commit → CI → tag → release-build cycle. On
+/// 0.5.61 the release commit went red in CI, and the v0.5.61 tag went on the
+/// commit that fixed it, 31 minutes after the release commit.
 ///
 /// A local tag is the check because it is the same thing `release.yml` triggers
 /// on — no network, and it cannot pass by being unable to look.
@@ -3581,9 +3582,14 @@ fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<
     })?;
 
     let yaml = read(wf)?;
+    // The binaries run side by side through scripts/parallel-tests.py, the
+    // runner the pre-commit hook uses; its output is cargo's, one block per
+    // binary, so the count rule reads it unchanged. Plain `cargo test` ran
+    // the 406 binaries one at a time: 460 s of the Linux job's 12.8-minute
+    // Test step on 2026-10-12.
     let test = line_of(
         &yaml,
-        "cargo test --all-features 2>&1 | tee test-output.txt",
+        "python3 scripts/parallel-tests.py -- --all-features 2>&1 | tee test-output.txt",
         wf,
     )?;
     let derive = line_of(&yaml, "- name: Derive the published test count", wf)?;
@@ -6307,6 +6313,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 184 -> 186: pages.yml's star-count steps name scripts/github-stars.py
     // twice (the paths filter and the run). The file they write,
     // website/data/github.toml, is on the GENERATED list and not counted.
+    // 186 -> 188: ci.yml's Test step names scripts/parallel-tests.py twice
+    // (its comment and its run line). Attributed by measurement: with
+    // origin/main's ci.yml swapped back in, the scan reads 186.
+    // 188 -> 197: .github/workflows/memcheck.yml, the weekly Valgrind
+    // memcheck job, names its scripts and fixtures nine times. Attributed by
+    // measurement: with the file set aside the scan reads 188.
     // 186 -> 190: four, all in `.github/workflows/pages.yml`, for the docs
     // pages' change history. scripts/doc-history.py is named by the `paths:`
     // entry, that entry's comment, the checkout's `fetch-depth: 0` comment and
@@ -6314,7 +6326,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // website/data/doc-history.toml, is on the GENERATED list and not counted.
     // Attributed by measurement: with HEAD's pages.yml swapped back in, the
     // scan reads 186.
-    const EXPECTED_REFERENCES: usize = 190;
+    // 197 -> 201: the merge of docs/doc-improvements with the 0.5.213 batch.
+    // .github/workflows/pages.yml +4, its four references to
+    // scripts/doc-history.py. Attributed by measurement: with the batch's
+    // pages.yml swapped back in, the scan reads 197.
+    const EXPECTED_REFERENCES: usize = 201;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -10907,6 +10923,11 @@ fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
 /// it, then the voice stack, what it supports, the numbers and the guides.
 /// Quick Start still comes before the agent demos, which need a source
 /// checkout, so the rule above still holds.
+///
+/// Norm, 2026-10-11, adopted this order: how sipnab fits together, what you
+/// can do with it, the animation that shows it, what it supports, how to
+/// install it, what an agent can ask it, the voice stack, the numbers, and the
+/// guides last, where a reader who has decided looks for the next step.
 #[test]
 fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -10914,14 +10935,26 @@ fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     let want = [
         "hero",
         "sysmap-section",
-        "hero-shot-section",
         "features",
+        "hero-shot-section",
+        "comparison",
         "quickstart",
         "demos",
-        "comparison",
         "arch-callout",
         "notes-callout",
     ];
+    // The voice-stack section's class is "features stack", which the class
+    // scan above does not match, so its place is pinned by its id: after the
+    // agent demos and before the numbers.
+    let at = |needle: &str| {
+        page.find(needle)
+            .ok_or_else(|| format!("the homepage has no {needle}"))
+    };
+    let stack = at("id=\"voice-stack\"")?;
+    assert!(
+        at("<section class=\"demos\"")? < stack && stack < at("<section class=\"arch-callout\"")?,
+        "the voice-stack section is not between the agent demos and the numbers"
+    );
     let seen: Vec<&str> = order
         .iter()
         .map(String::as_str)
@@ -11530,8 +11563,9 @@ fn homepage_voice_stack_section_links_every_stack_guide() -> Result<(), TestErro
         .filter(|e| GROUPS.contains(&e.group.as_str()))
         .map(|e| e.path)
         .collect();
+    let expected = guides;
     assert_eq!(
-        linked, guides,
+        linked, expected,
         "the homepage voice-stack section (left) and the nav's voice-stack group (right) \
          list different guides"
     );
@@ -11590,6 +11624,50 @@ fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() -> Result<(), TestError>
         tile.contains("<h3>SIP proxy</h3>"),
         "the tile's heading is not \"SIP proxy\":\n{tile}"
     );
+    Ok(())
+}
+
+/// The Asterisk and FreeSWITCH guides share a tile headed "PBX" (Norm,
+/// 2026-10-11): both are PBXs that answer and bridge calls, a different role
+/// from the SIP proxies on the "SIP proxy" tile, which links neither. Each
+/// gets the pair of links every voice-stack tile gives: use it, then run
+/// sipnab beside it.
+#[test]
+fn the_pbx_tile_pairs_asterisk_and_freeswitch_with_their_sipnab_guides() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let tiles: Vec<&str> = page
+        .split("class=\"feature-card")
+        .filter(|card| card.contains("@/docs/asterisk.md") || card.contains("@/docs/freeswitch.md"))
+        .collect();
+    assert_eq!(
+        tiles.len(),
+        1,
+        "Asterisk and FreeSWITCH share one tile: {tiles:?}"
+    );
+    let tile = tiles[0];
+    assert!(
+        tile.contains("<h3>PBX</h3>"),
+        "the tile's heading is not \"PBX\":\n{tile}"
+    );
+    for (href, text) in [
+        ("@/docs/asterisk.md", "Use Asterisk"),
+        ("@/docs/asterisk-sipnab.md", "Run sipnab beside it"),
+        ("@/docs/freeswitch.md", "Use FreeSWITCH"),
+        ("@/docs/freeswitch-sipnab.md", "Run sipnab beside it"),
+    ] {
+        let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
+        assert!(tile.contains(&link), "missing {link}:\n{tile}");
+    }
+    let proxy = page
+        .split("class=\"feature-card")
+        .find(|card| card.contains("<h3>SIP proxy</h3>"))
+        .ok_or("the home page has no SIP proxy tile")?;
+    for pbx in ["asterisk", "freeswitch"] {
+        assert!(
+            !proxy.contains(pbx),
+            "the SIP proxy tile links {pbx}:\n{proxy}"
+        );
+    }
     Ok(())
 }
 

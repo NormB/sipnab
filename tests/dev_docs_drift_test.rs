@@ -849,11 +849,28 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/fixtures/vcon-datasets/CORRECTED.tsv.
     // 506 -> 507: docs/internals/zero-copy-payloads.md links bench/carrier.py
     // in the single-threaded mapped-read measurement.
+    // 507 -> 512: docs/internals/build-ci-release.md's commit-signature gate
+    // paragraph links scripts/commit-signature-check.sh,
+    // scripts/tag-signature-check.sh, .github/allowed_signers and
+    // tests/commit_signature_gate_test.rs.
+    // +1: docs/internals/walkthroughs.md links src/mcp/budget.rs in the
+    // new-tool recipe's step on bounding a paged response.
+    // 512 -> 516: docs/internals/testing.md links tests/examples_run_test.rs,
+    // tests/release_surface_test.rs and scripts/lib_markdown.py, and
+    // docs/internals/build-ci-release.md's changelog paragraph links
+    // tests/release_surface_test.rs.
+    // 516 -> 517: docs/internals/build-ci-release.md's memcheck.yml row links
+    // scripts/memcheck-verdict.py.
     // 507 -> 509: docs/internals/build-ci-release.md's note on the CLI
     // reference's Since column links src/cli.rs and
     // tests/cli_flag_since_test.rs. Attributed by measurement: with HEAD's
     // page the count is 507.
-    const EXPECTED_CODE_LINKS: usize = 509;
+    // 517 -> 519: the merge of docs/doc-improvements with the 0.5.213 batch.
+    // docs/internals/build-ci-release.md +2, the Since column note's links to
+    // src/cli.rs and tests/cli_flag_since_test.rs. Attributed by measurement:
+    // with the 0.5.213 batch's build-ci-release.md swapped back in, the
+    // count is 517.
+    const EXPECTED_CODE_LINKS: usize = 519;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1711,7 +1728,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 18] = [
+    const WORDS: [&str; 19] = [
         "zero",
         "one",
         "two",
@@ -1730,6 +1747,7 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
         "fifteen",
         "sixteen",
         "seventeen",
+        "eighteen",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?

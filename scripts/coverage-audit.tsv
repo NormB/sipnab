@@ -74,6 +74,7 @@
 --api-max-rows	parse-only	Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not
 --api-rate-limit-per-peer	behavior	via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer
 --mcp-max-body-bytes	behavior	via config key: probe_mcp_max_body_bytes changes the search_messages snippet length
+--mcp-max-response-bytes	behavior	via config key: probe_mcp_max_response_bytes changes how many dialogs a list_dialogs page returns
 --mcp-max-wait-seconds	behavior	via config key: probe_mcp_max_wait_seconds changes the effective await_condition deadline
 --mcp-sweep-max-files	behavior	via config key: probe_mcp_sweep_max_files changes the files find_in_captures examines
 --mcp-sweep-deadline-ms	behavior	via config key: probe_mcp_sweep_deadline_ms changes the deadline find_in_captures reports

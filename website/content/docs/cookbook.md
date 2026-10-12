@@ -2694,7 +2694,7 @@ sipnab -N -I capture.pcap --group-by call-id --delta-time
 
 **Problem:** A report from three weeks ago says the capture was clean, and nobody can say which file, which filter or which port range produced it.
 
-`--run-provenance-file` appends one JSON line per run, at startup — before sipnab loads the config and before it opens any capture device:
+`--run-provenance-file` appends one JSON line per run, at startup — before the config takes effect and before sipnab opens any capture device. sipnab reads the config file first, so `capture.node` is the node `--node-name` or `[capture] node_name` sets:
 
 ```bash
 sipnab -N -I capture.pcap --run-provenance-file runs.jsonl --report --no-cli-print
@@ -3113,7 +3113,7 @@ sudo sipnab -N --mcp -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-rel
 
 **What to look for:**
 
-- `delivery_trust`, strongest first: `asked` (sipnab asked the relay over its control socket, so no third party could answer), `hmac-verified`, `plain-secret`, `port-gated-only` — **the source is not authenticated** — and `not-relay-asserted`, the parties' own SDP claim. With no posture configured sipnab reports the weakest reading, because a tool whose job is telling you what a claim is worth must not round up in the absence of information.
+- `delivery_trust`, strongest first: `asked` (sipnab asked the relay over its control socket, so no third party could answer), `hmac-verified`, `plain-secret`, `port-gated-only` — **the source is not authenticated** — and `not-relay-asserted`, the parties' own SDP claim. With no posture configured sipnab reports the weakest reading, because a tool whose job is telling you what a claim is worth must not round up in the absence of information. The posture is the HEP listener's: a relay datagram read off a capture interface (`input_origin: wire`) is `port-gated-only` whatever the listener checks.
 - `reconcile_orphans` has three verdicts and the difference is the point: `relay-asserted-but-no-dialog` means the **signaling** is missing, not the media; `signaled-but-no-dialog` means the capture missed the dialog or its SDP predates the capture; `never-named` means nothing in the capture named the endpoint at all.
 - `relay_was_consulted: false` beside a `never-named` verdict means **nobody asked** — an absence of evidence, not evidence of absence.
 

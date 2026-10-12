@@ -50,7 +50,7 @@ included.
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](../design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
-| `vcon` | `native` | vCon export: one observed dialog as an unsigned OBSERVER conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, no party name, and no `url` — retained audio travels INLINE as base64url or not at all, under a measured size budget the emitter refuses out loud. |
+| `vcon` | `native` | vCon export: one observed dialog as an unsigned OBSERVER conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, a party `name` only from a `From` or `To` display name and never vouched for, and no `url` — retained audio travels INLINE as base64url or not at all, under a measured size budget the emitter refuses out loud. |
 | `bpf` | `native` | The eBPF uprobe backend — the only one that can report the peer address a TLS session went out to, because it pairs each write with its `tcp_sendmsg`. **Outside `full`**: the kernel half needs nightly and `bpf-linker`. Shipped on the four `*-linux-gnu` release artifacts, not on musl or macOS. |
 | `full` | everything but `wasm` and `bpf` | What the pre-commit hook and most local testing use. The released gnu binaries add `bpf` on top. |
 
@@ -59,7 +59,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The seventeen workflows
+## The eighteen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -75,6 +75,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+| `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](../../scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
@@ -90,7 +91,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 133 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 135 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
@@ -383,13 +384,14 @@ Activate once per clone: `git config core.hooksPath .githooks`.
 [`pre-commit`](../../.githooks/pre-commit) runs thirteen numbered gates,
 starting at 0, in order:
 <!-- The thirteen pre-commit gates as one list. Several items carry their own
-commas and parentheses ("clippy (`--features full`, `-D warnings`)"), so
+commas and parentheses ("clippy (`--workspace --all-features --all-targets`,
+`-D warnings`)"), so
 semicolons are the separator; periods would make thirteen sentences out of one
 enumeration. -->
 <!-- vale Google.Semicolons = NO -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
-clippy (`--features full`, `-D warnings`); the
+clippy (`--workspace --all-features --all-targets`, `-D warnings`); the
 full test suite, its binaries run side by side by
 [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (`SIPNAB_TEST_JOBS`
 sets how many; `1` runs them one at a time); the `sipnab-bpf-types` crate's own tests and doctests
@@ -646,8 +648,9 @@ its `action.yml` at the pinned commit), a digest-pinned engine and the mirror
 on every `docker/setup-buildx-action` step, no Docker Hub image in what `cross` builds in, and one
 codespell pin that CI and the hooks share.
 
-[`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
-does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
+[`pre-push`](../../.githooks/pre-push) adds fourteen hard gates that `cargo test`
+does not cover: a check that every pushed commit carries a good signature,
+`cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
 combinations `tls`, `api` and `wasm`, the full fifteen-combination matrix with
@@ -655,6 +658,38 @@ CI's flags, a non-Linux compile of the whole tree, a YANG validation of the
 `sipnab-diagnosis` module, a `zola build` of the website, the two prose
 linters — Vale and codespell — and, for a `v*` tag, a check that a trusted key
 signed the tag.
+
+The commit-signature gate runs first, before the hook looks for `cargo`.
+Branch protection on `main` requires signed commits, and GitHub applies that
+only at merge time: pull request #333 carried four unsigned commits and stayed
+blocked with every check green and no reason shown.
+[`scripts/commit-signature-check.sh`](../../scripts/commit-signature-check.sh)
+reads the hook's input, one `<local ref> <local sha> <remote ref> <remote sha>`
+line per ref. A deleted ref pushes nothing to check. Any other ref pushes
+the commits no remote-tracking branch has and, for an update, that the old
+remote commit does not reach either. A commit already on the remote is not
+the push's to sign: a branch rebased onto a newer `main` reaches main's
+squash merges, which GitHub signs with its own key. For each commit, the letter that
+`git log --format=%G?` prints decides, checked the way
+[`scripts/tag-signature-check.sh`](../../scripts/tag-signature-check.sh)
+verifies a tag, against [`.github/allowed_signers`](../../.github/allowed_signers):
+
+| `%G?` | Meaning | Verdict |
+|---|---|---|
+| `G` | good signature from a listed key | passes |
+| `U` | good signature from a key the file does not list | passes, and the hook names the key |
+| `N` | no signature | refused |
+| `B` | bad signature | refused |
+| `E` | signature this machine cannot check | refused |
+| `X`, `Y`, `R` | expired signature, expired key, revoked key | refused |
+
+`U` passes because GitHub marks a commit verified from the keys on the GitHub
+account that owns its committer email, which no file in the repository lists.
+The hook names each refused commit and prints both fixes:
+`git commit --amend -S --no-edit` for the last commit and
+`git rebase --exec 'git commit --amend --no-edit -S' <base>` for a range.
+[`tests/commit_signature_gate_test.rs`](../../tests/commit_signature_gate_test.rs)
+signs commits with throwaway SSH keys and drives both the script and the hook.
 
 The YANG gate, [`scripts/check-yang.py`](../../scripts/check-yang.py), exists
 because a test generates the module under `yang/`: [`tests/yang_module_test.rs`](../../tests/yang_module_test.rs)
@@ -820,7 +855,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the thirteen hard gates. Each of those fails in
+**When it runs.** Last, after the fourteen hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:
@@ -984,8 +1019,8 @@ They are different facts, and conflating
 them broke the download page in production — the release *commit* bumped the
 crate version, Pages redeployed, and the whole of `/download` pointed at a tag
 nobody had pushed yet. Every link 404ed, including `SHA256SUMS.txt` and the
-checksum column. On 0.5.61 that window was not minutes: its release commit went
-red and was never tagged.
+checksum column. On 0.5.61 the release commit went red in CI, and the v0.5.61
+tag went on the commit that fixed it, 31 minutes after the release commit.
 
 So `published_version` moves **after** a release finishes publishing, in its
 own commit — never while cutting one.
@@ -1499,9 +1534,15 @@ It exists because an edit whose anchor included the heading destroyed it, leavin
 and a full CI run, because the sibling gate searches for the heading naming the
 *current site version* — which was still present further down.
 
-Nothing gates the changelog's contents, which is deliberate — prose would satisfy
-a gate on prose. What *is* gated is the release date: it must match
+Nothing gates the changelog's prose, which is deliberate — prose would satisfy
+a gate on prose. Two checks read it all the same. The release date must match
 [`website/config.toml`](../../website/config.toml), asserted by `site_release_date_matches_changelog`.
+And the notes must name everything a release adds:
+[`release_surface_test`](../../tests/release_surface_test.rs) reads the
+command-line flags, MCP tools and REST routes at every release tag, and
+requires the notes to name each addition in its release's section or a later
+one. Whatever the working tree adds over the last tag, the notes must name
+above that tag's section, which before a release means under `[Unreleased]`.
 
 ### Re-measuring the benchmarks
 

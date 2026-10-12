@@ -694,14 +694,31 @@ fn lists() -> Result<Lists, TestError> {
 /// 74, measured when the page was written: 38 distinct calls, most of them
 /// passing on the text of an error raised outside the scope (the capture,
 /// security and TLS code, the operating system).
-const EXPECTED_UNRESOLVED: usize = 74;
+// 74 -> 76: merging the 0.5.213 batch. Added 4: src/app/bootstrap.rs 3
+// (apply_read_config's copied config refusal, and unwritable_output_refusal's
+// describe_output_error call and its context) and src/app/batch.rs 1 (the
+// end-of-run vCon count, built by end_of_run_vcon_summary). Removed 2:
+// src/app/bootstrap.rs's ws_portrange PlanError literal, now
+// `PlanError::refused` in the resolved list, and one of the three
+// `error!("{}", e.message)` sites.
+const EXPECTED_UNRESOLVED: usize = 76;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
 ///
 /// 414, measured when the page was written, counting the literals that
 /// `resolved` entries carry.
-const EXPECTED_TEMPLATES: usize = 414;
+// 414 -> 419: merging the 0.5.213 batch. Added 8: src/app/vcon_spool.rs 4
+// (`cannot read '{path}': {e}` and the three failure-record problems),
+// src/app/bootstrap.rs 2 (`--vcon-spool-status: {e}` and its missing-feature
+// refusal), src/cli.rs 2 (`Invalid --ws-portrange: {e}` and
+// `[capture] ws_ports: {e}`, which replace the carried `{source}: {e}`).
+// Removed 3: src/cli.rs `--mcp-transport must be 'stdio' or 'http', got '{}'`
+// and src/app/servers.rs `unknown --mcp-transport '{other}', expected stdio
+// or http` (the transport is an enum now), and the carried `{source}: {e}`.
+// Reworded in place, no count change: the three `Failed to load` key-file
+// messages (`{e}` -> `{e:#}`) and `Processing thread panicked: {}`.
+const EXPECTED_TEMPLATES: usize = 419;
 
 // ---------------------------------------------------------------------------
 // The page gates

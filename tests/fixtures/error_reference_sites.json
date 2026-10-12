@@ -16,7 +16,6 @@
     "Redaction: {} classes, key {}, {} leading digit(s) retained.",
     "Wrote {n} token mapping(s) to '{}' (mode 0600).",
     "Wrote {n} token mapping(s) to '{}' (mode 0600). It reverses every pseudonym in these containers, so it is as sensitive as the capture.",
-    "Wrote {written} vCon container(s) to '{}'.",
     "[perf-stats] dialogs={} streams={} endpoint_link_scan_visits={} evict_shift_work={}",
     "sipnab: {}"
   ],
@@ -276,15 +275,6 @@
       "why": "All 3 occurrences in src/cli.rs::Cli::validate: refusal from Cli::vcon_refusal (line 7269), Cli::live_vcon_refusal (line 7310) and Cli::mcp_beside_tui_refusal (line 7157), each a format! literal in the same file."
     },
     {
-      "file": "src/cli.rs",
-      "call": "Error::ConfigInvalid(format!(\"{source}: {e}\"))",
-      "count": 1,
-      "carries": [
-        "{source}: {e}"
-      ],
-      "why": "Cli::ws_port_range in cli.rs: {source} is the literal \"--ws-portrange\" or \"[capture] ws_ports\", and {e} comes from config::parse_portrange, whose messages are Err(format!(..)) sites in src/config.rs. Carried because this site was reported non-literal."
-    },
-    {
       "file": "src/config.rs",
       "call": "Error::ConfigInvalid(format!(\"{display}: {e}\"))",
       "count": 1,
@@ -310,6 +300,20 @@
         "Reading {}. Also present and NOT read: {}. sipnab reads only the first config file it finds; merge them or remove the ones you do not want."
       ],
       "why": "shadowing_note in config.rs."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused(origin, e.to_string())",
+      "count": 1,
+      "carries": [],
+      "why": "apply_config in bootstrap.rs: the error from Cli::ws_port_range in src/cli.rs, whose two messages are the Error::CliValidation(format!(\"Invalid --ws-portrange: {e}\")) and Error::ConfigInvalid(format!(\"[capture] ws_ports: {e}\")) sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "Error::CliValidation(_)",
+      "count": 1,
+      "carries": [],
+      "why": "Not a message: apply_config matches the error's kind with matches!(e, crate::Error::CliValidation(_)) to choose the exit code. It prints nothing."
     }
   ],
   "unresolved": [
@@ -385,13 +389,6 @@
     },
     {
       "file": "src/app/bootstrap.rs",
-      "call": "PlanError { exit_code: if cli.capture_args.ws_portrange.is_some() { 2 } else { 1 }, message: e.to_string(), }",
-      "count": 1,
-      "carries": [],
-      "why": "Text from src/cli.rs::Cli::ws_port_range (Error::ConfigInvalid(format!(\"{source}: {e}\")), not a site) wrapping src/config.rs::parse_portrange, whose .map_err(|_| format!(..)) port-number messages are not sites."
-    },
-    {
-      "file": "src/app/bootstrap.rs",
       "call": "PlanError::arg(e.to_string())",
       "count": 1,
       "carries": [],
@@ -456,9 +453,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "error!(\"{}\", e.message)",
-      "count": 3,
+      "count": 2,
       "carries": [],
-      "why": "PlanError values from load_config (struct literals carrying config/limits/security validate() e.to_string()) and from strip_secrets_copy/annotated_copy (.map_err(PlanError::arg) of src/capture/output_guard.rs check), out of scope."
+      "why": "PlanError values from load_config (struct literals carrying config/limits/security validate() e.to_string()), logged by apply_read_config, and the startup commands' results logged by finish_startup_command, which include strip_secrets_copy/annotated_copy (.map_err(PlanError::arg) of src/capture/output_guard.rs check), out of scope."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -578,6 +575,34 @@
       "count": 1,
       "carries": [],
       "why": "Cli::validate's crate::Error Display; CliValidation strings are built in src/cli.rs without sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError { exit_code: e.exit_code, message: e.message.clone(), }",
+      "count": 1,
+      "carries": [],
+      "why": "apply_read_config in bootstrap.rs copies the refusal of the configuration read (load_config), whose text comes from Config::load and the [section] validate() methods in src/config.rs, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::new( 1, describe_output_error(&err, privilege::dropped_to()), )",
+      "count": 1,
+      "carries": [],
+      "why": "unwritable_output_refusal in bootstrap.rs: the text is built by src/capture/writer.rs::describe_output_error (out of scope) from the context \"{what} '<path>'\" and the io::Error of check_output_creatable, plus a privilege hint when the drop user was refused."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "context(format!(\"{what} '{}'\", path.display()))",
+      "count": 1,
+      "carries": [],
+      "why": "unwritable_output_refusal in bootstrap.rs: {what} is one of four &str literals naming the output (-O, --export-vcon-dir, --vcon-out, --redact-map); the context is printed only through src/capture/writer.rs::describe_output_error, out of scope."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!( \"{}\", end_of_run_vcon_summary( written, live.map_or(0, LiveVconTracker::containers_written), dir ) )",
+      "count": 1,
+      "carries": [],
+      "why": "Informational, not a failure: the end-of-run vCon count, built by end_of_run_vcon_summary in batch.rs with plain format! calls that are not extracted sites. It reports how many containers were written, so the page does not list it."
     }
   ]
 }

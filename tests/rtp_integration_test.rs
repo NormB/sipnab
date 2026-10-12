@@ -289,6 +289,7 @@ fn stream_store_tracks_streams_from_parsed_rtp() -> Result<(), TestError> {
         ssrc,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let stream = store.get(&key).ok_or("stream should exist")?;
 
@@ -456,6 +457,7 @@ fn jitter_uses_pcmu_clock_rate() -> Result<(), TestError> {
         ssrc: 0xAAAA,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let hdr = make_rtp_header(0xAAAA, 100, 0, 0); // PT=0 PCMU, 8kHz
     let mut stream = RtpStream::new(key, &hdr, ts(0)?);
@@ -495,6 +497,7 @@ fn jitter_uses_h263_clock_rate() -> Result<(), TestError> {
         ssrc: 0xBBBB,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let hdr = make_rtp_header(0xBBBB, 100, 0, 34); // PT=34 H263, 90kHz
     let mut stream = RtpStream::new(key, &hdr, ts(0)?);
@@ -596,6 +599,7 @@ fn packet_loss_detected_from_sequence_gaps() -> Result<(), TestError> {
         ssrc,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
@@ -635,6 +639,7 @@ fn no_false_loss_on_sequential_packets() -> Result<(), TestError> {
         ssrc,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
@@ -655,6 +660,7 @@ fn quality_intervals_recorded_after_five_seconds() -> Result<(), TestError> {
         ssrc: 0x5555,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let hdr = make_rtp_header(0x5555, 100, 0, 0);
     let mut stream = RtpStream::new(key, &hdr, ts(0)?);
@@ -712,6 +718,7 @@ fn comfort_noise_counted_and_silence_tracked() -> Result<(), TestError> {
         ssrc: 0xCCCC,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     // Start with normal audio (PT=0)
     let hdr = make_rtp_header(0xCCCC, 100, 0, 0);
@@ -799,6 +806,7 @@ fn stream_linked_to_dialog() -> Result<(), TestError> {
         ssrc: 0x1234,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
@@ -1030,6 +1038,7 @@ fn diagnose_one_way_audio() -> Result<(), TestError> {
         ssrc: 0x1111,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let hdr = make_rtp_header(0x1111, 100, 0, 0);
     let mut stream = RtpStream::new(key, &hdr, ts(0)?);
@@ -1062,6 +1071,7 @@ fn diagnose_bidirectional_no_one_way() -> Result<(), TestError> {
         ssrc: 0x1111,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let hdr_fwd = make_rtp_header(0x1111, 100, 0, 0);
     let mut fwd = RtpStream::new(key_fwd, &hdr_fwd, ts(0)?);
@@ -1075,6 +1085,7 @@ fn diagnose_bidirectional_no_one_way() -> Result<(), TestError> {
         ssrc: 0x2222,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+        session: 0,
     };
     let hdr_rev = make_rtp_header(0x2222, 200, 0, 0);
     let mut rev = RtpStream::new(key_rev, &hdr_rev, ts(0)?);
@@ -1346,6 +1357,7 @@ fn rtcp_is_recorded_beside_the_measurement() -> Result<(), TestError> {
         ssrc: 0xFFFF,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
@@ -1409,6 +1421,7 @@ fn negative_cumulative_lost_survives_as_negative() -> Result<(), TestError> {
         ssrc: 0xFFFE,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     assert_eq!(
         store.remote_report(&key).map(|r| r.cumulative_lost),
@@ -1549,6 +1562,7 @@ fn diagnose_nat_mismatch() -> Result<(), TestError> {
         ssrc: 0x3333,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let hdr = make_rtp_header(0x3333, 100, 0, 0);
     let mut stream = RtpStream::new(key, &hdr, ts(0)?);
@@ -1711,6 +1725,7 @@ fn sequence_wraparound_no_false_loss_in_store() -> Result<(), TestError> {
         ssrc: ssrc_val,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
     let stream = store.get(&key).ok_or("stream should exist")?;
     assert_eq!(
@@ -1768,6 +1783,7 @@ fn stream_detail_render_does_not_panic() -> Result<(), TestError> {
         ssrc,
         src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        session: 0,
     };
 
     // Render to a test terminal — this should not panic

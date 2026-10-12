@@ -2495,6 +2495,7 @@ mod tests {
             dst: dst
                 .parse()
                 .map_err(|e| format!("a literal socket address parses: {e:?}"))?,
+            session: 0,
         };
         let hdr = crate::rtp::parser::RtpHeader {
             version: 2,

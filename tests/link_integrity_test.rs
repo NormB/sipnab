@@ -1202,6 +1202,28 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // linking prometheus-metrics.md.
     // 1348 -> 1346: a bullet in docs/vcon.md and a row in
     // docs/cli-reference.md, each linking vcon-store.md, were removed.
+    // 1346 -> 1380: docs/mcp-tools.md 7, the "Which tool finds calls" table
+    // linking the section of each of its seven tools.
+    // +14: the byte budget and uniform paging in docs/mcp-tools.md.
+    // +2: the output-schemas paragraph linking
+    // mcp-protocol.md#tool-response-schemas and the server_capabilities
+    // section linking #response-bounding.
+    // +7: `export_vcon` paging and `vcon_spool_status`: docs/mcp-tools.md 4,
+    // docs/mcp-protocol.md 1, docs/vcon.md 1 and docs/vcon-store.md 1.
+    // +4: the spool status's REST and CLI doors: docs/mcp-tools.md 2,
+    // docs/vcon.md 1 and docs/vcon-store.md 1.
+    // 1380 -> 1392: docs/keybindings.md 11 (ten Call List rows linking the
+    // view sections they open, and the TFPS observe section linking tfps.md)
+    // and docs/rest-api.md 1 (the `filter` parameter row linking
+    // filter-dsl.md). Measured on the merged tree.
+    // 1392 -> 1396: the Tested on sections that leave a section out link it,
+    // docs/tfps-sipnab.md section 3 and docs/vcon-sipnab.md's forwarder
+    // section (+2), section 3 links back to #tested-on (+1), and
+    // docs/library.md links client-examples.md for tls_plaintext_records (+1).
+    // 1396 -> 1426: the Asterisk and FreeSWITCH guides. docs/asterisk.md 5,
+    // docs/asterisk-sipnab.md 11, docs/freeswitch.md 4,
+    // docs/freeswitch-sipnab.md 6, docs/README.md 4 (one index entry per
+    // page).
     // 1346 -> 1524: the MCP tool reference split into an index and one page
     // per tool bundle. Attributed per file against HEAD: docs/mcp-tools.md
     // 234 -> 170 (-64), and the new bundle pages +242 -- signaling 72,
@@ -1226,7 +1248,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // the capture tuning page), and one link to it from each of
     // docs/README.md, docs/troubleshooting.md and docs/cli-reference.md (+3).
     // Attributed per file against HEAD: no link was removed.
-    const EXPECTED_WIKI_LINKS: usize = 1542;
+    // 1426 -> 1624: the merge of docs/doc-improvements with the 0.5.213
+    // batch. Attributed per file against the batch's tree (cde39109):
+    // docs/mcp-tools.md 263 -> 181 (-82), and the bundle pages +262 --
+    // signaling 74, core 56, captures 40, security 24, vcon 15, relay 12,
+    // server 12, media 11, tfps 10, tls 8; docs/README.md +11 (ten bundle
+    // pages and the error-message reference); docs/errors.md +4;
+    // docs/cli-reference.md, docs/troubleshooting.md and
+    // docs/internals/build-ci-release.md +1 each. Net +198.
+    const EXPECTED_WIKI_LINKS: usize = 1624;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1360,7 +1390,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // the 19 guides the home page's voice-stack tiles link (4 + 3 + 4 + 4 + 2 + 2).
     // 135 -> 136: CONTRIBUTING.md's commit-msg hook paragraph links its own
     // "Never publish a machine, an account, or a network" section.
-    const EXPECTED_COMMUNITY_LINKS: usize = 136;
+    // 136 -> 140: README.md's voice-stack section links docs/asterisk.md,
+    // docs/asterisk-sipnab.md, docs/freeswitch.md and
+    // docs/freeswitch-sipnab.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 140;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2459,10 +2492,14 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 71 -> 73: docs/rtpproxy-relay.md and docs/rtpproxy-sipnab.md.
     // 73 -> 75: docs/fail2ban.md and docs/fail2ban-sipnab.md.
     // 75 -> 76: docs/vcon-store.md.
+    // 76 -> 80: docs/asterisk.md, docs/asterisk-sipnab.md, docs/freeswitch.md
+    // and docs/freeswitch-sipnab.md.
     // 76 -> 86: the ten MCP tool bundle pages, docs/mcp-tools-{core,
     // signaling,captures,security,media,relay,tfps,server,vcon,tls}.md.
     // 86 -> 87: docs/errors.md, the error-message reference.
-    const EXPECTED_DOCS_PAGES: usize = 87;
+    // 80 -> 91: the merge of docs/doc-improvements with the 0.5.213 batch.
+    // The ten docs/mcp-tools-<bundle>.md pages and docs/errors.md.
+    const EXPECTED_DOCS_PAGES: usize = 91;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

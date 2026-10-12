@@ -79,8 +79,9 @@ The tools that change server state rather than read it. Every one stays off unti
 
 ### `query_relay`
 
-**This is the only tool that transmits.** Every other one answers from bytes
-sipnab already holds. This one puts a packet on the network.
+**This tool transmits, as `relay_stats` and `relay_compare` do.** Every other
+tool answers from bytes sipnab already holds. These three put a packet on the
+network.
 
 It closes a gap a passive decoder cannot. A call already in progress when
 sipnab started has no control exchange left to read, so the relay's own view is

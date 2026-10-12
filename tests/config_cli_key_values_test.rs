@@ -797,6 +797,14 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "limits",
+        "mcp_max_response_bytes",
+        KeyKind::Int {
+            lo: 1,
+            hi: i64::MAX as i128,
+        },
+    ),
+    (
+        "limits",
         "mcp_max_rows",
         KeyKind::Int {
             lo: 1,

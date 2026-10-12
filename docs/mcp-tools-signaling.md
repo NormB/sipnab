@@ -267,9 +267,11 @@ Returns dialogs whose first message falls in the window, oldest first.
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog in the window. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`. The row here is already narrow, so name one of the four below — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](mcp-tools.md#rules-every-tool-follows). | The ceiling. |
 
-**Returns** `{ dialogs, returned, total_matched, truncated, next_cursor,
-capture_identity, schema_version }`.
+**Returns** `{ dialogs, returned, total_matched, truncated, truncated_by,
+next_cursor, capture_identity, schema_version }`, with `truncated_by` present
+only when a bound cut the page.
 Each row carries `call_id`, `created_at`, `state` and `final_status_code` —
 **a narrower row than [`list_dialogs`](mcp-tools-core.md#list_dialogs) returns**, with no
 `msg_count`, no `from_user`, no `timing` and no `frame`. No markers appear
@@ -307,7 +309,8 @@ same window without a filter answers `total_matched: 247`:
   "returned": 2,
   "total_matched": 16,
   "truncated": true,
-  "next_cursor": "2016-11-17T21:52:37.703349+00:00|call-25-synth@192.0.2.10",
+  "truncated_by": "rows",
+  "next_cursor": "2016-11-17T21:52:37.703349Z|call-25-synth@192.0.2.10",
   "capture_identity": {
     "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
@@ -403,14 +406,20 @@ Incremental fetch of the dialogs updated after a cursor position.
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|<Call-ID>`). A bare RFC 3339 timestamp also parses, and filters strictly after it. | Starts from the beginning of the store. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](mcp-tools-core.md#list_dialogs) — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](mcp-tools.md#rules-every-tool-follows). | The ceiling. |
 
 Returns `{ dialogs, next_cursor, source_exhausted, source_stopped_early,
 capture_identity }`, where
 `dialogs` holds the same summary rows [`list_dialogs`](mcp-tools-core.md#list_dialogs) returns,
-fencing included. This page object carries no `returned`, `total_matched` or
-`truncated` — "how many are there" is not a question a tail can answer, because
-the store keeps changing underneath it. Poll until `dialogs` comes back empty
-and `source_exhausted` is `true`.
+fencing included. This page object carries no `returned` or `total_matched` —
+"how many are there" is not a question a tail can answer, because the store
+keeps changing underneath it. Poll until `dialogs` comes back empty and
+`source_exhausted` is `true`.
+
+`truncated` and `truncated_by` appear only when the byte budget cut the page:
+`truncated: true` and `truncated_by: "bytes"`. A tail page cut by `limit` says
+nothing extra, because its `next_cursor` already names the last row returned
+and the next poll continues from there either way.
 
 `next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
 timestamp. Dialogs can share an `updated_at`, so resuming from the
@@ -457,7 +466,7 @@ has finished: stop when it turns `true` instead of polling forever.
       "input_origin": "wire"
     }
   ],
-  "next_cursor": "2016-11-26T14:53:08.170676+00:00|1-1966@10.0.2.20",
+  "next_cursor": "2016-11-26T14:53:08.170676Z|1-1966@10.0.2.20",
   "source_exhausted": true,
   "source_stopped_early": false,
   "capture_identity": {
@@ -885,8 +894,8 @@ Single SIP message at a given zero-based index.
 
 **Where an index comes from,** because the number means nothing on its own:
 `msg_count` on any [`list_dialogs`](mcp-tools-core.md#list_dialogs) row is the count, so the last
-valid index is `msg_count - 1`. [`get_dialog`](mcp-tools-core.md#get_dialog) pages messages from
-its `cursor`, so the Nth row of that page sits at `cursor + N`, and every
+valid index is `msg_count - 1`. [`get_dialog`](mcp-tools-core.md#get_dialog) reports each page's
+`first_index`, so the Nth row of that page sits at `first_index + N`, and every
 [`lint_dialog`](#lint_dialog) finding reports the `message_index` it fired on.
 
 An index at or past the end fails with `index 999 out of range for dialog with

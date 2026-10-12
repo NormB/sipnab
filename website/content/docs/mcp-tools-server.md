@@ -421,8 +421,8 @@ note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
 
 ### `server_capabilities`
 
-What this binary can do, what this server permits, and which libpcap it
-captures through. Ask before requesting decryption, HEP, a file export or a
+What this binary can do, what this server permits and loaded, the limits it
+answers under, and which libpcap it captures through. Ask before requesting decryption, HEP, a file export or a
 capture swap: a build without the feature, or a server without the flag, fails
 confusingly otherwise.
 
@@ -431,7 +431,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.211",
+  "version": "0.5.213",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -441,15 +441,44 @@ No parameters. Returns:
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": true,
     "mcp_allow_tls_capture": false,
-    "mcp_allow_save_findings": false
+    "mcp_allow_save_findings": false,
+    "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
+    "hep_delivery_trust": "port-gated-only",  // hmac-verified, plain-secret or port-gated-only
+    "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
   "libpcap": {
     "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
     "version": "1.10.6",             // null when the banner carries none
     "named_backends": ["netmap"]     // [] on a distribution libpcap
-  }
+  },
+  "limits": {
+    "max_rows": 1000,                // --mcp-max-rows
+    "max_body_bytes": 4096,          // --mcp-max-body-bytes
+    "max_inline_media_bytes": 5242880, // --vcon-max-inline-media; null without vcon
+    "max_wait_seconds": 60           // --mcp-max-wait-seconds
+  },
+  "tools": ["actions_revert", "aggregate_dialogs", "..."],  // what tools/list returns
+  "bundles": ["core", "signaling", "..."],                  // bundles loaded whole
+  "prompts": ["triage-outage", "carrier-escalation", "..."], // what prompts/list returns
+  "resource_templates": ["sipnab://live/dialogs/{call_id}", "..."]
 }
 ```
+
+`runtime.mcp_allow_relay_query` is true only when `query_relay`,
+`relay_stats` and `relay_compare` can actually transmit: the run reads a live
+interface, `--rtpengine-control` names the relay, and the operator passed
+`--mcp-allow-relay-query`. A file replay never transmits, so the flag alone
+does not set it.
+`runtime.mcp_allow_actions` lists the action targets `--allow-action` enabled
+for MCP callers, by name.
+
+`limits` are the ceilings this server holds every response to, as the operator
+set them. [Response bounding](@/docs/mcp-tools.md#response-bounding) says what each one bounds.
+`tools` is the loaded tool set after `--mcp-tools` selected it. `bundles` lists
+each built-in bundle whose tools all appear in `tools`, counting only the tools
+this build carries, so a selection of single tool names lists no bundle those
+tools only partly fill. `prompts` and `resource_templates` are the names `prompts/list` and
+`resources/templates/list` return, in the same order.
 
 `features` comes from `cfg!` at compile time, so it cannot claim a feature the
 binary does not have. `runtime` is a different question — what the **operator**
@@ -457,6 +486,14 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+`hep_delivery_trust` says what an endpoint a relay asserted over HEP is worth on
+this run, decided once at startup by the HEP listener's authentication:
+`hmac-verified` with `--hep-auth-mode hmac` and a secret, `plain-secret` with a
+secret and the default `plain` mode, and `port-gated-only` when sipnab checks no
+secret, which includes every run that does not listen for HEP. An endpoint the
+relay tools report as delivered over HEP carries the same value in its
+`delivery_trust`.
 
 `libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
 this process sees it. A gnu build or a package loads the host's libpcap, a

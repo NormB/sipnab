@@ -2,6 +2,8 @@
 # sipnab pre-push hook (portable POSIX sh).
 #
 # Hard gate: refuse to push code that fails any of
+#   * scripts/commit-signature-check.sh: every pushed commit carries a good
+#     signature (first, since it needs no build),
 #   * `cargo fmt --all -- --check`, plus the two packages the workspace
 #     excludes (`fuzz/`, `bpf/`),
 #   * `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
@@ -75,6 +77,28 @@ if [ "${SKIP_FMT_HOOK:-0}" = "1" ]; then
 	exit 0
 fi
 
+# stdin is the only place a pre-push hook learns what is being pushed: one
+# `<local ref> <local sha> <remote ref> <remote sha>` line per ref. git always
+# provides it. It is read once, here, because two gates below need it.
+PUSH_REFS=$(cat)
+
+# -- Hard gate: every pushed commit carries a good signature -----------------
+# Branch protection on main requires signed commits, and GitHub enforces that
+# only at merge time: PR #333 sat BLOCKED with every check green and no reason
+# shown, because four of its commits were unsigned. This gate runs first, so
+# the refusal takes seconds rather than following the cargo gates.
+# scripts/commit-signature-check.sh is the rule, including which `%G?` letters
+# pass and why.
+if ! SIG_OUT=$(printf '%s\n' "$PUSH_REFS" \
+	| bash "$(dirname "$0")/../scripts/commit-signature-check.sh" 2>&1); then
+	printf '%bPush blocked:%b\n%s\n' "$RED" "$NC" "$SIG_OUT"
+	exit 1
+fi
+if [ -n "$SIG_OUT" ]; then
+	printf '%s\n' "$SIG_OUT"
+fi
+printf '%b  every pushed commit is signed%b\n' "$GREEN" "$NC"
+
 # cargo must be available; if it is not, fail closed (better to block than to
 # let unformatted code slip past unchecked).
 if ! command -v cargo >/dev/null 2>&1; then
@@ -109,9 +133,9 @@ fi
 # -- Hard gate: clippy --------------------------------------------------------
 # Mirrors CI exactly
 # (`cargo clippy --workspace --all-features --all-targets -- -D warnings`) so a
-# lint that would fail CI fails here first. `--all-features --all-targets` is
-# broader than pre-commit's `--features full`: it also lints tests, benches,
-# and examples, and every feature-gated path.
+# lint that would fail CI fails here first. pre-commit runs the same command.
+# `--all-features --all-targets` lints tests, benches, examples, and every
+# feature-gated path.
 #
 # `--workspace` is load-bearing, not decoration. Without it this lints the main
 # crate alone, so a warning in sipnab-audio, sipnab-bpf-types or the example
@@ -583,8 +607,8 @@ fi
 # stopped a broken build being published with SBOMs, provenance and a Homebrew
 # tap push attached to it.
 #
-# stdin is the only place a pre-push hook learns what is being pushed. git
-# always provides it; the loop simply finds nothing when a caller does not.
+# The ref lines were read into PUSH_REFS at the top of the hook; the loop
+# simply finds nothing when a caller provides none.
 tag_commits=""
 tag_objects=""
 while read -r _local_ref local_sha remote_ref _remote_sha; do
@@ -602,7 +626,9 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
 		tag_commits="$tag_commits $commit"
 		tag_objects="$tag_objects $local_sha"
 	fi
-done
+done <<EOF_PUSH_REFS
+$PUSH_REFS
+EOF_PUSH_REFS
 
 # -- Hard gate: a v* tag must be signed by a trusted key ----------------------
 # A tag is what this machine publishes under the maintainer's name. v0.5.176 to

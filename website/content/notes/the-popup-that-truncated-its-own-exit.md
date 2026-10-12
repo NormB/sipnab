@@ -1,179 +1,146 @@
 +++
-title = "A popup that cut off the only key that closes it"
+title = "TUI popups: a cut-off Esc hint and crashes on small terminals, fixed in 0.5.142"
 date = 2026-09-01
-description = "A 60-column constant against a 66-column hint dropped the words Esc cancel off the right edge, silently. Writing the general gate found three more dialogs with the same defect and two crashes, one of them at 66x12."
+updated = 2026-10-11
+description = "Why the Name Address popup hid its Esc key, why the Filter popup could close the whole TUI on a small terminal, and what sipnab 0.5.142 changed so every popup shows its closing key and survives any terminal size."
 
 [extra]
 kind = "postmortem"
 +++
 
-Somebody pressed `N` in sipnab's TUI, and the popup that opened had its hint
-line cut off mid-word.
+## In short
+
+sipnab's terminal interface opens small windows (popups) for tasks such as
+naming an address or setting a filter. Up to version 0.5.141, the popup for
+naming an address cut off the end of its help line, which was the text
+`Esc cancel` that says how to close it. Three other popups did not mention the
+Esc key at all, and the Filter popup could crash the interface when the
+terminal window was small. Version 0.5.142 sizes each popup to its text, shows the Esc
+key in every popup, and draws text so that a small window can no longer crash
+the interface.
+
+## What happened
+
+In the call list, pressing `N` opens the **Name Address** popup, which gives a
+host name to an IP address (see
+[Name resolution](@/docs/keybindings.md#name-resolution)). When the selected
+call has two addresses, the popup's last line is:
 
 ```text
   Tab switch endpoint · Enter save all · empty clears · Esc cancel
 ```
 
-That line is 66 columns. The popup was a constant 60 wide. The part that fell
-off the right edge was `Esc cancel` — the only exit the dialog names.
+That line is 66 characters wide. The popup was at most 60 characters wide, so
+the end of the line, `Esc cancel`, was not shown. When the selected call has
+one address the line is shorter (`  Enter save · empty name clears · Esc cancel`,
+45 characters) and fit, so the problem appeared only for calls with two
+addresses.
 
-## Why nothing failed
+The tests written for this found three more problems (recorded in the fix
+commit, 506851b5):
 
-`Paragraph` in this rendering path has no `wrap`, so an overlong line does not
-flow onto a second row. It truncates. Nothing panics, nothing logs, nothing
-returns an error. The popup renders, and it renders slightly shorter than it
-should.
+- The **Filter** popup (F7), the **Settings** popup (F8) and the **Column
+  selector** (F10) all close on Esc, but none of them said so inside the
+  popup.
+- The Filter popup crashed the interface at 66 columns by 12 rows.
+- The Settings popup crashed when the tests drew it into an area fewer than
+  six rows high. In the running program a terminal smaller than 40 columns by
+  6 rows shows the notice `Terminal too small` instead of any popup, and that
+  notice existed before this fix, so the 66 by 12 case is the one a user could
+  reach.
 
-The other arm of the same branch is why it survived. A single-endpoint capture
-gets a shorter hint:
+A crash closes the whole interface, including a live capture in progress.
 
-```text
-  Enter save · empty name clears · Esc cancel
+## Why it happened
+
+- **Fixed width.** The Name Address popup used a fixed width of 60 characters
+  rather than the width of its own text. The text component it draws with
+  does not wrap long lines onto a second row; it cuts them off and reports no
+  error, so nothing signaled the loss.
+- **No rule that a popup names its exit.** No test checked that a popup shows
+  the key that closes it.
+- **Fixed height.** The Filter and Settings popups placed their rows using a
+  fixed height. On a terminal shorter than that height, the popups asked the
+  drawing library's text function (`Buffer::set_string`) to write outside the
+  screen, and that function stops the program when its position lies outside
+  the screen.
+
+## What changed
+
+All of this shipped in 0.5.142 (2026-09-01).
+
+- **Popups take the width of their text.** The Name Address popup measures its
+  longest line and adds three columns: one for each border and one so the text
+  does not touch the right border. It still shrinks to fit a narrow terminal.
+  The same popup on a 100-column terminal now looks like this (captured from a
+  run on `tests/pcap-samples/sip-rtp-g711.pcap`):
+
+  ```text
+                 ┌ Name Address ─────────────────────────────────────────────────────┐
+                 │  Endpoint:  10.0.2.20   10.0.2.15                                 │
+                 │  IP:   10.0.2.20                                                  │
+                 │  Name:                                                            │
+                 │                                                                   │
+                 │  Tab switch endpoint · Enter save all · empty clears · Esc cancel │
+                 └───────────────────────────────────────────────────────────────────┘
+  ```
+
+- **Every popup names its exit.** The Filter popup now shows
+  `Tab move · Enter apply · Esc cancel`, and the Settings popup shows
+  `↑/↓ move · Enter toggle · Esc close`. The Column selector shows
+  `Space: toggle  Enter: apply  Esc: close`.
+- **Text that does not fit no longer crashes the interface.** Every place in the
+  interface that called `Buffer::set_string` now calls one function,
+  `set_string_clipped`, instead. It skips a write that falls outside the
+  screen and shortens a line at the right edge.
+- **Tests hold each of these in place** (all in `src/tui/render/popups.rs`):
+  - `no_popup_shows_more_text_when_the_terminal_grows` draws every popup at
+    100x40 and again at 240x60 and requires the same text in both. If the
+    larger terminal shows more, the smaller one was cutting text off. This test
+    does not need to know what any popup says.
+  - `every_overlay_names_the_key_that_closes_it` requires `Esc` in every
+    popup.
+  - `every_overlay_survives_an_exhaustive_size_sweep` draws every popup at
+    every width from 1 to 90 columns, at heights of 1, 2, 3, 5, 8, 12, 20 and
+    30 rows, and fails on any crash. `every_overlay_survives_a_tiny_terminal`
+    does the same for six named sizes, including 4x3 and 66x12.
+  - `no_tui_code_writes_through_the_unguarded_set_string` fails if
+    code in `render/popups.rs`, `call_list.rs` or `call_flow/render.rs`
+    calls `Buffer::set_string` directly.
+
+A further test, `every_tui_overlay_is_covered_by_these_gates`, finds the list
+of popups by counting the places in
+`src/tui/render/popups.rs` and `src/tui/call_list.rs` that clear a screen area
+before drawing a popup, and fails if that count differs from the list of
+popups the other tests use. A popup added in one of those two files without a test therefore
+fails the build. The count does not include a popup added in another file.
+Today no other file under `src/tui/` draws one.
+
+## What you can check yourself
+
+Open the interface on a capture in the repository, select a call, and press
+`N`. The last line of the popup ends in `Esc cancel`:
+
+```bash
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap
 ```
 
-That fits at 60. The common case looked right, and only a two-endpoint call
-tripped it.
+Make the terminal window small (for example 66 columns by 12 rows) and press
+F7 or F8. On 0.5.142 and later sipnab draws as much of the popup as fits and
+the interface keeps running.
 
-## Size to what it says, not to a bigger constant
+## Terms used here
 
-The tempting fix is 80. It fails the same way one IPv6 address later, and the
-popup can carry a long address, a long name and an inline validation error at
-once — none of which anybody sized 60 for.
+- **TUI**: terminal user interface, sipnab's full-screen interactive view.
+- **Popup**: a small window drawn on top of the main view for one task.
+- **Endpoint**: one IP address taking part in a call.
+- **Crash**: the program stops unexpectedly; here it closes the whole TUI.
+- **Test**: an automated check that runs on every build and fails when the
+  behavior it describes stops working.
 
-The popup now measures the lines it has already built:
+## Related guides
 
-```rust
-let content = lines
-    .iter()
-    .map(ratatui::text::Line::width)
-    .max()
-    .unwrap_or(0);
-let desired = u16::try_from(content.max(title.len()).saturating_add(3))
-    .unwrap_or(u16::MAX);
-let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
-```
-
-`+3` covers the two borders and one column so the longest line does not sit
-flush against the frame. The title has to fit between the corners too.
-
-## The gate that needs to know nothing about the strings
-
-A test asserting `Esc cancel` appears is a fine regression guard and it catches
-one popup. The general form asks a different question:
-
-```rust
-/// No popup shows MORE text when the terminal grows.
-///
-/// The general detector, and the one that needs no knowledge of any
-/// popup's strings. If a popup is complete at 100 columns, widening the
-/// terminal to 240 cannot reveal anything new; if widening does reveal
-/// something, the popup was clipping its own content at 100 and a user on
-/// an ordinary terminal was reading a truncated dialog.
-#[test]
-fn no_popup_shows_more_text_when_the_terminal_grows() {
-```
-
-Render every overlay at 100x40, render it again at 240x60, strip the borders,
-compare the text. Any difference means the narrower rendering dropped
-something.
-
-That test would have caught `N` without anybody counting the hint's length, and
-it catches the next one the same way.
-
-## Three more dialogs with the same defect, differently
-
-Writing the general gate turned up something the specific one could not.
-
-The settings popup, the filter popup and the column selector all accept `Esc`
-in their controllers. None of them said so anywhere on screen.
-
-From the keyboard those are the same defect as `N`. A dialog that never names
-its exit and a dialog that names it and cuts it off both leave the user
-guessing, and guessing wrong in a modal dialog during a live capture is not a
-small cost. All four now name their exit, and a test holds them to it.
-
-## Enumerate the overlays by what makes them overlays
-
-Earlier coverage missed the column selector, because it lives in
-`src/tui/call_list.rs` rather than in the popup module, and the coverage table
-read only the popup module.
-
-The fix is to stop maintaining a table:
-
-```rust
-overlays += production.matches("frame.render_widget(Clear").count();
-```
-
-`render_widget(Clear, ..)` is what makes something an overlay, so counting that
-call is the honest enumeration. A popup added anywhere under `src/tui/` shows
-up as uncovered rather than quietly escaping the gate.
-
-Two details in that scan are worth copying. It matches the **call** form rather
-than the bare substring, because the prose in the same file explaining the rule
-would otherwise count as an overlay — a scanner counting its own documentation
-is measuring itself. And it reads only the production half of each file, since
-the tests below render overlays too.
-
-## Then the size sweep found two crashes
-
-With every overlay enumerated, sweeping sizes became cheap. It produced two
-panics.
-
-The settings popup panicked below six rows. The filter popup panicked at sizes
-as ordinary as **66x12**. Both computed their row positions from a constant
-height, and `Buffer::set_string` panics on an out-of-bounds index.
-
-A panic takes the whole TUI down mid-capture, and resizing a terminal is not an
-error case.
-
-The sweep is exhaustive on width for a reason:
-
-```rust
-for w in 1u16..=90 {
-    for h in [1u16, 2, 3, 5, 8, 12, 20, 30] {
-```
-
-The two crashes sat at 4x3 and 66x12 — one absurd, one completely ordinary. No
-sampled list of "sizes worth testing" would have held both. A sampler that
-thought to include tiny terminals would have found the first and missed the
-second, and one that thought to include realistic ones would have done the
-reverse.
-
-## Three directions on the fix
-
-Every write across `src/tui/` now goes through `set_string_clipped`, which
-declines rather than panicking and truncates at the right edge rather than
-running into the border. Three gates hold it there.
-
-The helper is correct on its own: out-of-bounds starts in every direction, a
-zero-sized area, multibyte truncation.
-
-Nothing bypasses it — a source gate, because calling `Buffer::set_string`
-directly is the obvious thing to reach for and, as the test's own comment puts
-it, is "what all 42 existing call sites did".
-
-And every overlay survives the sweep.
-
-The snapshot suite pins rendered frames character by character, and it is the
-evidence that the clipping migration altered no rendering. Three snapshots
-moved, and all three moved for the visible fix rather than the safety one — a
-line appearing where a popup previously named no exit:
-
-```diff
--            │                                                      │
-+            │  Tab move · Enter apply · Esc cancel                 │
-```
-
-A safety change that quietly shifted a column would have shown up in the rest
-of them.
-
-## Worth stealing
-
-A gate that needs to know your content is a gate you have to update whenever
-the content changes. Look for the property that holds without knowing the
-strings — here, "more room cannot reveal more text" — because that one keeps
-working after everybody has forgotten it exists.
-
-And enumerate a category by the thing that defines it, not by a list. The list
-was right when somebody wrote it, and the item it was missing lived one file
-over.
+- [Name resolution and the `N` popup](@/docs/keybindings.md#name-resolution)
+- [Filter popup keys](@/docs/keybindings.md#filter-popup)
+- [Settings popup keys](@/docs/keybindings.md#settings-popup)
+- [Column selector keys](@/docs/keybindings.md#column-selector)
