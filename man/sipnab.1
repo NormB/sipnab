@@ -1045,7 +1045,7 @@ The credential itself, as the auth file would hold it: one line, \fBHeader\-Name
 Also read from \fBSIPNAB_VCON_FORWARD_AUTH\fR.
 .TP
 \fB\-\-vcon\-forward\-kind\fR \fIKIND\fR
-What kind of store receives the containers: \fBgeneric\fR (the default: every setting given explicitly), \fBvcon\-store\fR or \fBconserver\fR. A kind supplies the ingest path for a base URL, the header for a bare key, and the payload adaptation; an explicit setting overrides each. Overrides \fB[vcon_forward] kind\fR.
+What kind of store receives the containers: \fBgeneric\fR (the default: every setting given explicitly), \fBvcon\-store\fR or \fBconserver\fR. A kind supplies the ingest path for a base URL and the header for a bare key; an explicit setting overrides each. No kind changes the container sent. Overrides \fB[vcon_forward] kind\fR.
 Values: \fBgeneric\fR, \fBvcon\-store\fR, \fBconserver\fR.
 .TP
 \fB\-\-vcon\-forward\-done\fR \fIDIR\fR
@@ -1080,10 +1080,6 @@ The most bytes of a store's answer to a refused container that its \fB<name>.err
 .TP
 \fB\-\-vcon\-forward\-ca\fR \fIFILE\fR
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the forwarder trusts the host's CA bundle. Overrides \fB[vcon_forward] ca\fR.
-.TP
-\fB\-\-vcon\-forward\-compat\fR \fISTORE\fR
-Adjust the copy that is SENT for one store's known deviation from the vCon drafts. \fBvcon\-store\fR: send \fBextensions\fR as an object, and refuse a Dialog Object without \fBtype\fR and \fBparties\fR, the adaptation the \fBvcon\-store\fR kind applies. \fBnone\fR: send every container byte for byte. The container on disk is never changed. Default: the \-\-vcon\-forward\-kind's adaptation, none for \fBgeneric\fR. Overrides \fB[vcon_forward] compat\fR.
-Values: \fBnone\fR, \fBvcon\-store\fR.
 .SS vCon fetcher
 .TP
 \fB\-\-vcon\-fetch\fR \fIUUID\fR\&...

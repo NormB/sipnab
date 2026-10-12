@@ -21,6 +21,20 @@ entry that carries them.
 
 ### Fixed
 
+- **`man sipnab` describes every option, environment variable and exit
+  status of this build.** The page listed 27 of 329 options, named none of
+  the environment variables that carry secrets, printed "theterminalviewer(1)"
+  in DESCRIPTION and SEE ALSO, and gave an exit-status list older than
+  `docs/cli-reference.md`. OPTIONS is now generated from the same definitions
+  `--help` prints, grouped under the same headings (MCP included), ENVIRONMENT
+  from the table `--help` now prints after its examples, and EXIT STATUS from
+  the exit-code table in `docs/cli-reference.md`.
+  Affected: `man/sipnab.1` in the release archives and the deb, rpm and
+  Homebrew packages.
+- **`--help` names every environment variable sipnab reads.** It now ends
+  with an ENVIRONMENT list, and `--archive-password-file` names
+  `SIPNAB_ARCHIVE_PASSWORD` and the `archive-password` systemd credential.
+  Values are never printed.
 - **CI and the site deploy survive one failed request to github.com.** The
   checks of #471 failed when curl got HTTP 504 fetching the Pagefind release,
   and the 0.5.212 site deploy failed twice when one read of GitHub's API
@@ -464,25 +478,6 @@ entry that carries them.
   as `--api` already was.
 
 ### Fixed
-
-- **`man sipnab` describes every option, environment variable and exit
-  status of this build.** The page listed 27 of 329 options, named none of
-  the environment variables that carry secrets, printed "theterminalviewer(1)"
-  in DESCRIPTION and SEE ALSO, and gave an exit-status list older than
-  `docs/cli-reference.md`. OPTIONS is now generated from the same definitions
-  `--help` prints, grouped under the same headings (MCP included), ENVIRONMENT
-  from the table `--help` now prints after its examples, and EXIT STATUS from
-  the exit-code table in `docs/cli-reference.md`.
-  Affected: `man/sipnab.1` in the release archives and the deb, rpm and
-  Homebrew packages.
-- **`--help` names every environment variable sipnab reads.** It now ends
-  with an ENVIRONMENT list, and `--archive-password-file` names
-  `SIPNAB_ARCHIVE_PASSWORD` and the `archive-password` systemd credential.
-  Values are never printed.
-- **`--seccomp` help describes `enforce`.** The help and its
-  `docs/cli-reference.md` row said the killing action was not implemented
-  while `enforce` was a listed value. They now say what `enforce` does and
-  that it needs `SIPNAB_SECCOMP_ALLOWLIST`.
 
 - **A stdio MCP client receives the reply to a `shutdown_server` that stops
   the process.** The tool set the shutdown flag before its reply was written,
