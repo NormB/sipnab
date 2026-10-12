@@ -6860,6 +6860,10 @@ pub struct LiveVconTracker {
     /// Set when a sweep could not write a container it owed, so the run can
     /// end non-zero instead of reporting an export that did not happen.
     failed: bool,
+    /// Containers the live sweeps wrote over the whole run, rewrites included.
+    /// Never pruned, unlike `written`, so the end-of-run line can report what
+    /// the run wrote.
+    containers_written: usize,
 }
 
 impl LiveVconTracker {
@@ -6889,6 +6893,12 @@ impl LiveVconTracker {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.written.is_empty()
+    }
+
+    /// How many containers the live sweeps wrote over the whole run.
+    #[must_use]
+    pub fn containers_written(&self) -> usize {
+        self.containers_written
     }
 
     /// Whether a sweep failed to write a container it owed.
@@ -7108,6 +7118,7 @@ fn settle_live_writes(
     for dialog in due.iter().take(written) {
         tracker.record(&dialog.call_id, dialog.updated_at);
     }
+    tracker.containers_written = tracker.containers_written.saturating_add(written);
     if written > 0 {
         tracing::info!(
             "Wrote {written} vCon container(s) to '{}' for calls that ended.",
@@ -7462,8 +7473,38 @@ fn export_vcon_selection_after(
             }
         }
     }
-    stderr_line!("Wrote {written} vCon container(s) to '{}'.", dir.display());
+    stderr_line!(
+        "{}",
+        end_of_run_vcon_summary(
+            written,
+            live.map_or(0, LiveVconTracker::containers_written),
+            dir
+        )
+    );
     true
+}
+
+/// The line the end of a `--export-vcon-when` run prints about the spool.
+///
+/// `at_end` is what the end-of-run export wrote and `live` what the live
+/// sweeps wrote while the capture ran. A live run usually writes every
+/// container as its call ends, so the end of the run writes none, and a bare
+/// count of zero would read as a run that exported nothing.
+#[cfg(feature = "vcon")]
+fn end_of_run_vcon_summary(at_end: usize, live: usize, dir: &std::path::Path) -> String {
+    let dir = dir.display();
+    match (at_end, live) {
+        (n, 0) => format!("Wrote {n} vCon container(s) to '{dir}'."),
+        (0, live) => format!(
+            "Wrote no further vCon containers to '{dir}' at the end of the run; \
+             {live} container(s) were written there as their calls ended."
+        ),
+        (n, live) => format!(
+            "Wrote {n} more vCon container(s) to '{dir}' at the end of the run, \
+             {} in total with the {live} written as their calls ended.",
+            n.saturating_add(live)
+        ),
+    }
 }
 
 /// A container's SHA-256, in the format `sha256sum` reads and writes.
@@ -8552,6 +8593,71 @@ mod tests {
         cli.output_args.export_vcon = Some(call_id.to_owned());
         cli.output_args.vcon_out = Some(out.to_path_buf());
         cli
+    }
+
+    /// The end-of-run line never reports a misleading zero.
+    ///
+    /// A replay call logged `Wrote 1 vCon container(s) ... for calls that
+    /// ended` from the live sweep and then `Wrote 0 vCon container(s)` to the
+    /// same directory at the end of the run, which reads as an export that
+    /// wrote nothing.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_end_of_run_vcon_line_reports_what_the_run_wrote() {
+        let dir = std::path::Path::new("spool");
+        assert_eq!(
+            end_of_run_vcon_summary(3, 0, dir),
+            "Wrote 3 vCon container(s) to 'spool'.",
+            "a run with no live sweeps keeps the line scripts already read"
+        );
+        assert_eq!(
+            end_of_run_vcon_summary(0, 0, dir),
+            "Wrote 0 vCon container(s) to 'spool'.",
+            "a run that wrote nothing at all still says so"
+        );
+        assert_eq!(
+            end_of_run_vcon_summary(0, 1, dir),
+            "Wrote no further vCon containers to 'spool' at the end of the run; \
+             1 container(s) were written there as their calls ended."
+        );
+        assert_eq!(
+            end_of_run_vcon_summary(2, 1, dir),
+            "Wrote 2 more vCon container(s) to 'spool' at the end of the run, \
+             3 in total with the 1 written as their calls ended."
+        );
+    }
+
+    /// The tracker counts every container a live sweep wrote, and pruning a
+    /// dialog the store dropped does not lower the count.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_counts_the_containers_it_wrote() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
+        let failed = dialogs.get("failed-call@example.com").ok_or("fixture")?;
+        let ok = dialogs.get("ok-call@example.com").ok_or("fixture")?;
+        let mut tracker = LiveVconTracker::default();
+        let dir = std::path::Path::new("spool");
+        assert_eq!(
+            settle_live_writes(&mut tracker, &[failed, ok], dir, Ok(2)),
+            2
+        );
+        assert_eq!(tracker.containers_written(), 2);
+        assert_eq!(
+            settle_live_writes(&mut tracker, &[ok], dir, Err((0, "disk full".into()))),
+            0
+        );
+        assert_eq!(
+            tracker.containers_written(),
+            2,
+            "a failed write adds nothing"
+        );
+        tracker.prune(|_| false);
+        assert_eq!(
+            tracker.containers_written(),
+            2,
+            "what the run wrote stays written after the store drops the dialog"
+        );
+        Ok(())
     }
 
     /// A dialog the tracker holds at its current `updated_at` was written

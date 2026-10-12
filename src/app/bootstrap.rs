@@ -2435,6 +2435,11 @@ fn confine_after_capture_start(
     privilege::drop_privileges(effective_user, effective_no_priv_drop)
         .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
 
+    // 16a'. Every output created later must be creatable by the user this
+    // process now runs as, or the run ends here rather than at the first
+    // packet or the first finished call.
+    unwritable_output_refusal(cli)?;
+
     // 16b. Initialize syslog if --syslog is set
     if cli.security_args.syslog {
         crate::security::alerting::init_syslog();
@@ -2547,6 +2552,63 @@ fn uncompiled_source_flag(cli: &Cli) -> Option<&'static str> {
         return Some("--hep-listen requires the 'hep' feature (not compiled in)");
     }
     None
+}
+
+/// Refuse, before the first packet, an output the run would create later and
+/// the user it now runs as cannot create.
+///
+/// Called right after the privilege drop. `-O` is opened on the first packet,
+/// `--export-vcon-dir` and `--vcon-out` when a call ends or at the end of the
+/// run, and `--redact-map` at the end. Without this check a run dropped to
+/// `nobody` read packets until the first of those moments and then exited 1;
+/// with it the same refusal, worded the same way, ends the run at startup.
+/// Each output keeps being created after the drop, by the drop user, as
+/// documented: this only asks the kernel whether that user could.
+///
+/// # Errors
+///
+/// The first output that cannot be created, with exit code 1 (an I/O error
+/// in the exit-code table), described by
+/// [`crate::capture::writer::describe_output_error`].
+fn unwritable_output_refusal(cli: &Cli) -> Result<(), PlanError> {
+    use crate::capture::writer::{OutputKind, check_output_creatable, describe_output_error};
+    let o = &cli.output_args;
+    let outputs: [(Option<std::path::PathBuf>, OutputKind, &str); 4] = [
+        (
+            cli.capture_args
+                .output
+                .as_deref()
+                .map(std::path::PathBuf::from),
+            OutputKind::File,
+            "Failed to create output file",
+        ),
+        (
+            o.export_vcon_dir.clone(),
+            OutputKind::Dir,
+            "Could not create the vCon directory",
+        ),
+        (
+            o.vcon_out.clone(),
+            OutputKind::ReplacedFile,
+            "Could not write --vcon-out",
+        ),
+        (
+            o.redact_map.clone(),
+            OutputKind::File,
+            "Could not create --redact-map",
+        ),
+    ];
+    for (path, kind, what) in outputs {
+        let Some(path) = path else { continue };
+        if let Err(e) = check_output_creatable(&path, kind) {
+            let err = anyhow::Error::from(e).context(format!("{what} '{}'", path.display()));
+            return Err(PlanError::new(
+                1,
+                describe_output_error(&err, privilege::dropped_to()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The refusal for a flag checked after the privilege drop: one whose feature
@@ -5761,6 +5823,83 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;
         cli
+    }
+
+    // ── unwritable_output_refusal ─────────────────────────────────────
+
+    /// A run whose `-O` file cannot be created is refused at startup with
+    /// exit code 1 and the message the writer gives on the first packet.
+    ///
+    /// The replay run that found this dropped to `nobody`, read packets for
+    /// seven seconds, and only then exited on `Permission denied`. A missing
+    /// parent directory stages the same late refusal as any user.
+    #[test]
+    fn an_output_file_that_cannot_be_created_is_refused_before_capture() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("missing").join("out.pcap");
+        let mut cli = base_cli();
+        cli.capture_args.output = Some(out.display().to_string());
+        let err = unwritable_output_refusal(&cli)
+            .err()
+            .ok_or("an -O path under a missing directory must be refused")?;
+        assert_eq!(
+            err.exit_code, 1,
+            "an I/O error is exit code 1: {}",
+            err.message
+        );
+        assert!(
+            err.message.starts_with(&format!(
+                "Failed to create output file '{}': ",
+                out.display()
+            )),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// Every lazily written output is checked, not only `-O`.
+    #[test]
+    fn every_lazily_written_output_is_checked_before_capture() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, b"x")?;
+        let missing = dir.path().join("missing").join("x");
+
+        let mut spool = base_cli();
+        spool.output_args.export_vcon_dir = Some(plain.join("spool"));
+        let mut vcon_out = base_cli();
+        vcon_out.output_args.vcon_out = Some(missing.clone());
+        let mut redact_map = base_cli();
+        redact_map.output_args.redact_map = Some(missing.clone());
+        for (label, cli, names) in [
+            ("--export-vcon-dir", spool, "vCon directory"),
+            ("--vcon-out", vcon_out, "--vcon-out"),
+            ("--redact-map", redact_map, "--redact-map"),
+        ] {
+            let err = unwritable_output_refusal(&cli)
+                .err()
+                .ok_or_else(|| format!("{label} must be refused before capture"))?;
+            assert_eq!(err.exit_code, 1, "{label}: {}", err.message);
+            assert!(err.message.contains(names), "{label}: {}", err.message);
+        }
+        Ok(())
+    }
+
+    /// Outputs that can be created, and no outputs at all, pass, and the
+    /// check leaves nothing behind.
+    #[test]
+    fn creatable_outputs_pass_the_startup_check_and_nothing_is_created() -> Result<(), TestError> {
+        unwritable_output_refusal(&base_cli()).map_err(|e| e.message)?;
+        let dir = tempfile::tempdir()?;
+        let mut cli = base_cli();
+        cli.capture_args.output = Some(dir.path().join("out.pcap").display().to_string());
+        cli.output_args.export_vcon_dir = Some(dir.path().join("spool"));
+        cli.output_args.vcon_out = Some(dir.path().join("call.vcon.json"));
+        cli.output_args.redact_map = Some(dir.path().join("map.tsv"));
+        unwritable_output_refusal(&cli).map_err(|e| e.message)?;
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+        Ok(())
     }
 
     // ── parse_autostop ─────────────────────────────────────────────────

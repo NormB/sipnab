@@ -49,6 +49,47 @@ entry that carries them.
   or that no tool transmits.** `query_relay`, `relay_stats` and
   `relay_compare` all transmit to the relay, and several tools besides
   `save_findings` change state or write files.
+- **The `--export-vcon` help no longer says no party carries a `name`.**
+  The exporter writes a party `name` when the `From` or `To` header carried a
+  display name, quoted or bare, beside `validation: "none"`, and never takes
+  one from the URI's user part. The help text, the `--export-vcon` row of
+  `docs/cli-reference.md` and the `vcon` feature row of
+  `docs/internals/build-ci-release.md` still denied it. They now state the
+  rule, and a test exports a dialog with and without a display name and
+  holds each of those surfaces to what the exporter wrote.
+  Affected: readers of `--export-vcon --help` and those two pages.
+- **A vCon callee's `sip_user_agent` no longer comes from a proxy.** The
+  exporter read the callee's `User-Agent`/`Server` and `Contact` from the
+  first response in the ladder. Through a proxy that is the proxy's own
+  `100 Trying`, which [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261#section-16.7) keeps hop by hop, so a call
+  through OpenSIPS exported the proxy's `Server` banner as the callee's
+  software and no callee `Contact`. Both now come only from messages the
+  callee sent: a response from 101 to 699 carrying the dialog's remote `To`
+  tag, or a request carrying that tag as its `From` tag. A callee that names
+  no software gets no `sip_user_agent`.
+  Affected: every `--export-vcon`, `--export-vcon-when` and MCP
+  `export_vcon` container for a call that crossed a proxy.
+- **A live vCon run no longer ends with `Wrote 0 vCon container(s)`.** A
+  live `--export-vcon-when` run that ended on its own (`--duration`,
+  `--autostop`) after its sweeps had written every container printed a count
+  of zero for the same directory, which reads as an export that wrote
+  nothing. The last line now counts what the sweeps wrote: `Wrote no further
+  vCon containers to '<dir>' at the end of the run; N container(s) were
+  written there as their calls ended.`, or the end-of-run count and the
+  total when both wrote. Runs without live sweeps print the line they did.
+  Affected: live captures with `--export-vcon-when`.
+- **An output the drop user cannot create fails the run at startup.** Run
+  as root, sipnab drops privileges and opened `-O` only when the first packet
+  arrived, `--export-vcon-dir` and `--vcon-out` when a call ended or the run
+  did, and `--redact-map` at the end. A directory the drop user could not
+  write let the run read packets and then exit `1` on `Permission denied`.
+  Right after the drop, before the first packet, sipnab now asks the kernel
+  (`faccessat` with `AT_EACCESS`) whether the user it runs as can create each
+  of those outputs, and exits `1` with the same message when it cannot. The
+  outputs are still created after the drop, by the drop user; the check
+  creates nothing.
+  Affected: root runs with any of those flags pointing at a directory the
+  drop user cannot write.
 
 ### Changed
 

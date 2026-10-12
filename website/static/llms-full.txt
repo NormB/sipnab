@@ -12020,7 +12020,8 @@ silent truncation, and the caveat names the size it turned down.
 
 ## An output file sipnab cannot create
 
-**Problem:** a root run with `-O` stops at once, or a long run stops when
+**Problem:** a root run with `-O`, `--export-vcon-dir`, `--vcon-out` or
+`--redact-map` stops at startup with exit code `1`, or a long run stops when
 `--split` rotates, with a line such as:
 
 ```text
@@ -12030,7 +12031,10 @@ Failed to create output file '/var/tmp/e2e/rtp03.pcap': Permission denied (os er
 **Why:** run as root, sipnab opens the capture device and then drops
 privileges, to `nobody` unless `--user` or `[privilege] user` names another
 account. It creates the `-O` file after the drop, and each `--split` file
-later still, so the drop user creates the file, not root. A
+later still, so the drop user creates the file, not root. sipnab checks right
+after the drop that the drop user can create each of those outputs, so the
+refusal comes before the first packet rather than when the file is first
+needed. A
 directory made with a plain `sudo mkdir` is `root:root` mode `0755`, which
 `nobody` may read but not write.
 
@@ -13647,8 +13651,11 @@ sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-
 **The drop user creates the output files.** Run as root, sipnab opens the
 capture device, then drops privileges to `nobody` (or the `--user` you name)
 before it creates the `-O` file, and it creates every `--split` file later
-still. A directory only root may write, such as one made with a plain
-`sudo mkdir`, therefore refuses the file:
+still. Right after the drop, before it reads the first packet, sipnab checks
+that the drop user can create the `-O` file, `--export-vcon-dir`,
+`--vcon-out` and `--redact-map`. A directory only root may write, such as one
+made with a plain `sudo mkdir`, therefore ends the run at startup with exit
+code `1`:
 
 ```text
 Failed to create output file '/var/captures/sip.pcapng': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
@@ -13698,7 +13705,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories) |
 | `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
 | `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory or an archive. Applies at every depth under `--recursive`, and to an archive's members at every depth |
-| `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file. `--filter` chooses what sipnab shows and analyzes, not what this file holds: a BPF filter (the positional argument, such as `"udp port 5060"`) narrows the file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. See [the note above](#bound-split-and-multi-interface-captures) |
+| `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file. `--filter` chooses what sipnab shows and analyzes, not what this file holds: a BPF filter (the positional argument, such as `"udp port 5060"`) narrows the file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. sipnab checks this before it reads the first packet and exits `1` when the drop user cannot. See [the note above](#bound-split-and-multi-interface-captures) |
 | `-B`, `--buffer` | `<MIB>` | `64` | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md). sipnab refuses `0` (no ring at all) with exit `2`, and `[capture] buffer = 0` with exit `1`. Config: `[capture] buffer` |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes). sipnab refuses `0` (no byte of any packet) with exit `2`, and `[capture] snaplen = 0` with exit `1`. Config: `[capture] snaplen` |
@@ -14218,7 +14225,7 @@ selects only problem calls from user 1001.
 | `--plugin` | `<PATH>` | -- | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
-| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as an observer vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`): unsigned, with no party names, with the audio this run retained inline up to `--vcon-max-inline-media`, and with what the capture missed attached. Goes to stdout unless `--vcon-out` names a file, and then silences the per-message stream so the container stays parseable. Implies non-interactive. On a live capture (`-d` or `--hep-listen`), sipnab writes the container when that call ends, about ten seconds after its last message, while the capture runs. A stopped live run writes nothing, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes it at the end of the run. A live run refuses `--redact` and `--redact-map`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature, which `full` has and the default set does not. More: [Export a call as a vCon](vcon.md) |
+| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as an observer vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`): unsigned, with each party's `name` taken only from a `From` or `To` display name and marked `validation: "none"`, with the audio this run retained inline up to `--vcon-max-inline-media`, and with what the capture missed attached. Goes to stdout unless `--vcon-out` names a file, and then silences the per-message stream so the container stays parseable. Implies non-interactive. On a live capture (`-d` or `--hep-listen`), sipnab writes the container when that call ends, about ten seconds after its last message, while the capture runs. A stopped live run writes nothing, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes it at the end of the run. A live run refuses `--redact` and `--redact-map`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature, which `full` has and the default set does not. More: [Export a call as a vCon](vcon.md) |
 | `--export-vcon-when` | `<EXPR>` | -- | Emit a vCon for every dialog matching this filter expression, one container per dialog, into `--export-vcon-dir`. `EXPR` is the language `--filter` already speaks ([`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md)), so `state == 'Failed'` and `response_code >= 400 and rtp.codec == 'PCMU'` work without new syntax. Reusing the language rather than growing a flag per policy is deliberate: one flag for failures, another for calls with media, another for a duration threshold, and so on enumerates the cases somebody thought of. The case nobody thought of is the one an operator needs at three in the morning. Parsed before the capture opens, so a malformed expression fails the run instead of leaving an empty directory a reader takes for "nothing matched". Conflicts with `--export-vcon`, which answers the same question for one named call. Implies non-interactive, and unlike `--export-vcon` it leaves stdout alone, because the containers go to a directory. On a live capture (`-d` or `--hep-listen`), sipnab writes each matching call's container while the capture runs, about ten seconds after the call ends. A stopped live run writes nothing more, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes every container at the end of the run. A live run refuses `--redact`, `--redact-map` and `--content-deny-tombstone`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature |
 | `--export-vcon-dir` | `<DIR>` | -- | Directory for the containers `--export-vcon-when` produces, created if absent. Each file takes its Call-ID as a name, with every character outside `A-Za-z0-9._-` becoming `_` and the whole truncated, because a Call-ID is text whoever placed the call chose and this is the first path sipnab builds from one. Requires `--export-vcon-when`: a destination for containers no predicate selects is a flag that does nothing |
 | `--vcon-max-inline-media` | `<MIB>` | `5` | Largest inline media body a vCon may carry, in MiB. The shipped 5 comes from a measurement rather than taste: one probed vCon store answered HTTP 204 for a roughly 12 MB container, wrote the record to its database, and then had its file spool refuse the payload, with neither transport reporting the partial write. That budget is a property of the CONSUMER and not of the format, so raise it once you know what reads your containers. `0` refuses every inline body, which says "never inline media" without turning the exporter off, and the refusal still appears in the completeness caveat. Batch export, the REST server and the MCP server all read this one value. Needs the `vcon` Cargo feature |
@@ -31473,7 +31480,10 @@ rely on.
   written are not written on the way out, because stopping sipnab must leave
   no call data behind. A live run that ends on its own (`--duration`,
   `--autostop`) writes the matching calls the checks had not reached yet, and
-  does not write a second copy of any container already written.
+  does not write a second copy of any container already written. Its last
+  line counts both, for example `Wrote no further vCon containers to 'spool'
+  at the end of the run; 1 container(s) were written there as their calls
+  ended.`
 - With `-I`, sipnab reads the whole capture and writes every container at the
   end, as before.
 
@@ -32222,6 +32232,7 @@ participant.
 |---|---|---|
 | `parties[].sip` | the `From` or `To` header carried this URI | that anyone with that URI took part |
 | `parties[].sip_display_name` | the sender wrote this string in its header | that this names a person |
+| `parties[].sip_user_agent` and `parties[].sip_contact` | a message this party sent carried the `User-Agent` or `Server` and `Contact` header: for the caller, the opening request; for the callee, a response from 101 to 699 carrying the dialog's remote `To` tag, or a request carrying it as the `From` tag. A proxy's `100 Trying` and any response without that tag are never read for the callee | that the software named is what the party runs |
 | `validation: "none"` on every party | nobody checked anything about this party | that a check failed — the field never carries another value |
 | a `role: "observer"` party | this container came from a tap | that the tap was in the media path |
 | `attachments[].party` | the observer contributed this document | that a participant did |
@@ -44659,7 +44670,7 @@ included.
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](../design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
-| `vcon` | `native` | vCon export: one observed dialog as an unsigned OBSERVER conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, no party name, and no `url` — retained audio travels INLINE as base64url or not at all, under a measured size budget the emitter refuses out loud. |
+| `vcon` | `native` | vCon export: one observed dialog as an unsigned OBSERVER conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, a party `name` only from a `From` or `To` display name and never vouched for, and no `url` — retained audio travels INLINE as base64url or not at all, under a measured size budget the emitter refuses out loud. |
 | `bpf` | `native` | The eBPF uprobe backend — the only one that can report the peer address a TLS session went out to, because it pairs each write with its `tcp_sendmsg`. **Outside `full`**: the kernel half needs nightly and `bpf-linker`. Shipped on the four `*-linux-gnu` release artifacts, not on musl or macOS. |
 | `full` | everything but `wasm` and `bpf` | What the pre-commit hook and most local testing use. The released gnu binaries add `bpf` on top. |
 
@@ -44699,7 +44710,7 @@ processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`.
 
 The borrow checker does not help here either
-— it stops at `unsafe`, and most of this crate's 133 `unsafe` blocks are libc
+— it stops at `unsafe`, and most of this crate's 135 `unsafe` blocks are libc
 FFI, concentrated in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
 and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
