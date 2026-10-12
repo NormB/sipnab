@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 341 | 262 | 35 | 44 | 0 |
+| CLI flags | 341 | 263 | 34 | 44 | 0 |
 | HTTP routes | 42 | 42 | -- | 0 | 0 |
 | MCP tools | 73 | 73 | -- | 0 | 0 |
 
@@ -98,7 +98,7 @@ behind them.
 | `--no-reassembly` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--quiet-bad-parse` | `-x` |  | Capture | parsed | `src/app/mod.rs`, `src/cli.rs` |  |  |
 | `--portrange` |  | `RANGE` | Capture | e2e | `tests/accused_sources_test.rs`, `tests/analyze_test.rs` +17 |  |  |
-| `--ws-portrange` |  | `RANGE` | Capture | parsed | `src/cli.rs` |  |  |
+| `--ws-portrange` |  | `RANGE` | Capture | e2e | `tests/config_cli_defects_test.rs` |  |  |
 | `--multi-device` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-rtp` |  |  | Capture | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` |  |  |
 | `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +14 |  |  |
@@ -289,8 +289,8 @@ behind them.
 | `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/app_servers_wiring_test.rs` +1 |  |  |
 | `--api-accept-archive-passwords` |  |  | Network listeners | e2e | `tests/archive_password_test.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | e2e | `tests/actions_journal_rest_test.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
-| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +20 |  |  |
-| `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/config_cli_flag_values_test.rs`, `tests/listener_tls_test.rs` +8 |  |  |
+| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +21 |  |  |
+| `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/config_cli_defects_test.rs`, `tests/config_cli_flag_values_test.rs` +9 |  |  |
 | `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/listener_tls_test.rs` +4 |  |  |
 | `--mcp-token` |  | `TOKEN` | MCP (Model Context Protocol) | e2e | `tests/listener_tls_test.rs`, `tests/mcp_http_test.rs` +2 |  |  |
 | `--mcp-token-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs`, `tests/review_regressions_test.rs` |  |  |
@@ -367,8 +367,8 @@ behind them.
 | `--keylog-fd` |  | `N` | TLS / Decryption | parsed | `src/cli.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
 | `--tls-lockon-window` |  | `RECORDS` | TLS / Decryption | parsed | `tests/cli_defaults_test.rs` |  |  |
-| `--dtls-keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/config_cli_defects_test.rs` +1 | **behavior** | DECRYPTION MATERIAL. Split proof: parse -> extract -> an SRTP packet decrypts. The file-load hop is untested |
-| `--srtp-keys` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/doc_commands_run_test.rs` | **behavior** | DECRYPTION MATERIAL. Key-file parsing and decryption both tested, with a wrong-key negative. The file-load hop is untested |
+| `--dtls-keylog` |  | `FILE` | TLS / Decryption | e2e | `src/app/tui_mode.rs`, `tests/batch_run_paths_test.rs` +2 | **behavior** | DECRYPTION MATERIAL. Split proof: parse -> extract -> an SRTP packet decrypts. The file-load hop is untested |
+| `--srtp-keys` |  | `FILE` | TLS / Decryption | e2e | `src/app/tui_mode.rs`, `tests/batch_run_paths_test.rs` +2 | **behavior** | DECRYPTION MATERIAL. Key-file parsing and decryption both tested, with a wrong-key negative. The file-load hop is untested |
 | `--pcap-export-mode` |  | `MODE` | TLS / Decryption | e2e | `tests/cli_flag_behavior_test.rs`, `tests/decrypted_export_test.rs` +1 | **parse-only** | Three tests assert the string->enum mapping. No test writes a file in two modes and compares |
 | `--allow-coredump` |  |  | TLS / Decryption | e2e | `tests/archive_password_test.rs`, `tests/cli_options_test.rs` | **parse-only** | SAFETY SWITCH. Its smoke test runs on a capture with NO key material, so the code it guards never executes either way |
 | `--uprobe-tls` |  |  | TLS / Decryption | parsed | `tests/uprobe_cli_test.rs` |  |  |
@@ -456,7 +456,7 @@ behind them.
 | `/v1/relay/stats/call/{call_id}` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/names` | exercised | `tests/relay_rest_test.rs` |
 | `/v1/report` | exercised | `tests/api_test.rs`, `tests/yang_export_test.rs` |
-| `/v1/runtime` | exercised | `tests/api_test.rs`, `tests/hep_senders_surfaces_test.rs` |
+| `/v1/runtime` | exercised | `tests/api_test.rs`, `tests/hep_senders_surfaces_test.rs` +1 |
 | `/v1/security/findings` | exercised | `tests/api_test.rs` |
 | `/v1/stats` | exercised | `tests/api_harness_readiness_test.rs`, `tests/api_test.rs` +4 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +3 |

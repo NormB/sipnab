@@ -92,6 +92,17 @@ Each answers "how do I …?" and assumes you already know what you want.
   with Kamailio 6.1, alone or beside OpenSIPS. No sipnab involved.
 - **[Run sipnab beside Kamailio](kamailio-sipnab.md)**: watch a call through
   Kamailio as one call, from both its legs.
+- **[Use Asterisk as your voice stack's PBX](asterisk.md)**: build Asterisk 22
+  from source, connect a caller to a callee through it, and operate it. No
+  sipnab involved.
+- **[Run sipnab beside Asterisk](asterisk-sipnab.md)**: watch a call through
+  Asterisk as its two legs, in the terminal interface, over MCP and REST, and
+  from Asterisk's own HEP.
+- **[Use FreeSWITCH in your voice stack](freeswitch.md)**: build FreeSWITCH
+  1.11.3 from source and bridge a test call through it. No sipnab involved.
+- **[Run sipnab beside FreeSWITCH](freeswitch-sipnab.md)**: watch a call's two
+  legs and its audio through FreeSWITCH, tie the legs together, and receive
+  FreeSWITCH's HEP.
 - **[Add a vCon server to an OpenSIPS voice stack](vcon-server.md)**:
   vcon-server, Valkey and PostgreSQL, with OpenSIPS recording every call into
   it over SIPREC. Kamailio cannot record this way. No sipnab involved.

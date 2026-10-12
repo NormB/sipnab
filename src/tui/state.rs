@@ -375,6 +375,9 @@ pub struct TuiOptions {
     /// The `--notes` path, which the save dialog's Notes format writes to by
     /// default. `None` when the run named no notes file.
     pub notes_path: Option<std::path::PathBuf>,
+    /// `-c` / `--calls-only`: open with only INVITE checked in the filter
+    /// dialog and that filter applied, so the call list shows calls (#474).
+    pub calls_only: bool,
     /// The capture-mode label the status bar opens with (`Online (eth0)`,
     /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
     pub capture_mode: Option<String>,
@@ -474,6 +477,11 @@ impl TuiOptions {
         app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
+        // Last, once the action trail is attached, so the applied filter is
+        // recorded the way one applied from the dialog is.
+        if self.calls_only {
+            super::controllers::start_calls_only(&mut app);
+        }
         if let Some(mode) = self.capture_mode {
             app.set_capture_mode(mode);
         }

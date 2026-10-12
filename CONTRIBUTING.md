@@ -342,6 +342,21 @@ this file and `website/content/docs/contrib.md` from `contrib/README.md`, and
 `contributor_docs_are_generated_site_pages` fails if either page is missing.
 Edit the source, then regenerate.
 
+The man page, `man/sipnab.1`, is partly generated. Its OPTIONS section comes
+from the clap definitions in `src/cli.rs`, its ENVIRONMENT section from the
+`ENVIRONMENT` table in the same file (the list `--help` prints), and its EXIT
+STATUS section from the exit-code table in `docs/cli-reference.md`.
+`tests/man_page_test.rs` fails when any of the three is stale. Regenerate them
+with:
+
+```bash
+SIPNAB_MAN_APPLY=1 cargo test --features full --test man_page_test
+```
+
+The rest of the page is hand-written. The same test checks that it names only
+flags sipnab has, that it names every environment variable sipnab reads, and
+that `groff -man -ww` formats it without a warning.
+
 `docs/internals/` *does* publish to the site — ten pages under
 `website/content/docs/internals/`, rendered by
 [`scripts/build-site-internals.py`](scripts/build-site-internals.py) and gated by

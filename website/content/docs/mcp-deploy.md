@@ -140,7 +140,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.212 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.213 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -1356,7 +1356,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.212",
+  "version": "0.5.213",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1930,11 +1930,11 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 
 ## Build a binary with MCP support
 
-```toml
+```text
 mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
 mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
 full      # native + tui + tls + hep + api + audio + mcp + mcp-http
-          #   + metrics + plugins + vcon
+          #   + metrics + plugins + vcon + archive
 ```
 
 The default build does not include `mcp` — operators who'll never
@@ -2031,7 +2031,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.212"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.213"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand

@@ -734,6 +734,8 @@ pub fn run_tui_mode(
             offline: !cli.capture_args.input.is_empty(),
             notes,
             notes_path,
+            // -c / --calls-only: the session opens filtered to calls (#474).
+            calls_only: cli.mode_args.calls_only,
         },
     )
     .err();
@@ -820,7 +822,10 @@ fn join_tui_threads(
     relay_thread: Option<std::thread::JoinHandle<()>>,
 ) {
     if let Err(e) = processing_thread.join() {
-        tracing::error!("Processing thread panicked: {:?}", e);
+        tracing::error!(
+            "Processing thread panicked: {}",
+            crate::crash::panic_message(e.as_ref())
+        );
     }
 
     // ONLY after the processing thread is joined. It owned the only sink, so
@@ -1493,7 +1498,7 @@ impl TuiMedia {
                         std::path::Path::new(keyfile),
                         backend,
                     )
-                    .map_err(|e| tracing::error!("Failed to load --srtp-keys {keyfile}: {e}"))
+                    .map_err(|e| tracing::error!("Failed to load --srtp-keys {keyfile}: {e:#}"))
                     .ok(),
                     // No key file, but SDES keys may still arrive via SDP.
                     None => Some(crate::rtp::srtp::SrtpContext::new(Vec::new(), backend)),
@@ -1504,7 +1509,7 @@ impl TuiMedia {
                     std::path::Path::new(keylog),
                     crate::crypto::default_backend(),
                 )
-                .map_err(|e| tracing::error!("Failed to load --dtls-keylog {keylog}: {e}"))
+                .map_err(|e| tracing::error!("Failed to load --dtls-keylog {keylog}: {e:#}"))
                 .ok()
             });
             Self { srtp, dtls }
@@ -1624,6 +1629,52 @@ pub fn tui_pipeline_options(
 
 #[cfg(test)]
 mod tests {
+    /// The TUI logs the OS reason for an unreadable `--srtp-keys` or
+    /// `--dtls-keylog`, not only the loader's context line.
+    #[cfg(all(feature = "native", feature = "tls"))]
+    #[test]
+    fn unreadable_media_key_files_are_logged_with_the_os_reason() {
+        let cli = crate::cli::Cli::parse_from_args([
+            "sipnab",
+            "--srtp-keys",
+            "/nonexistent/s.keys",
+            "--dtls-keylog",
+            "/nonexistent/d.log",
+        ]);
+        let logs = crate::test_utils::capture_logs(tracing::Level::ERROR, || {
+            let _ = super::TuiMedia::from_cli(&cli);
+        });
+        for flag in ["--srtp-keys", "--dtls-keylog"] {
+            let line = logs.lines().find(|l| l.contains(flag)).unwrap_or_default();
+            assert!(
+                line.contains("No such file or directory"),
+                "{flag}: {logs:?}"
+            );
+        }
+    }
+
+    /// A processing-thread panic is logged with the panic's own message.
+    ///
+    /// The payload of a `join` error is a `Box<dyn Any + Send>`, and it was
+    /// logged with `{:?}`, which prints `Any { .. }` and nothing an operator
+    /// can act on.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_processing_thread_panic_is_logged_with_its_message() {
+        // `resume_unwind` unwinds the thread with exactly the payload a
+        // `panic!("...")` literal carries, without calling `panic!`, which the
+        // unwrap ratchet counts.
+        let handle: std::thread::JoinHandle<()> =
+            std::thread::spawn(|| std::panic::resume_unwind(Box::new("ring index 9 out of range")));
+        let logs = crate::test_utils::capture_logs(tracing::Level::ERROR, || {
+            super::join_tui_threads(handle, None);
+        });
+        assert!(
+            logs.contains("Processing thread panicked: ring index 9 out of range"),
+            "{logs:?}"
+        );
+        assert!(!logs.contains("Any {"), "{logs:?}");
+    }
 
     type TestError = Box<dyn std::error::Error>;
 

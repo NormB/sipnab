@@ -8,10 +8,44 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.213] - 2026-10-12
+
+### Added
+
+- **Guides for Asterisk and FreeSWITCH.** Asterisk and FreeSWITCH are
+  back-to-back user agents (B2BUAs): each answers the caller's call itself and
+  places a second call to the callee, so one call through them is two SIP
+  dialogs, called legs. [Use Asterisk as your voice stack's
+  PBX](https://sipnab.com/docs/asterisk/) builds Asterisk 22.11.0 from the
+  Asterisk project's source release, runs it as its own user under systemd,
+  connects a caller to a callee through it, and proves it with a test call
+  that carries audio both ways through Asterisk. [Run sipnab beside
+  Asterisk](https://sipnab.com/docs/asterisk-sipnab/) watches that call as
+  its two legs: the report and the streams on each leg, both legs in one flow
+  in the terminal interface, a call report from a saved capture, the legs
+  matched over MCP and the REST API, and Asterisk's own HEP received by
+  sipnab's listener. [Use FreeSWITCH in your voice
+  stack](https://sipnab.com/docs/freeswitch/) builds FreeSWITCH 1.11.3, with
+  sofia-sip and spandsp, from source, which needs no account, where
+  FreeSWITCH's own packages need a SignalWire access token and neither
+  distribution carries one. It bridges a test call to a callee on the same
+  machine and proves it with audio on both legs. [Run sipnab beside
+  FreeSWITCH](https://sipnab.com/docs/freeswitch-sipnab/) watches that call
+  as two dialogs and four audio streams with `--portrange 5060-5080`, reads
+  its quality from the capture, ties the two legs together in the TUI's
+  extended flow, the REST `/correlated` route and MCP, and receives
+  FreeSWITCH's own HEP from its `capture-server` setting. Every command in
+  the four guides ran as written on clean Debian 13 and Ubuntu 24.04
+  machines, with sipnab 0.5.211 from its release package.
 
 ### Changed
 
+- **Breaking for library users: `McpArgs::mcp_transport` is a
+  `sipnab::cli::McpTransport` enum, not a `String`.** The command line accepts
+  the same two values, `stdio` and `http`. Any other value was already refused
+  by the parser, so the second check in `Cli::validate` and the third in
+  `start_servers` could not print; with the enum no other transport can be
+  built and both are gone. `--help` now describes each value.
 - **CI runs the test binaries side by side.** The Check job's Test step ran
   `cargo test --all-features`, which runs its 406 test binaries one at a time:
   460 s of the Linux job's 12.8-minute step on 2026-10-12. It now runs them
@@ -21,6 +55,29 @@ entry that carries them.
 
 ### Fixed
 
+- **`-c` / `--calls-only` keeps only calls on every dialog output.** It
+  applied only to the per-message printout, so `--json-dialogs` and
+  `--report` still listed OPTIONS, REGISTER and SUBSCRIBE dialogs, and the
+  TUI ignored it. Those outputs now keep only dialogs an INVITE started, `-c`
+  combines with `--filter` as an AND, and the TUI opens with only INVITE
+  checked in its filter dialog, as sngrep's `-c` does. Like `--filter`, it
+  does not narrow what `-O` writes. Reported by Ihor
+  Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
+  [#474](https://github.com/NormB/sipnab/issues/474).
+- **`man sipnab` describes every option, environment variable and exit
+  status of this build.** The page listed 27 of 329 options, named none of
+  the environment variables that carry secrets, printed "theterminalviewer(1)"
+  in DESCRIPTION and SEE ALSO, and gave an exit-status list older than
+  `docs/cli-reference.md`. OPTIONS is now generated from the same definitions
+  `--help` prints, grouped under the same headings (MCP included), ENVIRONMENT
+  from the table `--help` now prints after its examples, and EXIT STATUS from
+  the exit-code table in `docs/cli-reference.md`.
+  Affected: `man/sipnab.1` in the release archives and the deb, rpm and
+  Homebrew packages.
+- **`--help` names every environment variable sipnab reads.** It now ends
+  with an ENVIRONMENT list, and `--archive-password-file` names
+  `SIPNAB_ARCHIVE_PASSWORD` and the `archive-password` systemd credential.
+  Values are never printed.
 - **CI and the site deploy survive one failed request to github.com.** The
   checks of #471 failed when curl got HTTP 504 fetching the Pagefind release,
   and the 0.5.212 site deploy failed twice when one read of GitHub's API
@@ -29,6 +86,72 @@ entry that carries them.
   in `release.yml` already did, and a test requires it of every `curl` in CI.
   The deploy's wait for CI's test output treats a failed API read as a reason
   to poll again within its deadline, and logs the error text `gh` printed.
+- **`--capture-tunnels=` with no port in the list says the list is empty.**
+  It printed "Invalid --capture-tunnels port ''" instead, because the check
+  for a blank port ran before the check for an empty list.
+- **`-x`/`--quiet-bad-parse` help names `SIPNAB_LOG=debug` as the way to see
+  the notice it silences.** It said the notice was visible under `-v`, which
+  is `--invert` and changes no log level.
+- **A panic in the TUI's processing thread is logged with its message.** The
+  log line read "Processing thread panicked: Any { .. }".
+- **A bad `--ws-portrange` is reported as a flag value, not a config value.**
+  `--ws-portrange 80` printed "invalid config value: --ws-portrange: …" with
+  no config file involved. It now prints "Invalid --ws-portrange: …", as
+  `--portrange` does. The exit code is unchanged: 2 for the flag, 1 for
+  `[capture] ws_ports`.
+- **An unreadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` names the OS
+  reason.** The refusal named the file and stopped, for example "Failed to
+  load --tls-key key.pem: reading TLS private key from key.pem", without
+  "No such file or directory" or "Permission denied". `--keylog` already gave
+  the reason.
+- **The keybindings page documents every key the F1 help lists.** The Call
+  List keys `g`, `m`, `c`, `e`, `b`, `o`, `f`, `x`, `a`, `B` and `N`, the
+  `Ctrl+L` alias of `F5`, and the relay statistics `H` key had no row, and
+  the nine views those keys open had no section. They do now, with a section
+  for the capture filter editor `B` opens.
+- **The REST reference documents `filter`, `after` and `before` on
+  `GET /v1/dialogs`.** The OpenAPI document declared all three; the page's
+  parameter table listed four parameters and omitted them.
+- **The website's plugin page no longer requires `sipnab_dealloc`**, which the
+  host never looks up, and both plugin pages count three exports, not four.
+  The website's plugin and TLS capture pages are now generated from
+  `docs/`, so the TLS page carries the current `bpf` build requirements.
+- **The build page's feature table lists `vcon` and `archive`**, and its
+  `full` row lists all twelve members. The install page's dependency column
+  names the `rustls` that `api`, `metrics` and `vcon` pull in, and its `hep`
+  row names HEP v1 receive.
+- **The release notes name every flag and REST route a release added.**
+  These shipped without a release note that named them. Each is listed with
+  the release that added it, read from that release's tag:
+  - 0.4.3: `--api-revoked-file`, `--api-signing-key-file`, `--api-token-ttl`,
+    `--mcp-signing-key-file` and `--mcp-token-ttl`.
+  - 0.4.4: `--buffer-budget`.
+  - 0.5.0: `--panic-selftest`, a hidden flag that panics on purpose to test
+    crash handling.
+  - 0.5.96: `--findings-history`.
+  - 0.5.97: `--jitter-bad-ms`, `--jitter-warn-ms`, `--loss-bad-pct`,
+    `--loss-warn-pct`, `--max-grouped-messages`, `--max-groups`,
+    `--max-lost-sequences`, `--max-metadata-file-bytes`, `--mos-bad`,
+    `--mos-warn`, `--rtt-bad-ms` and `--rtt-warn-ms`.
+  - 0.5.98: `--scanner-answer-grace`, `--scanner-behavioral-probes`,
+    `--scanner-enumeration-targets`, `--scanner-established-factor`,
+    `--scanner-rejected-probes`, `--scanner-unanswered-probes` and
+    `--scanner-window`.
+  - 0.5.99: `--cn-suppression-ratio` and `--max-tcp-buffer`.
+  - 0.5.100: `--exec-queue-depth`, `--fraud-volume-window`,
+    `--fraud-wangiri-window` and `--leg-correlation-window`.
+  - 0.5.125: `GET /v1/dialogs/{call_id}/vcon`.
+  - 0.5.130: `--mcp-audit-file`, `--redact-keep-prefix` and
+    `--redact-key-file`.
+  - 0.5.148: `GET /v1/tfps/banned`.
+  - 0.5.170: `GET /v1/relay/stats`, `GET /v1/relay/stats/names`,
+    `GET /v1/relay/stats/call/{call_id}` and
+    `GET /v1/relay/compare/{call_id}`.
+  - 0.5.205: `--vcon-forward-interval` and `--vcon-forward-timeout`.
+
+  `tests/release_surface_test.rs` now fails when a release adds a flag, an
+  MCP tool or a REST route that no release note from that release onward
+  names, and when the working tree adds one that `[Unreleased]` does not name.
 
 ## [0.5.212] - 2026-10-12
 

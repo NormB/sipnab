@@ -6308,7 +6308,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 186 -> 188: ci.yml's Test step names scripts/parallel-tests.py twice
     // (its comment and its run line). Attributed by measurement: with
     // origin/main's ci.yml swapped back in, the scan reads 186.
-    const EXPECTED_REFERENCES: usize = 188;
+    // 188 -> 197: .github/workflows/memcheck.yml, the weekly Valgrind
+    // memcheck job, names its scripts and fixtures nine times. Attributed by
+    // measurement: with the file set aside the scan reads 188.
+    const EXPECTED_REFERENCES: usize = 197;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -10901,6 +10904,11 @@ fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
 /// it, then the voice stack, what it supports, the numbers and the guides.
 /// Quick Start still comes before the agent demos, which need a source
 /// checkout, so the rule above still holds.
+///
+/// Norm, 2026-10-11, adopted this order: how sipnab fits together, what you
+/// can do with it, the animation that shows it, what it supports, how to
+/// install it, what an agent can ask it, the voice stack, the numbers, and the
+/// guides last, where a reader who has decided looks for the next step.
 #[test]
 fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -10908,14 +10916,26 @@ fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     let want = [
         "hero",
         "sysmap-section",
-        "hero-shot-section",
         "features",
+        "hero-shot-section",
+        "comparison",
         "quickstart",
         "demos",
-        "comparison",
         "arch-callout",
         "notes-callout",
     ];
+    // The voice-stack section's class is "features stack", which the class
+    // scan above does not match, so its place is pinned by its id: after the
+    // agent demos and before the numbers.
+    let at = |needle: &str| {
+        page.find(needle)
+            .ok_or_else(|| format!("the homepage has no {needle}"))
+    };
+    let stack = at("id=\"voice-stack\"")?;
+    assert!(
+        at("<section class=\"demos\"")? < stack && stack < at("<section class=\"arch-callout\"")?,
+        "the voice-stack section is not between the agent demos and the numbers"
+    );
     let seen: Vec<&str> = order
         .iter()
         .map(String::as_str)
@@ -11524,8 +11544,9 @@ fn homepage_voice_stack_section_links_every_stack_guide() -> Result<(), TestErro
         .filter(|e| GROUPS.contains(&e.group.as_str()))
         .map(|e| e.path)
         .collect();
+    let expected = guides;
     assert_eq!(
-        linked, guides,
+        linked, expected,
         "the homepage voice-stack section (left) and the nav's voice-stack group (right) \
          list different guides"
     );
@@ -11584,6 +11605,50 @@ fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() -> Result<(), TestError>
         tile.contains("<h3>SIP proxy</h3>"),
         "the tile's heading is not \"SIP proxy\":\n{tile}"
     );
+    Ok(())
+}
+
+/// The Asterisk and FreeSWITCH guides share a tile headed "PBX" (Norm,
+/// 2026-10-11): both are PBXs that answer and bridge calls, a different role
+/// from the SIP proxies on the "SIP proxy" tile, which links neither. Each
+/// gets the pair of links every voice-stack tile gives: use it, then run
+/// sipnab beside it.
+#[test]
+fn the_pbx_tile_pairs_asterisk_and_freeswitch_with_their_sipnab_guides() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let tiles: Vec<&str> = page
+        .split("class=\"feature-card")
+        .filter(|card| card.contains("@/docs/asterisk.md") || card.contains("@/docs/freeswitch.md"))
+        .collect();
+    assert_eq!(
+        tiles.len(),
+        1,
+        "Asterisk and FreeSWITCH share one tile: {tiles:?}"
+    );
+    let tile = tiles[0];
+    assert!(
+        tile.contains("<h3>PBX</h3>"),
+        "the tile's heading is not \"PBX\":\n{tile}"
+    );
+    for (href, text) in [
+        ("@/docs/asterisk.md", "Use Asterisk"),
+        ("@/docs/asterisk-sipnab.md", "Run sipnab beside it"),
+        ("@/docs/freeswitch.md", "Use FreeSWITCH"),
+        ("@/docs/freeswitch-sipnab.md", "Run sipnab beside it"),
+    ] {
+        let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
+        assert!(tile.contains(&link), "missing {link}:\n{tile}");
+    }
+    let proxy = page
+        .split("class=\"feature-card")
+        .find(|card| card.contains("<h3>SIP proxy</h3>"))
+        .ok_or("the home page has no SIP proxy tile")?;
+    for pbx in ["asterisk", "freeswitch"] {
+        assert!(
+            !proxy.contains(pbx),
+            "the SIP proxy tile links {pbx}:\n{proxy}"
+        );
+    }
     Ok(())
 }
 

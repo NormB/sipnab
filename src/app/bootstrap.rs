@@ -4508,14 +4508,9 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         Err(e) => {
             // A malformed flag is an argument error, exit 2, as a malformed
             // `--portrange` is; a malformed key is a config error, exit 1.
-            return Err(PlanError {
-                exit_code: if cli.capture_args.ws_portrange.is_some() {
-                    2
-                } else {
-                    1
-                },
-                message: e.to_string(),
-            });
+            // `ws_port_range` says which by the error's kind.
+            let origin = crate::settings::Origin::of(matches!(e, crate::Error::CliValidation(_)));
+            return Err(PlanError::refused(origin, e.to_string()));
         }
     }
 
@@ -4593,6 +4588,38 @@ pub(crate) fn parse_autostop(
 
 // ── Filter expression building ──────────────────────────────────────
 
+/// The DSL form of `-c` / `--calls-only`: dialogs an INVITE started, the
+/// rule [`crate::sip::matcher::calls_only_admits`] applies per message.
+const CALLS_ONLY_EXPR: &str = "method == 'INVITE'";
+
+/// Build the dialog filter every post-capture output selects with.
+///
+/// The expression from [`filter_expr_from_sources`], narrowed to calls when
+/// `-c` / `--calls-only` is set. `-c` was applied only to the per-message
+/// printout, so `--json-dialogs`, `--report` and the exports still listed
+/// OPTIONS, REGISTER and SUBSCRIBE dialogs (#474); folding it in here gives
+/// every output that selects through [`crate::sip::dsl::select_dialogs`] the
+/// same answer.
+///
+/// # Errors
+///
+/// As [`filter_expr_from_sources`].
+fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+    let base = filter_expr_from_sources(cli, config)?;
+    if !cli.mode_args.calls_only {
+        return Ok(base);
+    }
+    let text = match &base {
+        Some(f) => format!("({CALLS_ONLY_EXPR}) AND ({})", f.source()),
+        None => CALLS_ONLY_EXPR.to_owned(),
+    };
+    FilterExpr::parse(&text).map(Some).map_err(|e| {
+        PlanError::arg(format!(
+            "Internal error building the --calls-only filter: {e}"
+        ))
+    })
+}
+
 /// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or
 /// config fallback.
 ///
@@ -4605,7 +4632,7 @@ pub(crate) fn parse_autostop(
 /// Returns a `PlanError` (exit code 2) when the `--filter` expression, an
 /// expanded diagnostic alias, or the config-file expression fails to parse.
 /// Returning (rather than exiting) keeps planning testable and composable.
-fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+fn filter_expr_from_sources(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
     // An explicit expression narrows the diagnostic flags. Parse it even
     // when aliases are enabled, so an invalid expression is never hidden.
     let thresholds = cli.alias_thresholds(config);
@@ -5108,10 +5135,17 @@ fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
     let Some(ref list) = cli.capture_args.capture_tunnels else {
         return Ok(Vec::new());
     };
+    // Checked before the per-port loop, which would otherwise refuse the
+    // first blank field as an invalid port '' and this message would never
+    // be reached.
+    if list.split(',').all(|field| field.trim().is_empty()) {
+        return Err(PlanError::arg(format!(
+            "--capture-tunnels was given an empty port list; drop the flag, or \
+             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
+        )));
+    }
     let mut ports: Vec<u16> = Vec::new();
-    let mut any = false;
     for field in list.split(',') {
-        any = true;
         let text = field.trim();
         let port: u16 = text.parse().unwrap_or(0);
         if port == 0 {
@@ -5124,12 +5158,6 @@ fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
         if !ports.contains(&port) {
             ports.push(port);
         }
-    }
-    if !any || ports.is_empty() {
-        return Err(PlanError::arg(format!(
-            "--capture-tunnels was given an empty port list; drop the flag, or \
-             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
-        )));
     }
     Ok(ports)
 }
@@ -8378,6 +8406,30 @@ mod tests {
             assert!(
                 err.message.contains("--capture-tunnels"),
                 "'{bad}': the error must name the flag, got: {}",
+                err.message
+            );
+        }
+        Ok(())
+    }
+
+    /// A list with no port in it gets the message that says so, not the
+    /// per-port one quoting an empty port.
+    ///
+    /// The empty-list message used to be checked after the per-port loop, and
+    /// the loop refused the first blank field as "Invalid --capture-tunnels
+    /// port ''" before the check was reached, so it could never print.
+    #[test]
+    fn capture_tunnels_names_an_empty_list_as_empty() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        for empty in ["", " ", ",", " , "] {
+            cli.capture_args.capture_tunnels = Some(empty.to_string());
+            let err = resolve_tunnel_ports(&cli)
+                .err()
+                .ok_or_else(|| format!("'{empty}' must be refused"))?;
+            assert_eq!(err.exit_code, 2, "'{empty}'");
+            assert!(
+                err.message.contains("was given an empty port list"),
+                "'{empty}': got: {}",
                 err.message
             );
         }

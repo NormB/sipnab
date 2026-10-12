@@ -615,6 +615,50 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Install sipnab on the Kamailio machine and watch a call through the proxy "
         "as one call, from both its legs, with or without OpenSIPS beside it.",
     ),
+    # The Asterisk guides (2026-10-09). 61-62 were the next free
+    # weights; the contributor documents took 59-60.
+    (
+        "docs/asterisk.md",
+        "asterisk.md",
+        "Use Asterisk as your voice stack's PBX",
+        "Use Asterisk as your voice stack's PBX",
+        61,
+        "Build Asterisk 22 from source, connect a caller to a callee through it as "
+        "a back-to-back user agent, place a test call with audio both ways, and "
+        "operate it. No sipnab involved.",
+    ),
+    (
+        "docs/asterisk-sipnab.md",
+        "asterisk-sipnab.md",
+        "Run sipnab beside Asterisk",
+        "Run sipnab beside Asterisk",
+        62,
+        "Install sipnab on the Asterisk machine and watch a call through it as its "
+        "two legs: the report, the terminal interface, a call report, MCP, the "
+        "REST API, and Asterisk's own HEP.",
+    ),
+    # The FreeSWITCH guides (GUIDE-FS, 2026-10-09). 63-64 were the next free
+    # weights once the Asterisk guides took 61-62.
+    (
+        "docs/freeswitch.md",
+        "freeswitch.md",
+        "Use FreeSWITCH in your voice stack",
+        "Use FreeSWITCH in your voice stack",
+        63,
+        "Build FreeSWITCH 1.11.3 from source on Debian 13 or Ubuntu 24.04, bridge "
+        "a test call to a callee, place it with audio, operate it, and uninstall "
+        "it. No sipnab involved.",
+    ),
+    (
+        "docs/freeswitch-sipnab.md",
+        "freeswitch-sipnab.md",
+        "Run sipnab beside FreeSWITCH",
+        "Run sipnab beside FreeSWITCH",
+        64,
+        "Install sipnab on the FreeSWITCH machine, watch a call's two legs and "
+        "four audio streams, tie the legs together in the TUI, REST and MCP, and "
+        "receive FreeSWITCH's own HEP.",
+    ),
     # The fail2ban guides (GUIDE-F2B, 2026-10-01). 56-57 were the next free
     # weights; the rtpproxy guides took 54-55.
     (
@@ -636,6 +680,32 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Run sipnab's scanner and registration-flood detectors as a service and "
         "have fail2ban ban what they find, with the filter and jail that ship "
         "with sipnab.",
+    ),
+    # Two pages that were hand-kept copies until the copies drifted: the site's
+    # plugins page went on requiring `sipnab_dealloc` after docs/plugins.md
+    # dropped it, and the site's TLS chooser kept older `bpf` build
+    # requirements. Generated, there is one text to keep right. Titles,
+    # weights and descriptions are the ones the hand-kept pages carried.
+    (
+        "docs/plugins.md",
+        "plugins.md",
+        "WASM plugins",
+        "Add a detection with a WASM plugin",
+        33,
+        "Add your own detection to sipnab's diagnosis without forking it: what "
+        "a sandboxed WebAssembly plugin can and cannot do, what trusting one "
+        "costs you, and a worked example from crate to finding.",
+    ),
+    (
+        "docs/tls-capture.md",
+        "tls-capture.md",
+        "Capture SIP over TLS",
+        "Capture SIP over TLS",
+        29,
+        "Pick the right method for reading SIP over TLS: a key log from the "
+        "endpoint, plaintext read out of the process with no keys at all, eBPF "
+        "with peer addresses, or eCapture — chosen by what access you have, "
+        "plus what does not work and why.",
     ),
     # The two contributor documents that live outside docs/ (SITE-CONTRIB).
     # Their sources sit at the repo root and in contrib/, where GitHub shows

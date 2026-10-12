@@ -506,3 +506,236 @@ fn help_marks_global_keys_as_global() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+// ── The written reference: docs/keybindings.md ─────────────────────────
+
+/// The keybindings page, which the website copy is generated from.
+const KEYBINDINGS_PAGE: &str = include_str!("../docs/keybindings.md");
+
+/// Which `docs/keybindings.md` sections document each F1 help section.
+///
+/// `None` marks a help section that binds no keys (a glossary, a note). A help
+/// section missing from this table fails the gate, so a new view cannot ship
+/// with F1 help and no written reference.
+fn page_sections_for(help_heading: &str) -> Option<Option<&'static [&'static str]>> {
+    Some(match help_heading {
+        "CALL LIST:" => Some(&["Call list"]),
+        "CALL FLOW:" => Some(&["Call flow"]),
+        "RAW MESSAGE:" => Some(&["Raw message"]),
+        "MESSAGE DIFF / COMBINED DETAIL / STATISTICS:" => {
+            Some(&["Message diff", "Combined detail", "Statistics"])
+        }
+        "TOP TALKERS:" => Some(&["Top talkers"]),
+        "CARRIER METRICS:" => Some(&["Carrier metrics"]),
+        "COMPARE TWO CALLS:" => Some(&["Compare two calls"]),
+        "ENDPOINT ROLLUP:" => Some(&["Endpoint rollup"]),
+        "CAPTURE HEALTH:" => Some(&["Capture health"]),
+        "HEP SENDERS:" => Some(&["HEP senders"]),
+        "CALL VOLUME HISTOGRAM:" => Some(&["Call volume histogram"]),
+        "SDP OFFER/ANSWER TIMELINE:" => Some(&["SDP offer/answer timeline"]),
+        "RFC CONFORMANCE:" => Some(&["RFC conformance"]),
+        "TFPS OBSERVE:" => Some(&["TFPS observe"]),
+        "SECURITY FINDINGS:" => Some(&["Security findings"]),
+        "RELAY STATISTICS VIEW (S asks the relay directly):" => Some(&["Relay statistics"]),
+        "QUALITY DASHBOARD:" => Some(&["Quality dashboard"]),
+        "RTP STREAMS (Tab):" => Some(&["RTP streams"]),
+        "STREAM DETAIL:" => Some(&["Stream detail"]),
+        "ARCHIVE PASSWORD (a load waits on an encrypted archive member):" => {
+            Some(&["Archive password popup"])
+        }
+        // Each key here belongs to one view; the page documents it there.
+        "COPY & PASTE:" => Some(&["Raw message", "Call flow", "Global"]),
+        "TERMS:" => None,
+        "VCON EXPORT (one call, for handing to somebody else):" => None,
+        _ => return None,
+    })
+}
+
+/// Split one key column into key tokens.
+///
+/// `, ` separates alternatives and ` / ` (spaced) separates a pair (`a / A`,
+/// `< / >`, `Up / k`); an unspaced `/` joins a pair too (`↑/↓`, `PgUp/PgDn`).
+/// A column that is exactly `/` is the search key itself.
+fn key_tokens(column: &str) -> Vec<String> {
+    let column = column.trim();
+    if column == "/" {
+        return vec!["/".to_string()];
+    }
+    let mut out = Vec::new();
+    for alt in column.split(',') {
+        for pair in alt.split(" / ") {
+            let pair = pair.trim();
+            if pair == "/" {
+                out.push("/".to_string());
+                continue;
+            }
+            for tok in pair.split('/') {
+                let tok = tok.trim();
+                if !tok.is_empty() {
+                    out.push(tok.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The spellings a help token may take in the page's key column.
+///
+/// The F1 help draws arrows as glyphs; the page writes `Up`/`Down` in some
+/// tables and the glyph in others.
+fn page_spellings(tok: &str) -> Vec<&str> {
+    match tok {
+        "\u{2191}" => vec!["\u{2191}", "Up"],
+        "\u{2193}" => vec!["\u{2193}", "Down"],
+        "\u{2190}" => vec!["\u{2190}", "Left"],
+        "\u{2192}" => vec!["\u{2192}", "Right"],
+        other => vec![other],
+    }
+}
+
+/// `(section heading, key tokens of every table row)` for each `## ` and
+/// `### ` section of the page. A section ends at the next heading of any level,
+/// so a subsection's table is not credited to its parent.
+fn page_key_rows(page: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut in_fence = false;
+    for line in page.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some(h) = line
+            .strip_prefix("## ")
+            .or_else(|| line.strip_prefix("### "))
+        {
+            out.push((h.trim().to_string(), Vec::new()));
+            continue;
+        }
+        let Some(row) = line.trim().strip_prefix('|') else {
+            continue;
+        };
+        let Some((first, _)) = row.split_once(" | ").or_else(|| row.split_once('|')) else {
+            continue;
+        };
+        let first = first.trim();
+        if first.is_empty() || first == "Key" || first.starts_with("---") || first.starts_with(":-")
+        {
+            continue;
+        }
+        let cell = first
+            .replace('`', "")
+            .replace("\\[", "[")
+            .replace("\\]", "]");
+        if let Some((_, toks)) = out.last_mut() {
+            toks.extend(key_tokens(&cell));
+        }
+    }
+    out
+}
+
+/// Every key the F1 help gives a view has a row in that view's section of
+/// `docs/keybindings.md`.
+///
+/// The checks above hold the handlers to the F1 help. Nothing held the written
+/// reference to either, and it fell ten keys and nine views behind the help:
+/// a reader of the page (or of the website copy generated from it) could not
+/// learn that `g`, `m`, `c`, `e`, `b`, `o`, `f`, `x`, `a` or `B` did anything.
+#[test]
+fn every_help_key_has_a_row_in_the_keybindings_page() -> Result<(), TestError> {
+    let rows = page_key_rows(KEYBINDINGS_PAGE);
+    let global: Vec<String> = rows
+        .iter()
+        .find(|(h, _)| h == "Global")
+        .map(|(_, t)| t.clone())
+        .ok_or("docs/keybindings.md has a Global section")?;
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    let mut sections: Option<&'static [&'static str]> = None;
+    let mut heading = String::new();
+    for line in HELP_TEXT.lines() {
+        if !line.starts_with(' ') && line.trim_end().ends_with(':') {
+            heading = line.trim_end().to_string();
+            match page_sections_for(&heading) {
+                Some(s) => sections = s,
+                None => {
+                    failures.push(format!(
+                        "F1 help section '{heading}' has no entry in page_sections_for(): \
+                         name the docs/keybindings.md section that documents it"
+                    ));
+                    sections = None;
+                }
+            }
+            continue;
+        }
+        let Some(names) = sections else { continue };
+        if !line.starts_with("  ") {
+            continue;
+        }
+        let t = line.trim_start();
+        let Some(gap) = t.find("  ") else { continue };
+        // A key the help marks as working everywhere may be documented once,
+        // in the page's Global table, rather than in every view.
+        let is_global = t.contains("\u{2014} global") || t.contains("every view");
+        for tok in key_tokens(&t[..gap]) {
+            checked += 1;
+            let spellings = page_spellings(&tok);
+            let in_view = rows
+                .iter()
+                .filter(|(h, _)| names.contains(&h.as_str()))
+                .any(|(_, toks)| toks.iter().any(|k| spellings.contains(&k.as_str())));
+            let in_global = is_global && global.iter().any(|k| spellings.contains(&k.as_str()));
+            if !(in_view || in_global) {
+                failures.push(format!(
+                    "{heading} key '{tok}' ({}) has no row in docs/keybindings.md {names:?}",
+                    t[gap..].trim()
+                ));
+            }
+        }
+        for name in names {
+            if !rows.iter().any(|(h, _)| h == name) {
+                failures.push(format!("docs/keybindings.md has no '## {name}' section"));
+            }
+        }
+    }
+    failures.sort();
+    failures.dedup();
+    assert!(
+        checked >= 150,
+        "only {checked} help keys were read: the HELP_TEXT scan stopped matching"
+    );
+    assert!(
+        failures.is_empty(),
+        "the F1 help documents keys the written reference does not:\n{}",
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+/// The page reader finds keys where a reader sees them, and the tokenizer
+/// splits the column forms the page and the help both use.
+#[test]
+fn the_page_key_reader_discriminates() -> Result<(), TestError> {
+    assert_eq!(key_tokens("Esc / q / D"), ["Esc", "q", "D"]);
+    assert_eq!(
+        key_tokens("\u{2191}/\u{2193}, j/k"),
+        ["\u{2191}", "\u{2193}", "j", "k"]
+    );
+    assert_eq!(key_tokens("/"), ["/"]);
+    assert_eq!(key_tokens("a / A"), ["a", "A"]);
+    assert_eq!(key_tokens("< / >"), ["<", ">"]);
+    let page = "## One\n\n| Key | Action |\n|-----|--------|\n| `\\[` | up |\n| F5 / Ctrl+L | clear |\n\n### Sub\n\n| Key | Action |\n|---|---|\n| z | zed |\n";
+    let rows = page_key_rows(page);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1, ["[", "F5", "Ctrl+L"]);
+    assert_eq!(
+        rows[1].1,
+        ["z"],
+        "a subsection's rows are its own, not its parent's"
+    );
+    Ok(())
+}

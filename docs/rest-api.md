@@ -481,6 +481,12 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
+| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
+| `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
+| `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
+
+`state`, `from`, `filter`, `after` and `before` combine with AND, and `total`
+counts the dialogs that pass all of them before `offset` and `limit` page them.
 
 **curl:**
 
@@ -545,6 +551,27 @@ filter: unexpected input at position 0: 'slow_setup'
 valid operators: ==, !=, <, <=, >, >=, =~ (regex)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
+
+Count the INVITE dialogs. `-G` with `--data-urlencode` encodes the expression
+into the query string:
+
+```bash
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs" \
+  --data-urlencode "filter=method == 'INVITE'" | jq '.total'
+```
+
+List when each dialog in one ten-second window opened:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs?after=2016-05-18T18:23:10Z&before=2016-05-18T18:23:20Z" \
+  | jq '[.dialogs[].created_at]'
+```
+
+Run against a server reading [`tests/pcap-samples/b2bua-asterisk.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/b2bua-asterisk.pcapng), the
+first prints `2` and the second the seven instants between 18:23:11 and
+18:23:17.
 
 **Python:**
 

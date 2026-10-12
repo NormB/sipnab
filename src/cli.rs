@@ -332,6 +332,114 @@ pub fn compiled_features() -> Vec<&'static str> {
     out
 }
 
+/// The examples `-h` and `--help` print after the options.
+const EXAMPLES: &str = "EXAMPLES:\n  \
+    sipnab -d eth0                    Capture on eth0\n  \
+    sipnab -I capture.pcap           Read from pcap file\n  \
+    sipnab -N --json                 Non-interactive JSON output\n  \
+    sipnab --problems                Show problematic calls\n  \
+    sipnab --kill-scanner            Detect SIP scanners\n  \
+    sipnab --from alice --to bob     Filter by From/To headers\n  \
+    sipnab -e 'INVITE sip:'          Grep SIP payload, follow the dialog\n  \
+    sipnab 'host 10.0.0.1 and port 5060'   BPF capture filter";
+
+/// Every environment variable sipnab reads for an operator, with what it does.
+///
+/// The one list: `--help` prints it after the examples, and the ENVIRONMENT
+/// section of `man/sipnab.1` is generated from it. `tests/man_page_test.rs`
+/// fails when `src/` reads a `SIPNAB_*` variable, or a flag reads one through
+/// clap's `env`, that this table does not name. Names only: no value is ever
+/// printed (`tests/help_env_values_test.rs`).
+pub const ENVIRONMENT: &[(&str, &str)] = &[
+    (
+        "SIPNAB_CONFIG",
+        "Path to the configuration file, read when `-f` is not given",
+    ),
+    (
+        "XDG_CONFIG_HOME",
+        "Directory holding the per-user configuration file \
+         `$XDG_CONFIG_HOME/sipnab/sipnab.toml`. Unset, empty or relative means `~/.config`",
+    ),
+    (
+        "SIPNAB_LOG",
+        "Log filter, in the `tracing` `EnvFilter` syntax: a level such as `debug`, or \
+         per-target directives",
+    ),
+    ("NO_COLOR", "A non-empty value turns color off in the TUI"),
+    (
+        "SIPNAB_API_KEY",
+        "Read as `--api-key` when the flag is not given",
+    ),
+    (
+        "SIPNAB_API_SIGNING_KEY",
+        "Read as `--api-signing-key` when the flag is not given",
+    ),
+    (
+        "SIPNAB_MCP_TOKEN",
+        "The bearer token for the HTTP MCP transport, read when neither `--mcp-token` \
+         nor `--mcp-token-file` is given",
+    ),
+    (
+        "SIPNAB_MCP_SIGNING_KEY",
+        "Read as `--mcp-signing-key` when the flag is not given",
+    ),
+    (
+        "SIPNAB_HEP_AUTH",
+        "Read as `--hep-auth` when the flag is not given",
+    ),
+    (
+        "SIPNAB_VCON_FORWARD_AUTH",
+        "Read as `--vcon-forward-auth` when the flag is not given. A capture run ignores it",
+    ),
+    (
+        "SSL_CERT_FILE",
+        "The CA bundle the HEP TLS and vCon forwarder connections trust, in place of the \
+         system bundle locations, when it names a file",
+    ),
+    (
+        "SIPNAB_ARCHIVE_PASSWORD",
+        "A password for encrypted ZIP members `-I` finds. Tried after \
+         `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin` \
+         and the systemd credential, and before `--archive-password`",
+    ),
+    (
+        "CREDENTIALS_DIRECTORY",
+        "Set by systemd. sipnab reads the credential `archive-password` in it as an \
+         archive password",
+    ),
+    (
+        "SIPNAB_SECCOMP_ALLOWLIST",
+        "Path to the syscall allowlist `--seccomp enforce` installs. That mode refuses to \
+         run without it",
+    ),
+    (
+        "SIPNAB_NO_MMAP",
+        "Set to any value to read capture files without memory-mapping them, for a \
+         filesystem where mapping misbehaves, such as a network mount",
+    ),
+    (
+        "SIPNAB_AUDIO_PLUGIN",
+        "Path to an audio playback plugin, tried after every trusted location. Honored \
+         only for an unprivileged process and a file no other user can rewrite, and \
+         announced when used",
+    ),
+    (
+        "SIPNAB_PERF_STATS",
+        "Set to any value to print per-run work counters to stderr at the end of a \
+         headless run",
+    ),
+];
+
+/// What `--help` prints after the options: the examples, then
+/// [`ENVIRONMENT`].
+fn after_long_help() -> String {
+    let rows: Vec<String> = ENVIRONMENT
+        .iter()
+        .map(|(name, what)| format!("  {name}\n          {what}."))
+        .collect();
+    format!("{EXAMPLES}\n\nENVIRONMENT:\n{}", rows.join("\n"))
+}
+
 /// SIP & RTP capture, analysis, and security tool.
 ///
 /// sipnab unifies the capabilities of the established terminal SIP tools into a single binary
@@ -346,15 +454,8 @@ pub fn compiled_features() -> Vec<&'static str> {
     long_about = "sipnab — SIP & RTP capture, analysis, and security tool.\n\n\
         Live capture, call-flow TUI and text search, with security analysis, RTP quality \
         monitoring, and machine-readable output.",
-    after_help = "EXAMPLES:\n  \
-        sipnab -d eth0                    Capture on eth0\n  \
-        sipnab -I capture.pcap           Read from pcap file\n  \
-        sipnab -N --json                 Non-interactive JSON output\n  \
-        sipnab --problems                Show problematic calls\n  \
-        sipnab --kill-scanner            Detect SIP scanners\n  \
-        sipnab --from alice --to bob     Filter by From/To headers\n  \
-        sipnab -e 'INVITE sip:'          Grep SIP payload, follow the dialog\n  \
-        sipnab 'host 10.0.0.1 and port 5060'   BPF capture filter"
+    after_help = EXAMPLES,
+    after_long_help = after_long_help()
 )]
 pub struct Cli {
     // ── Capture ──
@@ -464,6 +565,10 @@ pub struct ArchiveArgs {
     /// other users can read, the way ssh refuses a private key. A file another
     /// user owns, such as a Kubernetes secret mount, is accepted. Descriptor
     /// forms work: `/dev/fd/3`, or `<(pass show pcaps)`.
+    ///
+    /// Two sources are not flags: the environment variable
+    /// `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`
+    /// (see ENVIRONMENT at the end of this help).
     #[arg(
         help_heading = "Archives",
         long = "archive-password-file",
@@ -694,7 +799,8 @@ pub struct CaptureArgs {
     /// Quiet bad-parse packets: suppress the per-packet
     /// diagnostic emitted when a SIP-looking packet fails to parse. The packet
     /// is dropped either way; this only silences the "SIP parse error" notice
-    /// on a noisy link (visible under -v / debug logging).
+    /// on a noisy link. sipnab logs the notice at debug level, so it shows
+    /// only with SIPNAB_LOG=debug.
     #[arg(help_heading = "Capture", short = 'x', long = "quiet-bad-parse")]
     pub quiet_bad_parse: bool,
 
@@ -706,9 +812,9 @@ pub struct CaptureArgs {
     /// The default is narrow, and SIP on other ports is ordinary: carriers and
     /// SBCs use 5070, 5080 and others routinely. Reading a file, SIP whose
     /// source and destination are both outside the range is skipped, and it
-    /// then appears in no message count, no dialog, and no output format. That
-    /// used to be silent; sipnab now counts what it skipped and says so,
-    /// naming the busiest ports so there is something to widen to. Pass
+    /// then appears in no message count, no dialog, and no output format.
+    /// sipnab counts what it skipped and says so, naming the busiest ports so
+    /// there is something to widen to. Pass
     /// `--portrange 1-65535` to analyze everything the capture holds.
     ///
     /// Live capture also turns this into the BPF filter when no explicit
@@ -727,9 +833,8 @@ pub struct CaptureArgs {
     /// web, not a deployment's. Kamailio, OpenSIPS and Janus each default to
     /// WSS on ports outside it, and behind a reverse proxy sipnab sees
     /// whichever port the proxy forwards to; on such a capture the entire
-    /// WebRTC signaling leg is invisible. Unlike `--portrange` this used to
-    /// report nothing at all, so sipnab now tallies the SIP-over-WebSocket it
-    /// declined to unwrap and names the ports it was on.
+    /// WebRTC signaling leg is invisible. sipnab tallies the SIP-over-WebSocket
+    /// it declined to unwrap and names the ports it was on.
     ///
     /// A range REPLACES the shipped set, exactly as `--portrange` replaces the
     /// default signaling ports; pass `--ws-portrange 1-65535` to unwrap
@@ -849,7 +954,9 @@ pub struct ModeArgs {
     #[arg(help_heading = "Mode", short = 'N', long = "no-tui")]
     pub no_tui: bool,
 
-    /// Show only SIP dialogs (calls), not standalone messages.
+    /// Show only calls: dialogs an INVITE started. The dialog outputs apply
+    /// it, and the TUI opens with only INVITE checked in its filter dialog.
+    /// Like --filter, it does not narrow what -O writes.
     #[arg(help_heading = "Mode", short = 'c', long = "calls-only")]
     pub calls_only: bool,
 
@@ -1732,22 +1839,19 @@ pub struct DialogArgs {
     /// 100000). NOT a concurrency limit: nothing removes a completed dialog,
     /// so this bound scales with UPTIME, not with load.
     ///
-    /// This help used to say "track simultaneously", which is the reading an
-    /// operator wants and not the behavior that exists. A box carrying five
+    /// It is not the number of dialogs tracked at once. A box carrying five
     /// concurrent calls still evicts once 100,000 calls have COMPLETED, and
     /// eviction drops the OLDEST dialogs — the worst ones to lose for a
     /// post-mortem. A multi-file set feeds one store, so a 27-file directory
-    /// reaches the cap 27x sooner than one file (#64).
+    /// reaches the cap 27x sooner than one file.
     ///
     /// Completed dialogs are retained on purpose: `--report` and
     /// `--call-report` answer about calls that already ended, and evicting
     /// them on completion would break exactly the after-the-fact analysis
-    /// sipnab exists for. Whether the right fix is a separate retention window
-    /// for completed dialogs, a time-based bound, or something else is the
-    /// retention umbrella's decision (#160), not this flag's.
+    /// sipnab exists for.
     ///
-    /// The eviction count IS reported wherever a dialog count appears (#68),
-    /// so a run that hits this says so rather than quietly answering from a
+    /// The eviction count IS reported wherever a dialog count appears, so a
+    /// run that hits this says so rather than quietly answering from a
     /// truncated store.
     #[arg(
         help_heading = "Dialog",
@@ -3012,16 +3116,15 @@ pub struct McpArgs {
     /// MCP transport: "stdio" (default) or "http".
     ///
     /// Accepts only `stdio` or `http`; any other value is rejected at parse
-    /// time (previously an unrecognized transport passed parse silently and was
-    /// only caught later, and only when `--mcp` was also set).
+    /// time, whether or not `--mcp` is set.
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-transport",
         value_name = "TRANSPORT",
-        default_value = "stdio",
-        value_parser = clap::builder::PossibleValuesParser::new(["stdio", "http"])
+        value_enum,
+        default_value_t = McpTransport::Stdio
     )]
-    pub mcp_transport: String,
+    pub mcp_transport: McpTransport,
 
     /// Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
     #[arg(
@@ -3754,13 +3857,9 @@ pub struct McpArgs {
     /// max_audio_frames` frames (default 1500) per stream across at most
     /// `--max-streams` streams.
     ///
-    /// It used to require `--mcp`, because the MCP server was the only
-    /// batch-mode consumer and retaining without it would have spent the
-    /// memory on audio nothing in the run could reach. That stopped being true
-    /// when the amplitude measurement landed: `--call-report` and
-    /// `--json-dialogs` read it now, and the constraint would have kept the
-    /// one finding that needs samples behind a server nobody analyzing a pcap
-    /// wants to start.
+    /// It does not need `--mcp`: `--call-report` and `--json-dialogs` read the
+    /// retained audio for the amplitude measurement, so a pcap analysis gets
+    /// that finding without starting a server.
     #[arg(help_heading = "MCP (Model Context Protocol)", long = "retain-audio")]
     pub retain_audio: bool,
 
@@ -5028,6 +5127,16 @@ impl CaptureProfile {
     }
 }
 
+/// The MCP server's transport (`--mcp-transport`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum McpTransport {
+    /// JSON-RPC over stdin and stdout.
+    #[default]
+    Stdio,
+    /// JSON-RPC over HTTP (needs the mcp-http feature).
+    Http,
+}
+
 /// Source-address strategy for the scanner-kill response packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum KillSpoof {
@@ -5890,23 +5999,25 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// `crate::Error::ConfigInvalid`, naming the source, when the spec is not
-    /// two ports separated by `-` with start <= end.
+    /// When the spec is not two ports separated by `-` with start <= end:
+    /// `crate::Error::CliValidation` ("Invalid --ws-portrange: ...") for the
+    /// flag, `crate::Error::ConfigInvalid` naming `[capture] ws_ports` for the
+    /// key. The kind is the origin: the caller derives the exit code from it.
     pub fn ws_port_range(
         &self,
         config: &crate::config::Config,
     ) -> Result<Option<(u16, u16)>, crate::Error> {
-        let (spec, source) = match (
-            self.capture_args.ws_portrange.as_deref(),
-            config.capture.ws_ports.as_deref(),
-        ) {
-            (Some(s), _) => (s, "--ws-portrange"),
-            (None, Some(s)) => (s, "[capture] ws_ports"),
-            (None, None) => return Ok(None),
+        if let Some(spec) = self.capture_args.ws_portrange.as_deref() {
+            return crate::config::parse_portrange(spec)
+                .map(Some)
+                .map_err(|e| crate::Error::CliValidation(format!("Invalid --ws-portrange: {e}")));
+        }
+        let Some(spec) = config.capture.ws_ports.as_deref() else {
+            return Ok(None);
         };
         crate::config::parse_portrange(spec)
             .map(Some)
-            .map_err(|e| crate::Error::ConfigInvalid(format!("{source}: {e}")))
+            .map_err(|e| crate::Error::ConfigInvalid(format!("[capture] ws_ports: {e}")))
     }
 
     /// Gzip inflation ceiling: `--max-gunzip-bytes`, else
@@ -7247,7 +7358,7 @@ impl Cli {
     /// passing through `normalize`.
     #[must_use]
     pub fn mcp_owns_stdout(&self) -> bool {
-        self.mcp_args.mcp && self.mcp_args.mcp_transport != "http"
+        self.mcp_args.mcp && self.mcp_args.mcp_transport != McpTransport::Http
     }
 
     /// Whether the dialog store evicts the oldest dialog at `--limit` capacity.
@@ -7304,8 +7415,8 @@ impl Cli {
     /// `--fail2ban`) require non-interactive mode (`-N`) unless `--call-report`
     /// is specified (which implies non-interactive output). Also rejects
     /// `--mcp` without `-N`, `--mcp` combined with stdout-writing flags
-    /// (MCP owns stdout for the JSON-RPC wire), an unknown
-    /// `--mcp-transport` value, and any malformed `--kill-target` spec.
+    /// (MCP owns stdout for the JSON-RPC wire), and any malformed
+    /// `--kill-target` spec.
     ///
     /// # Errors
     /// `crate::Error::CliValidation` with a user-facing message for each
@@ -7608,19 +7719,13 @@ impl Cli {
             // Token + bind validation for non-loopback HTTP transport happens
             // in the http transport module; for stdio there is no
             // network surface to validate.
-            if self.mcp_args.mcp_transport != "stdio" && self.mcp_args.mcp_transport != "http" {
-                return Err(crate::Error::CliValidation(format!(
-                    "--mcp-transport must be 'stdio' or 'http', got '{}'",
-                    self.mcp_args.mcp_transport
-                )));
-            }
         }
 
         // The MCP certificate pair configures the HTTP transport's listener.
         // On stdio there is no listener, so the flags would do nothing while
         // the operator believes the server is on HTTPS.
         if (self.mcp_args.mcp_tls_cert.is_some() || self.mcp_args.mcp_tls_key.is_some())
-            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == "http")
+            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == McpTransport::Http)
         {
             return Err(crate::Error::CliValidation(
                 "--mcp-tls-cert/--mcp-tls-key serve MCP over HTTPS and do nothing \
@@ -8859,14 +8964,23 @@ mod tests {
         Ok(())
     }
 
-    /// Both documented transports still parse and round-trip.
+    /// Both documented transports still parse, each into its own variant,
+    /// and no flag at all is stdio.
+    ///
+    /// The transport used to be a `String` that clap restricted to the two
+    /// values, with a second check in `validate` and a third arm in
+    /// `start_servers` for any other value. clap refused every other value
+    /// first, so neither later message could print. As an enum there is one
+    /// rule, and no other value can be built.
     #[test]
     fn mcp_transport_accepts_documented_values() -> Result<(), TestError> {
-        for v in ["stdio", "http"] {
+        for (v, want) in [("stdio", McpTransport::Stdio), ("http", McpTransport::Http)] {
             let cli = Cli::try_parse_from(["sipnab", "--mcp-transport", v])
                 .map_err(|e| format!("--mcp-transport {v} must parse: {e}"))?;
-            assert_eq!(cli.mcp_args.mcp_transport, v);
+            assert_eq!(cli.mcp_args.mcp_transport, want);
         }
+        let bare = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("bare: {e}"))?;
+        assert_eq!(bare.mcp_args.mcp_transport, McpTransport::Stdio);
         Ok(())
     }
 
@@ -11201,6 +11315,29 @@ mod tests {
         Ok(())
     }
 
+    /// `-x` help says how to see the notice it silences: `SIPNAB_LOG=debug`.
+    ///
+    /// It said "visible under -v", and `-v` is `--invert`, which inverts the
+    /// match and changes no log level. The notice is a `debug` event, so
+    /// only the log filter shows it (`pipeline` tests pin that level).
+    #[test]
+    fn quiet_bad_parse_help_names_the_log_level_that_shows_the_notice() -> Result<(), TestError> {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "quiet_bad_parse")
+            .ok_or("no --quiet-bad-parse argument")?;
+        let help = arg
+            .get_long_help()
+            .or_else(|| arg.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(help.contains("SIPNAB_LOG=debug"), "{help}");
+        assert!(!help.contains("-v"), "-v is --invert: {help}");
+        Ok(())
+    }
+
     /// The `-e` payload expression and the trailing BPF positional stay
     /// independent — neither steals the other's tokens.
     #[test]
@@ -12661,6 +12798,34 @@ mod tests {
             err.to_string().contains("--ws-portrange"),
             "the refusal must name the flag that carried it: {err}"
         );
+        Ok(())
+    }
+
+    /// A bad `--ws-portrange` is a flag error, not a config error: no config
+    /// file is involved, so "invalid config value" would send the operator
+    /// looking for one. A bad `[capture] ws_ports` stays a config error.
+    #[test]
+    fn a_bad_ws_portrange_flag_is_a_flag_error() -> Result<(), TestError> {
+        let flagged =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--ws-portrange", "80"]);
+        let err = flagged
+            .ws_port_range(&crate::config::Config::default())
+            .err()
+            .ok_or("a single port is not a range")?;
+        assert!(matches!(err, crate::Error::CliValidation(_)), "{err:?}");
+        assert!(
+            err.to_string().starts_with("Invalid --ws-portrange: "),
+            "{err}"
+        );
+
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        let mut broken = crate::config::Config::default();
+        broken.capture.ws_ports = Some("80".into());
+        let err = bare
+            .ws_port_range(&broken)
+            .err()
+            .ok_or("a single port is not a range")?;
+        assert!(matches!(err, crate::Error::ConfigInvalid(_)), "{err:?}");
         Ok(())
     }
 

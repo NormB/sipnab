@@ -366,15 +366,23 @@ cargo build --release --no-default-features --features native,hep,api,mcp,mcp-ht
 
 ## Add it to your voice stack
 
-Step-by-step guides that install your SIP server, OpenSIPS or Kamailio, and
-each piece beside it, then connect sipnab to it. Every command in each guide
-ran on fresh virtual machines, and each page names them.
+Step-by-step guides that install your SIP server, OpenSIPS, Kamailio,
+Asterisk or FreeSWITCH, and each piece beside it, then connect sipnab to it.
+Every command in each guide ran on fresh virtual machines, and each page names
+them.
 
 - **SIP proxy.** OpenSIPS and Kamailio carry your calls, and every other guide
   builds on them: [Use OpenSIPS](docs/opensips.md) and
   [run sipnab beside it](docs/opensips-sipnab.md);
   [Use Kamailio](docs/kamailio.md) and
   [run sipnab beside it](docs/kamailio-sipnab.md).
+- **PBX.** Asterisk answers calls and places them on to the callee, as two
+  legs: [Use Asterisk](docs/asterisk.md) and
+  [run sipnab beside it](docs/asterisk-sipnab.md).
+- **Softswitch.** FreeSWITCH answers each call and bridges it to the callee
+  as a second call, with the audio of both passing through it:
+  [Use FreeSWITCH](docs/freeswitch.md) and
+  [run sipnab beside it](docs/freeswitch-sipnab.md).
 - **Call records.** A vCon server keeps every call as a vCon. OpenSIPS records
   calls into it over SIPREC, and sipnab can send its own vCons, built from what
   it saw on the wire. `sipnab --vcon-forward` delivers them, to the server or

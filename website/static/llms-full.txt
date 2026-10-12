@@ -149,11 +149,13 @@ downstream literal therefore cannot construct.
 
 ## Worked examples
 
-Four of the six programs in [`examples/`](../examples/) take the library path:
+Four of the seven programs in [`examples/`](../examples/) take the library path:
 they run against a real capture and print a real answer. Each exists because
 it demonstrates something a doctest on this page structurally cannot — state
-accumulated across a whole file. (The other two, `uprobe_discover` and
-`uprobe_sock_offsets`, report on the host rather than a capture.)
+accumulated across a whole file. Of the other three, `uprobe_discover` and
+`uprobe_sock_offsets` report on the host rather than a capture, and
+`tls_plaintext_records` decodes records laid out the way the BPF TLS probe
+writes them, as [Runnable client examples](client-examples.md) describes.
 
 | Example | Run it against | What it is for |
 |---|---|---|
@@ -1358,7 +1360,7 @@ The first command should print a diagnosis object like:
 
 ## 5. Filter for the five things you look for most
 
-The filter DSL has 33 fields and 7 operators. These five cover most operational triage:
+The filter DSL has 32 fields and 8 operators. These five cover most operational triage:
 
 Slow setup — every dialog that took more than 3 seconds from INVITE to 200 OK:
 
@@ -5320,6 +5322,12 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
+| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
+| `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
+| `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
+
+`state`, `from`, `filter`, `after` and `before` combine with AND, and `total`
+counts the dialogs that pass all of them before `offset` and `limit` page them.
 
 **curl:**
 
@@ -5384,6 +5392,27 @@ filter: unexpected input at position 0: 'slow_setup'
 valid operators: ==, !=, <, <=, >, >=, =~ (regex)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
+
+Count the INVITE dialogs. `-G` with `--data-urlencode` encodes the expression
+into the query string:
+
+```bash
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs" \
+  --data-urlencode "filter=method == 'INVITE'" | jq '.total'
+```
+
+List when each dialog in one ten-second window opened:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs?after=2016-05-18T18:23:10Z&before=2016-05-18T18:23:20Z" \
+  | jq '[.dialogs[].created_at]'
+```
+
+Run against a server reading [`tests/pcap-samples/b2bua-asterisk.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/b2bua-asterisk.pcapng), the
+first prints `2` and the second the seven instants between 18:23:11 and
+18:23:17.
 
 **Python:**
 
@@ -9680,18 +9709,18 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf` and `vcon`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
+| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon` and `archive`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
-| `hep` | HEP v3 send + v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
-| `api` | REST API + Prometheus metrics endpoint | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa` |
+| `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
+| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
-| `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64` |
+| `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
-| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types` |
-| `vcon` | vCon export: one observed dialog as an unsigned IETF conversation container, with the audio inline when the run retained it. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64` |
+| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
+| `vcon` | vCon export: one observed dialog as an unsigned IETF conversation container, with the audio inline when the run retained it. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
@@ -9872,7 +9901,7 @@ sipnab -D
 second line the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.212 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
+sipnab 0.5.213 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -12550,6 +12579,17 @@ without toggling anything.
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
 | h | Open the [Capture health](#capture-health) panel: drops, undecodable frames, and on a `-L` run the HEP listener's senders |
+| g | Open [Top talkers](#top-talkers): every source IP ranked by the dialogs it took part in |
+| m | Open [Carrier metrics](#carrier-metrics): ASR, NER and ACD per destination IP |
+| c | Open [Compare two calls](#compare-two-calls) for the two starred dialogs (star exactly two with `Space` first; any other count leaves a hint on the status line) |
+| e | Open the [Endpoint rollup](#endpoint-rollup) for the selected dialog's source address |
+| b | Open the [Call volume histogram](#call-volume-histogram): calls per 60-second bucket |
+| o | Open the [SDP offer/answer timeline](#sdp-offeranswer-timeline) of the selected dialog |
+| f | Open the [RFC conformance](#rfc-conformance) findings of the selected dialog |
+| x | Open [TFPS observe](#tfps-observe): the sources an enforcing TFPS peer bans, and its drop counters |
+| a | Open [Security findings](#security-findings): the alerts of the armed detectors |
+| B | Open the [Capture filter editor](#capture-filter-editor) to append an expression to the BPF capture filter |
+| N | Name the selected dialog's addresses (map IP → host/FQDN; Tab switches between source and destination) |
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
@@ -12560,7 +12600,7 @@ without toggling anything.
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`) — matches Call-ID, method, From/To user, addresses, dialog state, and the full raw message text (headers and bodies, including SDP and multipart payloads) |
 | F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
-| F5 | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them |
+| F5 / Ctrl+L | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them. `Ctrl+L` is a fixed alias |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear filter: drops the view filter **and** the persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
@@ -12749,6 +12789,65 @@ the Call List or RTP Streams view.
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
 
+## Top talkers
+
+Every source IP in the capture, ranked by the number of dialogs it took part
+in, then by messages. Each row counts the participant's dialogs, messages,
+INVITEs, and how many of those INVITEs got an answer or failed. The view
+credits a participant for every dialog it took part in, so the shares
+overlap. Open with `g` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / g | Back to Call List |
+
+## Carrier metrics
+
+Answer-seizure ratio (ASR), network effectiveness ratio (NER) and average call
+duration (ACD) for each destination IP, the address each call went to.
+A call attempt is an INVITE that got a final response; a group with no call
+attempt shows `—` rather than a zero. The figures come from the same
+calculation as `GET /v1/dialogs/rates`. Open with `m` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / m | Back to Call List |
+
+## Compare two calls
+
+Two dialogs side by side: Call-ID, state, final status, message count and the
+methods each carried. The view marks each field that differs `(differs)`,
+lists the differences by name, and shows a failed call's diagnosis hints.
+Star exactly two dialogs with `Space` in the Call List, then press `c`.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / c | Back to Call List |
+
+## Endpoint rollup
+
+Everything the selected dialog's source address did in the capture: its
+dialogs, messages sent and received, counts by method and by state, INVITE
+outcomes, registrations, the User-Agent and Server values it sent, its RTP
+streams with codecs, loss and jitter, and its most recent Call-IDs. The same
+report as `GET /v1/endpoints`. Open with `e` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / e | Back to Call List |
+
 ## Capture health
 
 The capture's own health: the loss, decode and media-path counters, and on a
@@ -12778,6 +12877,101 @@ A session with no listener says so. Open with `s` from Capture health.
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Capture health |
 
+## Call volume histogram
+
+Calls per 60-second bucket across the capture, one bar per bucket, scaled
+against the busiest bucket. Open with `b` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / b | Back to Call List |
+
+## SDP offer/answer timeline
+
+Each SDP offer and answer of the selected dialog in order: its time, the
+codecs, the media address and port, and the direction attribute
+(`sendrecv`, `sendonly` and so on). The row of a mid-call change names it:
+on hold, resumed, codec change, switched to T.38 fax, media anchor moved, or
+a transfer. Open with `o` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / o | Back to Call List |
+
+## RFC conformance
+
+The selected dialog's RFC conformance findings, the same ones
+`GET /v1/dialogs/:call_id/lint` returns. Each names its severity, the RFC
+section, the message it came from, the rule ID, what sipnab observed,
+what the RFC expects, and why it matters. Open with `f` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / f | Back to Call List |
+
+## TFPS observe
+
+What an enforcing [TFPS](tfps.md) peer reports, read by running its
+`tfps_ctl` command: the sources it bans now, or its per-source drop counters.
+The view only reads; it bans and unbans nothing. Without `tfps_ctl` on the
+`PATH` (or named by `--tfps-ctl` or `[tfps] ctl`) the view says so. Open with
+`x` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| b | Show the banned sources (the view opens on these) |
+| d | Show the drop counters |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / x | Back to Call List |
+
+## Security findings
+
+The detectors armed on this run and the alerts they raised: each finding's
+rule, source address, detail and time. It shows 200 findings and gives the
+total when more matched. With no detector
+armed the view says that nothing was watching, so an empty list is not a clean
+bill. The same report as `GET /v1/security/findings`. Arm a detector with
+`--kill-scanner`, `--fraud-detect`, `--digest-leak` or `--reg-flood`. Open
+with `a` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / a | Back to Call List |
+
+## Capture filter editor
+
+Appends an expression to the BPF capture filter. The upper pane previews the
+filter in force; the lower pane takes the expression. `Enter` compiles the
+combined filter first and refuses one libpcap rejects, with the reason on the
+status line. A live capture then applies it to the running capture, and
+sipnab reads a single capture file again under it. With several input files, or
+none, it reports that the filter compiles and applies nothing. Open with `B`
+from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Tab | Switch between AND (narrow the current filter) and OR (widen it) |
+| Enter | Check the combined filter and apply it |
+| Backspace | Delete the last character |
+| Up / Down | Scroll the preview |
+| PgUp / PgDn | Page the preview |
+| Home / End | Jump to top/bottom of the preview |
+| Esc | Discard the edit and return to the Call List |
+
 ## Relay statistics
 
 The live relay's own view of media, asked over its control socket — distinct
@@ -12793,6 +12987,7 @@ in the background, so the view never freezes waiting on a slow relay.
 |-----|--------|
 | ? | Show the names the relay knows (what you can ask for) |
 | K | Compare the relay's per-call count against this capture's (per-call view only) |
+| H | Show what the relay holds now: the Call-IDs of up to 32 calls (press again to return to the counters) |
 | Up / k, Down / j | Scroll |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
@@ -13783,7 +13978,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--capture-profile` | `signaling\|full` | -- | Picks a `--snaplen` for you: `signaling` is 1500 bytes, which keeps every SIP header whole and drops most of each RTP payload, and `full` is 65535. An explicit `--snaplen` overrides it. More: [Tuning capture](tuning-capture.md#4-snapshot-length---snaplen--and-why-it-decides-your-ring-capacity). Config: `[capture] snaplen` |
 | `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation). At least 1: sipnab refuses `0` |
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of segment reassembly). Useful for pure single-packet UDP scanning |
-| `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link |
+| `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link. sipnab logs the notice at debug level, so it shows only with `SIPNAB_LOG=debug` |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP **signaling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyze a fraction of the file — see the note below. HEP input (`-L`, `--hep-parse`) is never gated: the sender already chose what to send, and the ports in its HEP chunks are its claim, not something sipnab captured. Config: `[capture] portrange` |
 | `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. The range governs plain WebSocket only: sipnab reads a WebSocket frame it decrypts out of TLS with `--keylog` on any port and labels it WSS. It joins a frame split across TLS records (OpenSIPS writes the header and the payload as two), several frames in one record, and a message fragmented across frames, up to `MAX_WS_MESSAGE_SIZE` (65,536) bytes per message. It reads the HTTP upgrade and its `101` answer across TLS records too (OpenSIPS writes its `101` as three), up to `MAX_WS_HANDSHAKE_SIZE` (8,192) bytes, and frames start at the byte after the blank line that ends them, in the same record or a later one. A frame, message or upgrade it cannot finish or decode counts in the NOT DECODED line. Config: `[capture] ws_ports` |
 | `--multi-device` | -- | off | Open one capture per interface named in a comma-separated `-d` list, e.g. `-d eth0,docker0 --multi-device`. It does **not** enumerate interfaces for you: with a single `-d` (or none) it falls back to an ordinary single capture. On Linux the zero-argument default already sniffs every interface via the `any` pseudo-device |
@@ -14122,16 +14317,16 @@ once that they write that data unencrypted. The section comment of a
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-N`, `--no-tui` | -- | off | Non-interactive mode (no TUI). Required for batch/output flags |
-| `-c`, `--calls-only` | -- | off | Show only SIP dialogs (calls), not standalone messages |
+| `-c`, `--calls-only` | -- | off | Show only calls: dialogs an INVITE started. The dialog outputs apply it (`--json-dialogs`, `--report`, the per-message printout), and the TUI opens with only INVITE checked in its filter dialog. It leaves out OPTIONS, REGISTER, SUBSCRIBE and other dialogs. Like `--filter`, it does not narrow what `-O` writes |
 | `-t`, `--telephone-event` | -- | off | Decode telephone-event (DTMF) RTP payloads and log each event at `info`, digit value masked as `x` |
 | `--dtmf-cleartext` | -- | off | Log the DTMF digit VALUES instead of the mask, at `debug`. Publishes PINs and card numbers |
 | `-q`, `--quiet` | -- | off | Suppress informational output; only show results |
 
 **Examples**
 
-- `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only complete SIP dialogs (calls), not standalone messages
+- `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only calls (dialogs an INVITE started), without OPTIONS pings, registrations or subscriptions
 - `sudo sipnab --no-tui -d eth0 --telephone-event` — headless live capture that decodes DTMF and logs each event with its duration and SSRC, digit value masked
-- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only complete dialogs, and log how many DTMF events each one carried
+- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only calls, and log how many DTMF events each one carried
 - `sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext` — read a capture you own and disclose the digit values. Also set `SIPNAB_LOG=debug`, or the run prints nothing but the mask
 - `sudo sipnab --no-tui -d eth0 --telephone-event --dtmf-cleartext 2>dtmf.log` — capture live and steer the cleartext digits into a file whose permissions you control instead of a shared terminal or journald. Again needs `SIPNAB_LOG=debug`
 
@@ -19188,7 +19383,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.212 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.213 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -20404,7 +20599,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.212",
+  "version": "0.5.213",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -20978,11 +21173,11 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 
 ## Build a binary with MCP support
 
-```toml
+```text
 mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
 mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
 full      # native + tui + tls + hep + api + audio + mcp + mcp-http
-          #   + metrics + plugins + vcon
+          #   + metrics + plugins + vcon + archive
 ```
 
 The default build does not include `mcp` — operators who'll never
@@ -21079,7 +21274,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.212"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.213"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -24024,7 +24219,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.212",
+  "version": "0.5.213",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -36009,7 +36204,9 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
+Every block on this page except those under
+[Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnabs-own-forwarder)
+ran as written, in order, on 2026-09-28, with
 sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
 (kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
 machine.
@@ -36951,7 +37148,9 @@ The [REST API reference](rest-api.md) gives every request and response.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
+Every block on this page except those in
+[3. sipnab on the same machine as TFPS](#3-sipnab-on-the-same-machine-as-tfps)
+ran as written, in order, on 2026-09-28, with
 sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
 (kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): sipnab beside TFPS and on a second machine reaching it over SSH, with TFPS
 built from master.
@@ -36993,6 +37192,12 @@ sudo apt-get install -y ./sipnab_${V}_amd64.deb
 The package runs sipnab as the `sipnab` user, capturing on every interface.
 
 ## 3. sipnab on the same machine as TFPS
+
+This section ran as written on 2026-09-29, not with the release in
+[Tested on](#tested-on): on the same Debian 13 and Ubuntu 24.04 machines, with
+a package built from source that day, before the 0.5.196 release, installed
+over the release package that step 2 installs. `--allow-action`,
+`--journal-show` and `--revert-actions` first shipped in 0.5.196.
 
 **Turn on the REST API, and let it ban.** The API key reads everything and
 changes nothing. To ban and unban, sipnab also needs a signing key, from which
@@ -41515,6 +41720,1337 @@ so the `RTP Streams:` table lists each call's streams on rows of their own:
 
 ---
 
+<!-- source: docs/asterisk.md -->
+
+# Use Asterisk as your voice stack's PBX
+
+[Asterisk](https://www.asterisk.org) is an open-source PBX: it answers calls,
+runs a dialplan that decides what happens to each one, and places calls to
+phones and carriers. OpenSIPS and Kamailio are proxies, which pass a call's
+SIP messages along. Asterisk is a
+[B2BUA](glossary.md#b2bua) (back-to-back user agent) instead: it answers the
+caller's call itself, places a second call to the callee, and connects the
+two. Each call through Asterisk is therefore two SIP calls, called legs, each
+with its own Call-ID.
+
+This guide builds Asterisk from source, sets up two endpoints and a dialplan
+that connects them, and proves it with a test call that carries audio both
+ways through Asterisk. This guide does not use sipnab. When you have this
+working, [Run sipnab beside Asterisk](asterisk-sipnab.md) adds sipnab.
+
+## Tested on
+
+Every block on this page ran as written on 2026-10-12, on clean x86_64 virtual
+machines with 2 cores and 3 GB of memory, Debian 13 (kernel 6.12.63) and Ubuntu
+24.04 (kernel 6.8.0), with nothing installed before the build. On Ubuntu 24.04,
+the install, configuration, test call and uninstall then ran a second time on
+the same machine, after its first uninstall. Every test call carried audio both
+ways through Asterisk, counted on the wire, and causing each fault under [When
+something does not work](#when-something-does-not-work) produced what it
+describes, on both.
+
+| Software | Version |
+|---|---|
+| Asterisk | 22.11.0, the Asterisk project's source release. 22 is a long-term support series, which the project lists as fully supported until 2028-10-16 |
+| SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian 13, 3.7.2 on Ubuntu 24.04 |
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install Asterisk
+
+Debian 13 has no Asterisk package, and Ubuntu 24.04 carries the older 20.6.0.
+The Asterisk project publishes source releases, which build the same way on
+both. This block installs the build tools and libraries, downloads 22.11.0,
+checks it against the project's published SHA-256 checksum, and builds it:
+
+```bash
+# Run all of these, in order.
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends build-essential curl ca-certificates pkg-config bzip2 patch \
+  libedit-dev libjansson-dev libxml2-dev uuid-dev libsqlite3-dev libssl-dev
+sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
+cd /usr/local/src/voice
+curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.tar.gz
+curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.sha256 | sha256sum -c -
+tar xzf asterisk-22.11.0.tar.gz
+cd asterisk-22.11.0
+./configure
+make -j2
+sudo make install
+sudo asterisk -V
+```
+
+`sha256sum -c` prints `asterisk-22.11.0.tar.gz: OK`. The checksum file comes
+from the same server as the source, so it detects a damaged download, not a
+replaced one. `./configure` also downloads PJSIP, the SIP library that
+Asterisk's `chan_pjsip` uses, from `raw.githubusercontent.com`, and checks it
+before the build uses it. The last line prints `Asterisk 22.11.0`.
+
+`make install` puts the program in `/usr/sbin/asterisk` and its modules in
+`/usr/lib/asterisk/modules`, and creates an empty `/etc/asterisk` for the
+configuration. Give Asterisk its own user and a systemd unit that runs it as
+that user:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home-dir /var/lib/asterisk --shell /usr/sbin/nologin asterisk
+sudo chown -R asterisk:asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk
+sudo tee /etc/systemd/system/asterisk.service >/dev/null <<'EOF'
+[Unit]
+Description=Asterisk PBX
+After=network.target
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+RuntimeDirectory=asterisk
+WorkingDirectory=/var/lib/asterisk
+ExecStart=/usr/sbin/asterisk -f -C /etc/asterisk/asterisk.conf
+ExecReload=/usr/sbin/asterisk -rx 'core reload'
+Restart=always
+RestartSec=4
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable asterisk
+```
+
+`-f` keeps Asterisk in the foreground, where systemd can watch it.
+`RuntimeDirectory` creates `/run/asterisk` for the `asterisk` user at every
+start. Asterisk puts its control socket there, which the `asterisk -rx`
+commands below use to talk to the running Asterisk.
+
+## 2. Configure Asterisk
+
+This configuration has two endpoints, a caller and a callee, and a dialplan
+that connects a call to extension `100` from the caller to the callee. Your own
+configuration does much more (phones that register with a password, voicemail,
+carriers).
+
+```bash
+# Run all of these, in order.
+printf '[options]\n' | sudo tee /etc/asterisk/asterisk.conf >/dev/null
+sudo tee /etc/asterisk/modules.conf >/dev/null <<'EOF'
+[modules]
+autoload = yes
+EOF
+sudo tee /etc/asterisk/logger.conf >/dev/null <<'EOF'
+[logfiles]
+messages.log => notice,warning,error
+EOF
+sudo tee /etc/asterisk/rtp.conf >/dev/null <<'EOF'
+[general]
+rtpstart = 10000
+rtpend = 20000
+EOF
+sudo tee /etc/asterisk/pjsip.conf >/dev/null <<'EOF'
+[transport-udp]
+type = transport
+protocol = udp
+bind = 0.0.0.0:5060
+
+[caller]
+type = endpoint
+context = from-caller
+disallow = all
+allow = alaw,ulaw
+direct_media = no
+
+[caller-ip]
+type = identify
+endpoint = caller
+match = 192.0.2.10
+
+[callee]
+type = endpoint
+context = from-callee
+disallow = all
+allow = ulaw
+direct_media = no
+dtmf_mode = auto
+aors = callee
+
+[callee]
+type = aor
+contact = sip:192.0.2.10:5070
+EOF
+sudo tee /etc/asterisk/extensions.conf >/dev/null <<'EOF'
+[from-caller]
+exten => 100,1,Dial(PJSIP/callee,30)
+ same => n,Hangup()
+EOF
+sudo systemctl restart asterisk
+until sudo asterisk -rx 'core waitfullybooted' 2>/dev/null; do sleep 1; done
+sudo asterisk -rx 'pjsip show endpoints'
+```
+
+What the files do:
+
+- `asterisk.conf` is the first file Asterisk reads. An empty `[options]`
+  section keeps Asterisk's built-in settings. Without the file, every
+  `asterisk -rx` command prints `Unable to open specified master config
+  file`.
+- `modules.conf` loads every module the build installed. Some modules decline
+  to load without a configuration file of their own, and each logs a line
+  such as `app_queue declined to load.` to `/var/log/asterisk/messages.log`.
+- `logger.conf` writes notices, warnings and errors to
+  `/var/log/asterisk/messages.log`.
+- `rtp.conf` sets the UDP ports Asterisk takes for each call's audio.
+- `pjsip.conf` sets up SIP:
+  - The `transport` listens on UDP port 5060 on every address.
+  - An `endpoint` is a phone or a carrier Asterisk talks to. `context` names
+    the dialplan section that handles calls from it.
+  - The `identify` section tells Asterisk that requests from `192.0.2.10` come
+    from the `caller` endpoint. Requests from any other address get `401
+    Unauthorized`.
+  - `allow` lists the codecs each end may use. The caller sends G.711 A-law
+    (`alaw`, called PCMA in SDP), and the callee takes only G.711 u-law
+    (`ulaw`, PCMU), so Asterisk converts the audio between the two codecs.
+  - `direct_media = no` keeps the audio flowing through Asterisk. The sample
+    configuration that ships with Asterisk describes the setting as
+    `Determines whether media may flow directly between endpoints`, and its
+    default is `yes`.
+  - `dtmf_mode = auto` sets how Asterisk passes key presses (DTMF) to the
+    callee. Asterisk's own description of `auto` is `DTMF is sent as RFC 4733
+    if the other side supports it or as INBAND if not`: as RFC 4733 event
+    packets, or as tones inside the audio. This test callee supports no
+    events. With the default, `rfc4733`, Asterisk sent the test caller's key
+    press to this callee as events anyway, and the echoing callee returned
+    them: the two then exchanged more than 6,000 event packets each way within
+    0.15 seconds.
+  - The `aor` (address of record) gives the address Asterisk calls the
+    callee at.
+- `extensions.conf` is the dialplan. A call from the caller to `100` rings the
+  callee for up to 30 seconds, and hangs up when either side does.
+
+systemd counts Asterisk as started as soon as the process runs, before
+Asterisk has opened its control socket, so an `asterisk -rx` straight after a
+restart can fail. The `until` line waits until `core waitfullybooted` answers
+`Asterisk has fully booted.`. `pjsip show endpoints` then lists both
+endpoints, `caller` with `Match: 192.0.2.10/32` and `callee` with its contact
+`sip:192.0.2.10:5070`.
+
+## 3. Place a test call
+
+SIPp plays both ends: a callee on this machine at port 5070 that echoes audio
+back, and a caller that dials extension `100` and plays a recorded G.711
+sample, so the call carries real audio both ways. Both SIPp ends write the same
+SDP origin line (`o=user1 53655765 2353687637`) by default. The `sed` line
+gives the callee its own, as two separate phones would have:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y sip-tester
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uas > uas.xml
+sed -i 's/o=user1 53655765 2353687637/o=callee 1 1/' uas.xml
+sipp -sf uas.xml -i 192.0.2.10 -p 5070 -min_rtp_port 7000 -max_rtp_port 7100 -rtp_echo -m 1 -bg
+sudo sipp -sn uac_pcap 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s 100 -m 1 -timeout 90s
+```
+
+The callee takes its audio ports from 7000-7100, so that it does not collide
+with the caller's port 6000 on the same address. The caller needs `sudo`
+because it plays the audio sample through a raw socket. It sends about 7
+seconds of audio, then a short DTMF clip, and hangs up. At the end SIPp's
+statistics screen shows `Successful call` at 1.
+
+Unlike a proxy, Asterisk carries the audio as well as the signaling. The
+caller sends its audio to Asterisk, at the port Asterisk's answer names, and
+Asterisk sends it on to the callee from a second port, converted to PCMU. The
+callee's echo comes back the same way.
+[Run sipnab beside Asterisk](asterisk-sipnab.md) shows both legs and all of
+their audio.
+
+## 4. Operate it
+
+**See what Asterisk has handled.** `asterisk -rx` runs one command in the
+running Asterisk. It needs `sudo`, because the control socket belongs to the
+`asterisk` user. `core show calls` prints the calls in progress, `0 active
+calls` once the test call has ended, and a `calls processed` count.
+`pjsip show endpoints` lists the endpoints again:
+
+```bash
+# Run all of these, in order.
+sudo asterisk -rx 'core show calls'
+sudo asterisk -rx 'pjsip show endpoints'
+```
+
+**Check health and read the logs.**
+
+```bash
+# Run all of these, in order.
+systemctl is-active asterisk
+sudo asterisk -rx 'core show uptime'
+sudo tail -n 20 /var/log/asterisk/messages.log
+```
+
+**Apply a configuration change.** `core reload` makes Asterisk reread its
+configuration files, `pjsip.conf` and `extensions.conf` among them:
+
+```bash
+sudo asterisk -rx 'core reload'
+```
+
+A configuration file that did not exist when Asterisk started can need a
+restart instead. After you create the `hep.conf` in
+[Run sipnab beside Asterisk](asterisk-sipnab.md), `core reload` leaves the
+modules that read it `Not Running`, and a restart starts them:
+
+```bash
+# Run all of these, in order.
+sudo systemctl restart asterisk
+systemctl is-active asterisk
+```
+
+**Uninstall.** `make uninstall-all` removes the program, its modules, and the
+configuration, logs and data under `/etc/asterisk`, `/var/log/asterisk`,
+`/var/lib/asterisk` and `/var/spool/asterisk`:
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now asterisk
+cd /usr/local/src/voice/asterisk-22.11.0
+sudo make uninstall-all
+sudo rmdir /usr/lib/asterisk
+sudo rm /etc/systemd/system/asterisk.service
+sudo systemctl daemon-reload
+sudo userdel asterisk
+cd /usr/local/src/voice && rm -rf asterisk-22.11.0 asterisk-22.11.0.tar.gz
+```
+
+`make uninstall-all` leaves the empty `/usr/lib/asterisk` directory behind,
+which `rmdir` removes.
+
+## When something does not work
+
+- **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
+  by process ...`.** Another package tool holds the lock: on a machine that
+  has just booted, usually the system's own scheduled update. Wait for it to
+  finish, then run the block again.
+- **`asterisk -rx` says `Unable to connect to remote asterisk (does
+  /var/run/asterisk/asterisk.ctl exist?)`.** Asterisk is not running, it has
+  not finished starting, or you ran the command without `sudo`. On Debian 13,
+  where `/usr/sbin` is not in an ordinary user's `PATH`, the command without
+  `sudo` answers `asterisk: command not found` instead.
+- **`asterisk -rx 'pjsip reload'` says `No such command 'pjsip reload'`.** Use
+  `core reload`, which rereads `pjsip.conf` with the rest.
+- **The caller gets `404 Not Found`.** The dialplan has no such extension.
+  `messages.log` names it: `Call (UDP:192.0.2.10:5080) to extension '999'
+  rejected because extension not found in context 'from-caller'.`
+- **The caller gets `401 Unauthorized`.** Asterisk matched the request to no
+  endpoint. `messages.log` says `No matching endpoint found` and names the
+  address the request came from. Add that address to the `identify` section's
+  `match`.
+- **The caller gets `603 Decline`.** Asterisk could not reach the callee at the
+  `aor`'s `contact`. Check that the callee runs and listens there.
+
+---
+
+<!-- source: docs/asterisk-sipnab.md -->
+
+# Run sipnab beside Asterisk
+
+sipnab reads the SIP and the audio that pass through Asterisk off the wire, so
+it needs nothing from Asterisk: no module, no configuration change. Asterisk is
+a [B2BUA](glossary.md#b2bua): every call through it is two SIP calls, called
+legs, the caller's leg into Asterisk and Asterisk's leg out to the callee, each
+with its own Call-ID. sipnab lists the two legs as two
+[dialogs](glossary.md#dialog), shows them together as one call flow, and
+measures the audio on each.
+
+This guide adds sipnab to the Asterisk machine from
+[Use Asterisk as your voice stack's PBX](asterisk.md): it watches a test call,
+shows its two legs in the terminal interface, explains it from a saved
+capture, answers about it over MCP and the REST API, and finally receives
+Asterisk's own copies of its SIP over HEP.
+
+**What works without Asterisk.** sipnab does not depend on Asterisk. Steps 2
+to 6 use sipnab's own capture and work the same way beside any SIP server.
+Step 7 is the one that uses an Asterisk module, and you can leave it out.
+
+## Tested on
+
+Every block on this page ran as written, in order, on 2026-10-12, with sipnab
+0.5.211 from its release package, on the Debian 13 (kernel 6.12.63) and Ubuntu
+24.04 (kernel 6.8.0) machines that [the Asterisk guide](asterisk.md) had set
+up. The terminal interface ran in a terminal 160 columns wide and 40 lines
+high, with the test call placed while it ran, and the keys in step 3 showed
+what that step describes. Every test call carried audio both ways. On both,
+causing each fault under [When something does not
+work](#when-something-does-not-work) produced the message it quotes.
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb jq
+sipnab --version
+```
+
+The commands in steps 4 to 6 use `jq` to pick fields out of sipnab's JSON, so
+the block installs it too.
+
+## 2. Watch a call through Asterisk
+
+Start sipnab on every interface for 30 seconds. It prints each SIP message as
+it passes and a report of the calls at the end, and `-O` saves every packet it
+captured to `/tmp/asterisk-call.pcap` for steps 4 and 5:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report -O /tmp/asterisk-call.pcap
+```
+
+While it runs, place a test call from a second terminal, as in
+[step 3 of the Asterisk guide](asterisk.md#3-place-a-test-call):
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sf uas.xml -i 192.0.2.10 -p 5070 -min_rtp_port 7000 -max_rtp_port 7100 -rtp_echo -m 1 -bg
+sudo sipp -sn uac_pcap 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s 100 -m 1 -timeout 90s
+```
+
+sipnab prints the caller's `INVITE` to Asterisk at `192.0.2.10:5060`, then
+Asterisk's own `INVITE` to the callee at `192.0.2.10:5070`, with a Call-ID
+Asterisk generated and an SDP offer of its own. When the 30 seconds are up, the
+report lists the two legs as two calls, both `Completed` with code `200`:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-50232@192.0.2.10               sipp           100            Completed    200    9s         7      0.0s     -
+37e58306-c14d-4a0f-9fa1-41a...   sipp           -              Completed    200    9s         6      0.0s     -
+```
+
+The first is the caller's leg, to extension `100`, with 7 messages, among
+them Asterisk's `100 Trying` to the caller. The second is Asterisk's leg to the
+callee, with 6. Its `To` column shows `-` because Asterisk addressed the callee
+as `<sip:192.0.2.10>`, with no user name.
+
+Below them, the `RTP Streams:` table shows that the audio goes through
+Asterisk, in a different codec on each leg:
+
+- On the caller's leg, 236 `PCMA` packets from the caller to Asterisk, and 236
+  `PCMA` packets back, the callee's echo.
+- On the callee's leg, 236 `PCMU` packets each way between Asterisk and the
+  callee: Asterisk converts the caller's PCMA to PCMU, which is the only codec
+  the callee takes.
+- The caller's key press, 10 `telephone-event` (DTMF) packets to Asterisk.
+  Asterisk passes it to the callee as a tone inside the audio, so the callee's
+  leg carries no `telephone-event` stream. After the key press, both legs show
+  short PCMU and PCMA streams under new SSRCs: 6 `PCMU` packets each way on
+  the callee's leg, and 10 `PCMA` packets toward the caller.
+
+## 3. See both legs as one call flow
+
+The terminal interface shows the same calls, and updates as they happen:
+
+```bash
+sudo sipnab -d any
+```
+
+Place the test call from a second terminal, as in step 2. The call list shows
+two rows, one per leg, both `Completed`, with 7 and 6 messages. Then, in the
+terminal interface:
+
+- **Press `F4`** with the first row selected. The extended flow draws both
+  legs in one ladder with three columns, the caller at `192.0.2.10:5080`,
+  Asterisk at `192.0.2.10:5060` and the callee at `192.0.2.10:5070`: the
+  caller's `INVITE` to Asterisk, Asterisk's `INVITE` to the callee, the
+  callee's answer, and Asterisk's answer to the caller, in the order they
+  happened. Press `Esc` to go back to the list.
+- **Press `Space`, `↓` (the down arrow), `Space` again, then `Enter`.**
+  `Space` stars the selected row, so this stars both legs. With two rows
+  starred, `Enter` opens one flow of both, in time order: the same
+  three-column ladder. Press `Esc` to go back to the list.
+- **Press `Tab`** for the RTP streams. Each stream names the leg it belongs
+  to in the `Dialog` column.
+
+Press `q`, then `y`, to quit.
+
+## 4. Explain the call from the saved capture
+
+`--call-report` explains one call: its SIP transactions with their timings,
+and for each audio stream its packets, jitter, loss and estimated
+[MOS](glossary.md#mos) (call quality on a scale from 1 to 5). Reading a file
+needs no root. The first line finds the caller's leg in the capture from step
+2:
+
+```bash
+# Run all of these, in order.
+CALL=$(sipnab -N -I /tmp/asterisk-call.pcap --json-dialogs --no-cli-print | jq -r 'select(.to == "100") | .call_id')
+sipnab -N -I /tmp/asterisk-call.pcap --call-report "$CALL" --no-cli-print
+```
+
+The report covers the caller's leg. Its `SIP Transactions` show the `INVITE`
+answered in a few milliseconds, then the `ACK`, and the `BYE` 9 seconds later:
+
+```text
+SIP Transactions:
+  INVITE -> 100 -> 180 (1ms) -> 200 (3ms)
+  ACK
+  BYE -> 200 (9008ms)
+```
+
+Under `Media Streams`, the two PCMA streams of 236 packets, one each way, show
+no loss and `mos=4.36 R=90.8`. The `telephone-event` stream shows
+`mos=unknown (unpublished)`: sipnab gives no quality estimate for DTMF events.
+The last stream is the 10 PCMA packets toward the caller. The report ends with
+`Issues Detected: None`.
+
+## 5. Ask about the call over MCP
+
+sipnab's MCP server lets an AI agent ask about a capture. The [MCP
+guide](mcp.md) sets it up for a client. This block sends the three messages a
+client would, straight from the shell, and asks `find_correlated` which other
+leg belongs to the caller's call. The first line takes the caller's Call-ID
+from the report, from the row whose `To` is `100`:
+
+```bash
+# Run all of these, in order.
+CALL=$(sipnab -N -I /tmp/asterisk-call.pcap --report --no-cli-print | awk '$3 == "100" {print $1}')
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_correlated\",\"arguments\":{\"call_id\":\"$CALL\"}}}" \
+  | sipnab --mcp -N -I /tmp/asterisk-call.pcap --quiet \
+  | jq 'select(.id == 2) | .result.content[0].text | fromjson | {total_matched, heuristic_only, legs}'
+```
+
+The answer names Asterisk's leg:
+
+```json
+{
+  "total_matched": 1,
+  "heuristic_only": true,
+  "legs": [
+    {
+      "call_id": "37e58306-c14d-4a0f-9fa1-41a2b3c05f96",
+      "identifier_match": false,
+      "observed_gap_ms": 1,
+      "score": 50,
+      "strategy": "timing_heuristic"
+    }
+  ]
+}
+```
+
+`timing_heuristic` means that sipnab matched the legs because they share an
+address and started within 2 seconds of each other, here 1 millisecond apart
+(`observed_gap_ms`). That is a guess, and the answer says so:
+`identifier_match` is false and `heuristic_only` is true. Asterisk puts no
+header on its leg that names the caller's leg, so sipnab has no identifier to
+match on.
+
+## 6. Keep sipnab running, and query it over REST
+
+The sipnab package installs a systemd service, `sipnab`, which captures on
+every interface without the terminal interface. Turn on its REST API. sipnab
+reads the API key from the environment, and keeping the key in a file only
+root can read keeps it out of the command line, where every user on the
+machine could read it:
+
+```bash
+# Run all of these, in order.
+sudo sh -c 'umask 077; printf "SIPNAB_API_KEY=%s\n" "$(openssl rand -hex 32)" > /etc/sipnab/api.env'
+sudo mkdir -p /etc/systemd/system/sipnab.service.d
+sudo tee /etc/systemd/system/sipnab.service.d/api.conf >/dev/null <<'EOF'
+[Service]
+EnvironmentFile=/etc/sipnab/api.env
+ExecStart=
+ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090 --api 127.0.0.1:8080
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now sipnab
+systemctl is-active sipnab
+```
+
+The `ExecStart` line keeps the package's own arguments and adds `--api`. The
+API listens on `127.0.0.1` only.
+
+Place the test call again, as in step 2. Then ask sipnab for its calls, the
+leg that goes with the caller's, and the audio streams:
+
+```bash
+# Run all of these, in order.
+KEY=$(sudo sed -n 's/^SIPNAB_API_KEY=//p' /etc/sipnab/api.env)
+curl -s -H "Authorization: Bearer $KEY" 127.0.0.1:8080/v1/dialogs \
+  | jq -r '.dialogs[] | [.call_id, .to_user // "-", .state, .msg_count] | @tsv'
+CALL=$(curl -s -H "Authorization: Bearer $KEY" 127.0.0.1:8080/v1/dialogs | jq -r '.dialogs[] | select(.to_user == "100") | .call_id')
+curl -s -H "Authorization: Bearer $KEY" "127.0.0.1:8080/v1/dialogs/$CALL/correlated" | jq -c '.legs[]'
+curl -s -H "Authorization: Bearer $KEY" 127.0.0.1:8080/v1/streams \
+  | jq -r '.streams[] | [.associated_dialog, .codec, .packets, .loss_pct] | @tsv'
+```
+
+The first answer lists the two legs, `Completed` with 7 and 6 messages. The
+second names Asterisk's leg with `"strategy":"timing_heuristic"`, as MCP did
+in step 5. The third lists each stream with the leg it belongs to, its codec,
+its packets and its loss. The [REST API reference](rest-api.md) gives every
+route.
+
+## 7. Receive Asterisk's HEP
+
+[HEP](glossary.md#hep) is the protocol SIP servers use to send a copy of their
+traffic to a collector such as Homer. Asterisk sends HEP with its `res_hep`
+module, which the build in the Asterisk guide includes, and sipnab can receive
+it. sipnab then sees the SIP as Asterisk handled it, with no capture on the
+wire. Point Asterisk at sipnab's HEP listener, on port 9060 of the loopback
+address, and restart it:
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/asterisk/hep.conf >/dev/null <<'EOF'
+[general]
+enabled = yes
+capture_address = 127.0.0.1:9060
+capture_id = 1234
+uuid_type = call-id
+EOF
+sudo systemctl restart asterisk
+until sudo asterisk -rx 'core waitfullybooted' 2>/dev/null; do sleep 1; done
+sudo asterisk -rx 'module show like hep'
+```
+
+The `until` line waits for Asterisk to finish starting, as in
+[step 2 of the Asterisk guide](asterisk.md#2-configure-asterisk).
+`module show like hep` lists `res_hep.so`, `res_hep_pjsip.so` and
+`res_hep_rtcp.so` as `Running`. `capture_id` is the number Asterisk stamps on
+every copy it sends, so that a collector can tell its senders apart. `uuid_type
+= call-id` labels each copy with the SIP Call-ID.
+
+Start sipnab's HEP listener for 30 seconds:
+
+```bash
+sudo sipnab -N -L 127.0.0.1:9060 --duration 30 --report --hep-senders
+```
+
+While it runs, place the test call from a second terminal, as in step 2.
+sipnab prints each message as it arrives, marked `origin=hep`. When the 30
+seconds are up, the report lists the same two legs, and who sent them:
+
+```text
+  SOURCE                                PACKETS  LAST SEEN                    IDLE  STATE
+  hep:1234@127.0.0.1                         15  2026-10-12T07:52:29.691Z      14s  sending
+```
+
+`hep:1234` is Asterisk's `capture_id`. The last line counts `15 packets
+captured, 13 SIP messages`. The other two packets are RTCP summaries from
+`res_hep_rtcp`, which Asterisk sends as JSON, and sipnab's report shows nothing
+from them. HEP carries no audio, so this report has no `RTP Streams:` table.
+For the audio, capture on the wire as in step 2.
+
+HEP over UDP carries no authentication of its own, and the capture id is what
+the sender claims. Listening on `127.0.0.1` keeps every sender but this
+machine out.
+
+## Remove what this guide added
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now sipnab
+sudo apt-get purge -y sipnab
+sudo rm -rf /etc/systemd/system/sipnab.service.d /etc/sipnab
+sudo systemctl daemon-reload
+sudo rm -f /etc/asterisk/hep.conf /tmp/asterisk-call.pcap
+sudo systemctl restart asterisk
+```
+
+`apt-get purge` removes the package and its own configuration. The API key
+file and the drop-in are yours, so the block removes them. The package leaves
+the `sipnab` user in place.
+
+## When something does not work
+
+- **sipnab says `sipnab: the terminal UI could not start: No such device or
+  address (os error 6). It needs a terminal; add -N for a run without one.`**
+  The terminal interface needs an interactive terminal, and this session has
+  none, as with a command passed to `ssh` without `-t`. Run it from an
+  interactive login, or use `-N` as in step 2.
+- **sipnab's HEP listener ends with `HEP listener on 127.0.0.1:9060 finished: 0
+  packets received`.** Asterisk sent nothing. Run `sudo asterisk -rx 'module
+  show like hep'`: if the three modules show `Not Running`, Asterisk has not
+  read `hep.conf`. `core reload` does not start them; restart Asterisk.
+- **The REST API answers
+  `{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}`.**
+  The request carried no API key, or the wrong one. Read it from
+  `/etc/sipnab/api.env`, as in step 6.
+
+---
+
+<!-- source: docs/freeswitch.md -->
+
+# Use FreeSWITCH in your voice stack
+
+[FreeSWITCH](https://signalwire.com/freeswitch) is an open-source softswitch:
+it answers calls, bridges them, plays and records audio, and runs
+conferences and voicemail. It works as a back-to-back user agent (B2BUA). A
+proxy such as OpenSIPS or Kamailio passes the caller's request on to the
+callee. A B2BUA instead answers the caller's call itself and places a second,
+separate call to the callee, with its own Call-ID, and it carries the audio of
+both calls through itself. One call through FreeSWITCH is therefore two SIP
+dialogs, one per leg, and its audio is four streams: caller to FreeSWITCH,
+FreeSWITCH to caller, and the same pair on the callee's side.
+
+This guide builds FreeSWITCH from source, sets it up to bridge a test call to
+a callee on the same machine, and proves it with a call that carries audio.
+This guide does not use sipnab. When you have this working, [Run sipnab beside
+FreeSWITCH](freeswitch-sipnab.md) adds sipnab.
+
+## Tested on
+
+Every block on this page ran as written, in order, on 2026-10-12, on clean
+x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13 (kernel
+6.12.63) and Ubuntu 24.04 (kernel 6.8.0). On each, the build ran on a machine
+with nothing installed, [Run sipnab beside FreeSWITCH](freeswitch-sipnab.md)
+ran between step 4's operate blocks and the uninstall, and the uninstall ran
+last. Every test call carried audio both ways on both legs, counted on the
+wire, and causing each fault under [When something does not
+work](#when-something-does-not-work) produced the message it quotes, on both.
+
+| Software | Version |
+|---|---|
+| FreeSWITCH | 1.11.3, the current release, built from the release archive on `files.freeswitch.org` |
+| sofia-sip (FreeSWITCH's SIP stack) | 1.13.18, built from the `v1.13.18` tag of `github.com/freeswitch/sofia-sip` |
+| spandsp (FreeSWITCH's signal-processing library) | 3.1.1, built from the `v3.1.1` tag of `github.com/freeswitch/spandsp` |
+| SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian 13, 3.7.2 on Ubuntu 24.04 |
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install FreeSWITCH
+
+### What each distribution offers
+
+FreeSWITCH's own packages come from SignalWire's package repository, which
+answers only with a SignalWire account's access token. Neither distribution
+carries a `freeswitch` package, and the versions of sofia-sip and spandsp they
+carry are older than FreeSWITCH 1.11.3 accepts: it needs sofia-sip 1.13.18 or
+later and spandsp 3.1.1 or later. This block shows all three on your machine:
+
+```bash
+# Run all of these, in order.
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+apt-cache policy freeswitch libsofia-sip-ua-dev libspandsp-dev
+. /etc/os-release
+curl -s -o /dev/null -w '%{http_code}\n' "https://freeswitch.signalwire.com/repo/deb/debian-release/dists/$VERSION_CODENAME/Release"
+```
+
+`apt-cache policy` prints nothing for `freeswitch`, and a `Candidate` of
+1.12.11 for `libsofia-sip-ua-dev` and 0.0.6 for `libspandsp-dev`. The last
+line prints `401`, the HTTP status for a request that needs credentials.
+
+| | Debian 13 | Ubuntu 24.04 |
+|---|---|---|
+| A `freeswitch` package from the distribution | none | none |
+| SignalWire's FreeSWITCH packages | need a SignalWire access token | need a SignalWire access token |
+| Build from source, as below | no account needed | no account needed |
+
+This guide builds from source, which needs no account, and the same steps
+work on both distributions. The build installs everything under
+`/usr/local/freeswitch`, apart from sofia-sip and spandsp, which go under
+`/usr/local`.
+
+### Build sofia-sip and spandsp
+
+First the compiler, the build tools, and the libraries FreeSWITCH's core and
+its default modules use:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y --no-install-recommends git build-essential automake autoconf libtool libtool-bin pkg-config xz-utils \
+  libssl-dev zlib1g-dev libjpeg-dev libtiff-dev libsqlite3-dev libcurl4-openssl-dev libpcre2-dev \
+  libspeex-dev libspeexdsp-dev libldns-dev libedit-dev uuid-dev libopus-dev libsndfile1-dev liblua5.4-dev yasm nasm
+```
+
+Then the two libraries, from the FreeSWITCH project's own repositories, at the
+versions FreeSWITCH 1.11.3 asks for:
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
+cd /usr/local/src/voice
+git -c advice.detachedHead=false clone --depth 1 -b v1.13.18 https://github.com/freeswitch/sofia-sip.git
+git -c advice.detachedHead=false clone --depth 1 -b v3.1.1 https://github.com/freeswitch/spandsp.git
+for d in sofia-sip spandsp; do (cd "$d" && ./bootstrap.sh && ./configure && make -j2 && sudo make install); done
+sudo ldconfig
+pkg-config --modversion sofia-sip-ua spandsp
+```
+
+The last line prints `1.13.18` and `3.1.1`.
+
+### Build FreeSWITCH
+
+`modules.conf` lists the modules the build compiles. Four of the default ones
+need libraries this guide does not install: `mod_signalwire` and `mod_verto`
+need SignalWire's `libks`, `mod_av` needs the FFmpeg development libraries,
+and `mod_pgsql` the PostgreSQL client library. The `sed` line leaves those
+four out:
+
+```bash
+# Run all of these, in order.
+cd /usr/local/src/voice
+curl -fsSLO https://files.freeswitch.org/releases/freeswitch/freeswitch-1.11.3.-release.tar.xz
+curl -fsSL https://files.freeswitch.org/releases/freeswitch/freeswitch-1.11.3.-release.tar.xz.sha256 | sha256sum -c -
+tar xf freeswitch-1.11.3.-release.tar.xz
+cd freeswitch-1.11.3.-release
+sed -i -E 's#^(applications/mod_av|applications/mod_signalwire|endpoints/mod_verto|databases/mod_pgsql)$#\#\1#' modules.conf
+./configure
+make -j2
+sudo make install
+sudo ln -sf /usr/local/freeswitch/bin/freeswitch /usr/local/freeswitch/bin/fs_cli /usr/local/bin/
+freeswitch -version
+```
+
+`sha256sum -c` prints `freeswitch-1.11.3.-release.tar.xz: OK`. The checksum
+comes from the same server as the archive, so it detects a damaged download,
+not a changed one. The last line prints `FreeSWITCH version:
+1.11.3-release~64bit (-release 64bit)`.
+
+The release archive's name has a dot before `-release`. That is the name on the
+server.
+
+### Run it as a service
+
+FreeSWITCH runs as its own user. This unit is the one in the FreeSWITCH
+source tree, `debian/freeswitch-systemd.freeswitch.service`, with the paths
+of this build. FreeSWITCH starts as root, raises its own scheduling priority,
+then drops to the `freeswitch` user. `-ncwait` makes `systemctl start` wait
+until FreeSWITCH is ready to take commands:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home-dir /usr/local/freeswitch --shell /usr/sbin/nologin freeswitch
+sudo chown -R freeswitch:freeswitch /usr/local/freeswitch
+sudo tee /etc/systemd/system/freeswitch.service >/dev/null <<'EOF'
+[Unit]
+Description=FreeSWITCH
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=forking
+PIDFile=/usr/local/freeswitch/run/freeswitch.pid
+ExecStart=/usr/local/freeswitch/bin/freeswitch -u freeswitch -g freeswitch -ncwait -nonat
+TimeoutSec=45s
+Restart=always
+LimitCORE=infinity
+LimitNOFILE=100000
+LimitNPROC=60000
+LimitSTACK=250000
+LimitRTPRIO=infinity
+LimitRTTIME=infinity
+IOSchedulingClass=realtime
+IOSchedulingPriority=2
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=89
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable freeswitch
+```
+
+`-nonat` stops FreeSWITCH from asking the local router to forward ports to it
+(UPnP and NAT-PMP).
+
+## 2. Configure FreeSWITCH
+
+`make install` put FreeSWITCH's example configuration, which the FreeSWITCH
+project calls "vanilla", in `/usr/local/freeswitch/conf`. It runs two SIP
+profiles, each a SIP listener with its own settings:
+
+- `internal`, on port 5060, for your own phones. It asks every caller for a
+  user name and password.
+- `external`, on port 5080, for carriers and other servers. It asks for no
+  password, and sends each call to the dialplan's `public` context.
+
+The test call in step 3 goes to `external`. This block changes five things:
+
+```bash
+# Run all of these, in order.
+cd /usr/local/freeswitch/conf
+sudo sed -i 's|=stun:stun.freeswitch.org"|=192.0.2.10"|' vars.xml
+P=$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')
+sudo sed -i "s|data=\"default_password=1234\"|data=\"default_password=$P\"|" vars.xml
+sudo sed -i 's|<param name="listen-ip" value="::"/>|<param name="listen-ip" value="127.0.0.1"/>|' autoload_configs/event_socket.conf.xml
+sudo sed -i -E 's#^( *)(<load module="mod_(verto|signalwire|av)"/>)#\1<!-- \2 -->#' autoload_configs/modules.conf.xml
+sudo tee dialplan/public/01_echo.xml >/dev/null <<'EOF'
+<include>
+  <!-- A call to "echo" goes to the test callee on this machine, in PCMU. -->
+  <extension name="test_callee">
+    <condition field="destination_number" expression="^echo$">
+      <action application="bridge" data="{absolute_codec_string=PCMU}sofia/external/echo@127.0.0.1:5070"/>
+    </condition>
+  </extension>
+</include>
+EOF
+sudo chown -R freeswitch:freeswitch /usr/local/freeswitch/conf
+grep 'stun-set' vars.xml
+sudo systemctl restart freeswitch
+fs_cli -x 'sofia status'
+```
+
+What the changes do:
+
+- **The machine's address.** `external_rtp_ip` and `external_sip_ip` are the
+  addresses FreeSWITCH puts in its SIP and SDP for the `external` profile. The
+  example configuration asks the public STUN server `stun.freeswitch.org` for
+  them at startup, which gives the address of your internet connection, not
+  of this machine. With that default, the `Contact` header of FreeSWITCH's
+  replies to the test call named the public address. On a machine with its own
+  public address, put that address here.
+- **The SIP password.** `default_password` is the password of the 20 example
+  users, `1000` to `1019`, that the `internal` profile accepts. The example
+  configuration sets it to `1234`. The block replaces it with a random one.
+- **The event socket.** `fs_cli`, FreeSWITCH's command-line client, talks to
+  FreeSWITCH over its event socket, TCP port 8021, with the password `ClueCon`.
+  The example configuration listens on every address. The block moves it to
+  `127.0.0.1`, so only this machine reaches it.
+- **Modules the build left out.** The example configuration loads `mod_verto`,
+  `mod_signalwire` and `mod_av`, which step 1 did not build. Without this
+  line, FreeSWITCH logs `Error Loading module` for each at every start.
+- **Where the test call goes.** The dialplan is FreeSWITCH's routing:
+  FreeSWITCH bridges a call to `echo` in the `public` context to a test callee
+  on this machine, `127.0.0.1:5070`. `absolute_codec_string=PCMU` makes FreeSWITCH
+  offer the callee PCMU only, the one codec SIPp's callee answers with.
+
+`sofia status` lists the profiles. `internal` shows
+`sip:mod_sofia@192.0.2.10:5060` and `external` shows
+`sip:mod_sofia@192.0.2.10:5080`, both `RUNNING`.
+
+## 3. Place a test call
+
+SIPp plays both ends: a callee on this machine that echoes audio back, and a
+caller that calls `echo` on FreeSWITCH's `external` profile and plays a
+recorded G.711 sample, so the call carries real audio both ways. The caller
+uses port 5090, because FreeSWITCH holds 5060 and 5080:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y sip-tester jq
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sn uac_pcap 192.0.2.10:5080 -i 192.0.2.10 -p 5090 -s echo -m 1 -timeout 90s
+```
+
+The caller needs `sudo` because it plays the audio sample through a raw socket.
+It sends about 7 seconds of audio, then a short DTMF clip, and hangs up. At the
+end SIPp's statistics screen shows `Successful call` at 1.
+
+SIPp's built-in caller sends its `ACK` and `BYE` straight to FreeSWITCH, which
+is the far end of the caller's dialog. Unlike the proxy guides, this guide
+needs no edited scenario.
+
+Each leg has its own audio. The caller offers PCMA, and FreeSWITCH answers it
+in PCMA. On the callee's leg FreeSWITCH offers PCMU, and converts the audio
+between the two codecs. [Run sipnab beside
+FreeSWITCH](freeswitch-sipnab.md) shows all four streams.
+
+## 4. Operate it
+
+**See a call's two legs while it is up.** FreeSWITCH calls each leg a
+channel. Start a call in the background and list the channels:
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sn uac_pcap 192.0.2.10:5080 -i 192.0.2.10 -p 5090 -s echo -m 1 -timeout 90s -bg
+sleep 3
+fs_cli -x 'show channels as json' | jq -r '.rows[] | "\(.direction) \(.name) \(.read_codec)"'
+sleep 12
+```
+
+```text
+inbound sofia/external/sipp@192.0.2.10:5090 PCMA
+outbound sofia/external/echo@127.0.0.1:5070 PCMU
+```
+
+The `inbound` channel is the caller's leg, in PCMA, and the `outbound` one the
+callee's, in PCMU. The last line waits for the call to end.
+
+**Check health and read the logs.**
+
+```bash
+# Run all of these, in order.
+systemctl is-active freeswitch
+fs_cli -x status
+sudo tail -n 30 /usr/local/freeswitch/log/freeswitch.log
+```
+
+`fs_cli -x status` prints FreeSWITCH's version, its uptime and the number of
+sessions since it started. FreeSWITCH writes its log to
+`/usr/local/freeswitch/log/freeswitch.log`, not to the journal.
+
+**Apply a configuration change.** A change to the dialplan or the users
+takes effect with `reloadxml`. A change to `vars.xml` or a SIP profile needs a
+restart:
+
+```bash
+# Run all of these, in order.
+fs_cli -x reloadxml
+sudo systemctl restart freeswitch
+fs_cli -x status | head -2
+```
+
+`reloadxml` prints `+OK [Success]`.
+
+**Uninstall.** Remove FreeSWITCH, its user, and the two libraries:
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now freeswitch
+sudo rm -rf /usr/local/freeswitch /etc/systemd/system/freeswitch.service /usr/local/bin/freeswitch /usr/local/bin/fs_cli
+sudo systemctl daemon-reload
+sudo userdel freeswitch
+sudo make -C /usr/local/src/voice/sofia-sip uninstall
+sudo make -C /usr/local/src/voice/spandsp uninstall
+sudo rm -rf /usr/local/include/sofia-sip-1.13 /usr/local/include/spandsp /usr/local/share/sofia-sip
+sudo ldconfig
+rm -rf /usr/local/src/voice/sofia-sip /usr/local/src/voice/spandsp /usr/local/src/voice/freeswitch-1.11.3.-release*
+```
+
+## When something does not work
+
+- **The test call fails, and SIPp reports `Aborting call on unexpected message
+  ... received 'SIP/2.0 488 Not Acceptable Here`.** The callee answered with
+  a codec FreeSWITCH had not offered it. Without `absolute_codec_string`,
+  FreeSWITCH offers the callee the caller's codec, PCMA, and SIPp's callee
+  answers PCMU whatever FreeSWITCH offers. FreeSWITCH's log shows `Originate
+  Failed.  Cause: INCOMPATIBLE_DESTINATION`. Keep `{absolute_codec_string=PCMU}`
+  in the `bridge` line, or offer your callee a codec it supports.
+- **`fs_cli` prints `[ERROR] fs_cli.c:1699 main() Error Connecting []`.**
+  Nothing answers on the event socket: FreeSWITCH is not running, or its
+  `listen-ip` is not the address `fs_cli` connects to, `127.0.0.1`. Check
+  `systemctl status freeswitch`.
+
+---
+
+<!-- source: docs/freeswitch-sipnab.md -->
+
+# Run sipnab beside FreeSWITCH
+
+sipnab reads the SIP and the audio that pass through FreeSWITCH off the wire,
+so it needs nothing from FreeSWITCH: no module, no configuration change.
+FreeSWITCH is a back-to-back user agent (B2BUA): it answers the caller's call
+and places a second call, with a Call-ID of its own, to the callee. On the
+FreeSWITCH machine sipnab sees both calls, which it calls dialogs, and the four
+audio streams, and it can tie the two dialogs together as one call.
+FreeSWITCH can also send sipnab a copy of its SIP over HEP, the protocol SIP
+servers use to send Homer their traffic.
+
+This guide adds sipnab to the FreeSWITCH machine from
+[Use FreeSWITCH in your voice stack](freeswitch.md).
+
+## Tested on
+
+Every block on this page ran as written, in order, on 2026-10-12, with sipnab
+0.5.211 from its release package, on the Debian 13 (kernel 6.12.63) and Ubuntu
+24.04 (kernel 6.8.0) machines that [the FreeSWITCH guide](freeswitch.md) had
+set up, with FreeSWITCH 1.11.3. Each test call carried audio both ways on both
+legs. On both, causing each fault under [When something does not
+work](#when-something-does-not-work) produced the message it quotes. The
+examples use `192.0.2.10` as the machine's address.
+
+## 1. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb
+sipnab --version
+```
+
+## 2. Watch a call through FreeSWITCH
+
+sipnab watches SIP ports 5060-5061 unless you give it others. FreeSWITCH's
+`external` profile, which takes the test call, listens on 5080, so give sipnab
+the range from 5060 to 5080 with `--portrange`. Start sipnab on every
+interface for 30 seconds, printing each SIP message as it passes, a report of
+the calls at the end, and a copy of what it captured in
+`/tmp/freeswitch-call.pcap` for the next steps:
+
+```bash
+sudo sipnab -N -d any --portrange 5060-5080 --duration 30 --report -O /tmp/freeswitch-call.pcap
+```
+
+sipnab writes the capture file after it has dropped its root privileges, as
+the user `nobody`, so the file goes in `/tmp`, where `nobody` can write.
+
+While it runs, place a test call from a second terminal, as in
+[step 3 of the FreeSWITCH guide](freeswitch.md#3-place-a-test-call):
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sn uac_pcap 192.0.2.10:5080 -i 192.0.2.10 -p 5090 -s echo -m 1 -timeout 90s
+```
+
+sipnab prints the caller's `INVITE` to FreeSWITCH at `192.0.2.10:5080`, then
+FreeSWITCH's own `INVITE` to the callee at `127.0.0.1:5070`, with a different
+Call-ID, and the replies, `ACK`s and `BYE`s of both. When the 30 seconds are
+up, the report lists two dialogs, both `Completed`: the caller's leg, whose
+Call-ID SIPp made (`1-...@192.0.2.10`), with 7 messages, and the callee's leg,
+whose Call-ID FreeSWITCH made, with 6. FreeSWITCH answers the caller's
+`INVITE` with `100 Trying` and the callee does not, which is the seventh
+message.
+
+Below them, the `RTP Streams:` table holds the call's audio, all of it to or
+from FreeSWITCH:
+
+```text
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps
+--------------------------------------------------------------------------------------------------------------------------
+0xdee0ee8f   8    PCMA     8000   192.0.2.10:6000       192.0.2.10:32348      236     0      0.0%    0ms      7s     64
+0xeed25cad   0    PCMU     8000   192.0.2.10:25690      127.0.0.1:6000        360     0      0.0%    32ms     8s     54
+0xeed25cad   0    PCMU     8000   127.0.0.1:6000        192.0.2.10:25690      360     0      0.0%    32ms     8s     54
+0x02d49cad   8    PCMA     8000   192.0.2.10:32348      192.0.2.10:6000       236     0      0.0%    52ms     9s     50
+0x0e05384e   101  telephone-event 8000   192.0.2.10:6000       192.0.2.10:32348      10      0      0.0%    6ms      0s     2
+```
+
+The caller sends 236 PCMA packets and 10 DTMF (`telephone-event`) packets to
+FreeSWITCH, at a port FreeSWITCH chose for the call, and FreeSWITCH sends PCMA
+back. On the callee's side the audio is PCMU, both ways: FreeSWITCH converts
+between the two codecs. The callee's answer offered no `telephone-event`, so
+no DTMF stream goes to the callee. FreeSWITCH chooses new ports for each
+call.
+
+## 3. Read one call: timing and audio quality
+
+The capture file holds the whole call. Find the caller's leg, the dialog
+whose Call-ID starts with `1-`, as SIPp names its calls, and print sipnab's
+report of it:
+
+```bash
+# Run all of these, in order.
+CALL=$(sipnab -N -I /tmp/freeswitch-call.pcap --portrange 5060-5080 --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select(.call_id | startswith("1-")) | .call_id')
+echo "$CALL"
+sipnab -N -I /tmp/freeswitch-call.pcap --portrange 5060-5080 --call-report "$CALL" --no-cli-print --quiet
+```
+
+A file you read takes `--portrange` too. The report gives the call's timing,
+its SIP transactions, and a line for each of its audio streams, with the jitter,
+the packet loss and an estimated MOS (mean opinion score, from 1 to 5) for
+each:
+
+```text
+Media Streams:
+  RTP 192.0.2.10->192.0.2.10 PCMA SSRC=0xdee0ee8f pkts=236 jitter=0ms loss=0.0% mos=4.36 R=90.8
+  RTP 192.0.2.10->192.0.2.10 PCMA SSRC=0x02d49cad pkts=236 jitter=52ms loss=0.0% mos=4.33 R=89.5
+  RTP 192.0.2.10->192.0.2.10 telephone-event SSRC=0x0e05384e pkts=10 jitter=6ms loss=0.0% mos=unknown (unpublished)
+```
+
+The callee's leg's report adds a line FreeSWITCH supplies. FreeSWITCH puts a
+`Reason` header in the `BYE` it sends, and sipnab reads it:
+
+```text
+Cause:      Q.850 cause 16 "NORMAL_CLEARING" [Reason]
+```
+
+## 4. See both legs as one call
+
+FreeSWITCH gives the callee's leg a Call-ID of its own, and its `INVITE`
+carries nothing that names the caller's leg: no `Session-ID` header, the one
+[RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) defines for that. sipnab
+still ties the two together, from their addresses and their start times,
+and says so.
+
+**In the terminal interface.** Open the capture:
+
+```bash
+sipnab -I /tmp/freeswitch-call.pcap --portrange 5060-5080
+```
+
+The call list shows the two dialogs, `Dialogs: 2 shown of 2`. Press `Enter`
+on the first to open its ladder, the diagram of its messages between the
+caller at `192.0.2.10:5090` and FreeSWITCH at `192.0.2.10:5080`. Press `x`
+for the extended flow, `Extended flow: on (multi-leg)`, which adds the
+callee's leg and the callee, `127.0.0.1:5070`, as a third column. Press `Esc`
+to go back to the call list. There, `Esc` asks `Are you sure you want to
+quit?`, and `Y` quits.
+
+**Over the REST API.** sipnab answers HTTP requests about what it captured.
+The route `/correlated` names the other legs of a call:
+
+```bash
+# Run all of these, in order.
+CALL=$(sipnab -N -I /tmp/freeswitch-call.pcap --portrange 5060-5080 --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select(.call_id | startswith("1-")) | .call_id')
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+sipnab -N -I /tmp/freeswitch-call.pcap --portrange 5060-5080 --api 127.0.0.1:8080 --no-cli-print --quiet &
+sleep 2
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/$CALL/correlated" | jq .
+kill %1
+```
+
+```json
+{
+  "schema_version": 1,
+  "source_call_id": "1-114198@192.0.2.10",
+  "legs": [
+    {
+      "call_id": "3c33fca7-40b8-1240-48b2-bc24119de73a",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "identifier_match": false,
+      "observed_gap_ms": 2
+    }
+  ],
+  "total_matched": 1,
+  "heuristic_only": true
+}
+```
+
+`timing_heuristic` and `identifier_match: false` say how sipnab matched the
+leg: from its addresses and its start, 2 ms after the caller's, not from an
+identifier both legs carry. On a busy FreeSWITCH, calls that start close
+together can match the same way. The [REST API
+reference](rest-api.md) describes the other
+strategies.
+
+**Over MCP.** sipnab's [MCP server](mcp.md) answers the same questions for an
+AI agent. This takes the caller's leg's Call-ID from sipnab's report, sends
+sipnab the messages a client would, and asks the `render_ladder` tool for that
+leg as a Mermaid diagram. The `sleep` gives sipnab time to read the whole file
+first:
+
+```bash
+# Run all of these, in order.
+CALL=$(sipnab -N -I /tmp/freeswitch-call.pcap --portrange 5060-5080 --report --no-cli-print --quiet \
+  | awk '$1 ~ /^1-/ {print $1}')
+{ printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  sleep 2
+  printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"render_ladder","arguments":{"call_id":"%s","format":"mermaid"}}}\n' "$CALL"
+} | sipnab --mcp -N -I /tmp/freeswitch-call.pcap --portrange 5060-5080 --quiet \
+  | jq -r 'select(.id == 2) | .result.content[0].text'
+```
+
+The answer is a Mermaid `sequenceDiagram` of the caller's leg, from the
+`INVITE` to the `200 OK` of the `BYE`, each message with its time from the
+first. sipnab fences it as untrusted text taken from the capture, between the
+`⟦untrusted-capture-data⟧` lines:
+
+```text
+⟦untrusted-capture-data⟧sequenceDiagram
+    autonumber
+    participant p0 as 192.0.2.10:5090
+    participant p1 as 192.0.2.10:5080
+
+    p0->>p1: INVITE
+    Note right of p1: +0.000s
+    p1-->>p0: 100 Trying
+    Note right of p0: +0.001s
+    p1-->>p0: 180 Ringing
+    Note right of p0: +0.003s · PDD 3ms
+    p1-->>p0: 200 OK
+    Note right of p0: +0.041s
+    p0->>p1: ACK
+    Note right of p1: +0.041s
+    p0->>p1: BYE
+    Note right of p1: +9.047s
+    p1-->>p0: 200 OK
+    Note right of p0: +9.054s
+⟦/untrusted-capture-data⟧
+```
+
+`PDD` is the post-dial delay, the time from the `INVITE` to the first ringing
+reply. The MCP tool
+`find_correlated` returns the same legs as the `/correlated` route.
+
+## 5. Receive FreeSWITCH's own copy of its SIP (HEP)
+
+FreeSWITCH's SIP stack can send a HEP copy of every SIP message it sends and
+receives to a collector, such as Homer or sipnab. Then sipnab needs no capture
+of the SIP at all. Turn it on for both profiles, sending to `127.0.0.1:9060`
+with the capture id `100`:
+
+```bash
+# Run all of these, in order.
+cd /usr/local/freeswitch/conf
+sudo sed -i 's|^    <param name="debug-presence" value="0"/>|&\n    <param name="capture-server" value="udp:127.0.0.1:9060;hep=3;capture_id=100"/>|' autoload_configs/sofia.conf.xml
+sudo sed -i 's|<param name="sip-capture" value="no"/>|<param name="sip-capture" value="yes"/>|' sip_profiles/internal.xml sip_profiles/external.xml
+grep -h -E '^ *<param name="(capture-server|sip-capture)"' autoload_configs/sofia.conf.xml sip_profiles/internal.xml sip_profiles/external.xml
+sudo systemctl restart freeswitch
+```
+
+`capture-server` names the collector, the HEP version and the capture id, a
+number that tells a collector which sender a copy came from. `sip-capture`
+turns the copies on for a profile.
+
+Start sipnab's HEP listener for 30 seconds. `-d any` adds the call's audio
+from the wire, which HEP does not carry:
+
+```bash
+sudo sipnab -N -L 127.0.0.1:9060 -d any --duration 30 --report --hep-senders
+```
+
+While it runs, place the test call from a second terminal, as in step 2.
+sipnab prints each message as it arrives, marked `origin=hep`, and the report
+lists the same two dialogs, with 7 and 6 messages, and the same five audio
+streams. Below them it names the sender:
+
+```text
+  SOURCE                                PACKETS  LAST SEEN                    IDLE  STATE
+  hep:100@127.0.0.1                          13  2026-10-12T08:18:49.166Z      14s  sending
+```
+
+`hep:100` is the `capture_id` from `capture-server`. The capture id is what the
+sender claims, and nothing proves it. What keeps other senders out here is the
+address: sipnab listens on `127.0.0.1`, which only this machine can reach.
+
+## Without FreeSWITCH
+
+sipnab does not depend on FreeSWITCH. Steps 2 to 4 read SIP and RTP off the
+wire or from a capture file, and work the same on any SIP traffic, from any
+SIP server or none. Step 5 is the one that needs FreeSWITCH, because
+FreeSWITCH sends the HEP. A capture file you take on the FreeSWITCH machine,
+such as `/tmp/freeswitch-call.pcap`, works with steps 3 and 4 on any machine
+with sipnab installed.
+
+## When something does not work
+
+- **sipnab reports `No SIP signaling found, but ... RTP packets across ...
+  stream(s) were parsed`.** It saw the call's audio, but none of its SIP:
+  FreeSWITCH's `external` profile is on 5080, outside 5060-5061, the range
+  sipnab watches by default. Give sipnab the range with `--portrange
+  5060-5080`.
+- **Reading a capture file, sipnab warns `SIP outside --portrange 5060-5061 is
+  being skipped` and names `Busiest port(s): 5080`, then says `Call-ID '...'
+  not found in tracked dialogs`.** The same range applies to a file. Add
+  `--portrange 5060-5080` to the command that reads it.
+- **The MCP answer ends with `INCOMPLETE RUN — this report does not describe
+  the whole capture` and `the capture is still being read`.** The question
+  reached sipnab before it had read the whole file. Keep the `sleep` before the
+  `tools/call` line, or make it longer for a larger file.
+
+---
+
 <!-- source: docs/fail2ban.md -->
 
 # Ban SIP scanners with fail2ban
@@ -42416,6 +43952,496 @@ sudo apt-get purge -y sipnab
 
 ---
 
+<!-- source: docs/plugins.md -->
+
+# WASM plugins
+
+Add your own detection to sipnab's diagnosis, without forking it.
+
+A plugin is a small WebAssembly module that receives one reconstructed dialog
+and returns findings. Those findings appear beside sipnab's built-in ones, in
+the same shape, so every surface that renders a finding renders yours with no
+extra work.
+
+## When you want one
+
+sipnab already lets you *select* dialogs — the [filter DSL](filter-dsl.md)
+picks them by field, [NDJSON](output-formats.md) pipes them anywhere, and
+`--alert exec` reacts to them. What none of those do is *diagnose*: express a
+site-specific fault pattern and have sipnab report it as a finding, with
+evidence, in `--call-report` and the TUI and the JSON alike.
+
+That is the one hole a plugin fills. If you can already answer your question
+with a filter or a `jq` pipeline, use those — they need no build step and no
+trust decision.
+
+## What it costs you to trust one
+
+A plugin is a `.wasm` file, which is exactly the kind of artifact people copy
+off the internet, so read this before loading one someone sent you.
+
+**A plugin has no imports at all.** Not a restricted set — none. No WASI, no
+filesystem, no network, no clock, not even logging. The only things crossing
+the boundary are integers and the bytes sipnab copies into the plugin's own
+linear memory. A module that imports anything fails to instantiate.
+
+| Bounded | How |
+|---|---|
+| CPU | Fuel metering. A plugin that loops forever gets cut off and reported as a plugin error, and the capture continues |
+| Memory at run time | 16 MiB linear-memory ceiling, refused by the engine at the point of growth |
+| Memory at load time | sipnab reads the `.wasm` file through a 16 MiB bound, so it never allocates a length the file chose |
+| Output size | 4 MiB per reply |
+| Blast radius | A trap, an exhausted fuel budget or a malformed reply fails *that dialog's* plugin findings, and nothing else |
+
+**What is not bounded is what it reads.** A plugin sees every dialog sipnab
+reconstructs, including `Authorization` headers and `MESSAGE` bodies. It cannot
+send them anywhere — it has no imports — but it can decide what to report, and
+a finding's `summary` is a string it chose. Load a plugin the way you would run
+a script: from someone you trust, or after reading it.
+
+Plugins need a build with `--features plugins`, which is **not** in the default
+feature set. A stock binary carries no interpreter at all, so `sipnab --version`
+tells you whether the machine in front of you can load one.
+
+## Writing one, start to finish
+
+The worked example is [`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example).
+It flags **short answered calls** — picked up and torn down inside five seconds,
+which is a bad route, a codec the far end rejected, or wangiri-style fraud
+dialling. It is deliberately not a built-in: whether three seconds is a problem
+depends entirely on your traffic, which is the shape a plugin is for.
+
+### 1. A crate that builds to WASM
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+```
+
+Target `wasm32-unknown-unknown`. `std` works there. A `no_std` plugin is
+smaller but needs its own allocator and panic handler, which is a lot of
+ceremony for a detection.
+
+### 2. Three exports, and nothing imported
+
+```rust
+#[unsafe(no_mangle)]
+pub extern "C" fn sipnab_plugin_abi_version() -> i32 { 1 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sipnab_alloc(len: i32) -> i32 { /* host writes input here */ }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sipnab_analyze(ptr: i32, len: i32) -> i64 {
+    // read UTF-8 JSON at (ptr, len), return (out_ptr << 32) | out_len
+}
+```
+
+There is no deallocator, and that is deliberate rather than an omission.
+sipnab instantiates the module once per dialog and drops the store when
+`sipnab_analyze` returns, so the plugin's entire linear memory goes with it and
+there is nothing left to reclaim. Both documents used to require a
+`sipnab_dealloc` that the host never looked up, so a plugin that omitted it
+loaded and ran anyway — a requirement nothing checks teaches an author to
+distrust the rest of the page.
+
+sipnab checks the ABI version at load rather than on first use: a plugin built
+against a later ABI would misread its input and report confident nonsense,
+which is worse than not loading.
+
+### 3. Read the input, return findings
+
+Look at the input before writing code — it is the same per-dialog JSON
+`--json-dialogs` emits, with the `messages` array alongside it:
+
+```sh
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print | head -1
+```
+
+Return findings in this shape:
+
+```json
+{ "findings": [ { "id": "short-answered-call",
+                  "summary": "Call answered and torn down after 2.2s …",
+                  "evidence": [3, 5] } ] }
+```
+
+`evidence` indexes the dialog's own message list and is **mandatory** — sipnab
+rejects a finding that leaves it empty. Every built-in detection names the
+messages behind it, and a third-party finding answers to the same rule rather
+than entering as a lesser citizen.
+
+### 4. Build and run it
+
+```sh
+# Run all of these, in order.
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown -p sipnab-plugin-example
+
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print \
+  --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm
+```
+
+`--plugin` is repeatable. Each plugin gets its own sandbox, and a failure in
+one never stops the capture or the others.
+
+### 5. Where the findings come out
+
+Under a top-level `plugin_findings` array, separate from `signaling_diagnosis`,
+and each finding carries the plugin's own name — filled in by sipnab from the
+file stem, never by the plugin, so a plugin cannot attribute a finding to
+another plugin or to a built-in detection.
+
+That separation is the point. A reader can always tell which findings sipnab
+stands behind and which came from third-party code.
+
+## Known limits
+
+- Findings currently reach `--json-dialogs` only. The other surfaces render the
+  shape but are not yet wired to it.
+- One hook point: post-dialog analysis. There is deliberately no packet-level
+  hook — handing every packet to an interpreter would undo the capture path's
+  performance, and the [benchmarks](benchmarks.md) with it.
+- Plugins observe rather than mutate. A plugin that could rewrite a dialog
+  would make every other surface's output unattributable.
+
+## See also
+
+- [Design specification](https://github.com/NormB/sipnab/blob/main/docs/design/wasm-plugin-api.md)
+  — the ABI in full, the safety model, and why WASM rather than an embedded
+  scripting runtime.
+- [CLI reference](cli-reference.md#output) — the `--plugin` flag.
+- [Installation](install.md#feature-flags) — building with `--features plugins`.
+
+---
+
+<!-- source: docs/tls-capture.md -->
+
+# Capture SIP over TLS
+
+You have SIP on port 5061, sipnab shows you nothing useful, and you want to
+see the signaling. This page picks the method for you.
+
+**For many production deployments this is not an advanced topic — it is the
+only topic.** A hardened SIP server often does not listen on 5060 at all, so
+every call is TLS and a capture that reads only plaintext reads nothing. If
+that is your situation, start at the table below rather than with the
+plaintext quick-start elsewhere in these docs.
+
+**The short version.** The wire alone never yields encrypted traffic —
+modern TLS uses forward secrecy, so even the server's private key does not
+open a captured session. Something on a machine you control has to hand over
+the session keys, or hand over the plaintext. Every method below is one of
+those two, and they differ only in what access each demands.
+
+## Which method can you use?
+
+Answer these in order. Each branch ends at one numbered method below, and the
+question that separates two branches is always an access question rather than
+a protocol one.
+
+```mermaid
+flowchart TD
+    S["SIP on 5061, and sipnab decodes nothing"] --> Q1{"Can you set SSLKEYLOGFILE<br/>on an endpoint and restart it?"}
+    Q1 -->|yes| M1["Method 1: --keylog<br/>full decryption, live or from a pcap"]
+    Q1 -->|no| Q2{"Can you get root on the SIP host?"}
+    Q2 -->|no| Q6{"Old TLS 1.2 server on RSA key exchange,<br/>and you hold its private key?"}
+    Q6 -->|yes| M6["Method 6: --tls-key<br/>non-PFS handshakes only"]
+    Q6 -->|no| X["Nothing opens it.<br/>Read What does not work, and why"]
+    Q2 -->|yes| L["Method 2: sudo sipnab --uprobe-list<br/>names the TLS libraries this host runs"]
+    L --> Q3{"Do you want keys you can keep,<br/>or plaintext right now?"}
+    Q3 -->|keys| M5["Method 5: eCapture, then --keylog<br/>daemon untouched, and the pcap stays readable"]
+    Q3 -->|plaintext| Q4{"BTF kernel, and a build<br/>carrying the bpf feature?"}
+    Q4 -->|yes| M4["Method 4: --uprobe-tls --uprobe-backend bpf<br/>plaintext with the real 5-tuple"]
+    Q4 -->|no| M3["Method 3: --uprobe-tls<br/>plaintext, no peer addresses"]
+```
+
+The table says the same thing in rows. Read down the first column and stop at
+the first row you can satisfy.
+
+| If you can… | Use | Needs | Gets you |
+|---|---|---|---|
+| Set `SSLKEYLOGFILE` on the endpoint (a soft client, test UA, or a daemon you can restart) | [`--keylog`](#1-the-endpoint-writes-a-key-log) | Nothing special | Full decryption, live or from a pcap |
+| Get root on the SIP host, but **not** restart the daemon | [`--uprobe-tls`](#3-no-keys-at-all-read-the-plaintext-in-the-process) | Linux, root | Plaintext, no peer addresses |
+| Get root **and** the kernel has BTF | [`--uprobe-tls --uprobe-backend bpf`](#4-plaintext-and-the-peer-address) | Linux, root, BTF, a `bpf` build | Plaintext **with** the real 5‑tuple |
+| Run a helper on the SIP host but prefer keys to plaintext | [eCapture → `--keylog`](#5-lift-keys-from-a-daemon-you-cannot-restart) | Linux, root | Full decryption, daemon untouched |
+| Only reach an old TLS 1.2 server using RSA key exchange | [`--tls-key`](#6-the-old-rsa-case) | The server's private key | Decryption, **non-PFS handshakes only** |
+| None of the above | — | — | Nothing. See [what does not work](#what-does-not-work-and-why) |
+
+**Most people want [`--keylog`](#1-the-endpoint-writes-a-key-log) or
+[`--uprobe-tls`](#3-no-keys-at-all-read-the-plaintext-in-the-process).**
+`--keylog` if you are testing and control an endpoint. `--uprobe-tls` if you
+are on a production box and cannot restart anything —
+that is the case sipnab exists for, and the one people assume is impossible.
+
+---
+
+## 1. The endpoint writes a key log
+
+The ordinary case, and the cheapest. Any TLS library built on OpenSSL, NSS or
+GnuTLS writes session keys to the file named by `SSLKEYLOGFILE`.
+
+```sh
+# Run all of these, in order.
+export SSLKEYLOGFILE=/tmp/sip-keys.log
+# start your softphone or daemon from this shell, then:
+sudo sipnab -d eth0 --keylog /tmp/sip-keys.log --keylog-watch
+```
+
+`--keylog-watch` re-reads the file as it grows, so keys minted after sipnab
+starts still decrypt. Without it you get only the sessions whose keys were
+already written.
+
+Same flag reads a capture you already recorded:
+
+```sh
+sipnab -I tls-capture.pcap --keylog /tmp/sip-keys.log
+```
+
+The full recipes, including exporting a decrypted pcap for Wireshark and
+keeping keys off disk entirely, are cookbook recipes 7a to 7f, under
+[recipe 7, "Decrypt SIP over TLS with a key log file"](examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile).
+
+## 2. Check what you have before going further
+
+```sh
+sudo sipnab --uprobe-list
+```
+
+Installs nothing. It prints the TLS libraries running on this host and which
+processes use them — which tells you whether rows 3 and 4 are even available
+before you spend time on them.
+
+## 3. No keys at all: read the plaintext in the process
+
+This is the method the long-standing upstream feature request
+asks for — TLS visibility with no recompile and no certificate — and it is
+what sipnab does here.
+
+```sh
+sudo sipnab -N --uprobe-tls
+```
+
+sipnab attaches a uprobe to the TLS library's write function and reads the
+bytes **before** the library encrypts them. It recovers no key, decrypts
+nothing, and touches no other machine.
+
+Dialogs carry **no addresses and port 0**, labeled `uprobe:<process>/<pid>`.
+A uprobe sees the bytes an application handed its TLS library and nothing
+about the socket underneath, so sipnab names the process rather than inventing
+a peer. If you need the addresses, use method 4.
+
+**If it attaches and reports zero messages**, the symbol is almost certainly
+wrong — OpenSSL 3 applications increasingly call `SSL_write_ex` rather than
+`SSL_write`:
+
+```sh
+# Run all of these, in order.
+nm -D --undefined-only /usr/sbin/opensips | grep -i ssl_write
+sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
+```
+
+Read [the security implications](uprobe-walkthrough.md#security-implications-stated-plainly) before using this on a
+production host. It reads process memory, so anyone who can run it can read
+every SIP session on that machine, credentials included.
+
+## 4. Plaintext **and** the peer address
+
+```sh
+sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
+```
+
+Adds a kernel probe on `tcp_sendmsg` and pairs it with the write by thread, so
+dialogs carry the real 5-tuple. Needs a kernel with `CONFIG_DEBUG_INFO_BTF=y`
+and a sipnab that actually holds the kernel programs — `--features bpf` compiles
+the loader, and the programs themselves need a nightly toolchain and
+`bpf-linker` on the build host. A build missing either still succeeds and
+produces a binary that lists `bpf` and refuses at attach time. The uprobe
+walkthrough linked at the foot of this page carries the message and the
+build-time switch that turns that gap into a build failure.
+
+sipnab **refuses** rather than falling back in silence, because a silent
+downgrade would leave you with no peers and no reason given.
+
+Widen `--portrange`. The port a uprobe reports is whatever the socket used,
+which is usually ephemeral rather than 5061.
+
+## 5. Lift keys from a daemon you cannot restart
+
+If you would rather have keys than plaintext — keys decrypt a pcap you keep,
+and plaintext does not — [eCapture](https://github.com/gojue/ecapture) reads
+them out of a running process and sipnab consumes them unchanged:
+
+```sh
+# Run all of these, in order.
+# eCapture picks the TLS library to instrument by looking at curl. Your SIP
+# daemon may well map a different one, so name the daemon's explicitly — this
+# is the single most common reason a keylog stays empty.
+LIBSSL=$(sudo awk '/libssl/ {print $6; exit}' /proc/"$(pgrep -o opensips)"/maps)
+sudo ecapture tls -m keylog --libssl="$LIBSSL" --keylogfile=/tmp/keys.log &
+sudo sipnab -d eth0 --keylog /tmp/keys.log --keylog-watch
+```
+
+The uprobe attaches to the library, not to one process, so a forking daemon
+needs no `--pid` — it covers every worker that maps that path, and `--pid`
+would restrict you to one of them. Check the path it chose in eCapture's own
+startup line (`openssl_path=`) before trusting the run.
+
+**Start the capture before the connections you want to read.** This is the
+single biggest trap on long-lived trunks, and it bites differently in each TLS
+version:
+
+- **TLS 1.3** ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) numbers each record with a counter both endpoints keep privately.
+  Nothing on the wire carries it, so sipnab searches for it — about a million
+  records, roughly a day of a trunk ticking over at ten records a second. The
+  search costs one AEAD tag check per candidate and runs once per direction per
+  session, so it is a one-off of about a second, not a per-record cost. Past
+  that, the keys are right and the records still do not open.
+  `--tls-lockon-window` moves that ceiling. Raising it costs nothing on a
+  connection captured from its handshake, because the search widens only as
+  records fail to open, so raise it for a carrier trunk held open for days. A
+  separate per-run trial budget — four full windows — stops one session whose
+  keys belong to some other connection from spending a window on every record
+  it gets offered.
+- **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246)) is worse: a `CLIENT_RANDOM` line gives the master secret, and the
+  server random and cipher suite that expand it into record keys are in the
+  ServerHello. Miss the handshake and there is no way to use the secret at all,
+  now or later.
+
+sipnab says which of these happened, with counts. The fix is at capture time
+either way: bounce the connection, or the far end, while capturing, so the
+capture catches the stream from its handshake and its first record.
+
+Cookbook [recipe 7e, "Decrypt traffic from a daemon you cannot restart"](examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
+sequence, and [recipe 7f, "Decrypt without writing the keys to disk"](examples.md#7f-decrypt-without-writing-the-keys-to-disk) shows
+feeding keys through a pipe so they never reach disk.
+
+## 6. The old RSA case
+
+```sh
+sipnab -I capture.pcap --tls-key server.key
+```
+
+Works **only** for TLS 1.2 handshakes that used RSA key exchange. Any
+ECDHE/DHE handshake — which is every modern configuration, and mandatory in
+TLS 1.3 — has forward secrecy, and the private key does not decrypt a recorded
+session. If this produces nothing, your traffic is almost certainly PFS and
+you need method 1, 3, 4 or 5.
+
+## Media as well as signaling
+
+SRTP keys arrive two ways, and sipnab reads both:
+
+- **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
+  media with it. Nothing extra to do.
+- **DTLS-SRTP** — a DTLS handshake carries the keys. Point `--dtls-keylog` at an
+  NSS-format key log and sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter over it to reach the
+  SRTP keys, cookbook [recipe 7d, "Decrypt SRTP from a DTLS keylog"](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
+
+`--dtls-keylog` is a separate flag from `--keylog` because the two name
+different handshakes. If you already hold SRTP master keys rather than a
+handshake, `--srtp-keys` takes them directly.
+
+## When the keys arrive after the call starts
+
+Any run whose keys arrive while it runs has one race: method 1 or method 5
+with `--keylog-watch`, or keys fed through a descriptor with `--keylog-fd`.
+Methods 3 and 4 use no keys, so they do not have it. You attach the key source
+to a daemon that is already running, a call arrives, and the first records
+reach sipnab before the first key does. On a SIP session the first record is the INVITE, so the
+symptom is not "a few records are unreadable" — it is a call with no offer in
+it, which sipnab then reports as a media mismatch or a NAT problem, because
+from the dialog's point of view that is exactly what it looks like.
+
+With `--keylog-watch` or `--keylog-fd`, sipnab holds application data it
+cannot open yet and retries it as soon as a key for that session turns up. No
+separate flag switches this on. sipnab reads a plain `--keylog` file, without
+`--keylog-watch`, once at startup and holds nothing: no key arrives later in
+the run, so a record the loaded keys cannot open now never opens. A run that
+recovered records says so:
+
+```text
+TLS late decrypt: recovered 3 record(s) that arrived before their keys
+```
+
+The hold has limits, because a peer whose keys never arrive would otherwise
+grow it without end:
+
+| Bound | Value |
+|---|---|
+| Total held, across every session | 4 MiB |
+| Records per direction | 16 |
+| Directions | 4096 |
+| Age | 5 seconds |
+
+Those bounds are the reason to start the key source **before** the capture
+wherever you can. Recovery closes a gap measured in packets, not one measured
+in minutes.
+
+The run also says what the hold could NOT recover, because "we never had the
+keys for those records" and "we had them and had already discarded the
+ciphertext" are different problems with different fixes:
+
+```text
+sipnab discarded 3 TLS record(s) held from before a key arrived: the
+late-decrypt hold is bounded (4 MiB total, 16 record(s) per direction, 5s),
+and it filled before any key matched them. Start the key source before the
+capture, or expect the first message of a call to be missing.
+```
+
+That one argues for starting the key source earlier, or for a bigger bound.
+Records still held when the run ended produce a different line, which argues
+for neither:
+
+```text
+5 TLS record(s) were still waiting when the run ended: no key ever arrived
+for them. Nothing was discarded and starting the capture earlier would not
+have helped -- the key source never produced those secrets.
+```
+
+
+## What does not work, and why
+
+Stated plainly, because time spent here is time people lose:
+
+- **A packet capture alone.** No amount of sipnab flags decrypts a pcap with
+  no keys. If the handshake had forward secrecy, the information required is
+  not in the capture and never was.
+- **The server's private key, on modern TLS.** See method 6.
+- **A mirror port or tap, by itself.** It gives you the same ciphertext as a
+  local capture. You still need keys or plaintext from an endpoint.
+- **Any of methods 3–5 against a machine you do not control.** They read
+  process memory on the host they run on. That is the whole boundary.
+- **Attaching to a long-lived connection and expecting the back catalog.**
+  Keys extracted from a running process decrypt records captured from that
+  point on, provided the capture catches the stream early enough. sipnab does
+  recover records that reached it in the moments before the key did, described
+  above, but that closes a gap of packets rather than one of history: traffic
+  that went past before the capture started is not in the capture, and nothing
+  recovers it.
+
+## Still stuck?
+
+| Symptom | Likely cause |
+|---|---|
+| `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
+| `--uprobe-list` marks a library `(UNREACHABLE)` | The path lives in another mount namespace, almost always a container. Run as root |
+| Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [method 3](#3-no-keys-at-all-read-the-plaintext-in-the-process)) |
+| `needs this kernel's BTF` | No `CONFIG_DEBUG_INFO_BTF`; use `--uprobe-backend tracefs` |
+| `no kernel programs` | Binary carries the `bpf` feature and not the programs — the build host had no `bpf-linker`. Use `tracefs`, or rebuild somewhere that has it |
+| Keylog present, still encrypted | Keys minted after start — add `--keylog-watch` |
+| Call decodes, but its INVITE is missing and sipnab reports a media or NAT problem | The keys arrived after the INVITE did. sipnab retries records held from before the key, within the bounds above; start the key source before the capture |
+| Keylog stays empty | eCapture attached to a TLS library the daemon never calls — pass `--libssl` with the path from `/proc/<daemon-pid>/maps` |
+| Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing, or raise `--tls-lockon-window` |
+| Keys load, no sessions listed | TLS 1.2 without the handshake — the ServerHello never got captured, and the master secret alone cannot make record keys. Restart the connection while capturing |
+| TLS 1.2, right keys, still nothing | A CBC suite. sipnab refuses to emit record plaintext it cannot MAC-verify, so a forged capture cannot inject "decrypted" SIP. Configure an AES-GCM suite |
+| Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use [method 4](#4-plaintext-and-the-peer-address) for peers |
+
+More in [Troubleshooting](troubleshooting.md) and the
+[uprobe walkthrough](uprobe-walkthrough.md).
+
+---
+
 <!-- source: CONTRIBUTING.md -->
 
 # Contributing to sipnab
@@ -42761,6 +44787,21 @@ Two pages outside `docs/` publish to the site the same way:
 this file and `website/content/docs/contrib.md` from `contrib/README.md`, and
 `contributor_docs_are_generated_site_pages` fails if either page is missing.
 Edit the source, then regenerate.
+
+The man page, `man/sipnab.1`, is partly generated. Its OPTIONS section comes
+from the clap definitions in `src/cli.rs`, its ENVIRONMENT section from the
+`ENVIRONMENT` table in the same file (the list `--help` prints), and its EXIT
+STATUS section from the exit-code table in `docs/cli-reference.md`.
+`tests/man_page_test.rs` fails when any of the three is stale. Regenerate them
+with:
+
+```bash
+SIPNAB_MAN_APPLY=1 cargo test --features full --test man_page_test
+```
+
+The rest of the page is hand-written. The same test checks that it names only
+flags sipnab has, that it names every environment variable sipnab reads, and
+that `groff -man -ww` formats it without a warning.
 
 `docs/internals/` *does* publish to the site — ten pages under
 `website/content/docs/internals/`, rendered by
@@ -44776,7 +46817,9 @@ the thing it guards silently rotted at least once.
 | [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The WASM binding loses an export the browser analyzer calls. |
 | [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the automated-test count, which the template must read from the file `pages.yml` generates rather than state as a number. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Your SIP server" and "Add to your voice stack" groups of the docs navigation, so a guide added to one reaches the other. |
 | [`config_examples_test`](../../tests/config_examples_test.rs) | A config sample in the docs no longer parses. |
-| [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block and RUNS 352 of the 383 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
+| [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/`, the README or a hand-written page under `website/content/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block, including a fence indented under a list item, through the same CommonMark fence rule as [`scripts/lib_markdown.py`](../../scripts/lib_markdown.py) (it checks the two parsers agree on every page), and RUNS 447 of the 496 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
+| [`examples_run_test`](../../tests/examples_run_test.rs) | A program in `examples/` no longer runs the way its own comment says, or prints something other than the output the comment shows. It runs every `cargo run` command the comments document (12, across all seven programs), except one under `sudo`, and holds `docs/library.md`'s count of the programs to the directory. |
+| [`release_surface_test`](../../tests/release_surface_test.rs) | A release adds a flag, MCP tool or REST route that no release note names, or a guide's Tested on names a sipnab release older than a flag its commands use. It reads the three lists at every release tag, with extractors it first holds to clap and the MCP router. |
 | [`homepage_claim_truth_test`](../../tests/homepage_claim_truth_test.rs) | A claim the homepage states in PROSE stops being true: the MCP tool counts and their read-only split, which released builds carry the `bpf` feature, what the installer actually puts on a host, a capability the static musl build does not have, the filter language's field and operator counts, a TUI key the page names that nothing binds, and a CLI flag the page names that does not exist, plus the `unsafe` count and the safety claim resting on it — the page said "memory-safe by construction" beside 88 `unsafe` blocks and no `forbid(unsafe_code)`. `site_journey_test` gates the tiles; this gates the sentences, because the two disagreed on one page for months. |
 | [`cookbook_recipes_test`](../../tests/cookbook_recipes_test.rs) | A command in [`docs/examples.md`](../../docs/examples.md) no longer runs or names a flag `--help` lacks; or a command it executes has no output golden in [`tests/cli/cookbook/`](../../tests/cli/cookbook) and no reason in the checker's `OUTPUT_UNPINNED` table; or a golden there is one no cookbook command produces. |
 | [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
@@ -45213,7 +47256,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The seventeen workflows
+## The eighteen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -45229,6 +47272,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+| `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](../../scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
@@ -46671,9 +48715,15 @@ It exists because an edit whose anchor included the heading destroyed it, leavin
 and a full CI run, because the sibling gate searches for the heading naming the
 *current site version* — which was still present further down.
 
-Nothing gates the changelog's contents, which is deliberate — prose would satisfy
-a gate on prose. What *is* gated is the release date: it must match
+Nothing gates the changelog's prose, which is deliberate — prose would satisfy
+a gate on prose. Two checks read it all the same. The release date must match
 [`website/config.toml`](../../website/config.toml), asserted by `site_release_date_matches_changelog`.
+And the notes must name everything a release adds:
+[`release_surface_test`](../../tests/release_surface_test.rs) reads the
+command-line flags, MCP tools and REST routes at every release tag, and
+requires the notes to name each addition in its release's section or a later
+one. Whatever the working tree adds over the last tag, the notes must name
+above that tag's section, which before a release means under `[Unreleased]`.
 
 ### Re-measuring the benchmarks
 

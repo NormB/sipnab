@@ -38,12 +38,14 @@ permissions:
 # `profiler_builtins`, so the nested build fails E0463 (scrubbing the coverage
 # variables from the child environment was not enough). Both run in full under
 # the CI workflow's plain `cargo test`; only their coverage contribution is
-# dropped.
+# dropped. `every_example_runs_as_its_comment_documents` runs the built example
+# programs, and `cargo llvm-cov` does not build examples, so here it could only
+# report "not built"; it also runs in full under the CI workflow's `cargo test`.
 #
 # COVERAGE_IGNORE_REGEX -- the dev-only src/bin/gen_fixture.rs [[bin]] is not
 # shipped product code (mirrors codecov.yml `ignore:`).
 env:
-  COVERAGE_TEST_SKIPS: --skip cli_goldens --skip wasm_plugin_
+  COVERAGE_TEST_SKIPS: --skip cli_goldens --skip wasm_plugin_ --skip every_example_runs_as_its_comment_documents
   COVERAGE_IGNORE_REGEX: gen_fixture\.rs
 
 jobs:

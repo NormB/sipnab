@@ -66,7 +66,7 @@ Target `wasm32-unknown-unknown`. `std` works there. A `no_std` plugin is
 smaller but needs its own allocator and panic handler, which is a lot of
 ceremony for a detection.
 
-### 2. Four exports, and nothing imported
+### 2. Three exports, and nothing imported
 
 ```rust
 #[unsafe(no_mangle)]

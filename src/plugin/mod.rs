@@ -745,13 +745,62 @@ mod tests {
              gate is comparing nothing"
         );
 
-        for (page, text) in [
+        // The website page a reader of sipnab.com follows. It was a hand-kept
+        // copy outside this list, and it went on requiring `sipnab_dealloc`
+        // after both documents below stopped. Read at run time rather than
+        // embedded: the published crate does not ship `website/`, and an
+        // embedded path it lacks would break a build from crates.io. In a
+        // checkout the page exists, and a missing one fails here.
+        let site_page = "website/content/docs/plugins.md";
+        let site_text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(site_page),
+        );
+        let site_text = match site_text {
+            Ok(t) => Some(t),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join(".git")
+                        .exists() =>
+            {
+                None
+            }
+            Err(e) => return Err(format!("{site_page}: {e}").into()),
+        };
+        let mut pages: Vec<(&str, &str)> = vec![
             ("docs/plugins.md", include_str!("../../docs/plugins.md")),
             (
                 "docs/design/wasm-plugin-api.md",
                 include_str!("../../docs/design/wasm-plugin-api.md"),
             ),
-        ] {
+        ];
+        if let Some(text) = site_text.as_deref() {
+            pages.push((site_page, text));
+        }
+        for (page, text) in pages {
+            // A count the page states in words ("Four exports") is a claim
+            // about the same set. The declaration block can be right while the
+            // heading above it says otherwise.
+            for line in text.lines() {
+                let lower = line.to_ascii_lowercase();
+                for (word, n) in [
+                    ("two", 2usize),
+                    ("three", 3),
+                    ("four", 4),
+                    ("five", 5),
+                    ("six", 6),
+                ] {
+                    if lower.contains(&format!("{word} exports")) {
+                        assert_eq!(
+                            n,
+                            resolved.len(),
+                            "{page} says \"{word} exports\" and the host resolves \
+                             {}: {resolved:?}\n  {line}",
+                            resolved.len()
+                        );
+                    }
+                }
+            }
             // Names DECLARED on this page, by form. A `sipnab_*` token also
             // appears in prose explaining why there is no deallocator, and in
             // a shell line naming `sipnab_plugin_example.wasm`; neither

@@ -68,7 +68,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The seventeen workflows
+## The eighteen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -84,6 +84,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+| `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](https://github.com/NormB/sipnab/blob/main/scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
@@ -1526,9 +1527,15 @@ It exists because an edit whose anchor included the heading destroyed it, leavin
 and a full CI run, because the sibling gate searches for the heading naming the
 *current site version* — which was still present further down.
 
-Nothing gates the changelog's contents, which is deliberate — prose would satisfy
-a gate on prose. What *is* gated is the release date: it must match
+Nothing gates the changelog's prose, which is deliberate — prose would satisfy
+a gate on prose. Two checks read it all the same. The release date must match
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml), asserted by `site_release_date_matches_changelog`.
+And the notes must name everything a release adds:
+[`release_surface_test`](https://github.com/NormB/sipnab/blob/main/tests/release_surface_test.rs) reads the
+command-line flags, MCP tools and REST routes at every release tag, and
+requires the notes to name each addition in its release's section or a later
+one. Whatever the working tree adds over the last tag, the notes must name
+above that tag's section, which before a release means under `[Unreleased]`.
 
 ### Re-measuring the benchmarks
 
