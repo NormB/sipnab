@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking for library users: `McpArgs::mcp_transport` is a
+  `sipnab::cli::McpTransport` enum, not a `String`.** The command line accepts
+  the same two values, `stdio` and `http`. Any other value was already refused
+  by the parser, so the second check in `Cli::validate` and the third in
+  `start_servers` could not print; with the enum no other transport can be
+  built and both are gone. `--help` now describes each value.
+
 ### Fixed
 
 - **CI and the site deploy survive one failed request to github.com.** The

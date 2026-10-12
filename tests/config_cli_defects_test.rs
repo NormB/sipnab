@@ -1147,3 +1147,18 @@ fn an_empty_capture_tunnels_list_is_named_as_empty() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// An unknown `--mcp-transport` is refused by clap, naming both values, with
+/// exit 2. That is the one place the rule lives: `validate` and the server
+/// start-up each carried a second copy that clap made unreachable.
+#[test]
+fn an_unknown_mcp_transport_is_refused_at_parse_time() -> Result<(), TestError> {
+    let o = run(&argv(&["--mcp", "--mcp-transport", "carrier-pigeon"]), None);
+    assert_eq!((o.stage, o.code), (Stage::Parse, 2), "{}", o.message);
+    assert!(
+        o.message.contains("[possible values: stdio, http]"),
+        "{}",
+        o.message
+    );
+    Ok(())
+}

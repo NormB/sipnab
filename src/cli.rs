@@ -3012,16 +3012,15 @@ pub struct McpArgs {
     /// MCP transport: "stdio" (default) or "http".
     ///
     /// Accepts only `stdio` or `http`; any other value is rejected at parse
-    /// time (previously an unrecognized transport passed parse silently and was
-    /// only caught later, and only when `--mcp` was also set).
+    /// time.
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-transport",
         value_name = "TRANSPORT",
-        default_value = "stdio",
-        value_parser = clap::builder::PossibleValuesParser::new(["stdio", "http"])
+        value_enum,
+        default_value_t = McpTransport::Stdio
     )]
-    pub mcp_transport: String,
+    pub mcp_transport: McpTransport,
 
     /// Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
     #[arg(
@@ -5026,6 +5025,16 @@ impl CaptureProfile {
             CaptureProfile::Full => 65535,
         }
     }
+}
+
+/// The MCP server's transport (`--mcp-transport`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum McpTransport {
+    /// JSON-RPC over stdin and stdout.
+    #[default]
+    Stdio,
+    /// JSON-RPC over HTTP (needs the mcp-http feature).
+    Http,
 }
 
 /// Source-address strategy for the scanner-kill response packet.
@@ -7247,7 +7256,7 @@ impl Cli {
     /// passing through `normalize`.
     #[must_use]
     pub fn mcp_owns_stdout(&self) -> bool {
-        self.mcp_args.mcp && self.mcp_args.mcp_transport != "http"
+        self.mcp_args.mcp && self.mcp_args.mcp_transport != McpTransport::Http
     }
 
     /// Whether the dialog store evicts the oldest dialog at `--limit` capacity.
@@ -7304,8 +7313,8 @@ impl Cli {
     /// `--fail2ban`) require non-interactive mode (`-N`) unless `--call-report`
     /// is specified (which implies non-interactive output). Also rejects
     /// `--mcp` without `-N`, `--mcp` combined with stdout-writing flags
-    /// (MCP owns stdout for the JSON-RPC wire), an unknown
-    /// `--mcp-transport` value, and any malformed `--kill-target` spec.
+    /// (MCP owns stdout for the JSON-RPC wire), and any malformed
+    /// `--kill-target` spec.
     ///
     /// # Errors
     /// `crate::Error::CliValidation` with a user-facing message for each
@@ -7608,19 +7617,13 @@ impl Cli {
             // Token + bind validation for non-loopback HTTP transport happens
             // in the http transport module; for stdio there is no
             // network surface to validate.
-            if self.mcp_args.mcp_transport != "stdio" && self.mcp_args.mcp_transport != "http" {
-                return Err(crate::Error::CliValidation(format!(
-                    "--mcp-transport must be 'stdio' or 'http', got '{}'",
-                    self.mcp_args.mcp_transport
-                )));
-            }
         }
 
         // The MCP certificate pair configures the HTTP transport's listener.
         // On stdio there is no listener, so the flags would do nothing while
         // the operator believes the server is on HTTPS.
         if (self.mcp_args.mcp_tls_cert.is_some() || self.mcp_args.mcp_tls_key.is_some())
-            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == "http")
+            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == McpTransport::Http)
         {
             return Err(crate::Error::CliValidation(
                 "--mcp-tls-cert/--mcp-tls-key serve MCP over HTTPS and do nothing \
@@ -8859,14 +8862,23 @@ mod tests {
         Ok(())
     }
 
-    /// Both documented transports still parse and round-trip.
+    /// Both documented transports still parse, each into its own variant,
+    /// and no flag at all is stdio.
+    ///
+    /// The transport used to be a `String` that clap restricted to the two
+    /// values, with a second check in `validate` and a third arm in
+    /// `start_servers` for any other value. clap refused every other value
+    /// first, so neither later message could print. As an enum there is one
+    /// rule, and no other value can be built.
     #[test]
     fn mcp_transport_accepts_documented_values() -> Result<(), TestError> {
-        for v in ["stdio", "http"] {
+        for (v, want) in [("stdio", McpTransport::Stdio), ("http", McpTransport::Http)] {
             let cli = Cli::try_parse_from(["sipnab", "--mcp-transport", v])
                 .map_err(|e| format!("--mcp-transport {v} must parse: {e}"))?;
-            assert_eq!(cli.mcp_args.mcp_transport, v);
+            assert_eq!(cli.mcp_args.mcp_transport, want);
         }
+        let bare = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("bare: {e}"))?;
+        assert_eq!(bare.mcp_args.mcp_transport, McpTransport::Stdio);
         Ok(())
     }
 

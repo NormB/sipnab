@@ -901,13 +901,13 @@ pub fn start_servers(
                 None => s,
             }
         };
-        match cli.mcp_args.mcp_transport.as_str() {
-            "stdio" => Some(Prepared::McpStdio {
+        match cli.mcp_args.mcp_transport {
+            crate::cli::McpTransport::Stdio => Some(Prepared::McpStdio {
                 server: Box::new(new_server()),
                 done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
             #[cfg(feature = "mcp-http")]
-            "http" => {
+            crate::cli::McpTransport::Http => {
                 let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
                 let bind = crate::output::api::parse_bind_addr(bind_str)
                     .map_err(|e| anyhow::anyhow!("Invalid --mcp-bind address: {e}"))?;
@@ -942,15 +942,10 @@ pub fn start_servers(
                 })
             }
             #[cfg(not(feature = "mcp-http"))]
-            "http" => {
+            crate::cli::McpTransport::Http => {
                 return Err(anyhow::anyhow!(
                     "--mcp-transport http requires the mcp-http feature; rebuild with \
                      --features mcp-http (or full)."
-                ));
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "unknown --mcp-transport '{other}', expected stdio or http"
                 ));
             }
         }
