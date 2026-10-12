@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP prompt `vcon-handoff`.** It orders `capture_status`,
+  `validate_filter`, `export_vcon` with the filter, and `validate_vcon` on each
+  exported container, then has the model record each container's `digest`.
+  It is served only when the `core`, `signaling` and `vcon` tools are loaded.
+  The [MCP tool reference](docs/mcp-tools.md#prompts) lists every prompt, its
+  steps and the bundles it needs, and a new table,
+  [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls), says
+  which of seven tools answers which question.
+
 ### Fixed
 
 - **`--run-provenance-file` no longer replaces the node name with the host
@@ -130,6 +141,17 @@ entry that carries them.
   later column of that row to the right, and an IPv6 socket did the same to
   the Source and Destination columns of both stream tables. Each column now
   widens to its longest value; a table of short values prints as before.
+- **MCP prompts named tools the server did not load.** `prompts/list` served
+  every prompt whatever `--mcp-tools` selected, so under `core` the
+  `triage-outage` prompt told the model to call `show_evidence`, which `core`
+  does not register. A prompt is now served only when every tool its text
+  names is registered, and `prompts/get` on one that is not refuses with
+  -32602, naming the missing tools and the bundles that hold them.
+- **The MCP tool reference listed `actions_revert` among the tools that omit
+  `source_exhausted`.** The code's list does not hold it; the paragraph now
+  names the seventeen tools the code lists, and a test derives it from that
+  list. The table of tools without a cursor named two tools; it now lists the
+  eleven that lack a cursor, a total, or both.
 
 ### Changed
 

@@ -4924,7 +4924,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    // 1113 -> 1121: the `%G?` verdict table for the pre-push commit-signature
+    // 1113 -> 1125: the `%G?` verdict table for the pre-push commit-signature
     // gate, in docs/internals/build-ci-release.md and its site mirror, +2; and
     // the 2026-10-11 notes rewrite, +6, per file under
     // website/content/notes/: fifty-seven-tools-and-the-two-that-stay-off +2,
@@ -4934,8 +4934,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // the-invite-that-arrived-before-its-keys +1,
     // what-to-allow-when-an-agent-drives-sipnab +1,
     // an-observer-vcon-and-its-third-verdict -1,
-    // three-surfaces-and-three-different-calls -1.
-    const EXPECTED_TABLES: usize = 1121;
+    // three-surfaces-and-three-different-calls -1; and docs/mcp-tools.md +2
+    // (the "Which tool finds calls" table and the Prompts table) and their
+    // site page +2. The cursor-exceptions table was rewritten in place.
+    const EXPECTED_TABLES: usize = 1125;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -7681,6 +7683,149 @@ fn guides_explain_the_dpkg_lock_error_in_apts_own_words() -> Result<(), TestErro
         assert!(
             flat.contains("Wait for it to finish, then run the block again."),
             "{guide} no longer says what to do about it"
+        );
+    }
+    Ok(())
+}
+
+/// The English word for a small count, as the MCP reference spells counts.
+#[cfg(feature = "mcp")]
+fn count_word(n: usize) -> Option<&'static str> {
+    [
+        "Zero",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "Eleven",
+        "Twelve",
+        "Thirteen",
+        "Fourteen",
+        "Fifteen",
+        "Sixteen",
+        "Seventeen",
+        "Eighteen",
+        "Nineteen",
+        "Twenty",
+    ]
+    .get(n)
+    .copied()
+}
+
+/// Backticked spans in `text`.
+#[cfg(feature = "mcp")]
+fn backticked(text: &str) -> Vec<&str> {
+    text.split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, s)| s)
+        .collect()
+}
+
+/// The MCP reference's paragraph on source-independent tools names exactly
+/// `SOURCE_INDEPENDENT_TOOLS`, and its counts are that list's counts.
+///
+/// The paragraph said "Seventeen" and named eighteen: it carried
+/// `actions_revert`, which the code's list does not hold, so a reader was told
+/// a tool omits `source_exhausted` when the code makes no such exception.
+#[cfg(feature = "mcp")]
+#[test]
+fn the_source_independent_paragraph_names_the_codes_list() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    let lead = " tools are the exception, because their answer cannot move with";
+    let at = text
+        .find(lead)
+        .ok_or("the source-independent paragraph is on the page")?;
+    let start = text[..at].rfind("\n\n").map_or(0, |p| p + 2);
+    let end = text[at..].find("\n\n").map_or(text.len(), |p| at + p);
+    let para = &text[start..end];
+    let code = sipnab::mcp::completeness::SOURCE_INDEPENDENT_TOOLS;
+
+    let named: BTreeSet<&str> = backticked(para).into_iter().collect();
+    let want: BTreeSet<&str> = code.iter().copied().collect();
+    assert_eq!(
+        named, want,
+        "docs/mcp-tools.md names a different set of source-independent tools \
+         than src/mcp/completeness.rs SOURCE_INDEPENDENT_TOOLS"
+    );
+    let total = count_word(code.len()).ok_or("a count the table spells")?;
+    assert!(
+        para.starts_with(&format!("{total}{lead}")),
+        "the paragraph should open with {total:?}: {para}"
+    );
+
+    // The two halves: tools that read something else, and tools that ask
+    // another process. Each half's count word matches the names in it.
+    let split = para
+        .find("The other ")
+        .ok_or("the paragraph has its second half")?;
+    let (first, second) = para.split_at(split);
+    let first_names = backticked(first).len();
+    let second_names = backticked(second).len();
+    let first_word = count_word(first_names).ok_or("first count")?;
+    let second_word = count_word(second_names)
+        .ok_or("second count")?
+        .to_lowercase();
+    assert!(
+        first.contains(&format!(
+            "{first_word} read something other than the capture store"
+        )),
+        "the first half names {first_names}: {first}"
+    );
+    assert!(
+        second.starts_with(&format!("The other {second_word} ask another process")),
+        "the second half names {second_names}: {second}"
+    );
+    Ok(())
+}
+
+/// The MCP reference documents every prompt, with the tools it calls and the
+/// bundles those tools need, derived from `sipnab::mcp::prompts`.
+#[cfg(feature = "mcp")]
+#[test]
+fn every_prompt_is_documented_with_its_tools_and_bundles() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    let at = text
+        .find("\n### Prompts\n")
+        .ok_or("docs/mcp-tools.md has a `### Prompts` section")?;
+    let body = &text[at + 1..];
+    let end = body[4..].find("\n#").map_or(body.len(), |p| p + 4);
+    let section = &body[..end];
+    let rows: Vec<&str> = section.lines().filter(|l| l.starts_with("| `")).collect();
+    let workflows = sipnab::mcp::prompts::all();
+    assert_eq!(
+        rows.len(),
+        workflows.len(),
+        "one table row per prompt: {rows:#?}"
+    );
+    for w in workflows {
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with(&format!("| `{}` |", w.name)))
+            .ok_or(format!("no row for prompt {}", w.name))?;
+        let cells: Vec<&str> = row.split(" | ").collect();
+        let tools_cell = cells.get(2).ok_or(format!("{}: a tools cell", w.name))?;
+        let bundles_cell = cells.get(3).ok_or(format!("{}: a bundles cell", w.name))?;
+        let needs = w.needs();
+        assert_eq!(
+            backticked(tools_cell),
+            needs,
+            "{}: the tools column lists the tools the prompt calls, in order",
+            w.name
+        );
+        assert_eq!(
+            backticked(bundles_cell),
+            sipnab::mcp::prompts::bundles_holding(&needs),
+            "{}: the bundles column lists the bundles those tools are in",
+            w.name
         );
     }
     Ok(())
