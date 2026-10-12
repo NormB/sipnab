@@ -112,7 +112,15 @@ fn the_workflow_still_enforces_a_coverage_floor() -> Result<(), TestError> {
 /// the workflow states rather than keeping a copy that agrees today.
 #[test]
 fn the_rehearsal_skips_what_the_coverage_job_skips() -> Result<(), TestError> {
-    for skip in ["cli_goldens", "wasm_plugin_"] {
+    // `every_example_runs_as_its_comment_documents` runs the built example
+    // programs, and `cargo llvm-cov` does not build examples, so under
+    // coverage it can only report "not built". It runs in full under CI's
+    // plain `cargo test`, which builds them.
+    for skip in [
+        "cli_goldens",
+        "wasm_plugin_",
+        "every_example_runs_as_its_comment_documents",
+    ] {
         assert!(
             workflow()?.contains(&format!("--skip {skip}")),
             "the coverage scope no longer skips {skip}; if that is deliberate, \
