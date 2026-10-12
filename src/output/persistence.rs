@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whether content may still reach disk on this run.
 //!
 //! The command line decides what a run is allowed to persist. This gate lets
