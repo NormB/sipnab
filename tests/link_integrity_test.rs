@@ -1220,7 +1220,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/tfps-sipnab.md section 3 and docs/vcon-sipnab.md's forwarder
     // section (+2), section 3 links back to #tested-on (+1), and
     // docs/library.md links client-examples.md for tls_plaintext_records (+1).
-    const EXPECTED_WIKI_LINKS: usize = 1396;
+    // 1396 -> 1426: the Asterisk and FreeSWITCH guides. docs/asterisk.md 5,
+    // docs/asterisk-sipnab.md 11, docs/freeswitch.md 4,
+    // docs/freeswitch-sipnab.md 6, docs/README.md 4 (one index entry per
+    // page).
+    const EXPECTED_WIKI_LINKS: usize = 1426;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1354,7 +1358,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // the 19 guides the home page's voice-stack tiles link (4 + 3 + 4 + 4 + 2 + 2).
     // 135 -> 136: CONTRIBUTING.md's commit-msg hook paragraph links its own
     // "Never publish a machine, an account, or a network" section.
-    const EXPECTED_COMMUNITY_LINKS: usize = 136;
+    // 136 -> 140: README.md's voice-stack section links docs/asterisk.md,
+    // docs/asterisk-sipnab.md, docs/freeswitch.md and
+    // docs/freeswitch-sipnab.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 140;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2453,7 +2460,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 71 -> 73: docs/rtpproxy-relay.md and docs/rtpproxy-sipnab.md.
     // 73 -> 75: docs/fail2ban.md and docs/fail2ban-sipnab.md.
     // 75 -> 76: docs/vcon-store.md.
-    const EXPECTED_DOCS_PAGES: usize = 76;
+    // 76 -> 80: docs/asterisk.md, docs/asterisk-sipnab.md, docs/freeswitch.md
+    // and docs/freeswitch-sipnab.md.
+    const EXPECTED_DOCS_PAGES: usize = 80;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

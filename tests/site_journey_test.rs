@@ -11511,13 +11511,38 @@ fn homepage_voice_stack_section_links_every_stack_guide() -> Result<(), TestErro
             "website/config.toml has no \"{group}\" docs_nav group — renamed?"
         );
     }
+    // Guides in the nav whose homepage links land in a separate change. Each
+    // must be in the nav and must NOT be linked yet: once the homepage links
+    // one, this list fails until the entry is removed, so it cannot go stale.
+    // The Asterisk and FreeSWITCH guides, 2026-10-11.
+    const NOT_YET_ON_HOMEPAGE: [&str; 4] = [
+        "docs/asterisk.md",
+        "docs/asterisk-sipnab.md",
+        "docs/freeswitch.md",
+        "docs/freeswitch-sipnab.md",
+    ];
     let guides: BTreeSet<String> = nav
         .into_iter()
         .filter(|e| GROUPS.contains(&e.group.as_str()))
         .map(|e| e.path)
         .collect();
+    for pending in NOT_YET_ON_HOMEPAGE {
+        assert!(
+            guides.contains(pending),
+            "{pending} is listed as not yet on the homepage but is not in the nav's \
+             voice-stack groups"
+        );
+        assert!(
+            !linked.contains(pending),
+            "the homepage now links {pending}: remove it from NOT_YET_ON_HOMEPAGE"
+        );
+    }
+    let expected: BTreeSet<String> = guides
+        .into_iter()
+        .filter(|g| !NOT_YET_ON_HOMEPAGE.contains(&g.as_str()))
+        .collect();
     assert_eq!(
-        linked, guides,
+        linked, expected,
         "the homepage voice-stack section (left) and the nav's voice-stack group (right) \
          list different guides"
     );

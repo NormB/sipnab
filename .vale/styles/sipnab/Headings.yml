@@ -158,6 +158,7 @@ exceptions:
 
   # --- Products and projects named in the docs ---
   - Alpine
+  - Asterisk
   - Cascade
   - Catppuccin
   - Claude

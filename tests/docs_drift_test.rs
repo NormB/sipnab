@@ -1421,6 +1421,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1441,6 +1445,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1461,6 +1469,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1497,6 +1509,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/fail2ban.md",
             "docs/fail2ban-sipnab.md",
             "website/content/docs/fail2ban-sipnab.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
+            "docs/asterisk-sipnab.md",
+            "website/content/docs/asterisk-sipnab.md",
         ],
     ),
     // fail2ban-client's, on `fail2ban-client get <jail> banip --with-time`,
@@ -1544,6 +1562,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // apt-get's and dpkg's, installing the voice stack's build tools.
@@ -1664,6 +1686,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "data-binary",
         &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
+    // docs/freeswitch.md builds FreeSWITCH from source: git's `--depth`,
+    // cloning one tag of sofia-sip and of spandsp, and pkg-config's
+    // `--modversion`, printing the versions the build installed.
+    (
+        "depth",
+        &["docs/freeswitch.md", "website/content/docs/freeswitch.md"],
+    ),
+    (
+        "modversion",
+        &["docs/freeswitch.md", "website/content/docs/freeswitch.md"],
     ),
 ];
 
@@ -4606,7 +4639,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 276 -> 275: compare.md removed (Norm, 2026-10-10).
     // 275 -> 276: tests/fixtures/markdown-fences.md, the fence shapes
     // the_rust_and_python_fence_parsers_agree holds both parsers to.
-    const EXPECTED_MARKDOWN_FILES: usize = 276;
+    // 276 -> 284: the Asterisk and FreeSWITCH guides. docs/asterisk.md,
+    // docs/asterisk-sipnab.md, docs/freeswitch.md and
+    // docs/freeswitch-sipnab.md, and their four generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 284;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5183,7 +5219,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1136 -> 1156: ten key tables in docs/keybindings.md (the nine views the F1 help
     // documented and the page did not, and the capture filter editor) and
     // the same ten in its site mirror.
-    const EXPECTED_TABLES: usize = 1156;
+    // 1156 -> 1162: the Asterisk and FreeSWITCH guides: docs/asterisk.md 1,
+    // docs/freeswitch.md 2, and the same in their site copies.
+    const EXPECTED_TABLES: usize = 1162;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

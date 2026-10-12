@@ -370,6 +370,10 @@ pages = [
   { path = "docs/opensips-sipnab.md", menu = true },
   { path = "docs/kamailio.md", menu = true },
   { path = "docs/kamailio-sipnab.md", menu = true },
+  { path = "docs/asterisk.md", menu = true },
+  { path = "docs/asterisk-sipnab.md", menu = true },
+  { path = "docs/freeswitch.md", menu = true },
+  { path = "docs/freeswitch-sipnab.md", menu = true },
 ]
 
 [[extra.docs_nav]]

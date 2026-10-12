@@ -79,7 +79,11 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                which part of it carries a host. codespell wants "param";
 #                spelling the RFC's token differently from the RFC would make
 #                the quotation unfindable in the document it cites.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO,parm
+#   exten        Asterisk's dialplan keyword. Every line of extensions.conf
+#                starts `exten =>`, and docs/asterisk.md writes the file the
+#                reader's Asterisk reads. codespell wants "extend"; Asterisk
+#                accepts no other spelling.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO,parm,exten
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

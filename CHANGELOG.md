@@ -10,6 +10,34 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Guides for Asterisk and FreeSWITCH.** Asterisk and FreeSWITCH are
+  back-to-back user agents (B2BUAs): each answers the caller's call itself and
+  places a second call to the callee, so one call through them is two SIP
+  dialogs, called legs. [Use Asterisk as your voice stack's
+  PBX](https://sipnab.com/docs/asterisk/) builds Asterisk 22.11.0 from the
+  Asterisk project's source release, runs it as its own user under systemd,
+  connects a caller to a callee through it, and proves it with a test call
+  that carries audio both ways through Asterisk. [Run sipnab beside
+  Asterisk](https://sipnab.com/docs/asterisk-sipnab/) watches that call as
+  its two legs: the report and the streams on each leg, both legs in one flow
+  in the terminal interface, a call report from a saved capture, the legs
+  matched over MCP and the REST API, and Asterisk's own HEP received by
+  sipnab's listener. [Use FreeSWITCH in your voice
+  stack](https://sipnab.com/docs/freeswitch/) builds FreeSWITCH 1.11.3, with
+  sofia-sip and spandsp, from source, which needs no account, where
+  FreeSWITCH's own packages need a SignalWire access token and neither
+  distribution carries one. It bridges a test call to a callee on the same
+  machine and proves it with audio on both legs. [Run sipnab beside
+  FreeSWITCH](https://sipnab.com/docs/freeswitch-sipnab/) watches that call
+  as two dialogs and four audio streams with `--portrange 5060-5080`, reads
+  its quality from the capture, ties the two legs together in the TUI's
+  extended flow, the REST `/correlated` route and MCP, and receives
+  FreeSWITCH's own HEP from its `capture-server` setting. Every command in
+  the four guides ran as written on clean Debian 13 and Ubuntu 24.04
+  machines, with sipnab 0.5.211 from its release package.
+
 ### Changed
 
 - **Breaking for library users: `McpArgs::mcp_transport` is a
