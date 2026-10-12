@@ -260,7 +260,7 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (Homer Encapsula
 
 ### `--until {} is not after --since {}: the window [--since, --until) would hold no instant`
 
-`--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`. The `--until` time you gave, the first `{}`, is the same as or earlier than the `--since` time, the second `{}`, so no instant is in the window. sipnab prints both in RFC 3339 UTC.
+`--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`. The `--until` time you gave, the first `{}`, is the same as or earlier than the `--since` time, the second `{}`, so no instant is in the window. sipnab prints both in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) UTC.
 
 **What to do:** Give an `--until` time later than the `--since` time, or drop one of the two flags for a window open on that side.
 
