@@ -4647,7 +4647,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 276 -> 284: the Asterisk and FreeSWITCH guides. docs/asterisk.md,
     // docs/asterisk-sipnab.md, docs/freeswitch.md and
     // docs/freeswitch-sipnab.md, and their four generated site pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 284;
+    // 284 -> 285: docs/design/par5-cli-queries.md, the CLI query flag design.
+    // A design doc has no site mirror, so one file.
+    const EXPECTED_MARKDOWN_FILES: usize = 285;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5234,7 +5236,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/design/surface-capability-matrix.md 1 (Analyze a stored vCon).
     // 1167 -> 1169: the whole-call audio budget: docs/config-reference.md 1
     // (the call-seconds table under Audio retention budget) and its site page 1.
-    const EXPECTED_TABLES: usize = 1169;
+    // 1169 -> 1175: the --since/--until time window and docs/design/par5-cli-queries.md:
+    // par5-cli-queries.md 2, cli-reference.md 1, filter-dsl.md 1, and their
+    // two site copies.
+    const EXPECTED_TABLES: usize = 1175;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

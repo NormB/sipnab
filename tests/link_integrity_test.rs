@@ -1235,7 +1235,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1438 -> 1443: the whole-call audio budget: one link each to Audio
     // retention budget from docs/cli-reference.md, docs/mcp-tools.md,
     // docs/vcon-sipnab.md, docs/vcon.md and docs/config-reference.md.
-    const EXPECTED_WIKI_LINKS: usize = 1443;
+    // 1443 -> 1446: the --since/--until time window: one link each from
+    // docs/cli-reference.md, docs/filter-dsl.md and docs/examples.md.
+    const EXPECTED_WIKI_LINKS: usize = 1446;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

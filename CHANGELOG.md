@@ -47,6 +47,21 @@ entry that carries them.
   container with no readable SIP is answered with `verdict: unreadable` and
   the reason. The tool is read-only, in the `vcon` bundle, and bounded by
   `limit`.
+- **`--since` and `--until` scope a headless run to a time window.**
+  `sipnab -N -I capture.pcap --report --since 2026-10-09T10:00:00Z --until
+  2026-10-09T11:00:00Z` keeps the dialogs whose first message falls in the
+  half-open window `[since, until)`, the window REST `/v1/dialogs` spells
+  `after`/`before` and the MCP `search_by_time` tool spells `start`/`end`; all
+  three now read the bound with one [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) parser and apply one rule. The
+  window joins `--filter` in one compiled filter, so `--report`,
+  `--json-dialogs`, `--analyze`, the per-message stream and
+  `--export-vcon-when` all honor it. A window holding none of the capture's
+  dialogs says so on stderr, naming the span the dialogs cover. An `--until`
+  not after `--since`, a value that is not RFC 3339, or either flag without
+  `-N` exits 2.
+- **The filter DSL has a `time` field**: the dialog's first-message instant,
+  compared with a quoted RFC 3339 literal by `<`, `<=`, `>`, `>=` or `==`.
+  `time >= 'A' AND time < 'B'` selects what `--since A --until B` selects.
 
 ### Changed
 

@@ -1402,8 +1402,9 @@ impl FilterDialogState {
             if s.is_empty() {
                 return Ok(None);
             }
-            chrono::DateTime::parse_from_rfc3339(s)
-                .map(|t| Some(t.with_timezone(&chrono::Utc)))
+            // The one parser every surface reads a time bound with.
+            crate::cursor::parse_instant(s)
+                .map(Some)
                 .map_err(|e| format!("{label} time: {e}"))
         }
         Ok((

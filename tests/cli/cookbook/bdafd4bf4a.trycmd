@@ -1,0 +1,7 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --report --filter "state == 'Failed'" --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z
+--since/--until: no dialog's first message falls in [2026-10-09T10:00:00Z, 2026-10-09T11:00:00Z); this capture's dialogs begin between 2016-11-26T14:52:59.666393Z and 2016-11-26T14:53:08.286194Z
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags            
+-------------------------------------------------------------------------------------------------------------------------
+
+```
