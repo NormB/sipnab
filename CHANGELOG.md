@@ -32,6 +32,9 @@ entry that carries them.
 - **`--capture-tunnels=` with no port in the list says the list is empty.**
   It printed "Invalid --capture-tunnels port ''" instead, because the check
   for a blank port ran before the check for an empty list.
+- **`-x`/`--quiet-bad-parse` help names `SIPNAB_LOG=debug` as the way to see
+  the notice it silences.** It said the notice was visible under `-v`, which
+  is `--invert` and changes no log level.
 
 ## [0.5.212] - 2026-10-12
 

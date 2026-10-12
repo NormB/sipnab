@@ -694,7 +694,8 @@ pub struct CaptureArgs {
     /// Quiet bad-parse packets: suppress the per-packet
     /// diagnostic emitted when a SIP-looking packet fails to parse. The packet
     /// is dropped either way; this only silences the "SIP parse error" notice
-    /// on a noisy link (visible under -v / debug logging).
+    /// on a noisy link. sipnab logs the notice at debug level, so it shows
+    /// only with SIPNAB_LOG=debug.
     #[arg(help_heading = "Capture", short = 'x', long = "quiet-bad-parse")]
     pub quiet_bad_parse: bool,
 
@@ -11210,6 +11211,29 @@ mod tests {
                 .capture_args
                 .quiet_bad_parse
         );
+        Ok(())
+    }
+
+    /// `-x` help says how to see the notice it silences: `SIPNAB_LOG=debug`.
+    ///
+    /// It said "visible under -v", and `-v` is `--invert`, which inverts the
+    /// match and changes no log level. The notice is a `debug` event, so
+    /// only the log filter shows it (`pipeline` tests pin that level).
+    #[test]
+    fn quiet_bad_parse_help_names_the_log_level_that_shows_the_notice() -> Result<(), TestError> {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "quiet_bad_parse")
+            .ok_or("no --quiet-bad-parse argument")?;
+        let help = arg
+            .get_long_help()
+            .or_else(|| arg.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(help.contains("SIPNAB_LOG=debug"), "{help}");
+        assert!(!help.contains("-v"), "-v is --invert: {help}");
         Ok(())
     }
 
