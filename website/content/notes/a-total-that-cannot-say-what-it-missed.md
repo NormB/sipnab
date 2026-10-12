@@ -211,5 +211,5 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 - [`--run-provenance-file` in the Security flags](@/docs/cli.md#security)
 - [SIP the port gate never analyzed](@/docs/api.md#sip-the-port-gate-never-analyzed)
 - [Rules every tool follows](@/docs/mcp-tools.md#rules-every-tool-follows)
-- [`capture_status`](@/docs/mcp-tools.md#capture-status) and
-  [`capture_health`](@/docs/mcp-tools.md#capture-health)
+- [`capture_status`](@/docs/mcp-tools-core.md#capture-status) and
+  [`capture_health`](@/docs/mcp-tools-server.md#capture-health)

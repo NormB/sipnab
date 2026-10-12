@@ -697,7 +697,7 @@ fn parallel_config(
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
         retain_audio: audio_retention_wanted(cli),
-        max_audio_frames: config.limits.max_audio_frames.unwrap_or(1500) as usize,
+        audio_limits: config.limits.audio_limits(),
         reassembly: !cli.capture_args.no_reassembly,
         parse_limit: cli.capture_args.limitlen,
     }
@@ -1121,7 +1121,9 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
 ///
 /// Returns a ready-to-print reason when a file that was named, or was found on
 /// disk, cannot be read.
-fn lint_suppressions(cli: &Cli) -> Result<Option<crate::sip::lint::SuppressionFile>, String> {
+pub(crate) fn lint_suppressions(
+    cli: &Cli,
+) -> Result<Option<crate::sip::lint::SuppressionFile>, String> {
     if cli.output_args.lint_no_suppress {
         return Ok(None);
     }
@@ -1206,7 +1208,7 @@ pub fn run_cores_file(
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
             // No companion server runs on the --cores path, so there is no
             // gate anyone could have moved and the command line governs.
-            let reports_ok = report_parallel_run(cli, &r, filter, vcon_filter);
+            let reports_ok = report_parallel_run(cli, config, &r, filter, vcon_filter);
             // Same linter, same catalog, same exit code as the batch path.
             // Wired here because a gate that silently passes under `--cores` is
             // worse than no gate: a pipeline adding `--cores 8` for speed would
@@ -1250,6 +1252,7 @@ pub fn run_cores_file(
 /// # Arguments
 ///
 /// * `cli` — the parsed command line: the report flags and `--quiet`.
+/// * `config` — the loaded config, for the thresholds a query resolves.
 /// * `r` — the merged result of the parallel run.
 /// * `filter` / `vcon_filter` — the compiled `--filter` expressions, as
 ///   [`generate_reports`] takes them.
@@ -1261,12 +1264,14 @@ pub fn run_cores_file(
 /// capture-quality and LLMNR notices.
 fn report_parallel_run(
     cli: &Cli,
+    config: &Config,
     r: &crate::parallel::ReconResult,
     filter: Option<&FilterExpr>,
     vcon_filter: Option<&FilterExpr>,
 ) -> bool {
     let reports_ok = generate_reports(
         cli,
+        config,
         CaptureRead {
             dialogs: &r.dialog_store,
             streams: &r.stream_store,
@@ -2408,9 +2413,7 @@ fn build_live_stream_store(
     relay_snapshot: &crate::relay::reconcile::RelaySnapshot,
 ) -> StreamStore {
     let mut ss = StreamStore::new(cli.max_streams_limit(config));
-    if let Some(max_frames) = config.limits.max_audio_frames {
-        ss.set_max_audio_frames(max_frames as usize);
-    }
+    ss.set_audio_limits(config.limits.audio_limits());
     // RE4: what the relay said it was holding when sipnab started, so a call
     // already in progress is named by its first packet rather than arriving as
     // an orphan.
@@ -2418,15 +2421,26 @@ fn build_live_stream_store(
     if apply_audio_retention(&mut ss, cli) {
         // Retention changes this run's memory profile, so state the bound
         // rather than letting an operator discover it under load.
-        let frames = config.limits.max_audio_frames.unwrap_or(1500);
-        let streams = cli.max_streams_limit(config);
-        tracing::info!(
-            "RTP payload retention is on so the MCP export_audio tool can decode it: \
-             up to {frames} frame(s) per stream across at most {streams} stream(s). \
-             Lower [limits] max_audio_frames or --max-streams to bound it further."
-        );
+        tracing::info!("{}", retention_bound_message(ss.audio_limits()));
     }
     ss
+}
+
+/// The line a live run logs when it turns audio retention on: what it keeps
+/// and what bounds it, so the bound is stated rather than discovered under
+/// load.
+fn retention_bound_message(limits: crate::rtp::stream_store::AudioLimits) -> String {
+    let per_stream = limits.max_frames.map_or_else(
+        || "whole calls".to_owned(),
+        |f| format!("up to {f} frame(s) per stream"),
+    );
+    format!(
+        "RTP payload retention is on so the MCP export_audio tool can decode it: \
+         {per_stream}, inside a budget of {} byte(s) across every stream. At the \
+         budget the oldest stream's earliest frames are released first, and its \
+         export says so. Set [limits] max_audio_bytes to change the budget.",
+        limits.max_bytes
+    )
 }
 
 /// Print the ICMP evidence summary for a finished run.
@@ -2554,6 +2568,7 @@ pub fn run(
         // As above: no companion server on this path, so no gate to consult.
         let reports_ok = report_parallel_run(
             &cli,
+            config,
             &result,
             batch.filter_expr.as_ref(),
             batch.vcon_filter_expr.as_ref(),
@@ -3905,6 +3920,17 @@ impl BatchRunner {
             #[cfg(not(feature = "vcon"))]
             let _ = ds;
         });
+        // After the sweep, which held the stream store for reading: the calls
+        // it wrote give their retained audio back.
+        #[cfg(feature = "vcon")]
+        if let Some(tracker) = lp.live_vcon.as_mut() {
+            let released = release_exported_audio(tracker, &mut self.stream_store.write());
+            if released > 0 {
+                tracing::debug!(
+                    "released {released} retained audio frame(s) of calls whose vCon was written"
+                );
+            }
+        }
         if compacted.messages_evicted > 0 {
             tracing::debug!(
                 "idle-dialog compaction: dropped {} messages from {} dialogs",
@@ -4452,6 +4478,7 @@ impl BatchRunner {
         let gate = self.servers.as_ref().map(|s| s.persistence_gate.as_ref());
         if !generate_reports(
             &self.cli,
+            &self.config,
             CaptureRead {
                 dialogs: &ds_guard,
                 streams: &ss_guard,
@@ -6080,7 +6107,13 @@ fn try_tls_decrypt(
     // appended its SIP text to the wire's held partial record, which then
     // never decrypted (issue #301). `InputOrigin::Hep` marks both
     // `--hep-listen` and `--hep-parse` input.
-    if pp.input_origin == crate::capture::parse::InputOrigin::Hep {
+    //
+    // A message rebuilt from a stored vCon is plaintext for the same reason:
+    // the container stored the decoded message.
+    if matches!(
+        pp.input_origin,
+        crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
+    ) {
         return TlsYield {
             recovered,
             decrypted: out,
@@ -6298,7 +6331,7 @@ fn print_hep_senders(roster: Option<&crate::capture::hep_roster::HepRoster>, jso
 /// every other error means the output is incomplete. `print!` would panic on
 /// both, which is how `--report` to a full disk exited 101 with a backtrace
 /// while `-O` and `--json` reported the same condition as a clean failure.
-fn write_stdout(text: &str) -> bool {
+pub(crate) fn write_stdout(text: &str) -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -6334,6 +6367,8 @@ pub struct CaptureRead<'a> {
 ///
 /// # Arguments
 ///
+/// * `config` — the loaded config, for the thresholds the one-shot queries
+///   resolve (see `app::queries`).
 /// * `filter` — the compiled `--filter` expression, or `None` for no filter.
 ///   These reports render the final stores rather than the packet stream, so
 ///   they must apply it themselves: it used to be consulted only as packets
@@ -6348,6 +6383,7 @@ pub struct CaptureRead<'a> {
 /// `SIPNAB_PERF_STATS` environment variable.
 pub fn generate_reports(
     cli: &Cli,
+    config: &Config,
     read: CaptureRead<'_>,
     filter: Option<&FilterExpr>,
     vcon_filter: Option<&FilterExpr>,
@@ -6360,6 +6396,11 @@ pub fn generate_reports(
         frames_read,
     } = read;
     report_perf_stats(dialog_store, stream_store);
+    // A window holding none of the capture's dialogs leaves every listing
+    // below empty; say why on stderr, where it cannot corrupt a JSON stream.
+    if let Some(notice) = time_window_notice(cli, dialog_store) {
+        stderr_line!("{notice}");
+    }
 
     // Idle compaction throws away messages sipnab captured, which makes the
     // ladder for those calls short in every report below. Recorded, not
@@ -6407,6 +6448,56 @@ pub fn generate_reports(
             gate,
             vcon_end,
         )
+        // The one-shot query flags (`--talkers`, `--call-tree`, `--expect`
+        // and the rest), answered from these same final stores through the
+        // same compiled filter. See `app::queries`.
+        && super::queries::render(&super::queries::QueryContext::new(
+            cli,
+            config,
+            dialog_store,
+            stream_store,
+            filter,
+        ))
+}
+
+/// What `--since`/`--until` found when the window itself holds no dialog of
+/// the capture: the explicit empty answer, naming the window and the span the
+/// capture's dialogs do cover, so an empty listing is not mistaken for a
+/// capture with nothing in it or a filter that matched nothing.
+///
+/// `None` when no window was given, or when some dialog falls inside it (an
+/// empty answer then comes from `--filter`, not from the window).
+fn time_window_notice(cli: &Cli, dialogs: &DialogStore) -> Option<String> {
+    let (since, until) = (cli.matching_args.since, cli.matching_args.until);
+    if since.is_none() && until.is_none() {
+        return None;
+    }
+    let mut span: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> = None;
+    for d in dialogs.iter() {
+        if crate::cursor::in_time_window(d.created_at, since, until) {
+            return None;
+        }
+        span = Some(match span {
+            None => (d.created_at, d.created_at),
+            Some((lo, hi)) => (lo.min(d.created_at), hi.max(d.created_at)),
+        });
+    }
+    let instant =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+    let window = format!(
+        "[{}, {})",
+        since.map_or_else(|| "unbounded".to_string(), instant),
+        until.map_or_else(|| "unbounded".to_string(), instant),
+    );
+    Some(match span {
+        Some((first, last)) => format!(
+            "--since/--until: no dialog's first message falls in {window}; this \
+             capture's dialogs begin between {} and {}",
+            instant(first),
+            instant(last),
+        ),
+        None => format!("--since/--until: no dialog in {window}; the capture holds no dialog"),
+    })
 }
 
 /// SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
@@ -6463,7 +6554,7 @@ fn report_tables_print(cli: &Cli) -> bool {
 }
 
 /// The table format `--markdown` picks for the human-readable reports.
-fn table_report_format(cli: &Cli) -> output::ReportFormat {
+pub(crate) fn table_report_format(cli: &Cli) -> output::ReportFormat {
     if cli.output_args.markdown {
         output::ReportFormat::Markdown
     } else {
@@ -6866,6 +6957,9 @@ pub struct LiveVconTracker {
     /// Set when a sweep could not write a container it owed, so the run can
     /// end non-zero instead of reporting an export that did not happen.
     failed: bool,
+    /// Call-IDs written since their retained audio was last released, for
+    /// [`release_exported_audio`].
+    unreleased: Vec<String>,
     /// Containers the live sweeps wrote over the whole run, rewrites included.
     /// Never pruned, unlike `written`, so the end-of-run line can report what
     /// the run wrote.
@@ -6882,6 +6976,7 @@ impl LiveVconTracker {
     /// Record that `call_id`'s container was written at `updated_at`.
     pub fn record(&mut self, call_id: &str, updated_at: chrono::DateTime<chrono::Utc>) {
         self.written.insert(call_id.to_owned(), updated_at);
+        self.unreleased.push(call_id.to_owned());
     }
 
     /// Forget every dialog `still_held` says the store no longer holds.
@@ -6920,6 +7015,23 @@ impl LiveVconTracker {
         tracing::error!("{message}");
         self.failed = true;
     }
+}
+
+/// Release the retained audio of every call a live sweep wrote since the last
+/// release, and return how many frames were released.
+///
+/// The written container carries the audio, so holding it until the stream
+/// store evicts the stream would grow retention with the length of the run.
+/// Each stream counts what it released, so a later export of the same call
+/// (the call changed and is written again, or `export_audio` is asked for it)
+/// says the audio was released and why, rather than reading as a call with
+/// none.
+#[cfg(feature = "vcon")]
+fn release_exported_audio(tracker: &mut LiveVconTracker, streams: &mut StreamStore) -> u64 {
+    std::mem::take(&mut tracker.unreleased)
+        .iter()
+        .map(|call_id| streams.release_audio_for(call_id))
+        .fold(0u64, u64::saturating_add)
 }
 
 /// What the end-of-run vCon export owes, given how the run went.
@@ -8361,6 +8473,100 @@ mod tests {
             later,
         );
         assert_eq!(again, 0, "a written call is not written again unchanged");
+        Ok(())
+    }
+
+    /// One 20 ms PCMU frame from `10.0.0.1:src_port`, sequence `seq`.
+    #[cfg(feature = "vcon")]
+    fn pcmu_frame(
+        src_port: u16,
+        ssrc: u32,
+        seq: u16,
+    ) -> (ParsedPacket, crate::rtp::parser::RtpHeader) {
+        let mut payload = vec![0x80, 0x00];
+        payload.extend_from_slice(&seq.to_be_bytes());
+        payload.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+        payload.extend_from_slice(&ssrc.to_be_bytes());
+        payload.extend_from_slice(&[0x55; 160]);
+        let header = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: seq,
+            timestamp: u32::from(seq) * 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        let packet = ParsedPacket {
+            src_port,
+            payload: bytes::Bytes::from(payload),
+            ..rtp_dtmf_packet(30000, 0, ssrc, 0, 0)
+        };
+        (packet, header)
+    }
+
+    /// A live sweep's written calls release their retained audio, and only
+    /// theirs, so ended calls do not accumulate audio for the whole run.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_releases_the_audio_of_the_calls_it_wrote() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed()?;
+        let mut streams = StreamStore::new(16);
+        for (port, ssrc) in [(40010u16, 0xF001u32), (40011, 0xF002)] {
+            for seq in 0..50u16 {
+                let (packet, header) = pcmu_frame(port, ssrc, seq);
+                streams.process_rtp(&packet, &header, packet.timestamp);
+            }
+        }
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        streams.link_to_dialog(caller, 40010, "failed-call@example.com");
+        streams.link_to_dialog(caller, 40011, "ok-call@example.com");
+        let mut tracker = LiveVconTracker::default();
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+
+        let written = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
+        assert_eq!(written, 1, "only the ended call is written");
+        assert_eq!(
+            release_exported_audio(&mut tracker, &mut streams),
+            50,
+            "the written call's 50 frames are released"
+        );
+        let ended = streams
+            .streams_for("failed-call@example.com")
+            .next()
+            .ok_or("the ended call's stream")?;
+        assert!(ended.payload_buffer.is_empty());
+        assert_eq!(ended.payload_frames_released_after_export, 50);
+        let ongoing = streams
+            .streams_for("ok-call@example.com")
+            .next()
+            .ok_or("the ongoing call's stream")?;
+        assert_eq!(
+            ongoing.payload_buffer.len(),
+            50,
+            "a call not written keeps its audio"
+        );
+        assert_eq!(
+            release_exported_audio(&mut tracker, &mut streams),
+            0,
+            "a call is released once"
+        );
         Ok(())
     }
 
@@ -13108,6 +13314,46 @@ mod tests {
         Ok(())
     }
 
+    /// `[limits] max_audio_frames` and `max_audio_bytes` reach the store a
+    /// live capture builds, and unset means the whole call inside the default
+    /// budget.
+    #[test]
+    fn the_live_store_takes_the_configured_audio_limits() {
+        use crate::relay::reconcile::RelaySnapshot;
+        use crate::rtp::stream_store::{AudioLimits, MIN_MAX_AUDIO_BYTES};
+        let unset =
+            build_live_stream_store(&base_cli(), &Config::default(), &RelaySnapshot::default());
+        assert_eq!(unset.audio_limits(), AudioLimits::default());
+        assert_eq!(unset.audio_limits().max_frames, None, "the whole call");
+        let mut config = Config::default();
+        config.limits.max_audio_frames = Some(700);
+        config.limits.max_audio_bytes = Some(MIN_MAX_AUDIO_BYTES * 3);
+        let set = build_live_stream_store(&base_cli(), &config, &RelaySnapshot::default());
+        assert_eq!(
+            set.audio_limits(),
+            AudioLimits {
+                max_frames: Some(700),
+                max_bytes: (MIN_MAX_AUDIO_BYTES * 3) as usize,
+            }
+        );
+    }
+
+    /// The `--cores` paths take the same audio limits from the same keys.
+    #[test]
+    fn parallel_config_takes_the_configured_audio_limits() {
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let mut config = Config::default();
+        config.limits.max_audio_bytes = Some(5 * 1024 * 1024);
+        assert_eq!(
+            parallel_config(&cli, &config, (1, 65535), false).audio_limits,
+            config.limits.audio_limits()
+        );
+        assert_eq!(
+            parallel_config(&cli, &Config::default(), (1, 65535), false).audio_limits,
+            crate::rtp::stream_store::AudioLimits::default()
+        );
+    }
+
     /// A run that never asked registers nothing, rather than registering an
     /// endpoint stamped with a moment nothing happened at.
     #[test]
@@ -14179,6 +14425,88 @@ mod tests {
 
     // ── generate_reports ───────────────────────────────────────────────
 
+    /// The report chain ends in the one-shot query dispatcher, and a query
+    /// that cannot be answered fails the chain the way a failed report does.
+    /// `--cores` reaches the same chain through `report_parallel_run`.
+    #[test]
+    fn the_report_chain_ends_in_the_query_dispatcher() -> Result<(), TestError> {
+        let dialog_store = DialogStore::new(10, false);
+        let stream_store = StreamStore::new(10);
+        let run = |cli: &Cli| {
+            generate_reports(
+                cli,
+                &Config::default(),
+                CaptureRead {
+                    dialogs: &dialog_store,
+                    streams: &stream_store,
+                    frames_read: 0,
+                },
+                None,
+                None,
+                None,
+                VconRunEnd::Whole,
+            )
+        };
+        let mut cli = base_cli();
+        assert!(run(&cli), "no query asked for: the chain succeeds");
+        cli.test_one_shots.push(crate::cli::OneShot {
+            name: crate::app::queries::TEST_FAILING_QUERY,
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        });
+        assert!(!run(&cli), "a query that failed must fail the chain");
+        Ok(())
+    }
+
+    /// A window that holds none of the capture's dialogs says so, with the
+    /// window and the span the dialogs cover; a window holding one says
+    /// nothing, and so does a run with no window.
+    #[test]
+    fn a_window_holding_no_dialog_is_an_explicit_empty_answer() -> Result<(), TestError> {
+        let mut store = DialogStore::new(10, false);
+        for (id, when) in [
+            ("a@example.com", "2023-11-14T22:13:20Z"),
+            ("b@example.com", "2023-11-14T22:13:32Z"),
+        ] {
+            let data = bytes::Bytes::from(invite_bytes(id));
+            store.process_message(sip::parser::parse_sip_bytes(
+                &data,
+                crate::cursor::parse_instant(when)?,
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )?);
+        }
+        let with = |args: &[&str]| {
+            let mut argv = vec!["sipnab", "-N", "-I", "x.pcap"];
+            argv.extend_from_slice(args);
+            Cli::parse_from_args(argv)
+        };
+        let notice = time_window_notice(&with(&["--since", "2030-01-01T00:00:00Z"]), &store)
+            .ok_or("a window past the capture must say so")?;
+        assert!(notice.contains("2030-01-01T00:00:00Z"), "{notice}");
+        assert!(
+            notice.contains("2023-11-14T22:13:20Z") && notice.contains("2023-11-14T22:13:32Z"),
+            "names the span the dialogs cover: {notice}"
+        );
+        // The upper bound is exclusive: a window ending AT the first dialog
+        // holds none of them.
+        assert!(time_window_notice(&with(&["--until", "2023-11-14T22:13:20Z"]), &store).is_some());
+        assert_eq!(
+            time_window_notice(&with(&["--until", "2023-11-14T22:13:21Z"]), &store),
+            None
+        );
+        assert_eq!(time_window_notice(&with(&[]), &store), None);
+        let empty = DialogStore::new(10, false);
+        let none = time_window_notice(&with(&["--since", "2030-01-01T00:00:00Z"]), &empty)
+            .ok_or("an empty capture in a window says so too")?;
+        assert!(none.contains("no dialog"), "{none}");
+        Ok(())
+    }
+
     /// `--report` and `--call-report` run without panicking on empty stores,
     /// unknown Call-IDs, and a tracked dialog across all report formats.
     #[test]
@@ -14191,6 +14519,7 @@ mod tests {
         cli.output_args.report = true;
         generate_reports(
             &cli,
+            &Config::default(),
             CaptureRead {
                 dialogs: &dialog_store,
                 streams: &stream_store,
@@ -14207,6 +14536,7 @@ mod tests {
         cli.output_args.call_report = Some("does-not-exist".to_string());
         generate_reports(
             &cli,
+            &Config::default(),
             CaptureRead {
                 dialogs: &dialog_store,
                 streams: &stream_store,
@@ -14244,6 +14574,7 @@ mod tests {
             setup(&mut cli);
             generate_reports(
                 &cli,
+                &Config::default(),
                 CaptureRead {
                     dialogs: &dialog_store,
                     streams: &stream_store,

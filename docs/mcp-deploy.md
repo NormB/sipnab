@@ -132,7 +132,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.213 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.214 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -1291,7 +1291,7 @@ When `triage_call` returns `verdict: media`, go to the streams:
 The stream row above keeps the fields this recipe reads. A real row carries
 about a dozen more — `octets`, `first_seen`, `last_seen`, `orphaned`, `dscp`,
 `input_origin`, `quality_intervals` and the rest — and
-[the tool reference](mcp-tools.md#rtp_stats) lists every one.
+[the tool reference](mcp-tools-core.md#rtp_stats) lists every one.
 
 **Check `mos_grounded` before you act on `mos`.** `true` means ITU-T G.113
 publishes an impairment factor for this codec and the score is a real estimate.
@@ -1331,7 +1331,7 @@ only way to tell a live capture from a replayed file:
 That is the subset this recipe reads. A real answer also carries
 `active_dialog_count`, `active_call_count`, `orphaned_stream_count`,
 `capture_quality`, `caveats`, `capture_identity`, `load` and the
-`unanalysed_*` counters — [`capture_status`](mcp-tools.md#capture_status)
+`unanalysed_*` counters — [`capture_status`](mcp-tools-core.md#capture_status)
 walks through each of them.
 
 `source_exhausted: true` says sipnab read the file to the end, so counts are
@@ -1348,7 +1348,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.213",
+  "version": "0.5.214",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1368,7 +1368,7 @@ Then confirm the build can do what you are about to ask of it:
 
 A real answer also carries a `libpcap` block: the libpcap this server
 captures through and the alternate capture backends its banner names.
-[`server_capabilities`](mcp-tools.md#server_capabilities) walks through it.
+[`server_capabilities`](mcp-tools-server.md#server_capabilities) walks through it.
 
 Asking for TLS decryption on a build without `tls` otherwise fails in a way
 that reads like a key problem. `features` describes the binary you are talking
@@ -2023,7 +2023,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.213"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.214"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand

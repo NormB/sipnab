@@ -28,6 +28,7 @@ the cause from there.
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
 | `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
+| sipnab refused to start, or stopped with an error message | [Error messages](errors.md): look up the message by its text |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -1307,6 +1308,6 @@ as the `sipnab` binary. The binary's `.gnu_debuglink` names that file, and
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](filter-dsl.md) -- 32 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).

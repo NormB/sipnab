@@ -994,6 +994,13 @@ fn note_undescended_dir(
 /// the same opener as the read path, so gzip members are handled identically
 /// and a mixed compressed/uncompressed set needs no special case here.
 pub(crate) fn first_packet_time(path: &Path) -> Result<Option<f64>> {
+    // A stored vCon container is read, validated and timed by its earliest
+    // message, so a directory of them sorts like a directory of captures and
+    // an invalid one is refused here with the schema's reasons. See
+    // `crate::capture::vcon_input`.
+    if super::vcon_input::is_container_file(path) {
+        return container_first_message(path);
+    }
     // A merged pcapng must be recognized BEFORE libpcap touches it. libpcap
     // opens such a file happily and fails on the first packet that names a
     // second interface, so there is no open-time error to catch -- and this
@@ -1019,6 +1026,27 @@ pub(crate) fn first_packet_time(path: &Path) -> Result<Option<f64>> {
         // file that never received a packet. It is not an error.
         Err(pcap::Error::NoMorePackets) => Ok(None),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Epoch seconds of a stored vCon container's earliest message, or `None` for
+/// a valid container that stores none.
+///
+/// # Errors
+///
+/// The container is unreadable or invalid, or this build cannot read one.
+fn container_first_message(path: &Path) -> Result<Option<f64>> {
+    let rebuilt = super::vcon_input::read_file(path).map_err(|e| anyhow::anyhow!("{e}"))?;
+    #[cfg(feature = "vcon")]
+    {
+        Ok(rebuilt
+            .first_message
+            .map(|t| t.timestamp() as f64 + f64::from(t.timestamp_subsec_micros()) / 1_000_000.0))
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = rebuilt;
+        Ok(None)
     }
 }
 

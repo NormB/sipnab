@@ -56,6 +56,25 @@ the deploy goes green: the hash refresh runs AFTER the upload, so the
 changed script is blocked for the window between the two. Load the
 deployed page before calling such a change done.
 
+Every docs page ends with a footer. It links to the page's source file
+on GitHub: the file under `docs/` for a page the site generators write
+(named by `source` in the page's `[extra]` front matter), or the page's
+own file under `website/content/` for a hand-written page. Before
+`zola build`, the deploy runs `scripts/doc-history.py`, which writes
+`website/data/doc-history.toml` from git. For each source file, it
+records the date of the last commit that changed the file and the
+earliest release tag that contains that commit. When no release
+contains it, the file records the newest release instead. The footer
+then reads, for example, "Last changed in v0.5.210 (2026-10-01)." or "Last changed on
+2026-10-11, after v0.5.211; not yet in a release." The file is never
+committed. A local `zola build` has no such file, so the footer shows
+the link alone. To render the line locally, from the repository root
+(the checkout needs its tags):
+
+```bash
+python3 scripts/doc-history.py --write website/data/doc-history.toml
+```
+
 `scripts/deploy-website.sh` is the alternative for anyone self-hosting
 a copy — it builds, rsyncs and chowns to a host over SSH. It is not
 how sipnab.com ships.

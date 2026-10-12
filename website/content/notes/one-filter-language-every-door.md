@@ -183,8 +183,8 @@ error (code `-32602`).
 - [Named aliases and their expansions](@/docs/filter-dsl.md#named-aliases)
 - [Parser constraints](@/docs/filter-dsl.md#parser-constraints)
 - [The `[filter]` settings section](@/docs/config.md#filter)
-- [`validate_filter`](@/docs/mcp-tools.md#validate-filter),
-  [`find_problems`](@/docs/mcp-tools.md#find-problems),
-  [`list_dialogs`](@/docs/mcp-tools.md#list-dialogs) and
-  [`evaluate_expectations`](@/docs/mcp-tools.md#evaluate-expectations)
+- [`validate_filter`](@/docs/mcp-tools-signaling.md#validate-filter),
+  [`find_problems`](@/docs/mcp-tools-core.md#find-problems),
+  [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) and
+  [`evaluate_expectations`](@/docs/mcp-tools-security.md#evaluate-expectations)
 - [`GET /v1/streams`](@/docs/api.md#get-v1-streams)

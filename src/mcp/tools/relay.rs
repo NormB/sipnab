@@ -1007,6 +1007,11 @@ pub fn classify(
         Some(
             crate::capture::parse::InputOrigin::Wire | crate::capture::parse::InputOrigin::Uprobe,
         ) => DeliveryTrust::PortGatedOnly,
+        // Rebuilt from a stored vCon container: whatever the container's
+        // producer wrote, and no listener on this run checked any of it. It
+        // takes the lowest relay tier, as a sniffed frame does, and never the
+        // HEP listener's posture.
+        Some(crate::capture::parse::InputOrigin::Vcon) => DeliveryTrust::PortGatedOnly,
     }
 }
 
@@ -1816,7 +1821,9 @@ mod query_relay_view_tests {
                 "an assertion the HEP listener delivered is worth what the \
                  listener checked"
             );
-            for sniffed in [InputOrigin::Wire, InputOrigin::Uprobe] {
+            // A message rebuilt from a stored vCon reached no listener on
+            // this run either, so it takes the lowest relay tier too.
+            for sniffed in [InputOrigin::Wire, InputOrigin::Uprobe, InputOrigin::Vcon] {
                 assert_eq!(
                     classify(relay, Some(sniffed), configured),
                     DeliveryTrust::PortGatedOnly,

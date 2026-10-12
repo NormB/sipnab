@@ -35,8 +35,9 @@ another party's system. Decide what may leave the machine first:
 
 ## 1. Write the containers
 
-Export the calls from a capture file with their audio. `--retain-audio` makes
-sipnab put each call's audio in its `recording` Dialog Object. The object names
+Export the calls from a capture file with their audio. `--retain-audio` keeps
+each call's audio whole, from the first frame, and makes sipnab put it in its
+`recording` Dialog Object. The object names
 the parties when each audio channel came from the media address and port that
 one party advertised in its own SDP, and has no `parties` otherwise. This
 container is not redacted: it carries the audio and the identifiers as
@@ -99,7 +100,7 @@ the store accepted every container. A container the store refused is in
 counts and the store's answer from each `.error.json` record, read from the
 files without sending anything. A capture run with `--mcp` or `--api` answers
 the same through the MCP tool
-[`vcon_spool_status`](mcp-tools.md#vcon_spool_status) and
+[`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) and
 [`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool). A `401` or `403`
 is different: it refuses the token or the client for every container, so the
 forwarder stops, moves nothing, logs the status and the start of the answer,

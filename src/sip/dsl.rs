@@ -154,6 +154,15 @@ enum Expr {
     Not(Box<Expr>),
     /// Leaf comparison: `field operator value`.
     Compare(Field, Operator, Value),
+    /// Leaf time window: the dialog's first-message instant falls in the
+    /// half-open `[after, before)` window, through
+    /// [`crate::cursor::in_time_window`]. Built by
+    /// [`FilterExpr::with_time_window`]; the parser writes the same selection
+    /// as `time` comparisons.
+    Window(
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ),
 }
 
 /// A childless node, used as the stand-in a subtree is swapped out for while
@@ -173,7 +182,7 @@ fn placeholder_leaf() -> Expr {
 fn detach_children(node: &mut Expr, out: &mut Vec<Expr>) {
     /// Swap one child for a placeholder unless it is already a leaf.
     fn take(child: &mut Expr, out: &mut Vec<Expr>) {
-        if matches!(child, Expr::Compare(..)) {
+        if matches!(child, Expr::Compare(..) | Expr::Window(..)) {
             return;
         }
         out.push(std::mem::replace(child, placeholder_leaf()));
@@ -185,7 +194,7 @@ fn detach_children(node: &mut Expr, out: &mut Vec<Expr>) {
             take(rhs, out);
         }
         Expr::Not(inner) => take(inner, out),
-        Expr::Compare(..) => {}
+        Expr::Compare(..) | Expr::Window(..) => {}
     }
 }
 
@@ -234,7 +243,7 @@ fn count_nodes(expr: &Expr) -> usize {
                 stack.push(rhs);
             }
             Expr::Not(inner) => stack.push(inner),
-            Expr::Compare(..) => {}
+            Expr::Compare(..) | Expr::Window(..) => {}
         }
     }
     count
@@ -347,6 +356,13 @@ enum Field {
     DurationAsymmetry,
     /// `late_media` — RTP began long after the 200 OK.
     LateMedia,
+    /// `time` — the dialog's first-message instant (`created_at`), compared
+    /// with an RFC 3339 string literal by `<`, `<=`, `>`, `>=` or `==`.
+    ///
+    /// The instant the REST `after`/`before` window and the MCP
+    /// `search_by_time` window bound, so `time >= A AND time < B` selects what
+    /// `--since A --until B` selects.
+    Time,
     /// `header.<name>` — the value of any SIP header, named by the operator.
     ///
     /// Holds the name in the long form the parser stores headers under: a
@@ -428,6 +444,8 @@ enum Value {
     /// Byte-oriented compiled regex for a `payload =~` comparison, matched
     /// against the raw message bytes without a lossy UTF-8 copy.
     ReBytes(regex::bytes::Regex),
+    /// An RFC 3339 instant: the literal of a `time` comparison, parsed once.
+    Instant(chrono::DateTime<chrono::Utc>),
 }
 
 // ── Diagnostic filter aliases ───────────────────────────────────────
@@ -659,6 +677,7 @@ fn expr_references_diagnosis(expr: &Expr) -> bool {
                     return true;
                 }
             }
+            Expr::Window(..) => {}
         }
     }
     false
@@ -696,6 +715,65 @@ impl FilterExpr {
             // The tree above, written the way `parse` would read it back.
             source: "one_way == true AND one_way == false".to_string(),
         }
+    }
+
+    /// AND a half-open `[after, before)` time window into a compiled filter.
+    ///
+    /// The window bounds a dialog's first-message instant (`created_at`) and is
+    /// evaluated through [`crate::cursor::in_time_window`], the rule the REST
+    /// `/v1/dialogs` `after`/`before` parameters, the MCP `search_by_time` tool
+    /// and the TUI's time range apply. It joins the one compiled filter rather
+    /// than becoming a second one, so every output that honors `--filter`
+    /// honors the window with it.
+    ///
+    /// # Arguments
+    ///
+    /// * `base` — the filter compiled so far, or `None` for none.
+    /// * `after` — the inclusive lower bound, or `None` for unbounded.
+    /// * `before` — the exclusive upper bound, or `None` for unbounded.
+    ///
+    /// # Returns
+    ///
+    /// `base` unchanged when both bounds are `None`; otherwise a filter that
+    /// matches what `base` matches AND falls in the window. Its
+    /// [`source`](Self::source) is the same selection written in the DSL, with
+    /// the `time` field, so it can be pasted back into `--filter`.
+    #[must_use]
+    pub fn with_time_window(
+        base: Option<FilterExpr>,
+        after: Option<chrono::DateTime<chrono::Utc>>,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Option<FilterExpr> {
+        if after.is_none() && before.is_none() {
+            return base;
+        }
+        let window = Expr::Window(after, before);
+        let instant = |t: chrono::DateTime<chrono::Utc>| {
+            t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+        };
+        let window_source = [
+            after.map(|a| format!("time >= '{}'", instant(a))),
+            before.map(|b| format!("time < '{}'", instant(b))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" AND ");
+        Some(match base {
+            None => FilterExpr {
+                root: window,
+                needs_diagnosis: false,
+                source: window_source,
+            },
+            Some(mut base) => {
+                let root = std::mem::replace(&mut base.root, placeholder_leaf());
+                FilterExpr {
+                    root: Expr::And(Box::new(root), Box::new(window)),
+                    needs_diagnosis: base.needs_diagnosis,
+                    source: format!("({}) AND {window_source}", base.source),
+                }
+            }
+        })
     }
 
     /// The expression text this filter was compiled from, trimmed.
@@ -1147,7 +1225,14 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
     let (input, field) = parse_field(input)?;
     let (input, _) = multispace0(input)?;
+    let op_at = input;
     let (input, op) = parse_operator(input)?;
+    if field == Field::Time && !TIME_OPERATORS.contains(&op) {
+        return Err(nom::Err::Failure(nom::error::Error::new(
+            op_at,
+            TIME_OPERATOR_INVALID,
+        )));
+    }
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_value(input, &field, op)?;
 
@@ -1190,6 +1275,7 @@ pub const FIELD_NAMES: &[&str] = &[
     "payload_asymmetry",
     "duration_asymmetry",
     "late_media",
+    "time",
 ];
 
 /// The classes a `response_class` literal names.
@@ -1288,6 +1374,7 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
         "payload_asymmetry" => Field::PayloadAsymmetry,
         "duration_asymmetry" => Field::DurationAsymmetry,
         "late_media" => Field::LateMedia,
+        "time" => Field::Time,
         _ => {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 input,
@@ -1311,6 +1398,28 @@ const HEADER_NAME_TOO_LONG: nom::error::ErrorKind = nom::error::ErrorKind::TooLa
 /// [`HEADER_NAME_TOO_LONG`].
 const HEADER_NAME_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Not;
 
+/// The operators a `time` comparison accepts: the orderings and equality.
+///
+/// `!=` is left out because "every instant but this one" is not a question
+/// anyone asks of a timestamp with sub-second resolution, and `=~` and
+/// `in_subnet` do not apply to an instant at all.
+const TIME_OPERATORS: [Operator; 5] = [
+    Operator::Lt,
+    Operator::Le,
+    Operator::Gt,
+    Operator::Ge,
+    Operator::Eq,
+];
+
+/// The nom error kind a `time` comparison raises for an operator outside
+/// [`TIME_OPERATORS`]. Unused by every combinator here, like
+/// [`HEADER_NAME_TOO_LONG`].
+const TIME_OPERATOR_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Permutation;
+
+/// The nom error kind a `time` comparison raises for a literal that is not a
+/// quoted RFC 3339 instant. Unused by every combinator here.
+const TIME_VALUE_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Fix;
+
 /// The headline for a parse error of `kind`.
 ///
 /// Only the two header-name problems get words of their own: every other
@@ -1323,6 +1432,10 @@ fn parse_problem(kind: nom::error::ErrorKind) -> String {
         }
         HEADER_NAME_INVALID => "header name missing or not an RFC 3261 token \
              (quote any other name: header.\"Name\")"
+            .to_string(),
+        TIME_OPERATOR_INVALID => "time compares with <, <=, >, >= or ==".to_string(),
+        TIME_VALUE_INVALID => "time needs a quoted RFC 3339 instant, such as \
+             time >= '2026-10-09T10:00:00Z'"
             .to_string(),
         _ => "unexpected input".to_string(),
     }
@@ -1642,6 +1755,19 @@ fn parse_value<'a>(
 ) -> IResult<&'a str, Value, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
 
+    // A `time` literal is a quoted RFC 3339 instant and nothing else, parsed
+    // here once by the parser every surface reads a time bound with.
+    if *field == Field::Time {
+        let refused = || nom::Err::Failure(nom::error::Error::new(input, TIME_VALUE_INVALID));
+        let quote = match input.chars().next() {
+            Some(q @ ('\'' | '"')) => q,
+            _ => return Err(refused()),
+        };
+        let (text, rest) = scan_quoted_string(&input[1..], quote).ok_or_else(refused)?;
+        let instant = crate::cursor::parse_instant(&text).map_err(|_| refused())?;
+        return Ok((rest, Value::Instant(instant)));
+    }
+
     // Try boolean literals first
     if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("true").parse(input) {
         // Ensure "true" is not a prefix of a longer identifier
@@ -1747,6 +1873,9 @@ fn eval_expr(
         Expr::Not(inner) => !eval_expr(inner, dialog, streams, diag, delay),
         Expr::Compare(field, op, value) => {
             eval_compare(field, op, value, dialog, streams, diag, delay)
+        }
+        Expr::Window(after, before) => {
+            crate::cursor::in_time_window(dialog.created_at, *after, *before)
         }
     }
 }
@@ -1938,6 +2067,9 @@ fn eval_compare(
             compare_num(total as f64, op, value)
         }
 
+        // ── Instant field ──────────────────────────────────────────
+        Field::Time => compare_instant(dialog.created_at, op, value),
+
         // ── Boolean fields ─────────────────────────────────────────
         Field::OneWay => compare_bool(diag.one_way_audio, op, value),
         Field::NatMismatch => compare_bool(diag.nat_mismatch, op, value),
@@ -1947,6 +2079,23 @@ fn eval_compare(
         Field::PayloadAsymmetry => compare_bool(diag.payload_type_asymmetry.is_some(), op, value),
         Field::DurationAsymmetry => compare_bool(diag.duration_asymmetry.is_some(), op, value),
         Field::LateMedia => compare_bool(diag.late_media.is_some(), op, value),
+    }
+}
+
+/// Compare the instant `field_val` against a `time` literal. The parser
+/// admits only [`TIME_OPERATORS`] and [`Value::Instant`] here; anything else
+/// is `false`, the safe direction.
+fn compare_instant(field_val: chrono::DateTime<chrono::Utc>, op: &Operator, value: &Value) -> bool {
+    let Value::Instant(v) = value else {
+        return false;
+    };
+    match op {
+        Operator::Eq => field_val == *v,
+        Operator::Lt => field_val < *v,
+        Operator::Le => field_val <= *v,
+        Operator::Gt => field_val > *v,
+        Operator::Ge => field_val >= *v,
+        Operator::Ne | Operator::Regex | Operator::InSubnet => false,
     }
 }
 
@@ -5019,6 +5168,179 @@ mod header_field_tests {
             .ok_or("unknown")?
             .to_string();
         assert!(msg.contains("header.<name>"), "{msg}");
+        Ok(())
+    }
+}
+
+/// The time window ANDed into a compiled filter, and the `time` field that
+/// writes the same window in the DSL.
+#[cfg(test)]
+mod time_window_tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use chrono::{DateTime, Utc};
+
+    use super::*;
+    use crate::net::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn at(s: &str) -> Result<DateTime<Utc>, TestError> {
+        Ok(crate::cursor::parse_instant(s)?)
+    }
+
+    /// A one-message dialog whose first message is at `when`.
+    fn dialog_at(method: &str, when: &str) -> Result<SipDialog, TestError> {
+        let raw = build_sip(
+            &format!("{method} sip:bob@example.com SIP/2.0"),
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {method}-{when}@example.com"),
+                &format!("CSeq: 1 {method}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let msg = parse_sip(&raw, at(when)?, lo, lo, 5060, 5060, TransportProto::Udp)?;
+        let dialog = SipDialog::new(&msg).ok_or("should create dialog")?;
+        assert_eq!(dialog.created_at, at(when)?, "the fixture's own instant");
+        Ok(dialog)
+    }
+
+    fn selects(f: &FilterExpr, d: &SipDialog) -> bool {
+        f.matches_dialog(d, &[], CaptureMedia::Absent, MosDelay::unknown())
+    }
+
+    const SINCE: &str = "2026-10-09T10:00:00Z";
+    const UNTIL: &str = "2026-10-09T11:00:00Z";
+
+    /// The window keeps a dialog AT `after` and drops one AT `before`: the
+    /// half-open rule REST and MCP apply.
+    #[test]
+    fn the_window_includes_after_and_excludes_before() -> Result<(), TestError> {
+        let f = FilterExpr::with_time_window(None, Some(at(SINCE)?), Some(at(UNTIL)?))
+            .ok_or("a bounded window is a filter")?;
+        for (when, inside) in [
+            ("2026-10-09T09:59:59.999Z", false),
+            (SINCE, true),
+            ("2026-10-09T10:30:00Z", true),
+            ("2026-10-09T10:59:59.999Z", true),
+            (UNTIL, false),
+            ("2026-10-09T11:00:00.001Z", false),
+        ] {
+            assert_eq!(selects(&f, &dialog_at("INVITE", when)?), inside, "{when}");
+        }
+        Ok(())
+    }
+
+    /// One bound alone leaves the other side open.
+    #[test]
+    fn one_bound_alone_is_open_on_the_other_side() -> Result<(), TestError> {
+        let from = FilterExpr::with_time_window(None, Some(at(SINCE)?), None).ok_or("filter")?;
+        assert!(selects(
+            &from,
+            &dialog_at("INVITE", "2099-01-01T00:00:00Z")?
+        ));
+        assert!(!selects(
+            &from,
+            &dialog_at("INVITE", "2026-10-09T09:00:00Z")?
+        ));
+        let to = FilterExpr::with_time_window(None, None, Some(at(UNTIL)?)).ok_or("filter")?;
+        assert!(selects(&to, &dialog_at("INVITE", "2000-01-01T00:00:00Z")?));
+        assert!(!selects(&to, &dialog_at("INVITE", UNTIL)?));
+        Ok(())
+    }
+
+    /// No bound, no filter: `None` stays `None` and a base stays itself.
+    #[test]
+    fn no_bound_changes_nothing() -> Result<(), TestError> {
+        assert!(FilterExpr::with_time_window(None, None, None).is_none());
+        let base = FilterExpr::parse("method == 'INVITE'")?;
+        let same = FilterExpr::with_time_window(Some(base), None, None).ok_or("kept")?;
+        assert_eq!(same.source(), "method == 'INVITE'");
+        Ok(())
+    }
+
+    /// The window ANDs with the filter it joins: a dialog must pass both.
+    #[test]
+    fn the_window_composes_with_a_filter() -> Result<(), TestError> {
+        let base = FilterExpr::parse("method == 'INVITE'")?;
+        let f = FilterExpr::with_time_window(Some(base), Some(at(SINCE)?), Some(at(UNTIL)?))
+            .ok_or("filter")?;
+        let mid = "2026-10-09T10:30:00Z";
+        assert!(selects(&f, &dialog_at("INVITE", mid)?));
+        assert!(!selects(&f, &dialog_at("REGISTER", mid)?), "fails the base");
+        assert!(
+            !selects(&f, &dialog_at("INVITE", UNTIL)?),
+            "fails the window"
+        );
+        Ok(())
+    }
+
+    /// The windowed filter's source is the same selection in the DSL, so it
+    /// can be pasted back into `--filter` and select the same dialogs.
+    #[test]
+    fn the_windowed_source_is_the_same_selection_in_the_dsl() -> Result<(), TestError> {
+        let base = FilterExpr::parse("method == 'INVITE' OR method == 'REGISTER'")?;
+        let f = FilterExpr::with_time_window(Some(base), Some(at(SINCE)?), Some(at(UNTIL)?))
+            .ok_or("filter")?;
+        let back = FilterExpr::parse(f.source())?;
+        for (method, when) in [
+            ("INVITE", SINCE),
+            ("REGISTER", "2026-10-09T10:59:00Z"),
+            ("OPTIONS", "2026-10-09T10:30:00Z"),
+            ("INVITE", UNTIL),
+            ("REGISTER", "2026-10-09T09:00:00Z"),
+        ] {
+            let d = dialog_at(method, when)?;
+            assert_eq!(selects(&f, &d), selects(&back, &d), "{method} at {when}");
+        }
+        Ok(())
+    }
+
+    /// `time` compares the first-message instant with each ordering operator
+    /// and `==`, at the boundary.
+    #[test]
+    fn the_time_field_orders_and_equates_instants() -> Result<(), TestError> {
+        let d = dialog_at("INVITE", SINCE)?;
+        for (expr, want) in [
+            (format!("time == '{SINCE}'"), true),
+            (format!("time >= '{SINCE}'"), true),
+            (format!("time > '{SINCE}'"), false),
+            (format!("time <= '{SINCE}'"), true),
+            (format!("time < '{SINCE}'"), false),
+            ("time < '2026-10-09T10:00:00.001Z'".to_string(), true),
+            ("time > '2026-10-09T09:59:59.999Z'".to_string(), true),
+            // Another offset naming the same instant.
+            ("time == '2026-10-09T12:00:00+02:00'".to_string(), true),
+        ] {
+            assert_eq!(selects(&FilterExpr::parse(&expr)?, &d), want, "{expr}");
+        }
+        Ok(())
+    }
+
+    /// A `time` literal that is not RFC 3339 is refused at parse, naming the
+    /// format; so are the operators that do not order or equate instants.
+    #[test]
+    fn the_time_field_refuses_what_it_cannot_compare() -> Result<(), TestError> {
+        for (expr, says) in [
+            ("time >= 'yesterday'", "RFC 3339"),
+            ("time >= '2026-10-09'", "RFC 3339"),
+            ("time >= 1760000000", "RFC 3339"),
+            ("time != '2026-10-09T10:00:00Z'", "<, <=, >, >= or =="),
+            ("time =~ '2026'", "<, <=, >, >= or =="),
+            ("time in_subnet '10.0.0.0/8'", "<, <=, >, >= or =="),
+        ] {
+            let err = FilterExpr::parse(expr)
+                .err()
+                .ok_or(format!("{expr} must be refused"))?
+                .to_string();
+            assert!(err.contains(says), "{expr}: {err}");
+        }
         Ok(())
     }
 }

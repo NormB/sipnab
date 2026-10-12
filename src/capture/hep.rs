@@ -160,6 +160,7 @@ fn hep_to_packet(hep: HepPacket, source: &str, received: DateTime<Utc>) -> Packe
                 protocol: hep.protocol.to_byte(),
                 correlation_id: hep.correlation_id.clone(),
             }),
+            vcon: None,
         },
     )
 }

@@ -153,7 +153,7 @@ Which dialogs fall in this wall-clock window?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: scoping a batch to when the user says it broke is one-shot, but no time-window flag exists and the filter has no timestamp field (PAR5) |
+| CLI | `--since`/`--until` (half-open `[since, until)`, the `after`/`before` window under other names because `-A/--after` is taken), and the filter DSL's `time` field |
 | TUI | the `CallList` filter dialog's `After`/`Before` time bounds, applied as a half-open `[after, before)` window through the shared `cursor::in_time_window` |
 | REST | `/v1/dialogs` with `after`/`before` |
 | MCP | `search_by_time` |
@@ -511,6 +511,17 @@ Does this vCon container pass sipnab's vendored schema?
 | TUI | decision: validating JSON against a schema is a CI concern, and a human at a terminal would not reach for a conformance screen |
 | REST | `/v1/vcon/validate` (POST) |
 | MCP | `validate_vcon` |
+
+### Analyze a stored vCon
+
+What does this stored vCon container say about its calls?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--input` with a container, then `--analyze`, `--json-dialogs` or any report flag |
+| TUI | `CallList` and `CallFlow`, once `--input` or the file browser reads a container; `RawMessage` marks each message `origin=vcon` |
+| REST | `/v1/vcon/analyze` (POST) |
+| MCP | `analyze_vcon` |
 
 ### vCon spool status
 

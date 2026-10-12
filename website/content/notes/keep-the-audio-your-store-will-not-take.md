@@ -194,7 +194,7 @@ the vCon format. That store publishes no per-container limit.
 - [What this does not do](@/docs/vcon.md#what-this-does-not-do): the inline
   budget among the exporter's other limits.
 - [`[limits]`](@/docs/config.md#limits): `max_audio_frames`.
-- [`export_audio`](@/docs/mcp-tools.md#export-audio): the MCP tool that writes
+- [`export_audio`](@/docs/mcp-tools-media.md#export-audio): the MCP tool that writes
   a call's audio to a WAV file.
 - [Measured against a real consumer, section 4a.1](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#4a1-a-204-does-not-mean-the-container-was-stored):
   the design record of the store measurement.

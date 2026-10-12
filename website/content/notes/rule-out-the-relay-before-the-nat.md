@@ -263,5 +263,5 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 - Cookbook [4. Diagnose a one-way audio complaint](@/docs/cookbook.md#4-diagnose-a-one-way-audio-complaint)
   and [45. Check whether comfort noise explains a one-way finding](@/docs/cookbook.md#45-check-whether-comfort-noise-explains-a-one-way-finding)
 - [STUN / TURN JSON (`--json-stun`)](@/docs/output-formats.md#stun-turn-json-json-stun)
-- [`get_sdp_timeline`](@/docs/mcp-tools.md#get-sdp-timeline) and
-  [`check_codec_negotiation`](@/docs/mcp-tools.md#check-codec-negotiation)
+- [`get_sdp_timeline`](@/docs/mcp-tools-signaling.md#get-sdp-timeline) and
+  [`check_codec_negotiation`](@/docs/mcp-tools-signaling.md#check-codec-negotiation)

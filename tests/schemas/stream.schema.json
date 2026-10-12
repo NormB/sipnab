@@ -73,7 +73,8 @@
       "enum": [
         "wire",
         "hep",
-        "uprobe"
+        "uprobe",
+        "vcon"
       ],
       "description": "Which capture source this stream's MEDIA arrived over. Absent rather than null when the stream came from no captured packet."
     },
@@ -90,7 +91,8 @@
       "enum": [
         "wire",
         "hep",
-        "uprobe"
+        "uprobe",
+        "vcon"
       ],
       "description": "Which source delivered the SDP that named this stream's dialog, present ONLY when it differs from `input_origin` — the binding crossed capture sources. A cross-source tie is weaker than a same-source one: the SDP says what the proxy believes it did and the media says what the NIC saw, and the two can disagree. Absent means either a same-source binding or one whose sources nobody recorded, never 'they agree'."
     }

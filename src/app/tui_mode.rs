@@ -182,9 +182,7 @@ fn build_stores(
     ));
     let stream_store = {
         let mut ss = StreamStore::new(cli.max_streams_limit(config));
-        if let Some(max_frames) = config.limits.max_audio_frames {
-            ss.set_max_audio_frames(max_frames as usize);
-        }
+        ss.set_audio_limits(config.limits.audio_limits());
         // RE4: what the relay said it was holding when sipnab started, so a
         // call already in progress is named by its first packet rather than
         // arriving as an orphan.
@@ -2126,7 +2124,7 @@ mod tests {
             stream.payload_buffer.len(),
             2,
             "five frames arrived under a cap of 2; an unwired cap leaves all 5 \
-             buffered at the 1500-frame default"
+             buffered, the default being the whole stream"
         );
         Ok(())
     }
@@ -2148,6 +2146,42 @@ mod tests {
         let store = streams.read();
         let stream = store.iter().next().ok_or("one stream was created")?;
         assert_eq!(stream.payload_buffer.len(), 5);
+        Ok(())
+    }
+
+    /// `[limits] max_audio_bytes` must reach the stream store the TUI builds.
+    #[test]
+    fn the_configured_audio_budget_reaches_the_stream_store() {
+        use crate::rtp::stream_store::{AudioLimits, MIN_MAX_AUDIO_BYTES};
+        let mut config = Config::default();
+        config.limits.max_audio_bytes = Some(MIN_MAX_AUDIO_BYTES);
+        let (_dialogs, streams) = build_stores(&cli_from(&[]), &config, &Default::default());
+        assert_eq!(
+            streams.read().audio_limits(),
+            AudioLimits {
+                max_frames: None,
+                max_bytes: MIN_MAX_AUDIO_BYTES as usize,
+            }
+        );
+    }
+
+    /// With no `[limits] max_audio_frames`, a stream keeps more than the
+    /// 1500 frames the old default ring held.
+    #[test]
+    fn without_a_configured_cap_a_stream_keeps_past_the_old_ring() -> Result<(), TestError> {
+        let (_dialogs, streams) =
+            build_stores(&cli_from(&[]), &Config::default(), &Default::default());
+        {
+            let mut ss = streams.write();
+            let packet = pcmu_packet()?;
+            for seq in 1..=1600u16 {
+                ss.process_rtp(&packet, &pcmu_header(seq), packet.timestamp);
+            }
+        }
+        let store = streams.read();
+        let stream = store.iter().next().ok_or("one stream was created")?;
+        assert_eq!(stream.payload_buffer.len(), 1600);
+        assert_eq!(stream.payload_frames_dropped, 0);
         Ok(())
     }
 

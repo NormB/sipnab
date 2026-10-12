@@ -415,7 +415,7 @@ The same document is what you get from:
 - the REST `GET /v1/dialogs/{call_id}` and
   `GET /v1/dialogs/{call_id}/report` endpoints,
 - MCP tool responses (`get_dialog_report` with `format: "json"` — see the
-  [MCP tool reference](mcp-tools.md#get_dialog_report)), and
+  [MCP tool reference](mcp-tools-signaling.md#get_dialog_report)), and
 - `SIPNAB_JSON` in [`--on-dialog-exec`](cli-reference.md#event-execution)
   hooks. Note the dialog hook fills `streams: []` and a default `diagnosis`
   — it fires on a dialog event, when media analysis for that call may not be
@@ -567,16 +567,16 @@ To check it, save the module this sipnab writes against, then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-09-22.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-09-22.yang`](../yang/sipnab-diagnosis@2026-09-22.yang).
+[`yang/sipnab-diagnosis@2026-10-09.yang`](../yang/sipnab-diagnosis@2026-10-09.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`, and differs
 from the `--json-analyze` object only in how it writes the same facts:

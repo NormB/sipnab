@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! vCon containers: producing them, and checking them before somebody else
-//! does.
+//! vCon containers: producing them, checking them before somebody else
+//! does, and analyzing one somebody stored.
 //!
-//! # Why these two live together
+//! # Why these live together
 //!
-//! They are one workflow. An agent handing containers to a conserver exports
+//! `analyze_vcon` is the reading half of the same document: a container that
+//! went to a store comes back to be analyzed, through the analysis the export
+//! summarized. The export and the check are one workflow. An agent handing containers to a conserver exports
 //! a set, checks that the store will accept them, and records what it sent.
 //! Splitting the export from the check across two files would put the
 //! producer's half and the reader's half in different places, and the second
@@ -125,6 +127,22 @@ pub struct ValidateVconParams {
     /// including the one thing that is always true of it.
     #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub container: Option<serde_json::Value>,
+}
+
+/// Parameters for `analyze_vcon`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AnalyzeVconParams {
+    /// The container to analyze, supplied by the caller: one sipnab exported,
+    /// or one another producer wrote.
+    /// Advertised as an object rather than as "anything at all", for the
+    /// reason `validate_vcon`'s `container` gives.
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
+    pub container: Option<serde_json::Value>,
+    /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
+    ///
+    /// `total_dialogs` says how many the container holds.
+    pub limit: Option<u32>,
 }
 
 /// One thing a container does not carry, as a row.
@@ -322,6 +340,64 @@ impl ExportRequest {
 
 #[tool_router(router = vcon_router, vis = "pub(crate)")]
 impl SipnabMcp {
+    /// Rebuild and analyze a stored container the caller holds.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when no `container` is given or it is not a
+    /// JSON object. A container with no readable SIP is an answer, with
+    /// `verdict: unreadable` and the reason, and schema findings ride beside
+    /// an analysis rather than replacing it.
+    #[tool(
+        name = "analyze_vcon",
+        description = "Analyzes a stored vCon container supplied verbatim -- \
+                       one sipnab exported, or one another producer wrote \
+                       with a sip-message-trace or message/sip attachments. \
+                       Its SIP messages are rebuilt and analyzed in stores of \
+                       their own, apart from this server's capture. Returns \
+                       per dialog the --json-dialogs object, the signaling \
+                       diagnosis and the message ladder, plus the capture \
+                       analysis, whose first finding is rebuilt_from_vcon. \
+                       not_recomputed lists what a container cannot \
+                       reproduce: no RTP is stored, so no media statistic is \
+                       computed; stored_media_quality holds the producer's \
+                       own numbers verbatim. schema_findings lists where \
+                       the container fails the draft-ietf-vcon-vcon-core-04 \
+                       schema without stopping the analysis; a container \
+                       with no readable SIP returns verdict unreadable and \
+                       the reason. Bounded by limit.",
+        output_schema = schema_for_output::<crate::output::vcon_analysis::VconAnalysis>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn analyze_vcon(
+        &self,
+        Parameters(params): Parameters<AnalyzeVconParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let container = params.container.ok_or_else(|| {
+            errors::refuse_param(
+                Reason::MissingParam,
+                "container",
+                "give `container`: the vCon container to analyze, as a JSON object",
+            )
+        })?;
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
+        let analysis = crate::output::vcon_analysis::analyze_container(&container, limit)
+            .map_err(|e| errors::refuse_param(Reason::InvalidValue, "container", e.to_string()))?;
+        let value = serde_json::to_value(&analysis).map_err(|e| {
+            rmcp::ErrorData::internal_error(
+                format!("analysis response serialization failed: {e}"),
+                None,
+            )
+        })?;
+        // The rebuilt dialogs carry whatever the container's producer stored:
+        // header values, display names, SDP. The note says so, as it does
+        // for an exported container.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(value)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
     /// Count the vCon export spool, and read why each refused container was
     /// refused.
     ///
@@ -2463,6 +2539,78 @@ mod tests {
             .err()
             .ok_or("a string is not a container")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
+    }
+
+    // ── analyze_vcon ─────────────────────────────────────────────────
+
+    /// The tool answers exactly what the shared analysis answers, through
+    /// its content block, so the MCP tool and `POST /v1/vcon/analyze` cannot
+    /// describe one container two ways.
+    #[tokio::test]
+    async fn analyze_vcon_answers_what_the_shared_analysis_answers() -> Result<(), TestError> {
+        let container = serde_json::json!({
+            "vcon": "0.4.0",
+            "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+            "created_at": "2026-10-09T12:00:00Z",
+            "parties": [{"name": "observer"}],
+            "attachments": [{
+                "purpose": "sip-message-trace",
+                "start": "2026-10-09T12:00:00Z",
+                "party": 0, "dialog": 0,
+                "mediatype": "application/json", "encoding": "json",
+                "body": serde_json::json!({"version": 1, "call_id": "m1", "messages": [{
+                    "timestamp": "2026-10-09T12:00:00+00:00",
+                    "src": "192.0.2.1", "src_port": 5060,
+                    "dst": "192.0.2.2", "dst_port": 5060,
+                    "transport": "UDP", "is_request": true, "method": "OPTIONS",
+                    "call_id": "m1",
+                    "headers": {"Via": ["SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK9"],
+                                "From": ["<sip:a@example.com>;tag=1"],
+                                "To": ["<sip:b@example.com>"],
+                                "Call-ID": ["m1"], "CSeq": ["1 OPTIONS"]}
+                }]}).to_string(),
+            }]
+        });
+        let result = empty_server()
+            .analyze_vcon(Parameters(AnalyzeVconParams {
+                container: Some(container.clone()),
+                limit: None,
+            }))
+            .await
+            .map_err(|e| format!("analysis should answer: {e:?}"))?;
+        let expected = serde_json::to_value(
+            crate::output::vcon_analysis::analyze_container(&container, 50)
+                .map_err(|e| e.to_string())?,
+        )?;
+        assert_eq!(payload(&result)?, expected);
+        assert_eq!(expected["dialogs"][0]["call_id"], "m1", "{expected}");
+        Ok(())
+    }
+
+    /// No container, or one that is not an object, is a malformed request.
+    /// A container with no readable SIP is an answer.
+    #[tokio::test]
+    async fn analyze_vcon_refuses_what_is_not_a_container() -> Result<(), TestError> {
+        for container in [None, Some(serde_json::json!("{}"))] {
+            let err = empty_server()
+                .analyze_vcon(Parameters(AnalyzeVconParams {
+                    container,
+                    limit: None,
+                }))
+                .await
+                .err()
+                .ok_or("no container to analyze must be refused")?;
+            assert_eq!(code_of(err), -32602);
+        }
+        let result = empty_server()
+            .analyze_vcon(Parameters(AnalyzeVconParams {
+                container: Some(serde_json::json!({"vcon": "0.4.0"})),
+                limit: None,
+            }))
+            .await
+            .map_err(|e| format!("an unreadable container is an answer: {e:?}"))?;
+        assert_eq!(payload(&result)?["verdict"], "unreadable");
         Ok(())
     }
 }

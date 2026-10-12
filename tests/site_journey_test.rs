@@ -27,6 +27,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
+
 /// The error a fallible test or helper returns: any error, boxed, so `?`
 /// works on I/O, parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
@@ -2412,8 +2415,8 @@ struct Corpora<'a> {
     /// mirrored pages alone.
     mirror: &'a str,
     /// The output schema: `docs/output-formats.md` and the two references it
-    /// points at for per-field detail, `docs/rest-api.md` and
-    /// `docs/mcp-tools.md`.
+    /// points at for per-field detail, `docs/rest-api.md` and the MCP tool
+    /// reference (`docs/mcp-tools.md` and its per-bundle pages).
     output_docs: &'a str,
 }
 
@@ -2812,9 +2815,11 @@ fn site_mirror() -> Result<String, TestError> {
 /// The output schema as the docs describe it. `output-formats.md` describes
 /// the shapes and points at the REST and MCP references for the per-field
 /// tables, so the three together are where a field is documented or is not.
+/// The MCP reference is an index plus one page per tool bundle, and
+/// `output-formats.md` may link any of them, so every page is read.
 fn output_schema_docs() -> Result<String, TestError> {
     let formats = read("docs/output-formats.md")?;
-    for pointed_at in ["rest-api.md", "mcp-tools.md"] {
+    for pointed_at in ["rest-api.md", "mcp-tools"] {
         assert!(
             formats.contains(pointed_at),
             "docs/output-formats.md no longer points at {pointed_at} — the field \
@@ -2824,7 +2829,7 @@ fn output_schema_docs() -> Result<String, TestError> {
     Ok(format!(
         "{formats}\n{}\n{}",
         read("docs/rest-api.md")?,
-        read("docs/mcp-tools.md")?
+        mcp_reference::read_all(repo())?
     ))
 }
 
@@ -6059,7 +6064,7 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 7] = [
+            const GENERATED: [&str; 8] = [
                 "website/public",
                 "build/",
                 "target/",
@@ -6073,6 +6078,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
                 // pages.yml writes the GitHub star count here at deploy
                 // (scripts/github-stars.py); it is never committed.
                 "website/data/github.toml",
+                // pages.yml writes the docs pages' change history here at
+                // deploy (scripts/doc-history.py); it is never committed.
+                "website/data/doc-history.toml",
             ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
@@ -6311,7 +6319,18 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 188 -> 197: .github/workflows/memcheck.yml, the weekly Valgrind
     // memcheck job, names its scripts and fixtures nine times. Attributed by
     // measurement: with the file set aside the scan reads 188.
-    const EXPECTED_REFERENCES: usize = 197;
+    // 186 -> 190: four, all in `.github/workflows/pages.yml`, for the docs
+    // pages' change history. scripts/doc-history.py is named by the `paths:`
+    // entry, that entry's comment, the checkout's `fetch-depth: 0` comment and
+    // the step that runs it. The file it writes,
+    // website/data/doc-history.toml, is on the GENERATED list and not counted.
+    // Attributed by measurement: with HEAD's pages.yml swapped back in, the
+    // scan reads 186.
+    // 197 -> 201: the merge of docs/doc-improvements with the 0.5.213 batch.
+    // .github/workflows/pages.yml +4, its four references to
+    // scripts/doc-history.py. Attributed by measurement: with the batch's
+    // pages.yml swapped back in, the scan reads 197.
+    const EXPECTED_REFERENCES: usize = 201;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -11948,6 +11967,69 @@ fn pages_writes_the_star_count_before_it_builds_the_site() -> Result<(), TestErr
     assert!(
         check_body.contains("data-stars=") && check_body.contains("website/data/github.toml"),
         "the check does not compare the built homepage with the generated file:\n{check_body}"
+    );
+    Ok(())
+}
+
+// ---- The docs pages' "Last changed" line ----
+
+/// The history the docs footer states comes from the file the deploy
+/// generates, `website/data/doc-history.toml`, and nothing commits it.
+///
+/// A committed date could only describe the commit before the one that wrote
+/// it, so the file is derived from git at deploy time by
+/// `scripts/doc-history.py`. A local `zola build` has no such file, and the
+/// footer then shows the edit link alone.
+#[test]
+fn doc_history_comes_from_the_generated_data_file() -> Result<(), TestError> {
+    let rel = "website/data/doc-history.toml";
+    let tracked = Command::new("git")
+        .args(["ls-files", "--error-unmatch", rel])
+        .current_dir(repo())
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    assert!(
+        !tracked.status.success(),
+        "{rel} is tracked; it is generated at deploy time"
+    );
+    let ignored = Command::new("git")
+        .args(["check-ignore", "-q", "--no-index", rel])
+        .current_dir(repo())
+        .status()
+        .map_err(|e| format!("git check-ignore: {e}"))?;
+    assert!(ignored.success(), "{rel} is not in .gitignore");
+    Ok(())
+}
+
+/// The deploy checks out the full history with its tags, writes the docs
+/// history, and only then builds the site. A shallow checkout has neither the
+/// commits nor the tags the script reads, and every page would read as
+/// changed in the one commit the checkout holds.
+#[test]
+fn pages_writes_the_doc_history_before_it_builds_the_site() -> Result<(), TestError> {
+    let wf = ".github/workflows/pages.yml";
+    let yaml = read(wf)?;
+    let checkout = line_of(&yaml, "- uses: actions/checkout@", wf)?;
+    let depth = line_of(&yaml, "fetch-depth: 0", wf)?;
+    let derive = line_of(&yaml, "python3 scripts/doc-history.py", wf)?;
+    let build = line_of(&yaml, "run: zola build", wf)?;
+    assert!(
+        checkout < depth && depth < derive && derive < build,
+        "{wf} must check out the full history (line {}), write the docs history \
+         (line {}) and build (line {}), in that order",
+        depth + 1,
+        derive + 1,
+        build + 1
+    );
+    let step = workflow_step_body(wf, "Write the docs pages' change history")?;
+    assert!(
+        step.contains("--write website/data/doc-history.toml"),
+        "the step does not write the file page.html reads:\n{step}"
+    );
+    assert!(
+        yaml.contains("- 'scripts/doc-history.py'"),
+        "{wf}'s paths filter does not list scripts/doc-history.py, so a change \
+         to the script would not rebuild the site"
     );
     Ok(())
 }

@@ -504,10 +504,11 @@ fn registered_mcp_tools() -> Result<(BTreeSet<String>, usize), TestError> {
 
 /// Every tool named in the index of `docs/mcp-tools.md`.
 ///
-/// The index is EIGHT tables, one per category. It runs from the first
-/// `| Tool | Parameters | Returns |` header to the first `## ` section
-/// heading, and ALL of it is read — slicing to the first blank line stopped at
-/// the end of table one and reported forty-one tools as undocumented.
+/// The index was EIGHT tables, one per category, and slicing to the first
+/// blank line stopped at the end of table one and reported forty-one tools as
+/// undocumented. The tools now sit on one page per bundle, and the index keeps
+/// one alphabetical lookup table. It runs from the `| Tool | Bundle | Returns |`
+/// header to the next `## ` section heading, and ALL of it is read.
 ///
 /// A row's name may be plain or a link into the tool's own section, so both
 /// spellings are matched: pinning the plain form alone made a formatting
@@ -515,8 +516,8 @@ fn registered_mcp_tools() -> Result<(BTreeSet<String>, usize), TestError> {
 fn documented_mcp_tools() -> Result<BTreeSet<String>, TestError> {
     let doc = read(&repo().join("docs/mcp-tools.md"))?;
     let start = doc
-        .find("| Tool | Parameters | Returns |")
-        .ok_or("docs/mcp-tools.md has no tool table")?;
+        .find("| Tool | Bundle | Returns |")
+        .ok_or("docs/mcp-tools.md has no tool lookup table")?;
     let end = doc[start..].find("\n## ").map_or(doc.len(), |i| start + i);
     Ok(regex::RegexBuilder::new(r"^\| \[?`([a-z0-9_]+)`")
         .multi_line(true)
@@ -838,10 +839,9 @@ fn the_mcp_tool_index_lists_every_registered_tool_across_all_its_tables() -> Res
     assert!(
         missing.is_empty(),
         "these tools answer calls and appear in no index table: {missing:?}\n\n\
-         Add a row to the table for the tool's category in docs/mcp-tools.md. \
-         The index is read from the first `| Tool | Parameters | Returns |` \
-         header to the first `## ` heading, so a new CATEGORY table needs no \
-         change here — a new tool does."
+         Add a row to the alphabetical lookup in docs/mcp-tools.md and a \
+         section on its bundle's page. The lookup is read from the \
+         `| Tool | Bundle | Returns |` header to the next `## ` heading."
     );
 
     let stale: Vec<&String> = documented.difference(&registered).collect();

@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-12" "sipnab 0.5.213" "User Commands"
+.TH SIPNAB 1 "2026-10-12" "sipnab 0.5.214" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -65,7 +65,7 @@ describes every option with its configuration key.
 Network interface to capture on.
 .TP
 \fB\-I\fR, \fB\-\-input\fR \fIFILE|DIR|GLOB\fR
-Read packets from a capture file, directory, archive, or glob instead of live capture. Repeatable.
+Read packets from a capture file, directory, archive, or glob instead of live capture, and stored vCon containers as the SIP messages they hold. Repeatable.
 .TP
 \fB\-\-recursive\fR
 Descend into subdirectories when \fB\-I\fR names a directory.
@@ -244,6 +244,12 @@ Filter by User\-Agent header (regex pattern).
 .TP
 \fB\-\-filter\fR \fIEXPR\fR
 Filter DSL expression OR a diagnostic alias. Accepts full expressions (e.g. "method == 'INVITE' and rtp.mos < 3.5") and alias names like "problems" or "codec\-asym" \(em see docs/filter\-dsl.md.
+.TP
+\fB\-\-since\fR \fIRFC3339\fR
+Keep only dialogs whose first message is at or after this RFC 3339 instant (e.g. 2026\-10\-09T10:00:00Z). The window is half\-open [\-\-since, \-\-until), the one REST /v1/dialogs spells after/before and the MCP search_by_time tool spells start/end. ANDed with \-\-filter; needs \-N.
+.TP
+\fB\-\-until\fR \fIRFC3339\fR
+Keep only dialogs whose first message is BEFORE this RFC 3339 instant; a dialog at exactly \-\-until belongs to the next window. Must be after \-\-since. ANDed with \-\-filter; needs \-N.
 .SS Diagnostic aliases
 .TP
 \fB\-\-problems\fR

@@ -253,6 +253,16 @@ const NOT_PROBED: &[(&str, &str)] = &[
 /// against this table in both directions, so a tool that grows a page size
 /// tomorrow fails this suite rather than escaping it.
 const PROBES: &[PageProbe] = &[
+    // A container supplied inline rather than the replayed capture: the
+    // population this tool pages over is the container's dialogs, three of
+    // them here so a small page cuts.
+    PageProbe {
+        tool: "analyze_vcon",
+        args: r#"{"container":{"vcon":"0.4.0","uuid":"01928e10-193e-8231-b9a2-279e0d16bc46","created_at":"2026-10-09T12:00:00Z","parties":[{"name":"observer"}],"attachments":[{"purpose":"sip-invite","start":"2026-10-09T12:00:01Z","party":0,"dialog":0,"mediatype":"message/sip","encoding":"none","body":"INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bKpc1\r\nFrom: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\nCall-ID: pc1\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"},{"purpose":"sip-invite","start":"2026-10-09T12:00:02Z","party":0,"dialog":0,"mediatype":"message/sip","encoding":"none","body":"INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bKpc2\r\nFrom: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\nCall-ID: pc2\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"},{"purpose":"sip-invite","start":"2026-10-09T12:00:03Z","party":0,"dialog":0,"mediatype":"message/sip","encoding":"none","body":"INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bKpc3\r\nFrom: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\nCall-ID: pc3\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"}]}}"#,
+        page: "dialogs",
+        nested: None,
+        per_page: &[],
+    },
     PageProbe {
         tool: "list_dialogs",
         args: "{}",

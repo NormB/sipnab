@@ -175,9 +175,10 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
 - [Security implications](@/docs/mcp-deploy.md#security-implications) in the
   MCP deployment guide.
 - [File tools — the shared rule](@/docs/mcp-tools.md#file-tools-the-shared-rule)
-  and [Capture control (opt-in, off by default)](@/docs/mcp-tools.md#capture-control-opt-in-off-by-default)
-  in the MCP tool reference.
-- [`tfps_ban`](@/docs/mcp-tools.md#tfps-ban) in the MCP tool reference.
+  and [Find a tool by name](@/docs/mcp-tools.md#find-a-tool-by-name), which
+  marks every tool that writes, transmits or is off by default, in the MCP
+  tool reference.
+- [`tfps_ban`](@/docs/mcp-tools-tfps.md#tfps-ban) in the MCP tool reference.
 - [MCP server](@/docs/cli.md#mcp-server) and [Security](@/docs/cli.md#security)
   in the command-line reference, for every flag on this page.
 - [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load),

@@ -1767,7 +1767,7 @@ mod tests {
              came off a wire"
         );
 
-        for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
+        for origin in InputOrigin::ALL {
             msg.input_origin = Some(origin);
             assert_eq!(
                 message_to_json_value(&msg)

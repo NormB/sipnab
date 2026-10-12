@@ -379,6 +379,24 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // holds.
         ("export_vcon", json!({"filter": "response_code >= 400"})),
         ("validate_vcon", json!({"call_id": call_id})),
+        // A container handed over inline, so the probe drives the arm that
+        // fills every field: dialogs, ladder, analysis and stored rows.
+        (
+            "analyze_vcon",
+            json!({"container": {
+                "vcon": "0.4.0",
+                "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+                "created_at": "2026-10-09T12:00:00Z",
+                "parties": [{"name": "observer"}],
+                "attachments": [{"purpose": "sip-invite", "start": "2026-10-09T12:00:00Z",
+                                 "party": 0, "dialog": 0, "mediatype": "message/sip",
+                                 "encoding": "none",
+                                 "body": "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\nFrom: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\nCall-ID: probe\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"}],
+                "analysis": [{"type": "report", "dialog": 0, "vendor": "sipnab",
+                              "mediatype": "application/json", "encoding": "json",
+                              "body": "{\"media_quality\":[{\"ssrc\":\"0x1\",\"mos\":4.1}]}"}]
+            }}),
+        ),
         // Over the spool `vcon_spool_with_one_failure` writes, so the failed
         // list carries one record and its schema is exercised.
         ("vcon_spool_status", json!({})),

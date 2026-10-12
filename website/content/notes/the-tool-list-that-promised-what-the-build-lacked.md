@@ -108,8 +108,8 @@ When `vcon` is in that list, `tools/list` includes `export_vcon` and
 
 ## Related guides
 
-- [`server_capabilities`](@/docs/mcp-tools.md#server-capabilities)
+- [`server_capabilities`](@/docs/mcp-tools-server.md#server-capabilities)
 - [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load)
-- [`export_vcon`](@/docs/mcp-tools.md#export-vcon) and [`validate_vcon`](@/docs/mcp-tools.md#validate-vcon)
+- [`export_vcon`](@/docs/mcp-tools-vcon.md#export-vcon) and [`validate_vcon`](@/docs/mcp-tools-vcon.md#validate-vcon)
 - [REST API: `GET /v1/capabilities`](@/docs/api.md#get-v1-capabilities)
 - [Feature flags](@/docs/build.md#feature-flags)

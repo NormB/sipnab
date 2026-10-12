@@ -7162,16 +7162,11 @@ impl SipnabMcp {
         Parameters(params): Parameters<SearchByTimeParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         use chrono::{DateTime, Utc};
+        // The one parser every surface reads a time bound with.
         let parse = |s: &str, which: &str| -> Result<DateTime<Utc>, rmcp::ErrorData> {
-            DateTime::parse_from_rfc3339(s)
-                .map(|d| d.with_timezone(&Utc))
-                .map_err(|e| {
-                    errors::refuse_param(
-                        Reason::InvalidValue,
-                        which,
-                        format!("{which} '{s}' is not RFC 3339: {e}"),
-                    )
-                })
+            crate::cursor::parse_instant(s).map_err(|e| {
+                errors::refuse_param(Reason::InvalidValue, which, format!("{which} {e}"))
+            })
         };
         let start = parse(&params.start, "start")?;
         let end = match &params.end {
@@ -12646,12 +12641,19 @@ mod tests {
             // 5_000 -> 7_000 and full 81_000 -> 83_500 by `vcon_spool_status`
             // and `export_vcon`'s `cursor`, `media` and `next_cursor` (vcon
             // measured 6,627, full 83,052).
-            ("vcon", 7_000),
+            // 7_000 -> 8_500 and full 85_500 -> 87_000 when feat/vcon-input's
+            // `analyze_vcon` met the 0.5.213 batch: vcon measured 8,369 (the
+            // five tools `analyze_vcon`, `export_vcon`, `siprec_metadata`,
+            // `validate_vcon` and `vcon_spool_status`), full 86,969 over 74
+            // tools, on the merged tree.
+            ("vcon", 8_500),
             ("tls", 3_000),
             // full 83_500 -> 85_500: the three changes above together, the
             // paged-tool byte budget, the response schemas and the vCon
             // paging and spool tool, measured 85,447 on the merged tree.
-            ("full", 85_500),
+            // full 85_500 -> 87_000: `analyze_vcon`, as the vcon row above
+            // says, measured 86,969 on the merged tree.
+            ("full", 87_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

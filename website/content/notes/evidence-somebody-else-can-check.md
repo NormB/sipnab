@@ -272,6 +272,6 @@ organization, remove personal data first, as described in
 - [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice): every `capture_completeness` field.
 - [Someone handed you a sipnab vCon — what may you conclude?](@/docs/vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude): what the receiver can conclude.
 - [What sipnab refuses to put in a container](@/docs/vcon.md#what-sipnab-refuses-to-put-in-a-container)
-- [`validate_vcon`](@/docs/mcp-tools.md#validate-vcon): the tool's arguments and answers.
+- [`validate_vcon`](@/docs/mcp-tools-vcon.md#validate-vcon): the tool's arguments and answers.
 - [CLI reference: Output](@/docs/cli.md#output): `--export-vcon-when`, `--export-vcon-dir`, `--vcon-digest`, `--no-cli-print`.
 - [CLI reference: Security](@/docs/cli.md#security): `--run-provenance-file`.

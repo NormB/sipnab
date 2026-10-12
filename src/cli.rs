@@ -9,6 +9,18 @@
 
 use clap::Parser;
 
+mod aggregate_args;
+mod call_query_args;
+mod file_job_args;
+mod gate_args;
+pub mod one_shot;
+
+pub use aggregate_args::AggregateArgs;
+pub use call_query_args::CallQueryArgs;
+pub use file_job_args::FileJobArgs;
+pub use gate_args::GateArgs;
+pub use one_shot::OneShot;
+
 /// The flag that names the relay's control port, as an operator spells it.
 ///
 /// Exported so a message can name it without the spelling being duplicated --
@@ -542,6 +554,28 @@ pub struct Cli {
     #[command(flatten)]
     pub config_args: ConfigArgs,
 
+    // ── One-shot queries ──
+    // Each group lives in its own file under `src/cli/` and declares its flags
+    // to `normalize` and `validate` through `one_shots`, so a query flag is
+    // added without editing this struct. See `docs/design/par5-cli-queries.md`.
+    #[command(flatten)]
+    pub aggregate_args: AggregateArgs,
+
+    #[command(flatten)]
+    pub call_query_args: CallQueryArgs,
+
+    #[command(flatten)]
+    pub file_job_args: FileJobArgs,
+
+    #[command(flatten)]
+    pub gate_args: GateArgs,
+
+    /// One-shot declarations a unit test injects, so the registry plumbing in
+    /// `normalize` and `validate` is proved before any real query flag exists.
+    #[cfg(test)]
+    #[arg(skip)]
+    pub(crate) test_one_shots: Vec<OneShot>,
+
     // ── Positional ──
     /// BPF capture filter expression (trailing positional arguments), handed
     /// to libpcap as typed. Not the display filter (`--filter`). Replaces
@@ -682,7 +716,8 @@ pub struct CaptureArgs {
     pub device: Option<String>,
 
     /// Read packets from a capture file, directory, archive, or glob instead
-    /// of live capture. Repeatable.
+    /// of live capture, and stored vCon containers as the SIP messages they
+    /// hold. Repeatable.
     ///
     /// Files are read in the order their packets were captured, never by
     /// filename — `tcpdump -C -W` writes a ring buffer that wraps, so
@@ -692,6 +727,12 @@ pub struct CaptureArgs {
     /// inside joins the set, gzip-compressed members and archives nested in
     /// archives included, and every member that is not a capture is named
     /// with the reason. Layers are recognized by their bytes, not their names.
+    ///
+    /// A stored vCon container (a JSON file, such as one `--export-vcon`
+    /// wrote) is read too: its SIP messages are rebuilt and analyzed, marked
+    /// `origin=vcon`. A vCon stores no RTP, so no media is analyzed from it.
+    /// A schema finding is reported and the container read anyway; one with
+    /// no SIP sipnab can read is skipped with the reason.
     #[arg(
         help_heading = "Capture",
         short = 'I',
@@ -1201,6 +1242,36 @@ pub struct MatchingArgs {
     /// docs/filter-dsl.md.
     #[arg(help_heading = "Matching", long, value_name = "EXPR")]
     pub filter: Option<String>,
+
+    /// Keep only dialogs whose first message is at or after this RFC 3339
+    /// instant (e.g. 2026-10-09T10:00:00Z). The window is half-open
+    /// [--since, --until), the one REST /v1/dialogs spells after/before and
+    /// the MCP search_by_time tool spells start/end. ANDed with --filter;
+    /// needs -N.
+    #[arg(
+        help_heading = "Matching",
+        long,
+        value_name = "RFC3339",
+        value_parser = parse_time_bound
+    )]
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// Keep only dialogs whose first message is BEFORE this RFC 3339 instant;
+    /// a dialog at exactly --until belongs to the next window. Must be after
+    /// --since. ANDed with --filter; needs -N.
+    #[arg(
+        help_heading = "Matching",
+        long,
+        value_name = "RFC3339",
+        value_parser = parse_time_bound
+    )]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Parse a `--since`/`--until` value through the one parser every surface
+/// reads a time bound with.
+fn parse_time_bound(s: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    crate::cursor::parse_instant(s)
 }
 
 /// `Diagnostic aliases` flags.
@@ -3853,9 +3924,13 @@ pub struct McpArgs {
     /// should be a decision an operator makes rather than a side effect of
     /// running a capture.
     ///
-    /// Costs a per-packet payload clone and buffers up to `[limits]
-    /// max_audio_frames` frames (default 1500) per stream across at most
-    /// `--max-streams` streams.
+    /// Keeps whole calls: every frame of every stream, from the first. Costs
+    /// a per-packet payload clone, bounded by one budget across every stream,
+    /// `[limits] max_audio_bytes` (default 1 GiB, about 67 concurrent
+    /// ten-minute G.711 calls). At the budget the oldest stream's earliest
+    /// frames are released first, and that call's export and vCon say
+    /// PARTIAL with the count. `[limits] max_audio_frames` caps each stream
+    /// as well when set.
     ///
     /// It does not need `--mcp`: `--call-report` and `--json-dialogs` read the
     /// retained audio for the amplitude measurement, so a pcap analysis gets
@@ -7275,6 +7350,7 @@ impl Cli {
             || self.output_args.export_vcon.is_some()
             || self.output_args.export_vcon_when.is_some()
             || self.mcp_owns_stdout()
+            || one_shot::any_implies_no_tui(&self.one_shots())
         {
             self.mode_args.no_tui = true;
         }
@@ -7347,6 +7423,53 @@ impl Cli {
                 refused.join(", ")
             )
         })
+    }
+
+    /// Why `--since`/`--until` cannot be used as given, if they cannot.
+    ///
+    /// Two refusals. An `--until` at or before `--since` is an empty window by
+    /// construction, and a run that answered it would report "nothing matched"
+    /// for a typo. And the window narrows the batch outputs (`--report`,
+    /// `--json-dialogs`, the per-message stream, the queries), none of which
+    /// the TUI shows, so a run that would raise the TUI refuses it rather than
+    /// ignore it; the TUI's own time range is the call-list filter dialog.
+    fn time_window_refusal(&self) -> Option<String> {
+        let m = &self.matching_args;
+        if let (Some(since), Some(until)) = (m.since, m.until)
+            && until <= since
+        {
+            return Some(format!(
+                "--until {} is not after --since {}: the window [--since, --until) \
+                 would hold no instant",
+                until.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+                since.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+            ));
+        }
+        if (m.since.is_some() || m.until.is_some()) && !self.mode_args.no_tui {
+            return Some(
+                "--since/--until narrow the batch outputs and require -N/--no-tui \
+                 mode. In the TUI, set the time range in the call list's filter \
+                 dialog"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    /// Every one-shot query flag's declaration, from the four query groups.
+    ///
+    /// The single list `normalize` and `validate` read: a flag declared in its
+    /// group's `one_shots` is made headless, required to run with `-N`, or
+    /// refused beside `--mcp` on stdio from that declaration alone.
+    #[must_use]
+    pub fn one_shots(&self) -> Vec<OneShot> {
+        let mut shots = self.aggregate_args.one_shots();
+        shots.extend(self.call_query_args.one_shots());
+        shots.extend(self.file_job_args.one_shots());
+        shots.extend(self.gate_args.one_shots());
+        #[cfg(test)]
+        shots.extend(self.test_one_shots.iter().copied());
+        shots
     }
 
     /// Whether this run serves MCP on stdout: `--mcp` with any transport but
@@ -7583,7 +7706,11 @@ impl Cli {
             ));
         }
 
-        let output_flags_used: Vec<&str> = [
+        if let Some(refusal) = self.time_window_refusal() {
+            return Err(crate::Error::CliValidation(refusal));
+        }
+
+        let mut output_flags_used: Vec<&str> = [
             (self.output_args.json, "--json"),
             (self.output_args.json_dialogs, "--json-dialogs"),
             (self.output_args.json_pretty, "--json-pretty"),
@@ -7609,6 +7736,9 @@ impl Cli {
         .filter(|(active, _)| *active)
         .map(|(_, name)| *name)
         .collect();
+        // Every one-shot query flag that does not imply -N, from the registry
+        // rather than a line here per flag: see `cli::one_shot`.
+        output_flags_used.extend(one_shot::needing_no_tui(&self.one_shots()));
 
         if !output_flags_used.is_empty()
             && !self.mode_args.no_tui
@@ -7683,7 +7813,7 @@ impl Cli {
             // "Implies --no-tui" means. The stdout conflicts below are a
             // different question -- those flags would write to the wire MCP
             // owns, and the operator asked for them explicitly.
-            let stdout_flags: Vec<&str> = [
+            let mut stdout_flags: Vec<&str> = [
                 (self.output_args.json, "--json"),
                 (self.output_args.json_pretty, "--json-pretty"),
                 (self.output_args.report, "--report"),
@@ -7709,6 +7839,9 @@ impl Cli {
             .filter(|(active, _)| *active)
             .map(|(_, name)| *name)
             .collect();
+            // Every one-shot query flag whose answer goes to stdout, from the
+            // registry: see `cli::one_shot`.
+            stdout_flags.extend(one_shot::writing_stdout(&self.one_shots()));
             if !stdout_flags.is_empty() {
                 return Err(crate::Error::CliValidation(format!(
                     "--mcp uses stdout for the JSON-RPC wire and cannot be combined with \
@@ -12846,6 +12979,107 @@ mod tests {
                 "{flag} without --group-by must name what it needs: {err}"
             );
         }
+        Ok(())
+    }
+}
+
+/// The one-shot registry is what `normalize` and `validate` read, proved with
+/// declarations injected by the test rather than by any real query flag.
+#[cfg(test)]
+mod one_shot_plumbing_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A parsed command line plus one injected declaration, normalized the way
+    /// `parse_from_args` normalizes a real one.
+    fn with_shot(argv: &[&str], shot: OneShot) -> Result<Cli, TestError> {
+        let mut full = vec!["sipnab"];
+        full.extend_from_slice(argv);
+        let mut cli = Cli::try_parse_from(full)?;
+        cli.test_one_shots.push(shot);
+        cli.normalize();
+        Ok(cli)
+    }
+
+    /// An active declaration that implies `-N` makes the run headless.
+    #[test]
+    fn an_implying_one_shot_makes_the_run_headless() -> Result<(), TestError> {
+        let cli = with_shot(
+            &["-I", "x.pcap"],
+            OneShot {
+                name: "--test-implies",
+                active: true,
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        )?;
+        assert!(cli.mode_args.no_tui, "the declaration implies -N");
+        let idle = with_shot(
+            &["-I", "x.pcap"],
+            OneShot {
+                name: "--test-implies",
+                active: false,
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        )?;
+        assert!(!idle.mode_args.no_tui, "an inactive flag implies nothing");
+        Ok(())
+    }
+
+    /// An active declaration that does not imply `-N` is refused without it,
+    /// by name, and accepted with it.
+    #[test]
+    fn a_non_implying_one_shot_needs_no_tui() -> Result<(), TestError> {
+        let shot = OneShot {
+            name: "--test-needs",
+            active: true,
+            implies_no_tui: false,
+            owns_stdout: true,
+        };
+        let err = with_shot(&["-I", "x.pcap"], shot)?
+            .validate()
+            .err()
+            .ok_or("an active one-shot without -N must be refused")?
+            .to_string();
+        assert!(err.contains("--test-needs"), "names the flag: {err}");
+        assert!(err.contains("-N/--no-tui"), "names the remedy: {err}");
+        with_shot(&["-N", "-I", "x.pcap"], shot)?.validate()?;
+        Ok(())
+    }
+
+    /// An active declaration that writes stdout is refused beside `--mcp` on
+    /// stdio, and one that writes elsewhere is not.
+    #[test]
+    fn a_stdout_one_shot_is_refused_beside_mcp() -> Result<(), TestError> {
+        let writes = OneShot {
+            name: "--test-stdout",
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        };
+        let err = with_shot(&["--mcp", "-I", "x.pcap"], writes)?
+            .validate()
+            .err()
+            .ok_or("a stdout one-shot beside --mcp must be refused")?
+            .to_string();
+        assert!(err.contains("--test-stdout"), "names the flag: {err}");
+        assert!(err.contains("JSON-RPC"), "says why: {err}");
+        let elsewhere = OneShot {
+            owns_stdout: false,
+            ..writes
+        };
+        with_shot(&["--mcp", "-I", "x.pcap"], elsewhere)?.validate()?;
+        Ok(())
+    }
+
+    /// The four query groups are flattened in and declare nothing yet, so a
+    /// plain command line carries no one-shot at all.
+    #[test]
+    fn a_plain_command_line_declares_no_active_one_shot() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])?;
+        assert!(cli.one_shots().iter().all(|s| !s.active));
         Ok(())
     }
 }

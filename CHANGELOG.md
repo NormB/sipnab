@@ -8,6 +8,115 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.214] - 2026-10-12
+
+### Added
+
+- **`-I` reads stored vCon containers, and every surface analyzes them.** A
+  container `--export-vcon` wrote, or one another producer wrote, is read like
+  a capture: a file, a directory of them or a glob, beside pcap files or
+  alone. Its SIP messages are rebuilt from the `sip-message-trace` attachment
+  (sipnab's, and the trace form of draft-howe-vcon-sip-signaling-00) or from
+  `message/sip` attachments, keeping each message's time, addresses and
+  transport, and the dialog list, ladder, `--report`, `--analyze`, `--json`,
+  `--json-dialogs`, the TUI (file browser included) and MCP `open_capture`
+  analyze them unchanged. Each rebuilt message carries the new `input_origin`
+  value `vcon` (`origin=vcon` on the `-N` line and in the TUI). The capture
+  analysis opens with a new blind finding, `rebuilt_from_vcon`, one occurrence
+  per container, naming what a container cannot reproduce and quoting the
+  producer's own caveat: no RTP is stored, so no media statistic is computed;
+  the request-URI is not stored, so a rebuilt request carries
+  `sip:request-uri-not-stored.invalid`; header order across names, bodies
+  other than SDP, and headers the producer did not store do not come back. A
+  container that fails the draft-ietf-vcon-vcon-core-04 schema is still read
+  when its SIP is readable, with the finding logged and carried in the
+  analysis: vcon.store hands containers back with `extensions` as an object,
+  and `extensions` is read in either form. A container with no SIP sipnab can
+  read, or a file that is not a vCon, is skipped with the reason, or stops the
+  run when named directly. `--cores` and a BPF filter are refused for a set
+  holding one. The TUI file browser lists `*.vcon.json`, and its status line
+  says when dialogs came from stored containers. Cookbook recipe 66 shows it. The YANG module `sipnab-diagnosis` has a
+  new revision, 2026-10-09, carrying the finding kind.
+- **MCP `analyze_vcon` and `POST /v1/vcon/analyze`.** Both take a container
+  inline and answer with one shared analysis: per dialog the `--json-dialogs`
+  object, the signaling diagnosis and the message ladder, the capture
+  analysis, `not_recomputed`, and the producer's `media_quality` rows
+  verbatim as `stored_media_quality`. The container is analyzed in stores of
+  its own: the loaded capture is untouched and nothing connects anywhere.
+  `schema_findings` lists every schema finding beside the analysis, and a
+  container with no readable SIP is answered with `verdict: unreadable` and
+  the reason. The tool is read-only, in the `vcon` bundle, and bounded by
+  `limit`.
+- **`--since` and `--until` scope a headless run to a time window.**
+  `sipnab -N -I capture.pcap --report --since 2026-10-09T10:00:00Z --until
+  2026-10-09T11:00:00Z` keeps the dialogs whose first message falls in the
+  half-open window `[since, until)`, the window REST `/v1/dialogs` spells
+  `after`/`before` and the MCP `search_by_time` tool spells `start`/`end`; all
+  three now read the bound with one [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) parser and apply one rule. The
+  window joins `--filter` in one compiled filter, so `--report`,
+  `--json-dialogs`, `--analyze`, the per-message stream and
+  `--export-vcon-when` all honor it. A window holding none of the capture's
+  dialogs says so on stderr, naming the span the dialogs cover. An `--until`
+  not after `--since`, a value that is not RFC 3339, or either flag without
+  `-N` exits 2.
+- **The filter DSL has a `time` field**: the dialog's first-message instant,
+  compared with a quoted RFC 3339 literal by `<`, `<=`, `>`, `>=` or `==`.
+  `time >= 'A' AND time < 'B'` selects what `--since A --until B` selects.
+- **An error-message reference.** [Error messages](docs/errors.md) lists each
+  message sipnab prints when it refuses a run or stops at startup, keyed by
+  the template in the source, with what it means, what to do, and the exit
+  code. `tests/error_reference_test.rs` reads the startup and exit path of the
+  source and fails when a message has no entry or an entry names a message no
+  code prints.
+- **A Since column in the CLI reference.** Every flag row of
+  [docs/cli-reference.md](docs/cli-reference.md) names the first release
+  whose command line accepted the flag, derived from `src/cli.rs` at each
+  release tag by `scripts/flag-since.py`. On the release commit, a flag in no
+  tag reads the version being cut. `tests/cli_flag_since_test.rs` fails when
+  the column differs from what the tags say.
+- **A source footer on every docs page of sipnab.com.** Each page links to its
+  source file on GitHub and states the release that holds the last change to
+  that file, read from git at deploy time by `scripts/doc-history.py`.
+
+### Changed
+
+- **Retained audio covers the whole call.** `--retain-audio`, and the
+  terminal UI, kept the last 1500 frames of each stream, 30 seconds of 20 ms
+  G.711, so a 60-second call exported to WAV or vCon held its last 30 seconds
+  and said PARTIAL. Each stream now keeps every frame from the first.
+  `[limits] max_audio_frames` is unset by default and still caps each stream
+  when set; `0` is still refused.
+  Affected: every run that retains audio, live or from a file, `--cores`
+  included.
+- **A new `[limits] max_audio_bytes` budget bounds retained audio across every
+  stream.** Default 1 GiB, minimum 1 MiB. A 20 ms G.711 frame is charged 264
+  bytes, an upper bound on what it occupies (measured at 192.6 bytes with the
+  binary's allocator), so the default holds 40,672 call-seconds with media both
+  ways: 67 concurrent ten-minute calls, or 225 concurrent three-minute ones.
+  At the budget the oldest stream's earliest frames are released first, and
+  that call's WAV note, export summary and vCon `media_note` say `PARTIAL: the
+  [limits] max_audio_bytes retention budget was reached and released N earlier
+  frame(s)`; the vCon wraps the recording in a `recording-set`. With `--cores
+  N` each worker gets 1/N of the budget. See
+  [Audio retention budget](docs/config-reference.md#audio-retention-budget).
+- **A live capture that writes vCon containers releases each call's audio
+  once its container is written.** The container carries it, and holding it
+  until the stream was evicted grew retention with the length of the run. A
+  later export of that call says how many frames were released and why.
+- **A whole call can exceed the vCon inline media budget.** A two-way G.711
+  call fits the 5 MiB `--vcon-max-inline-media` default for up to 122
+  seconds; a longer one carries the existing out-loud refusal instead of the
+  audio. Raise `--vcon-max-inline-media` to what your store accepts.
+- **The MCP tool reference is one page per tool bundle.**
+  [docs/mcp-tools.md](docs/mcp-tools.md) is now the index: what a bundle is,
+  the ten bundles with a link to each page, the bundle byte costs, which tool
+  finds calls, the prompts, an alphabetical tool lookup naming each tool's
+  page, and the rules every tool follows. `docs/mcp-tools-<bundle>.md` holds
+  each bundle's tools, for example
+  [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats) in the `core` bundle.
+  `tests/mcp_tool_bundle_pages_test.rs` reads `src/mcp_profile.rs` and fails
+  when a tool's section is not on its bundle's page.
+
 ## [0.5.213] - 2026-10-12
 
 ### Added
@@ -1652,7 +1761,7 @@ entry that carries them.
   carries is still refused, and the message now names both searches: `no SIP
   dialog and no RTP stream associated with call_id '…' in this capture`. The
   SIP-only tools still need the dialog. See
-  [`rtp_stats`](docs/mcp-tools.md#rtp_stats).
+  [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats).
 - **A HEP listener or uprobe capture no longer grows memory with every
   packet.** Each packet's source label (`capture_id@address`, `uprobe:comm/pid`)
   was built fresh and stored again, so the table of source names grew with the

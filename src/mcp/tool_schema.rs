@@ -60,7 +60,8 @@ pub fn describe(tool: &str, output_schema: Option<&Map<String, Value>>) -> Value
             "note": format!(
                 "{tool} declares no output schema, so there is no machine-checkable \
                  response shape to return. Its response is described in the {tool} \
-                 section of docs/mcp-tools.md"
+                 section of the MCP tool reference: docs/mcp-tools.md names the \
+                 bundle page that holds it"
             ),
         }),
     }

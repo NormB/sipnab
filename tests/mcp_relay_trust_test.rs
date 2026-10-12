@@ -11,6 +11,8 @@
 //! `port-gated-only`, `--hep-auth-mode hmac` included.
 #![cfg(all(feature = "mcp", feature = "hep"))]
 
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
 #[path = "support/mcp.rs"]
 mod support;
 
@@ -98,11 +100,10 @@ fn the_guides_claim_no_tool_is_the_only_one_that_transmits_or_writes() -> Result
         "only write verb",
         "no mcp tool puts a packet",
     ];
-    for page in [
-        "docs/mcp-tools.md",
-        "docs/cli-reference.md",
-        "docs/mcp-deploy.md",
-    ] {
+    // The MCP tool reference is an index page plus one page per bundle.
+    let mut pages = mcp_reference::pages();
+    pages.extend(["docs/cli-reference.md".into(), "docs/mcp-deploy.md".into()]);
+    for page in &pages {
         let text = std::fs::read_to_string(root.join(page))?.to_lowercase();
         for claim in CLAIMS {
             assert!(!text.contains(claim), "{page} still says \"{claim}\"");

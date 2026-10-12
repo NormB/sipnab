@@ -109,6 +109,8 @@ const COMPLETE_KEY: &str = "complete";
 ///   `show_evidence` and `list_tls_libraries` answer from a frame the caller
 ///   handed over, from the IANA registry, from the rule catalog, or from the
 ///   host's linker.
+/// - `analyze_vcon` analyzes a container the caller handed over, in stores
+///   of its own.
 /// - `list_captures` lists files on disk, and `vcon_spool_status` counts
 ///   the files in the vCon export spool.
 /// - `server_capabilities` describes the binary.
@@ -116,6 +118,10 @@ const COMPLETE_KEY: &str = "complete";
 /// `mcp_completeness_test.rs` derives the set of store-reading tools from the
 /// source and fails if any of them appears here.
 pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
+    // Analyzes a container the caller handed over, rebuilt into stores of its
+    // own. How much of the server's capture has been read says nothing about
+    // it; what the container could not supply is in its own `not_recomputed`.
+    "analyze_vcon",
     "compare_captures",
     "decode_evidence",
     // Answers about ONE frame on disk, reached by pointer. Its answer does not

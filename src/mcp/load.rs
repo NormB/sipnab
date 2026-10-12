@@ -164,6 +164,9 @@ pub fn spawn(
     // life of the process, and `open_capture` has already rotated the identity
     // every later answer carries.
     super::completeness::clear_source_stopped_early();
+    // Likewise the vCon containers the previous capture was rebuilt from: the
+    // stores they filled are the ones being replaced.
+    crate::capture::vcon_input::reset_read_report();
     let worker = Arc::clone(&load);
     std::thread::Builder::new()
         .name("mcp-pcap-load".to_string())
@@ -263,6 +266,11 @@ pub(crate) fn read_into_stores(
         crate::capture::replay::read_into_stores(path, opts, dialog_store, stream_store, progress);
     if outcome.stopped_early {
         super::completeness::note_source_stopped_early();
+    }
+    // These stores are the server's own, so the containers they were rebuilt
+    // from are what its capture analysis has to name.
+    for input in outcome.vcon_inputs {
+        crate::capture::vcon_input::record_read(input);
     }
     match outcome.error {
         Some(e) => Err((outcome.packets, e)),

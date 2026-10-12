@@ -371,7 +371,7 @@ sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only with a token, and with TLS: either [`--api-tls-cert`/`--api-tls-key`](#api-tls) or a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
 
-`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 on every route that reads one: `POST /v1/persistence`, `POST /v1/tfps/ban`, `POST /v1/tfps/unban`, `POST /v1/actions/revert` and `POST /v1/vcon/validate`. A body that is merely malformed is a 400, so the two answers stay distinct. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
+`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 on every route that reads one: `POST /v1/persistence`, `POST /v1/tfps/ban`, `POST /v1/tfps/unban`, `POST /v1/actions/revert`, `POST /v1/vcon/validate` and `POST /v1/vcon/analyze`. A body that is merely malformed is a 400, so the two answers stay distinct. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
 ## OpenAPI specification
 
@@ -991,7 +991,7 @@ On a call that said why it ended, the report also carries a `termination`
 object — `cause_code`, `cause_text`, `protocol`, `source_header` and
 `frame_ref`. It comes from the same assembler as the MCP answer, so this route
 and `get_dialog_report` cannot report different causes for one call. The field
-reference is in [mcp-tools.md](mcp-tools.md#why-the-call-ended). sipnab omits
+reference is in [Why the call ended](mcp-tools-core.md#why-the-call-ended). sipnab omits
 the block, and never sends `null`, when nothing on the wire named a cause.
 
 **curl:**
@@ -2234,7 +2234,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
 ```
 
 It is the same analysis in a different encoding: the YANG section of
@@ -3480,6 +3480,94 @@ Dialog Object core-03 allowed, which core-04 no longer allows.
 
 The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
+
+---
+
+### POST /v1/vcon/analyze
+
+Rebuild the SIP messages a stored vCon container holds and analyze them, apart
+from the capture this server holds: per dialog the `--json-dialogs` object, the
+signaling diagnosis and the message ladder, plus the capture analysis. Reads no
+store and writes none. The body is the container. `limit` (default 50, ceiling
+`--api-max-rows`) bounds the dialogs returned, and `total_dialogs` counts them
+all.
+
+**curl** (the container `--export-vcon 1-1966@10.0.2.20 --node-name tap-a` writes from
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), with a filter that keeps the summary
+fields):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: application/json" \
+  --data-binary @call.vcon.json "http://127.0.0.1:8080/v1/vcon/analyze?limit=10" \
+  | jq '{verdict, uuid, messages_rebuilt, total_dialogs, truncated, schema_findings, not_recomputed, first_finding: .analysis.findings[0].kind, ladder: [.dialogs[0].ladder[].label]}'
+```
+
+**Response:**
+
+```json
+{
+  "verdict": "analyzed",
+  "uuid": "0158a120-0392-857f-8193-d90b5d03d6c4",
+  "messages_rebuilt": 6,
+  "total_dialogs": 1,
+  "truncated": false,
+  "schema_findings": [],
+  "not_recomputed": [
+    "media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it",
+    "the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed",
+    "request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid",
+    "header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent"
+  ],
+  "first_finding": "rebuilt_from_vcon",
+  "ladder": [
+    "INVITE",
+    "100 Trying",
+    "200 OK",
+    "ACK",
+    "BYE",
+    "200 OK"
+  ]
+}
+```
+
+**`verdict` is `analyzed` or `unreadable`.** `unreadable` means the container
+stores no SIP message sipnab can rebuild, or is not a vCon at all, and `reason`
+says which. `schema_findings` lists every place the container disagrees with
+the schema, in the shape `POST /v1/vcon/validate` uses, beside either verdict:
+a finding never stops the analysis. A container that went through vcon.store,
+with `extensions` as an object, still gets an analysis (the section
+[A container the schema refuses is still read](vcon.md#a-container-the-schema-refuses-is-still-read)
+writes `store-shape.vcon.json`):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: application/json" \
+  --data-binary @store-shape.vcon.json "http://127.0.0.1:8080/v1/vcon/analyze" \
+  | jq '{verdict, total_dialogs, schema_findings}'
+```
+
+```json
+{
+  "verdict": "analyzed",
+  "total_dialogs": 1,
+  "schema_findings": [
+    {
+      "instance_path": "/extensions",
+      "keyword": "type",
+      "detail": "expected type \"array\", found object"
+    }
+  ]
+}
+```
+
+ `not_recomputed` lists what a container cannot reproduce: a
+vCon stores no RTP, so sipnab computes no media statistic, and
+`stored_media_quality` carries the producer's own numbers verbatim. The analysis opens with a
+`rebuilt_from_vcon` finding.
+
+The body must be the JSON object itself, not a string holding it. A non-object
+is a `400`. The MCP tool [`analyze_vcon`](mcp-tools-vcon.md#analyze_vcon) runs the
+same `vcon_analysis::analyze_container` and answers with the same body. Its
+section describes every field.
 
 ---
 

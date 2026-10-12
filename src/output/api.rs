@@ -650,6 +650,16 @@ pub struct HepSendersParams {
     pub limit: Option<usize>,
 }
 
+/// Query parameters for the `POST /v1/vcon/analyze` endpoint.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct VconAnalyzeParams {
+    /// Maximum dialogs to return (default 50, ceiling `--api-max-rows`).
+    /// `total_dialogs` counts every dialog the container holds.
+    pub limit: Option<usize>,
+}
+
 /// Query parameters for the `GET /v1/dialogs` endpoint.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -1020,6 +1030,8 @@ pub fn build_router(state: ApiState) -> Router {
     // vcon feature, so this route is gated with it too.
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/vcon/validate", axum::routing::post(post_vcon_validate));
+    #[cfg(feature = "vcon")]
+    let router = router.route("/v1/vcon/analyze", axum::routing::post(post_vcon_analyze));
     // The spool's state, read by the function the MCP tool and the CLI use,
     // which is part of the vcon feature.
     #[cfg(feature = "vcon")]
@@ -3397,6 +3409,61 @@ async fn post_vcon_validate(
     }))
 }
 
+#[cfg(feature = "vcon")]
+/// `POST /v1/vcon/analyze` — rebuild and analyze a stored vCon container a
+/// caller holds (the REST side of the MCP `analyze_vcon` tool).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (for the guard and the row cap).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `limit`, the most dialogs to return.
+/// * `body` — The vCon container, a JSON object.
+///
+/// # Returns
+///
+/// 200 with the analysis and any schema findings, or with
+/// `verdict: unreadable` and the reason; 400 when the body is not a JSON
+/// object; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Mutates the rate limiter. Reads no store and writes none: the container
+/// is rebuilt into stores of its own and dropped.
+#[utoipa::path(
+    post,
+    path = "/v1/vcon/analyze",
+    tag = "operations",
+    summary = "Analyze a stored vCon container",
+    description = "Rebuild the SIP messages a stored vCon container holds and analyze them, apart from this server's capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the message ladder, plus the capture analysis, whose first finding is `rebuilt_from_vcon`.\n\nReads a `sip-message-trace` attachment (sipnab's, and the draft-howe-vcon-sip-signaling trace form) and `message/sip` attachments. `not_recomputed` lists what a container cannot reproduce: no RTP is stored, so no media statistic is computed, and `stored_media_quality` carries the producer's own numbers verbatim. `schema_findings` lists where the container fails the vendored draft-ietf-vcon-vcon-core-04 schema, without stopping the analysis: a container a store reshaped is still read. A container with no SIP sipnab can read answers `verdict: unreadable` with the reason. The MCP `analyze_vcon` tool runs the same `vcon_analysis::analyze_container`.",
+    params(VconAnalyzeParams),
+    request_body(content = serde_json::Value, description = "The vCon container to analyze.", content_type = "application/json"),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The analysis with any schema findings, or the reason a container with no readable SIP was not analyzed.", body = crate::output::vcon_analysis::VconAnalysis),
+        (status = 400, description = "The body is not a JSON object.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn post_vcon_analyze(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<VconAnalyzeParams>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+
+    let container = json_body(body, Some("the body must be a JSON vCon container"))?;
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+    let analysis = crate::output::vcon_analysis::analyze_container(&container, limit)
+        .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(analysis))
+}
+
 /// Query parameters for `GET /v1/vcon/spool`.
 #[cfg(feature = "vcon")]
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -3536,16 +3603,16 @@ async fn list_dialogs(
     // Parse the time window up front, so a malformed timestamp is a 400 rather
     // than a silently ignored window a client would read as the answer to its
     // question. `after`/`before` bound the dialog's first-message instant.
-    let parse_ts = |name: &str,
-                    v: Option<&str>|
-     -> Result<Option<chrono::DateTime<chrono::Utc>>, Problem> {
-        match v {
-            Some(s) => chrono::DateTime::parse_from_rfc3339(s)
-                .map(|t| Some(t.with_timezone(&chrono::Utc)))
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("{name}: {e}"))),
-            None => Ok(None),
-        }
-    };
+    let parse_ts =
+        |name: &str, v: Option<&str>| -> Result<Option<chrono::DateTime<chrono::Utc>>, Problem> {
+            match v {
+                // The one parser every surface reads a time bound with.
+                Some(s) => crate::cursor::parse_instant(s).map(Some).map_err(|e| {
+                    Problem::detailed(StatusCode::BAD_REQUEST, format!("{name}: {e}"))
+                }),
+                None => Ok(None),
+            }
+        };
     let after = parse_ts("after", params.after.as_deref())?;
     let before = parse_ts("before", params.before.as_deref())?;
 
@@ -4665,7 +4732,7 @@ async fn get_stream(
     params(CaptureReportParams),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-09-22.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
+        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-10-09.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
             (schema::CaptureReport = "application/json"),
             ("application/yang-data+json"),
         )),
@@ -7430,11 +7497,15 @@ pub fn openapi_json() -> String {
 #[cfg(feature = "vcon")]
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(get_dialog_vcon, post_vcon_validate, get_vcon_spool),
+    paths(get_dialog_vcon, post_vcon_validate, post_vcon_analyze, get_vcon_spool),
     components(schemas(
         schema::Vcon,
         schema::VconValidation,
         schema::VconFinding,
+        crate::output::vcon_analysis::VconAnalysis,
+        crate::output::vcon_analysis::AnalyzedDialog,
+        crate::output::vcon_analysis::LadderRow,
+        crate::output::vcon_analysis::ContainerFinding,
         crate::app::vcon_spool::SpoolStatus,
         crate::app::vcon_spool::SpoolDirectory,
         crate::app::vcon_spool::SpoolFailure,
@@ -9137,6 +9208,69 @@ mod tests {
             .await
             .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    /// `POST /v1/vcon/analyze` answers exactly what the shared analysis
+    /// answers, which is what the MCP `analyze_vcon` tool answers too: one
+    /// function behind both surfaces, held to it on each side.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_analyze_answers_what_the_shared_analysis_answers() -> Result<(), TestError> {
+        let container = serde_json::json!({
+            "vcon": "0.4.0",
+            "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+            "created_at": "2026-10-09T12:00:00Z",
+            "parties": [{"name": "observer"}],
+            "attachments": [
+                {"purpose": "sip-invite", "start": "2026-10-09T12:00:00Z", "party": 0,
+                 "dialog": 0, "mediatype": "message/sip", "encoding": "none",
+                 "body": "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\nFrom: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\nCall-ID: r1\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"},
+                {"purpose": "sip-invite", "start": "2026-10-09T12:00:01Z", "party": 0,
+                 "dialog": 0, "mediatype": "message/sip", "encoding": "none",
+                 "body": "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK2\r\nFrom: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\nCall-ID: r2\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"}
+            ]
+        });
+        let resp = build_router(make_state())
+            .oneshot(test_post(
+                "/v1/vcon/analyze?limit=1",
+                &container.to_string(),
+            )?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)?;
+        let expected = serde_json::to_value(
+            crate::output::vcon_analysis::analyze_container(&container, 1)
+                .map_err(|e| e.to_string())?,
+        )?;
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed["total_dialogs"], 2, "{parsed}");
+        assert_eq!(
+            parsed["truncated"], true,
+            "the limit reached the analysis: {parsed}"
+        );
+        Ok(())
+    }
+
+    /// A body that is not a JSON object is a 400; a container with no readable
+    /// SIP is an answer.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_analyze_refuses_a_non_object_and_answers_an_unreadable_one()
+    -> Result<(), TestError> {
+        let resp = build_router(make_state())
+            .oneshot(test_post("/v1/vcon/analyze", "[1, 2, 3]")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let resp = build_router(make_state())
+            .oneshot(test_post("/v1/vcon/analyze", r#"{"vcon": "0.4.0"}"#)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value = serde_json::from_str(&body_to_string(resp.into_body()).await?)?;
+        assert_eq!(parsed["verdict"], "unreadable", "{parsed}");
         Ok(())
     }
 

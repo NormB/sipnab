@@ -1120,6 +1120,12 @@ fn limit_probes() -> Vec<LimitProbe> {
             waits_out_a_window: false,
         },
         LimitProbe {
+            key: "max_audio_bytes",
+            enabled: cfg!(feature = "vcon"),
+            observe: probe_max_audio_bytes,
+            waits_out_a_window: false,
+        },
+        LimitProbe {
             key: "lint_max_per_rule",
             enabled: true,
             observe: probe_lint_max_per_rule,
@@ -2787,6 +2793,49 @@ fn probe_max_audio_frames() -> Result<(String, String), TestError> {
         exported_wav_bytes(1500)?.to_string(),
         exported_wav_bytes(4)?.to_string(),
     ))
+}
+
+/// `max_audio_bytes`: a 60-second two-way G.711 call exported as a vCon with
+/// `--retain-audio`, under the default budget and under the 1 MiB minimum.
+///
+/// The call is charged about 1.6 MB, so the default keeps it whole and the
+/// minimum releases frames, which the vCon's `media_note` counts. Driven
+/// through the binary: the observation is the container the run writes.
+fn probe_max_audio_bytes() -> Result<(String, String), TestError> {
+    const CALL: &str = "audio-budget@10.0.0.1";
+    let dir = tempfile::tempdir()?;
+    let pcap = dir.path().join("call.pcap");
+    let frames = pcap_build::g711_call_both_ways(CALL, 60, |stream, frame, i| {
+        ((frame * 31 + i * 7 + stream * 101) % 251) as u8
+    });
+    pcap_build::write_pcap_at(&pcap, &frames, 1)?;
+    observe_stdout(
+        &pcap,
+        "[limits]\nmax_audio_bytes = 1048576\n",
+        &[
+            "-q",
+            "--no-cli-print",
+            "--retain-audio",
+            "--vcon-max-inline-media",
+            "64",
+            "--export-vcon",
+            CALL,
+        ],
+        |out| {
+            let vcon: serde_json::Value = serde_json::from_str(out)?;
+            let body = match &vcon["analysis"][0]["body"] {
+                serde_json::Value::String(text) => serde_json::from_str(text)?,
+                other => other.clone(),
+            };
+            let note = body["capture_completeness"]["media_note"]
+                .as_str()
+                .ok_or_else(|| format!("no media_note in {body:#}"))?;
+            Ok(format!(
+                "budget-released={}",
+                note.contains("max_audio_bytes retention budget was reached")
+            ))
+        },
+    )
 }
 
 /// Bytes of WAV exported from the G.711 fixture with `max_audio_frames` set

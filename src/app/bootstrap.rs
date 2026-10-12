@@ -839,6 +839,22 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
     }
     let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
 
+    // `--cores` shards captured frames across workers by host pair, and its
+    // readers open captures with libpcap. A stored vCon container holds no
+    // frames, so a set holding one would lose it. Refused before anything is
+    // read, rather than half-read.
+    if cli.limits_args.cores > 1
+        && let Some(container) = paths
+            .iter()
+            .find(|p| crate::capture::vcon_input::is_container_file(p))
+    {
+        return Err(PlanError::arg(format!(
+            "--cores reads capture files in parallel and cannot read the stored vCon \
+             container '{}'. Drop --cores: a vCon is read on one core.",
+            crate::capture::archive::source_name(container)
+        )));
+    }
+
     // Precondition, not a post-hoc error: an output that names an input is
     // refused here, before any writer exists. `-O` opens with truncation,
     // so a check made after the open has already destroyed the capture —
@@ -3497,6 +3513,13 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         return Some(strip_secrets(cli, out));
     }
 
+    // The one-shot file jobs (`--find-in-files`, `--compare-captures`,
+    // `--vcon-validate`): they read a set of files rather than a capture's
+    // stores, so they run and exit here. See `app::queries`.
+    if let Some(code) = crate::app::queries::startup(cli) {
+        return Some(code);
+    }
+
     None
 }
 
@@ -4592,9 +4615,25 @@ pub(crate) fn parse_autostop(
 /// rule [`crate::sip::matcher::calls_only_admits`] applies per message.
 const CALLS_ONLY_EXPR: &str = "method == 'INVITE'";
 
-/// Build the dialog filter every post-capture output selects with.
+/// Build the dialog filter every post-capture output selects with: the
+/// selection from [`build_selection_expr`], then the `--since`/`--until`
+/// window, so every output that honors `--filter` honors `-c` and the window.
 ///
-/// The expression from [`filter_expr_from_sources`], narrowed to calls when
+/// # Errors
+///
+/// As [`build_selection_expr`].
+fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+    // The `--since`/`--until` window joins the one compiled filter, so every
+    // output that honors `--filter` honors the window.
+    Ok(FilterExpr::with_time_window(
+        build_selection_expr(cli, config)?,
+        cli.matching_args.since,
+        cli.matching_args.until,
+    ))
+}
+
+/// The selection before the time window: the expression from
+/// [`filter_expr_from_sources`], narrowed to calls when
 /// `-c` / `--calls-only` is set. `-c` was applied only to the per-message
 /// printout, so `--json-dialogs`, `--report` and the exports still listed
 /// OPTIONS, REGISTER and SUBSCRIBE dialogs (#474); folding it in here gives
@@ -4604,7 +4643,7 @@ const CALLS_ONLY_EXPR: &str = "method == 'INVITE'";
 /// # Errors
 ///
 /// As [`filter_expr_from_sources`].
-fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+fn build_selection_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
     let base = filter_expr_from_sources(cli, config)?;
     if !cli.mode_args.calls_only {
         return Ok(base);
@@ -4728,7 +4767,13 @@ fn build_vcon_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExp
     };
     let thresholds = cli.alias_thresholds(config);
     match crate::sip::dsl::parse_filter(expr, &thresholds) {
-        Ok(f) => Ok(Some(f)),
+        // The `--since`/`--until` window narrows which dialogs are exported,
+        // as it narrows every other listing.
+        Ok(f) => Ok(FilterExpr::with_time_window(
+            Some(f),
+            cli.matching_args.since,
+            cli.matching_args.until,
+        )),
         Err(e) => Err(PlanError::arg(format!(
             "--export-vcon-when is not a valid filter expression: {e}"
         ))),
@@ -5974,6 +6019,28 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;
         cli
+    }
+
+    /// The startup commands end in the one-shot file-job dispatcher, and a
+    /// job that ran exits with its own code.
+    #[test]
+    fn startup_commands_reach_the_file_job_dispatcher() {
+        let mut cli = base_cli();
+        assert_eq!(
+            run_startup_commands(&cli),
+            None,
+            "no job: the run continues"
+        );
+        cli.test_one_shots.push(crate::cli::OneShot {
+            name: crate::app::queries::TEST_FILE_JOB,
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        });
+        assert_eq!(
+            run_startup_commands(&cli),
+            Some(crate::app::queries::TEST_FILE_JOB_EXIT)
+        );
     }
 
     // ── unwritable_output_refusal ─────────────────────────────────────

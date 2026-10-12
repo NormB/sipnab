@@ -357,9 +357,9 @@ bytes against.
 ## Related guides
 
 - [Rules every tool follows](@/docs/mcp-tools.md#rules-every-tool-follows)
-- [`capture_status`](@/docs/mcp-tools.md#capture-status),
-  [`find_problems`](@/docs/mcp-tools.md#find-problems),
-  [`describe_endpoint`](@/docs/mcp-tools.md#describe-endpoint) and
-  [`security_findings`](@/docs/mcp-tools.md#security-findings)
+- [`capture_status`](@/docs/mcp-tools-core.md#capture-status),
+  [`find_problems`](@/docs/mcp-tools-core.md#find-problems),
+  [`describe_endpoint`](@/docs/mcp-tools-security.md#describe-endpoint) and
+  [`security_findings`](@/docs/mcp-tools-security.md#security-findings)
 - [Find the calls that went wrong](@/docs/first-cli-triage.md#3-find-the-calls-that-went-wrong)
 - [`--show-frame` and frame pointers](@/docs/cli.md#pcapng-metadata)
