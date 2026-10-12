@@ -1374,6 +1374,105 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() -> Result<(),
     Ok(())
 }
 
+/// A live `--export-vcon-when` run that ends on its own (`--duration`) after
+/// its sweep wrote every container says so at the end, rather than printing
+/// `Wrote 0 vCon container(s)` beneath the sweep's `Wrote 1`.
+///
+/// Measured on 0.5.209 in a replay call: the sweep logged one container for a
+/// call that ended, and the end of the run then printed a count of zero for
+/// the same directory.
+#[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
+#[test]
+fn a_live_vcon_run_that_ends_on_its_own_does_not_report_zero_written() -> Result<(), TestError> {
+    use chrono::Utc;
+    use sipnab::capture::hep::{HepProtocol, build_hep_v3};
+    use std::io::Read;
+
+    const CALL: &str = "live-vcon-duration@example.invalid";
+    let spool = tempfile::tempdir()?;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "--no-cli-print",
+            "--hep-listen",
+            "127.0.0.1:0",
+            "--hep-parse",
+            "--duration",
+            "20s",
+            "--export-vcon-when",
+            "state == 'Completed'",
+            "--export-vcon-dir",
+            spool.path().to_str().ok_or("utf-8 temp path")?,
+        ])
+        .env("NO_COLOR", "1")
+        .env("SIPNAB_LOG", "info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut pipe = child.stderr.take().ok_or("stderr piped")?;
+    let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let into = std::sync::Arc::clone(&text);
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = pipe.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            if let Ok(mut all) = into.lock() {
+                all.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        }
+    });
+    let stderr = || {
+        text.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    let bind = wait_for_own_udp_listener(&mut child, &stderr)?;
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    for (sip, src, dst) in live_hep_call(CALL) {
+        let hep = build_hep_v3(
+            &live_hep_endpoint(src, dst),
+            Utc::now(),
+            HepProtocol::Sip,
+            0,
+            None,
+            sip.as_bytes(),
+        );
+        sock.send_to(&hep, &bind)?;
+    }
+    let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= exit_by {
+            let _ = child.kill();
+            return Err(format!("sipnab did not end on --duration:\n{}", stderr()).into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    reader.join().map_err(|_| "reader thread panicked")?;
+    let err = stderr();
+    assert!(status.success(), "{status}:\n{err}");
+    assert!(
+        err.contains("for calls that ended"),
+        "the live sweep must have written the container, or the line below \
+         proves nothing:\n{err}"
+    );
+    assert!(
+        !err.contains("Wrote 0 vCon container(s)"),
+        "the end of the run reported zero after the sweep wrote one:\n{err}"
+    );
+    assert!(
+        err.contains("Wrote no further vCon containers to")
+            && err.contains("1 container(s) were written there as their calls ended."),
+        "the end of the run must say the sweep already wrote the container:\n{err}"
+    );
+    Ok(())
+}
+
 /// Run a live `--hep-listen` capture with `--export-vcon <call_id> --vcon-out
 /// <out>`, deliver one complete call, then stop it with SIGTERM.
 ///
@@ -3006,5 +3105,56 @@ fn a_lone_file_argument_asks_for_dash_i() -> Result<(), TestError> {
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{err}");
     assert!(err.contains("-I tests/fixtures/sip_call.pcap"), "{err}");
+    Ok(())
+}
+
+/// An `-O` file sipnab cannot create fails the run before any packet is read.
+///
+/// The writer opens `-O` on the first packet, after the privilege drop. A run
+/// dropped to `nobody` with an `-O` in a directory only root could write read
+/// packets for seven seconds and then exited 1. The capture here holds no
+/// packets at all, so a run that still opened `-O` lazily would never reach
+/// the open and would exit 0 with no file and no word: only a check made at
+/// startup can refuse it. A missing directory stands in for the permission
+/// refusal, because it refuses the open for every user, root included.
+#[test]
+fn an_unwritable_output_file_fails_the_run_before_the_first_packet() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    // A classic pcap header with no records: little-endian magic, version 2.4,
+    // zone 0, sigfigs 0, snaplen 65535, link type 1 (Ethernet).
+    let mut header = Vec::with_capacity(24);
+    header.extend_from_slice(&0xa1b2_c3d4_u32.to_le_bytes());
+    header.extend_from_slice(&2_u16.to_le_bytes());
+    header.extend_from_slice(&4_u16.to_le_bytes());
+    header.extend_from_slice(&0_i32.to_le_bytes());
+    header.extend_from_slice(&0_u32.to_le_bytes());
+    header.extend_from_slice(&65_535_u32.to_le_bytes());
+    header.extend_from_slice(&1_u32.to_le_bytes());
+    let input = dir.path().join("empty.pcap");
+    std::fs::write(&input, &header)?;
+    let out = dir.path().join("missing").join("out.pcap");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "--no-cli-print",
+            "-I",
+            input.to_str().ok_or("utf-8 temp path")?,
+            "-O",
+            out.to_str().ok_or("utf-8 temp path")?,
+        ])
+        .env("NO_COLOR", "1")
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an -O file that cannot be created is an I/O error, exit 1:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("Failed to create output file '{}'", out.display())),
+        "the refusal names the file:\n{stderr}"
+    );
     Ok(())
 }

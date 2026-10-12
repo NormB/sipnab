@@ -126,7 +126,10 @@ rely on.
   written are not written on the way out, because stopping sipnab must leave
   no call data behind. A live run that ends on its own (`--duration`,
   `--autostop`) writes the matching calls the checks had not reached yet, and
-  does not write a second copy of any container already written.
+  does not write a second copy of any container already written. Its last
+  line counts both, for example `Wrote no further vCon containers to 'spool'
+  at the end of the run; 1 container(s) were written there as their calls
+  ended.`
 - With `-I`, sipnab reads the whole capture and writes every container at the
   end, as before.
 
@@ -875,6 +878,7 @@ participant.
 |---|---|---|
 | `parties[].sip` | the `From` or `To` header carried this URI | that anyone with that URI took part |
 | `parties[].sip_display_name` | the sender wrote this string in its header | that this names a person |
+| `parties[].sip_user_agent` and `parties[].sip_contact` | a message this party sent carried the `User-Agent` or `Server` and `Contact` header: for the caller, the opening request; for the callee, a response from 101 to 699 carrying the dialog's remote `To` tag, or a request carrying it as the `From` tag. A proxy's `100 Trying` and any response without that tag are never read for the callee | that the software named is what the party runs |
 | `validation: "none"` on every party | nobody checked anything about this party | that a check failed — the field never carries another value |
 | a `role: "observer"` party | this container came from a tap | that the tap was in the media path |
 | `attachments[].party` | the observer contributed this document | that a participant did |

@@ -304,7 +304,7 @@ Next: [REST API and metrics](docs/rest-api.md),
 
 ## Build from source
 
-sipnab is Rust everywhere except the OS boundary: 110 `unsafe` blocks, all of
+sipnab is Rust everywhere except the OS boundary: 111 `unsafe` blocks, all of
 them FFI, and the build rejects any block that does not state its own soundness
 argument.
 

@@ -1255,10 +1255,12 @@ pub struct OutputArgs {
     /// What sipnab writes is an OBSERVER vCon, and the container says so in its
     /// own parties. sipnab watched packets go past a tap: it did not place the
     /// call, record it, or obtain anyone's permission to keep it. So nothing
-    /// here carries a signature, no party carries a `name` — a `From` header is
-    /// what the sender chose to write, not an identity anyone established — and
-    /// no URL ever points at media held elsewhere, because sipnab hosts nothing
-    /// to point at.
+    /// here carries a signature, and no URL ever points at media held
+    /// elsewhere, because sipnab hosts nothing to point at. A party's `name`
+    /// is the `From` or `To` display name when the wire carried one, never
+    /// the URI's user part, and every party carries `validation: "none"`: a
+    /// `From` header is what the sender chose to write, not an identity anyone
+    /// established.
     ///
     /// Audio this run RETAINED travels INSIDE the container, as a `recording`
     /// Dialog Object holding the WAV inline with a `sha512` `content_hash`. It
