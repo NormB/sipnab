@@ -1146,9 +1146,9 @@ for that container, and the MCP tool and the REST route list it in
   fails the schema and stores readable SIP, and reports the finding.
 - **One container is at most 64 MiB.** sipnab reads a container whole to
   validate it, so it refuses a file larger than `MAX_CONTAINER_BYTES`
-  (67,108,864 bytes) without reading it, naming the size and the limit. Like
-  any container it cannot read, it is skipped in a directory or a glob and
-  stops the run when named directly. A container carrying inline audio within
+  (67,108,864 bytes) without reading it, naming the size and the limit. As with
+  any container it cannot read, sipnab skips it in a directory or a glob and
+  stops the run when you name it directly. A container carrying inline audio within
   the 5 MiB default budget is far below the limit.
 - **No media.** A vCon stores no RTP, so sipnab computes no stream, MOS,
   jitter or loss from it, and reports no media fault for a call that had none
