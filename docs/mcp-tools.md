@@ -194,29 +194,34 @@ them, as a text block and as `structuredContent`. Only a client that validates
 responses against a declared shape needs them. Turn them on with
 `--mcp-output-schemas` or `[mcp] output_schemas = true`.
 
+To read one tool's response shape without turning output schemas on for every
+tool, read the resource `sipnab://schema/<tool>`. It returns the tool's output
+JSON Schema and an example payload generated from that schema, or says that
+the tool declares no output schema.
+[Tool response schemas](mcp-protocol.md#tool-response-schemas) describes the
+resource.
+
 | Bundle | Tools | Bytes (default) | Bytes with output schemas | What it holds |
 |---|---|---|---|---|
-| core | 9 | 12,223 | 32,151 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
-| signaling | 20 | 22,349 | 36,899 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
-| captures | 11 | 12,542 | 30,030 | `build_evidence_package`, `cancel_find_in_captures`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `find_in_captures_status`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
-| security | 6 | 9,938 | 9,938 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
+| core | 9 | 12,223 | 54,526 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
+| signaling | 20 | 22,349 | 58,494 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
+| captures | 11 | 12,578 | 30,066 | `build_evidence_package`, `cancel_find_in_captures`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `find_in_captures_status`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
+| security | 6 | 9,923 | 9,923 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
 | media | 4 | 3,480 | 16,048 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
-| relay | 4 | 4,217 | 20,006 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
+| relay | 4 | 4,240 | 20,029 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
 | tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
-| server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
-| vcon | 3 | 4,481 | 12,642 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
-| tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
-| full | 72 | 82,649 | 200,632 | Every tool the build carries (the default) |
+| server | 5 | 5,394 | 27,170 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
+| vcon | 3 | 4,187 | 11,287 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
+| tls | 3 | 2,850 | 4,943 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
+| full | 72 | 82,787 | 248,433 | Every tool the build carries (the default) |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.196**, a build with every feature, except the
-> `captures` row, measured after 0.5.206 on the change that added
-> `find_in_captures_status` and `cancel_find_in_captures`, and the `core`,
-> `signaling`, `media` and `full` rows, measured after 0.5.211 on the change
-> that added `max_response_bytes` and the `get_dialog` and `reconcile_orphans`
-> cursors. Sizes, tool
+> **Measured after sipnab 0.5.211** on a build with every feature, with
+> `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
+> output schemas on nine `core` and `signaling` tools, and the response limits
+> and loaded-surface fields of `server_capabilities` in place. Sizes, tool
 > counts and bundle membership may change in later releases. A build without a
 > feature does not register that feature's tools, so its bundles are smaller.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
@@ -1972,8 +1977,8 @@ it does the same walk without computing seven metrics.
 
 ### `server_capabilities`
 
-What this binary can do, what this server permits, and which libpcap it
-captures through. Ask before requesting decryption, HEP, a file export or a
+What this binary can do, what this server permits and loaded, the limits it
+answers under, and which libpcap it captures through. Ask before requesting decryption, HEP, a file export or a
 capture swap: a build without the feature, or a server without the flag, fails
 confusingly otherwise.
 
@@ -1993,16 +1998,43 @@ No parameters. Returns:
     "mcp_allow_open_capture": true,
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
-    "mcp_allow_relay_query": false,
-    "hep_delivery_trust": "port-gated-only"  // hmac-verified, plain-secret or port-gated-only
+    "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
+    "hep_delivery_trust": "port-gated-only",  // hmac-verified, plain-secret or port-gated-only
+    "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
   "libpcap": {
     "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
     "version": "1.10.6",             // null when the banner carries none
     "named_backends": ["netmap"]     // [] on a distribution libpcap
-  }
+  },
+  "limits": {
+    "max_rows": 1000,                // --mcp-max-rows
+    "max_body_bytes": 4096,          // --mcp-max-body-bytes
+    "max_inline_media_bytes": 5242880, // --vcon-max-inline-media; null without vcon
+    "max_wait_seconds": 60           // --mcp-max-wait-seconds
+  },
+  "tools": ["actions_revert", "aggregate_dialogs", "..."],  // what tools/list returns
+  "bundles": ["core", "signaling", "..."],                  // bundles loaded whole
+  "prompts": ["triage-outage", "carrier-escalation", "..."], // what prompts/list returns
+  "resource_templates": ["sipnab://live/dialogs/{call_id}", "..."]
 }
 ```
+
+`runtime.mcp_allow_relay_query` is true only when `query_relay`,
+`relay_stats` and `relay_compare` can actually transmit: the run reads a live
+interface, `--rtpengine-control` names the relay, and the operator passed
+`--mcp-allow-relay-query`. A file replay never transmits, so the flag alone
+does not set it.
+`runtime.mcp_allow_actions` lists the action targets `--allow-action` enabled
+for MCP callers, by name.
+
+`limits` are the ceilings this server holds every response to, as the operator
+set them. [Response bounding](#response-bounding) says what each one bounds.
+`tools` is the loaded tool set after `--mcp-tools` selected it. `bundles` lists
+each built-in bundle whose tools all appear in `tools`, counting only the tools
+this build carries, so a selection of single tool names lists no bundle those
+tools only partly fill. `prompts` and `resource_templates` are the names `prompts/list` and
+`resources/templates/list` return, in the same order.
 
 `features` comes from `cfg!` at compile time, so it cannot claim a feature the
 binary does not have. `runtime` is a different question — what the **operator**
@@ -6777,6 +6809,61 @@ sipnab uses:
 
 Tools never panic. An unknown Call-ID always produces a structured error
 rather than an empty result.
+
+#### Error data
+
+Every -32602 and -32000 error also carries a `data` object, so a client can act
+on the error without parsing `message`. The `message` text stays as it was.
+People read `message`, and its wording may improve between releases. The
+`data` codes below stay stable.
+
+```jsonc
+{
+  "code": -32602,
+  "message": "cannot group by 'bogus'; one of: state, response_code, ...",
+  "data": {
+    "reason": "invalid_choice",       // always present
+    "param": "group_by",              // the argument that was refused, when one was
+    "valid_values": ["state", "response_code", "method", "..."]  // the allowed set, when there is one
+  }
+}
+```
+
+| Member | Present | Meaning |
+|---|---|---|
+| `reason` | always | A stable lowercase code from the table below. |
+| `param` | when one argument caused the refusal | The argument's name, as the tool's input schema spells it. For a resource read, the URI template variable (`tool`, `alias`, `rule_id`) or `uri`. |
+| `valid_values` | when the refusal is "not one of these" | The values the server accepts for that argument. |
+| `retry_after_ms` | on a rate-limit refusal | Milliseconds until the current one-second window ends and the same call can succeed. |
+
+sipnab omits a member that does not apply, rather than sending it as `null`.
+
+| `reason` | Code | Meaning |
+|---|---|---|
+| `not_found` | -32602 | A named thing (a Call-ID, a rule, a finding, a sweep job, a subscription) is not held by this server. |
+| `invalid_choice` | -32602 | The value is not in the allowed set; `valid_values` lists the set. |
+| `invalid_value` | -32602 | The value is empty, out of range, or not in the expected format. |
+| `invalid_filter` | -32602 | A filter expression did not compile. |
+| `missing_param` | -32602 | A required argument, or one of a set of alternatives, was not given. |
+| `conflicting_params` | -32602 | The call named two arguments that cannot appear together. |
+| `not_enabled` | -32602 | The operator did not enable this on the server: an opt-in flag such as `--mcp-allow-shutdown`, `--mcp-file-root`, or `--allow-action`. |
+| `path_refused` | -32602 | sipnab refused a filename: not a bare name, outside `--mcp-file-root`, or one of the capture's own inputs. |
+| `already_exists` | -32602 | The filename asked for already exists, and sipnab does not overwrite. |
+| `not_ready` | -32602 | The server's current state refuses the request (a capture is still loading, a live capture is running, the source has not finished). The same call can succeed later. |
+| `limit_exceeded` | -32602 | The request asks for more than a ceiling this server enforces. |
+| `unsupported` | -32602 | This build, platform, or process privilege cannot do this. |
+| `scope_refused` | -32602 | The caller's token scope does not cover this tool. |
+| `declined` | -32602 | The person asked to confirm the request (MCP elicitation) declined it. |
+| `no_data` | -32602 | The named call holds nothing of the kind asked for: no messages, no RTP streams, no request to replay. |
+| `unknown_tool` | -32602 | The tool name is not loaded on this server; `valid_values` lists the loaded names. |
+| `invalid_arguments` | -32602 | An argument this server refuses whatever its value (a password-like argument name), or a refusal the MCP SDK built without naming the argument. |
+| `at_capacity` | -32000 | `--mcp-max-concurrent` calls are already running. There is no `retry_after_ms`, because a slot frees when some running call ends and the server cannot know when that happens. |
+| `rate_limited` | -32000 | This peer used its `--mcp-rate-limit-per-peer` allowance for the current one-second window. `retry_after_ms` says when the window ends. |
+
+The MCP SDK answers arguments that do not match a tool's input schema at all
+(a wrong JSON type, a missing required key) with a tool result that has
+`isError: true` and the parse error as its text, not with a JSON-RPC error, so
+that answer carries no `data`.
 
 ### Response bounding
 

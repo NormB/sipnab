@@ -1140,6 +1140,17 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() -> Resul
                 message.contains("rate limit") && message.contains("retry"),
                 "the refusal must tell the caller to retry shortly: {message}"
             );
+            assert_eq!(
+                error["data"]["reason"],
+                serde_json::json!("rate_limited"),
+                "the refusal carries a reason code: {resp}"
+            );
+            assert!(
+                error["data"]["retry_after_ms"]
+                    .as_u64()
+                    .is_some_and(|ms| (1..=1000).contains(&ms)),
+                "the refusal says when the one-second window ends: {resp}"
+            );
         } else {
             admitted += 1;
             assert!(

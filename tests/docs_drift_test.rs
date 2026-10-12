@@ -4924,7 +4924,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    // 1113 -> 1127: the `%G?` verdict table for the pre-push commit-signature
+    // 1113 -> 1131: the `%G?` verdict table for the pre-push commit-signature
     // gate, in docs/internals/build-ci-release.md and its site mirror, +2; and
     // the 2026-10-11 notes rewrite, +6, per file under
     // website/content/notes/: fifty-seven-tools-and-the-two-that-stay-off +2,
@@ -4939,7 +4939,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // site page +2. The cursor-exceptions table was rewritten in place.
     // +2: the `reconcile_orphans` parameter table, in docs/mcp-tools.md and
     // its site page.
-    const EXPECTED_TABLES: usize = 1127;
+    // +4: the error-data member table and the reason-code table in
+    // docs/mcp-tools.md's "Error data" section, and the same two in its
+    // site mirror.
+    const EXPECTED_TABLES: usize = 1131;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

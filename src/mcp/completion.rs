@@ -80,6 +80,8 @@ pub enum Source {
     ReferenceTopics,
     /// Filenames under `--mcp-file-root`.
     CaptureFiles,
+    /// The tools this server loaded, after `--mcp-tools` selected them.
+    ToolNames,
 }
 
 /// One resource template, and the variable inside it a client can complete.
@@ -161,6 +163,19 @@ pub fn all() -> Vec<Template> {
             mime_type: "text/markdown",
             variable: "topic",
             source: Source::ReferenceTopics,
+            needs_file_root: false,
+        },
+        Template {
+            uri_template: "sipnab://schema/{tool}",
+            name: "Tool response schema by tool name",
+            description: "One loaded tool's output JSON Schema and an example payload \
+                 generated from it, so a client can learn a response shape without \
+                 turning output schemas on for every tool in `tools/list`. A tool \
+                 that declares no output schema says so. Complete `tool` to get the \
+                 tools this server loaded.",
+            mime_type: "application/json",
+            variable: "tool",
+            source: Source::ToolNames,
             needs_file_root: false,
         },
         Template {
@@ -329,6 +344,7 @@ mod tests {
             Source::FilterAliases,
             Source::ReferenceTopics,
             Source::CaptureFiles,
+            Source::ToolNames,
         ] {
             assert!(sources.contains(&want), "{want:?} has no template");
         }
