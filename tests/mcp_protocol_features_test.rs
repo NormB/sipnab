@@ -370,6 +370,9 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // holds.
         ("export_vcon", json!({"filter": "response_code >= 400"})),
         ("validate_vcon", json!({"call_id": call_id})),
+        // Over the spool `vcon_spool_with_one_failure` writes, so the failed
+        // list carries one record and its schema is exercised.
+        ("vcon_spool_status", json!({})),
         // The TFPS peer's tools, answered by the fake `fake_tfps_ctl` writes:
         // the `installed: true` arm of each schema, which is the one that
         // carries the contract types. The absent arm is two fields and is
@@ -384,6 +387,51 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // the shape of an answer without another ban to wait out.
         ("actions_revert", json!({"all": true})),
     ]
+}
+
+/// The flags that give the server a vCon export spool under `fake`, holding
+/// one refused container beside the record the forwarder writes for it. Empty
+/// on a build without the `vcon` feature, which has neither the flags' effect
+/// nor the tool that reads them.
+///
+/// The filter matches no dialog, so the run adds nothing to the spool.
+fn vcon_spool_args(fake: &tempfile::TempDir) -> Result<Vec<String>, TestError> {
+    if !cfg!(feature = "vcon") {
+        return Ok(Vec::new());
+    }
+    let spool = vcon_spool_with_one_failure(fake)?;
+    Ok(vec![
+        "--export-vcon-when".to_string(),
+        "response_code >= 700".to_string(),
+        "--export-vcon-dir".to_string(),
+        spool,
+    ])
+}
+
+/// A vCon export spool under `fake` holding one refused container beside the
+/// record the forwarder writes for it.
+fn vcon_spool_with_one_failure(fake: &tempfile::TempDir) -> Result<String, TestError> {
+    let spool = fake.path().join("vcons");
+    let failed = spool.join("failed");
+    std::fs::create_dir_all(&failed).map_err(|e| format!("spool: {e:?}"))?;
+    std::fs::write(failed.join("refused.vcon.json"), b"{}")
+        .map_err(|e| format!("container: {e:?}"))?;
+    let record = json!({
+        "at": "2026-10-07T12:00:00Z",
+        "body": "{\"detail\":\"refused\"}",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 422,
+        "url": "https://vcon.example.com/v1/vcons",
+    });
+    std::fs::write(
+        failed.join("refused.vcon.json.error.json"),
+        record.to_string(),
+    )
+    .map_err(|e| format!("record: {e:?}"))?;
+    Ok(spool.display().to_string())
 }
 
 /// The flags that let `tfps_ban` and `tfps_unban` act against the fake in
@@ -555,6 +603,9 @@ fn no_tool_answers_with_a_top_level_array() -> Result<(), TestError> {
     let actions = tfps_action_args(&fake)?;
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
     args.extend(["--mcp-file-root", &root]);
+    // The spool the schema probe reads, for the same reason as the file root.
+    let spool = vcon_spool_args(&fake)?;
+    args.extend(spool.iter().map(String::as_str));
     let mut wire = Wire::start_with(&args)?;
     let call_id = wire.a_call_id()?;
 
@@ -940,6 +991,11 @@ fn every_declared_output_schema_matches_the_payload_it_describes() -> Result<(),
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
     // Output schemas are off by default; this gate needs them declared.
     args.extend(["--mcp-file-root", &root, "--mcp-output-schemas"]);
+    // A vCon export spool holding one refused container and its record, so
+    // `vcon_spool_status` answers with the record shape rather than an empty
+    // list.
+    let spool = vcon_spool_args(&fake)?;
+    args.extend(spool.iter().map(String::as_str));
     let mut wire = Wire::start_with(&args)?;
     let call_id = wire.a_call_id()?;
     let probes = schema_probes(&call_id);

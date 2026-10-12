@@ -668,6 +668,70 @@ pub fn pending(spool: &Path) -> std::io::Result<Vec<String>> {
     Ok(names)
 }
 
+/// The suffix of the record the forwarder writes beside a refused container:
+/// `<name>.error.json`.
+pub const ERROR_RECORD_SUFFIX: &str = ".error.json";
+
+/// Where delivered containers go when no setting says otherwise.
+#[must_use]
+pub fn default_done_dir(spool: &Path) -> PathBuf {
+    spool.join("delivered")
+}
+
+/// Where refused containers go when no setting says otherwise.
+#[must_use]
+pub fn default_failed_dir(spool: &Path) -> PathBuf {
+    spool.join("failed")
+}
+
+/// The refused containers in a failed directory, by name, sorted.
+///
+/// [`pending`]'s rule, less the `<name>.error.json` records that sit beside
+/// the containers: a record also ends in `.json`, and is not a container.
+///
+/// # Errors
+///
+/// The directory cannot be read.
+pub fn failed_containers(dir: &Path) -> std::io::Result<Vec<String>> {
+    Ok(pending(dir)?
+        .into_iter()
+        .filter(|name| !name.ends_with(ERROR_RECORD_SUFFIX))
+        .collect())
+}
+
+/// The `<name>.error.json` record the forwarder writes beside a refused
+/// container.
+///
+/// One type for the writer and for every reader, so the file and what a
+/// reader expects of it cannot drift. Fields are declared in alphabetical
+/// order, which is the order the record has always been written in.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct FailureRecord {
+    /// When the forwarder wrote the record, RFC 3339 UTC.
+    pub at: String,
+    /// The start of the store's answer, with the auth value removed. Null when
+    /// the container was refused before it was sent.
+    pub body: Option<String>,
+    /// Whether the forwarder cut `body` to `--vcon-forward-max-error-body`, or
+    /// the answer was longer than it read.
+    pub body_truncated: bool,
+    /// The container's file name.
+    pub file: String,
+    /// `POST` or `PUT`. Null when the container was refused before it was sent.
+    pub method: Option<String>,
+    /// The forwarder's own reason, when the container was refused before it
+    /// was sent. Null when the store answered.
+    pub reason: Option<String>,
+    /// The status the store answered with. Null when the container was refused
+    /// before it was sent.
+    pub status: Option<u16>,
+    /// The URL the request went to. Null when the container was refused before
+    /// it was sent.
+    pub url: Option<String>,
+}
+
 /// How long a container waits after its `attempts`-th failed try:
 /// `first_secs`, then doubling, never more than `cap_secs`.
 #[must_use]
@@ -1044,12 +1108,12 @@ impl ForwardPlan {
                 .vcon_forward_done
                 .clone()
                 .or_else(|| keys.done.clone())
-                .unwrap_or_else(|| spool.join("delivered")),
+                .unwrap_or_else(|| default_done_dir(&spool)),
             failed_dir: args
                 .vcon_forward_failed
                 .clone()
                 .or_else(|| keys.failed.clone())
-                .unwrap_or_else(|| spool.join("failed")),
+                .unwrap_or_else(|| default_failed_dir(&spool)),
             ca: args.vcon_forward_ca.clone().or_else(|| keys.ca.clone()),
             replace_url: replace.map(|(t, _)| t.to_string()),
             spool,
@@ -1475,7 +1539,7 @@ impl Forwarder {
             return Outcome::Changed;
         }
         let record = self.failure_record(name, why);
-        let record_name = format!("{name}.error.json");
+        let record_name = format!("{name}{ERROR_RECORD_SUFFIX}");
         if let Err(e) = write_atomically(&failed.join(&record_name), record.as_bytes()) {
             tracing::error!("{name}: could not write {record_name}: {e}");
         }
@@ -1527,29 +1591,31 @@ impl Forwarder {
                     .auth
                     .scrub(&String::from_utf8_lossy(&answer.body));
                 let (body, cut) = cut_to(&text, self.settings.limits.error_body);
-                serde_json::json!({
-                    "file": name,
-                    "method": method,
-                    "url": url.to_string(),
-                    "status": answer.status,
-                    "body": body,
-                    "body_truncated": cut || answer.truncated,
-                    "reason": serde_json::Value::Null,
-                    "at": at,
-                })
+                FailureRecord {
+                    at,
+                    body: Some(body.to_owned()),
+                    body_truncated: cut || answer.truncated,
+                    file: name.to_owned(),
+                    method: Some((*method).to_owned()),
+                    reason: None,
+                    status: Some(answer.status),
+                    url: Some(url.to_string()),
+                }
             }
-            Refusal::Before(reason) => serde_json::json!({
-                "file": name,
-                "method": serde_json::Value::Null,
-                "url": serde_json::Value::Null,
-                "status": serde_json::Value::Null,
-                "body": serde_json::Value::Null,
-                "body_truncated": false,
-                "reason": reason,
-                "at": at,
-            }),
+            Refusal::Before(reason) => FailureRecord {
+                at,
+                body: None,
+                body_truncated: false,
+                file: name.to_owned(),
+                method: None,
+                reason: Some((*reason).to_owned()),
+                status: None,
+                url: None,
+            },
         };
-        serde_json::to_string_pretty(&record).unwrap_or_else(|_| record.to_string())
+        serde_json::to_string_pretty(&record)
+            .or_else(|_| serde_json::to_string(&record))
+            .unwrap_or_default()
     }
 
     /// Move `name` from the spool into `dir`, if it is still the file that

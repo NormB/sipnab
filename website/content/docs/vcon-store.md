@@ -99,7 +99,11 @@ auth_file = "/etc/sipnab/vcon-store.key"
 For each container the forwarder logs a `delivered` line with the store's
 status, and moves the file to `spool/delivered`. The exit status is `0` when
 the store accepted every container. A container the store refused is in
-`spool/failed`, beside a `.error.json` record that says why. A `401` or `403`
+`spool/failed`, beside a `.error.json` record that says why. A capture run
+with `--mcp` answers the same question through the MCP tool
+[`vcon_spool_status`](@/docs/mcp-tools.md#vcon-spool-status): the pending, delivered
+and failed counts, and the store's answer from each `.error.json` record, read
+from the files without sending anything. A `401` or `403`
 is different: it refuses the token or the client for every container, so the
 forwarder stops, moves nothing, logs the status and the start of the answer,
 and exits `3`.

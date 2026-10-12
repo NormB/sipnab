@@ -89,8 +89,8 @@ For the tools themselves — and for the error codes and response bounds — see
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 72 carry MCP annotations, so a host
-  can decide what to call without asking. Fifty-nine are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 73 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -311,6 +311,7 @@ state:
 | `sipnab://filter/{alias}` | `alias` | the diagnostic aliases `find_problems` takes as `kinds` |
 | `sipnab://reference/{topic}` | `topic` | the reference pages `resources/list` names |
 | `sipnab:///{filename}` | `filename` | the directory `--mcp-file-root` names |
+| `sipnab://vcon/{call_id}` | `call_id` | the Call-IDs the capture holds right now |
 
 sipnab caches nothing. A completion that offered a Call-ID the capture has since
 evicted would cost an agent a call to discover, and it would conclude the
@@ -318,10 +319,16 @@ capture was wrong rather than the completion.
 
 Three bounds worth knowing:
 
-- **The last template stays hidden until an operator sets a file root.** A
+- **The file template stays hidden until an operator sets a file root.** A
   template promises that the URI resolves, and advertising a shape whose every
   URI would draw a refusal tells an agent the captures are reachable and lets
-  it find out otherwise one call at a time.
+  it find out otherwise one call at a time. For the same reason only a build
+  with the `vcon` feature lists the vCon template.
+- **Reading `sipnab://vcon/{call_id}` returns the container
+  [`export_vcon`](mcp-tools.md#export_vcon) builds for that dialog**, by the
+  same function, with retained audio inline. sipnab refuses an unknown Call-ID
+  with `invalid_params`, and a container over the 8 MiB resource limit that
+  applies to capture files too.
 - **An argument sipnab does not complete gets an EMPTY completion, never an
   error.** That is the spec's rule and the useful one. What must never happen is
   the third option: answering an unknown argument name with a vocabulary that
@@ -391,7 +398,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Fifty-nine of the 72 tools are `readOnlyHint: true`. These thirteen are not, and
+Sixty of the 73 tools are `readOnlyHint: true`. These thirteen are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

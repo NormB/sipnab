@@ -3589,9 +3589,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // is. Both change no capture, store, file or other system, so the split
     // moves to 59 read-only of 72 and the thirteen write-capable tools are
     // unchanged.
+    // 72 -> 73 by `vcon_spool_status` (src/mcp/tools/vcon.rs), which counts
+    // the vCon export spool and reads each failed container's record. It
+    // reads files and changes nothing, so the split moves to 60 read-only of
+    // 73 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        72,
+        73,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4846,7 +4850,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1117: `vcon_spool_status`'s parameter and Returns tables, in
+    // docs/mcp-tools.md 2 and website/content/docs/mcp-tools.md 2.
+    // 1117 -> 1118: the vCon spool status row in
+    // docs/design/surface-capability-matrix.md. Design doc, no mirror.
+    const EXPECTED_TABLES: usize = 1118;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

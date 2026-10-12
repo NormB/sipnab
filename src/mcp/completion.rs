@@ -52,6 +52,13 @@ pub const LINT_RULE_URI_PREFIX: &str = "sipnab://lint/";
 /// expansion can be read.
 pub const FILTER_ALIAS_URI_PREFIX: &str = "sipnab://filter/";
 
+/// One dialog as a vCon container, by Call-ID.
+///
+/// Read through the function `export_vcon` builds containers with, so the
+/// resource and the tool cannot describe one dialog differently. Served only
+/// by a build carrying the `vcon` feature.
+pub const VCON_URI_PREFIX: &str = "sipnab://vcon/";
+
 /// Most values one completion response may carry.
 ///
 /// The MCP-specified ceiling, restated here because the response type refuses
@@ -117,7 +124,7 @@ pub struct Template {
 /// one an agent cannot know in advance.
 #[must_use]
 pub fn all() -> Vec<Template> {
-    vec![
+    let mut templates = vec![
         Template {
             uri_template: "sipnab://live/dialogs/{call_id}",
             name: "Live dialog by Call-ID",
@@ -174,7 +181,31 @@ pub fn all() -> Vec<Template> {
             source: Source::CaptureFiles,
             needs_file_root: true,
         },
-    ]
+    ];
+    templates.extend(vcon_template());
+    templates
+}
+
+/// The vCon template, on a build carrying the exporter.
+///
+/// `None` elsewhere.
+#[must_use]
+fn vcon_template() -> Option<Template> {
+    // Offered only where the exporter is compiled: a template is a promise
+    // that its URIs resolve, and on a build without it none of them would.
+    cfg!(feature = "vcon").then_some(Template {
+        uri_template: "sipnab://vcon/{call_id}",
+        name: "vCon container by Call-ID",
+        description: "One dialog as a vCon container (draft-ietf-vcon-vcon-core-04), \
+             built by the same function as `export_vcon` with retained audio inline. \
+             Complete `call_id` from the Call-IDs the capture holds. Refused past the \
+             8 MiB resource limit; `export_vcon` with `media: \"omit\"` carries a \
+             container without its audio.",
+        mime_type: "application/json",
+        variable: "call_id",
+        source: Source::CallIds,
+        needs_file_root: false,
+    })
 }
 
 /// Look one up by its exact template string.

@@ -70,6 +70,38 @@ pub struct ExportVconParams {
     /// bounded here rather than in the caller's memory. `total_matched` says
     /// how many there were.
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339 created_at>|<Call-ID>`, the cursor `list_dialogs` uses).
+    /// Omit on the first call.
+    ///
+    /// The position is only meaningful within one capture: compare
+    /// `capture_identity.instance` between pages, as with every other paged
+    /// tool.
+    pub cursor: Option<String>,
+    /// Whether retained audio travels inline: `inline` (the default) or
+    /// `omit`.
+    ///
+    /// `omit` builds signaling-only containers. Each one records
+    /// `media: "not-considered"` in its own completeness carrier, so a
+    /// reader of the container learns that the export left the audio out,
+    /// not that the call had none.
+    pub media: Option<VconMedia>,
+}
+
+/// Whether an export carries the audio the run retained.
+///
+/// A typed enum rather than a free string, so the schema a client reads names
+/// both words and a third is refused before the tool runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+pub enum VconMedia {
+    /// Retained audio travels inline as a `recording` Dialog Object, under the
+    /// inline-media budget. The default.
+    #[default]
+    Inline,
+    /// No audio is considered. The container is signaling-only and says so.
+    Omit,
 }
 
 /// Parameters for `validate_vcon`.
@@ -180,15 +212,23 @@ pub struct ExportedContainer {
 pub struct ExportVconResponse {
     /// Version of this envelope.
     pub schema_version: u32,
-    /// The containers, in store order.
+    /// The containers, ordered by the dialog's `created_at`, then Call-ID.
     pub containers: Vec<ExportedContainer>,
     /// How many are in this response.
     pub returned: usize,
     /// How many dialogs the request selected, across the whole store.
     pub total_matched: usize,
-    /// Whether `limit` cut the answer short.
+    /// Whether matches remain after this page. Pass `next_cursor` back to
+    /// continue.
     pub truncated: bool,
+    /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>` of the last container)
+    /// to pass to the next call. Null on the final page.
+    pub next_cursor: Option<String>,
     /// Which capture this answer came from, and which revision of its stores.
+    ///
+    /// A cursor is only meaningful within one capture. `open_capture` can
+    /// replace the whole dialog set between two pages, and a page carrying a
+    /// different `instance` than the page before it is from another capture.
     pub capture_identity: crate::provenance::CaptureEtag,
 }
 
@@ -225,6 +265,100 @@ pub struct ValidateVconResponse {
     pub call_id: Option<String>,
 }
 
+/// Parameters for `vcon_spool_status`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct VconSpoolStatusParams {
+    /// Maximum failed records to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
+    ///
+    /// The three counts are never bounded; only the list of failed records is.
+    pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim.
+    /// Omit on the first call.
+    pub cursor: Option<String>,
+}
+
+/// One directory the snapshot read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SpoolDirectory {
+    /// The path, as this server resolved it.
+    pub path: String,
+    /// Whether the directory existed when it was read. A directory that does
+    /// not exist holds nothing, and is counted as zero.
+    pub exists: bool,
+}
+
+/// One refused container, and the record the forwarder wrote beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SpoolFailure {
+    /// The container's file name in the failed directory.
+    pub file: String,
+    /// The `<file>.error.json` record: the status, the method and URL, and
+    /// the start of the store's answer, or the forwarder's own reason. Null
+    /// when the record is missing or unreadable, and `record_problem` says
+    /// which. `body` is fenced and cut to `--mcp-max-body-bytes`: it is text
+    /// the store wrote.
+    pub record: Option<crate::app::vcon_forward::FailureRecord>,
+    /// Why `record` is null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_problem: Option<String>,
+}
+
+/// The answer `vcon_spool_status` gives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct VconSpoolStatusResponse {
+    /// Version of this envelope.
+    pub schema_version: u32,
+    /// When the directories were read, RFC 3339 UTC. The forwarder is another
+    /// process and may have moved files since.
+    pub as_of: String,
+    /// What this answer is, in one sentence.
+    pub note: String,
+    /// The `--export-vcon-dir` spool: containers waiting to be delivered.
+    pub spool: SpoolDirectory,
+    /// Where the forwarder moves a delivered container by default.
+    pub delivered_dir: SpoolDirectory,
+    /// Where the forwarder moves a refused container by default, beside its
+    /// `<file>.error.json` record.
+    pub failed_dir: SpoolDirectory,
+    /// Containers in the spool, by the forwarder's own rule: regular files
+    /// ending in `.json` whose names do not start with a dot.
+    pub pending: usize,
+    /// Containers in the delivered directory.
+    pub delivered: usize,
+    /// Containers in the failed directory, records not counted.
+    pub failed: usize,
+    /// This page of failed containers, by file name.
+    pub failures: Vec<SpoolFailure>,
+    /// Rows in `failures`.
+    pub returned: usize,
+    /// Whether failed containers remain after this page. Pass `next_cursor`
+    /// back to continue.
+    pub truncated: bool,
+    /// Opaque cursor (the last file name returned) to pass to the next call.
+    /// Null on the final page.
+    pub next_cursor: Option<String>,
+}
+
+/// The one sentence every `vcon_spool_status` answer carries.
+const SPOOL_NOTE: &str = "A snapshot of files on disk at as_of, read by this \
+     process. The vCon forwarder (sipnab --vcon-forward) is a separate process \
+     that moves files out of the spool; this server sends, fetches, moves and \
+     deletes nothing. The delivered and failed directories are the forwarder's \
+     defaults beside the spool; a forwarder started with --vcon-forward-done or \
+     --vcon-forward-failed moves files elsewhere, and those are not counted.";
+
+/// The most bytes of one `<file>.error.json` record this tool reads.
+///
+/// Not a setting: the record's body is cut to `--mcp-max-body-bytes` before it
+/// is returned, and a record larger than this is reported as too large rather
+/// than read into memory. The forwarder's own default keeps 8 KiB of an
+/// answer, so a default record is far below it.
+const MAX_RECORD_READ: u64 = 1024 * 1024;
+
 /// Which dialogs an export was asked for.
 ///
 /// A caller that sent both `call_id` and `filter` has a malformed request, and
@@ -238,8 +372,86 @@ enum Selection {
     Matching(Box<crate::sip::dsl::FilterExpr>),
 }
 
+/// One `export_vcon` request, after its arguments were read.
+///
+/// Grouped so the builder takes one value: which dialogs, how many per page,
+/// where the previous page ended, and whether the audio travels.
+struct ExportRequest {
+    /// Which dialogs.
+    selection: Selection,
+    /// Most containers in this page.
+    limit: usize,
+    /// Where the previous page ended, when there was one.
+    cursor: Option<crate::mcp::shape::Cursor>,
+    /// Whether retained audio travels inline.
+    media: VconMedia,
+}
+
+impl ExportRequest {
+    /// The whole of one dialog, audio included: the request `validate_vcon`
+    /// and the `sipnab://vcon/{call_id}` resource make.
+    fn one(call_id: String) -> Self {
+        Self {
+            selection: Selection::One(call_id),
+            limit: 1,
+            cursor: None,
+            media: VconMedia::Inline,
+        }
+    }
+}
+
 #[tool_router(router = vcon_router, vis = "pub(crate)")]
 impl SipnabMcp {
+    /// Count the vCon export spool, and read why each refused container was
+    /// refused.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when this run was not given
+    /// `--export-vcon-dir`; `internal_error` (-32603) when a directory exists
+    /// and cannot be read.
+    #[tool(
+        name = "vcon_spool_status",
+        description = "Counts the vCon export spool (--export-vcon-dir): \
+                       containers pending, delivered and failed, and for each \
+                       failed container the record the forwarder wrote beside \
+                       it -- the store's status, the method and URL, and the \
+                       start of the store's answer. A SNAPSHOT of files on \
+                       disk at as_of: the forwarder (sipnab --vcon-forward) is \
+                       a separate process, and this tool sends, fetches, moves \
+                       and deletes nothing. Reads the forwarder's default \
+                       delivered/ and failed/ directories beside the spool. \
+                       The failed list is bounded by limit and paged with \
+                       cursor. Returns an error when this run was started \
+                       without --export-vcon-dir.",
+        output_schema = schema_for_output::<VconSpoolStatusResponse>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn vcon_spool_status(
+        &self,
+        Parameters(params): Parameters<VconSpoolStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let spool = self.vcon_spool.as_deref().ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                "this run has no vCon export spool: start sipnab with \
+                 --export-vcon-when <EXPR> --export-vcon-dir <DIR>, and this \
+                 tool reads that directory",
+                None,
+            )
+        })?;
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
+        let response = spool_snapshot(spool, params.cursor.as_deref(), limit, self.body_cap)?;
+        let value = serde_json::to_value(&response).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("spool status serialization failed: {e}"), None)
+        })?;
+        // The record bodies are text a vCon store wrote. They are fenced, and
+        // the note says what the fence means.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(value)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
     /// Export observed dialogs as vCon conversation containers.
     ///
     /// # Errors
@@ -253,8 +465,13 @@ impl SipnabMcp {
                        (draft-ietf-vcon-vcon-core, syntax 0.4.0), structured \
                        JSON, each with its SHA-256 and with what the capture \
                        missed. Takes ONE call_id, or a DSL filter selecting a \
-                       SET -- use the filter rather than looping call_id, and \
-                       bound it with limit. These are OBSERVER vCons: sipnab \
+                       SET -- use the filter rather than looping call_id, \
+                       bound it with limit, and page it by passing \
+                       next_cursor back as cursor. media \"omit\" leaves the \
+                       audio out and each container says so; the default, \
+                       \"inline\", carries it. The same container is readable \
+                       as the resource sipnab://vcon/{call_id}. These are \
+                       OBSERVER vCons: sipnab \
                        watched packets go past a tap, so nothing is signed and \
                        no party carries an established name. Audio the run \
                        RETAINED travels inline as a recording Dialog Object, \
@@ -274,8 +491,22 @@ impl SipnabMcp {
         Parameters(params): Parameters<ExportVconParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let selection = self.vcon_selection(params.call_id, params.filter)?;
-        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let response = self.export_containers(&selection, limit)?;
+        // Parsed the way every other paged tool parses it, and refused the
+        // same way: restarting from the beginning on a malformed cursor would
+        // loop a paging agent over the first page forever.
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                crate::mcp::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
+        let response = self.export_containers(&ExportRequest {
+            selection,
+            limit: resolve_limit_with_cap(params.limit, self.row_cap),
+            cursor,
+            media: params.media.unwrap_or_default(),
+        })?;
 
         // `ContentBlock::json` of the SERIALIZED response, never a rendered
         // string handed back for the caller to parse. `get_capture_report`
@@ -343,7 +574,7 @@ impl SipnabMcp {
                 ));
             }
             (Some(call_id), None) => {
-                let exported = self.export_containers(&Selection::One(call_id.clone()), 1)?;
+                let exported = self.export_containers(&ExportRequest::one(call_id.clone()))?;
                 let container = exported
                     .containers
                     .first()
@@ -441,12 +672,18 @@ impl SipnabMcp {
     /// `invalid_params` (-32602) when a NAMED Call-ID is not in the store. A
     /// filter that matches nothing is an empty answer instead, because "no
     /// call failed" is a finding and "that call is not here" is a mistake.
+    ///
+    /// Paged the way `list_dialogs` pages: matches are ordered by
+    /// `(created_at, Call-ID)` before the cursor and the limit apply, because
+    /// store order is insertion order and cutting it would let `next_cursor`
+    /// skip dialogs that were never returned. `created_at` never changes, so a
+    /// page boundary stays where it was put while the capture grows.
     #[cfg(feature = "vcon")]
     fn export_containers(
         &self,
-        selection: &Selection,
-        limit: usize,
+        request: &ExportRequest,
     ) -> Result<ExportVconResponse, rmcp::ErrorData> {
+        let selection = &request.selection;
         use crate::output::vcon::{
             ExportContext, ObservedAudio, container_digest, export_dialog_and_completeness, seal,
             sealed_json,
@@ -467,38 +704,64 @@ impl SipnabMcp {
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
         let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
 
+        // Every match, counted and ordered; only the page is BUILT.
+        // `total_matched` is the number an agent pages against, and it cannot
+        // be known from a scan that stopped at the limit.
+        let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
+            .iter()
+            .filter(|dialog| match selection {
+                Selection::One(id) => dialog.call_id == *id,
+                Selection::Matching(expr) => {
+                    let streams: Vec<&crate::rtp::stream::RtpStream> =
+                        ss.streams_for(&dialog.call_id).collect();
+                    expr.matches_dialog(dialog, &streams, capture, delay)
+                }
+            })
+            .collect();
+        let total_matched = matched.len();
+        crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.call_id.cmp(&b.call_id))
+        });
+        let remaining: Vec<&crate::sip::dialog::SipDialog> = match &request.cursor {
+            None => matched,
+            Some(c) => matched
+                .into_iter()
+                .filter(|d| c.precedes(d.created_at, &d.call_id))
+                .collect(),
+        };
+        let truncated = remaining.len() > request.limit;
+        let page = &remaining[..remaining.len().min(request.limit)];
+        let next_cursor = truncated
+            .then(|| page.last())
+            .flatten()
+            .map(|d| crate::mcp::shape::format_cursor(d.created_at, &d.call_id));
+
         let mut containers = Vec::new();
-        let mut total_matched = 0_usize;
-        for dialog in ds.iter() {
+        for dialog in page {
             let streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&dialog.call_id).collect();
-            let selected = match selection {
-                Selection::One(id) => dialog.call_id == *id,
-                Selection::Matching(expr) => expr.matches_dialog(dialog, &streams, capture, delay),
-            };
-            if !selected {
-                continue;
-            }
-            total_matched += 1;
-            if containers.len() >= limit {
-                // Counted, not built. `total_matched` is the number an agent
-                // pages against, and it cannot be known from a scan that
-                // stopped at the limit.
-                continue;
-            }
 
-            // Media is attempted always. When the run retained no payload the
-            // decode fails, and its message -- which reports what was MEASURED
-            // and never claims the call was silent -- travels in the container
-            // instead of an absence the agent would have to interpret.
-            let decoded = crate::rtp::audio_export::decode_dialog_audio(&streams);
+            // With `media: inline`, media is attempted always. When the run
+            // retained no payload the decode fails, and its message -- which
+            // reports what was MEASURED and never claims the call was silent
+            // -- travels in the container instead of an absence the agent
+            // would have to interpret. With `media: omit` nothing is decoded,
+            // and the container records `not-considered`: the outcome the
+            // exporter already has for an export that did not look at media.
+            let decoded = match request.media {
+                VconMedia::Inline => Some(crate::rtp::audio_export::decode_dialog_audio(&streams)),
+                VconMedia::Omit => None,
+            };
             let reason = decoded
                 .as_ref()
-                .err()
+                .and_then(|d| d.as_ref().err())
                 .map_or_else(String::new, ToString::to_string);
             let audio = match decoded.as_ref() {
-                Ok(audio) => ObservedAudio::Decoded(audio),
-                Err(_) => ObservedAudio::NothingToDecode(&reason),
+                None => ObservedAudio::NotConsidered,
+                Some(Ok(audio)) => ObservedAudio::Decoded(audio),
+                Some(Err(_)) => ObservedAudio::NothingToDecode(&reason),
             };
 
             let media = crate::output::vcon::media_quality_for(&ss, &dialog.call_id);
@@ -547,13 +810,60 @@ impl SipnabMcp {
         }
 
         Ok(ExportVconResponse {
+            // Still 1: `next_cursor` is an added member, and every member a
+            // version-1 reader knows keeps its meaning.
             schema_version: 1,
             returned: containers.len(),
-            truncated: total_matched > containers.len(),
+            truncated,
+            next_cursor,
             containers,
             total_matched,
             capture_identity,
         })
+    }
+
+    /// The text `sipnab://vcon/{call_id}` reads as: the container
+    /// `export_vcon` builds for that dialog, audio inline.
+    ///
+    /// Built by [`Self::export_containers`], the function behind
+    /// `export_vcon` and `validate_vcon`, so the resource door and the tool
+    /// door cannot come to build different containers for one dialog.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for a Call-ID the store does not hold, and
+    /// for a container longer than `max_bytes`, which the refusal states
+    /// alongside the tool that carries it instead.
+    #[cfg(feature = "vcon")]
+    pub(crate) fn vcon_resource(
+        &self,
+        call_id: &str,
+        max_bytes: u64,
+    ) -> Result<String, rmcp::ErrorData> {
+        let exported = self.export_containers(&ExportRequest::one(call_id.to_owned()))?;
+        let container = exported
+            .containers
+            .into_iter()
+            .next()
+            .map(|c| c.container)
+            .ok_or_else(|| {
+                rmcp::ErrorData::internal_error(
+                    format!("call_id '{call_id}' exported no container"),
+                    None,
+                )
+            })?;
+        let text = serde_json::to_string(&container).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("vCon serialization failed: {e}"), None)
+        })?;
+        crate::mcp::server::refuse_past_resource_limit(
+            &format!("the vCon for '{call_id}'"),
+            u64::try_from(text.len()).unwrap_or(u64::MAX),
+            max_bytes,
+            "call export_vcon with this call_id, which is bounded by \
+             --mcp-max-rows rather than by the resource limit, or with \
+             media \"omit\" to leave the audio out",
+        )?;
+        Ok(text)
     }
 
     /// Validate one container against the vendored schema.
@@ -583,6 +893,146 @@ impl SipnabMcp {
             call_id: None,
         })
     }
+}
+
+/// Read the spool, its delivered and failed directories, and one page of
+/// failure records.
+///
+/// A pure function of the directory and its arguments, so a test can drive it
+/// over a temporary spool. It opens files for reading and nothing else.
+///
+/// # Errors
+///
+/// `internal_error` (-32603) naming the directory when one exists and cannot
+/// be read.
+fn spool_snapshot(
+    spool: &std::path::Path,
+    after: Option<&str>,
+    limit: usize,
+    body_cap: usize,
+) -> Result<VconSpoolStatusResponse, rmcp::ErrorData> {
+    use crate::app::vcon_forward::{
+        ERROR_RECORD_SUFFIX, default_done_dir, default_failed_dir, failed_containers, pending,
+    };
+
+    let as_of = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let done = default_done_dir(spool);
+    let failed = default_failed_dir(spool);
+    let (spool_dir, pending_names) = read_names(spool, pending)?;
+    let (done_dir, delivered_names) = read_names(&done, pending)?;
+    let (failed_dir, failed_names) = read_names(&failed, failed_containers)?;
+
+    let remaining: Vec<&String> = failed_names
+        .iter()
+        .filter(|name| after.is_none_or(|c| name.as_str() > c))
+        .collect();
+    let truncated = remaining.len() > limit;
+    let page = &remaining[..remaining.len().min(limit)];
+    let next_cursor = truncated
+        .then(|| page.last())
+        .flatten()
+        .map(|n| (*n).clone());
+    let failures: Vec<SpoolFailure> = page
+        .iter()
+        .map(|name| {
+            let record_path = failed.join(format!("{name}{ERROR_RECORD_SUFFIX}"));
+            match read_record(&record_path, body_cap) {
+                Ok(record) => SpoolFailure {
+                    file: (*name).clone(),
+                    record: Some(record),
+                    record_problem: None,
+                },
+                Err(problem) => SpoolFailure {
+                    file: (*name).clone(),
+                    record: None,
+                    record_problem: Some(problem),
+                },
+            }
+        })
+        .collect();
+
+    Ok(VconSpoolStatusResponse {
+        schema_version: 1,
+        as_of,
+        note: SPOOL_NOTE.to_owned(),
+        spool: spool_dir,
+        delivered_dir: done_dir,
+        failed_dir,
+        pending: pending_names.len(),
+        delivered: delivered_names.len(),
+        failed: failed_names.len(),
+        returned: failures.len(),
+        failures,
+        truncated,
+        next_cursor,
+    })
+}
+
+/// List one directory by `rule`, treating a missing directory as empty.
+///
+/// # Errors
+///
+/// `internal_error` (-32603) naming the directory for any other read failure.
+fn read_names(
+    dir: &std::path::Path,
+    rule: fn(&std::path::Path) -> std::io::Result<Vec<String>>,
+) -> Result<(SpoolDirectory, Vec<String>), rmcp::ErrorData> {
+    let path = dir.display().to_string();
+    match rule(dir) {
+        Ok(names) => Ok((SpoolDirectory { path, exists: true }, names)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((
+            SpoolDirectory {
+                path,
+                exists: false,
+            },
+            Vec::new(),
+        )),
+        Err(e) => Err(rmcp::ErrorData::internal_error(
+            format!("cannot read '{path}': {e}"),
+            None,
+        )),
+    }
+}
+
+/// Read one failure record, its body fenced and cut to `body_cap`.
+///
+/// # Errors
+///
+/// A sentence naming the record when it is missing, too large, unreadable, or
+/// not in the shape the forwarder writes.
+fn read_record(
+    path: &std::path::Path,
+    body_cap: usize,
+) -> Result<crate::app::vcon_forward::FailureRecord, String> {
+    use std::io::Read as _;
+
+    let shown = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let size = match std::fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("{shown} is missing beside the container"));
+        }
+        Err(e) => return Err(format!("{shown} cannot be read: {e}")),
+    };
+    if size > MAX_RECORD_READ {
+        return Err(format!(
+            "{shown} is {size} bytes, past the {MAX_RECORD_READ}-byte bound this \
+             tool reads; read the file on the host"
+        ));
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_RECORD_READ).read_to_string(&mut text))
+        .map_err(|e| format!("{shown} cannot be read: {e}"))?;
+    let mut record: crate::app::vcon_forward::FailureRecord = serde_json::from_str(&text)
+        .map_err(|e| format!("{shown} is not a forwarder failure record: {e}"))?;
+    record.body = record
+        .body
+        .map(|b| crate::mcp::shape::fence(&crate::mcp::shape::truncate_string(&b, body_cap)));
+    Ok(record)
 }
 
 /// The completeness carrier, in the shape this response publishes it.
@@ -1004,7 +1454,7 @@ mod tests {
             .export_vcon(Parameters(ExportVconParams {
                 call_id: Some("a@x".to_string()),
                 filter: Some("response_code >= 400".to_string()),
-                limit: None,
+                ..ExportVconParams::default()
             }))
             .await
             .err()
@@ -1349,6 +1799,725 @@ mod tests {
             serde_json::to_value(&row).map_err(|e| format!("serializes: {e:?}"))?,
             serde_json::to_value(&carrier).map_err(|e| format!("serializes: {e:?}"))?,
             "the tool's row and the carrier's row must be one wire shape"
+        );
+        Ok(())
+    }
+
+    // ── export_vcon: paging and media selection ──────────────────────
+
+    /// The `call_id`s of one parsed `export_vcon` page, in response order.
+    #[cfg(feature = "vcon")]
+    fn page_ids(v: &serde_json::Value) -> Vec<String> {
+        v["containers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|c| c["call_id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A filter selecting more dialogs than one page is walked to the end by
+    /// following `next_cursor`, and every dialog arrives exactly once.
+    ///
+    /// The five dialogs share one `created_at` (every fixture message is
+    /// stamped with `ts()`), so the walk crosses page boundaries INSIDE a tie
+    /// group. That is the case the compound cursor's Call-ID half exists for:
+    /// a bare-timestamp cursor drops the rest of the group or repeats it.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn a_cursor_pages_through_every_matching_dialog_exactly_once() -> Result<(), TestError> {
+        let ids = ["p1@x", "p2@x", "p3@x", "p4@x", "p5@x"];
+        // Inserted out of order, so the page order has to come from the sort
+        // and not from the store's insertion order.
+        let server = server_with(&[
+            ("p3@x", 486),
+            ("p1@x", 486),
+            ("p5@x", 486),
+            ("p2@x", 486),
+            ("p4@x", 486),
+        ])?;
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            pages += 1;
+            assert!(pages <= 5, "the walk did not terminate: {seen:?}");
+            let v = exported(
+                &server,
+                ExportVconParams {
+                    filter: Some("response_code >= 400".to_string()),
+                    limit: Some(2),
+                    cursor: cursor.clone(),
+                    ..ExportVconParams::default()
+                },
+            )
+            .await?;
+            assert_eq!(
+                v["total_matched"], 5,
+                "the count is across the store on every page: {v}"
+            );
+            seen.extend(page_ids(&v));
+            match v["next_cursor"].as_str() {
+                Some(next) => {
+                    assert_eq!(v["truncated"], true, "a cursor means more remain: {v}");
+                    cursor = Some(next.to_owned());
+                }
+                None => {
+                    assert_eq!(v["truncated"], false, "the last page says so: {v}");
+                    break;
+                }
+            }
+        }
+        assert_eq!(pages, 3, "five dialogs at two per page is three pages");
+        assert_eq!(
+            seen,
+            ids.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+            "every dialog once, in (created_at, Call-ID) order"
+        );
+        Ok(())
+    }
+
+    /// `next_cursor` is the cursor `list_dialogs` mints for the same set.
+    ///
+    /// One cursor rule across the paged tools, so a cursor from either one
+    /// means the same position. A second encoding would have to be learned,
+    /// and would drift.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn the_cursor_is_the_one_list_dialogs_mints() -> Result<(), TestError> {
+        let server = server_with(&[("c1@x", 486), ("c2@x", 486), ("c3@x", 486)])?;
+        let filter = Some("response_code >= 400".to_string());
+        let v = exported(
+            &server,
+            ExportVconParams {
+                filter: filter.clone(),
+                limit: Some(2),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        let listed = server
+            .list_dialogs(Parameters(crate::mcp::server::ListDialogsParams {
+                filter,
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("list_dialogs answers: {e:?}"))?;
+        let listed = payload(&listed)?;
+        assert!(v["next_cursor"].is_string(), "premise: a second page: {v}");
+        assert_eq!(
+            v["next_cursor"], listed["next_cursor"],
+            "export_vcon and list_dialogs must mint one cursor for one position"
+        );
+        Ok(())
+    }
+
+    /// A cursor that is not one is refused the way `list_dialogs` refuses it,
+    /// rather than restarting from the beginning. A restart would loop a
+    /// paging agent over the first page forever.
+    #[tokio::test]
+    async fn export_vcon_refuses_a_malformed_cursor() -> Result<(), TestError> {
+        let err = server_with(&[("m@x", 486)])?
+            .export_vcon(Parameters(ExportVconParams {
+                filter: Some("response_code >= 400".to_string()),
+                cursor: Some("not-a-time|m@x".to_string()),
+                ..ExportVconParams::default()
+            }))
+            .await
+            .err()
+            .ok_or("a malformed cursor must be refused")?;
+        let json = serde_json::to_value(err).map_err(|e| format!("serializes: {e:?}"))?;
+        assert_eq!(json["code"], -32602, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("RFC 3339")),
+            "the refusal names the format the cursor must have: {json}"
+        );
+        Ok(())
+    }
+
+    /// A cursor past every match answers with an empty final page, and the
+    /// envelope still says how many matched.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn a_cursor_past_the_end_answers_an_empty_final_page() -> Result<(), TestError> {
+        let server = server_with(&[("e1@x", 486)])?;
+        let v = exported(
+            &server,
+            ExportVconParams {
+                filter: Some("response_code >= 400".to_string()),
+                cursor: Some(crate::mcp::shape::format_cursor(ts()?, "zzzz")),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(v["returned"], 0, "{v}");
+        assert_eq!(v["total_matched"], 1, "{v}");
+        assert!(v["next_cursor"].is_null(), "{v}");
+        assert_eq!(v["truncated"], false, "{v}");
+        Ok(())
+    }
+
+    /// A server holding one dialog with a decodable PCMU stream retained, so
+    /// the export has audio to carry or to leave out.
+    #[cfg(feature = "vcon")]
+    fn server_with_audio(call_id: &str) -> Result<SipnabMcp, TestError> {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite(call_id)?);
+        ds.process_message(final_response(call_id, 200, "Fixture")?);
+
+        let mut ss = StreamStore::new(100);
+        for (ssrc, port) in [(0x1111_1111_u32, 20000_u16), (0x2222_2222, 30000)] {
+            let key = StreamKey {
+                ssrc,
+                src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), port + 1),
+            };
+            let hdr = RtpHeader {
+                version: 2,
+                padding: false,
+                extension: false,
+                csrc_count: 0,
+                marker: false,
+                payload_type: 0,
+                sequence: 1,
+                timestamp: 0,
+                ssrc,
+                payload_offset: 12,
+            };
+            let mut stream = RtpStream::new(key, &hdr, ts()?);
+            stream.codec = Some("PCMU".to_string());
+            stream.associated_dialog = Some(call_id.to_string());
+            stream.payload_buffer = (0..10_u32).map(|i| (i * 160, vec![0xFF; 160])).collect();
+            ss.insert_for_test(stream);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(ss)),
+        ))
+    }
+
+    /// Whether a container carries audio: a `recording` Dialog Object with an
+    /// inline `body`.
+    ///
+    /// The `body` is the test, not the type. core-04 types the signaling
+    /// Dialog Object of a call that was set up as `recording` too, so a type
+    /// check alone finds one in every signaling-only container.
+    #[cfg(feature = "vcon")]
+    fn has_recording(container: &serde_json::Value) -> bool {
+        container["dialog"].as_array().is_some_and(|d| {
+            d.iter()
+                .any(|o| o["type"] == "recording" && o["body"].is_string())
+        })
+    }
+
+    /// The `capture_completeness` object the container itself carries.
+    #[cfg(feature = "vcon")]
+    fn carried_completeness(container: &serde_json::Value) -> Result<serde_json::Value, TestError> {
+        let body: serde_json::Value = serde_json::from_str(
+            container["analysis"][0]["body"]
+                .as_str()
+                .ok_or("the analysis body is JSON text")?,
+        )
+        .map_err(|e| format!("the analysis body parses: {e:?}"))?;
+        Ok(body["capture_completeness"].clone())
+    }
+
+    /// `media: "inline"` (the default) carries the retained audio, and
+    /// `media: "omit"` leaves it out and says so INSIDE the container.
+    ///
+    /// The omission is recorded with the outcome sipnab already uses for an
+    /// export that did not consider media, `not-considered`, so a reader of
+    /// the container alone learns that the export left the audio out rather
+    /// than concluding the call had none. Both containers must stay valid
+    /// against the vendored core-04 schema.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn media_omit_leaves_the_audio_out_and_the_container_says_so() -> Result<(), TestError> {
+        let server = server_with_audio("audio@x")?;
+        let ask = |media: Option<VconMedia>| ExportVconParams {
+            call_id: Some("audio@x".to_string()),
+            media,
+            ..ExportVconParams::default()
+        };
+
+        for (label, v) in [
+            ("default", exported(&server, ask(None)).await?),
+            (
+                "inline",
+                exported(&server, ask(Some(VconMedia::Inline))).await?,
+            ),
+        ] {
+            let entry = &v["containers"][0];
+            assert!(
+                has_recording(&entry["container"]),
+                "{label}: the retained audio travels inline: {entry}"
+            );
+            assert_eq!(
+                entry["completeness"]["media"], "carried",
+                "{label}: {entry}"
+            );
+            let report = crate::output::vcon_schema::validate(&entry["container"]);
+            assert_eq!(
+                report.verdict.as_str(),
+                "valid",
+                "{label}: {:?}",
+                report.errors
+            );
+        }
+
+        let omitted = exported(&server, ask(Some(VconMedia::Omit))).await?;
+        let entry = &omitted["containers"][0];
+        assert!(
+            !has_recording(&entry["container"]),
+            "media omit must leave the audio out: {entry}"
+        );
+        assert_eq!(entry["completeness"]["media"], "not-considered", "{entry}");
+        let carried = carried_completeness(&entry["container"])?;
+        assert_eq!(
+            carried["media"], "not-considered",
+            "the container itself must state the omission: {carried}"
+        );
+        assert!(
+            carried["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("SIGNALING ONLY")),
+            "the caveat says this export carries no media: {carried}"
+        );
+        let report = crate::output::vcon_schema::validate(&entry["container"]);
+        assert_eq!(report.verdict.as_str(), "valid", "{:?}", report.errors);
+        Ok(())
+    }
+
+    /// `media` takes two words and refuses a third, naming the two.
+    #[test]
+    fn media_takes_inline_or_omit_and_nothing_else() -> Result<(), TestError> {
+        let parse =
+            |m: &str| serde_json::from_value::<ExportVconParams>(serde_json::json!({"media": m}));
+        assert_eq!(
+            parse("inline").map_err(|e| e.to_string())?.media,
+            Some(VconMedia::Inline)
+        );
+        assert_eq!(
+            parse("omit").map_err(|e| e.to_string())?.media,
+            Some(VconMedia::Omit)
+        );
+        let refused = parse("url")
+            .err()
+            .ok_or("an unknown word must be refused")?;
+        let message = refused.to_string();
+        assert!(
+            message.contains("inline") && message.contains("omit"),
+            "the refusal names the vocabulary: {message}"
+        );
+        Ok(())
+    }
+
+    // ── the sipnab://vcon/{call_id} resource ─────────────────────────
+
+    /// The container with its write time removed.
+    ///
+    /// `created_at` is the moment sipnab wrote the container, so two builds of
+    /// one dialog differ there and nowhere else.
+    #[cfg(feature = "vcon")]
+    fn without_write_time(mut container: serde_json::Value) -> serde_json::Value {
+        if let Some(obj) = container.as_object_mut() {
+            obj.remove("created_at");
+        }
+        container
+    }
+
+    /// Reading `sipnab://vcon/{call_id}` returns the container `export_vcon`
+    /// builds for the same dialog, and it is valid against core-04.
+    ///
+    /// Equal apart from `created_at`, which is the write time. Same `uuid`,
+    /// same parties, same Dialog Objects, same completeness carrier: one
+    /// builder behind both doors.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn the_vcon_resource_is_the_container_export_vcon_builds() -> Result<(), TestError> {
+        let server = server_with(&[("res@x", 200), ("other@x", 486)])?;
+        let text = server
+            .vcon_resource("res@x", u64::MAX)
+            .map_err(|e| format!("the resource reads: {e:?}"))?;
+        let from_resource: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("the resource is JSON: {e:?}"))?;
+        let from_tool = exported(
+            &server,
+            ExportVconParams {
+                call_id: Some("res@x".to_string()),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?["containers"][0]["container"]
+            .clone();
+
+        assert_eq!(
+            from_resource["dialog"][0]["sip_call_id"], "res@x",
+            "the resource names the dialog asked for: {from_resource}"
+        );
+        assert_eq!(
+            without_write_time(from_resource.clone()),
+            without_write_time(from_tool),
+            "the resource and the tool must build one container"
+        );
+        let report = crate::output::vcon_schema::validate(&from_resource);
+        assert_eq!(report.verdict.as_str(), "valid", "{:?}", report.errors);
+        Ok(())
+    }
+
+    /// A Call-ID the store does not hold is refused with -32602, naming it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_vcon_resource_refuses_an_unknown_call_id() -> Result<(), TestError> {
+        let err = server_with(&[("known@x", 200)])?
+            .vcon_resource("unknown@x", u64::MAX)
+            .err()
+            .ok_or("an unknown Call-ID must be refused")?;
+        let json = serde_json::to_value(err).map_err(|e| format!("serializes: {e:?}"))?;
+        assert_eq!(json["code"], -32602, "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("unknown@x")),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    /// A container past the resource bound is refused, and the refusal states
+    /// its size, the bound, and the tool that carries it instead.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_vcon_resource_is_refused_past_the_size_bound() -> Result<(), TestError> {
+        let server = server_with(&[("big@x", 200)])?;
+        let fits = server
+            .vcon_resource("big@x", u64::MAX)
+            .map_err(|e| format!("unbounded, it reads: {e:?}"))?;
+        let size = u64::try_from(fits.len()).map_err(|e| format!("{e:?}"))?;
+
+        let at_bound = server.vcon_resource("big@x", size + 64);
+        assert!(at_bound.is_ok(), "a container under the bound is served");
+
+        let err = server
+            .vcon_resource("big@x", 16)
+            .err()
+            .ok_or("a container past the bound must be refused")?;
+        let json = serde_json::to_value(err).map_err(|e| format!("serializes: {e:?}"))?;
+        assert_eq!(json["code"], -32602, "{json}");
+        let message = json["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("16-byte resource limit") && message.contains("export_vcon"),
+            "the refusal states the bound and the way around it: {message}"
+        );
+        Ok(())
+    }
+
+    // ── vcon_spool_status ────────────────────────────────────────────
+
+    /// A `vcon_spool_status` answer, parsed.
+    #[cfg(feature = "vcon")]
+    async fn spool_status(
+        server: &SipnabMcp,
+        params: VconSpoolStatusParams,
+    ) -> Result<serde_json::Value, TestError> {
+        let result = server
+            .vcon_spool_status(Parameters(params))
+            .await
+            .map_err(|e| format!("the status should answer: {e:?}"))?;
+        payload(&result)
+    }
+
+    /// Write `bytes` to `dir/name`, creating `dir`.
+    fn put(dir: &std::path::Path, name: &str, bytes: &[u8]) -> Result<(), TestError> {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join(name), bytes)?;
+        Ok(())
+    }
+
+    /// Every file under `dir`, relative, sorted, with its bytes: what the tool
+    /// must leave exactly as it found it.
+    fn tree(dir: &std::path::Path) -> Result<Vec<(String, Vec<u8>)>, TestError> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let rel = path.strip_prefix(dir)?.display().to_string();
+                    out.push((rel, std::fs::read(&path)?));
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// One failure record, in the shape the forwarder writes.
+    fn record(file: &str, status: u16, body: &str) -> String {
+        serde_json::json!({
+            "at": "2026-10-07T12:00:00Z",
+            "body": body,
+            "body_truncated": false,
+            "file": file,
+            "method": "POST",
+            "reason": null,
+            "status": status,
+            "url": "https://vcon.example.com/v1/vcons",
+        })
+        .to_string()
+    }
+
+    /// An empty spool answers zeros, says when it looked, and says it is a
+    /// snapshot of files rather than the forwarder's own account.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn an_empty_spool_answers_zeros_as_a_dated_snapshot() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let server = empty_server().with_vcon_spool(dir.path());
+        let v = spool_status(&server, VconSpoolStatusParams::default()).await?;
+
+        assert_eq!(v["pending"], 0, "{v}");
+        assert_eq!(v["delivered"], 0, "{v}");
+        assert_eq!(v["failed"], 0, "{v}");
+        assert_eq!(v["spool"]["exists"], true, "{v}");
+        assert!(v["failures"].as_array().is_some_and(Vec::is_empty), "{v}");
+        let as_of = v["as_of"].as_str().ok_or("an as_of instant")?;
+        chrono::DateTime::parse_from_rfc3339(as_of)
+            .map_err(|e| format!("as_of is RFC 3339: {as_of}: {e:?}"))?;
+        assert!(
+            v["note"].as_str().is_some_and(|n| n.contains("snapshot")),
+            "the answer must say it is a snapshot of files: {v}"
+        );
+        Ok(())
+    }
+
+    /// A spool holding every kind of file is counted by the forwarder's own
+    /// rules, and nothing in it is moved, removed or rewritten.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn a_mixed_spool_is_counted_and_left_untouched() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let spool = dir.path();
+        put(spool, "a.vcon.json", b"{}")?;
+        put(spool, "b.vcon.json", b"{}")?;
+        // Staging files and other names are not containers.
+        put(spool, ".c.vcon.json.partial", b"{")?;
+        put(spool, "notes.txt", b"x")?;
+        put(&spool.join("delivered"), "d1.vcon.json", b"{}")?;
+        put(&spool.join("failed"), "f1.vcon.json", b"{}")?;
+        put(
+            &spool.join("failed"),
+            "f1.vcon.json.error.json",
+            record("f1.vcon.json", 422, "bad").as_bytes(),
+        )?;
+        put(&spool.join("failed"), "f2.vcon.json", b"{}")?;
+        let before = tree(spool)?;
+
+        let v = spool_status(
+            &empty_server().with_vcon_spool(spool),
+            VconSpoolStatusParams::default(),
+        )
+        .await?;
+        assert_eq!(v["pending"], 2, "{v}");
+        assert_eq!(v["delivered"], 1, "{v}");
+        assert_eq!(v["failed"], 2, "a record is not a container: {v}");
+        assert_eq!(v["returned"], 2, "{v}");
+        assert_eq!(v["failures"][0]["file"], "f1.vcon.json", "{v}");
+        assert_eq!(v["failures"][0]["record"]["status"], 422, "{v}");
+        assert_eq!(v["failures"][1]["file"], "f2.vcon.json", "{v}");
+        assert!(
+            v["failures"][1]["record"].is_null()
+                && v["failures"][1]["record_problem"]
+                    .as_str()
+                    .is_some_and(|p| p.contains("f2.vcon.json.error.json")),
+            "a failed container without its record says so: {v}"
+        );
+
+        assert_eq!(
+            tree(spool)?,
+            before,
+            "the status tool must not move, delete or write anything"
+        );
+        Ok(())
+    }
+
+    /// Each failed record carries the store's answer as the forwarder kept
+    /// it, and the list pages under `limit` with a cursor.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn failed_records_carry_the_stores_answer_and_page() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let failed = dir.path().join("failed");
+        for (name, status, body) in [
+            ("r1.vcon.json", 400, r#"{"detail":"vcon must have a uuid"}"#),
+            ("r2.vcon.json", 409, "uuid already exists"),
+            ("r3.vcon.json", 422, "unprocessable"),
+        ] {
+            put(&failed, name, b"{}")?;
+            put(
+                &failed,
+                &format!("{name}.error.json"),
+                record(name, status, body).as_bytes(),
+            )?;
+        }
+        let server = empty_server().with_vcon_spool(dir.path());
+
+        let first = spool_status(
+            &server,
+            VconSpoolStatusParams {
+                limit: Some(2),
+                ..VconSpoolStatusParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(first["failed"], 3, "{first}");
+        assert_eq!(first["returned"], 2, "{first}");
+        assert_eq!(first["truncated"], true, "{first}");
+        let r1 = &first["failures"][0]["record"];
+        assert_eq!(r1["status"], 400, "{first}");
+        // The store's answer is text another server wrote, so it arrives
+        // fenced the way capture-derived text does.
+        assert_eq!(
+            r1["body"],
+            crate::mcp::shape::fence(r#"{"detail":"vcon must have a uuid"}"#),
+            "{first}"
+        );
+        assert_eq!(r1["method"], "POST", "{first}");
+        assert_eq!(r1["url"], "https://vcon.example.com/v1/vcons", "{first}");
+        assert_eq!(r1["at"], "2026-10-07T12:00:00Z", "{first}");
+        assert_eq!(
+            first["failures"][1]["record"]["body"],
+            crate::mcp::shape::fence("uuid already exists")
+        );
+
+        let next = first["next_cursor"]
+            .as_str()
+            .ok_or("a cursor to the rest")?;
+        let second = spool_status(
+            &server,
+            VconSpoolStatusParams {
+                limit: Some(2),
+                cursor: Some(next.to_owned()),
+            },
+        )
+        .await?;
+        assert_eq!(second["returned"], 1, "{second}");
+        assert_eq!(second["failures"][0]["file"], "r3.vcon.json", "{second}");
+        assert_eq!(second["failures"][0]["record"]["status"], 422, "{second}");
+        assert_eq!(second["truncated"], false, "{second}");
+        assert!(second["next_cursor"].is_null(), "{second}");
+        Ok(())
+    }
+
+    /// A store answer longer than `--mcp-max-body-bytes` is cut to it, and the
+    /// cut is marked.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn a_long_store_answer_is_cut_to_the_body_cap() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let failed = dir.path().join("failed");
+        let long = "x".repeat(300);
+        put(&failed, "long.vcon.json", b"{}")?;
+        put(
+            &failed,
+            "long.vcon.json.error.json",
+            record("long.vcon.json", 400, &long).as_bytes(),
+        )?;
+        let v = spool_status(
+            &empty_server()
+                .with_vcon_spool(dir.path())
+                .with_body_cap(100),
+            VconSpoolStatusParams::default(),
+        )
+        .await?;
+        assert_eq!(
+            v["failures"][0]["record"]["body"],
+            crate::mcp::shape::fence(&crate::mcp::shape::truncate_string(&long, 100)),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    /// The page size bounds the failed list and nothing else: the three
+    /// counts describe the whole spool on every page.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn a_page_size_never_moves_the_spool_counts() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        put(dir.path(), "p1.vcon.json", b"{}")?;
+        put(dir.path(), "p2.vcon.json", b"{}")?;
+        put(&dir.path().join("delivered"), "d1.vcon.json", b"{}")?;
+        for name in ["f1.vcon.json", "f2.vcon.json", "f3.vcon.json"] {
+            put(&dir.path().join("failed"), name, b"{}")?;
+        }
+        let server = empty_server().with_vcon_spool(dir.path());
+        let one = spool_status(
+            &server,
+            VconSpoolStatusParams {
+                limit: Some(1),
+                ..VconSpoolStatusParams::default()
+            },
+        )
+        .await?;
+        let all = spool_status(&server, VconSpoolStatusParams::default()).await?;
+        assert_eq!(one["returned"], 1, "premise: the page was cut: {one}");
+        assert_eq!(all["returned"], 3, "premise: the page was whole: {all}");
+        for key in ["pending", "delivered", "failed"] {
+            assert_eq!(one[key], all[key], "{key} moved with the page size");
+        }
+        assert_eq!(one["failed"], 3, "{one}");
+        Ok(())
+    }
+
+    /// A spool directory that does not exist yet answers zeros and says it
+    /// does not exist, rather than failing: the capture writes it on its
+    /// first container.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn a_spool_that_does_not_exist_answers_zeros_and_says_so() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("not-yet");
+        let v = spool_status(
+            &empty_server().with_vcon_spool(&missing),
+            VconSpoolStatusParams::default(),
+        )
+        .await?;
+        assert_eq!(v["spool"]["exists"], false, "{v}");
+        assert_eq!(v["delivered_dir"]["exists"], false, "{v}");
+        assert_eq!(v["pending"], 0, "{v}");
+        assert_eq!(v["failed"], 0, "{v}");
+        assert!(
+            !missing.exists(),
+            "the status tool must not create the spool"
+        );
+        Ok(())
+    }
+
+    /// A server that was not given a spool refuses, naming the flag.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn without_a_spool_the_status_names_the_flag() -> Result<(), TestError> {
+        let err = empty_server()
+            .vcon_spool_status(Parameters(VconSpoolStatusParams::default()))
+            .await
+            .err()
+            .ok_or("no spool configured must be refused")?;
+        assert_eq!(code_of(err.clone()), -32602);
+        assert!(
+            message_of(err).contains("--export-vcon-dir"),
+            "the refusal names the flag that sets the spool"
         );
         Ok(())
     }

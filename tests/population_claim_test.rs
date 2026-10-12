@@ -223,14 +223,23 @@ struct PageProbe {
 /// Named rather than skipped, for the reason [`PageProbe::per_page`] is: an
 /// unexplained exception is indistinguishable from the defect. An entry the
 /// source no longer derives fails `the_page_size_surface_is_derived_and_fully_probed`.
-const NOT_PROBED: &[(&str, &str)] = &[(
-    "hep_senders",
-    "pages over a HEP listener's sender roster, and the session here replays a \
+const NOT_PROBED: &[(&str, &str)] = &[
+    (
+        "hep_senders",
+        "pages over a HEP listener's sender roster, and the session here replays a \
      file: sipnab refuses `-I` beside `-L`, so no roster can exist in it and \
      both page sizes would compare two empty lists. \
      `a_page_size_never_moves_the_roster_totals` in src/mcp/tools/hep.rs \
      drives the same property over a real roster.",
-)];
+    ),
+    (
+        "vcon_spool_status",
+        "pages over the failed records in an `--export-vcon-dir` spool, which is \
+     files on disk rather than the loaded capture, and the session here starts \
+     without a spool. `a_page_size_never_moves_the_spool_counts` in \
+     src/mcp/tools/vcon.rs drives the same property over a real spool.",
+    ),
+];
 
 /// Every tool that takes a page-size argument, with the smallest call that
 /// makes it answer.

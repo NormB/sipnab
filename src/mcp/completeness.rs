@@ -109,7 +109,8 @@ const COMPLETE_KEY: &str = "complete";
 ///   `show_evidence` and `list_tls_libraries` answer from a frame the caller
 ///   handed over, from the IANA registry, from the rule catalog, or from the
 ///   host's linker.
-/// - `list_captures` lists files on disk.
+/// - `list_captures` lists files on disk, and `vcon_spool_status` counts
+///   the files in the vCon export spool.
 /// - `server_capabilities` describes the binary.
 ///
 /// `mcp_completeness_test.rs` derives the set of store-reading tools from the
@@ -146,6 +147,10 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     "list_tls_libraries",
     "server_capabilities",
     "show_evidence",
+    // Counts files in the `--export-vcon-dir` spool, which another process
+    // drains. Its answer moves with the forwarder, not with how much of the
+    // capture has been read.
+    "vcon_spool_status",
 ];
 
 /// Tools whose `truncated` names something other than a withheld population.
