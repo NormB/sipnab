@@ -6997,7 +6997,7 @@ entry that carries them.
   catches things still catches them.
 
 - **186 British spellings across 95 files.** The tree is US English and a gate
-  has said so since 0.5.105 -- by checking a list of about seventy words
+  has said so since 0.5.123 -- by checking a list of about seventy words
   somebody thought of. It caught `recognise`; it had never heard of
   `containerized`, `synthesized`, `unrecognized`, `sanitized` or
   `materializing` in their British forms, all of which were sitting in the tree
@@ -8429,8 +8429,8 @@ carried in the source tarball and the docs, not in the code.
 
 ### Fixed
 
-- **Offline reconstruction was 27% slower than this project measured, for ten
-  releases.** `is_merged` — the probe that decides whether a capture is a
+- **Offline reconstruction was 27% slower than this project measured, for four
+  releases (0.5.118 to 0.5.121).** `is_merged` — the probe that decides whether a capture is a
   merged pcapng — read the ENTIRE file into memory with `std::fs::read` and
   then rejected it on the first four bytes. Three call sites run it before a
   single packet is read, so every offline run over an ordinary pcap loaded the
@@ -14577,8 +14577,9 @@ The drop counters added above are the instrument that measurement needs.
   *commit* landed on main, the site advertised assets for a tag nobody had
   pushed yet. The file tiles, the sha256 column and `SHA256SUMS.txt` all pointed
   at a release that did not exist. The window is the whole commit → CI → tag →
-  release-build cycle, and on 0.5.61 it was far longer: that release commit went
-  red and was never tagged. `website/config.toml` now carries
+  release-build cycle. On 0.5.61 the release commit went red in CI, and the
+  v0.5.61 tag went on the commit that fixed it, 31 minutes after the release
+  commit. `website/config.toml` now carries
   `published_version` — the last version that exists as a release — and every
   download link and version badge is built from it.
   `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,

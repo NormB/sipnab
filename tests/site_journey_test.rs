@@ -1218,8 +1218,9 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() -> Result<(), Test
 /// That was live. `download.html` used `config.extra.version`, which the Pages
 /// step overwrites from `Cargo.toml` on every build, so the moment a release
 /// COMMIT landed on main the site advertised assets for a tag nobody had pushed
-/// yet. The window is the whole commit → CI → tag → release-build cycle, and on
-/// 0.5.61 it ran far longer: that release commit went red and was never tagged.
+/// yet. The window is the whole commit → CI → tag → release-build cycle. On
+/// 0.5.61 the release commit went red in CI, and the v0.5.61 tag went on the
+/// commit that fixed it, 31 minutes after the release commit.
 ///
 /// A local tag is the check because it is the same thing `release.yml` triggers
 /// on — no network, and it cannot pass by being unable to look.

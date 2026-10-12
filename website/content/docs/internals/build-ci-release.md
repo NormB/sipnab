@@ -392,13 +392,14 @@ Activate once per clone: `git config core.hooksPath .githooks`.
 [`pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit) runs thirteen numbered gates,
 starting at 0, in order:
 <!-- The thirteen pre-commit gates as one list. Several items carry their own
-commas and parentheses ("clippy (`--features full`, `-D warnings`)"), so
+commas and parentheses ("clippy (`--workspace --all-features --all-targets`,
+`-D warnings`)"), so
 semicolons are the separator; periods would make thirteen sentences out of one
 enumeration. -->
 <!-- vale Google.Semicolons = NO -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
-clippy (`--features full`, `-D warnings`); the
+clippy (`--workspace --all-features --all-targets`, `-D warnings`); the
 full test suite, its binaries run side by side by
 [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py) (`SIPNAB_TEST_JOBS`
 sets how many; `1` runs them one at a time); the `sipnab-bpf-types` crate's own tests and doctests
@@ -993,8 +994,8 @@ They are different facts, and conflating
 them broke the download page in production — the release *commit* bumped the
 crate version, Pages redeployed, and the whole of `/download` pointed at a tag
 nobody had pushed yet. Every link 404ed, including `SHA256SUMS.txt` and the
-checksum column. On 0.5.61 that window was not minutes: its release commit went
-red and was never tagged.
+checksum column. On 0.5.61 the release commit went red in CI, and the v0.5.61
+tag went on the commit that fixed it, 31 minutes after the release commit.
 
 So `published_version` moves **after** a release finishes publishing, in its
 own commit — never while cutting one.

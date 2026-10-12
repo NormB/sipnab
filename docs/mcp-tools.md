@@ -278,10 +278,10 @@ the load. Nine read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
 `show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
 and `compare_captures`, which reads two files and never the loaded capture.
-The other nine ask another process: `query_relay` and `relay_stats` put the
+The other eight ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
-`tfps_labels`, `tfps_ban`, `tfps_unban` and `actions_revert` put it to the
-toll-fraud prevention peer. How much
+`tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
+peer. How much
 of the capture sipnab has read says nothing about what those hold.
 
 The

@@ -12603,6 +12603,42 @@ mod tests {
         );
     }
 
+    /// docs/tls-capture.md and its hand-kept site page quote both late-hold
+    /// lines in full, as this function renders them, so a reader can match
+    /// the text a run prints.
+    ///
+    /// The pages once quoted the eviction line cut off after its bounds,
+    /// which dropped the advice the line ends with. Whitespace is collapsed
+    /// on both sides because the pages wrap the quote across lines.
+    #[test]
+    fn tls_capture_doc_quotes_both_late_hold_lines_in_full() -> Result<(), TestError> {
+        fn collapse(s: &str) -> String {
+            s.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        let mut report = tls_report(1, 12, 12);
+        report.late_evicted = 3;
+        report.late_still_held = 5;
+        let lines = late_hold_guidance(&report);
+        assert_eq!(
+            lines.len(),
+            2,
+            "both late-hold lines must render: {lines:?}"
+        );
+        for rel in ["docs/tls-capture.md", "website/content/docs/tls-capture.md"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+            let page = collapse(
+                &std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            );
+            for line in &lines {
+                assert!(
+                    page.contains(&collapse(line)),
+                    "{rel} must quote this line in full:\n{line}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// A run with no TLS at all, or one that decrypted everything it saw, has
     /// nothing to report — the notice must not fire on healthy runs.
     #[test]

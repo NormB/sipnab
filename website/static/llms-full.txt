@@ -22219,10 +22219,10 @@ the load. Nine read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
 `show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
 and `compare_captures`, which reads two files and never the loaded capture.
-The other nine ask another process: `query_relay` and `relay_stats` put the
+The other eight ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
-`tfps_labels`, `tfps_ban`, `tfps_unban` and `actions_revert` put it to the
-toll-fraud prevention peer. How much
+`tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
+peer. How much
 of the capture sipnab has read says nothing about what those hold.
 
 The
@@ -42029,7 +42029,8 @@ git config core.hooksPath .githooks
 ```
 
 **`pre-commit`** runs nine numbered gates, starting at 0: `cargo fmt --all --
---check`, clippy (`--features full`, `-D warnings`), the full
+--check`, clippy (`--workspace --all-features --all-targets`, `-D warnings`),
+the full
 `cargo test --features full` suite, no `unwrap()`/`expect()` or abort macro
 (`panic!`, `unreachable!`, `todo!`, `unimplemented!`) in production code,
 WASM exports in sync with the site's JS, the homepage test count still
@@ -42081,7 +42082,7 @@ which blocks the push:
 |---|---|
 | `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale and codespell at CI's pinned versions, both site-mirror generators, the and the documentation ratchets. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
 | `cargo fmt --all -- --check` | Formatting is never checked by a build. |
-| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
+| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | The same command as pre-commit's clippy gate and CI's, run again before the push. It lints tests, benches, examples, every workspace crate and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
 | `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
@@ -45003,13 +45004,14 @@ Activate once per clone: `git config core.hooksPath .githooks`.
 [`pre-commit`](../../.githooks/pre-commit) runs thirteen numbered gates,
 starting at 0, in order:
 <!-- The thirteen pre-commit gates as one list. Several items carry their own
-commas and parentheses ("clippy (`--features full`, `-D warnings`)"), so
+commas and parentheses ("clippy (`--workspace --all-features --all-targets`,
+`-D warnings`)"), so
 semicolons are the separator; periods would make thirteen sentences out of one
 enumeration. -->
 <!-- vale Google.Semicolons = NO -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
-clippy (`--features full`, `-D warnings`); the
+clippy (`--workspace --all-features --all-targets`, `-D warnings`); the
 full test suite, its binaries run side by side by
 [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (`SIPNAB_TEST_JOBS`
 sets how many; `1` runs them one at a time); the `sipnab-bpf-types` crate's own tests and doctests
@@ -45604,8 +45606,8 @@ They are different facts, and conflating
 them broke the download page in production — the release *commit* bumped the
 crate version, Pages redeployed, and the whole of `/download` pointed at a tag
 nobody had pushed yet. Every link 404ed, including `SHA256SUMS.txt` and the
-checksum column. On 0.5.61 that window was not minutes: its release commit went
-red and was never tagged.
+checksum column. On 0.5.61 the release commit went red in CI, and the v0.5.61
+tag went on the commit that fixed it, 31 minutes after the release commit.
 
 So `published_version` moves **after** a release finishes publishing, in its
 own commit — never while cutting one.
