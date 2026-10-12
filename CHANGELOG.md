@@ -1761,7 +1761,7 @@ entry that carries them.
   carries is still refused, and the message now names both searches: `no SIP
   dialog and no RTP stream associated with call_id '…' in this capture`. The
   SIP-only tools still need the dialog. See
-  [`rtp_stats`](docs/mcp-tools.md#rtp_stats).
+  [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats).
 - **A HEP listener or uprobe capture no longer grows memory with every
   packet.** Each packet's source label (`capture_id@address`, `uprobe:comm/pid`)
   was built fresh and stored again, so the table of source names grew with the
