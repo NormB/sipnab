@@ -21,6 +21,7 @@
       <p class="note-meta">
         {% if page.extra.kind %}<span class="note-kind note-kind-{{ page.extra.kind }}">{{ macros::kind_label(kind=page.extra.kind) }}</span>{% endif %}
         {% if page.date %}<time class="note-date" datetime="{{ page.date }}">{{ page.date | date(format="%-d %B %Y") }}</time>{% endif %}
+        {% if page.updated %}<span class="note-updated">updated <time datetime="{{ page.updated }}">{{ page.updated | date(format="%-d %B %Y") }}</time></span>{% endif %}
       </p>
       {% if page.description %}
       <p class="doc-lead">{{ page.description }}</p>

@@ -1,128 +1,208 @@
 +++
-title = "Fifty-seven tools, and the two that stay off"
+title = "MCP tool bundles: choose which tools sipnab's MCP server loads"
 date = 2026-09-01
-description = "The MCP surface an agent sees: what the full and core profiles register, why every answer carries how much of the capture it rests on, and why the two opt-in flags are opt-in — one of them makes sipnab transmit."
+updated = 2026-10-11
+description = "How --mcp-tools limits the tools sipnab's MCP server offers to an AI agent, what each bundle costs the agent's context, and which tools refuse until the operator enables them."
 
 [extra]
 kind = "feature"
 +++
 
-An agent that reads a capture through a shell has to parse text somebody wrote
-for a person. sipnab's MCP server hands it structured answers instead: 57
-tools, each returning JSON with a stated ceiling, over stdio or HTTP.
+## In short
 
-The surface sits behind the `mcp` Cargo feature, which the `full` feature
-carries and the default build does not. The HTTP transport needs `mcp-http` on
-top of it. `sipnab --version` prints what a binary holds, and the
-`server_capabilities` tool answers the same question from inside a session.
+sipnab can run as an MCP server: a program an AI agent connects to and calls
+named tools on, such as "list the calls in this capture". Each tool the server
+offers adds its description to the text the agent's model reads before every
+answer, so sipnab lets the operator offer fewer tools, grouped into named
+bundles. Separately from that choice, the tools that stop the server, change
+which capture it holds, send packets, read or write files, record findings,
+read encrypted traffic or change another system
+stay switched off until the operator turns each one on.
 
-## What a session gets
+## Who this is for
 
-Start one against a capture file and point a client at it:
+Anyone connecting an AI agent to sipnab's MCP server who wants to give it only
+the tools it needs, or needs to know which tools refuse by default.
 
-```bash
-sipnab -N --mcp -I capture.pcap --mcp-file-root /var/spool/sipnab-captures
+## What it does
+
+On connecting, an agent asks the server for its tool list (the MCP request
+`tools/list`). The answer carries each tool's name, description and input
+schema (the description of the arguments it takes), and the agent's client
+keeps all of it in the model's context (the text the model reads before every
+answer) for the whole session.
+
+`--mcp-tools` decides which tools the server registers, and so what that list
+holds. It takes a comma-separated list of:
+
+- **bundles**: `core`, `signaling`, `captures`, `security`, `media`, `relay`,
+  `tfps`, `server`, `vcon`, `tls`. Every tool is in exactly one bundle.
+- **single tool names**, to add one tool without its whole bundle.
+- **your own bundles**, defined under `[mcp.bundles]` in the config file.
+- **`full`**, every tool the build carries. This is the default.
+
+A tool that is not registered does not exist for that session: a call to it
+gets the MCP error `tool not found`, not a refusal.
+
+The MCP server needs the `mcp` Cargo feature (a compile-time option), which the
+`full` build carries and the default build does not. `sipnab --version` lists the
+features compiled into a binary. A build without a feature does not register
+that feature's tools, so its bundles are smaller.
+
+## How to turn it on
+
+Every example below runs from the root of the sipnab repository against a
+capture in it. Each one sends the server MCP requests on its standard input
+and uses `jq` (a command-line JSON processor) to print one field of the reply.
+
+1. Start the server with only the `core` bundle and list what it registers:
+
+```sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | sipnab -N --quiet -I tests/pcap-samples/sip-488-codec-reject.pcapng --mcp --mcp-tools core | jq -r 'select(.id==2) | .result.tools[].name'
 ```
 
-The 57 tools group by the question they answer — survey the capture, narrow to
-the calls that matter, diagnose one call, check conformance, follow evidence
-back to bytes, export. [The tool reference](@/docs/mcp-tools.md) is the
-per-tool page. Three rules matter more than any individual entry.
-
-**Every answer says how much of the capture is behind it.** Two booleans ride
-on every response object: `source_exhausted`, true once sipnab has read the
-source to its end, and `source_stopped_early`, true when a read ended before
-the source did. A file source loads on a background thread, so an agent's first
-call lands inside a window a human client never sees — on a 921 MB capture,
-`list_dialogs` answered with 6 of 18,241 dialogs. The rendered documents
-(`render_ladder`, and the Markdown and text arms of the report tools) have no
-envelope to put a field in, so they end with the `INCOMPLETE RUN` block
-`--report` appends.
-
-**Absence and `false` are different values.** Until sipnab has read the source
-to its end, a response omits `truncated: false` rather than sending it. That
-value claims outright that the page holds every match, and a caller reading
-only that field deserves no claim rather than a wrong one. `truncated: true`
-still appears whenever the row cap really did keep matches out.
-
-**Capture text arrives fenced.** Free text an endpoint wrote — display names,
-`User-Agent`, SDP, whole messages — comes wrapped in
-`⟦untrusted-capture-data⟧` markers, and identifiers such as Call-IDs, cursors
-and addresses stay verbatim so they pass straight into the next call.
-
-## The core profile, and what it costs to leave it off
-
-`--mcp-tools` takes `core` or `full`, and `full` is the default:
-
-```bash
-sipnab -N --mcp -I capture.pcap --mcp-tools core
+```text
+aggregate_dialogs
+capture_status
+find_problems
+get_capture_report
+get_dialog
+list_dialogs
+rtp_stats
+search_messages
+triage_call
 ```
 
-That registers eight tools — `capture_status`, `list_dialogs`, `get_dialog`,
-`triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`,
-`search_messages` — and nothing else.
+The same command with `--mcp-tools full`, or with no `--mcp-tools`, lists 72
+tools on sipnab 0.5.211 built with every feature.
 
-The reason is a cost nobody meters. Every registered tool's name, description
-and JSON schema goes to the client on `tools/list` and then rides in the
-model's context for the whole session, before the agent has asked anything. At
-fifty schemas that block is already the largest single thing the server says.
+2. Combine bundles and single tools. The server's handshake reply (to the MCP
+   `initialize` request) ends by naming what it loaded and which bundles it
+   left out, so an agent that misses a tool can tell the operator which bundle
+   holds it:
 
-`core` is not a favorites list. It is the smallest set that still answers the
-question an operator arrives with — *what happened on this call, and was it
-signaling or media* — end to end, without the agent hitting a missing step and
-improvising around it. Each member earns its place by being unreachable from
-the others: drop `aggregate_dialogs` and a "how many, by what" question pages
-the whole store through the model, which spends context rather than saving it.
+```sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' | sipnab -N --quiet -I tests/pcap-samples/sip-488-codec-reject.pcapng --mcp --mcp-tools core,relay,get_sdp_timeline | jq -r '.result.instructions'
+```
 
-`full` stays the default because shrinking the surface silently would change
-what every existing client can do at upgrade time. And a `core` server removes
-the dropped tools from the router rather than hiding them, so a call to one of
-them comes back as an unknown tool rather than as a refusal an agent might
-retry.
+```text
+sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: core, relay, get_sdp_timeline. Other bundles, which the operator can add with --mcp-tools or [mcp] tools: signaling, captures, security, media, tfps, server, vcon, tls.
+```
 
-## The refusals, and why they are flags
+3. A name sipnab does not know stops the run with exit status 2 and lists the
+   valid bundles. Names are case-sensitive:
 
-Five capabilities stay off until an operator turns them on:
-`--mcp-allow-shutdown`, `--mcp-allow-open-capture`, `--mcp-allow-relay-query`,
-`--mcp-allow-tls-capture` and `--mcp-allow-save-findings`. All five tools still
-appear in `tools/list` without them, because "not permitted here" and "this
-build cannot" are different answers and an agent deserves to tell them apart.
+```sh
+sipnab -N --quiet -I tests/pcap-samples/sip-488-codec-reject.pcapng --mcp --mcp-tools core,ladder
+```
 
-Two of the five carry an argument worth reading.
+```text
+2026-10-12T00:41:51.376191Z ERROR sipnab::app::bootstrap: --mcp-tools: unknown tool or bundle 'ladder'; bundles: core, signaling, captures, security, media, relay, tfps, server, vcon, tls, or full; tool names are listed in the MCP tool reference
+```
 
-**`--mcp-allow-relay-query` gates the only tool that transmits.** Every other
-tool on the surface answers from bytes sipnab already holds. `query_relay` puts
-a packet on the network, and it exists because a passive decoder has a real
-gap: a call already in progress when sipnab started has no control exchange
-left to read, which is exactly the state incident response begins in.
+4. To set the list once, put it in the config file (`-f`/`--config`). This
+   example defines a bundle named `voice` and loads it beside `core`; with it,
+   the handshake reply printed `Tools loaded: core, voice.`
 
-The tool needs three things and names whichever one is missing — the opt-in,
-a relay address from `--rtpengine-control`, and a live source. A run reading a
-capture file can obtain no transmit permit at all, so an analyst opening a
-capture from another organization cannot make sipnab talk to the addresses
-inside it.
+```toml
+[mcp]
+tools = ["core", "voice"]
 
-**There is no address parameter, and that is the design.** The destination
-comes from operator configuration and from nowhere else. A tool argument naming
-the destination would turn this surface into a way to make sipnab send packets
-to a host the caller chose, and an address sipnab could otherwise infer is one
-it learned from packets — a host that served as a relay during the capture, and
-may be somebody's laptop now.
+[mcp.bundles]
+voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
+```
 
-**`--mcp-allow-open-capture` gates the one destructive read.** `open_capture`
-replaces every dialog and stream the server holds with another capture from
-`--mcp-file-root`. It refuses while the source is live or still filling the
-stores, loads in the background, and mints a new capture identity that every
-later answer carries, so the replacement cannot reach a consumer as an ordinary
-update. Use it on a long-lived HTTP server working through a corpus, where a
-restart costs an operator their session. In stdio, starting sipnab again with a
-different `-I` does the same job and leaves a clean store behind.
+`--mcp-tools` on the command line replaces `[mcp] tools`.
 
-## Telling it works
+## What a bundle costs
 
-Ask `server_capabilities` first. `features` comes from `cfg!` at compile time,
-so it cannot claim a feature the binary lacks, and `runtime` reports what the
-operator turned on — a question no compile-time check can answer. Without it an
-agent discovers the setup by calling a tool and collecting a refusal, and a
-refusal mid-investigation reads as a dead end rather than as a server it was
-never allowed to use that way.
+The size of the `tools/list` answer is what the client keeps in context. This
+command prints it in bytes for `core`, as the sum of each tool entry's compact
+JSON:
+
+```sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | sipnab -N --quiet -I tests/pcap-samples/sip-488-codec-reject.pcapng --mcp --mcp-tools core | jq -r 'select(.id==2) | [.result.tools[] | tojson | utf8bytelength] | add'
+```
+
+```text
+10981
+```
+
+The same command, run on sipnab 0.5.211 built with every feature, measured:
+
+| `--mcp-tools` | Tools | Bytes | Bytes with `--mcp-output-schemas` |
+|---|---|---|---|
+| `core` | 9 | 10,981 | 30,909 |
+| `full` | 72 | 80,612 | 198,008 |
+
+Output schemas (a declared shape for each tool's answer) are optional in MCP
+and off by default. Responses carry the same JSON with or without them. Turn
+them on with `--mcp-output-schemas` only for a client that checks answers
+against a declared shape. The per-bundle table in the tool reference comes
+from a measurement on an earlier release. Sizes change as tools change.
+
+## Tools that refuse until the operator enables them
+
+Registering a tool does not permit it. With the default `full` list, the tools
+below appear in `tools/list` but answer each call with an error that names the
+flag they need. Leaving a tool out with `--mcp-tools` removes it. It does not
+replace the flag.
+
+| Tools | Enabled by |
+|---|---|
+| `shutdown_server` | `--mcp-allow-shutdown` |
+| `open_capture` | `--mcp-allow-open-capture` |
+| `query_relay`, `relay_stats`, `relay_compare` | `--mcp-allow-relay-query`, plus a relay address from `--rtpengine-control` and a live source (these tools send packets to the relay; a run reading a capture file cannot use them) |
+| `start_tls_capture` | `--mcp-allow-tls-capture` |
+| `save_findings` | `--mcp-allow-save-findings` |
+| `tfps_ban`, `tfps_unban`, `actions_revert` | `--allow-action tfps:mcp` |
+| `list_captures`, `export_capture`, `export_audio`, `compare_captures`, `build_evidence_package` | `--mcp-file-root <DIR>` |
+
+What each of these flags allows, and which to turn on for an agent, is the
+subject of
+[What to switch on when an agent drives sipnab](@/notes/what-to-allow-when-an-agent-drives-sipnab.md).
+
+## Limits
+
+- The counts and byte sizes above hold for sipnab 0.5.211 with every feature.
+  Another release or a build with fewer features gives other numbers.
+- A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty,
+  and cannot hold `full` or another custom bundle. sipnab refuses to start when
+  one breaks a rule, even if nothing uses it.
+- `core` does not include `server_capabilities`, the tool that reports a
+  binary's features and settings. Add it by name if the agent needs it.
+
+## Terms used here
+
+- **MCP (Model Context Protocol)**: a standard way for an AI agent to discover
+  and call tools that a program offers.
+- **Agent**: an AI model that calls tools on its own to answer a question.
+- **Tool**: one named operation the MCP server offers, with declared arguments.
+- **Bundle**: a named group of tools that `--mcp-tools` accepts as one entry.
+- **Context**: the text a model reads before each answer; the tool list sits
+  in it for the whole session.
+- **Schema**: a machine-readable description of a tool's arguments or of the
+  shape of its answer.
+- **JSON-RPC**: the request-and-reply message format MCP uses.
+- **Capture**: a recorded file of network packets, here a pcapng file.
+- **Cargo feature**: an option chosen at sipnab's compile time. A feature left
+  out removes its code from the binary.
+- **Live source**: a network interface or listener sipnab is reading now, as
+  opposed to a capture file.
+- **jq**: a command-line program that reads JSON and prints selected fields.
+
+## Related guides
+
+- [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load):
+  the bundle table with every tool in each bundle.
+- [Rules every tool follows](@/docs/mcp-tools.md#rules-every-tool-follows):
+  row limits, paging and how answers mark capture text.
+- [File tools — the shared rule](@/docs/mcp-tools.md#file-tools-the-shared-rule):
+  what `--mcp-file-root` allows.
+- [The `[mcp]` config section](@/docs/config.md#mcp): `tools`,
+  `output_schemas` and `[mcp.bundles]`.
+- [See it work](@/docs/mcp.md#see-it-work) and
+  [Add it to your client](@/docs/mcp.md#add-it-to-your-client): starting the
+  server and connecting a client.
+- [Security model](@/docs/mcp-protocol.md#security-model): why the opt-in tools
+  are off by default.

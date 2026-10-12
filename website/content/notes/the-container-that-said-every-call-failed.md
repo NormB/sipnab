@@ -1,137 +1,159 @@
 +++
-title = "sipnab recorded every successful call as a failure"
+title = "vCon exports before 0.5.128 described answered calls as failed setups"
 date = 2026-08-27
-description = "sipnab typed its vCon dialog objects \"incomplete\", a value the draft reserves for calls that never reached conversation. The reasoning behind it was local, careful, and wrong in a way no test could see."
+updated = 2026-10-11
+description = "From 0.5.125 to 0.5.127, sipnab gave every vCon record of an answered call without audio the type that means the call was never set up; this explains the cause, the two later changes, and how to check the current behavior."
 
 [extra]
 kind = "postmortem"
 +++
 
-Until 0.5.128, every vCon container sipnab produced for a call that answered
-claimed the call never reached conversation at all.
+## In short
 
-Not as a bug in an edge case. As the ordinary output, on the majority path, for
-about three releases.
+A vCon is a standard JSON record of one conversation. A Dialog Object
+describes each call in it, and its `type` says what kind of content it holds.
+From sipnab 0.5.125 to 0.5.127, every record of a call without saved audio used
+the type `incomplete`, which the vCon draft defines as a call whose setup
+failed, so the records showed answered calls as failed ones. Since 0.5.128
+sipnab uses `incomplete` only when it saw the call fail, and since 0.5.208 a
+call with no saved audio and no observed failure gets the type `recording`
+with no content.
 
-## The value that looked correct
+## What happened
 
-A vCon Dialog Object carries a `type` from a closed set of five:
-`recording`, `recording-set`, `text`, `transfer`, `incomplete`. A
-signaling-only capture — one where the operator did not retain media, which is
-the normal privacy-conscious configuration — has no audio to offer. So which
-value describes an object carrying nothing?
+sipnab added vCon export (`--export-vcon` and the `export_vcon` MCP tool) in
+0.5.125, released 2026-08-25. In 0.5.125, 0.5.126 and 0.5.127, the Dialog
+Object of every exported call that carried no audio had `"type":
+"incomplete"`, unconditionally. An export carries no audio when the capture
+holds only signaling or when the run kept no audio payload. Each such record of an answered call stated that the call
+never reached a conversation. The object also had no `disposition`, the field
+that names why an incomplete call failed and that the draft requires on an
+`incomplete` object.
 
-Four of the five promise content. The draft is explicit:
+A consumer that read these records, for example beside a switch's call detail
+record showing a connected call, received two contradicting accounts of the
+same call.
 
-<!-- vale off -->
-> A dialog of type "incomplete", "transfer" or "recording-set" MUST NOT have
-> Dialog Content.
-<!-- vale on -->
+## Why it happened
 
-`incomplete` is on the no-content list. The object has no content. The
-reasoning takes about four seconds and it is wrong, because the same section
-says what `incomplete` MEANS:
+The vCon core draft (`draft-ietf-vcon-vcon-core-03` at the time) defines five
+Dialog Object types: `recording`, `recording-set`, `text`, `transfer` and
+`incomplete`. Four of them describe content the object holds. An object for a
+call with no saved audio holds no content, so sipnab used the fifth,
+`incomplete`.
 
-<!-- vale off -->
-> In the "incomplete" case the call or conversation failed to be setup to the
-> point of exchanging any conversation.
-<!-- vale on -->
+The same section of the draft defines `incomplete` by what happened to the
+call, not by what the object holds: it is a call that "failed to be setup"
+(the 0.5.128 release notes quote this from section 4.3.1). sipnab chose the
+type because it was the one type that does not describe content, and that
+choice also stated that the call had failed.
 
-`incomplete` does not mean "this object is empty". It means the call never
-happened. Reaching for it because of the content rule and inheriting the
-semantics by accident is the whole defect.
+## What changed
 
-## Why nothing caught it
+**0.5.128 (2026-08-27).** sipnab decides the type and the disposition together:
 
-The tests were not weak. One test asserted the object carried the type
-`incomplete`, and it passed, because the code did what the test said. The test
-encoded the same mistake as the code — written in the same hour, by the same
-reasoning, about the same paragraph.
+- A final response that sipnab saw fail produces `"type": "incomplete"` with
+  a `disposition` naming the reason.
+- An object with no content and no observed failure got no `type` at all.
+  Draft `-03` allowed a Dialog Object with no parameters for a dialog known to
+  have occurred with nothing available about it, and the vCon working group
+  had agreed on that shape (the 0.5.128 release notes cite the working group's
+  issue #20). The draft's own JSON schema required `type`, so sipnab's copy of
+  the schema carried one recorded deviation.
 
-That is the failure mode worth naming. A test written from the implementation's
-premise cannot find a wrong premise. It can only confirm that the
-implementation is consistent with itself, which it always is.
+**0.5.208 (2026-10-09).** sipnab follows `draft-ietf-vcon-vcon-core-04`, which
+requires `type` on every Dialog Object and no longer has the sentence that
+allowed an empty one. A call with no saved audio and no observed failure is
+now `"type": "recording"` with no `body`, `url` or `mediatype`: the
+placeholder that section 4.3 of `-04` defines for a dialog known to have
+occurred. The vendored schema, `tests/schemas/vcon.schema.json`, is now the
+working group's `-04` file unchanged, and the local deviation no longer exists.
 
-What eventually surfaced it was reading
-[section 4.3.1 of `draft-ietf-vcon-vcon-core-03`](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) as prose, in full, rather than
-grepping it for the rule at hand.
+The current rule, as the [vCon guide](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+states it:
 
-## The part that made it durable
+- An object with audio is `recording`.
+- An object with no content and no observed failure is `recording` with no
+  content.
+- An object with no content and an observed final failure is `incomplete`,
+  with the reason in `disposition`.
 
-A container outlives the process that wrote it. Read six months later beside a
-switch's call-detail record showing a connected ninety-second conversation, a
-container claiming the call never began is the artifact that looks
-wrong. The CDR is right. The claim it contradicts is the one nobody has any
-reason to doubt, because it arrives in a standard format and looks
-authoritative.
+"No observed failure" includes an answered call, a call whose
+final response the capture did not contain, and a redirect. An absent
+`disposition` does not mean the call succeeded.
 
-The object also omitted `disposition`, which
-[section 4.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.1) makes mandatory on an
-incomplete dialog — because no failure had occurred, so there was no reason to
-name. So the container broke a MUST *and* stated something false, and the
-second was the expensive half.
+A consumer that selects `type == "recording"` must check that `body` or `url`
+is present before reading the audio. The [vCon guide](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+records that, at vcon-server commit `8ffbfcf`, the `deepgram_link`
+transcription link reads `dialog["url"]` without that check and raises an error
+on such an object.
 
-## No value was available
+## What you can check yourself
 
-The obvious fix is to pick a different type. There isn't one.
+The commands run from the root of a sipnab checkout. `jq` prints the
+`dialog` array of each container.
 
-* `recording` and `text` promise content the container does not hold. Worse
-  than imprecise: a conserver chain link that selects `type == "recording"` and
-  reads `dialog["url"]` raises, and the conserver dead-letters the whole
-  container rather than the one step.
-* `recording-set` requires a `recordings` member naming members that do not
-  exist.
-* `transfer` asserts a transfer that did not occur.
-* `incomplete` with a disposition invents a failure reason; six values are
-  defined and every one of them describes a failure.
+Export the two answered calls in a capture, reading only the SIP port so that
+the run captures no audio:
 
-Nor is there a value meaning "not observed". The disposition set admits six values, all
-entirely about failure.
-
-## The draft already answered it
-
-Section 4.3, one paragraph above the type definitions:
-
-<!-- vale off -->
-> There are situations when no information is available for a dialog either
-> initially or over the entire life of the vCon and yet it is known that the
-> dialog occurred. […] In such situations, it is possible to have a Dialog
-> Object with no parameters in it.
-<!-- vale on -->
-
-An object that names no type at all. And that sentence is not incidental
-drafting — it is a working-group decision. Issue #20 on the draft's repository
-asks exactly this question, and closes with: *"IETF 124 WG discussion agreed
-upon using an empty Dialog object: {}"*.
-
-So the answer existed, a meeting settled it, and the editor put it in the
-document.
-
-## And the schema in the same document forbids it
-
-```json
-"required": ["type", "start"],
+```bash
+sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when "response_code == 200" --export-vcon-dir ./answered/ --no-cli-print --quiet 'udp port 5060'
 ```
 
-An empty Dialog Object fails validation twice over. The shape the working group
-agreed on is the one shape the bundled schema rejects.
+```text
+Wrote 2 vCon container(s) to './answered/'.
+```
 
-sipnab now follows the prose: an object carrying no content and reporting no
-observed failure names no type, and `incomplete` now covers only a final
-response the capture actually saw fail. The vendored schema carries a one-line
-deviation with the reasoning written into a `$comment` beside it, and a test
-asserts that deviation is present and is the only one — so re-vendoring the
-schema from the draft, which looks like housekeeping, lands on a test that
-explains why it would break every signaling-only export.
+```bash
+jq -c '.dialog' answered/*.vcon.json
+```
 
-## What we would tell another implementer
+```text
+[{"type":"recording","sip_call_id":"1-1966@10.0.2.20","sip_from_tag":"1","sip_to_tag":"QvN92t713vSZK","start":"2016-11-26T14:52:59.666393+00:00"}]
+[{"type":"recording","sip_call_id":"1-1968@10.0.2.20","sip_from_tag":"1","sip_to_tag":"r5e24Nr505FjF","start":"2016-11-26T14:53:08.286194+00:00"}]
+```
 
-Read the definition of a value, not just the rule you are trying to satisfy.
-The content constraint and the semantics were one paragraph apart, and taking
-the first without the second produced a container that lied about every call it
-described.
+Both calls have the type `recording`, with no content and no `disposition`.
 
-And when a specification's prose and its schema disagree, that is worth
-reporting even when your own case has a workaround. The prose was right, it
-recorded a decision somebody made deliberately, and the schema quietly undid
-it.
+Export a call that failed with a `488 Not Acceptable Here` response:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "state == 'Failed'" --export-vcon-dir ./failed/ --no-cli-print --quiet
+```
+
+```text
+Wrote 1 vCon container(s) to './failed/'.
+```
+
+```bash
+jq -c '.dialog' failed/*.vcon.json
+```
+
+```text
+[{"type":"incomplete","disposition":"failed","sip_call_id":"codec-reject-synth","sip_from_tag":"tag-caller-488","sip_to_tag":"tag-auth-488","start":"2019-08-27T17:26:48.834678+00:00"}]
+```
+
+The failed call has the type `incomplete`, with `"disposition": "failed"`.
+
+## Terms used here
+
+- **vCon**: a JSON container format for one conversation, defined by an IETF
+  working group draft.
+- **Dialog Object**: the part of a vCon that describes one call or recording.
+- **Draft**: an IETF Internet-Draft, a specification still in progress.
+- **Schema**: a machine-readable description of a valid document, used to
+  validate it.
+- **Disposition**: the vCon field that names why an incomplete call failed,
+  for example `failed` or `busy`.
+- **Signaling**: the SIP messages that set up and end a call, as opposed to
+  the audio.
+- **Call detail record**: the per-call record a switch writes for billing and
+  reporting.
+- **MCP**: the Model Context Protocol, the interface sipnab offers to AI
+  agents.
+
+## Related guides
+
+- [vCon: The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+- [vCon: Step 3, read what came out](@/docs/vcon.md#step-3-read-what-came-out)
+- [vCon: Someone handed you a sipnab vCon, what may you conclude?](@/docs/vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)

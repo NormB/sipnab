@@ -1,112 +1,190 @@
 +++
-title = "One filter language, every door"
+title = "One filter language for the command line, the config file, vCon export and MCP tools"
 date = 2026-09-01
-description = "The same expression narrows --filter, decides which calls export as vCons, scopes a CI expectation and pages an MCP tool. Why reusing one language beats growing a flag per policy, and what an unmeasured value matches."
+updated = 2026-10-11
+description = "Where sipnab accepts a filter expression, how to try one before you rely on it, and what a value the capture could not measure matches."
 
 [extra]
 kind = "feature"
 +++
 
-sipnab has one declarative, non-Turing-complete language for selecting dialogs,
-and it turns up wherever a surface needs to say *which calls*. Learning it once
-buys every door.
+## In short
+
+sipnab, a tool that reads recorded or live phone-call traffic, lets you pick
+out the calls you care about with a short written condition such as "calls
+that failed with code 488". The same condition works everywhere sipnab asks
+which calls you mean: on the command line, in the settings file, when saving
+call records, in automated pass/fail checks, and in the tools an AI assistant
+uses. A value the recording does not contain, such as call quality on a call
+that carried no audio, matches no condition at all.
+
+## Who this is for
+
+Anyone who writes a sipnab filter more than once, and anyone who keeps one in
+a settings file, a test suite or an assistant's instructions.
+
+## What it does
+
+A filter selects **dialogs**: one dialog is one SIP call or other SIP
+conversation, from its first request to its last reply (SIP is the signaling
+protocol that sets up and ends phone calls). The filter language compares
+fields of a dialog, such as `response_code`, `duration` or `rtp.mos`, and
+combines comparisons with `AND`, `OR` and `NOT`.
+
+sipnab accepts the same text in each of these places:
+
+| Where | What you write |
+|---|---|
+| Command line | `--filter <EXPR>` |
+| Settings file | `expression` under `[filter]` |
+| Saving calls as vCon files | `--export-vcon-when <EXPR>` |
+| Pass/fail rules for automated tests | `scope = "filter:<EXPR>"` in a rule read by the MCP tool `evaluate_expectations` |
+| MCP tools that list dialogs | the `filter` parameter of `list_dialogs`, `find_problems` and others |
+
+A vCon is a standard JSON file that holds one conversation's record. MCP
+(Model Context Protocol) is the interface an AI assistant uses to call
+sipnab's tools.
+
+Ten names stand for preset expressions: `problems`, `slow-setup`,
+`short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`,
+`payload-asym`, `duration-asym` and `late-media`. `--filter` first checks
+whether its argument is one of these names and treats it as an expression only
+when it is not. Five of the names also have their own flag (`--problems`,
+`--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues`), and the MCP
+tool `find_problems` takes them in its `kinds` list.
+
+## How to turn it on
+
+Nothing needs enabling. The filter language is part of every sipnab build.
+`--export-vcon-when` and the MCP tools need a build with the `vcon` and `mcp`
+features. `sipnab --version` lists the features a binary carries.
+
+## Example run
+
+These commands use `tests/pcap-samples/sip-488-codec-reject.pcapng`, a
+recording (pcap file) that ships in the sipnab repository and holds four
+dialogs. `-N` selects command-line mode instead of the interactive screen, `-q`
+hides informational log lines, and `--no-cli-print` suppresses the per-message output so sipnab
+prints only the report. The output below has the trailing spaces at the ends
+of the report lines removed.
+
+1. Select the dialogs that failed with response code 488:
 
 ```bash
-sipnab -N -I capture.pcap --filter "response_code == 503 AND dst.ip == '198.51.100.7'"
+sipnab -N -q -I tests/pcap-samples/sip-488-codec-reject.pcapng --filter "response_code == 488" --report --no-cli-print
 ```
 
-That same string is what you put in the `[filter] expression` config key, what
-`--export-vcon-when` takes to decide which dialogs become containers, what an
-expectation rule's `scope = "filter:..."` narrows a CI gate with, and what the
-`filter` parameter on the MCP query tools accepts. `validate_filter` compiles
-one and tells you what it selects without spending a page of rows on the
-answer.
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+codec-reject-synth               caller         callee         Failed       488    0s         7      -        -
+```
 
-## Why reuse beats a flag per policy
+2. Save the same dialogs as vCon files, using the same expression. sipnab
+   creates the directory `vcons` in the current directory:
 
-The alternative was visible when conditional vCon export landed. It could have
-grown one export flag for failed calls, another for calls over thirty seconds,
-another per carrier. Each of those enumerates a case somebody thought of, and
-the case nobody thought of is the one an operator needs at three in the
-morning. Reusing the language sipnab already speaks covers all of them and adds
-no vocabulary to learn.
+```bash
+sipnab -N -q -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "response_code == 488" --export-vcon-dir vcons --no-cli-print
+```
 
-The same argument holds in the other direction for the diagnostic aliases. Ten
-of them name preset expressions — `problems`, `slow-setup`, `short-calls`,
-`one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`,
-`duration-asym`, `late-media` — and each one has up to three spellings: a
-dedicated CLI flag where one exists, `--filter <alias>`, and a `kinds` entry on
-the MCP `find_problems` tool. All three expand to one expression, so
-`sipnab --short-calls`, `sipnab --filter short-calls` and
-`sipnab --filter "duration < 3.0 AND state == 'Completed'"` select the same
-dialogs. `--filter` resolves its argument as an alias first and parses it as an
-expression only when no alias matches, which is what makes the two spellings
-interchangeable rather than merely similar.
+```text
+Wrote 1 vCon container(s) to 'vcons'.
+```
 
-## What an unmeasured value matches
+3. Use a preset name instead of an expression. `short-calls` expands to
+   `duration < 3.0 AND state == 'Completed'` while the short-call threshold is
+   at its default of 3 seconds:
 
-Nothing. This is the rule most worth knowing before you write a saved filter.
+```bash
+sipnab -N -q -I tests/pcap-samples/sip-488-codec-reject.pcapng --filter short-calls --report --no-cli-print
+```
 
-`pdd`, `setup_time`, `rtp.mos`, `rtp.jitter` and `rtp.loss` are **unknown**
-when the capture holds nothing to measure them from — no RTP for the media
-fields, no captured INVITE or 200 OK for the timing ones. An unknown matches no
-numeric operator, `!=` included: it is not "different from 3.0", it is unknown.
-That is the rule SQL uses for `NULL`, for the same reason.
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+options-ping-a-synth@192.16...   keepalive      keepalive      Completed    200    0s         2      -        -
+options-ping-b-synth@192.16...   keepalive      keepalive      Completed    200    0s         2      -        -
+options-ping-c-synth@198.51...   ping           probe          Completed    200    0s         2      -        -
+```
 
-Reading them as `0` instead would put every unmeasured call below every
-threshold anyone would type, so `rtp.mos < 3.0` would select every call
-carrying no media at all — 2292 of 2311 dialogs on one real trunk capture,
-rather than the 2 genuine ones. To ask about calls that carry no media, ask for
-that directly: `rtp.packets == 0` is a real count of zero, and `no_media` is the
-diagnosis itself. Pairing an `rtp.*` threshold with `rtp.packets > 0` is
-redundant rather than wrong, and it reads clearly.
+`--short-calls` and `--filter "duration < 3.0 AND state == 'Completed'"`
+print the same three dialogs on this file.
 
-`response_code` follows the same discipline. A call still in progress has no
-final response, so it matches nothing — not `< 400`, not `>= 400`, not `== 0`,
-because a zero default would sweep every ringing call into the success bucket.
+## Check an expression before you rely on it
 
-One field name the parser refuses outright is `rtp.orphaned`. It would ask
-whether a stream *belonging to this dialog* belongs to no dialog, and a stream
-is an orphan exactly when no dialog claims it, so the two halves exclude each
-other: the field would match nothing on any capture while `NOT rtp.orphaned`
-matched everything. Rejecting it at the parser beats a silent falsehood.
-Orphaned media stays reachable through surfaces that model streams rather than
-dialogs — the "Orphaned Streams" section of `--report`, and
-`/v1/streams?orphaned=true`.
+The MCP tool `validate_filter` parses an expression, counts the dialogs it
+matches, and returns no dialog rows. Run against the same file, a call with
+`{"expr":"short-calls"}` returned:
 
-## What it narrows, and what it does not
+```json
+{"error":null,"expr":"short-calls","schema_version":1,"source_exhausted":true,"source_stopped_early":false,"total_dialogs":4,"total_matched":3,"valid":true}
+```
 
-A filter selects **dialogs**, and every listing output honors that. The
-per-message stream emits only messages belonging to matching dialogs,
-`--json-dialogs` emits one line per matching dialog, and `--report` prints only
-matching dialogs with the RTP tables beneath holding only their streams.
+An expression that does not parse is not an error for this tool. A call with
+`{"expr":"response_code == == 5"}` returned `"valid":false`,
+`"total_matched":null` and the parser's message in `error`, which names
+position 17 and marks it with a caret. `total_matched` is `null` rather than
+`0` so that no reader can take it as "parsed, and matched nothing". Other MCP
+tools, such as `list_dialogs`, reject the same expression with a JSON-RPC
+error (code `-32602`).
 
-`--call-report <CALL-ID>` is deliberately not narrowed: it names one call, and
-a lookup by name is not a listing.
+## Limits
 
-The per-message match is a different tool. `-e`/`--match` is the
-match expression — it selects matching messages and then follows
-the dialog, emitting everything after the first match. The `payload` DSL field
-is the per-dialog version, true when any message in the dialog matches, and it
-composes inside a larger expression the way a flag cannot.
+- **A value the capture could not measure matches no comparison.** `pdd`
+  (post-dial delay), `setup_time`, `rtp.mos` (call-quality score), `rtp.jitter`
+  and `rtp.loss` are unknown when there is nothing to measure them from: no RTP
+  (the packets that carry the audio) for the media fields, no captured INVITE
+  or `200 OK` for the timing fields. An unknown value matches no numeric
+  operator, `!=` included. `response_code` is unknown while a call is still in
+  progress. On `tests/pcap-samples/b2bua-asterisk.pcapng`, which holds 12
+  dialogs and media for 2 of them, `--filter "rtp.mos != 3.0"` selects only
+  those 2. To select calls without media, use `rtp.packets == 0`, which is a
+  real count, or the field `no_media`.
+- **`rtp.orphaned` is not a field.** The parser rejects it with
+  `hint: unknown field 'rtp.orphaned'` and exit code 2. An orphaned stream is
+  an RTP stream that no dialog claims, so a dialog field cannot describe it.
+  The "Orphaned Streams" section of `--report` and
+  `GET /v1/streams?orphaned=true` on the REST API list orphaned streams.
+- **`--call-report <CALL-ID>` is not narrowed by `--filter`.** It names one
+  call, so it prints that call whatever the filter says.
+- **The language has no comment syntax.** A line starting with `#` is a parse
+  error.
+- **String comparisons are case-sensitive.** `=~` takes a regular expression in
+  Rust regex syntax.
+- **The per-message match is a separate option.** `-e`/`--match` tests a
+  regular expression against each raw SIP message and, once one message in a
+  dialog matches, shows every later message of that dialog. Inside a filter
+  expression, the `payload` field does the same test per dialog.
 
-The language has no comment syntax, so a `#` line handed to `--filter` is a
-parse error rather than a note. String comparisons are case-sensitive, and
-`=~` takes a Rust regex compiled once and reused across the capture.
+## Terms used here
 
-## Telling it works
+- **SIP**: the protocol that sets up, changes and ends phone calls over IP.
+- **Dialog**: one SIP conversation, such as one call, from first request to
+  last reply.
+- **RTP**: the protocol that carries the audio of a call.
+- **pcap**: a file format for recorded network traffic.
+- **INVITE / 200 OK**: the SIP request that starts a call, and the reply that
+  accepts it.
+- **Response code**: the three-digit number in a SIP reply; 400 and above means
+  failure.
+- **MOS**: Mean Opinion Score, an estimate of call quality from 1 to 5.
+- **Post-dial delay (PDD)**: time from the call request to the first reply that
+  shows the far end is ringing or answering.
+- **vCon**: a standard JSON file format for one conversation's record.
+- **MCP**: Model Context Protocol, the interface AI assistants use to call
+  tools.
+- **JSON-RPC error**: the error form MCP uses for a call it refuses.
+- **REST API**: sipnab's HTTP interface for other programs.
 
-`validate_filter` exists because trying an expression used to cost a page of
-rows. It compiles the expression, counts what it selects, and returns no rows
-at all — and a **parse failure is a successful call**, answering `valid: false`
-with the parser's own text, position and caret included. Every other tool
-rejects a bad filter as an error object, which is right there and wrong here:
-learning what is wrong with an expression is this tool's entire job, and an
-error channel is where a model acts on a message least.
+## Related guides
 
-`total_matched` stays `null` on a parse failure rather than dropping to `0`,
-because a zero there reads as "parsed, matched nothing" — the opposite of what
-happened.
-
-[The filter DSL reference](@/docs/filter-dsl.md) has every field, operator and
-alias, with the expansion each alias resolves to.
+- [What a filter narrows](@/docs/filter-dsl.md#what-a-filter-narrows)
+- [Numeric fields, including unknown values](@/docs/filter-dsl.md#numeric-fields)
+- [Named aliases and their expansions](@/docs/filter-dsl.md#named-aliases)
+- [Parser constraints](@/docs/filter-dsl.md#parser-constraints)
+- [The `[filter]` settings section](@/docs/config.md#filter)
+- [`validate_filter`](@/docs/mcp-tools.md#validate-filter),
+  [`find_problems`](@/docs/mcp-tools.md#find-problems),
+  [`list_dialogs`](@/docs/mcp-tools.md#list-dialogs) and
+  [`evaluate_expectations`](@/docs/mcp-tools.md#evaluate-expectations)
+- [`GET /v1/streams`](@/docs/api.md#get-v1-streams)
