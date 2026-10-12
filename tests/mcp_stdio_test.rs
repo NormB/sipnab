@@ -786,13 +786,14 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "validate_filter",
         "validate_message",
     ];
-    // The vCon pair is registered only where the exporter exists, so this
+    // The vCon tools are registered only where the exporter exists, so this
     // build's expectation has to say so too. A list that names them
     // unconditionally asserts a tool set no `mcp`-without-`vcon` build has --
-    // and the two are advertised exactly when they can run, which
-    // `mcp_capability_agreement_test` is what gates.
+    // and they are advertised exactly when they can run, which
+    // `mcp_capability_agreement_test` is what gates. `vcon_spool_status`
+    // joined the pair as the third.
     if cfg!(feature = "vcon") {
-        expected.extend_from_slice(&["export_vcon", "validate_vcon"]);
+        expected.extend_from_slice(&["export_vcon", "validate_vcon", "vcon_spool_status"]);
     }
     // `hep_senders` likewise exists only where a HEP listener can.
     if cfg!(feature = "hep") {
@@ -800,7 +801,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 69 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    let want = 69 + if cfg!(feature = "vcon") { 3 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // Wait for the replay to be read to its end. Until then the store-reading

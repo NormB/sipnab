@@ -85,7 +85,7 @@ raw material and none of the interpretation. This is a real dead end, and it is
 the strongest argument on this page.
 
 **The read surface is rich enough that the asymmetry is conspicuous.** There are
-72 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
+73 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
 `:2260`), and several of them do genuine analysis rather than projection:
 `triage_call` (`:1927`), `check_codec_negotiation` (`:1999`),
 `diagnose_registration` (`:2085`), `compare_dialogs` (`:1722`). An agent that
@@ -144,9 +144,9 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56),
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5683`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5683)) returns headers and
+- `get_message` ([`server.rs:5285`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5285)) returns headers and
   body.
-- `search_messages` ([`server.rs:6127`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6127)) returns a
+- `search_messages` ([`server.rs:5711`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5711)) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.

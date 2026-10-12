@@ -1902,9 +1902,10 @@ impl StreamStore {
 
     /// Insert a pre-built stream directly (unit tests only) — bypasses
     /// packet processing but keeps the SSRC index and generation honest.
-    /// Gated on `tui` alongside its only consumer (the dashboard tests),
-    /// so no-`tui` test builds don't see it as dead code.
-    #[cfg(all(test, feature = "tui"))]
+    /// Gated on the features of its consumers (the dashboard tests under
+    /// `tui`, the `export_vcon` media tests under `mcp` with `vcon`), so a
+    /// test build with neither does not see it as dead code.
+    #[cfg(all(test, any(feature = "tui", all(feature = "mcp", feature = "vcon"))))]
     pub(crate) fn insert_for_test(&mut self, s: RtpStream) {
         self.ssrc_index
             .entry(s.key.ssrc)

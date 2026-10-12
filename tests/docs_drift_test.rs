@@ -3667,9 +3667,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // is. Both change no capture, store, file or other system, so the split
     // moves to 59 read-only of 72 and the thirteen write-capable tools are
     // unchanged.
+    // 72 -> 73 by `vcon_spool_status` (src/mcp/tools/vcon.rs), which counts
+    // the vCon export spool and reads each failed container's record. It
+    // reads files and changes nothing, so the split moves to 60 read-only of
+    // 73 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        72,
+        73,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4924,7 +4928,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    // 1113 -> 1131: the `%G?` verdict table for the pre-push commit-signature
+    // 1113 -> 1136: the `%G?` verdict table for the pre-push commit-signature
     // gate, in docs/internals/build-ci-release.md and its site mirror, +2; and
     // the 2026-10-11 notes rewrite, +6, per file under
     // website/content/notes/: fifty-seven-tools-and-the-two-that-stay-off +2,
@@ -4942,7 +4946,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // +4: the error-data member table and the reason-code table in
     // docs/mcp-tools.md's "Error data" section, and the same two in its
     // site mirror.
-    const EXPECTED_TABLES: usize = 1131;
+    // +5: `vcon_spool_status`'s parameter and Returns tables, in
+    // docs/mcp-tools.md 2 and website/content/docs/mcp-tools.md 2, and the
+    // vCon spool status row in docs/design/surface-capability-matrix.md.
+    const EXPECTED_TABLES: usize = 1136;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

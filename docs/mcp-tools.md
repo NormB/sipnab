@@ -143,8 +143,9 @@ ordinary update.
 |---|---|---|
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
+| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 | [`generate_repro`](#generate_repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate_wireshark_filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -210,18 +211,19 @@ resource.
 | media | 4 | 3,480 | 16,048 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
 | relay | 4 | 4,240 | 20,029 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
 | tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
-| server | 5 | 5,394 | 27,170 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
-| vcon | 3 | 4,187 | 11,287 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
-| tls | 3 | 2,850 | 4,943 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
-| full | 72 | 82,787 | 248,433 | Every tool the build carries (the default) |
+| server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
+| vcon | 4 | 6,627 | 18,641 | `export_vcon`, `siprec_metadata`, `validate_vcon`, `vcon_spool_status` |
+| tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
+| full | 73 | 83,052 | 205,362 | Every tool the build carries (the default) |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured after sipnab 0.5.211** on a build with every feature, with
-> `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
-> output schemas on nine `core` and `signaling` tools, and the response limits
-> and loaded-surface fields of `server_capabilities` in place. Sizes, tool
+> **Measured on sipnab 0.5.196**, a build with every feature, except the
+> `captures` row, measured after 0.5.206 on the change that added
+> `find_in_captures_status` and `cancel_find_in_captures`, and the `vcon` and
+> `full` rows, measured after 0.5.211 on the change that added
+> `vcon_spool_status` and the `cursor` and `media` parameters of `export_vcon`. Sizes, tool
 > counts and bundle membership may change in later releases. A build without a
 > feature does not register that feature's tools, so its bundles are smaller.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
@@ -5836,6 +5838,8 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
 | `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](#list_dialogs) takes. The `--export-vcon-when` flag answers the same question but accepts the DSL expression ONLY -- it rejects an alias, which is [FLT1](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md). Every matching dialog comes back. | Give `call_id` instead. |
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
+| `cursor` | string | The previous response's `next_cursor`, passed back verbatim. It is the `<RFC 3339 created_at>\|<Call-ID>` cursor [`list_dialogs`](#list_dialogs) uses. A cursor whose time half is not RFC 3339 fails with `invalid_params` (-32602). | The first page. |
+| `media` | string | `inline`: audio the run retained travels inline in a `recording` Dialog Object. `omit`: the exporter considers no audio, and each container records `media: "not-considered"`. sipnab refuses any other value before the tool runs, with an error result naming `inline` and `omit`. | `inline`. |
 
 Give `call_id` or `filter`, never both. The CLI refuses the same pair, because
 a request naming a dialog AND a rule for choosing dialogs has two answers and
@@ -5846,6 +5850,29 @@ dialogs and then issue one `export_vcon` per row — on a real capture, hundreds
 of round trips to do what `--export-vcon-when` does in one invocation. Pass the
 filter here instead. A container is a large answer, so `limit` bounds the set.
 `total_matched` counts the whole store, so it is the number to page against.
+
+**Page through a large set.** Containers come back ordered by the dialog's
+`created_at`, then Call-ID. When more match than `limit` allows, `truncated`
+is `true` and `next_cursor` names the last container returned. Pass it back as
+`cursor` for the next page. The last page has `truncated: false` and a null
+`next_cursor`. The cursor is a position within one capture: compare
+`capture_identity.instance` between pages, as with every paged tool, because
+[`open_capture`](#open_capture) replaces the dialogs a cursor points into.
+
+**Leave the audio out.** A container that carries audio is up to the
+inline-media budget (5 MiB by default) larger than one that does not. With
+`media: "omit"` the exporter considers no audio, and each container says so in
+its own completeness carrier with `media: "not-considered"` and a caveat that
+names the omission as a fact about the export, not about the call. The
+containers stay valid against the core-04 schema.
+
+**Read one container as a resource.** `resources/read` on
+`sipnab://vcon/{call_id}` returns the container this tool builds for that
+dialog, with audio inline, and `completion/complete` fills in `call_id` from
+the Call-IDs the capture holds. sipnab refuses a container over the 8 MiB
+resource limit with `invalid_params`. Call this tool for it instead, with
+`media: "omit"` if the audio is what makes it large. Only a build with the
+`vcon` feature lists the template.
 
 A filter matching nothing answers with an empty set. "No call failed" is a
 finding, and a refusal there would make a clean capture look like a broken
@@ -5901,7 +5928,7 @@ to read a missing `recording` object as an answer:
 | `carried` | The audio is inline in a `recording` Dialog Object |
 | `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
 | `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
-| `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
+| `not-considered` | Nobody asked this export for media: the call to `export_vcon` gave `media: "omit"`. A fact about the export, not about the call |
 | `withheld-by-redaction` | The export ran with `--redact`, and redaction deletes audio rather than replacing it with a token, so the exporter considered none. The Dialog Object is the signaling one. A fact about the export, not about the call. The MCP tools do not redact, so they never write it |
 
 **What the capture MISSED travels with the container, in two places.** vCon has
@@ -5942,6 +5969,7 @@ shape:
   "returned": 2,
   "total_matched": 7,
   "truncated": true,
+  "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20",
   "capture_identity": { /* which capture, and which revision of its stores */ },
   "containers": [
     {
@@ -6170,6 +6198,91 @@ quietly certifying less than it claims.
 A binary built without the `vcon` Cargo feature does not offer this tool:
 it is absent from `tools/list`.
 [`server_capabilities`](#server_capabilities) lists what a given binary carries.
+
+### `vcon_spool_status`
+
+Counts the vCon export spool: the directory `--export-vcon-dir` names, which
+the capture's `--export-vcon-when` writes containers into and which
+[`sipnab --vcon-forward`](vcon.md#deliver-the-spool-to-a-store) delivers to a
+store. For each container the store refused, it returns the record the
+forwarder wrote beside it. Backed by
+[`app::vcon_forward`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_forward.rs),
+whose file rules it reuses.
+
+The answer is a **snapshot of files on disk**, taken when `as_of` says. The
+forwarder is a separate process and may move a file a moment later. This tool
+reads files and does nothing else: it sends nothing, fetches nothing, and
+moves, deletes or creates no file, so the capture process keeps making no
+outbound vCon connection. `read_only_hint` is `true`.
+
+It needs a run started with `--export-vcon-when` and `--export-vcon-dir`.
+Without them it fails with `invalid_params` (-32602) naming the flags. It
+reads the forwarder's DEFAULT directories beside the spool, `delivered/` and
+`failed/`. A forwarder started with `--vcon-forward-done` or
+`--vcon-forward-failed` moves files to directories this tool does not read,
+and does not count.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). Bounds the list of failed records; the three counts are never bounded. | 50. |
+| `cursor` | string | The previous response's `next_cursor`, passed back verbatim. | The first page. |
+
+Returns:
+
+| Field | Type | Description |
+|---|---|---|
+| `as_of` | string | When this tool read the directories, RFC 3339 UTC |
+| `note` | string | One sentence saying the answer is a snapshot and that this tool moves nothing |
+| `spool`, `delivered_dir`, `failed_dir` | object | Each directory's `path` and whether it `exists`. A directory that does not exist counts as empty |
+| `pending` | integer | Containers in the spool, by the forwarder's rule: regular files ending in `.json` whose names do not start with a dot |
+| `delivered` | integer | Containers in `delivered/` |
+| `failed` | integer | Containers in `failed/`, the `.error.json` records not counted |
+| `failures` | array | One page of failed containers by file name: `file`, and `record`, the `<file>.error.json` record (`at`, `status`, `method`, `url`, `body`, `body_truncated`, `reason`) |
+| `returned` | integer | Rows in `failures` |
+| `truncated` | boolean | Whether failed containers remain after this page |
+| `next_cursor` | string or null | Pass back as `cursor` for the next page; null on the last page |
+
+`record.body` is the start of the store's answer as the forwarder kept it,
+fenced as untrusted text and cut to `--mcp-max-body-bytes` (4096 by default).
+`record.status`, `method`, `url` and `body` are null when the forwarder refused
+the container before sending it, and `record.reason` then says why. A failed
+container whose record is missing, unreadable or not in the forwarder's shape
+has a null `record` and a `record_problem` saying which.
+
+```jsonc
+// vcon_spool_status {}, on a run started with --export-vcon-dir vcons
+{
+  "schema_version": 1,
+  "as_of": "2026-10-12T00:59:14.262Z",
+  "note": "A snapshot of files on disk at as_of, read by this process. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; this server sends, fetches, moves and deletes nothing. ...",
+  "spool": { "path": "vcons", "exists": true },
+  "delivered_dir": { "path": "vcons/delivered", "exists": true },
+  "failed_dir": { "path": "vcons/failed", "exists": true },
+  "pending": 1,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "refused.vcon.json",
+      "record": {
+        "at": "2026-10-11T11:58:02Z",
+        "body": "⟦untrusted-capture-data⟧{\"error\":\"vCon already exists\"}⟦/untrusted-capture-data⟧",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 409,
+        "url": "https://vcon.example.com/v1/vcons"
+      }
+    }
+  ],
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+A build without the `vcon` Cargo feature does not register this tool.
 
 ### `generate_repro`
 

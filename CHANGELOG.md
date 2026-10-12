@@ -39,6 +39,22 @@ entry that carries them.
   `describe_endpoint` orders on a key that moves, `hep_senders` answers two
   lists with the bytes `GET /v1/hep/senders` returns, and TFPS's `log` command
   has no offset for `tfps_labels` to resume from.
+- **`export_vcon` pages with a cursor and can leave the audio out.** The
+  response carries `next_cursor`, the `<created_at>|<Call-ID>` cursor
+  `list_dialogs` uses, and the tool takes it back as `cursor`; containers now
+  come back ordered by the dialog's `created_at`, then Call-ID. `media: "omit"`
+  builds signaling-only containers, each of which records `media:
+  "not-considered"` in its own completeness carrier. `media: "inline"`, the
+  default, is the behavior before this change.
+- **The MCP resource `sipnab://vcon/{call_id}`** reads one dialog as a vCon
+  container, built by the same function as `export_vcon`, with `call_id`
+  completed from the Call-IDs the capture holds. It is refused past the 8 MiB
+  resource limit, and offered only by a build with the `vcon` feature.
+- **The MCP tool `vcon_spool_status`** counts the `--export-vcon-dir` spool:
+  containers pending, delivered and failed, with the record
+  `sipnab --vcon-forward` wrote beside each failed container. It reads files
+  and nothing else: it sends, fetches, moves and deletes nothing, and its
+  answer is a snapshot dated by `as_of`. It is in the `vcon` bundle.
 
 ### Changed
 

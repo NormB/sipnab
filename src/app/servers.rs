@@ -821,6 +821,13 @@ pub fn start_servers(
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
+            // The spool this run's `--export-vcon-when` writes into, so
+            // `vcon_spool_status` reads the directory the capture fills.
+            #[cfg(feature = "vcon")]
+            let s = match cli.output_args.export_vcon_dir.as_ref() {
+                Some(dir) => s.with_vcon_spool(dir),
+                None => s,
+            };
             let s = match cli.mcp_args.mcp_sampling_budget {
                 Some(per_hour) => s.with_sampling_budget(per_hour),
                 None => s,

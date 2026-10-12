@@ -113,6 +113,13 @@ pub struct SipnabMcp {
     /// same call exported through two doors otherwise comes back carrying
     /// audio in one container and a refusal in the other.
     pub(crate) max_inline_media_bytes: Option<usize>,
+    /// The `--export-vcon-dir` spool the capture writes containers into, read
+    /// by `vcon_spool_status`. `None` when the run was not given one.
+    ///
+    /// Only read: the forwarder that drains the spool is another process, and
+    /// this one makes no outbound vCon connection and moves no file.
+    #[cfg(feature = "vcon")]
+    pub(crate) vcon_spool: Option<std::path::PathBuf>,
     /// The numbers the diagnostic filter aliases compare against.
     ///
     /// Carried here for the same reason `row_cap` is: `find_problems` used to
@@ -392,6 +399,8 @@ impl SipnabMcp {
             source_exhausted: None,
             row_cap: HARD_LIMIT,
             max_inline_media_bytes: None,
+            #[cfg(feature = "vcon")]
+            vcon_spool: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             response_cap: crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
@@ -607,6 +616,19 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_max_inline_media_bytes(mut self, bytes: Option<usize>) -> Self {
         self.max_inline_media_bytes = bytes;
+        self
+    }
+
+    /// Name the `--export-vcon-dir` spool `vcon_spool_status` reads.
+    ///
+    /// The directory the capture's `--export-vcon-when` writes into, and the
+    /// one a `sipnab --vcon-forward` process drains. Nothing is created here:
+    /// a spool the capture has not written yet reads as one that does not
+    /// exist.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn with_vcon_spool(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.vcon_spool = Some(dir.into());
         self
     }
 
@@ -4119,6 +4141,43 @@ fn endpoint_reported_json(
     }
     Some(v)
 }
+/// Bytes a single resource read may return.
+///
+/// JSON-RPC with base64 is not a bulk transfer channel -- a 128 MB capture
+/// becomes ~170 MB of one JSON string, which no client wants and no model can
+/// read. Refusing past a bound, and SAYING the bound, beats returning
+/// something unusable or truncating in silence.
+pub(crate) const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Refuse a resource of `size` bytes when it is past `max`.
+///
+/// The one rule every resource read applies, capture file or vCon container,
+/// so the bound and the wording of its refusal cannot differ between them.
+/// `what` names the resource as the refusal should quote it; `instead` is the
+/// way to get the content that the caller can act on.
+///
+/// # Errors
+///
+/// `invalid_params` (-32602) stating the size, the bound, and `instead`.
+pub(crate) fn refuse_past_resource_limit(
+    what: &str,
+    size: u64,
+    max: u64,
+    instead: &str,
+) -> Result<(), rmcp::ErrorData> {
+    if size > max {
+        return Err(errors::refuse_param(
+            Reason::LimitExceeded,
+            "uri",
+            format!(
+                "{what} is {size} bytes, past the {max}-byte resource limit. \
+                 JSON-RPC is not a bulk transfer channel; {instead}."
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// The tie-break half of a stream cursor: `0xSSRC@src>dst`, with `#N`
 /// appended for session N above 0.
 ///
@@ -4257,14 +4316,6 @@ impl SipnabMcp {
         &self,
         uri: &str,
     ) -> Result<Vec<rmcp::model::ResourceContents>, rmcp::ErrorData> {
-        /// Bytes a single resource read may return.
-        ///
-        /// JSON-RPC with base64 is not a bulk transfer channel -- a 128 MB
-        /// capture becomes ~170 MB of one JSON string, which no client wants
-        /// and no model can read. Refusing past a bound, and SAYING the bound,
-        /// beats returning something unusable or truncating in silence.
-        const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
-
         // Reference material is answered from the binary, before any file
         // handling. It is not on disk, so it has no path to resolve, no size to
         // stat and no root to be confined to -- routing it through the capture
@@ -4373,6 +4424,15 @@ impl SipnabMcp {
             return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
         }
 
+        // One dialog as a vCon container, built by the function `export_vcon`
+        // uses. Only on a build carrying the exporter; elsewhere the URI is
+        // not a sipnab resource and is refused below like any other.
+        #[cfg(feature = "vcon")]
+        if let Some(call_id) = uri.strip_prefix(super::completion::VCON_URI_PREFIX) {
+            let text = self.vcon_resource(call_id, MAX_RESOURCE_BYTES)?;
+            return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
+        }
+
         let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
             errors::refuse_param(
                 Reason::InvalidValue,
@@ -4391,18 +4451,12 @@ impl SipnabMcp {
         let size = std::fs::metadata(&path)
             .map_err(|e| errors::refuse_param(Reason::NotFound, "uri", format!("'{name}': {e}")))?
             .len();
-        if size > MAX_RESOURCE_BYTES {
-            return Err(errors::refuse_param(
-                Reason::LimitExceeded,
-                "uri",
-                format!(
-                    "'{name}' is {size} bytes, past the \
-                     {MAX_RESOURCE_BYTES}-byte resource limit. JSON-RPC \
-                     carrying base64 is not a bulk transfer channel; copy the \
-                     file from --mcp-file-root instead."
-                ),
-            ));
-        }
+        refuse_past_resource_limit(
+            &format!("'{name}'"),
+            size,
+            MAX_RESOURCE_BYTES,
+            "copy the file from --mcp-file-root instead",
+        )?;
 
         let bytes = std::fs::read(&path)
             .map_err(|e| rmcp::ErrorData::internal_error(format!("'{name}': {e}"), None))?;
@@ -12496,9 +12550,12 @@ mod tests {
             ("relay", 4_500),
             ("tfps", 6_000),
             ("server", 5_500),
-            ("vcon", 5_000),
+            // 5_000 -> 7_000 and full 81_000 -> 83_500 by `vcon_spool_status`
+            // and `export_vcon`'s `cursor`, `media` and `next_cursor` (vcon
+            // measured 6,627, full 83,052).
+            ("vcon", 7_000),
             ("tls", 3_000),
-            ("full", 83_000),
+            ("full", 83_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)
@@ -19824,6 +19881,96 @@ mod in_process_handler_tests {
             "{rooted:?}"
         );
         assert_eq!(rooted.len(), bare.len() + 1, "{rooted:?}");
+        Ok(())
+    }
+
+    /// The vCon template is listed, completes Call-IDs from the store, and
+    /// reads as a schema-valid container over the protocol. An unknown
+    /// Call-ID is refused.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn the_vcon_template_lists_completes_and_reads() -> Result<(), TestError> {
+        let server = server_over(
+            dialogs(vec![
+                invite("vc-alpha@example.invalid", None)?,
+                invite("vc-beta@example.invalid", None)?,
+            ]),
+            StreamStore::new(16),
+        );
+        let (running, mut client) = connect(server, json!({})).await?;
+        let template = "sipnab://vcon/{call_id}";
+
+        let listed = ask(&mut client, 2, "resources/templates/list", json!({})).await?;
+        assert!(
+            listed["result"]["resourceTemplates"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t["uriTemplate"] == template)),
+            "{listed}"
+        );
+
+        let completed = ask(
+            &mut client,
+            3,
+            "completion/complete",
+            json!({
+                "ref": {"type": "ref/resource", "uri": template},
+                "argument": {"name": "call_id", "value": "vc-"}
+            }),
+        )
+        .await?;
+        assert_eq!(
+            completed["result"]["completion"]["values"],
+            json!(["vc-alpha@example.invalid", "vc-beta@example.invalid"]),
+            "{completed}"
+        );
+
+        let read = ask(
+            &mut client,
+            4,
+            "resources/read",
+            json!({"uri": "sipnab://vcon/vc-alpha@example.invalid"}),
+        )
+        .await?;
+        let text = read["result"]["contents"][0]["text"]
+            .as_str()
+            .ok_or("the container arrives as text")?;
+        let container: Value =
+            serde_json::from_str(text).map_err(|e| format!("the container is JSON: {e:?}"))?;
+        assert_eq!(
+            container["dialog"][0]["sip_call_id"], "vc-alpha@example.invalid",
+            "{container}"
+        );
+        let report = crate::output::vcon_schema::validate(&container);
+        assert_eq!(report.verdict.as_str(), "valid", "{:?}", report.errors);
+
+        let unknown = ask(
+            &mut client,
+            5,
+            "resources/read",
+            json!({"uri": "sipnab://vcon/no-such@example.invalid"}),
+        )
+        .await?;
+        drop(running);
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+        Ok(())
+    }
+
+    /// A build without the exporter does not offer the vCon template: a
+    /// template is a promise that its URIs resolve.
+    #[cfg(not(feature = "vcon"))]
+    #[tokio::test]
+    async fn the_vcon_template_is_absent_without_the_vcon_feature() -> Result<(), TestError> {
+        let (running, mut client) = connect(empty(), json!({})).await?;
+        let listed = ask(&mut client, 2, "resources/templates/list", json!({})).await?;
+        drop(running);
+        assert!(
+            listed["result"]["resourceTemplates"]
+                .as_array()
+                .is_some_and(|t| !t
+                    .iter()
+                    .any(|t| t["uriTemplate"] == "sipnab://vcon/{call_id}")),
+            "{listed}"
+        );
         Ok(())
     }
 
