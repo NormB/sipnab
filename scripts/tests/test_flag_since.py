@@ -51,7 +51,22 @@ def repo(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q", "-b", "main")
+    cut(root, "Unreleased", "0.0.0")
     return root
+
+
+def cut(root, heading, version):
+    """Commit a CHANGELOG.md whose first heading is `heading`, and a
+    Cargo.toml at `version`: what a release commit changes."""
+    dated = "" if heading == "Unreleased" else " - 2026-02-02"
+    (root / "CHANGELOG.md").write_text(
+        f"# Changelog\n\nIntro naming [Keep a Changelog].\n\n## [{heading}]{dated}\n\n"
+        "### Added\n\n- x\n\n## [0.0.1] - 2026-01-01\n")
+    (root / "Cargo.toml").write_text(
+        f'[package]\nname = "fixture"\nversion = "{version}"\n\n'
+        '[dependencies]\nother = { version = "9.9.9" }\n')
+    git(root, "add", "CHANGELOG.md", "Cargo.toml")
+    git(root, "commit", "-q", "-m", f"changelog at {heading}")
 
 
 # -- parsing src/cli.rs ------------------------------------------------------
@@ -180,6 +195,70 @@ def test_a_clone_without_tags_is_refused(repo):
     commit(repo, cli(DEVICE))
     with pytest.raises(since.FlagSinceError, match="no v\\* tags in this clone; fetch tags"):
         since.flag_since(repo)
+
+
+# -- the cut commit: a release named but not yet tagged ----------------------
+
+def released_then_new_flag(repo):
+    commit(repo, cli(DEVICE))
+    git(repo, "tag", "v0.1.0")
+    commit(repo, cli(DEVICE, DRY_RUN))
+
+
+def test_an_unreleased_changelog_heading_expects_unreleased(repo):
+    released_then_new_flag(repo)
+    cut(repo, "Unreleased", "0.1.0")
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "Unreleased"}
+
+
+def test_a_cut_heading_equal_to_the_crate_version_expects_that_version(repo):
+    released_then_new_flag(repo)
+    cut(repo, "0.2.0", "0.2.0")
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "0.2.0"}
+
+
+def test_a_cut_heading_unequal_to_the_crate_version_is_refused(repo):
+    released_then_new_flag(repo)
+    cut(repo, "0.2.0", "0.1.9")
+    with pytest.raises(since.FlagSinceError,
+                       match=r"CHANGELOG.md's first heading is \[0.2.0\] but "
+                             r"Cargo.toml's version is 0.1.9"):
+        since.flag_since(repo)
+
+
+def test_tagging_the_cut_commit_keeps_the_same_version(repo):
+    released_then_new_flag(repo)
+    cut(repo, "0.2.0", "0.2.0")
+    before = since.flag_since(repo)
+    git(repo, "tag", "v0.2.0")
+    assert since.flag_since(repo) == before == {"device": "0.1.0", "dry-run": "0.2.0"}
+
+
+def test_a_flag_added_after_the_tag_under_the_released_heading_is_unreleased(repo):
+    released_then_new_flag(repo)
+    cut(repo, "0.2.0", "0.2.0")
+    git(repo, "tag", "v0.2.0")
+    commit(repo, cli(DEVICE, DRY_RUN, BPF))
+    assert since.flag_since(repo)["<BPF_FILTER>"] == "Unreleased"
+
+
+def test_a_missing_changelog_is_refused(repo):
+    released_then_new_flag(repo)
+    (repo / "CHANGELOG.md").unlink()
+    with pytest.raises(since.FlagSinceError, match="CHANGELOG.md"):
+        since.flag_since(repo)
+
+
+def test_the_cut_commit_checks_clean_once_written(repo):
+    tagged_repo(repo, DOC_NEW)
+    cut(repo, "0.2.0", "0.2.0")
+    assert run(repo, "--check").returncode == 1  # the doc still says Unreleased
+    assert run(repo, "--write").returncode == 0
+    assert "| off | 0.2.0 | Do nothing |" in (repo / "docs/cli-reference.md").read_text()
+    git(repo, "commit", "-qam", "Release 0.2.0")
+    git(repo, "tag", "v0.2.0")
+    r = run(repo, "--check")
+    assert r.returncode == 0, r.stdout + r.stderr
 
 
 # -- the table in docs/cli-reference.md --------------------------------------

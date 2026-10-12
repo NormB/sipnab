@@ -21,7 +21,12 @@ The rules:
   that first release. A version that was bumped but never tagged was never
   released, so a flag first declared there is Since the next tagged release,
   the one users first received it in.
-- A flag no release declares is `Unreleased`.
+- A flag no release declares is `Unreleased` while CHANGELOG.md's first
+  `## [` heading is `[Unreleased]`. On the release commit, where that heading
+  is a cut `[X.Y.Z]` equal to Cargo.toml's version and no vX.Y.Z tag exists
+  yet, it is `X.Y.Z`: the release that commit becomes when tagged. Tagging it
+  changes nothing, because the tag's history then gives the same X.Y.Z. A cut
+  heading that differs from Cargo.toml's version is refused.
 
 A clone without vX.Y.Z tags cannot answer, and the script refuses rather than
 calling every flag Unreleased.
@@ -40,6 +45,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 
 RELEASE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 SOURCE = "src/cli.rs"
@@ -276,17 +282,47 @@ def sources_at(repo, tags: list, source: str) -> dict:
     return out
 
 
+def pending_release(repo, tags: list):
+    """The version the working tree is the release commit of, or None.
+
+    CHANGELOG.md's first `## [` heading is `[Unreleased]` between releases,
+    and None is the answer. Cutting a release renames it `[X.Y.Z]` in the
+    same commit that sets Cargo.toml's version to X.Y.Z; until the tag
+    vX.Y.Z exists, that commit is the release and X.Y.Z is the answer. Once
+    the tag exists, its history answers instead, with the same X.Y.Z.
+    """
+    try:
+        changelog = (repo / "CHANGELOG.md").read_text()
+        manifest = tomllib.loads((repo / "Cargo.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise FlagSinceError(f"cannot read CHANGELOG.md and Cargo.toml: {e}") from e
+    m = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
+    if not m:
+        raise FlagSinceError("CHANGELOG.md has no `## [` heading")
+    heading = m.group(1)
+    if heading == UNRELEASED:
+        return None
+    version = manifest.get("package", {}).get("version")
+    if heading != version:
+        raise FlagSinceError(
+            f"CHANGELOG.md's first heading is [{heading}] but Cargo.toml's version is "
+            f"{version}: a release commit names the same version in both, and between "
+            "releases the first heading is [Unreleased]")
+    return None if f"v{heading}" in tags else heading
+
+
 def flag_since(repo, source: str = SOURCE) -> dict:
     """`{name: "X.Y.Z" | "Unreleased"}` for every name of every current flag."""
     repo = pathlib.Path(repo)
     tagged = releases(repo)
+    unreleased = pending_release(repo, [t for t, _ in tagged]) or UNRELEASED
     texts = sources_at(repo, [t for t, _ in tagged], source)
     declared = [(version, {n for a in declared_args(texts[tag]) for n in a})
                 for tag, version in tagged]
     current = declared_args((repo / source).read_text())
     out = {}
     for names in current:
-        first = next((v for v, seen in declared if seen.intersection(names)), UNRELEASED)
+        first = next((v for v, seen in declared if seen.intersection(names)), unreleased)
         for n in names:
             out[n] = first
     return out
