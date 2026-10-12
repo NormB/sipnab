@@ -21,9 +21,13 @@
 //!
 //! From the run's configuration, not from a per-packet record, and that is
 //! correct rather than a shortcut: a datagram that failed authentication was
-//! REJECTED at ingest, so every assertion still in the store arrived under
-//! whatever posture was configured. Recording a bit per packet would restate
-//! the configuration once per packet and let the two drift.
+//! REJECTED at ingest, so every assertion the HEP listener delivered arrived
+//! under whatever posture was configured. Recording a bit per packet would
+//! restate the configuration once per packet and let the two drift.
+//!
+//! The posture is the HEP listener's and covers only what the listener
+//! delivered. An assertion read off a capture interface never reached the
+//! listener, so [`classify`] reports it as `PortGatedOnly` on every run.
 //!
 //! # Relay-agnostic on purpose
 //!
@@ -906,6 +910,12 @@ impl SipnabMcp {
 ///
 /// A free function rather than a method so it can be driven with every
 /// combination directly, including ones this tree cannot currently produce.
+///
+/// `configured` is the HEP listener's posture, so only an assertion whose
+/// origin is [`InputOrigin::Hep`](crate::capture::parse::InputOrigin::Hep)
+/// takes it. One sniffed off a capture interface is `PortGatedOnly` whatever
+/// the listener checks: on a `-d <iface> -L <addr>` run the two arrive side by
+/// side, and only the listener's half was authenticated.
 #[must_use]
 pub fn classify(
     asserted: crate::rtp::stream_store::EndpointAssertion,
@@ -918,9 +928,16 @@ pub fn classify(
     match origin {
         // No capture source: sipnab asked for this rather than observing it.
         None => DeliveryTrust::Asked,
-        // It arrived over a capture path, so the run's configured posture is
+        // It arrived over HEP, so the posture the run configured for HEP is
         // what it was worth -- a datagram that failed was never stored.
-        Some(_) => configured,
+        Some(crate::capture::parse::InputOrigin::Hep) => configured,
+        // Read off a capture interface (or out of a process): no listener
+        // checked it, whatever the HEP listener checks on this run. It is
+        // believed because of the port it was sent to and for no other
+        // reason, which is what `PortGatedOnly` says.
+        Some(
+            crate::capture::parse::InputOrigin::Wire | crate::capture::parse::InputOrigin::Uprobe,
+        ) => DeliveryTrust::PortGatedOnly,
     }
 }
 
@@ -1700,6 +1717,61 @@ mod query_relay_view_tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// What each delivery path of a relay assertion is worth, under every
+    /// posture the HEP listener can be configured with.
+    ///
+    /// The configured posture is the HEP listener's: `hmac-verified` and
+    /// `plain-secret` both say "delivered over HEP" and describe a check the
+    /// listener made. A relay datagram read off a capture interface
+    /// (`InputOrigin::Wire`) never reached the listener, so it is believed
+    /// because of the port it was sent to and for no other reason, which is
+    /// `port-gated-only` whatever the listener checks. An assertion with no
+    /// path that the listener checked (`Uprobe`) is the same.
+    #[test]
+    fn only_a_hep_delivered_assertion_takes_the_listeners_trust() -> Result<(), TestError> {
+        use crate::capture::parse::InputOrigin;
+        use crate::rtp::stream_store::EndpointAssertion;
+        let relay = EndpointAssertion::media_relay(
+            crate::relay::RelayImplementation::default(),
+            crate::relay::ControlDelivery::BareDatagram,
+        );
+        for configured in [
+            DeliveryTrust::HmacVerified,
+            DeliveryTrust::PlainSecret,
+            DeliveryTrust::PortGatedOnly,
+        ] {
+            assert_eq!(
+                classify(relay, Some(InputOrigin::Hep), configured),
+                configured,
+                "an assertion the HEP listener delivered is worth what the \
+                 listener checked"
+            );
+            for sniffed in [InputOrigin::Wire, InputOrigin::Uprobe] {
+                assert_eq!(
+                    classify(relay, Some(sniffed), configured),
+                    DeliveryTrust::PortGatedOnly,
+                    "{sniffed:?} under a {configured:?} listener: the listener \
+                     never saw this datagram"
+                );
+            }
+            assert_eq!(
+                classify(relay, None, configured),
+                DeliveryTrust::Asked,
+                "no capture source means sipnab asked"
+            );
+            assert_eq!(
+                classify(
+                    EndpointAssertion::Signaled,
+                    Some(InputOrigin::Hep),
+                    configured
+                ),
+                DeliveryTrust::NotRelayAsserted,
+                "SDP is the parties' claim whatever carried it"
+            );
+        }
+        Ok(())
+    }
 
     /// The address a query answer echoes. A literal, so no test depends on
     /// anything an operator configured.
@@ -2780,6 +2852,67 @@ mod relay_handler_tests {
                 "asking is worth the same under every posture, because no \
                  capture path was involved"
             );
+        }
+        Ok(())
+    }
+
+    /// A relay claim sniffed off a capture interface is `port-gated-only`
+    /// under every HEP posture, and counts as unauthenticated.
+    ///
+    /// The posture is the HEP listener's, and a datagram read off an interface
+    /// never reached the listener. The run that mixes the two is `-d <iface>
+    /// -L <addr> --hep-auth-mode hmac`: a relay mirroring `ng` toward a
+    /// collector on that interface is sniffed there, while the listener checks
+    /// what is sent to it. That run needs capture privileges no test has, so
+    /// the store is filled here the way the pipeline fills it for a sniffed
+    /// datagram (`InputOrigin::Wire`, `ControlDelivery::BareDatagram`) and the
+    /// tool is asked directly.
+    #[tokio::test]
+    async fn a_relay_claim_sniffed_off_an_interface_is_port_gated_under_every_posture()
+    -> Result<(), TestError> {
+        let call = "sniffed@example.invalid";
+        for mode in [
+            None,
+            Some(crate::cli::HepAuthMode::Plain),
+            Some(crate::cli::HepAuthMode::Hmac),
+        ] {
+            let mut ss = StreamStore::new(64);
+            rtp(&mut ss, (ip(10), 40000), (ip(20), 30000), 0xA, 1, ts0());
+            ss.link_endpoint_from(
+                ip(20),
+                30000,
+                call,
+                &[],
+                None,
+                SdpProvenance::relay_asserted(
+                    crate::relay::RelayImplementation::default(),
+                    crate::relay::ControlDelivery::BareDatagram,
+                    InputOrigin::Wire,
+                    ts0(),
+                ),
+            );
+            let mut s = server(dialogs_with(call)?, ss);
+            if let Some(mode) = mode {
+                s = s.with_hep_auth_mode(mode);
+            }
+            let v = payload(
+                &s.explain_attribution(Parameters(ExplainAttributionParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .map_err(|e| format!("a held call is explained: {e:?}"))?,
+            )?;
+            let sniffed = row(&v, "192.0.2.20", 30000)?;
+            assert_eq!(
+                sniffed["asserted_by"], "media-relay",
+                "positive control: {v}"
+            );
+            assert_eq!(sniffed["input_origin"], "wire", "positive control: {v}");
+            assert_eq!(
+                sniffed["delivery_trust"], "port-gated-only",
+                "under {mode:?}: the HEP listener never saw this datagram: {v}"
+            );
+            assert_eq!(v["unauthenticated_endpoints"], 1, "under {mode:?}: {v}");
         }
         Ok(())
     }

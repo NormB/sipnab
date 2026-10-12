@@ -628,26 +628,41 @@ fn check_alert_rule(source: &str, from: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Declare the process-wide settings every surface reads: the node name, the
-/// diagnosis thresholds, and the Prometheus histogram boundaries.
+/// Declare the node name this process reports: `--node-name`, else
+/// `[capture] node_name` from `config`, else the system host name.
+///
+/// Called by `main` before the run provenance record is written. The record
+/// carries the node, and `set_node_name` writes a process-global `OnceLock`
+/// whose first READ fixes the host name when nothing was set: declared any
+/// later, the record and every vCon of the run carried the host name while
+/// the command line or the config named the node.
+///
+/// `config` is `None` when the config file could not be read; the run stops
+/// at the config step after the record is written, and the flag alone
+/// decides the node until then.
+///
+/// # Side effects
+///
+/// Writes a process-global `OnceLock`; the first writer wins.
+pub fn declare_node_name(cli: &Cli, config: Option<&Config>) {
+    let fallback = Config::default();
+    if let Some(name) = cli.node_name(config.unwrap_or(&fallback)) {
+        crate::provenance::set_node_name(&name);
+    }
+}
+
+/// Declare the process-wide settings every surface reads: the diagnosis
+/// thresholds and the Prometheus histogram boundaries. The node name is
+/// declared earlier, by [`declare_node_name`].
 ///
 /// # Side effects
 ///
 /// Writes process-global `OnceLock`s; the first writer wins, so this runs
 /// before anything can read them.
 fn declare_process_globals(cli: &Cli, config: &Config) {
-    // FIRST, before anything can mint an identity. `set_node_name` writes a
-    // process-global `OnceLock` and the first writer wins, so a later call
-    // would be silently ignored and answers would carry the hostname while the
-    // command line said otherwise.
-    //
-    // CLI first, config second, hostname last — and the ORDER of these two
-    // calls is the precedence, because the first writer wins. Written as a
-    // chain rather than an if/else so adding a third source cannot
-    // accidentally invert it.
-    if let Some(name) = cli.node_name(config) {
-        crate::provenance::set_node_name(&name);
-    }
+    // The node name is not declared here: `main` declares it with
+    // `declare_node_name` before the run provenance record, which reads it
+    // first.
 
     // Same shape, same reason: both diagnosers are reached from the TUI, the
     // reports, `--json-dialogs`, the REST layer and the MCP tools, and every
@@ -3971,15 +3986,16 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// exit code, or `None` when the flag is absent. The body is feature-swapped
 /// so the caller contains no `cfg`.
 ///
-/// Loads the configuration for `[vcon_forward]` ([`load_config`], which also
-/// refuses forwarder settings that cannot be used), and opens no capture: the
+/// Applies the configuration `main` read (`read`, from [`read_config`]) for
+/// `[vcon_forward]` ([`apply_config`], which also refuses forwarder settings
+/// that cannot be used), and opens no capture: the
 /// forwarder is a separate process that reads no packet, and clap has already
 /// refused every capture flag beside it.
 ///
 /// # Returns
 ///
 /// `Some` exit code from [`crate::app::vcon_forward::run`]; the exit code of
-/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// the config's refusal (1 for the file, 2 for a setting); when the
 /// credential's file cannot be read or holds no credential, 1 if
 /// `[vcon_forward] auth_file` named it and 2 if `--vcon-forward-auth-file`
 /// did ([`crate::settings::Origin`]); `Some(2)` when the `vcon` feature is
@@ -3987,21 +4003,18 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 ///
 /// # Side effects
 ///
-/// Reads the config file and the credential's file, creates the delivered
+/// Reads the credential's file, creates the delivered
 /// and failed directories, connects to the store, and moves files out of the
 /// spool, until SIGTERM or SIGINT (or after one pass with
 /// `--vcon-forward-once`).
-pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
+pub fn run_vcon_forward(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
     cli.vcon_forward_args.vcon_forward.as_ref()?;
     #[cfg(feature = "vcon")]
     {
         use crate::app::vcon_forward::{ForwardPlan, run};
-        let loaded = match load_config(cli) {
+        let loaded = match apply_read_config(cli, read) {
             Ok(loaded) => loaded,
-            Err(e) => {
-                tracing::error!("{}", e.message);
-                return Some(e.exit_code);
-            }
+            Err(code) => return Some(code),
         };
         let args = &cli.vcon_forward_args;
         let plan = match ForwardPlan::resolve_refusal(args, &loaded.config.vcon_forward) {
@@ -4026,6 +4039,7 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     }
     #[cfg(not(feature = "vcon"))]
     {
+        let _ = read;
         tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
@@ -4035,14 +4049,14 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
 /// file, and return the exit code, or `None` when the flag is absent. The
 /// body is feature-swapped so the caller contains no `cfg`.
 ///
-/// Loads the configuration for `[vcon_fetch]` ([`load_config`]) and opens no
-/// capture: the fetcher is a separate process that reads no packet, and clap
+/// Applies the configuration `main` read (`read`, from [`read_config`]) for
+/// `[vcon_fetch]` ([`apply_config`]) and opens no capture: the fetcher is a separate process that reads no packet, and clap
 /// has already refused every capture flag beside it.
 ///
 /// # Returns
 ///
 /// `Some` exit code from [`crate::app::vcon_fetch::run`]; the exit code of
-/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// the config's refusal (1 for the file, 2 for a setting); when the
 /// credential's file cannot be read or holds no credential, 1 if
 /// `[vcon_fetch] auth_file` named it and 2 if `--vcon-fetch-auth-file` did;
 /// 2 when `-` was given and standard input holds no usable uuid list;
@@ -4051,22 +4065,19 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
 ///
 /// # Side effects
 ///
-/// Reads the config file, the credential's file and, for `-`, standard
+/// Reads the credential's file and, for `-`, standard
 /// input; connects to the store; creates the output directory and writes a
 /// file per container.
-pub fn run_vcon_fetch(cli: &Cli) -> Option<i32> {
+pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
     if cli.vcon_fetch_args.vcon_fetch.is_empty() {
         return None;
     }
     #[cfg(feature = "vcon")]
     {
         use crate::app::vcon_fetch::{prepare, run};
-        let loaded = match load_config(cli) {
+        let loaded = match apply_read_config(cli, read) {
             Ok(loaded) => loaded,
-            Err(e) => {
-                tracing::error!("{}", e.message);
-                return Some(e.exit_code);
-            }
+            Err(code) => return Some(code),
         };
         let read_stdin = || {
             let mut text = String::new();
@@ -4082,14 +4093,41 @@ pub fn run_vcon_fetch(cli: &Cli) -> Option<i32> {
     }
     #[cfg(not(feature = "vcon"))]
     {
+        let _ = read;
         tracing::error!("--vcon-fetch requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
 }
 
+/// [`apply_config`] over the configuration `main` already read, logging the
+/// refusal: the vCon forwarder and fetcher read no config of their own, so
+/// the file is read once per process.
+///
+/// # Errors
+///
+/// The exit code of the read's refusal or of [`apply_config`]'s, after
+/// logging its message.
+#[cfg(feature = "vcon")]
+fn apply_read_config(
+    cli: &Cli,
+    read: &Result<LoadedConfig, PlanError>,
+) -> Result<LoadedConfig, i32> {
+    let applied = match read {
+        Ok(loaded) => apply_config(cli, loaded.clone()),
+        Err(e) => Err(PlanError {
+            exit_code: e.exit_code,
+            message: e.message.clone(),
+        }),
+    };
+    applied.map_err(|e| {
+        tracing::error!("{}", e.message);
+        e.exit_code
+    })
+}
+
 /// Why a `--vcon-fetch` run's settings cannot be used, or `None` (also when
 /// this is not a fetcher run). Feature-swapped: without the `vcon` feature
-/// [`run_vcon_fetch`] refuses the run before the config is read.
+/// [`run_vcon_fetch`] refuses the run before the config is applied.
 fn fetcher_settings_problem(
     cli: &Cli,
     config: &Config,
@@ -4112,7 +4150,7 @@ fn fetcher_settings_problem(
 
 /// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
 /// when this is not a forwarder run). Feature-swapped: without the `vcon`
-/// feature [`run_vcon_forward`] refuses the run before the config is read.
+/// feature [`run_vcon_forward`] refuses the run before the config is applied.
 fn forwarder_settings_problem(
     cli: &Cli,
     config: &Config,
@@ -4135,34 +4173,63 @@ fn forwarder_settings_problem(
 }
 
 /// Load the configuration file and apply the `[limits]` section's parser /
-/// dialog caps.
+/// dialog caps: [`read_config`], then [`apply_config`].
+///
+/// # Errors
+///
+/// As for [`read_config`] and [`apply_config`].
+///
+/// # Side effects
+///
+/// As for [`read_config`] and [`apply_config`].
+pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
+    apply_config(cli, read_config(cli)?)
+}
+
+/// Read the configuration file, applying nothing in it.
+///
+/// Split from [`apply_config`] so `main` can read the file once, early, and
+/// apply it later: the node name (`[capture] node_name`) has to be declared
+/// before the run provenance record is written, and that record is written
+/// before the config's settings take effect.
 ///
 /// # Errors
 ///
 /// Returns a `PlanError` (exit code 1) when the config file cannot be
-/// loaded/parsed or its `[limits]` section fails validation.
+/// loaded or parsed.
 ///
 /// # Side effects
 ///
-/// Reads the config file from disk (logging its path when found) and
-/// mutates process-global parser and dialog-store limits via
-/// `set_parser_limits` / `set_max_messages_per_dialog`.
-pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
-    let loaded = match Config::load(cli.config_args.config.as_deref(), cli.config_args.no_config) {
+/// Reads the config file from disk, logging its path when found; unknown
+/// keys are warned about.
+pub fn read_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
+    match Config::load(cli.config_args.config.as_deref(), cli.config_args.no_config) {
         Ok(loaded) => {
             if let Some(ref source) = loaded.source {
                 tracing::info!("Loaded config from {}", source.display());
             }
-            loaded
+            Ok(loaded)
         }
-        Err(e) => {
-            return Err(PlanError {
-                exit_code: 1,
-                message: e.to_string(),
-            });
-        }
-    };
+        Err(e) => Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        }),
+    }
+}
 
+/// Validate a configuration [`read_config`] read and apply the `[limits]`
+/// section's parser / dialog caps.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 1) when a section fails validation, or
+/// exit code 2 when a refusal names a flag.
+///
+/// # Side effects
+///
+/// Mutates process-global parser and dialog-store limits via
+/// `set_parser_limits` / `set_max_messages_per_dialog`.
+pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, PlanError> {
     if let Err(e) = loaded.config.limits.validate() {
         return Err(PlanError {
             exit_code: 1,

@@ -12,6 +12,28 @@ entry that carries them.
 
 ### Fixed
 
+- **`--run-provenance-file` no longer replaces the node name with the host
+  name.** The record was the first thing to read the node name, before
+  `--node-name` or `[capture] node_name` was applied, so the record and every
+  vCon of the run named the system host name. sipnab now reads the config file
+  and declares the node name before it writes the record; the config's settings
+  still take effect after it.
+- **`--call-report` prints the SIPREC recording block in its text and Markdown
+  forms.** It printed the block only in its JSON form, while
+  [See who is on a recorded call](docs/examples.md#60-see-who-is-on-a-recorded-call)
+  shows it in the text report. `--call-report` and `--report` now print it from
+  one function.
+- **`explain_attribution` reports a relay endpoint sniffed off a capture
+  interface as `port-gated-only`.** It gave such an endpoint the HEP listener's
+  posture, `hmac-verified` or `plain-secret`, although the listener never saw
+  the datagram. Only an endpoint the listener delivered (`input_origin: hep`)
+  now takes that posture.
+- **`--report` names the SIP a port gate set aside.** SIP on ports outside
+  `--portrange`, and SIP over WebSocket outside the WebSocket port set, was
+  reported on stderr, by `--analyze` and in a vCon, and not in the report. The
+  report's `INCOMPLETE RUN` block now names each count, and the `--json-dialogs`
+  `sipnab_run` record carries them under `port_gate`. Neither changes the exit
+  status.
 - **A diagnostic alias in the config file's `[filter] expression` works as it
   does on `--filter`.** `expression = "short-calls"` was refused at load with
   "unexpected input at position 0" and exit 1, while `--filter short-calls`

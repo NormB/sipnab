@@ -33,6 +33,7 @@ pub enum ReportFormat {
 /// - Call identification and result
 /// - Transaction timing (PDD, setup, ring, teardown)
 /// - SIP transaction flow
+/// - SIPREC recording metadata, when a recorder described the call
 /// - Media stream quality metrics
 /// - Diagnosed issues
 ///
@@ -464,6 +465,14 @@ fn generate_text_report(
     let _ = writeln!(out, "SIP Transactions:");
     write_transaction_flow(&mut out, dialog);
 
+    // SIPREC recording metadata, before the streams because it says what they
+    // are: which of them a recorder was told about and whose they are. The
+    // same block `--report` prints, from the same function.
+    if let Some(block) = super::dialog_report::siprec_block(dialog) {
+        let _ = writeln!(out);
+        out.push_str(&block);
+    }
+
     // Media streams section
     let _ = writeln!(out);
     let _ = writeln!(out, "Media Streams:");
@@ -614,6 +623,17 @@ fn generate_markdown_report(
         dialog.timing.total_retransmits()
     );
     let _ = writeln!(out);
+
+    // SIPREC recording metadata, as in the text report. Fenced, so Markdown
+    // keeps one line per participant and stream.
+    if let Some(block) = super::dialog_report::siprec_block(dialog) {
+        let _ = writeln!(out, "## SIPREC Recording");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "```text");
+        out.push_str(&block);
+        let _ = writeln!(out, "```");
+        let _ = writeln!(out);
+    }
 
     // Media streams
     let _ = writeln!(out, "## Media Streams");
@@ -1668,6 +1688,103 @@ mod tests {
             report.contains("credentials"),
             "403 after an answered challenge is a credential rejection:\n{report}"
         );
+        Ok(())
+    }
+
+    /// A dialog from [`make_dialog_with_messages`] carrying SIPREC metadata:
+    /// two participants, one of them unnamed, and three streams, one of which
+    /// no participant claims.
+    fn recorded_dialog() -> Result<SipDialog, TestError> {
+        let mut d = make_dialog_with_messages()?;
+        d.siprec_metadata = Some(crate::sip::siprec::SirecMetadata {
+            session_id: Some("sess-9".to_string()),
+            mode: Some("complete".to_string()),
+            participants: vec![
+                crate::sip::siprec::SirecParticipant {
+                    participant_id: Some("p1".to_string()),
+                    aor: Some("sip:alice@example.invalid".to_string()),
+                    name: Some("Alice".to_string()),
+                },
+                crate::sip::siprec::SirecParticipant {
+                    participant_id: Some("p2".to_string()),
+                    aor: Some("sip:bob@example.invalid".to_string()),
+                    name: None,
+                },
+            ],
+            streams: vec![
+                crate::sip::siprec::SirecStream {
+                    stream_id: Some("s1".to_string()),
+                    label: Some("0".to_string()),
+                    participant_id: Some("p1".to_string()),
+                },
+                crate::sip::siprec::SirecStream {
+                    stream_id: Some("s2".to_string()),
+                    label: Some("1".to_string()),
+                    participant_id: Some("p2".to_string()),
+                },
+                crate::sip::siprec::SirecStream {
+                    stream_id: Some("s3".to_string()),
+                    label: Some("2".to_string()),
+                    participant_id: None,
+                },
+            ],
+        });
+        Ok(d)
+    }
+
+    /// `--call-report` on a recorded call prints the SIPREC block, in text and
+    /// in Markdown, with the same lines `--report` prints for that dialog.
+    ///
+    /// The JSON form of this report already carried the `siprec` object; the
+    /// text and Markdown forms printed nothing about the recording, while
+    /// `docs/examples.md` recipe 60 shows `--call-report` printing it.
+    #[test]
+    fn a_recorded_call_names_its_recording_in_the_call_report() -> Result<(), TestError> {
+        let d = recorded_dialog()?;
+        let expected = "SIPREC recording (call-report-test@example.com): session sess-9, complete\n\
+                        \x20 participant sip:alice@example.invalid (Alice)\n\
+                        \x20 participant sip:bob@example.invalid\n\
+                        \x20 stream label 0 -> sip:alice@example.invalid\n\
+                        \x20 stream label 1 -> sip:bob@example.invalid\n\
+                        \x20 stream label 2 -> no participant claims it\n";
+        for format in [ReportFormat::Text, ReportFormat::Markdown] {
+            let report = generate_call_report(
+                &d,
+                &[],
+                &MediaDiagnosis::default(),
+                format,
+                crate::rtp::quality::MosDelay::unknown(),
+            );
+            assert!(
+                report.contains(expected),
+                "{format:?} call report lacks the SIPREC block:\n{report}"
+            );
+            let table = crate::output::dialog_report::print_dialog_report(&[&d], &[]);
+            assert!(
+                table.contains(expected),
+                "--report and --call-report must print the same block:\n{table}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A call nobody recorded gets no SIPREC heading in either format.
+    #[test]
+    fn an_unrecorded_call_report_has_no_siprec_heading() -> Result<(), TestError> {
+        let d = make_dialog_with_messages()?;
+        for format in [ReportFormat::Text, ReportFormat::Markdown] {
+            let report = generate_call_report(
+                &d,
+                &[],
+                &MediaDiagnosis::default(),
+                format,
+                crate::rtp::quality::MosDelay::unknown(),
+            );
+            assert!(
+                !report.contains("SIPREC"),
+                "{format:?}: a call nobody recorded is not labeled as recorded:\n{report}"
+            );
+        }
         Ok(())
     }
 }
