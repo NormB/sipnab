@@ -3577,9 +3577,14 @@ fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<
     })?;
 
     let yaml = read(wf)?;
+    // The binaries run side by side through scripts/parallel-tests.py, the
+    // runner the pre-commit hook uses; its output is cargo's, one block per
+    // binary, so the count rule reads it unchanged. Plain `cargo test` ran
+    // the 406 binaries one at a time: 460 s of the Linux job's 12.8-minute
+    // Test step on 2026-10-12.
     let test = line_of(
         &yaml,
-        "cargo test --all-features 2>&1 | tee test-output.txt",
+        "python3 scripts/parallel-tests.py -- --all-features 2>&1 | tee test-output.txt",
         wf,
     )?;
     let derive = line_of(&yaml, "- name: Derive the published test count", wf)?;
@@ -6300,7 +6305,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 184 -> 186: pages.yml's star-count steps name scripts/github-stars.py
     // twice (the paths filter and the run). The file they write,
     // website/data/github.toml, is on the GENERATED list and not counted.
-    const EXPECTED_REFERENCES: usize = 186;
+    // 186 -> 188: ci.yml's Test step names scripts/parallel-tests.py twice
+    // (its comment and its run line). Attributed by measurement: with
+    // origin/main's ci.yml swapped back in, the scan reads 186.
+    const EXPECTED_REFERENCES: usize = 188;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

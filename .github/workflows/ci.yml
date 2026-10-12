@@ -232,9 +232,17 @@ jobs:
           # here, and the YANG step below hands each one to yanglint. Empty,
           # and therefore off, on macOS, where nothing reads them.
           SIPNAB_YANG_EXPORT_DIR: ${{ runner.os == 'Linux' && format('{0}/yang-exports', runner.temp) || '' }}
+        # The test binaries run side by side, as the pre-commit hook runs
+        # them: scripts/parallel-tests.py builds with `cargo test`, records
+        # each binary, and runs the recordings in a pool of one job per core
+        # (at most 8). Plain `cargo test` ran the 406 binaries one at a time,
+        # 460 s of this step's 12.8 minutes on Linux on 2026-10-12. The
+        # output is cargo's, one block per binary, so the count rule below
+        # reads it unchanged, and the exit status is non-zero if any binary
+        # failed.
         run: |
           set -o pipefail
-          cargo test --all-features 2>&1 | tee test-output.txt
+          python3 scripts/parallel-tests.py -- --all-features 2>&1 | tee test-output.txt
 
       # The sipnab-diagnosis YANG module, and what every door really emits for
       # it, checked by two implementations that wrote neither: `pyang --lint`
