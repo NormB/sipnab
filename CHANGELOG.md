@@ -20,6 +20,9 @@ entry that carries them.
   in `release.yml` already did, and a test requires it of every `curl` in CI.
   The deploy's wait for CI's test output treats a failed API read as a reason
   to poll again within its deadline, and logs the error text `gh` printed.
+- **`--capture-tunnels=` with no port in the list says the list is empty.**
+  It printed "Invalid --capture-tunnels port ''" instead, because the check
+  for a blank port ran before the check for an empty list.
 
 ## [0.5.212] - 2026-10-12
 

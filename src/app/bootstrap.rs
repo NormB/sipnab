@@ -5108,10 +5108,17 @@ fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
     let Some(ref list) = cli.capture_args.capture_tunnels else {
         return Ok(Vec::new());
     };
+    // Checked before the per-port loop, which would otherwise refuse the
+    // first blank field as an invalid port '' and this message would never
+    // be reached.
+    if list.split(',').all(|field| field.trim().is_empty()) {
+        return Err(PlanError::arg(format!(
+            "--capture-tunnels was given an empty port list; drop the flag, or \
+             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
+        )));
+    }
     let mut ports: Vec<u16> = Vec::new();
-    let mut any = false;
     for field in list.split(',') {
-        any = true;
         let text = field.trim();
         let port: u16 = text.parse().unwrap_or(0);
         if port == 0 {
@@ -5124,12 +5131,6 @@ fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
         if !ports.contains(&port) {
             ports.push(port);
         }
-    }
-    if !any || ports.is_empty() {
-        return Err(PlanError::arg(format!(
-            "--capture-tunnels was given an empty port list; drop the flag, or \
-             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
-        )));
     }
     Ok(ports)
 }
@@ -8378,6 +8379,30 @@ mod tests {
             assert!(
                 err.message.contains("--capture-tunnels"),
                 "'{bad}': the error must name the flag, got: {}",
+                err.message
+            );
+        }
+        Ok(())
+    }
+
+    /// A list with no port in it gets the message that says so, not the
+    /// per-port one quoting an empty port.
+    ///
+    /// The empty-list message used to be checked after the per-port loop, and
+    /// the loop refused the first blank field as "Invalid --capture-tunnels
+    /// port ''" before the check was reached, so it could never print.
+    #[test]
+    fn capture_tunnels_names_an_empty_list_as_empty() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        for empty in ["", " ", ",", " , "] {
+            cli.capture_args.capture_tunnels = Some(empty.to_string());
+            let err = resolve_tunnel_ports(&cli)
+                .err()
+                .ok_or_else(|| format!("'{empty}' must be refused"))?;
+            assert_eq!(err.exit_code, 2, "'{empty}'");
+            assert!(
+                err.message.contains("was given an empty port list"),
+                "'{empty}': got: {}",
                 err.message
             );
         }

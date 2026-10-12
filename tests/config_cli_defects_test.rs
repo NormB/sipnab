@@ -1125,3 +1125,25 @@ fn credential_file_refusal_exit_code_follows_where_it_was_named() -> Result<(), 
     }
     verdict(failures)
 }
+
+// ── Error messages that could not print, or printed the wrong thing ────────
+
+/// The shipped single-call capture.
+const SIP_CALL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
+
+/// `--capture-tunnels=` names the list as empty, with exit 2.
+///
+/// The empty-list message was checked after the per-port loop, which refused
+/// the blank field first as "Invalid --capture-tunnels port ''".
+#[test]
+fn an_empty_capture_tunnels_list_is_named_as_empty() -> Result<(), TestError> {
+    let o = run(&argv(&["-I", SIP_CALL, "--capture-tunnels="]), None);
+    assert_eq!((o.stage, o.code), (Stage::Plan, 2), "{}", o.message);
+    assert!(
+        o.message
+            .contains("--capture-tunnels was given an empty port list"),
+        "{}",
+        o.message
+    );
+    Ok(())
+}
