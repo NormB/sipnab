@@ -5592,7 +5592,7 @@ impl PacketPass<'_, '_, '_> {
         // constant-factor cut; fire_quality_event no-ops otherwise).
         if self.state.event_exec.quality_events_enabled() {
             let key = stream_key_of(pp, rtp_hdr);
-            if let Some(stream) = self.state.stream_store.get(&key) {
+            if let Some(stream) = self.state.stream_store.get_live(&key) {
                 // Queued, not fired — same reason as the dialog event: the
                 // MOS estimate reads the stream, the `fork`/`exec` does not.
                 self.state.event_exec.queue_quality_event(
@@ -5625,7 +5625,7 @@ impl PacketPass<'_, '_, '_> {
         let (expected_pt, clock_rate) = self
             .state
             .stream_store
-            .get(&key)
+            .get_live(&key)
             .filter(|s| {
                 s.codec
                     .as_deref()
@@ -5651,6 +5651,10 @@ impl PacketPass<'_, '_, '_> {
 }
 
 /// The stream an RTP packet belongs to: its SSRC and its socket pair.
+///
+/// Session 0 always, because a packet carries no session: look it up with
+/// [`crate::rtp::stream_store::StreamStore::get_live`], which resolves it to
+/// the stream of the call the packet belongs to.
 #[inline]
 fn stream_key_of(
     pp: &ParsedPacket,
@@ -5660,6 +5664,7 @@ fn stream_key_of(
         ssrc: rtp_hdr.ssrc,
         src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
         dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+        session: 0,
     }
 }
 
@@ -11934,6 +11939,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), port + 1),
             ssrc: u32::from(port),
+            session: 0,
         };
         let hdr = crate::rtp::parser::RtpHeader {
             version: 2,

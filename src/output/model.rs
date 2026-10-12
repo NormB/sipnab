@@ -879,6 +879,7 @@ mod wideband_tests {
             ssrc: 0x1234,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,

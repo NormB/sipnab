@@ -452,6 +452,7 @@ mod tests {
             ssrc: 1,
             src: std::net::SocketAddr::new(addr_a(), 20000),
             dst: std::net::SocketAddr::new(addr_b(), 30000),
+            session: 0,
         };
         app.stream_detail_return_view = Some(View::StreamList);
         app.current_view = View::StreamDetail(k);

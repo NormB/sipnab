@@ -92,6 +92,16 @@ struct SdpEndpoint {
     /// would let an endpoint learned from a relay's control plane assert a
     /// packing nobody negotiated.
     media_formats: Option<Vec<String>>,
+    /// The store's [`StreamStore::binding_seq`] when this endpoint was first
+    /// recorded or last moved to a different Call-ID.
+    ///
+    /// Compared with the same counter as a stream saw it when the stream
+    /// began: an endpoint that names another call and is NEWER than the
+    /// stream is a renegotiation for a later call, and the stream's next
+    /// packet starts that call's stream. A sequence number rather than a
+    /// capture time, because an SDP endpoint does not always carry a time
+    /// and two clocks in a composite run need not agree.
+    bound_seq: u64,
 }
 
 /// WHO asserted a media endpoint — as opposed to how the assertion reached
@@ -667,6 +677,43 @@ pub struct StreamStore {
     /// outlives a capture, and a capture opened twice would read every
     /// command of the second pass as a retry of the first.
     relay_control: crate::relay_vocab::ControlChannels,
+    /// SSRC and socket pair (session 0) → the session of the stream that
+    /// currently receives its packets, for the pairs whose first stream a
+    /// later call replaced. A pair absent here is on session 0. See
+    /// [`StreamKey::session`].
+    live_sessions: std::collections::HashMap<StreamKey, u32, ahash::RandomState>,
+    /// Counter bumped each time an SDP endpoint is recorded for the first
+    /// time or moved to a different Call-ID. See `SdpEndpoint::bound_seq`.
+    binding_seq: u64,
+}
+
+/// Whether a stream bound to `stream_call`, which began when the store's
+/// binding counter read `began_at`, now carries a different call.
+///
+/// `endpoints` are the SDP endpoints currently recorded for the stream's two
+/// sockets, as `(call_id, bound_seq)`. The answer is yes when one of them
+/// names another Call-ID AND was bound after the stream began: SDP from a
+/// later call renegotiated a socket this stream uses. Both conditions, and
+/// each for a reason:
+///
+/// - A stream bound to no call has nothing to be replaced by: the SDP that
+///   names its call binds it, and that is not a second call.
+/// - An endpoint already naming another call when the stream began is not a
+///   change. A signaling-only B2BUA forwards one party's SDP under a second
+///   Call-ID, so one socket can be named by two calls for a whole call; with
+///   the age test missing, a stream there would split on every packet.
+#[must_use]
+fn renegotiated_by_another_call<'a>(
+    stream_call: Option<&str>,
+    began_at: u64,
+    endpoints: impl IntoIterator<Item = (&'a str, u64)>,
+) -> bool {
+    let Some(mine) = stream_call else {
+        return false;
+    };
+    endpoints
+        .into_iter()
+        .any(|(call, bound_seq)| bound_seq > began_at && call != mine)
 }
 
 impl StreamStore {
@@ -691,7 +738,54 @@ impl StreamStore {
             evict_shift_work: 0,
             generation: 0,
             relay_control: crate::relay_vocab::ControlChannels::default_capacity(),
+            live_sessions: std::collections::HashMap::default(),
+            binding_seq: 0,
         }
+    }
+
+    /// The key of the stream that receives packets on `flow`'s SSRC and
+    /// socket pair now. `flow.session` is ignored.
+    fn live_key(&self, flow: &StreamKey) -> StreamKey {
+        let flow = flow.flow();
+        match self.live_sessions.get(&flow) {
+            Some(&session) => StreamKey { session, ..flow },
+            None => flow,
+        }
+    }
+
+    /// Whether `key` is the stream receiving its pair's packets now, rather
+    /// than one a later call on the same SSRC and sockets replaced.
+    fn is_live(&self, key: &StreamKey) -> bool {
+        self.live_key(key).session == key.session
+    }
+
+    /// The stream that a packet with `flow`'s SSRC, source and destination
+    /// belongs to now.
+    ///
+    /// [`Self::get`] answers for one exact key, and an RTP packet carries no
+    /// session: when two calls reused the SSRC and sockets, this is the later
+    /// call's stream. `flow.session` is ignored.
+    #[must_use]
+    pub fn get_live(&self, flow: &StreamKey) -> Option<&RtpStream> {
+        self.streams.get(&self.live_key(flow))
+    }
+
+    /// Whether the live stream at `key` must give way to a new one because a
+    /// different call renegotiated one of its sockets after it began.
+    fn call_changed(&self, key: &StreamKey) -> bool {
+        let Some(stream) = self.streams.get(key) else {
+            return false;
+        };
+        let endpoints = [key.src, key.dst].into_iter().filter_map(|sock| {
+            self.sdp_endpoints
+                .get(&(sock.ip(), sock.port()))
+                .map(|e| (e.call_id.as_str(), e.bound_seq))
+        });
+        renegotiated_by_another_call(
+            stream.associated_dialog.as_deref(),
+            stream.binding_seq_at_start,
+            endpoints,
+        )
     }
 
     /// Monotonic structural-change counter: bumped when the stream SET, a
@@ -768,11 +862,19 @@ impl StreamStore {
         rtp: &RtpHeader,
         timestamp: DateTime<Utc>,
     ) {
-        let key = StreamKey {
-            ssrc: rtp.ssrc,
-            src: SocketAddr::new(parsed.src_addr, parsed.src_port),
-            dst: SocketAddr::new(parsed.dst_addr, parsed.dst_port),
-        };
+        let mut key = self.live_key(&StreamKey::new(
+            rtp.ssrc,
+            SocketAddr::new(parsed.src_addr, parsed.src_port),
+            SocketAddr::new(parsed.dst_addr, parsed.dst_port),
+        ));
+        // A later call renegotiated this stream's sockets and reuses its
+        // SSRC: this packet is that call's, and starts its own stream. The
+        // finished one stays in the store under its own session, bound to
+        // its own call, with only its own packets.
+        if self.call_changed(&key) {
+            key.session += 1;
+            self.live_sessions.insert(key.flow(), key.session);
+        }
 
         // RFC 3550 §5.1 padding is not payload. Counting it inflated the
         // octet total that becomes the reported bitrate, and put padding
@@ -813,6 +915,7 @@ impl StreamStore {
             self.ensure_capacity();
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
+            stream.binding_seq_at_start = self.binding_seq;
             // Where this stream began, recorded once and never again (#128).
             // This branch runs only for a key the store has not seen, so it is
             // by construction the first packet of the stream — writing it in
@@ -959,6 +1062,11 @@ impl StreamStore {
                 };
                 let keys = keys.clone();
                 for key in &keys {
+                    // A stream a later call replaced is finished: a report
+                    // about this SSRC now is about the live call's media.
+                    if !self.is_live(key) {
+                        continue;
+                    }
                     let Some(stream) = self.streams.get(key) else {
                         continue;
                     };
@@ -1028,7 +1136,8 @@ impl StreamStore {
             };
             let keys = keys.clone();
             for key in &keys {
-                if !self.streams.contains_key(key) {
+                // Live streams only, for the reason `process_rtcp` gives.
+                if !self.streams.contains_key(key) || !self.is_live(key) {
                     continue;
                 }
                 let entry = self.provenance.entry(key.clone()).or_default();
@@ -1475,6 +1584,10 @@ impl StreamStore {
     ) {
         match self.sdp_endpoints.get_mut(&(addr, port)) {
             Some(existing) => {
+                if existing.call_id != call_id {
+                    self.binding_seq += 1;
+                    existing.bound_seq = self.binding_seq;
+                }
                 existing.call_id = call_id.to_string();
                 if !rtpmap.is_empty() {
                     existing.rtpmap = rtpmap.to_vec();
@@ -1516,6 +1629,10 @@ impl StreamStore {
                         ptime,
                         provenance,
                         media_formats: None,
+                        bound_seq: {
+                            self.binding_seq += 1;
+                            self.binding_seq
+                        },
                     },
                 );
             }
@@ -1830,6 +1947,7 @@ impl StreamStore {
         self.endpoint_index.clear();
         self.sdp_endpoints.clear();
         self.provenance.clear();
+        self.live_sessions.clear();
         self.relay_control = crate::relay_vocab::ControlChannels::default_capacity();
         self.generation += 1;
     }
@@ -1902,6 +2020,10 @@ impl StreamStore {
         for (ep, sdp) in other.sdp_endpoints {
             self.sdp_endpoints.entry(ep).or_insert(sdp);
         }
+        for (flow, session) in other.live_sessions {
+            let live = self.live_sessions.entry(flow).or_insert(session);
+            *live = (*live).max(session);
+        }
         self.link_scan_iters += other.link_scan_iters;
         self.evict_shift_work += other.evict_shift_work;
         self.relay_control.merge(other.relay_control);
@@ -1970,6 +2092,13 @@ impl StreamStore {
                 // outlive the stream, or a later stream reusing the same
                 // 5-tuple + SSRC would inherit a stranger's RTCP report.
                 self.provenance.remove(key);
+                // The pair's earlier sessions are older than its live one, so
+                // they were evicted before it or with it: once the live one
+                // goes, the pair starts again at session 0 with nothing to
+                // collide with.
+                if self.live_sessions.get(&key.flow()) == Some(&key.session) {
+                    self.live_sessions.remove(&key.flow());
+                }
             }
         }
     }
@@ -2485,6 +2614,7 @@ a=rtpmap:96 H264/90000\r\n";
                 ssrc,
                 src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+                session: 0,
             })
             .ok_or("stream exists")?)
     }
@@ -2758,6 +2888,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x00C0FFEE,
             src: SocketAddr::new(addr, port),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let s = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(
@@ -3021,6 +3152,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x00C0FFEE,
             src: SocketAddr::new(addr, port),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert!(
             store
@@ -3055,6 +3187,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xBEEF,
             src: SocketAddr::new(addr, port),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         // Feed a 90 kHz, 33 ms-spaced stream of `pt` to a store, optionally
         // seeding the SDP for the endpoint first; return the final jitter (ms).
@@ -3106,6 +3239,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xAAAA,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(stream.packet_count, 1);
@@ -3155,6 +3289,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xDDDD,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(stream.packet_count, 2, "both packets must reach the stream");
@@ -3175,6 +3310,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xDDDD,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30001),
+            session: 0,
         };
         assert!(
             store
@@ -3204,6 +3340,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xBBBB,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(stream.packet_count, 2);
@@ -3239,6 +3376,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x1111,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert!(
             store.get(&key1).is_none(),
@@ -3266,6 +3404,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xCCCC,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(
@@ -3353,6 +3492,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xABCD,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         store.process_rtcp(
             &[RtcpPacket::ReceiverReport(ReceiverReport {
@@ -3414,6 +3554,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xBEEF,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         store.process_rtcp(
             &[RtcpPacket::ReceiverReport(ReceiverReport {
@@ -3494,6 +3635,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x0001,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert!(
             store.remote_report(&key).is_none(),
@@ -3521,6 +3663,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x5151,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let metrics = VoipMetrics {
             ssrc: 0x5151,
@@ -3587,6 +3730,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xFFFF,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let measured_jitter = store.get(&key).ok_or("store.get(&key) is None")?.jitter;
         let measured_lost = store
@@ -3675,6 +3819,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         }
     }
 
@@ -3856,6 +4001,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x5EED,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let mos_of = |store: &StreamStore| -> Result<_, TestError> {
             let s = store.get(&key).ok_or("the stream is tracked")?;
@@ -3918,11 +4064,13 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let second = StreamKey {
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         for key in [&first, &second] {
             let r = store
@@ -3954,6 +4102,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         store.process_rtcp(&rr_for(0xCAFE, 8), chrono::Utc::now(), None);
         store.process_rtcp(&rr_for(0xCAFE, 16), chrono::Utc::now(), None);
@@ -3976,6 +4125,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xB0B0,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert_eq!(
             store.clock_grounding(&key),
@@ -4004,6 +4154,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert!(store.remote_report(&key).is_some());
 
@@ -4061,6 +4212,7 @@ a=rtpmap:96 H264/90000\r\n";
                 ssrc: 0x600D,
                 src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+                session: 0,
             };
             assert_eq!(
                 store.get(&key).ok_or("store.get(&key) is None")?.clock_rate,
@@ -4092,6 +4244,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x1DEA,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Assumed));
         assert!(
@@ -4122,6 +4275,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0x1DEA,
             src: SocketAddr::new(addr, port),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let mut store = StreamStore::new(100);
         for i in 0..40u32 {
@@ -4279,6 +4433,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert_eq!(
             store.remote_report(&survivor).map(|r| r.jitter_ms),
@@ -4313,6 +4468,7 @@ a=rtpmap:96 H264/90000\r\n";
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         assert_eq!(
             store.get(&key).ok_or("store.get(&key) is None")?.jitter,
@@ -4748,6 +4904,305 @@ a=rtpmap:96 H264/90000\r\n";
             (ms - 90.0).abs() < f64::EPSILON,
             "the endpoint's own 90 ms must win over the derived 600 ms, got {ms}"
         );
+        Ok(())
+    }
+
+    // ── One stream per call on a reused socket and SSRC ─────────────────
+
+    /// The caller's and callee's media endpoints in every test below.
+    fn call_endpoints() -> [(IpAddr, u16); 2] {
+        [
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        ]
+    }
+
+    /// Bind both endpoints to `call_id` the way an offer/answer does.
+    fn negotiate(store: &mut StreamStore, call_id: &str) {
+        let rtpmap = vec![(0u8, "PCMU".to_string(), 8000u32)];
+        for (addr, port) in call_endpoints() {
+            store.link_endpoint(addr, port, call_id, &rtpmap);
+        }
+    }
+
+    /// `count` PCMU packets 20 ms apart from `start_ms`, sequence numbers and
+    /// RTP timestamps restarting at zero, all on one SSRC and socket pair.
+    fn send(store: &mut StreamStore, ssrc: u32, count: u16, start_ms: i64) {
+        let parsed = make_parsed(20000, 30000, 160);
+        for seq in 0..count {
+            store.process_rtp(
+                &parsed,
+                &rtp_pkt(ssrc, seq, 0, u32::from(seq) * 160),
+                ts_ms(start_ms + i64::from(seq) * 20),
+            );
+        }
+    }
+
+    /// A second call that renegotiates the same sockets and reuses the SSRC
+    /// gets its own stream, and each call keeps exactly its own packets.
+    #[test]
+    fn a_call_that_reuses_the_socket_and_ssrc_starts_a_new_stream() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        negotiate(&mut store, "call-1");
+        send(&mut store, 0x1122_3344, 50, 0);
+        negotiate(&mut store, "call-2");
+        send(&mut store, 0x1122_3344, 50, 8_000);
+
+        assert_eq!(store.len(), 2, "one stream per call, not one across both");
+        for call in ["call-1", "call-2"] {
+            let mine: Vec<&RtpStream> = store.streams_for(call).collect();
+            assert_eq!(mine.len(), 1, "{call} owns one stream");
+            assert_eq!(mine[0].packet_count, 50, "{call} owns its own packets");
+            assert_eq!(
+                mine[0].jitter, 0.0,
+                "{call}'s jitter is measured inside the call, not across the gap"
+            );
+            assert!(
+                mine[0]
+                    .last_seen
+                    .signed_duration_since(mine[0].first_seen)
+                    .num_milliseconds()
+                    < 1_000,
+                "{call}'s stream spans only its own second of media"
+            );
+        }
+        Ok(())
+    }
+
+    /// A re-offer on the SAME call does not split its stream.
+    #[test]
+    fn a_reoffer_on_the_same_call_keeps_one_stream() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        negotiate(&mut store, "call-1");
+        send(&mut store, 0x1122_3344, 25, 0);
+        negotiate(&mut store, "call-1");
+        let parsed = make_parsed(20000, 30000, 160);
+        for seq in 25..50u16 {
+            store.process_rtp(
+                &parsed,
+                &rtp_pkt(0x1122_3344, seq, 0, u32::from(seq) * 160),
+                ts_ms(i64::from(seq) * 20),
+            );
+        }
+        assert_eq!(store.len(), 1, "a re-INVITE is the same call");
+        assert_eq!(
+            store
+                .streams_for("call-1")
+                .map(|s| s.packet_count)
+                .sum::<u64>(),
+            50
+        );
+        Ok(())
+    }
+
+    /// Media seen before any SDP is not split when the SDP that names its
+    /// call arrives: binding an unbound stream is not a change of call.
+    #[test]
+    fn rtp_before_its_first_sdp_stays_one_stream() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        send(&mut store, 0x1122_3344, 10, 0);
+        negotiate(&mut store, "call-1");
+        let parsed = make_parsed(20000, 30000, 160);
+        for seq in 10..20u16 {
+            store.process_rtp(
+                &parsed,
+                &rtp_pkt(0x1122_3344, seq, 0, u32::from(seq) * 160),
+                ts_ms(i64::from(seq) * 20),
+            );
+        }
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store
+                .streams_for("call-1")
+                .map(|s| s.packet_count)
+                .sum::<u64>(),
+            20
+        );
+        Ok(())
+    }
+
+    /// A stream whose two endpoints were already claimed by two different
+    /// calls when it began is not split on every packet: nothing about its
+    /// call changed after it started.
+    #[test]
+    fn endpoints_claimed_by_two_calls_before_the_stream_began_do_not_split_it()
+    -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        let rtpmap = vec![(0u8, "PCMU".to_string(), 8000u32)];
+        let [a, b] = call_endpoints();
+        store.link_endpoint(a.0, a.1, "leg-a", &rtpmap);
+        store.link_endpoint(b.0, b.1, "leg-b", &rtpmap);
+        send(&mut store, 0x1122_3344, 20, 0);
+        assert_eq!(store.len(), 1, "one continuous stream");
+        assert_eq!(store.iter().map(|s| s.packet_count).sum::<u64>(), 20);
+        Ok(())
+    }
+
+    /// RTCP about the reused SSRC is filed against the call that is live,
+    /// never against the earlier call's finished stream.
+    #[test]
+    fn a_reception_report_after_the_split_reaches_only_the_live_stream() -> Result<(), TestError> {
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+
+        let mut store = StreamStore::new(100);
+        negotiate(&mut store, "call-1");
+        send(&mut store, 0x1122_3344, 10, 0);
+        negotiate(&mut store, "call-2");
+        send(&mut store, 0x1122_3344, 10, 8_000);
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x1111,
+                reports: vec![ReceptionReport {
+                    ssrc: 0x1122_3344,
+                    fraction_lost: 0,
+                    cumulative_lost: 0,
+                    highest_seq: 9,
+                    jitter: 0,
+                    last_sr: 0,
+                    delay_since_sr: 0,
+                }],
+            })],
+            ts(9),
+            None,
+        );
+        let first = store
+            .streams_for("call-1")
+            .next()
+            .ok_or("call-1 has a stream")?;
+        let second = store
+            .streams_for("call-2")
+            .next()
+            .ok_or("call-2 has a stream")?;
+        assert_ne!(first.key, second.key, "two streams, two identities");
+        assert!(
+            store.remote_report(&first.key).is_none(),
+            "the finished call's stream is not the one being reported on"
+        );
+        assert!(store.remote_report(&second.key).is_some());
+        Ok(())
+    }
+
+    /// The rule in isolation: each condition is necessary, and the two
+    /// together are sufficient.
+    #[test]
+    fn a_stream_changes_call_only_when_a_newer_endpoint_names_another() {
+        // Bound to no call: whatever the endpoints say binds it, not splits it.
+        assert!(!super::renegotiated_by_another_call(
+            None,
+            1,
+            [("call-2", 5)]
+        ));
+        // A newer binding for the SAME call is a re-offer.
+        assert!(!super::renegotiated_by_another_call(
+            Some("call-1"),
+            1,
+            [("call-1", 5)]
+        ));
+        // Another call, but already there when the stream began.
+        assert!(!super::renegotiated_by_another_call(
+            Some("call-1"),
+            5,
+            [("call-2", 5)]
+        ));
+        // Another call, bound after the stream began, on either socket.
+        assert!(super::renegotiated_by_another_call(
+            Some("call-1"),
+            1,
+            [("call-1", 1), ("call-2", 2)]
+        ));
+        // No endpoint recorded at all.
+        assert!(!super::renegotiated_by_another_call(
+            Some("call-1"),
+            1,
+            std::iter::empty()
+        ));
+    }
+
+    /// The later call's stream is session 1 of the same SSRC and sockets,
+    /// and a packet on them now resolves to it.
+    #[test]
+    fn the_later_calls_stream_is_the_next_session_and_the_live_one() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        negotiate(&mut store, "call-1");
+        send(&mut store, 0x1122_3344, 5, 0);
+        negotiate(&mut store, "call-2");
+        send(&mut store, 0x1122_3344, 7, 8_000);
+        let first = store.streams_for("call-1").next().ok_or("call-1")?;
+        let second = store.streams_for("call-2").next().ok_or("call-2")?;
+        assert_eq!(first.key.session, 0);
+        assert_eq!(second.key.session, 1);
+        assert_eq!(first.key.flow(), second.key.flow(), "same SSRC and sockets");
+        let live = store.get_live(&first.key).ok_or("a live stream")?;
+        assert_eq!(live.key, second.key, "packets now belong to call-2");
+        assert_eq!(store.get(&first.key).map(|s| s.packet_count), Some(5));
+        Ok(())
+    }
+
+    /// Three calls in a row are three sessions.
+    #[test]
+    fn every_later_call_starts_another_session() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        for (n, call) in ["call-1", "call-2", "call-3"].iter().enumerate() {
+            negotiate(&mut store, call);
+            send(&mut store, 0x1122_3344, 4, n as i64 * 8_000);
+        }
+        let mut sessions: Vec<(u32, String)> = store
+            .iter()
+            .map(|s| {
+                (
+                    s.key.session,
+                    s.associated_dialog.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        sessions.sort();
+        assert_eq!(
+            sessions,
+            [
+                (0, "call-1".to_string()),
+                (1, "call-2".to_string()),
+                (2, "call-3".to_string())
+            ]
+        );
+        Ok(())
+    }
+
+    /// Once eviction removes the live session, the pair starts again at
+    /// session 0 rather than at a number that names nothing in the store.
+    #[test]
+    fn evicting_the_live_session_forgets_the_pairs_sessions() -> Result<(), TestError> {
+        let mut store = StreamStore::new(2);
+        negotiate(&mut store, "call-1");
+        send(&mut store, 0x1122_3344, 3, 0);
+        negotiate(&mut store, "call-2");
+        send(&mut store, 0x1122_3344, 3, 8_000);
+        assert_eq!(store.len(), 2);
+        // Two unrelated streams push both sessions out.
+        let parsed = make_parsed(40000, 50000, 160);
+        store.process_rtp(&parsed, &rtp_pkt(0xAAAA, 1, 0, 0), ts(20));
+        let parsed = make_parsed(40002, 50002, 160);
+        store.process_rtp(&parsed, &rtp_pkt(0xBBBB, 1, 0, 0), ts(21));
+        assert!(
+            store.iter().all(|s| s.key.ssrc != 0x1122_3344),
+            "both sessions were evicted"
+        );
+        assert!(store.live_sessions.is_empty(), "nothing left to track");
+        Ok(())
+    }
+
+    /// A multi-core merge keeps every session and the live one.
+    #[test]
+    fn merge_keeps_each_session_and_the_live_one() -> Result<(), TestError> {
+        let mut worker = StreamStore::new(100);
+        negotiate(&mut worker, "call-1");
+        send(&mut worker, 0x1122_3344, 3, 0);
+        negotiate(&mut worker, "call-2");
+        send(&mut worker, 0x1122_3344, 3, 8_000);
+        let mut merged = StreamStore::new(100);
+        merged.merge(worker);
+        assert_eq!(merged.len(), 2);
+        let flow = merged.iter().next().ok_or("a stream")?.key.flow();
+        assert_eq!(merged.get_live(&flow).map(|s| s.key.session), Some(1));
         Ok(())
     }
 }
