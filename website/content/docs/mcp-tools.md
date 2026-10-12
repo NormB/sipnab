@@ -5905,8 +5905,8 @@ can deduplicate on it. Two dialogs that opened in the same millisecond on the
 same node have only 12 bits separating them — that is inherent in the draft's
 layout, which spends a v7's entropy on a host-derived `rand_b`.
 
-A binary built without the `vcon` Cargo feature refuses this tool with
-`invalid_params` and names the feature, rather than the tool being absent.
+A binary built without the `vcon` Cargo feature does not offer this tool:
+it is absent from `tools/list`.
 [`server_capabilities`](#server-capabilities) lists what a given binary carries.
 
 ### `validate_vcon`
@@ -5989,8 +5989,8 @@ a keyword outside that subset makes every validation report `invalid` naming
 the keyword. Re-vendoring a richer schema therefore fails loudly instead of
 quietly certifying less than it claims.
 
-A binary built without the `vcon` Cargo feature refuses this tool with
-`invalid_params` and names the feature.
+A binary built without the `vcon` Cargo feature does not offer this tool:
+it is absent from `tools/list`.
 [`server_capabilities`](#server-capabilities) lists what a given binary carries.
 
 ### `generate_repro`

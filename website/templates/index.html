@@ -635,14 +635,14 @@ Issues Detected:
   </div>
 </section>
 
-{# How-tos and walkthroughs: the newest three, how-tos ahead of features, pulled from the section so the
+{# How-tos and walkthroughs: the newest three how-tos and feature notes together, by date, pulled from the section so the
    list cannot go stale the way a hand-written one would. Post-mortems are left
    out on purpose. The notes index collapses them because an account of what
    broke is a poor front page, and this is the front page of the front page.
    Nothing here states a count: how many appear is however many exist, up to
    the cap, and a number in prose has to be kept true by hand. #}
 {% set notes = get_section(path="notes/_index.md") %}
-{% set guides = notes.pages | filter(attribute="extra.kind", value="howto") | concat(with=notes.pages | filter(attribute="extra.kind", value="feature")) %}
+{% set guides = notes.pages | filter(attribute="extra.kind", value="howto") | concat(with=notes.pages | filter(attribute="extra.kind", value="feature")) | sort(attribute="date") | reverse %}
 {% if guides | length > 0 %}
 <section class="notes-callout" id="notes">
   <div class="notes-inner">

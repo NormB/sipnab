@@ -10923,6 +10923,30 @@ fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The homepage's notes teaser shows the newest how-tos and feature notes
+/// together, by date. It took the newest three of the how-tos and only then
+/// the features, so with three or more how-tos no feature note could appear,
+/// while its heading promised "what each new feature is for".
+#[test]
+fn the_homepage_notes_teaser_sorts_how_tos_and_features_by_date() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let set = page
+        .lines()
+        .find(|l| l.contains("{% set guides ="))
+        .ok_or("the teaser no longer builds `guides`")?;
+    assert!(
+        set.contains("value=\"howto\"") && set.contains("value=\"feature\""),
+        "the teaser must take both kinds: {set}"
+    );
+    let sort = set
+        .find("sort(attribute=\"date\")")
+        .ok_or_else(|| format!("the teaser does not sort the merged list by date: {set}"))?;
+    let concat = set.find("concat(").ok_or("no concat")?;
+    assert!(concat < sort, "sort after merging the two kinds: {set}");
+    assert!(set.contains("reverse"), "newest first: {set}");
+    Ok(())
+}
+
 /// Each Quick Start block holds one command, so each copy button copies one.
 ///
 /// The block held four commands and three comments under one Copy button, so

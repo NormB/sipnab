@@ -1266,8 +1266,8 @@ pub struct OutputArgs {
     /// note the exported file carries travels with it saying so. Above a
     /// measured budget the media is REFUSED out loud rather than dropped —
     /// `capture_completeness.media` says which of carried, refused-over-budget,
-    /// none-decodable or not-considered applies, so an absent `recording` never
-    /// has to be read as a call with no audio.
+    /// none-decodable, not-considered or withheld-by-redaction applies, so an
+    /// absent `recording` never has to be read as a call with no audio.
     ///
     /// It also carries what THIS capture missed: frames no decoder could read,
     /// SIP a port gate discarded, messages a retention cap evicted. vCon has no
@@ -1418,7 +1418,8 @@ pub struct OutputArgs {
     /// one we sent?" without trusting either side's metadata.
     ///
     /// The format is `sha256sum`'s, so `sipnab ... --vcon-digest > SHA256SUMS`
-    /// and a later `sha256sum -c SHA256SUMS` both work with no glue.
+    /// and a later `sha256sum -c SHA256SUMS` both work with no glue. It implies
+    /// `--no-cli-print`, so no message line shares stdout with the digests.
     #[arg(help_heading = "Output", long = "vcon-digest")]
     pub vcon_digest: bool,
 
@@ -7094,6 +7095,12 @@ impl Cli {
         if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
             self.output_args.no_cli_print = true;
         }
+        // `--vcon-digest` writes `sha256sum` lines to stdout, which its help
+        // promises can be redirected straight into a file `sha256sum -c`
+        // reads, so no message line may share the stream.
+        if self.output_args.vcon_digest {
+            self.output_args.no_cli_print = true;
+        }
     }
 
     /// Why an MCP opt-in cannot be used with the TUI up, if one is set.
@@ -8194,6 +8201,33 @@ mod tests {
             build_line,
             "-V is the short form and stays the single build line"
         );
+        Ok(())
+    }
+
+    /// `--export-vcon`'s help names every value `capture_completeness.media`
+    /// can take. It named four of the five, leaving out
+    /// `withheld-by-redaction`, which a `--redact` export reports.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn export_vcon_help_names_every_media_outcome() -> Result<(), TestError> {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "export_vcon")
+            .ok_or("no --export-vcon argument")?;
+        let help = arg
+            .get_long_help()
+            .or_else(|| arg.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        for outcome in crate::output::vcon::MediaOutcome::ALL {
+            assert!(
+                help.contains(outcome.as_str()),
+                "--export-vcon help does not name `{}`:\n{help}",
+                outcome.as_str()
+            );
+        }
         Ok(())
     }
 

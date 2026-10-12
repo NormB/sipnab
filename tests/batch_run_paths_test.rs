@@ -688,6 +688,38 @@ fn vcon_digest_prints_a_sha256sum_line_for_each_container_written() -> Result<()
     Ok(())
 }
 
+/// `--vcon-digest` owns stdout: the docs promise `sipnab ... --vcon-digest >
+/// SHA256SUMS` and a later `sha256sum -c SHA256SUMS` work with no glue. Without
+/// `--no-cli-print`, `-N` also printed every SIP message there, and
+/// `sha256sum -c` reported the extra lines as improperly formatted.
+#[test]
+fn vcon_digest_alone_on_stdout_without_no_cli_print() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let export = dir.path().join("vcons");
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        SIP_CALL,
+        "--export-vcon-when",
+        "response_code >= 200",
+        "--export-vcon-dir",
+        s(&export)?,
+        "--vcon-digest",
+    ])?;
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    let line = regex::Regex::new(r"^[0-9a-f]{64}  \S")?;
+    let lines: Vec<&str> = run.stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert!(!lines.is_empty(), "no digest printed:\n{}", run.dump());
+    for l in &lines {
+        assert!(
+            line.is_match(l),
+            "a non-digest line on stdout: {l:?}\n{}",
+            run.dump()
+        );
+    }
+    Ok(())
+}
+
 /// `--export-vcon-when` puts the call's audio in each container, as
 /// `--export-vcon` does for one call, when the run retained it.
 ///

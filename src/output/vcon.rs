@@ -931,6 +931,16 @@ pub enum MediaOutcome {
 }
 
 impl MediaOutcome {
+    /// Every outcome, in declaration order, so a list of them in help text or
+    /// docs can be checked against the enum rather than against a copy.
+    pub const ALL: [Self; 5] = [
+        Self::NotConsidered,
+        Self::NoneDecodable,
+        Self::RefusedOverBudget,
+        Self::Carried,
+        Self::WithheldByRedaction,
+    ];
+
     /// The token this outcome serializes as.
     ///
     /// Spelled once here so a test, a doc page and the wire cannot disagree

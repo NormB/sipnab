@@ -10,6 +10,32 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A diagnostic alias in the config file's `[filter] expression` works as it
+  does on `--filter`.** `expression = "short-calls"` was refused at load with
+  "unexpected input at position 0" and exit 1, while `--filter short-calls`
+  ran. Both now go through the same alias expansion.
+- **`--vcon-digest` implies `--no-cli-print`.** With `-N` and no
+  `--no-cli-print`, every SIP message was printed on stdout beside the
+  digests, so `sipnab ... --vcon-digest > SHA256SUMS` followed by
+  `sha256sum -c SHA256SUMS`, as the help describes, reported the message lines
+  as improperly formatted.
+- **`--export-vcon`'s help lists all five `capture_completeness.media`
+  values;** it left out `withheld-by-redaction`.
+- **Two `--redact` examples in `docs/cli-reference.md` run.** Both omitted
+  `--export-vcon-when`, which sipnab requires with `--export-vcon-dir`, and
+  exited 2. The test that runs every documented command now also runs the
+  `sipnab …` examples that open a list item, not only fenced shell blocks.
+- **The docs describe what the code does:** a build without the `vcon` feature
+  leaves `export_vcon` and `validate_vcon` out of the tool list rather than
+  refusing them; `--filter` does not narrow what `-O` writes, while a BPF filter
+  does; the name popup's `Tab`, `Shift+Tab` and `Esc` keys; and the `--redact`
+  row no longer repeats a phrase.
+- **The homepage's notes list takes the newest how-tos and feature notes
+  together, by date.** It took the how-tos first, so no feature note could
+  appear.
+
 ### Changed
 
 - **Reading a capture file on one core is about 20% faster.** A run with no
