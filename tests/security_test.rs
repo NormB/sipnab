@@ -1441,6 +1441,7 @@ fn constant_time_eq_different_lengths_still_compares() -> Result<(), TestError> 
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
         max_inline_media_bytes: None,
+        content_deny_header: None,
         max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         // No capture context. These fixtures exercise auth and rate limiting
         // against bare stores, which is the state `source: "unknown"` and a
@@ -1507,6 +1508,7 @@ fn constant_time_eq_matching_strings() -> Result<(), TestError> {
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
         max_inline_media_bytes: None,
+        content_deny_header: None,
         max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         // No capture context. These fixtures exercise auth and rate limiting
         // against bare stores, which is the state `source: "unknown"` and a
@@ -1583,6 +1585,7 @@ fn constant_time_eq_different_strings_same_length() -> Result<(), TestError> {
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
         max_inline_media_bytes: None,
+        content_deny_header: None,
         max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         // No capture context. These fixtures exercise auth and rate limiting
         // against bare stores, which is the state `source: "unknown"` and a

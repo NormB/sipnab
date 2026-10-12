@@ -1402,6 +1402,19 @@ pub struct ExportContext<'a> {
     pub media: &'a [crate::output::model::StreamSummary],
 }
 
+/// Whether `--content-deny-header` withholds this dialog's container.
+///
+/// The one rule every door applies: the batch export, `GET
+/// /v1/dialogs/{id}/vcon` and MCP `export_vcon`. Presence of the named header
+/// on any message of the dialog denies; the value plays no part, and the
+/// name is matched case-insensitively by
+/// [`crate::sip::message::SipMessage::header`]. With no header named, nothing
+/// is denied.
+#[must_use]
+pub fn denied_by_header(dialog: &crate::sip::dialog::SipDialog, header: Option<&str>) -> bool {
+    header.is_some_and(|h| dialog.messages.iter().any(|m| m.header(h).is_some()))
+}
+
 /// The quality of `call_id`'s RTP streams for [`ExportContext::media`], on the
 /// delay basis `GET /v1/streams` uses, so the container and the API report
 /// the same figures.

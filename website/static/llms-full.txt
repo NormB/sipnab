@@ -6191,6 +6191,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 Percent-encode the `@`. A raw `@` in the path works in most clients, and the
 escaped form works in all of them.
 
+A run started with `--content-deny-header NAME` answers `403` for a dialog
+whose messages carry that header, and names the header in the problem detail.
+The batch export does not write that dialog either. See
+[When a container is missing on purpose](vcon.md#when-a-container-is-missing-on-purpose).
+
 **Response** (trimmed — the `sip-message-trace` attachment carries one entry
 per SIP message and grows with the call):
 
@@ -8667,6 +8672,7 @@ note from a capture either.
 | `200` | Success |
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
+| `403` | `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header` |
 | `404` | Unknown `call_id` or stream id — and every `call_id` on `/v1/dialogs/{call_id}/vcon` in a build without the `vcon` feature, which registers no route at that path |
 | `408` | The handler ran past the 30-second per-request cap. Every route sits behind it, so no slow client holds a connection slot open |
 | `500` | The answer would not serialize. Documented on `/v1/dialogs/{call_id}`, its `/report` and `/vcon` variants, `/v1/streams/{id}` and `/v1/report` |
@@ -32852,6 +32858,13 @@ of round trips to do what `--export-vcon-when` does in one invocation. Pass the
 filter here instead. A container is a large answer, so `limit` bounds the set.
 `total_matched` counts the whole store, so it is the number to page against.
 
+**The tool withholds a dialog the run denies.** On a run started with
+`--content-deny-header NAME`, the tool does not export a dialog whose messages
+carry that header, as the batch export does not write it. Asked for that
+dialog by `call_id`, the tool refuses with `not_enabled` and names the header.
+Under a filter, the tool leaves such dialogs out, and `withheld_by_deny` says
+how many it left out.
+
 **Page through a large set.** Containers come back ordered by the dialog's
 `created_at`, then Call-ID. When more match than `limit` allows, `truncated`
 is `true` and `next_cursor` names the last container returned. Pass it back as
@@ -37322,7 +37335,9 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 
 `--content-deny-header` suppresses the whole dialog, not merely its content, and
 the default is the conservative reading: a denied dialog leaves this process
-entirely. `--content-deny-tombstone` makes the narrower reading available — an
+entirely. The REST route `GET /v1/dialogs/{call_id}/vcon` answers `403` for
+it, and MCP `export_vcon` refuses it by `call_id` and leaves it out of a
+filtered export, counting it in `withheld_by_deny`. `--content-deny-tombstone` makes the narrower reading available — an
 identity-only container carrying a `redacted` object
 ([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)), with no message
 trace, no media and no bodies. The trade is explicit, because a tombstone

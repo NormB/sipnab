@@ -7938,7 +7938,7 @@ fn split_denied<'a>(
 /// case rule in the tree, and the two would drift.
 #[cfg(feature = "vcon")]
 fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -> bool {
-    dialog.messages.iter().any(|m| m.header(header).is_some())
+    crate::output::vcon::denied_by_header(dialog, Some(header))
 }
 
 /// Write the `--export-vcon` container, or say why it did not.

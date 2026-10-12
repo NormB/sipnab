@@ -113,6 +113,10 @@ pub struct SipnabMcp {
     /// same call exported through two doors otherwise comes back carrying
     /// audio in one container and a refusal in the other.
     pub(crate) max_inline_media_bytes: Option<usize>,
+    /// The run's `--content-deny-header`: `export_vcon` and the
+    /// `sipnab://vcon/{call_id}` resource withhold a dialog carrying it, as
+    /// the batch export does not write it. `None` denies nothing.
+    pub(crate) content_deny_header: Option<String>,
     /// The `--export-vcon-dir` spool the capture writes containers into, read
     /// by `vcon_spool_status`. `None` when the run was not given one.
     ///
@@ -399,6 +403,7 @@ impl SipnabMcp {
             source_exhausted: None,
             row_cap: HARD_LIMIT,
             max_inline_media_bytes: None,
+            content_deny_header: None,
             #[cfg(feature = "vcon")]
             vcon_spool: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
@@ -616,6 +621,14 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_max_inline_media_bytes(mut self, bytes: Option<usize>) -> Self {
         self.max_inline_media_bytes = bytes;
+        self
+    }
+
+    /// Name the run's `--content-deny-header`, so `export_vcon` withholds the
+    /// dialogs the batch export withholds. `None` denies nothing.
+    #[must_use]
+    pub fn with_content_deny_header(mut self, header: Option<String>) -> Self {
+        self.content_deny_header = header;
         self
     }
 
@@ -11082,6 +11095,7 @@ mod tests {
             )),
             rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
+            content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             capture: None,
             source_exhausted: None,

@@ -1686,9 +1686,9 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1091`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1091)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1107`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1107)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:544`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L544)) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:562`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L562)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |

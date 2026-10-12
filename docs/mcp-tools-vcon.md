@@ -124,6 +124,13 @@ of round trips to do what `--export-vcon-when` does in one invocation. Pass the
 filter here instead. A container is a large answer, so `limit` bounds the set.
 `total_matched` counts the whole store, so it is the number to page against.
 
+**The tool withholds a dialog the run denies.** On a run started with
+`--content-deny-header NAME`, the tool does not export a dialog whose messages
+carry that header, as the batch export does not write it. Asked for that
+dialog by `call_id`, the tool refuses with `not_enabled` and names the header.
+Under a filter, the tool leaves such dialogs out, and `withheld_by_deny` says
+how many it left out.
+
 **Page through a large set.** Containers come back ordered by the dialog's
 `created_at`, then Call-ID. When more match than `limit` allows, `truncated`
 is `true` and `next_cursor` names the last container returned. Pass it back as

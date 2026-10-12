@@ -238,6 +238,10 @@ pub struct ApiState {
     /// must enforce ONE budget, or the same call exported through two doors
     /// comes back carrying audio in one container and a refusal in the other.
     pub max_inline_media_bytes: Option<usize>,
+    /// The run's `--content-deny-header`: a dialog carrying it is not handed
+    /// out as a vCon by `GET /v1/dialogs/{id}/vcon`, as the batch export
+    /// does not write it. `None` denies nothing.
+    pub content_deny_header: Option<String>,
     /// Which capture this process holds — the SAME object the MCP server
     /// stamps its answers with, when both are running.
     ///
@@ -3922,6 +3926,17 @@ async fn get_dialog_vcon(
     let dialog = ds
         .get(&call_id)
         .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
+    #[cfg(feature = "vcon")]
+    if output::vcon::denied_by_header(dialog, state.content_deny_header.as_deref()) {
+        return Err(Problem::detailed(
+            StatusCode::FORBIDDEN,
+            format!(
+                "dialog '{call_id}' carries the '{}' header this run's \
+                 --content-deny-header names, so its vCon is withheld",
+                state.content_deny_header.as_deref().unwrap_or_default()
+            ),
+        ));
+    }
     let ss = state.stream_store.read();
 
     // Frames read comes from the same process-global the Prometheus scrape and
@@ -9300,6 +9315,7 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
+            content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -10177,6 +10193,7 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
+            content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -11578,6 +11595,7 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100, 1024))),
             max_inline_media_bytes: None,
+            content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -12175,6 +12193,42 @@ mod tests {
         Ok(())
     }
 
+    /// A dialog the run's `--content-deny-header` names is not handed out as a
+    /// vCon through REST either.
+    ///
+    /// The flag suppresses the whole dialog's container on the command line;
+    /// `GET /v1/dialogs/{id}/vcon` ignored it, so the same call came back
+    /// through the server the operator started beside the export. A dialog
+    /// without the header still exports.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn dialog_vcon_refuses_a_dialog_the_deny_header_names() -> Result<(), TestError> {
+        // Every message carries CSeq, so naming it denies the fixture's dialog.
+        let mut state = make_state();
+        state.content_deny_header = Some("CSeq".to_owned());
+        populate_dialogs(&state)?;
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(
+            body.contains("CSeq") && body.contains("content-deny-header"),
+            "the refusal names the header and the flag: {body}"
+        );
+
+        let mut state = make_state();
+        state.content_deny_header = Some("X-No-Record".to_owned());
+        populate_dialogs(&state)?;
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "no header, no refusal");
+        Ok(())
+    }
+
     /// The completeness caveat reaches BOTH surfaces through this door.
     ///
     /// The caveat is the whole reason an observer vCon is defensible, and
@@ -12514,6 +12568,7 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1, 1024))),
             max_inline_media_bytes: None,
+            content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -14924,6 +14979,7 @@ mod archive_password_tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1000, 1024))),
             max_inline_media_bytes: None,
+            content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             capture: None,
             source_exhausted: None,

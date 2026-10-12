@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **REST and MCP no longer hand out a vCon the run's `--content-deny-header`
+  withholds.** The flag kept a denied dialog out of the batch export, but
+  `GET /v1/dialogs/{call_id}/vcon` and MCP `export_vcon` (and the
+  `sipnab://vcon/{call_id}` resource) were never given it, so the same call
+  came back through the server started beside the export. REST now answers
+  `403` naming the header; MCP refuses the dialog by `call_id` with
+  `not_enabled` and leaves it out of a filtered export, counting it in the new
+  `withheld_by_deny` field. All three doors decide through one rule,
+  `output::vcon::denied_by_header`.
+
 ### Internal
 
 - **The concurrent-load refusal test no longer races the load it tests.**

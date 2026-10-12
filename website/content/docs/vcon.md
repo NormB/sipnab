@@ -863,7 +863,9 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 
 `--content-deny-header` suppresses the whole dialog, not merely its content, and
 the default is the conservative reading: a denied dialog leaves this process
-entirely. `--content-deny-tombstone` makes the narrower reading available — an
+entirely. The REST route `GET /v1/dialogs/{call_id}/vcon` answers `403` for
+it, and MCP `export_vcon` refuses it by `call_id` and leaves it out of a
+filtered export, counting it in `withheld_by_deny`. `--content-deny-tombstone` makes the narrower reading available — an
 identity-only container carrying a `redacted` object
 ([section 4.1.8 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)), with no message
 trace, no media and no bodies. The trade is explicit, because a tombstone

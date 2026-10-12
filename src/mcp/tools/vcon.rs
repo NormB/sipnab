@@ -235,8 +235,13 @@ pub struct ExportVconResponse {
     pub containers: Vec<ExportedContainer>,
     /// How many are in this response.
     pub returned: usize,
-    /// How many dialogs the request selected, across the whole store.
+    /// How many dialogs the request selected, across the whole store, after
+    /// the run's `--content-deny-header` withheld any.
     pub total_matched: usize,
+    /// How many selected dialogs carried the run's `--content-deny-header`
+    /// and were left out, as the batch export leaves them out. 0 when the
+    /// run names no deny header.
+    pub withheld_by_deny: usize,
     /// Whether matches remain after this page. Pass `next_cursor` back to
     /// continue.
     pub truncated: bool,
@@ -734,6 +739,24 @@ impl SipnabMcp {
                 }
             })
             .collect();
+        // The deny the batch export applies, through the one rule every door
+        // uses. Asked for by Call-ID, a withheld dialog is refused by name;
+        // under a filter it is left out and counted.
+        let deny = self.content_deny_header.as_deref();
+        let before_deny = matched.len();
+        matched.retain(|d| !crate::output::vcon::denied_by_header(d, deny));
+        let withheld_by_deny = before_deny - matched.len();
+        if let (Selection::One(id), true) = (selection, withheld_by_deny > 0) {
+            return Err(crate::mcp::errors::refuse_param(
+                crate::mcp::errors::Reason::NotEnabled,
+                "call_id",
+                format!(
+                    "dialog '{id}' carries the '{}' header this run's \
+                     --content-deny-header names, so its vCon is withheld",
+                    deny.unwrap_or_default()
+                ),
+            ));
+        }
         let total_matched = matched.len();
         crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
             a.created_at
@@ -835,6 +858,7 @@ impl SipnabMcp {
             next_cursor,
             containers,
             total_matched,
+            withheld_by_deny,
             capture_identity,
         })
     }
@@ -1305,6 +1329,59 @@ mod tests {
             .err()
             .ok_or("unknown call_id must error")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
+    }
+
+    /// A dialog the run's `--content-deny-header` names does not leave as a
+    /// vCon through MCP: asked for by `call_id`, it is refused by name; under
+    /// a filter, it is left out and counted in `withheld_by_deny`.
+    ///
+    /// The flag suppresses the dialog's container on the command line, and
+    /// `export_vcon` ignored it, so the same call came back through the
+    /// server the operator started beside the export.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_withholds_a_dialog_the_deny_header_names() -> Result<(), TestError> {
+        // Every fixture message carries CSeq, so naming it denies both.
+        let server = server_with(&[("deny-a@x", 200), ("deny-b@x", 200)])?
+            .with_content_deny_header(Some("CSeq".to_owned()));
+        let err = server
+            .export_vcon(Parameters(ExportVconParams {
+                call_id: Some("deny-a@x".to_string()),
+                ..ExportVconParams::default()
+            }))
+            .await
+            .err()
+            .ok_or("a denied call_id must be refused")?;
+        let text = format!("{err:?}");
+        assert!(
+            text.contains("CSeq") && text.contains("content-deny-header"),
+            "the refusal names the header and the flag: {text}"
+        );
+
+        let all = exported(
+            &server,
+            ExportVconParams {
+                filter: Some("method == 'INVITE'".to_string()),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(all["containers"].as_array().map(Vec::len), Some(0), "{all}");
+        assert_eq!(all["withheld_by_deny"], 2, "{all}");
+
+        let open = server_with(&[("deny-a@x", 200)])?
+            .with_content_deny_header(Some("X-No-Record".to_owned()));
+        let one = exported(
+            &open,
+            ExportVconParams {
+                call_id: Some("deny-a@x".to_string()),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(one["containers"].as_array().map(Vec::len), Some(1), "{one}");
+        assert_eq!(one["withheld_by_deny"], 0, "{one}");
         Ok(())
     }
 

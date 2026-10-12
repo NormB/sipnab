@@ -1273,6 +1273,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 Percent-encode the `@`. A raw `@` in the path works in most clients, and the
 escaped form works in all of them.
 
+A run started with `--content-deny-header NAME` answers `403` for a dialog
+whose messages carry that header, and names the header in the problem detail.
+The batch export does not write that dialog either. See
+[When a container is missing on purpose](vcon.md#when-a-container-is-missing-on-purpose).
+
 **Response** (trimmed — the `sip-message-trace` attachment carries one entry
 per SIP message and grows with the call):
 
@@ -3749,6 +3754,7 @@ note from a capture either.
 | `200` | Success |
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
+| `403` | `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header` |
 | `404` | Unknown `call_id` or stream id — and every `call_id` on `/v1/dialogs/{call_id}/vcon` in a build without the `vcon` feature, which registers no route at that path |
 | `408` | The handler ran past the 30-second per-request cap. Every route sits behind it, so no slow client holds a connection slot open |
 | `500` | The answer would not serialize. Documented on `/v1/dialogs/{call_id}`, its `/report` and `/vcon` variants, `/v1/streams/{id}` and `/v1/report` |
