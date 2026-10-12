@@ -1,64 +1,113 @@
 +++
-title = "Two tests that only failed on macOS, and the thing they had in common"
+title = "Two HEP-over-TCP tests failed on macOS because they assumed Linux timing"
 date = 2026-09-05
-description = "Both encoded when a kernel reports a peer's disconnect as if it were the behavior under test. Both passed on Linux, and on the one platform the author could not run, both were wrong."
+updated = 2026-10-11
+description = "Why two tests for the HEP over TCP feature passed on Linux and failed on macOS before the 0.5.150 release, and how each test now checks the behavior without depending on one operating system's timing."
 
 [extra]
 kind = "postmortem"
 +++
 
-Adding HEP over TCP and TLS produced two test failures on the macOS runner and
-nowhere else. They looked unrelated. They were the same mistake.
+## In short
 
-## The first
+Version 0.5.150 added the option to send and receive HEP (a format for copying
+captured SIP traffic to a collector) over TCP and TLS connections, not only
+UDP. During that work, two of its automated tests passed on Linux and failed
+on the macOS build machine. In both, the sipnab behavior was correct. The
+tests assumed that macOS reports a closed connection at the same moment Linux
+does. The project corrected both tests before the 0.5.150 release, so the
+failures affected no released version.
 
-A test arranges for a listener to refuse a connection, then reads the peer
-socket to prove the connection ended. It asked for a read timeout after writing
-to the socket:
+## What happened
 
-```rust
-let _ = peer.write_all(&packet);
-peer.set_read_timeout(Some(Duration::from_millis(750)))?;
-```
+sipnab's CI (the automated build-and-test jobs that run on each change) runs
+its test suite on Linux and on macOS (`macos-latest` in
+`.github/workflows/ci.yml`). Both tests below are in `src/capture/hep.rs`.
 
-macOS returns `EINVAL` from `setsockopt(SO_RCVTIMEO)` once the peer has reset
-the connection — and a refusal racing that write is precisely what the test
-sets up, so by the time the call ran the socket was often already in an error
-state. Linux tolerates it. The fix is ordering: ask for the timeout while the
-socket is plainly healthy, before the write.
+**The allowlist test**
+(`a_tcp_peer_outside_the_allowlist_is_refused_before_it_can_speak`). A HEP
+listener started with `--hep-listen-transport tcp` and `--hep-allow` must
+close a TCP connection from an address outside the allowed list as soon as it
+arrives. The test connects from
+outside the list, sends one packet, and then reads from its own end of the
+connection to confirm that the listener closed it. The test set a read time
+limit on its connection after sending the packet. On macOS that step failed
+with an error, so the test failed before it reached its check.
 
-## The second
+**The reconnect test**
+(`a_tcp_sender_reconnects_after_the_collector_drops_the_connection`). With
+`--hep-send-transport tcp`, sipnab's sender must open a new connection after
+the collector closes the old one. The test closed the collector's side, had
+the sender send exactly three packets, and then waited for a new connection.
+On macOS no new connection arrived within ten seconds, and the test failed.
 
-A test drops a collector and then checks the sender rebuilds its connection. It
-sent three packets and then accepted:
+## Why it happened
 
-```rust
-for body in [b"second", b"third", b"fourth"] {
-    let _ = sender.send_payload(body);
-}
-let mut second = accept_within(&collector, "the rebuilt connection");
-```
+Both tests depended on when the operating system reports that the other side
+has closed a connection. The code comments and the 0.5.150 changelog record
+the difference:
 
-The sender rebuilds when a write fails. A write fails once the peer's RST is
-back. How many writes that takes is the kernel's business — on Linux the RST
-beats the second packet, and on macOS it does not. Nobody chose three. It was the
-number that happened to work here.
+- **Allowlist test.** macOS returns the error `EINVAL` when a program sets a
+  read time limit (`setsockopt(SO_RCVTIMEO)`) on a connection the other side
+  has already reset. Linux accepts the call. The listener's refusal and the
+  test's packet happen at nearly the same moment, so on macOS the connection
+  could already be reset when the test set the limit.
+- **Reconnect test.** The sender opens a new connection only after a send
+  fails, and a send fails only after the operating system has received the
+  collector's reset. On Linux that reset arrives before the sender writes the
+  second packet, so three packets were enough. On macOS it does not, and after
+  the three packets no new connection arrived within ten seconds.
 
-## What they share
+In both cases the number or order in the test matched Linux timing, not the
+behavior the test exists to check.
 
-Both tests asserted a claim about sipnab and encoded a claim about a kernel.
-The claim about sipnab was right: the connection ends, the sender reconnects.
-The claim about timing was one platform's, written by someone who could only
-run that platform.
+## What changed
 
-The second test now offers packets until the sender reconnects and lets a
-deadline be the failure. It says what it means — that the sender rebuilds when
-the collector comes back — instead of that it rebuilds on a particular packet.
-A sender that never rebuilds still fails, which is the property worth keeping.
+Both fixes are in 0.5.150 (2026-09-04).
 
-## The shape to watch for
+- **Allowlist test.** The test now sets the read time limit before it sends
+  the packet, while the connection is still open on every platform. The test then
+  checks that the connection ended, seen either as an end-of-stream or as a
+  connection reset.
+- **Reconnect test.** The test no longer sends a fixed number of packets. It
+  keeps sending one packet at a time and checking for a new connection, for up
+  to ten seconds. A sender that reconnects passes on any platform; a sender
+  that never reconnects still fails when the ten seconds run out, with this
+  message:
 
-Any test whose fixture depends on *when* a kernel reports a peer's disconnect
-is testing the kernel. Loss, reset, close and timeout are all in that family.
-The fix is nearly always the same: replace the fixed count with a loop and a
-deadline, and let the deadline carry the failure message.
+  ```text
+  the rebuilt connection: the sender offered packets for 10s and never reconnected
+  ```
+
+The sender's behavior did not change. As the CLI reference states for
+`--hep-send-transport`, a send that fails drops the connection and the next
+packet opens a new one, one reconnect attempt per packet.
+
+## What you can check yourself
+
+Both tests run on every change on the Linux and macOS CI jobs. The behavior
+they protect appears in the CLI reference rows for `--hep-send-transport`
+and `--hep-allow`, linked below.
+
+## Terms used here
+
+- **HEP**: a format for sending copies of captured SIP packets to a collector
+  such as Homer.
+- **SIP**: the signaling protocol that sets up and ends phone calls.
+- **UDP, TCP, TLS**: ways to send data over a network. UDP sends separate
+  packets with no connection; TCP keeps a connection open; TLS is TCP with
+  encryption.
+- **Collector**: the program that receives HEP packets.
+- **Allowlist**: the list of addresses a HEP listener accepts connections from
+  (`--hep-allow`).
+- **Reset**: the signal a computer sends to end a TCP connection at once.
+- **CI**: continuous integration, the automated jobs that build and test
+  sipnab on every change.
+- **Test**: an automated check that fails when the behavior it describes is
+  broken.
+
+## Related guides
+
+- [Network listeners, including `--hep-send-transport` and `--hep-allow`](@/docs/cli.md#network-listeners)
+- [What `--hep-send` sends](@/docs/cli.md#what-hep-send-sends)
+- [How `--hep-listen` reads the transport](@/docs/cli.md#how-hep-listen-reads-the-transport)

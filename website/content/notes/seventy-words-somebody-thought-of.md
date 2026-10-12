@@ -1,42 +1,57 @@
 +++
-title = "Seventy words somebody thought of"
+title = "The US-spelling check missed British spellings that were not on its word list"
 date = 2026-09-01
-description = "A gate had enforced US English since 0.5.105 by checking a list. It caught the word written that morning and had never heard of 67 British forms already in the tree."
+updated = 2026-10-11
+description = "Why sipnab's spelling check, which compared text against a list of known British words, let other British spellings through, and the suffix rule added in 0.5.142."
 
 [extra]
 kind = "postmortem"
 +++
 
-sipnab's documentation, comments, test names and website copy are US English,
-and a gate has said so since 0.5.105. It works by checking a list of about
-seventy words somebody thought of.
+## In short
 
-On 2026-09-01 it did its job. Somebody wrote a British spelling in a comment,
-the gate caught it minutes later, and the commit stopped. That is the system
-working.
+sipnab writes its documentation, code comments and website in US English, and
+an automated check enforces that. Until 2026-09-01 the check compared text
+against a fixed list of British words, so any British spelling not on the list
+passed. On that day a scan found 67 such spellings in 95 files. sipnab 0.5.142
+added a second check that recognizes British word endings (for example the
+British `-ise` where US English writes `-ize`) instead of listing words.
 
-It is also the whole problem, and the reason takes one sentence: a list can
-only ever catch a word already on it.
+## What happened
 
-## What the list had never heard of
+sipnab 0.5.105 (2026-08-17) converted the repository to US English in one
+change of 2,904 replacements across 274 files, with no check to keep it that
+way. By 0.5.122 the repository held 166 British spellings again. sipnab
+0.5.123 (2026-08-22, commit 1291fb4b) added the test
+`the_tree_spells_in_us_english` in `tests/docs_drift_test.rs`, which fails if
+any tracked file contains a word from its list (CHANGELOG, 0.5.123 entry).
 
-Measured the same day, across the tracked tree: **67 distinct British forms in
-95 files** that the list did not name. The British spellings of `containerized`,
-`synthesized`, `unrecognized`, `sanitized`, `materializing`, `pseudonymizing`
-and `uninitialized` were all among them. This page prints the US forms, because
-the gate that came out of this reads the page.
+On 2026-09-01 that test caught the British spelling of `recognize` in a code
+comment written minutes earlier, and stopped the commit. The same day, a
+scan of the repository found **67 distinct British forms across 95 files**
+that the list did not contain, among them the British spellings of
+`containerized`, `synthesized`, `unrecognized`, `sanitized`, `materializing`,
+`pseudonymizing` and `uninitialized` (comment at the top of
+`tests/us_spelling_test.rs`. The CHANGELOG 0.5.142 entry counts the same
+finding as 186 occurrences across 95 files).
 
-Every one of those had passed every gate this repository has, for as long as it
-had sat there. Some of them shipped to sipnab.com.
+## Why it happened
 
-Nobody had done anything wrong. The list grows one embarrassment at a time,
-which is exactly the growth rate an allowlist of "words somebody thought of"
-can sustain. The failure is structural, and adding five more words to the list
-would have reproduced it.
+The list held 70 words at that time (`BRITISH` in `tests/docs_drift_test.rs`
+at commit 95e0d2bb). A check that compares against a list can only find words
+someone has already added to it. A British spelling of any other word passed
+every check the repository ran.
 
-## Naming the exceptions is tractable, naming the words is not
+Two statements about this history in the repository are incorrect: the
+comment at the top of `tests/us_spelling_test.rs` and the CHANGELOG 0.5.142
+entry both say the list-based check had existed "since 0.5.105". The test
+arrived in 0.5.123, as the CHANGELOG 0.5.123 entry and commit 1291fb4b show.
 
-The replacement in `tests/us_spelling_test.rs` enforces the morphology instead:
+## What changed
+
+Commit 95e0d2bb (2026-09-01, released in 0.5.142) corrected the spellings
+found and added `tests/us_spelling_test.rs`, which checks word endings instead
+of words. Its rule is ten suffix pairs:
 
 ```rust
 const SUFFIXES: &[(&str, &str)] = &[
@@ -53,88 +68,101 @@ const SUFFIXES: &[(&str, &str)] = &[
 ];
 ```
 
-Ten pairs and a bounded exception list, against a vocabulary that has no end.
-The exceptions are the words where those letters are not a suffix at all —
-`precise`, `otherwise`, `exercise`, `enterprise`, `promise`, `noise`, and
-`disable`, which simply ends in `-able` and appears on nearly every command
-line this project documents.
+`NOT_A_SUFFIX` lists, as exceptions, words that end in those letters without
+the letters being a suffix, for example `precise`, `otherwise`,
+`exercise`, `enterprise`, `promise`, `noise` and `disable`. It lists inflected
+forms too: an earlier version exempted `raise` but not `raising`, and
+reported `raising -> raizing`.
 
-That exception list came out of an error worth recording. The first version
-exempted `raise` and not `raising`, so the gate reported `raising -> raizing`.
-A gate that invents a word teaches the reader to distrust it, and one
-distrusted gate is how every later hit gets waved through. Base forms are not
-enough. The inflections need listing too.
+Tests in the same file check the rule from both sides and keep the lists
+accurate:
 
-## Two directions, or the rule proves nothing
+- `a_british_word_no_list_names_is_still_caught` builds nine British words and
+  asserts that the rule catches each one.
+- `the_us_spelling_of_each_is_accepted` asserts that the US forms of those
+  words are not flagged, so a rule that flagged too much would fail.
+- `every_exception_is_a_word_the_tree_actually_uses` and
+  `every_exclusion_names_a_path_that_exists_and_says_why` fail on an exception
+  or excluded path that no longer matches anything.
+- `the_rule_subsumes_every_suffixed_word_on_the_fixed_list` asserts that the
+  rule catches every word on the old list that has one of the ten suffixes.
 
-A spelling rule has an obvious test and a less obvious one, and only the pair
-means anything:
+The test file contains no British spelling itself. `british_form` builds its
+test words at run time by joining a stem and a suffix
+(`british_form("container", "ised")`), so the file needs no exemption from its
+own check, and `the_spelling_scan_reads_this_very_file` asserts that the scan
+reads it. The old list-based test stays exempt, because it has to contain the
+words it forbids.
 
-```rust
-fn a_british_word_no_list_names_is_still_caught() { ... }
-fn the_us_spelling_of_each_is_accepted() { ... }
+One British spelling remains on purpose: the published keys
+`unanalysed_sip_messages`, `unanalysed_busiest_ports`,
+`unanalysed_websocket_messages` and `unanalysed_websocket_ports` in the REST
+API's `GET /v1/stats` and the MCP tool `capture_status`. Programs read those
+keys by name, so renaming them would break them. They are exempt only as
+whole names (`wire_identifiers` in `tests/us_spelling_test.rs`), and
+`a_wire_exemption_matches_only_the_whole_token` asserts that a different name
+built from the same word, such as the key with `_v2` appended, is still
+caught.
+
+The suffix rule covers only the `-ise/-isation/-yse` family. Other British
+patterns, such as `-our`, `-ogue` and a doubled `l` before `-ed`, are not
+suffix cases, so the list-based test stayed. On 2026-09-08 (commit
+8f692afd, released in 0.5.159) the list-based test started to split
+identifiers such as `snake_case` names into separate words before comparing
+them, after four test names with British spellings had passed because the
+test read the whole identifier as one word. The list held 126 words on
+2026-10-11.
+
+## What you can check yourself
+
+Print the suffix rule from the test file:
+
+```bash
+grep -n -A11 '^const SUFFIXES' tests/us_spelling_test.rs
 ```
 
-The first asserts that nine constructed British words trip the rule. Without
-the second, "flag everything ending in a vowel" satisfies it completely.
-
-Two more tests hold the exception lists honest in the direction people forget.
-Every exception has to be a word the tree actually uses, because an exception
-matching nothing is either a typo or a hole somebody cut in advance. And every
-excluded path has to exist and say why the scan cannot read it, because an
-exclusion that outlives its path silently widens.
-
-## The file that contains no British spelling
-
-A spelling gate has an awkward property: writing its fixtures the obvious way
-makes the file full of the thing it forbids, and then the file needs an
-exemption from itself.
-
-The old list-based gate in `docs_drift_test.rs` accepts that trade and appears
-on the exclusion list with the reason spelled out — it lists the words it
-forbids, so it necessarily contains all of them.
-
-The new file refuses the trade. Fixtures come out of a builder:
-
-```rust
-fn british_form(stem: &str, suffix: &str) -> String {
-    format!("{stem}{suffix}")
-}
+```text
+188:const SUFFIXES: &[(&str, &str)] = &[
+189-    ("isation", "ization"),
+190-    ("isable", "izable"),
+191-    ("ising", "izing"),
+192-    ("ised", "ized"),
+193-    ("ises", "izes"),
+194-    ("ise", "ize"),
+195-    ("ysing", "yzing"),
+196-    ("ysed", "yzed"),
+197-    ("yses", "yzes"),
+198-    ("yse", "yze"),
+199-];
 ```
 
-so `british_form("container", "ised")` produces the word at run time and no
-British spelling appears in the source. The file needs no exemption, and an
-exemption is a permanent hole in exactly the place a misspelling would go to
-hide.
+Find the CHANGELOG entry that introduced the list-based check:
 
-The same trick covers the one contract that keeps its British spelling. The
-`unanalysed_*` keys in `GET /v1/stats` and in MCP's `capture_status` are wrong
-and they are also a wire contract that consumers read by name, so correcting
-them is a deprecation with a window rather than a sweep. They come back as
-whole **tokens**, assembled at run time, so the bare word stays banned in
-prose. A separate test asserts a wire exemption matches only the whole token.
-That key with `_v2` appended is a new name somebody just invented, and it takes
-the correct spelling like anything else.
+```bash
+grep -n "a gate now holds it there" CHANGELOG.md
+```
 
-## What the rule still cannot see
+```text
+8333:- **The tree spells in US English, and a gate now holds it there.** 0.5.105
+```
 
-The morphological rule covers the `-ise/-isation/-yse` family and nothing else.
-The `-our`, `-ogue` and doubled `-lled` classes are not suffix cases, and no
-rule of this shape reaches them. `SPELL1` in the backlog records that openly,
-with the 45 identifiers those classes hide in and why closing them needs the
-list **plus** a way to split identifiers into words, rather than a new suffix
-pair.
+That line sits under `## [0.5.123] - 2026-08-22` (line 8222). Line numbers
+are from the main branch on 2026-10-11 and move as the files change.
 
-So both gates stay. One test asserts the rule is a superset of the old list for
-the suffix class, because otherwise somebody could drop a word from the list in
-good faith and make it legal again.
+## Terms used here
 
-## Worth stealing
+- **Check / gate**: an automated test that must pass before a change is
+  accepted.
+- **Tracked file**: a file that is part of the repository under git.
+- **Suffix**: the ending added to a word stem, such as `-ise` or `-ize`.
+- **Exception list**: words the rule must not flag, because the letters are
+  not a suffix there.
+- **Identifier**: a name in code, such as a function or variable name.
+- **REST API**: sipnab's HTTP interface for other programs.
+- **MCP**: Model Context Protocol, the interface AI assistants use to call
+  sipnab's tools.
 
-If a gate enforces a rule by enumerating its violations, ask how the
-enumeration grows. If the answer is "somebody notices", the gate measures
-attention rather than the tree.
+## Related guides
 
-And when the rule replaces a list, keep the list. The two overlap, the overlap
-needs a test, and the part the list covers alone is the part worth writing
-down as still open.
+- [Build, CI and release: the prose gates](@/docs/internals/build-ci-release.md#the-prose-gates)
+- [`GET /v1/stats`](@/docs/api.md#get-v1-stats)

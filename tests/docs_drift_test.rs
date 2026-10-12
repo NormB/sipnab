@@ -36,6 +36,43 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `scripts/clean-stale.py --apply --root <DIR> --min-age-days <N>
+    // --reclaim-build-cache --disk-floor-gb <N>`, named by the stray-files
+    // note: the cleaner's flags, not sipnab's.
+    (
+        "apply",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "root",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "min-age-days",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "reclaim-build-cache",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "disk-floor-gb",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    // `cargo test --features full --test <NAME> -- --test-threads=1`, named
+    // by the MCP field-cap note. cargo's and the test harness's flags.
+    (
+        "features",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    (
+        "test",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    (
+        "test-threads",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
     ("features", &["website/content/features.md"]),
@@ -4846,7 +4883,16 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1119: the 2026-10-11 notes rewrite, per file under
+    // website/content/notes/: fifty-seven-tools-and-the-two-that-stay-off +2,
+    // measure-the-field-not-the-container +1, one-filter-language-every-door
+    // +1, reading-tls-without-a-certificate +1,
+    // read-tls-without-a-key-or-a-restart +1,
+    // the-invite-that-arrived-before-its-keys +1,
+    // what-to-allow-when-an-agent-drives-sipnab +1,
+    // an-observer-vcon-and-its-third-verdict -1,
+    // three-surfaces-and-three-different-calls -1.
+    const EXPECTED_TABLES: usize = 1119;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
