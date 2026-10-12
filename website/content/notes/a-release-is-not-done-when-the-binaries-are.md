@@ -36,9 +36,9 @@ one.
 That rule exists because of a specific outage. The release commit bumps the
 crate version, GitHub Pages redeploys from it, and if the download links
 followed the crate version, the whole of `/download` would point at a tag
-nobody had pushed yet. Every link 404s, including the checksums. On 0.5.61 that
-window was not minutes: the release commit went red and was never tagged, so
-the site advertised a release that never existed at all.
+nobody had pushed yet. Every link 404s, including the checksums. On 0.5.61 the
+release commit went red in CI, and the v0.5.61 tag went on the commit that
+fixed it, 31 minutes after the release commit.
 
 So the lag is correct. The bug is not that the site trails the tag. It is that
 nothing closes the gap once the assets appear.

@@ -225,16 +225,21 @@ handshake, `--srtp-keys` takes them directly.
 
 ## When the keys arrive after the call starts
 
-Methods 3, 4 and 5 share one race. You attach the key source to a daemon that
-is already running, a call arrives, and the first records reach sipnab before
-the first key does. On a SIP session the first record is the INVITE, so the
+Any run whose keys arrive while it runs has one race: method 1 or method 5
+with `--keylog-watch`, or keys fed through a descriptor with `--keylog-fd`.
+Methods 3 and 4 use no keys, so they do not have it. You attach the key source
+to a daemon that is already running, a call arrives, and the first records
+reach sipnab before the first key does. On a SIP session the first record is the INVITE, so the
 symptom is not "a few records are unreadable" — it is a call with no offer in
 it, which sipnab then reports as a media mismatch or a NAT problem, because
 from the dialog's point of view that is exactly what it looks like.
 
-sipnab holds application data it cannot open yet and retries it as soon as a
-key for that session turns up. No flag switches this on: it is what `--keylog`
-and `--keylog-watch` already do. A run that recovered records says so:
+With `--keylog-watch` or `--keylog-fd`, sipnab holds application data it
+cannot open yet and retries it as soon as a key for that session turns up. No
+separate flag switches this on. sipnab reads a plain `--keylog` file, without
+`--keylog-watch`, once at startup and holds nothing: no key arrives later in
+the run, so a record the loaded keys cannot open now never opens. A run that
+recovered records says so:
 
 ```text
 TLS late decrypt: recovered 3 record(s) that arrived before their keys
@@ -260,13 +265,20 @@ ciphertext" are different problems with different fixes:
 
 ```text
 sipnab discarded 3 TLS record(s) held from before a key arrived: the
-late-decrypt hold is bounded (4 MiB total, 16 record(s) per direction, 5s)
+late-decrypt hold is bounded (4 MiB total, 16 record(s) per direction, 5s),
+and it filled before any key matched them. Start the key source before the
+capture, or expect the first message of a call to be missing.
 ```
 
-That one argues for starting the key source earlier, or for a bigger bound. A
-line reporting records **still waiting when the run ended** argues for neither
--- the key source never produced those secrets, and capturing sooner would not
-have helped.
+That one argues for starting the key source earlier, or for a bigger bound.
+Records still held when the run ended produce a different line, which argues
+for neither:
+
+```text
+5 TLS record(s) were still waiting when the run ended: no key ever arrived
+for them. Nothing was discarded and starting the capture earlier would not
+have helped -- the key source never produced those secrets.
+```
 
 
 ## What does not work, and why

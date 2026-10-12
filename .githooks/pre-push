@@ -109,9 +109,9 @@ fi
 # -- Hard gate: clippy --------------------------------------------------------
 # Mirrors CI exactly
 # (`cargo clippy --workspace --all-features --all-targets -- -D warnings`) so a
-# lint that would fail CI fails here first. `--all-features --all-targets` is
-# broader than pre-commit's `--features full`: it also lints tests, benches,
-# and examples, and every feature-gated path.
+# lint that would fail CI fails here first. pre-commit runs the same command.
+# `--all-features --all-targets` lints tests, benches, examples, and every
+# feature-gated path.
 #
 # `--workspace` is load-bearing, not decoration. Without it this lints the main
 # crate alone, so a warning in sipnab-audio, sipnab-bpf-types or the example
