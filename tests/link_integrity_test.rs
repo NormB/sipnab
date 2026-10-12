@@ -1216,7 +1216,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // a tool section that links a tool now on another page still counts once.
     // 1524 -> 1534: docs/README.md +10, one entry per bundle page under the
     // MCP tool reference entry, so every page is reachable from the index.
-    const EXPECTED_WIKI_LINKS: usize = 1534;
+    // 1534 -> 1535: docs/internals/build-ci-release.md +1, the release
+    // section's note on the Since column links docs/cli-reference.md.
+    // Attributed per file against HEAD: with HEAD's build-ci-release.md the
+    // count is 1534, and docs/cli-reference.md, the other changed page, held
+    // its count.
+    const EXPECTED_WIKI_LINKS: usize = 1535;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

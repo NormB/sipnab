@@ -990,6 +990,17 @@ red and was never tagged.
 So `published_version` moves **after** a release finishes publishing, in its
 own commit — never while cutting one.
 
+The **Since** column of [`docs/cli-reference.md`](../cli-reference.md) moves in
+that same follow-up commit. A flag added since the previous release reads
+`Unreleased` until its release tag exists. Once the tag exists,
+`the_since_column_is_what_tagged_history_says` in
+[`tests/cli_flag_since_test.rs`](../../tests/cli_flag_since_test.rs) fails
+until the column names that release, so run
+`python3 scripts/flag-since.py --write` after tagging. The script reads
+[`src/cli.rs`](../../src/cli.rs) at every `vX.Y.Z` tag, so it needs the tags in the clone
+(`git fetch --tags`). Without them it refuses rather than calling every flag
+`Unreleased`.
+
 The same split applies to the docs:
 `docs/install.md`'s `SIPNAB_VERSION=`, `e.g. <version>` and `rpm -i sipnab-<v>`
 lines are download instructions, so they track `published_version` too and must

@@ -19,6 +19,8 @@
 use clap::CommandFactory;
 use std::collections::BTreeSet;
 
+#[path = "support/cli_flags.rs"]
+mod cli_flags;
 #[path = "support/markdown.rs"]
 mod markdown;
 #[path = "support/mcp_reference.rs"]
@@ -38,6 +40,24 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The release section's note on the CLI reference's Since column:
+    // `scripts/flag-since.py --write` rewrites the column after a release is
+    // tagged, and `git fetch --tags` brings the tags the script reads. The
+    // script's flag and git's, not sipnab's.
+    (
+        "write",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "tags",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
     ("features", &["website/content/features.md"]),
@@ -1595,20 +1615,10 @@ fn cli_long_flags() -> BTreeSet<String> {
     let cmd = sipnab::cli::Cli::command();
     let mut flags = BTreeSet::new();
 
-    // Flags that exist only under a non-default Cargo feature.
-    //
-    // This enumerates the CLI clap actually built, so a `#[cfg(feature = ...)]`
-    // flag is absent whenever the suite runs without that feature — and the
-    // docs, which describe the whole program, still name it. The reduced-feature
-    // CI matrix hits exactly that: `--plugin` is real under `plugins` and
-    // invisible under `native,hep,api,mcp,mcp-http`, so the gate reported the
-    // documentation as advertising a flag that does not exist.
-    //
-    // Listed rather than inferred, so adding a feature-gated flag is a
-    // deliberate entry here and not something a reader has to discover from a
-    // red matrix job. Each name must still be documented like any other flag.
-    const FEATURE_GATED: &[&str] = &["plugin"];
-    for f in FEATURE_GATED {
+    // Flags that exist only under a non-default Cargo feature: without the
+    // feature clap does not build them, and the docs still name them. Each
+    // name must still be documented like any other flag.
+    for f in cli_flags::FEATURE_GATED {
         flags.insert((*f).to_string());
     }
 

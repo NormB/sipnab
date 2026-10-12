@@ -30,6 +30,7 @@ GIT_FIXTURE_TESTS = [
     "scripts/tests/test_rfc_links.py::test_check_mode_fails_when_the_fixer_would_change_something",
     "scripts/tests/test_check_line_drift.py::test_an_untracked_page_under_docs_is_not_read",
     "scripts/tests/test_fetch_vcon_datasets.py::test_a_cached_checkout_at_another_commit_is_moved_to_the_pin",
+    "scripts/tests/test_flag_since.py::test_write_fixes_the_table_and_check_then_agrees",
 ]
 
 

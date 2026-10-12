@@ -849,7 +849,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/fixtures/vcon-datasets/CORRECTED.tsv.
     // 506 -> 507: docs/internals/zero-copy-payloads.md links bench/carrier.py
     // in the single-threaded mapped-read measurement.
-    const EXPECTED_CODE_LINKS: usize = 507;
+    // 507 -> 509: docs/internals/build-ci-release.md's note on the CLI
+    // reference's Since column links src/cli.rs and
+    // tests/cli_flag_since_test.rs. Attributed by measurement: with HEAD's
+    // page the count is 507.
+    const EXPECTED_CODE_LINKS: usize = 509;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
