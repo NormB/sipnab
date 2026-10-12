@@ -783,6 +783,46 @@ def rewrite_other_link(src_dir: str, m: re.Match) -> str:
     return f"]({BLOB}/{repo_path(src_dir, m.group(1))}{m.group(2) or ''})"
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+# A relative image link. The site's CSP is `img-src 'self' data:`, so an image
+# must be served from the site itself: OTHER_LINK_RE would send it to a GitHub
+# blob URL, which is an HTML page on another origin and is blocked. Matched
+# before OTHER_LINK_RE and CODE_LINK_RE, and rewritten to a site-absolute path
+# those two leave alone.
+IMAGE_RE = re.compile(
+    r"(!\[[^\]]*\])\(\s*(?![a-zA-Z][a-zA-Z0-9+.-]*:|@/|/|#)"
+    r"([^)\s#]+\.(?:png|jpe?g|gif|svg|webp|avif))\s*\)",
+    re.IGNORECASE,
+)
+
+# Where a docs image outside `website/static/` is published, keyed by its repo
+# path so two images with one file name cannot collide.
+IMAGES_DIR = "doc-images"
+STATIC_PREFIX = "website/static/"
+
+# Repo paths of the images the pages rendered so far link to, for
+# `copy_images` to publish under `IMAGES_DIR`.
+IMAGES: set[str] = set()
+
+
+def rewrite_image(src_dir: str, m: re.Match) -> str:
+    path = repo_path(src_dir, m.group(2))
+    if path.startswith(STATIC_PREFIX):
+        # Zola already serves `website/static/` at the site root.
+        return f"{m.group(1)}(/{path[len(STATIC_PREFIX):]})"
+    IMAGES.add(path)
+    return f"{m.group(1)}(/{IMAGES_DIR}/{path})"
+
+
+def copy_images(root: Path, static_dir: Path) -> None:
+    """Copy every image in `IMAGES` to the path `rewrite_image` linked it at."""
+    for path in sorted(IMAGES):
+        dest = static_dir / IMAGES_DIR / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes((root / path).read_bytes())
+
+
 def render(src: str, text: str, want_h1: str, title: str, weight: int,
            description: str) -> str:
     h1, body = _INT.strip_leading_h1(text)
@@ -797,6 +837,7 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     body = SELF_ANCHOR_RE.sub(
         lambda m: f"]({_xlate(rel, m.group(1))})", body
     )
+    body = sub_outside_code(IMAGE_RE, lambda m: rewrite_image(src_dir, m), body)
     body = sub_outside_code(CODE_LINK_RE, lambda m: rewrite_code_link(src_dir, m), body)
     body = sub_outside_code(OTHER_LINK_RE, lambda m: rewrite_other_link(src_dir, m), body)
 
@@ -987,6 +1028,7 @@ def main() -> int:
     # Written into static/ so Zola copies them to the site root verbatim,
     # where the llms.txt convention expects them.
     write_llms_txt(root, static_dir)
+    copy_images(root, static_dir)
     return 0
 
 
