@@ -97,7 +97,10 @@ three things to what it does:
   the failed ones instead.
 - **`--export-vcon-dir /var/spool/sipnab-vcon`** is where the files go.
 - **`--retain-audio`** keeps each call's audio so that the vCon can carry it.
-  Without it the vCon holds the signaling only.
+  sipnab keeps the whole call, inside a budget of 1 GiB across all calls held
+  at once ([Audio retention budget](@/docs/config.md#audio-retention-budget)),
+  and releases a call's audio once it writes the call's vCon. Without it the vCon
+  holds the signaling only.
 
 For the audio to be there at all, sipnab has to capture it. Up to 0.5.192 it
 captured only the SIP ports by default, and later versions capture the media

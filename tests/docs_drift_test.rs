@@ -5232,7 +5232,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 2 (its parameters and its verdicts), the same 2 in
     // website/content/docs/mcp-tools.md, and
     // docs/design/surface-capability-matrix.md 1 (Analyze a stored vCon).
-    const EXPECTED_TABLES: usize = 1167;
+    // 1167 -> 1169: the whole-call audio budget: docs/config-reference.md 1
+    // (the call-seconds table under Audio retention budget) and its site page 1.
+    const EXPECTED_TABLES: usize = 1169;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

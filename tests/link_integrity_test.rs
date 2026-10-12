@@ -1232,7 +1232,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // vcon.store-shaped container), docs/vcon.md 2 (the MCP tool and the REST
     // route), docs/cli-reference.md 1 (the `-I` row) and docs/examples.md 2
     // (recipe 66's index row and its vcon.md link).
-    const EXPECTED_WIKI_LINKS: usize = 1438;
+    // 1438 -> 1443: the whole-call audio budget: one link each to Audio
+    // retention budget from docs/cli-reference.md, docs/mcp-tools.md,
+    // docs/vcon-sipnab.md, docs/vcon.md and docs/config-reference.md.
+    const EXPECTED_WIKI_LINKS: usize = 1443;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -595,6 +595,102 @@ fn rfc3551_clock_rate(payload_type: u8) -> Option<u32> {
     })
 }
 
+/// Bytes one slot of a stream's retained-audio buffer occupies: the RTP
+/// timestamp and the `Vec` that owns the payload, 32 on a 64-bit target.
+///
+/// Charged per slot of the buffer's CAPACITY rather than per frame held, so
+/// the spare room a `VecDeque` keeps after it doubles is charged too.
+pub const AUDIO_SLOT_BYTES: usize = std::mem::size_of::<(u32, Vec<u8>)>();
+
+/// The fixed part of what one retained payload allocation is charged beyond
+/// its length. See [`audio_payload_charge`].
+pub const AUDIO_PAYLOAD_ALLOC_OVERHEAD_BYTES: usize = 32;
+
+/// Default `[limits] max_audio_bytes`: 1 GiB of retained audio across every
+/// stream in the process.
+///
+/// A two-way 20 ms G.711 call is charged 2 x 50 x (232 + 32) = 26,400 bytes
+/// per second, so 1 GiB holds 40,672 call-seconds: 67 concurrent ten-minute
+/// calls, or 225 concurrent three-minute calls, kept whole. The charge is an
+/// upper bound; the same audio measured 192.6 bytes per frame under the
+/// allocator the binary ships with, so the heap it really holds at the budget
+/// is about 0.73 GiB.
+pub const DEFAULT_MAX_AUDIO_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Smallest `[limits] max_audio_bytes` the config accepts: 1 MiB.
+///
+/// Above the largest RTP payload a UDP datagram can carry, so one frame can
+/// always be retained.
+pub const MIN_MAX_AUDIO_BYTES: u64 = 1024 * 1024;
+
+/// What one retained payload of `len` bytes is charged against the budget.
+///
+/// An upper bound on what the allocator spends on it, not the length alone.
+/// Measured on aarch64 Linux, 256 streams of 4096 frames each, resident set
+/// size per frame minus the 32 byte slot: under mimalloc 0.1.52 (the binary's
+/// allocator) a 160 byte payload costs 160 bytes and a 641 byte one, just
+/// above a size class, 772; under glibc 2.41 a 160 byte payload costs 176
+/// and a 1 byte one 32. mimalloc rounds up to a size class less than a
+/// quarter above the request, and glibc adds at most 8 bytes of header and 15
+/// of alignment with a 32 byte minimum, so `len + len / 4 + 32` covers both.
+#[must_use]
+pub const fn audio_payload_charge(len: usize) -> usize {
+    len + len / 4 + AUDIO_PAYLOAD_ALLOC_OVERHEAD_BYTES
+}
+
+/// The audio retention limits a stream store applies: one rule, read from
+/// `[limits]` in one place.
+///
+/// Every mode that builds a stream store (the terminal UI, a headless live
+/// capture, a single-core file read and each `--cores` worker) takes its
+/// limits from [`AudioLimits::from_config`], so the default cannot differ by
+/// mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioLimits {
+    /// Per-stream frame cap, `[limits] max_audio_frames`. `None` keeps the
+    /// whole stream.
+    pub max_frames: Option<usize>,
+    /// Bytes charged across every stream before the oldest stream's earliest
+    /// frames are released, `[limits] max_audio_bytes`.
+    pub max_bytes: usize,
+}
+
+impl Default for AudioLimits {
+    fn default() -> Self {
+        Self {
+            max_frames: None,
+            max_bytes: usize::try_from(DEFAULT_MAX_AUDIO_BYTES).unwrap_or(usize::MAX),
+        }
+    }
+}
+
+impl AudioLimits {
+    /// The limits `[limits] max_audio_frames` and `max_audio_bytes` set, with
+    /// the defaults (whole stream, [`DEFAULT_MAX_AUDIO_BYTES`]) where unset.
+    #[must_use]
+    pub fn from_config(max_frames: Option<u64>, max_bytes: Option<u64>) -> Self {
+        let default = Self::default();
+        Self {
+            max_frames: max_frames
+                .map(|f| usize::try_from(f).unwrap_or(usize::MAX))
+                .or(default.max_frames),
+            max_bytes: max_bytes.map_or(default.max_bytes, |b| {
+                usize::try_from(b).unwrap_or(usize::MAX)
+            }),
+        }
+    }
+
+    /// The share one of `workers` parallel stores gets, so the run as a whole
+    /// stays inside the budget. The frame cap is per stream and is not split.
+    #[must_use]
+    pub fn per_worker(self, workers: usize) -> Self {
+        Self {
+            max_frames: self.max_frames,
+            max_bytes: self.max_bytes / workers.max(1),
+        }
+    }
+}
+
 /// Central store for all tracked RTP streams.
 ///
 /// Streams are indexed by `StreamKey` for O(1) lookup. When the store
@@ -626,8 +722,18 @@ pub struct StreamStore {
     ssrc_index: std::collections::HashMap<u32, Vec<StreamKey>, ahash::RandomState>,
     /// Maximum number of concurrent streams before eviction.
     max_streams: usize,
-    /// Maximum number of audio frames to retain per stream for WAV export.
-    max_audio_frames: usize,
+    /// Per-stream frame cap for retained audio; `None` keeps the whole stream.
+    max_audio_frames: Option<usize>,
+    /// Budget for retained audio across every stream, in charged bytes.
+    max_audio_bytes: usize,
+    /// Charged bytes the streams' audio buffers hold now: every buffer's
+    /// capacity times [`AUDIO_SLOT_BYTES`] plus [`audio_payload_charge`] of
+    /// every payload held.
+    audio_bytes_retained: usize,
+    /// Where the search for the oldest stream with audio to release resumes,
+    /// so a run of emptied streams at the front is walked once rather than
+    /// on every frame.
+    audio_release_cursor: usize,
     /// Whether G.711/Opus payloads are cloned into per-stream buffers for
     /// WAV export / playback. On by default (the TUI exports on demand);
     /// batch mode turns it off — nothing there ever reads the buffers, so
@@ -726,7 +832,10 @@ impl StreamStore {
             ),
             ssrc_index: std::collections::HashMap::default(),
             max_streams,
-            max_audio_frames: 1500,
+            max_audio_frames: AudioLimits::default().max_frames,
+            max_audio_bytes: AudioLimits::default().max_bytes,
+            audio_bytes_retained: 0,
+            audio_release_cursor: 0,
             audio_capture: true,
             sdp_endpoints: IndexMap::default(),
             record_new_orphans: false,
@@ -830,9 +939,134 @@ impl StreamStore {
         self.audio_capture
     }
 
-    /// Set the maximum number of audio frames retained per stream for WAV export.
+    /// Cap the audio frames retained per stream; the oldest frame goes first
+    /// and is counted in [`RtpStream::payload_frames_dropped`]. Without a cap
+    /// a stream's whole call is retained, inside the budget.
     pub fn set_max_audio_frames(&mut self, max: usize) {
-        self.max_audio_frames = max;
+        self.max_audio_frames = Some(max);
+    }
+
+    /// Set the budget for retained audio across every stream, in charged bytes
+    /// (see [`audio_payload_charge`] and [`AUDIO_SLOT_BYTES`]).
+    pub fn set_max_audio_bytes(&mut self, max: usize) {
+        self.max_audio_bytes = max;
+    }
+
+    /// Apply both audio retention limits.
+    pub fn set_audio_limits(&mut self, limits: AudioLimits) {
+        self.max_audio_frames = limits.max_frames;
+        self.max_audio_bytes = limits.max_bytes;
+    }
+
+    /// The audio retention limits this store applies.
+    ///
+    /// Readable for the reason [`Self::audio_capture`] is: a caller that
+    /// computed the right limits and failed to apply them reads exactly like
+    /// one that applied them until a long call arrives.
+    #[must_use]
+    pub fn audio_limits(&self) -> AudioLimits {
+        AudioLimits {
+            max_frames: self.max_audio_frames,
+            max_bytes: self.max_audio_bytes,
+        }
+    }
+
+    /// Charged bytes every stream's retained audio holds now.
+    #[must_use]
+    pub fn audio_bytes_retained(&self) -> usize {
+        self.audio_bytes_retained
+    }
+
+    /// Release every frame of audio retained for `call_id`'s streams and give
+    /// the buffers' memory back, counting the frames on each stream in
+    /// [`RtpStream::payload_frames_released_after_export`].
+    ///
+    /// A live run calls this once the call's vCon container is written, so
+    /// the audio of ended calls does not accumulate for the length of the
+    /// run. Returns how many frames were released.
+    pub fn release_audio_for(&mut self, call_id: &str) -> u64 {
+        let mut released = 0u64;
+        for stream in self.streams.values_mut() {
+            if stream.associated_dialog.as_deref() != Some(call_id) {
+                continue;
+            }
+            let frames = stream.payload_buffer.len() as u64;
+            self.audio_bytes_retained = self
+                .audio_bytes_retained
+                .saturating_sub(buffer_charge(&stream.payload_buffer));
+            stream.payload_buffer = std::collections::VecDeque::new();
+            stream.payload_frames_released_after_export = stream
+                .payload_frames_released_after_export
+                .saturating_add(frames);
+            released = released.saturating_add(frames);
+        }
+        released
+    }
+
+    /// Retain one frame of `audio` on the stream at `index`, then apply the
+    /// per-stream cap and the budget.
+    ///
+    /// The cap drops the stream's own oldest frame. The budget releases the
+    /// earliest frames of the OLDEST stream that holds any, which is normally
+    /// an ended call, until the total is back inside it. Both are counted on
+    /// the stream that lost the frames, so its export says PARTIAL and why.
+    fn retain_payload(&mut self, index: usize, timestamp: u32, audio: Vec<u8>) {
+        let Some((_, stream)) = self.streams.get_index_mut(index) else {
+            return;
+        };
+        let buffer = &mut stream.payload_buffer;
+        if let Some(cap) = self.max_audio_frames
+            && buffer.len() >= cap
+            && let Some((_, old)) = buffer.pop_front()
+        {
+            self.audio_bytes_retained = self
+                .audio_bytes_retained
+                .saturating_sub(audio_payload_charge(old.len()));
+            // Counted, so the export can say the ring wrapped rather than
+            // reporting the buffer's duration as the call's.
+            stream.payload_frames_dropped = stream.payload_frames_dropped.saturating_add(1);
+        }
+        let buffer = &mut stream.payload_buffer;
+        let capacity_before = buffer.capacity();
+        let charge = audio_payload_charge(audio.len());
+        buffer.push_back((timestamp, audio));
+        let grown = buffer.capacity().saturating_sub(capacity_before);
+        self.audio_bytes_retained = self
+            .audio_bytes_retained
+            .saturating_add(charge)
+            .saturating_add(grown * AUDIO_SLOT_BYTES);
+        while self.audio_bytes_retained > self.max_audio_bytes {
+            if !self.release_oldest_frame() {
+                break;
+            }
+        }
+    }
+
+    /// Release the earliest retained frame of the oldest stream holding any,
+    /// counted in [`RtpStream::payload_frames_released`]. A buffer emptied
+    /// this way gives its memory back. `false` when no stream holds audio.
+    fn release_oldest_frame(&mut self) -> bool {
+        let n = self.streams.len();
+        for _ in 0..=n {
+            if self.audio_release_cursor >= n {
+                self.audio_release_cursor = 0;
+            }
+            let Some((_, stream)) = self.streams.get_index_mut(self.audio_release_cursor) else {
+                return false;
+            };
+            if let Some((_, old)) = stream.payload_buffer.pop_front() {
+                let mut freed = audio_payload_charge(old.len());
+                if stream.payload_buffer.is_empty() {
+                    freed += stream.payload_buffer.capacity() * AUDIO_SLOT_BYTES;
+                    stream.payload_buffer = std::collections::VecDeque::new();
+                }
+                stream.payload_frames_released = stream.payload_frames_released.saturating_add(1);
+                self.audio_bytes_retained = self.audio_bytes_retained.saturating_sub(freed);
+                return true;
+            }
+            self.audio_release_cursor += 1;
+        }
+        false
     }
 
     /// Process an RTP packet: create a new stream or update an existing one.
@@ -895,21 +1129,15 @@ impl StreamStore {
             if parsed.dscp.is_some() {
                 stream.dscp_last = parsed.dscp;
             }
-            // Capture G.711 payload for audio export (ring buffer, capped)
-            if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
-                let audio_slice = rtp.payload(&parsed.payload);
-                if !audio_slice.is_empty() {
-                    let audio = audio_slice.to_vec();
-                    if stream.payload_buffer.len() >= self.max_audio_frames {
-                        stream.payload_buffer.pop_front();
-                        // Counted, so the export can say the ring wrapped
-                        // rather than reporting the buffer's duration as the
-                        // call's.
-                        stream.payload_frames_dropped =
-                            stream.payload_frames_dropped.saturating_add(1);
-                    }
-                    stream.payload_buffer.push_back((rtp.timestamp, audio));
-                }
+            // Capture G.711 payload for audio export, inside the per-stream
+            // cap and the budget (see `retain_payload`).
+            let capturable = self.audio_capture && is_audio_capturable(stream.codec.as_deref());
+            let audio_slice = rtp.payload(&parsed.payload);
+            if capturable
+                && !audio_slice.is_empty()
+                && let Some(index) = self.streams.get_index_of(&key)
+            {
+                self.retain_payload(index, rtp.timestamp, audio_slice.to_vec());
             }
         } else {
             self.ensure_capacity();
@@ -975,21 +1203,20 @@ impl StreamStore {
                     self.orphan_sockets_dropped += 1;
                 }
             }
-            // Capture G.711 payload for audio export (first packet)
-            if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
-                let audio_slice = rtp.payload(&parsed.payload);
-                if !audio_slice.is_empty() {
-                    let audio = audio_slice.to_vec();
-                    stream.payload_buffer.push_back((rtp.timestamp, audio));
-                }
-            }
+            // Capture G.711 payload for audio export (first packet), charged
+            // like every later one once the stream is in the store.
+            let capturable = self.audio_capture && is_audio_capturable(stream.codec.as_deref());
             self.ssrc_index
                 .entry(key.ssrc)
                 .or_default()
                 .push(key.clone());
             self.index_endpoints(&key);
-            self.streams.insert(key, stream);
+            let (index, _) = self.streams.insert_full(key, stream);
             self.generation += 1;
+            let audio_slice = rtp.payload(&parsed.payload);
+            if capturable && !audio_slice.is_empty() {
+                self.retain_payload(index, rtp.timestamp, audio_slice.to_vec());
+            }
         }
     }
 
@@ -1944,6 +2171,8 @@ impl StreamStore {
     /// resurrecting a dead association.
     pub fn clear(&mut self) {
         self.streams.clear();
+        self.audio_bytes_retained = 0;
+        self.audio_release_cursor = 0;
         self.ssrc_index.clear();
         self.endpoint_index.clear();
         self.sdp_endpoints.clear();
@@ -2014,6 +2243,9 @@ impl StreamStore {
                 if let Some(p) = other.provenance.get(&key) {
                     self.provenance.insert(key.clone(), p.clone());
                 }
+                self.audio_bytes_retained = self
+                    .audio_bytes_retained
+                    .saturating_add(buffer_charge(&stream.payload_buffer));
                 self.streams.insert(key, stream);
                 self.generation += 1;
             }
@@ -2080,7 +2312,17 @@ impl StreamStore {
             // DialogStore::evict_oldest. `.max(1)` keeps small caps evicting singly.
             let batch = (self.max_streams / 10).max(1).min(self.streams.len());
             self.evict_shift_work += self.streams.len().saturating_sub(batch) as u64;
-            let evicted: Vec<StreamKey> = self.streams.drain(0..batch).map(|(k, _)| k).collect();
+            let mut freed = 0usize;
+            let evicted: Vec<StreamKey> = self
+                .streams
+                .drain(0..batch)
+                .map(|(k, stream)| {
+                    freed = freed.saturating_add(buffer_charge(&stream.payload_buffer));
+                    k
+                })
+                .collect();
+            self.audio_bytes_retained = self.audio_bytes_retained.saturating_sub(freed);
+            self.audio_release_cursor = self.audio_release_cursor.saturating_sub(batch);
             for key in &evicted {
                 if let Some(keys) = self.ssrc_index.get_mut(&key.ssrc) {
                     keys.retain(|k| k != key);
@@ -2116,6 +2358,16 @@ impl StreamStore {
 #[must_use]
 pub fn call_not_carried(call_id: &str) -> String {
     format!("no SIP dialog and no RTP stream associated with call_id '{call_id}' in this capture")
+}
+
+/// What a stream's retained-audio buffer is charged against the budget: its
+/// capacity in slots and every payload it holds.
+fn buffer_charge(buffer: &std::collections::VecDeque<(u32, Vec<u8>)>) -> usize {
+    buffer.capacity() * AUDIO_SLOT_BYTES
+        + buffer
+            .iter()
+            .map(|(_, payload)| audio_payload_charge(payload.len()))
+            .sum::<usize>()
 }
 
 /// Check if a codec supports audio payload capture for playback/export.
@@ -4378,6 +4630,227 @@ a=rtpmap:96 H264/90000\r\n";
              made the exported duration read as the call's length"
         );
         Ok(())
+    }
+
+    /// Push `frames` PCMU frames of 160 bytes onto the stream `ssrc` sends
+    /// from `src_port`, timed 20 ms apart from `first_seq`.
+    fn push_frames(store: &mut StreamStore, src_port: u16, ssrc: u32, first_seq: u16, frames: u16) {
+        let parsed = make_parsed(src_port, 30000, 160);
+        for n in 0..frames {
+            let seq = first_seq.wrapping_add(n);
+            store.process_rtp(
+                &parsed,
+                &make_rtp_header(ssrc, seq),
+                ts_ms(i64::from(seq) * 20),
+            );
+        }
+    }
+
+    /// What the store should charge for `streams`, from their buffers.
+    fn charged(streams: &[&RtpStream]) -> usize {
+        streams
+            .iter()
+            .map(|s| {
+                s.payload_buffer.capacity() * AUDIO_SLOT_BYTES
+                    + s.payload_buffer
+                        .iter()
+                        .map(|(_, p)| audio_payload_charge(p.len()))
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
+    /// With no per-stream cap, a ten-minute stream is retained whole.
+    ///
+    /// The store used to keep the last 1500 frames, 30 seconds of 20 ms
+    /// G.711, of every stream, so a ten-minute call exported as its last 30
+    /// seconds. Unset now means the whole call.
+    #[test]
+    fn with_no_frame_cap_a_ten_minute_stream_is_retained_whole() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        push_frames(&mut store, 20000, 0xA0E1, 0, 30_000);
+        let stream = store.iter().next().ok_or("stream exists")?;
+        assert_eq!(
+            stream.payload_buffer.len(),
+            30_000,
+            "every frame of a ten-minute stream is kept"
+        );
+        assert_eq!(stream.payload_frames_dropped, 0);
+        assert_eq!(stream.payload_frames_released, 0);
+        Ok(())
+    }
+
+    /// The charge for one payload allocation covers what the allocators sipnab
+    /// runs on actually spend on it.
+    ///
+    /// Measured on glibc 2.41 and mimalloc 0.1.52 (aarch64, 256 streams of 4096
+    /// frames each, resident set size per frame minus the 32 byte buffer slot,
+    /// rounded up): each entry is the larger of the two allocators. A 160 byte
+    /// payload costs 161 under mimalloc and 177 under glibc; 641 bytes, just
+    /// above a mimalloc size class, costs 773; a 1 byte payload costs 33 under
+    /// glibc. The charge is the length plus a quarter plus 32.
+    #[test]
+    fn the_payload_charge_covers_the_measured_allocator_cost() {
+        assert_eq!(AUDIO_SLOT_BYTES, std::mem::size_of::<(u32, Vec<u8>)>());
+        // (payload length, most measured bytes for its allocation)
+        for (len, measured) in [
+            (1, 33),
+            (20, 33),
+            (160, 177),
+            (161, 197),
+            (480, 518),
+            (641, 773),
+            (1275, 1297),
+        ] {
+            let charge = audio_payload_charge(len);
+            assert!(
+                charge >= measured,
+                "a {len} byte payload is charged {charge}, below the {measured} measured"
+            );
+        }
+        assert_eq!(audio_payload_charge(160), 232, "160 + 40 + 32");
+    }
+
+    /// The store's running total is exactly the charge of what its buffers
+    /// hold, through retention, a ring wrap, eviction and clear.
+    #[test]
+    fn retained_audio_bytes_track_what_the_buffers_hold() -> Result<(), TestError> {
+        let mut store = StreamStore::new(3);
+        push_frames(&mut store, 20000, 0xB001, 0, 100);
+        let streams: Vec<&RtpStream> = store.iter().collect();
+        assert!(store.audio_bytes_retained() > 0, "retention is charged");
+        assert_eq!(store.audio_bytes_retained(), charged(&streams));
+
+        store.set_max_audio_frames(10);
+        push_frames(&mut store, 20001, 0xB002, 0, 50);
+        let streams: Vec<&RtpStream> = store.iter().collect();
+        assert_eq!(
+            store.audio_bytes_retained(),
+            charged(&streams),
+            "after a ring wrap"
+        );
+
+        // A fourth stream evicts the oldest from a store capped at three.
+        push_frames(&mut store, 20002, 0xB003, 0, 5);
+        push_frames(&mut store, 20003, 0xB004, 0, 5);
+        assert!(
+            store.iter().all(|s| s.key.ssrc != 0xB001),
+            "the first stream was evicted"
+        );
+        let streams: Vec<&RtpStream> = store.iter().collect();
+        assert_eq!(
+            store.audio_bytes_retained(),
+            charged(&streams),
+            "after eviction"
+        );
+
+        store.clear();
+        assert_eq!(store.audio_bytes_retained(), 0, "after clear");
+        Ok(())
+    }
+
+    /// At the budget, the OLDEST stream's earliest frames are released to make
+    /// room, counted on that stream, and the total never exceeds the budget.
+    #[test]
+    fn a_reached_budget_releases_the_oldest_streams_earliest_frames() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        // Room for the two streams below to grow to 64 slots each, and 100
+        // frames between them.
+        let budget = 2 * 64 * AUDIO_SLOT_BYTES + 100 * audio_payload_charge(160);
+        store.set_max_audio_bytes(budget);
+        push_frames(&mut store, 20000, 0xC001, 0, 60);
+        push_frames(&mut store, 20001, 0xC002, 0, 60);
+        assert!(
+            store.audio_bytes_retained() <= budget,
+            "the total stays inside the budget"
+        );
+        let streams: Vec<&RtpStream> = store.iter().collect();
+        assert_eq!(store.audio_bytes_retained(), charged(&streams));
+        let (older, newer) = (streams[0], streams[1]);
+        assert_eq!(newer.payload_buffer.len(), 60, "the newer stream is whole");
+        assert_eq!(newer.payload_frames_released, 0);
+        assert_eq!(
+            older.payload_frames_released, 20,
+            "120 frames into room for 100 releases 20, all from the older stream"
+        );
+        assert_eq!(older.payload_buffer.len(), 40);
+        assert_eq!(
+            older.payload_buffer.front().map(|(ts, _)| *ts),
+            Some(20 * 160),
+            "what was released is the START of the older stream"
+        );
+        Ok(())
+    }
+
+    /// Releasing a call's audio empties its streams' buffers, gives their
+    /// memory back, counts what was released, and leaves other calls alone.
+    #[test]
+    fn releasing_a_calls_audio_empties_only_that_calls_streams() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        push_frames(&mut store, 20000, 0xD001, 0, 30);
+        push_frames(&mut store, 20001, 0xD002, 0, 20);
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        store.link_to_dialog(dst, 20000, "ended@example.com");
+        store.link_to_dialog(dst, 20001, "ongoing@example.com");
+
+        let released = store.release_audio_for("ended@example.com");
+        assert_eq!(released, 30, "every retained frame of the ended call");
+        let ended = store
+            .streams_for("ended@example.com")
+            .next()
+            .ok_or("the ended call's stream is still tracked")?;
+        assert!(ended.payload_buffer.is_empty());
+        assert_eq!(ended.payload_buffer.capacity(), 0, "its memory is returned");
+        assert_eq!(ended.payload_frames_released_after_export, 30);
+        let ongoing = store
+            .streams_for("ongoing@example.com")
+            .next()
+            .ok_or("the other call's stream")?;
+        assert_eq!(
+            ongoing.payload_buffer.len(),
+            20,
+            "another call keeps its audio"
+        );
+        let streams: Vec<&RtpStream> = store.iter().collect();
+        assert_eq!(store.audio_bytes_retained(), charged(&streams));
+        Ok(())
+    }
+
+    /// A multi-core merge adds the workers' retained totals.
+    #[test]
+    fn a_merge_carries_each_workers_retained_audio_bytes() {
+        let mut a = StreamStore::new(100);
+        let mut b = StreamStore::new(100);
+        push_frames(&mut a, 20000, 0xE001, 0, 30);
+        push_frames(&mut b, 20001, 0xE002, 0, 70);
+        let total = a.audio_bytes_retained() + b.audio_bytes_retained();
+        assert!(total > 0);
+        a.merge(b);
+        assert_eq!(a.audio_bytes_retained(), total);
+    }
+
+    /// `AudioLimits` splits the budget across `--cores` workers, so the run as
+    /// a whole stays inside it, and keeps an explicit frame cap per stream.
+    #[test]
+    fn audio_limits_split_the_budget_across_workers() {
+        let limits = AudioLimits::from_config(Some(1000), Some(8 * 1024 * 1024));
+        assert_eq!(limits.max_frames, Some(1000));
+        assert_eq!(limits.max_bytes, 8 * 1024 * 1024);
+        let per = limits.per_worker(3);
+        assert_eq!(
+            per.max_frames,
+            Some(1000),
+            "the cap is per stream, not split"
+        );
+        assert!(
+            per.max_bytes * 3 <= limits.max_bytes,
+            "three workers fit the budget"
+        );
+        assert_eq!(per.max_bytes, 8 * 1024 * 1024 / 3);
+        let unset = AudioLimits::from_config(None, None);
+        assert_eq!(unset.max_frames, None, "unset is the whole call");
+        assert_eq!(unset.max_bytes, DEFAULT_MAX_AUDIO_BYTES as usize);
+        assert_eq!(unset, AudioLimits::default());
     }
 
     /// Default (TUI / library use): G.711 payloads ARE buffered so

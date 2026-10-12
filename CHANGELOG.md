@@ -48,6 +48,36 @@ entry that carries them.
   the reason. The tool is read-only, in the `vcon` bundle, and bounded by
   `limit`.
 
+### Changed
+
+- **Retained audio covers the whole call.** `--retain-audio`, and the
+  terminal UI, kept the last 1500 frames of each stream, 30 seconds of 20 ms
+  G.711, so a 60-second call exported to WAV or vCon held its last 30 seconds
+  and said PARTIAL. Each stream now keeps every frame from the first.
+  `[limits] max_audio_frames` is unset by default and still caps each stream
+  when set; `0` is still refused.
+  Affected: every run that retains audio, live or from a file, `--cores`
+  included.
+- **A new `[limits] max_audio_bytes` budget bounds retained audio across every
+  stream.** Default 1 GiB, minimum 1 MiB. A 20 ms G.711 frame is charged 264
+  bytes, an upper bound on what it occupies (measured at 192.6 bytes with the
+  binary's allocator), so the default holds 40,672 call-seconds with media both
+  ways: 67 concurrent ten-minute calls, or 225 concurrent three-minute ones.
+  At the budget the oldest stream's earliest frames are released first, and
+  that call's WAV note, export summary and vCon `media_note` say `PARTIAL: the
+  [limits] max_audio_bytes retention budget was reached and released N earlier
+  frame(s)`; the vCon wraps the recording in a `recording-set`. With `--cores
+  N` each worker gets 1/N of the budget. See
+  [Audio retention budget](docs/config-reference.md#audio-retention-budget).
+- **A live capture that writes vCon containers releases each call's audio
+  once its container is written.** The container carries it, and holding it
+  until the stream was evicted grew retention with the length of the run. A
+  later export of that call says how many frames were released and why.
+- **A whole call can exceed the vCon inline media budget.** A two-way G.711
+  call fits the 5 MiB `--vcon-max-inline-media` default for up to 122
+  seconds; a longer one carries the existing out-loud refusal instead of the
+  audio. Raise `--vcon-max-inline-media` to what your store accepts.
+
 ## [0.5.213] - 2026-10-12
 
 ### Added

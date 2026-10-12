@@ -5790,7 +5790,11 @@ call carries no audio it can decode, rather than writing an empty file.
 
 Requires `--retain-audio` on the server command line: call audio is
 content, not signaling, so holding it in memory is an operator decision
-rather than a side effect of enabling MCP. Without the flag the tool refuses,
+rather than a side effect of enabling MCP. The run keeps whole calls, inside
+the `[limits] max_audio_bytes` budget
+([Audio retention budget](config-reference.md#audio-retention-budget)). A
+file missing the start of a call says PARTIAL in its `summary` with the count
+and the reason. Without the flag the tool refuses,
 and its refusal reports the media it measured and names the flag — a capture
 setting, not a finding that the call was silent.
 
@@ -5919,8 +5923,11 @@ it writes says "not a recording made by the endpoints".
 So audio the run RETAINED travels inline -- base64url, `mediatype:
 "audio/x-wav"`, and a `content_hash` of `sha512-` plus the base64url SHA-512 of
 the DECODED bytes, which `sha512sum` on the exported `.wav` reproduces. The
-`duration` on that object is the FILE's, never the call's. When a payload ring
-dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
+`duration` on that object is the FILE's, never the call's. sipnab keeps whole
+calls by default. When frames are missing from the start of the file (an
+explicit `[limits] max_audio_frames` cap dropped them, or the
+`[limits] max_audio_bytes` budget released them), a `recording-set` wraps it
+carrying the CALL's media window, so
 the two clocks stand side by side -- that is the only way the format can say
 "this file is a fragment of that call".
 
