@@ -374,6 +374,15 @@ bytes (default 65536) counts as no answer, and the container waits for a
 retry. The delivered and failed directories must be on the
 spool's file system, so that every move is a rename.
 
+To see the spool's state, run `sipnab --vcon-spool-status <SPOOL_DIR>`, call
+[`vcon_spool_status`](mcp-tools.md#vcon_spool_status) on the capture's MCP
+server, or read [`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool) from its
+REST server. All three give one answer. It counts the containers pending in the spool and in the default
+`delivered/` and `failed/` directories, and returns each failed container's
+`<name>.error.json` record. It reads files and nothing else: the answer is a
+snapshot dated by its `as_of` field, and the forwarder may move a file a moment
+later.
+
 The forwarder reads the spool by the contract above. It skips dot-prefixed
 names and names that do not end in `.json`, so it never reads a staging file.
 When sipnab rewrites a container under the same name because the call changed,

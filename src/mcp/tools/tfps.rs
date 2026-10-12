@@ -37,6 +37,7 @@
 //! sent -- and arrive fenced the way `security_findings` fences its `detail`.
 //! Addresses, rules, timestamps and TFPS's own words are returned verbatim.
 
+use crate::mcp::errors::{self, Reason};
 use std::net::IpAddr;
 
 use crate::mcp::server::SipnabMcp;
@@ -110,7 +111,8 @@ fn peer_error(e: TfpsError) -> rmcp::ErrorData {
 /// ban` can only ever hold an IPv4 address. The rule is
 /// [`crate::security::tfps::tfps_address`], shared with the REST routes.
 fn parse_ip(s: &str) -> Result<IpAddr, rmcp::ErrorData> {
-    crate::security::tfps::tfps_address(s).map_err(|why| rmcp::ErrorData::invalid_params(why, None))
+    crate::security::tfps::tfps_address(s)
+        .map_err(|why| errors::refuse_param(Reason::InvalidValue, "ip", why))
 }
 
 /// A permit to act on TFPS from MCP, or the refusal naming how to enable it.
@@ -125,7 +127,7 @@ fn mcp_permit(
             crate::security::actions::ActionTarget::Tfps,
             crate::security::actions::ActionSurface::Mcp,
         )
-        .map_err(|refusal| rmcp::ErrorData::invalid_params(refusal.to_string(), None))
+        .map_err(|refusal| errors::refuse(Reason::NotEnabled, refusal.to_string()))
 }
 
 /// Run one action through the service, off the async runtime: the service
@@ -162,8 +164,11 @@ where
 fn action_refusal(e: ActionError) -> Result<CallToolResult, rmcp::ErrorData> {
     let message = e.to_string();
     let (refusal, retry_after) = match e {
-        ActionError::NotEnabled(_) | ActionError::Rule(_) => {
-            return Err(rmcp::ErrorData::invalid_params(message, None));
+        ActionError::NotEnabled(_) => {
+            return Err(errors::refuse(Reason::NotEnabled, message));
+        }
+        ActionError::Rule(_) => {
+            return Err(errors::refuse(Reason::InvalidValue, message));
         }
         ActionError::Throttled(t) => ("rate", Some(t.retry_after().as_secs().max(1))),
         ActionError::NotOwned => ("not_owned", None),
@@ -467,10 +472,10 @@ impl SipnabMcp {
             (Some(id), None) if !id.trim().is_empty() => RevertTarget::One(id),
             (None, Some(true)) => RevertTarget::All,
             _ => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::MissingParam,
                     "name one action: {\"id\": \"a-...\"}, or {\"all\": true} for every ban \
                      sipnab holds",
-                    None,
                 ));
             }
         };

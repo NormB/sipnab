@@ -36,6 +36,74 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `git commit --amend -S --no-edit` and
+    // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
+    // contributing guide and the build page say to re-sign a commit the
+    // pre-push commit-signature gate refused. git's flags, not sipnab's.
+    (
+        "amend",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "exec",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "no-edit",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // `scripts/clean-stale.py --apply --root <DIR> --min-age-days <N>
+    // --reclaim-build-cache --disk-floor-gb <N>`, named by the stray-files
+    // note: the cleaner's flags, not sipnab's.
+    (
+        "apply",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "root",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "min-age-days",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "reclaim-build-cache",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "disk-floor-gb",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    // `cargo test --features full --test <NAME> -- --test-threads=1`, named
+    // by the MCP field-cap note. cargo's and the test harness's flags.
+    (
+        "features",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    (
+        "test",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    (
+        "test-threads",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
     ("features", &["website/content/features.md"]),
@@ -1305,7 +1373,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // command to spawn.
     ("cli", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     ("method", &["docs/mcp.md", "website/content/docs/mcp.md"]),
-    ("format", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    // Also `git log --format=%G?`, the letter the pre-push commit-signature
+    // gate decides by, in the build page. git's flag, not sipnab's.
+    (
+        "format",
+        &[
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     ("tool-name", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     ("tool-arg", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     (
@@ -3589,9 +3667,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // is. Both change no capture, store, file or other system, so the split
     // moves to 59 read-only of 72 and the thirteen write-capable tools are
     // unchanged.
+    // 72 -> 73 by `vcon_spool_status` (src/mcp/tools/vcon.rs), which counts
+    // the vCon export spool and reads each failed container's record. It
+    // reads files and changes nothing, so the split moves to 60 read-only of
+    // 73 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        72,
+        73,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4846,7 +4928,28 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1136: the `%G?` verdict table for the pre-push commit-signature
+    // gate, in docs/internals/build-ci-release.md and its site mirror, +2; and
+    // the 2026-10-11 notes rewrite, +6, per file under
+    // website/content/notes/: fifty-seven-tools-and-the-two-that-stay-off +2,
+    // measure-the-field-not-the-container +1, one-filter-language-every-door
+    // +1, reading-tls-without-a-certificate +1,
+    // read-tls-without-a-key-or-a-restart +1,
+    // the-invite-that-arrived-before-its-keys +1,
+    // what-to-allow-when-an-agent-drives-sipnab +1,
+    // an-observer-vcon-and-its-third-verdict -1,
+    // three-surfaces-and-three-different-calls -1; and docs/mcp-tools.md +2
+    // (the "Which tool finds calls" table and the Prompts table) and their
+    // site page +2. The cursor-exceptions table was rewritten in place.
+    // +2: the `reconcile_orphans` parameter table, in docs/mcp-tools.md and
+    // its site page.
+    // +4: the error-data member table and the reason-code table in
+    // docs/mcp-tools.md's "Error data" section, and the same two in its
+    // site mirror.
+    // +5: `vcon_spool_status`'s parameter and Returns tables, in
+    // docs/mcp-tools.md 2 and website/content/docs/mcp-tools.md 2, and the
+    // vCon spool status row in docs/design/surface-capability-matrix.md.
+    const EXPECTED_TABLES: usize = 1136;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -6461,6 +6564,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         12 => "twelve",
         13 => "thirteen",
         14 => "fourteen",
+        15 => "fifteen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -6483,7 +6587,8 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // Each of these names a count of pre-push gates somewhere. Any OTHER
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
-            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+            "fourteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -7404,6 +7509,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (12, "twelve"),
         (13, "thirteen"),
         (14, "fourteen"),
+        (15, "fifteen"),
     ];
     let want = spellings
         .iter()
@@ -7589,6 +7695,149 @@ fn guides_explain_the_dpkg_lock_error_in_apts_own_words() -> Result<(), TestErro
         assert!(
             flat.contains("Wait for it to finish, then run the block again."),
             "{guide} no longer says what to do about it"
+        );
+    }
+    Ok(())
+}
+
+/// The English word for a small count, as the MCP reference spells counts.
+#[cfg(feature = "mcp")]
+fn count_word(n: usize) -> Option<&'static str> {
+    [
+        "Zero",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "Eleven",
+        "Twelve",
+        "Thirteen",
+        "Fourteen",
+        "Fifteen",
+        "Sixteen",
+        "Seventeen",
+        "Eighteen",
+        "Nineteen",
+        "Twenty",
+    ]
+    .get(n)
+    .copied()
+}
+
+/// Backticked spans in `text`.
+#[cfg(feature = "mcp")]
+fn backticked(text: &str) -> Vec<&str> {
+    text.split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, s)| s)
+        .collect()
+}
+
+/// The MCP reference's paragraph on source-independent tools names exactly
+/// `SOURCE_INDEPENDENT_TOOLS`, and its counts are that list's counts.
+///
+/// The paragraph said "Seventeen" and named eighteen: it carried
+/// `actions_revert`, which the code's list does not hold, so a reader was told
+/// a tool omits `source_exhausted` when the code makes no such exception.
+#[cfg(feature = "mcp")]
+#[test]
+fn the_source_independent_paragraph_names_the_codes_list() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    let lead = " tools are the exception, because their answer cannot move with";
+    let at = text
+        .find(lead)
+        .ok_or("the source-independent paragraph is on the page")?;
+    let start = text[..at].rfind("\n\n").map_or(0, |p| p + 2);
+    let end = text[at..].find("\n\n").map_or(text.len(), |p| at + p);
+    let para = &text[start..end];
+    let code = sipnab::mcp::completeness::SOURCE_INDEPENDENT_TOOLS;
+
+    let named: BTreeSet<&str> = backticked(para).into_iter().collect();
+    let want: BTreeSet<&str> = code.iter().copied().collect();
+    assert_eq!(
+        named, want,
+        "docs/mcp-tools.md names a different set of source-independent tools \
+         than src/mcp/completeness.rs SOURCE_INDEPENDENT_TOOLS"
+    );
+    let total = count_word(code.len()).ok_or("a count the table spells")?;
+    assert!(
+        para.starts_with(&format!("{total}{lead}")),
+        "the paragraph should open with {total:?}: {para}"
+    );
+
+    // The two halves: tools that read something else, and tools that ask
+    // another process. Each half's count word matches the names in it.
+    let split = para
+        .find("The other ")
+        .ok_or("the paragraph has its second half")?;
+    let (first, second) = para.split_at(split);
+    let first_names = backticked(first).len();
+    let second_names = backticked(second).len();
+    let first_word = count_word(first_names).ok_or("first count")?;
+    let second_word = count_word(second_names)
+        .ok_or("second count")?
+        .to_lowercase();
+    assert!(
+        first.contains(&format!(
+            "{first_word} read something other than the capture store"
+        )),
+        "the first half names {first_names}: {first}"
+    );
+    assert!(
+        second.starts_with(&format!("The other {second_word} ask another process")),
+        "the second half names {second_names}: {second}"
+    );
+    Ok(())
+}
+
+/// The MCP reference documents every prompt, with the tools it calls and the
+/// bundles those tools need, derived from `sipnab::mcp::prompts`.
+#[cfg(feature = "mcp")]
+#[test]
+fn every_prompt_is_documented_with_its_tools_and_bundles() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    let at = text
+        .find("\n### Prompts\n")
+        .ok_or("docs/mcp-tools.md has a `### Prompts` section")?;
+    let body = &text[at + 1..];
+    let end = body[4..].find("\n#").map_or(body.len(), |p| p + 4);
+    let section = &body[..end];
+    let rows: Vec<&str> = section.lines().filter(|l| l.starts_with("| `")).collect();
+    let workflows = sipnab::mcp::prompts::all();
+    assert_eq!(
+        rows.len(),
+        workflows.len(),
+        "one table row per prompt: {rows:#?}"
+    );
+    for w in workflows {
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with(&format!("| `{}` |", w.name)))
+            .ok_or(format!("no row for prompt {}", w.name))?;
+        let cells: Vec<&str> = row.split(" | ").collect();
+        let tools_cell = cells.get(2).ok_or(format!("{}: a tools cell", w.name))?;
+        let bundles_cell = cells.get(3).ok_or(format!("{}: a bundles cell", w.name))?;
+        let needs = w.needs();
+        assert_eq!(
+            backticked(tools_cell),
+            needs,
+            "{}: the tools column lists the tools the prompt calls, in order",
+            w.name
+        );
+        assert_eq!(
+            backticked(bundles_cell),
+            sipnab::mcp::prompts::bundles_holding(&needs),
+            "{}: the bundles column lists the bundles those tools are in",
+            w.name
         );
     }
     Ok(())

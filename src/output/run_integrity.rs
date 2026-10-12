@@ -55,6 +55,11 @@
 //! limit doing its job is not a failure. It travels in the record instead,
 //! where a consumer can weigh it, and the counts are separate from the
 //! input-loss counts so the two can never be mistaken for each other.
+//!
+//! SIP a port gate set aside (`--portrange`, and the WebSocket port set) is
+//! recorded on the same terms as retention: the range is what the operator
+//! asked for, so it does not change the exit status, and the reports name it
+//! because the messages are in none of them.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -138,6 +143,21 @@ pub struct RunIntegrity {
     /// decompression ceiling, an entry cap, a broken header, or the archive
     /// ended inside a member. Its later members are not in the run.
     pub archives_cut_short: bool,
+    /// SIP messages skipped because both ports were outside `--portrange`,
+    /// from [`crate::pipeline::portrange_skip_report`].
+    ///
+    /// A fact, not a failure, for the reason retention is one: the range is
+    /// what the operator asked for. It is in the record because a report that
+    /// left it out reads as a report about every call in the capture, while
+    /// the run summary, `--analyze` and a vCon each say these messages were
+    /// not analyzed.
+    pub sip_outside_portrange: u64,
+    /// SIP-over-WebSocket messages skipped because they arrived on a port
+    /// outside the WebSocket port set, from
+    /// [`crate::pipeline::ws_port_skip_report`]. Counted apart from
+    /// [`Self::sip_outside_portrange`] because the remedy differs: widening
+    /// `--portrange` recovers none of it.
+    pub sip_outside_ws_ports: u64,
 }
 
 impl RunIntegrity {
@@ -158,7 +178,10 @@ impl RunIntegrity {
     /// nothing wrong with its exit status and still owes the reader that fact.
     #[must_use]
     pub fn is_degraded(&self) -> bool {
-        !self.input_complete() || self.retention_messages_dropped > 0
+        !self.input_complete()
+            || self.retention_messages_dropped > 0
+            || self.sip_outside_portrange > 0
+            || self.sip_outside_ws_ports > 0
     }
 
     /// One sentence per condition, in the words the stderr lines already use.
@@ -198,6 +221,21 @@ impl RunIntegrity {
                 "{} captured message(s) were dropped by idle compaction; \
                  ladders for those calls are incomplete",
                 self.retention_messages_dropped,
+            ));
+        }
+        if self.sip_outside_portrange > 0 {
+            out.push(format!(
+                "{} SIP message(s) were seen on ports outside --portrange and were not \
+                 analyzed; re-run with --portrange 1-65535 to include them",
+                self.sip_outside_portrange,
+            ));
+        }
+        if self.sip_outside_ws_ports > 0 {
+            out.push(format!(
+                "{} SIP-over-WebSocket message(s) arrived on ports outside the WebSocket \
+                 port set and were not analyzed; re-run with --ws-portrange covering them \
+                 to include them",
+                self.sip_outside_ws_ports,
             ));
         }
         out
@@ -251,6 +289,10 @@ impl RunIntegrity {
                 },
                 "archives": {
                     "cut_short": self.archives_cut_short,
+                },
+                "port_gate": {
+                    "sip_outside_portrange": self.sip_outside_portrange,
+                    "sip_outside_ws_ports": self.sip_outside_ws_ports,
                 },
             }
         })
@@ -440,6 +482,11 @@ pub fn snapshot() -> RunIntegrity {
         plugins_failed: PLUGINS_FAILED.load(Ordering::Relaxed),
         retention_messages_dropped: RETENTION_MESSAGES_DROPPED.load(Ordering::Relaxed),
         archives_cut_short: ARCHIVES_CUT_SHORT.load(Ordering::Relaxed),
+        // Read from the pipeline's own tallies rather than copied into this
+        // module: the run summary, `--analyze` and the vCon note read the same
+        // two, so no surface can count a different number.
+        sip_outside_portrange: crate::pipeline::portrange_skip_report().messages,
+        sip_outside_ws_ports: crate::pipeline::ws_port_skip_report().messages,
     }
 }
 
@@ -558,6 +605,57 @@ mod tests {
             "{:?}",
             p.reasons()
         );
+        Ok(())
+    }
+
+    /// SIP a port gate set aside reaches the `--report` notice, in the words
+    /// the run summary uses, and fails nothing: the range is what was asked
+    /// for. The NDJSON stream stays clean, as for retention.
+    #[test]
+    fn sip_a_port_gate_set_aside_is_reported_without_failing_the_run() -> Result<(), TestError> {
+        let r = RunIntegrity {
+            files_given: 1,
+            files_read_in_full: 1,
+            sip_outside_portrange: 7,
+            sip_outside_ws_ports: 3,
+            ..RunIntegrity::default()
+        };
+        assert!(r.input_complete(), "a port range must not fail the run");
+        assert!(r.is_degraded(), "and must still be declared");
+        assert!(r.ndjson_line().is_none(), "the dialog stream stays clean");
+        let notice = r.report_notice().ok_or("the report must carry a notice")?;
+        assert!(
+            notice.contains(
+                "7 SIP message(s) were seen on ports outside --portrange and were not \
+                 analyzed; re-run with --portrange 1-65535 to include them"
+            ),
+            "{notice}"
+        );
+        assert!(
+            notice.contains(
+                "3 SIP-over-WebSocket message(s) arrived on ports outside the WebSocket \
+                 port set and were not analyzed"
+            ),
+            "{notice}"
+        );
+        let v = r.to_json();
+        assert_eq!(
+            v["sipnab_run"]["port_gate"]["sip_outside_portrange"],
+            serde_json::json!(7)
+        );
+        assert_eq!(
+            v["sipnab_run"]["port_gate"]["sip_outside_ws_ports"],
+            serde_json::json!(3)
+        );
+        for (portrange, ws) in [(1, 0), (0, 1)] {
+            let one = RunIntegrity {
+                sip_outside_portrange: portrange,
+                sip_outside_ws_ports: ws,
+                ..RunIntegrity::default()
+            };
+            assert!(one.is_degraded(), "either gate alone is declared");
+            assert_eq!(one.reasons().len(), 1, "{:?}", one.reasons());
+        }
         Ok(())
     }
 

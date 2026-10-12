@@ -1,145 +1,147 @@
 +++
-title = "Two ways a scan reports nothing"
+title = "US-spelling check passed while it missed words inside identifiers and could not read its own file"
 date = 2026-09-01
-description = "A regex sweep declared the tree clean and missed fourteen spellings. The gate that replaced it reported twenty passing tests while its own file was invisible to it. Neither failure looks any different from a pass."
+updated = 2026-10-11
+description = "Two failures found while building sipnab's US-spelling check: a word search that could not see words inside code names, and a check that passed without reading the file that defined it."
 
 [extra]
 kind = "postmortem"
 +++
 
-Fixing the [US-English gate](@/notes/seventy-words-somebody-thought-of.md)
-produced two separate incidents in one afternoon, and both have the same shape:
-a scan that reported zero for a reason unrelated to the tree it was reading.
+## In short
 
-A scan reporting zero is indistinguishable from a clean tree. That is the whole
-hazard, and it does not announce itself.
+sipnab has an automated check that fails if any file in the project uses a
+British spelling, such as an "-ise" ending where US English uses "-ize". While
+the project built it on 2026-09-01, it reported "nothing found" twice when
+something was there: once because the search could not see words joined
+together inside code names, and once because the check could not see the new
+file that defined it. The project fixed both, and the check now also fails if
+it reads too few files to mean anything.
 
-## One: `\b` cannot see inside `snake_case`
+## What happened
 
-The sweep that measured the damage was a regex over the tracked tree, matching
-each British form with a word boundary at each end. It reported the tree clean
-after the corrections landed.
+The US-spelling rule replaced a fixed list of words (see
+[the post-mortem on that list](@/notes/seventy-words-somebody-thought-of.md)).
+Two failures came up while the project built it.
 
-Fourteen spellings survived it.
+**First failure.** Before the new check existed, a one-off search ran over the
+project with a regular expression (a text-matching pattern) that looked
+for each British spelling as a whole word. It reported no matches. British
+spellings remained inside identifiers (the names given to functions, variables
+and tests in source code). One was the test now named
+`etag_serializes_with_named_fields` in `src/provenance.rs`, which at the time
+spelled *serializes* with an *s* in place of the *z*. A comment in
+`tests/us_spelling_test.rs` records this case.
 
-`\b` sits between a word character and a non-word character. In every regex
-flavor this project uses, `_` **is** a word character. So in a test name like
+**Second failure.** The new check is `tests/us_spelling_test.rs`. A comment in
+that file records that its 20 tests passed while the file was untracked,
+meaning nobody had yet added it to git with `git add`. Once the file was in
+git, the check reported British spellings in the file itself.
 
-```text
-etag_serializes_with_named_fields
-```
+## Why it happened
 
-there is no boundary before `serializes` and none after it. A `\b`-anchored
-match never fires. The identifier is one word to the matcher, and that word
-ends in `elds`.
+**First failure.** The search used `\b`, the regular-expression marker for a
+word boundary: the point between a letter, digit or underscore and any other
+character. An underscore counts as part of a word, so inside
+`etag_serializes_with_named_fields` there is no boundary before or after
+*serializes*, and a whole-word search for it does not match. The same applies
+to `camelCase` names, where only a capital letter marks the start of each
+word, such as `serializesWithFields`, and to upper-case names joined by
+underscores.
 
-That is a real test name this tree carried, and the sweep read straight past it.
+**Second failure.** The check reads the list of files that git tracks (the
+output of `git ls-files`), not every file on disk. A new file that nobody has
+added to git is not in that list, so the check did not read it.
 
-`camelCase` hides the same thing with no punctuation at all.
-`serializesWithFields` has nothing to split on, so a matcher that breaks only
-on punctuation reads one word ending in `elds` and passes it. Upper case does
-not help either — `SCREAMING_SNAKE` is the same token shape.
+## What changed
 
-The rule now splits twice. Tokens first, on anything that is neither
-alphanumeric nor `_`, then each token on the underscore, then each run on a
-lower-to-upper transition:
+- **The rule splits identifiers into words.** `tests/us_spelling_test.rs`
+  splits text three times before it checks a word: into tokens at every
+  character that is not a letter, a digit or an underscore; each token into
+  runs of letters, which separates words at underscores and digits; and each
+  run at every point where an upper-case letter follows a lower-case one. A run of capitals such as `HTTPServer` has no such point and is not
+  split; the test `an_acronym_run_is_not_split_into_fragments` checks this.
+- **A word must be long enough.** The rule reports a word only when at least
+  three letters come before the British ending. An earlier version reported four
+  characters of an encoded checksum in a lockfile as a British spelling.
+- **Tests for each identifier shape.** Named tests check that the rule finds a
+  British spelling inside a `snake_case` name, a `camelCase` name, an upper-case
+  constant, a hyphenated or path segment, a code block, a string literal and
+  next to digits.
+- **Tests for what the check reads.**
+  `the_spelling_scan_reads_this_very_file` fails if
+  `tests/us_spelling_test.rs` is not among the files the check reads.
+  `every_tracked_test_file_is_reachable_by_the_scan` fails if a tracked test
+  file is neither read nor on the check's exclusion list with a reason.
+  `the_scan_reads_what_git_tracks_and_nothing_else` checks that the file list
+  holds no build output and only paths that exist, and its comment states
+  that the check does not read a file until someone adds it to git.
+- **A minimum count of files read.** `the_tree_uses_us_spellings` fails if
+  it read fewer than 200 files, so a check that stopped reaching the project
+  cannot pass. Two other checks have the same kind of minimum:
+  `every_free_disk_step_uses_the_shared_action` in
+  `tests/ci_disk_headroom_test.rs` (at least 4 steps) and
+  `no_executable_line_uses_a_gnu_only_spelling` in
+  `tests/repo_hygiene_test.rs` (at least 20 scripts).
 
-```rust
-fn split_camel(run: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let bytes = run.as_bytes();
-    let mut start = 0;
-    for i in 1..bytes.len() {
-        if bytes[i].is_ascii_uppercase() && bytes[i - 1].is_ascii_lowercase() {
-            out.push(&run[start..i]);
-            start = i;
-        }
-    }
-    if start < run.len() {
-        out.push(&run[start..]);
-    }
-    out
-}
-```
+`tests/us_spelling_test.rs` held 30 tests on 2026-10-11.
 
-The lower-to-upper condition matters and it is the reason the split is not
-"break before every capital". `HTTPServer` has no lower-to-upper position, so
-it survives whole. Splitting on every capital would shred `SIPMessage` into
-fragments, and a rule that manufactures fragments manufactures hits. There is a
-test named exactly that: `an_acronym_run_is_not_split_into_fragments`.
+## What you can check yourself
 
-The same class of false positive cost a separate correction. The scanner
-reported `pyse`, four characters of a base64 hash in a lockfile, as a British
-spelling. The rule now requires a stem long enough to be a word before the
-suffix. A gate that cries wolf gets switched off, and one bogus hit teaches a
-reader to skim every real one after it.
+1. See that a whole-word search does not find a word inside an identifier.
+   `grep -c` prints how many lines match:
 
-## Two: the gate could not read itself
+   ```bash
+   echo 'etag_serializes_with_named_fields' | grep -c -E '\bserializes\b'
+   ```
 
-The replacement went in as `tests/us_spelling_test.rs`, with twenty tests. All
-twenty passed. The scan reported the tree clean.
+   ```text
+   0
+   ```
 
-The file was untracked.
+2. Run the same search on the words separated by spaces:
 
-The scan reads what `git ls-files` hands it, so a file nobody has staged is not
-in the tree by the scan's reckoning. `git add` on that one file produced
-**thirteen hits in prose written minutes earlier** — including a helper function
-whose own name was British.
+   ```bash
+   echo 'etag serializes with named fields' | grep -c -E '\bserializes\b'
+   ```
 
-Twenty green tests, and the file defining them was the only file in the
-repository the gate could not see.
+   ```text
+   1
+   ```
 
-Three tests came out of it. The scan reads this very file. No tracked test file
-is invisible to it, which is the general form, because a test file is the place
-somebody most readily writes a British spelling and least readily rereads one.
-And the third:
+3. In a checkout of the repository, confirm that git tracks the check's file,
+   so the check reads it:
 
-```rust
-/// The scan reads what git tracks, and says so.
-///
-/// The limitation behind the hollow green, written down where it will be read.
-/// An unstaged file is invisible; that is a property of the input, not a bug,
-/// and the fix is to stage before believing a pass.
-#[test]
-fn the_scan_reads_what_git_tracks_and_nothing_else() {
-```
+   ```bash
+   git ls-files tests/us_spelling_test.rs
+   ```
 
-That third one fixes nothing. It records the limitation in the place somebody
-debugging a suspicious pass would look. Reading the index rather than the
-working tree is correct behavior for this gate — the question is whether the
-person reading the green knows it.
+   ```text
+   tests/us_spelling_test.rs
+   ```
 
-## The floor under both
+   A file you have created and not yet added with `git add` prints nothing
+   here, and the spelling check does not read it. Add new files before you
+   rely on a passing result.
 
-`the_tree_uses_us_spellings` opens with an assertion that has nothing to do
-with spelling:
+## Terms used here
 
-```rust
-assert!(
-    read >= 200,
-    "only {read} file(s) read; the walk is not reaching the tree and a \
-     pass would mean nothing"
-);
-```
+- **Check (gate)**: an automated test that must pass before a change is
+  accepted.
+- **Regular expression**: a pattern language for searching text.
+- **Word boundary (`\b`)**: the point between a word character (letter, digit
+  or underscore) and any other character.
+- **Identifier**: a name in source code, such as a function or test name.
+- **`snake_case`, `camelCase`**: ways of joining words in an identifier, with
+  underscores or with capital letters.
+- **Tracked file**: a file that git records as part of the project. A new file
+  becomes tracked when you add it with `git add`.
+- **Lockfile**: a generated file that pins the exact versions of a project's
+  dependencies, often with encoded checksums.
 
-That floor catches neither incident above. It catches the third version of the
-same problem, the coarsest one: a walk that stops reaching the tree at all. The
-two incidents were narrower — one read every file and could not see inside an
-identifier, the other read a tree that did not yet hold the file in question.
+## Related guides
 
-Gates written since carry a floor of the same shape. The disk-space gate
-refuses to pass on fewer than four reclaim steps, the overlay gate on fewer
-than six overlays, the portability gate on fewer than twenty scripts. All three
-say one thing: **exit status cannot tell "nothing wrong" from "nothing
-examined"**.
-
-## Worth stealing
-
-Before believing a scan that reports zero, make it report what it read. A count
-of inputs turns a silent pass into a checkable claim, and it costs one
-assertion.
-
-And check whether the scanner's own definition of a word matches the language
-of the tree it reads. Source code is not prose. It carries English words inside
-identifiers with the boundaries filed off, and every one of those is a place a
-text rule goes blind.
+- [Documentation](@/docs/contributing.md#documentation) in the contributing
+  guide, which states that prose is US English.
+- [Running tests](@/docs/contributing.md#running-tests) in the contributing
+  guide.

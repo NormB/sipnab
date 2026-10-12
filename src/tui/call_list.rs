@@ -525,11 +525,11 @@ pub fn displayed_dialogs<'a>(
 /// to contrast against and nothing should be emitted — that is the NO_COLOR
 /// theme, where drawing a foreground would defeat the point.
 ///
-/// For a real color, black or white is chosen by perceived luminance
-/// (Rec. 601 weights: green dominates, blue barely registers), which is the
-/// same rule browsers and terminals use to keep text readable on an arbitrary
-/// swatch. The named ANSI colors are mapped to their conventional sRGB values
-/// rather than guessed, and the bright variants count as light.
+/// For a real color, the answer is whichever of black and white has the
+/// higher WCAG 2 contrast ratio against it, computed from the relative
+/// luminance of the color's sRGB value. The named ANSI colors are mapped to
+/// their conventional sRGB values rather than guessed. On the default cyan
+/// band that is black, at about 7.2:1; white would be about 2.9:1 (#470).
 pub(crate) fn header_foreground(bg: Color) -> Option<Color> {
     let (r, g, b) = match bg {
         Color::Reset => return None,
@@ -554,12 +554,39 @@ pub(crate) fn header_foreground(bg: Color) -> Option<Color> {
         // safer default for the 16-255 range, which is mostly mid-to-dark.
         Color::Indexed(_) => return Some(Color::White),
     };
-    let luma = (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) / 1000;
-    Some(if luma >= 140 {
+    // WCAG 2 relative luminance: linearize each sRGB channel, then weight.
+    let channel = |c: u8| {
+        let v = f64::from(c) / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let l = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    // Contrast against black is (l + 0.05) / 0.05 and against white is
+    // 1.05 / (l + 0.05); pick the larger.
+    let on_black = (l + 0.05) / 0.05;
+    let on_white = 1.05 / (l + 0.05);
+    Some(if on_black >= on_white {
         Color::Black
     } else {
         Color::White
     })
+}
+
+/// The style of a table's header band: bold, on `header`, with the text color
+/// [`header_foreground`] picks for it, or bold alone when `header` is
+/// `Color::Reset` (the NO_COLOR theme). Every table header uses this, so the
+/// band and its text cannot disagree between tables.
+pub(crate) fn header_band_style(header: Color) -> Style {
+    match header_foreground(header) {
+        Some(fg) => Style::default()
+            .bg(header)
+            .fg(fg)
+            .add_modifier(Modifier::BOLD),
+        None => Style::default().add_modifier(Modifier::BOLD),
+    }
 }
 
 /// The rendered width of a laid-out column, or `None` when it is not laid out.
@@ -650,13 +677,7 @@ pub fn render_call_list(
     // custom header. So it is derived from the background: no background means
     // no foreground either (bold alone carries it), and a real color gets
     // black or white by luminance.
-    let header_style = match header_foreground(theme.header) {
-        Some(fg) => Style::default()
-            .bg(theme.header)
-            .fg(fg)
-            .add_modifier(Modifier::BOLD),
-        None => Style::default().add_modifier(Modifier::BOLD),
-    };
+    let header_style = header_band_style(theme.header);
 
     // Dynamic column widths for this terminal width. A column too narrow to
     // say anything comes back as `None` — not laid out at all — so it costs
@@ -1571,6 +1592,70 @@ mod tests {
                 "light header {light:?} needs dark text"
             );
         }
+    }
+
+    /// The header text is whichever of black and white contrasts more with
+    /// the band, by the WCAG 2 contrast ratio.
+    ///
+    /// The rule it replaces compared Rec. 601 luma against 140, which put
+    /// white on the default cyan band: a contrast of about 2.9:1, where
+    /// black gives about 7.2:1 (#470). This test computes the ratio itself,
+    /// from the WCAG 2 definitions of relative luminance and contrast ratio,
+    /// for every named ANSI color and a spread of RGB values.
+    #[test]
+    fn header_foreground_is_the_higher_contrast_of_black_and_white() -> Result<(), TestError> {
+        fn channel(c: u8) -> f64 {
+            let v = f64::from(c) / 255.0;
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+            0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+        }
+        fn ratio(a: f64, b: f64) -> f64 {
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+        let swatches: &[(Color, (u8, u8, u8))] = &[
+            (Color::Black, (0, 0, 0)),
+            (Color::Red, (170, 0, 0)),
+            (Color::Green, (0, 170, 0)),
+            (Color::Yellow, (170, 85, 0)),
+            (Color::Blue, (0, 0, 170)),
+            (Color::Magenta, (170, 0, 170)),
+            (Color::Cyan, (0, 170, 170)),
+            (Color::Gray, (170, 170, 170)),
+            (Color::DarkGray, (85, 85, 85)),
+            (Color::LightRed, (255, 85, 85)),
+            (Color::LightGreen, (85, 255, 85)),
+            (Color::LightYellow, (255, 255, 85)),
+            (Color::LightBlue, (85, 85, 255)),
+            (Color::LightMagenta, (255, 85, 255)),
+            (Color::LightCyan, (85, 255, 255)),
+            (Color::White, (255, 255, 255)),
+            (Color::Rgb(0, 128, 128), (0, 128, 128)),
+            (Color::Rgb(128, 128, 128), (128, 128, 128)),
+            (Color::Rgb(255, 0, 0), (255, 0, 0)),
+            (Color::Rgb(10, 14, 20), (10, 14, 20)),
+        ];
+        for &(bg, rgb) in swatches {
+            let l = luminance(rgb);
+            let (on_black, on_white) = (ratio(l, 0.0), ratio(l, 1.0));
+            let want = if on_black >= on_white {
+                Color::Black
+            } else {
+                Color::White
+            };
+            assert_eq!(
+                header_foreground(bg),
+                Some(want),
+                "{bg:?}: black gives {on_black:.2}:1 and white {on_white:.2}:1"
+            );
+        }
+        assert_eq!(header_foreground(Color::Cyan), Some(Color::Black), "#470");
+        Ok(())
     }
 
     /// Two hosts that differ only in the last octet must not render as the

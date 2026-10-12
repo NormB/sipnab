@@ -54,6 +54,8 @@ pub struct ReasonCause {
 /// a number and no text. The absent ones say "the message did not carry it",
 /// never "zero".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct Termination {
     /// The cause number, on the scale [`Self::protocol`] names.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -62,6 +62,11 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
     /// for the same reason `mcp_row_cap` is.
     pub mcp_body_cap: usize,
+    /// Ceiling on the bytes of one whole paged MCP response.
+    ///
+    /// Resolved by the caller with `cli.mcp_response_cap(config)`, and
+    /// carried here for the same reason `mcp_row_cap` is.
+    pub mcp_response_cap: usize,
     /// Ceiling on how long one `await_condition` MCP call may wait, seconds.
     ///
     /// Resolved by the caller with `cli.mcp_wait_cap(config)`, and carried
@@ -709,6 +714,9 @@ pub fn start_servers(
                 .api_file_root
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            // The spool this run's `--export-vcon-when` writes into: the same
+            // directory the MCP server's `vcon_spool_status` reads.
+            vcon_spool: cli.output_args.export_vcon_dir.clone(),
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
@@ -800,6 +808,7 @@ pub fn start_servers(
                         .map(|mib| mib.saturating_mul(1024 * 1024)),
                 )
                 .with_body_cap(selection.mcp_body_cap)
+                .with_response_cap(selection.mcp_response_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)
                 .with_sweep_limits(selection.mcp_sweep)
                 .with_sweep_job_limits(selection.mcp_sweep_jobs)
@@ -813,6 +822,13 @@ pub fn start_servers(
             };
             let s = match cli.mcp_args.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
+                None => s,
+            };
+            // The spool this run's `--export-vcon-when` writes into, so
+            // `vcon_spool_status` reads the directory the capture fills.
+            #[cfg(feature = "vcon")]
+            let s = match cli.output_args.export_vcon_dir.as_ref() {
+                Some(dir) => s.with_vcon_spool(dir),
                 None => s,
             };
             let s = match cli.mcp_args.mcp_sampling_budget {
@@ -1148,6 +1164,7 @@ mod tests {
             metrics_tls: (None, None),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
+            mcp_response_cap: 1,
             mcp_wait_seconds: 1,
             mcp_sweep: crate::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: crate::cli::McpSweepJobLimits::default(),

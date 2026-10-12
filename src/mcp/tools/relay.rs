@@ -21,9 +21,13 @@
 //!
 //! From the run's configuration, not from a per-packet record, and that is
 //! correct rather than a shortcut: a datagram that failed authentication was
-//! REJECTED at ingest, so every assertion still in the store arrived under
-//! whatever posture was configured. Recording a bit per packet would restate
-//! the configuration once per packet and let the two drift.
+//! REJECTED at ingest, so every assertion the HEP listener delivered arrived
+//! under whatever posture was configured. Recording a bit per packet would
+//! restate the configuration once per packet and let the two drift.
+//!
+//! The posture is the HEP listener's and covers only what the listener
+//! delivered. An assertion read off a capture interface never reached the
+//! listener, so [`classify`] reports it as `PortGatedOnly` on every run.
 //!
 //! # Relay-agnostic on purpose
 //!
@@ -31,7 +35,8 @@
 //! precisely so a second control decoder needs no second tool, and
 //! `relay_seam_test::no_mcp_tool_is_named_after_a_relay_vendor` refuses one.
 
-use crate::mcp::server::SipnabMcp;
+use crate::mcp::errors::{self, Reason};
+use crate::mcp::server::{SipnabMcp, stream_identity};
 use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -346,12 +351,22 @@ pub struct RelayControlRow {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct OrphanReconciliation {
-    /// One row per orphaned stream, most recent first.
+    /// One row per orphaned stream, oldest first: by first packet, ties
+    /// broken by `0xSSRC@src>dst`, the order the `rtp_stats` sweep pages in.
     pub orphans: Vec<OrphanRow>,
+    /// Rows in `orphans`, so counting the array is never necessary.
+    pub returned: usize,
     /// How many orphans this capture holds in total.
     pub total_orphans: usize,
-    /// Whether rows were cut to `limit`.
+    /// Whether orphans remain after this page.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
+    /// Cursor (`<RFC 3339 first packet>|0xSSRC@src>dst` of the last row) to
+    /// pass back for the next page. Null on the final page.
+    pub next_cursor: Option<String>,
     /// Whether a relay was ever asked about any of this.
     ///
     /// `false` means every `never-named` verdict below is "nobody asked",
@@ -369,11 +384,19 @@ pub struct OrphanReconciliation {
 }
 
 /// Arguments for `reconcile_orphans`.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct ReconcileOrphansParams {
     /// Maximum rows to return. Default 50.
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim.
+    /// Omit on the first call.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[tool_router(router = relay_router, vis = "pub(crate)")]
@@ -416,9 +439,10 @@ impl SipnabMcp {
             // the dialog, and is where attribution matters most.
             let dialog_seen = ds.get(&params.call_id).is_some();
             if !dialog_seen && streams.is_empty() {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     crate::rtp::stream_store::call_not_carried(&params.call_id),
-                    None,
                 ));
             }
             let absence = (!dialog_seen).then(|| dialog_absence(&ss, &streams));
@@ -495,17 +519,55 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ReconcileOrphansParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = params.limit.unwrap_or(50).max(1) as usize;
-        let (rows, total, consulted, identity, relay_control) = {
+        // 0 is read as one row rather than the default, so a page always makes
+        // progress; the operator's row cap bounds it as it bounds every other
+        // list tool.
+        let limit = (params.limit.unwrap_or(50).max(1) as usize).min(self.row_cap.max(1));
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                crate::mcp::shape::parse_cursor(raw)
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
+            ),
+            None => None,
+        };
+        let (rows, row_cursors, total, consulted, identity, relay_control) = {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
             let identity = state.identity.etag(ds.generation(), ss.generation());
-            let mut rows = Vec::new();
-            let mut total = 0usize;
             let mut consulted = false;
+            let mut orphans: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
             for stream in ss.iter().filter(|s| s.orphaned()) {
-                total += 1;
+                // Accumulated over EVERY orphan, not only those that fit under
+                // `limit` or past the cursor. Read off the truncated page, a
+                // small limit would report "nobody asked" about a capture
+                // whose sixtieth orphan is a relay assertion -- turning an
+                // absence of evidence into evidence of absence, which is the
+                // one reading this field exists to prevent.
+                let named = named_endpoint(&ss, stream);
+                consulted |= orphan_reason(named.map(|(_, asserted)| asserted))
+                    == OrphanReason::RelayAssertedButNoDialog;
+                orphans.push(stream);
+            }
+            let total = orphans.len();
+            // Sorted on the cursor's own key before the cursor filter and the
+            // cut, as the `rtp_stats` sweep is: store order is insertion order,
+            // and cutting it first would let `next_cursor` skip rows.
+            crate::sort::sort_by_dyn(&mut orphans, &mut |a, b| {
+                a.first_seen
+                    .cmp(&b.first_seen)
+                    .then_with(|| stream_identity(a).cmp(&stream_identity(b)))
+            });
+            let mut rows = Vec::new();
+            let mut row_cursors = Vec::new();
+            for stream in orphans.into_iter().filter(|s| {
+                cursor
+                    .as_ref()
+                    .is_none_or(|c| c.precedes(s.first_seen, &stream_identity(s)))
+            }) {
+                if rows.len() > limit {
+                    break;
+                }
                 let named = named_endpoint(&ss, stream);
                 let reason = orphan_reason(named.map(|(_, asserted)| asserted));
                 let (endpoint, asserted) = match named {
@@ -517,16 +579,10 @@ impl SipnabMcp {
                     }
                     None => (None, None),
                 };
-                // Accumulated over EVERY orphan, not only those that fit under
-                // `limit`. Read off the truncated page, a small limit would
-                // report "nobody asked" about a capture whose sixtieth orphan
-                // is a relay assertion -- turning an absence of evidence into
-                // evidence of absence, which is the one reading this field
-                // exists to prevent.
-                consulted |= reason == OrphanReason::RelayAssertedButNoDialog;
-                if rows.len() >= limit {
-                    continue;
-                }
+                row_cursors.push(crate::mcp::shape::format_cursor(
+                    stream.first_seen,
+                    &stream_identity(stream),
+                ));
                 rows.push(OrphanRow {
                     ssrc: stream.key.ssrc,
                     src: stream.key.src.to_string(),
@@ -548,11 +604,20 @@ impl SipnabMcp {
                     retried_after_answer: c.retried_after_answer,
                 })
                 .collect();
-            (rows, total, consulted, identity, relay_control)
+            (rows, row_cursors, total, consulted, identity, relay_control)
         };
 
+        // One row past `limit` was read to learn whether any remain.
+        let mut rows = rows;
+        let mut row_cursors = row_cursors;
+        let truncated = rows.len() > limit;
+        rows.truncate(limit);
+        row_cursors.truncate(limit);
         let payload = OrphanReconciliation {
-            truncated: total > rows.len(),
+            returned: rows.len(),
+            truncated,
+            truncated_by: truncated.then(|| crate::mcp::budget::TRUNCATED_BY_ROWS.to_string()),
+            next_cursor: truncated.then(|| row_cursors.last().cloned()).flatten(),
             total_orphans: total,
             orphans: rows,
             relay_was_consulted: consulted,
@@ -560,11 +625,17 @@ impl SipnabMcp {
             schema_version: 1,
             capture_identity: identity,
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(
-            serde_json::to_value(&payload).map_err(|e| {
-                rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
-            })?,
-        )?]))
+        let mut payload = serde_json::to_value(&payload).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+        })?;
+        self.fit_to_budget(
+            &mut payload,
+            "orphans",
+            &row_cursors,
+            params.max_response_bytes,
+            false,
+        )?;
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
     /// Decode one captured relay control message.
@@ -597,13 +668,14 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let pointer = params.frame_ref.trim();
         if pointer.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "frame_ref",
                 "frame_ref must name one frame pointer, in the \
                  <source>#<ordinal>@<digest> form the query tools emit. A blank \
                  string names no frame, and an empty decode would read as 'this \
                  frame holds no control message'"
                     .to_string(),
-                None,
             ));
         }
         let payload = decode_ng_one(self, pointer);
@@ -645,7 +717,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<QueryRelayParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(access) = self.relay_query_access() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 format!(
                     "query_relay is not available on this server. It transmits, \
                      so it needs three things: --mcp-allow-relay-query to enable \
@@ -655,7 +728,6 @@ impl SipnabMcp {
                      make sipnab talk to the addresses inside it.",
                     crate::cli::RELAY_CONTROL_FLAG
                 ),
-                None,
             ));
         };
 
@@ -733,7 +805,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<RelayStatsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(access) = self.relay_query_access() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 format!(
                     "relay_stats is not available on this server. It transmits, \
                      so it needs three things: --mcp-allow-relay-query to enable \
@@ -742,7 +815,6 @@ impl SipnabMcp {
                      permit.",
                     crate::cli::RELAY_CONTROL_FLAG
                 ),
-                None,
             ));
         };
 
@@ -810,7 +882,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<RelayCompareParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(access) = self.relay_query_access() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 format!(
                     "relay_compare is not available on this server. It transmits, \
                      so it needs three things: --mcp-allow-relay-query to enable \
@@ -819,17 +892,17 @@ impl SipnabMcp {
                      permit.",
                     crate::cli::RELAY_CONTROL_FLAG
                 ),
-                None,
             ));
         };
 
         let call_id = params.call_id.trim();
         if call_id.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "call_id",
                 "relay_compare needs a call_id to compare; a blank string names \
                  no call, and comparing nothing has no answer."
                     .to_string(),
-                None,
             ));
         }
 
@@ -906,6 +979,12 @@ impl SipnabMcp {
 ///
 /// A free function rather than a method so it can be driven with every
 /// combination directly, including ones this tree cannot currently produce.
+///
+/// `configured` is the HEP listener's posture, so only an assertion whose
+/// origin is [`InputOrigin::Hep`](crate::capture::parse::InputOrigin::Hep)
+/// takes it. One sniffed off a capture interface is `PortGatedOnly` whatever
+/// the listener checks: on a `-d <iface> -L <addr>` run the two arrive side by
+/// side, and only the listener's half was authenticated.
 #[must_use]
 pub fn classify(
     asserted: crate::rtp::stream_store::EndpointAssertion,
@@ -918,9 +997,16 @@ pub fn classify(
     match origin {
         // No capture source: sipnab asked for this rather than observing it.
         None => DeliveryTrust::Asked,
-        // It arrived over a capture path, so the run's configured posture is
+        // It arrived over HEP, so the posture the run configured for HEP is
         // what it was worth -- a datagram that failed was never stored.
-        Some(_) => configured,
+        Some(crate::capture::parse::InputOrigin::Hep) => configured,
+        // Read off a capture interface (or out of a process): no listener
+        // checked it, whatever the HEP listener checks on this run. It is
+        // believed because of the port it was sent to and for no other
+        // reason, which is what `PortGatedOnly` says.
+        Some(
+            crate::capture::parse::InputOrigin::Wire | crate::capture::parse::InputOrigin::Uprobe,
+        ) => DeliveryTrust::PortGatedOnly,
     }
 }
 
@@ -1700,6 +1786,61 @@ mod query_relay_view_tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// What each delivery path of a relay assertion is worth, under every
+    /// posture the HEP listener can be configured with.
+    ///
+    /// The configured posture is the HEP listener's: `hmac-verified` and
+    /// `plain-secret` both say "delivered over HEP" and describe a check the
+    /// listener made. A relay datagram read off a capture interface
+    /// (`InputOrigin::Wire`) never reached the listener, so it is believed
+    /// because of the port it was sent to and for no other reason, which is
+    /// `port-gated-only` whatever the listener checks. An assertion with no
+    /// path that the listener checked (`Uprobe`) is the same.
+    #[test]
+    fn only_a_hep_delivered_assertion_takes_the_listeners_trust() -> Result<(), TestError> {
+        use crate::capture::parse::InputOrigin;
+        use crate::rtp::stream_store::EndpointAssertion;
+        let relay = EndpointAssertion::media_relay(
+            crate::relay::RelayImplementation::default(),
+            crate::relay::ControlDelivery::BareDatagram,
+        );
+        for configured in [
+            DeliveryTrust::HmacVerified,
+            DeliveryTrust::PlainSecret,
+            DeliveryTrust::PortGatedOnly,
+        ] {
+            assert_eq!(
+                classify(relay, Some(InputOrigin::Hep), configured),
+                configured,
+                "an assertion the HEP listener delivered is worth what the \
+                 listener checked"
+            );
+            for sniffed in [InputOrigin::Wire, InputOrigin::Uprobe] {
+                assert_eq!(
+                    classify(relay, Some(sniffed), configured),
+                    DeliveryTrust::PortGatedOnly,
+                    "{sniffed:?} under a {configured:?} listener: the listener \
+                     never saw this datagram"
+                );
+            }
+            assert_eq!(
+                classify(relay, None, configured),
+                DeliveryTrust::Asked,
+                "no capture source means sipnab asked"
+            );
+            assert_eq!(
+                classify(
+                    EndpointAssertion::Signaled,
+                    Some(InputOrigin::Hep),
+                    configured
+                ),
+                DeliveryTrust::NotRelayAsserted,
+                "SDP is the parties' claim whatever carried it"
+            );
+        }
+        Ok(())
+    }
 
     /// The address a query answer echoes. A literal, so no test depends on
     /// anything an operator configured.
@@ -2784,6 +2925,67 @@ mod relay_handler_tests {
         Ok(())
     }
 
+    /// A relay claim sniffed off a capture interface is `port-gated-only`
+    /// under every HEP posture, and counts as unauthenticated.
+    ///
+    /// The posture is the HEP listener's, and a datagram read off an interface
+    /// never reached the listener. The run that mixes the two is `-d <iface>
+    /// -L <addr> --hep-auth-mode hmac`: a relay mirroring `ng` toward a
+    /// collector on that interface is sniffed there, while the listener checks
+    /// what is sent to it. That run needs capture privileges no test has, so
+    /// the store is filled here the way the pipeline fills it for a sniffed
+    /// datagram (`InputOrigin::Wire`, `ControlDelivery::BareDatagram`) and the
+    /// tool is asked directly.
+    #[tokio::test]
+    async fn a_relay_claim_sniffed_off_an_interface_is_port_gated_under_every_posture()
+    -> Result<(), TestError> {
+        let call = "sniffed@example.invalid";
+        for mode in [
+            None,
+            Some(crate::cli::HepAuthMode::Plain),
+            Some(crate::cli::HepAuthMode::Hmac),
+        ] {
+            let mut ss = StreamStore::new(64);
+            rtp(&mut ss, (ip(10), 40000), (ip(20), 30000), 0xA, 1, ts0());
+            ss.link_endpoint_from(
+                ip(20),
+                30000,
+                call,
+                &[],
+                None,
+                SdpProvenance::relay_asserted(
+                    crate::relay::RelayImplementation::default(),
+                    crate::relay::ControlDelivery::BareDatagram,
+                    InputOrigin::Wire,
+                    ts0(),
+                ),
+            );
+            let mut s = server(dialogs_with(call)?, ss);
+            if let Some(mode) = mode {
+                s = s.with_hep_auth_mode(mode);
+            }
+            let v = payload(
+                &s.explain_attribution(Parameters(ExplainAttributionParams {
+                    call_id: call.to_string(),
+                }))
+                .await
+                .map_err(|e| format!("a held call is explained: {e:?}"))?,
+            )?;
+            let sniffed = row(&v, "192.0.2.20", 30000)?;
+            assert_eq!(
+                sniffed["asserted_by"], "media-relay",
+                "positive control: {v}"
+            );
+            assert_eq!(sniffed["input_origin"], "wire", "positive control: {v}");
+            assert_eq!(
+                sniffed["delivery_trust"], "port-gated-only",
+                "under {mode:?}: the HEP listener never saw this datagram: {v}"
+            );
+            assert_eq!(v["unauthenticated_endpoints"], 1, "under {mode:?}: {v}");
+        }
+        Ok(())
+    }
+
     // ── reconcile_orphans ───────────────────────────────────────────
 
     /// Three orphans -- never named, named in SDP, named by a relay, inserted
@@ -2833,7 +3035,10 @@ mod relay_handler_tests {
     async fn orphans(ss: StreamStore, limit: Option<u32>) -> Result<serde_json::Value, TestError> {
         payload(
             &server(DialogStore::new(16, false), ss)
-                .reconcile_orphans(Parameters(ReconcileOrphansParams { limit }))
+                .reconcile_orphans(Parameters(ReconcileOrphansParams {
+                    limit,
+                    ..Default::default()
+                }))
                 .await
                 .map_err(|e| format!("reconciliation does not fail: {e:?}"))?,
         )
@@ -2976,6 +3181,141 @@ mod relay_handler_tests {
         Ok(())
     }
 
+    /// `n` orphans, inserted in an order their sort order disagrees with.
+    fn store_with_orphans(n: u16) -> StreamStore {
+        let mut ss = StreamStore::new(256);
+        for i in (0..n).rev() {
+            rtp(
+                &mut ss,
+                (ip(90), 20000 + i * 2),
+                (ip(91), 30000 + i * 2),
+                0x100 + u32::from(i),
+                1,
+                late() + chrono::Duration::milliseconds(i64::from(i)),
+            );
+        }
+        ss
+    }
+
+    /// One `reconcile_orphans` page on `srv`.
+    async fn orphan_page(
+        srv: &SipnabMcp,
+        limit: Option<u32>,
+        cursor: Option<String>,
+        budget: Option<u64>,
+    ) -> Result<(serde_json::Value, usize), rmcp::ErrorData> {
+        let result = srv
+            .reconcile_orphans(Parameters(ReconcileOrphansParams {
+                limit,
+                cursor,
+                max_response_bytes: budget,
+            }))
+            .await?;
+        let bytes = result
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .map(|t| t.text.len())
+            .sum();
+        let v =
+            payload(&result).map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Ok((v, bytes))
+    }
+
+    /// Follow `next_cursor` to the end, collecting each row's SSRC.
+    async fn sweep_orphans(
+        srv: &SipnabMcp,
+        limit: Option<u32>,
+        budget: Option<u64>,
+    ) -> Result<(Vec<u64>, Vec<serde_json::Value>), TestError> {
+        let mut ssrcs = Vec::new();
+        let mut pages = Vec::new();
+        let mut cursor = None;
+        for _ in 0..50 {
+            let (v, _) = orphan_page(srv, limit, cursor.clone(), budget)
+                .await
+                .map_err(|e| format!("page: {e:?}"))?;
+            for row in v["orphans"].as_array().ok_or("orphans")? {
+                ssrcs.push(row["ssrc"].as_u64().ok_or("ssrc")?);
+            }
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+            pages.push(v);
+            if cursor.is_none() {
+                return Ok((ssrcs, pages));
+            }
+        }
+        Err("the cursor never reached a final page".into())
+    }
+
+    /// `reconcile_orphans` pages with a cursor: every orphan exactly once, in
+    /// first-packet order, whatever order the store holds them in.
+    #[tokio::test]
+    async fn reconcile_orphans_pages_through_every_orphan_with_a_cursor() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(5));
+        let (ssrcs, pages) = sweep_orphans(&srv, Some(2), None).await?;
+        assert_eq!(ssrcs, vec![0x100, 0x101, 0x102, 0x103, 0x104]);
+        assert_eq!(pages.len(), 3, "2 + 2 + 1");
+        assert_eq!(pages[0]["truncated"], true);
+        assert_eq!(pages[0]["truncated_by"], "rows");
+        assert_eq!(pages[0]["returned"], 2);
+        assert_eq!(pages[2]["truncated"], false);
+        assert!(pages[2]["next_cursor"].is_null());
+        assert!(pages.iter().all(|p| p["total_orphans"] == 5));
+        Ok(())
+    }
+
+    /// A limit above `--mcp-max-rows` is clamped to it, as on every other
+    /// list tool.
+    #[tokio::test]
+    async fn reconcile_orphans_limit_is_clamped_to_the_row_cap() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(5)).with_row_cap(2);
+        let (v, _) = orphan_page(&srv, Some(50), None, None)
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        assert_eq!(v["orphans"].as_array().map(Vec::len), Some(2), "{v}");
+        Ok(())
+    }
+
+    /// A byte budget cuts at whole rows and the cursor reaches the rest.
+    #[tokio::test]
+    async fn reconcile_orphans_honors_the_byte_budget() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(6));
+        let (_, whole) = orphan_page(&srv, Some(6), None, None)
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        let budget = whole / 2;
+        let (ssrcs, pages) = sweep_orphans(&srv, Some(6), Some(budget as u64)).await?;
+        assert_eq!(ssrcs, (0x100..0x106).collect::<Vec<u64>>());
+        assert_eq!(pages[0]["truncated_by"], "bytes", "{}", pages[0]);
+        for p in &pages {
+            assert_eq!(
+                p["returned"],
+                p["orphans"].as_array().map_or(0, Vec::len),
+                "{p}"
+            );
+        }
+        let (first, bytes) = orphan_page(&srv, Some(6), None, Some(budget as u64))
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        assert!(
+            bytes + crate::mcp::completeness::stamp_growth_bound() <= budget,
+            "{bytes} bytes against a {budget}-byte budget: {first}"
+        );
+        Ok(())
+    }
+
+    /// A cursor that is not one is refused rather than read as the start.
+    #[tokio::test]
+    async fn reconcile_orphans_refuses_a_malformed_cursor() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(2));
+        let err = orphan_page(&srv, None, Some("yesterday".into()), None)
+            .await
+            .err()
+            .ok_or("a malformed cursor must be refused")?;
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{err:?}");
+        Ok(())
+    }
+
     // ── the transmitting tools, against a relay double ──────────────
 
     /// A relay that records every question and answers from a script.
@@ -3098,6 +3438,22 @@ mod relay_handler_tests {
     }
 
     /// Without a Call-ID, `query_relay` enumerates, at the relay's default cap.
+    /// `server_capabilities` reports the relay opt-in as on exactly when the
+    /// relay tools can transmit.
+    #[tokio::test]
+    async fn capabilities_report_the_relay_opt_in() -> Result<(), TestError> {
+        let relay = Arc::new(RelayDouble::default());
+        for (server, want) in [(empty(), false), (asking(empty(), &relay)?, true)] {
+            let result = server
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("capabilities answered: {e:?}"))?;
+            let v = payload(&result)?;
+            assert_eq!(v["runtime"]["mcp_allow_relay_query"], want, "{v}");
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn querying_without_a_call_id_lists_at_the_default_cap() -> Result<(), TestError> {
         let relay = Arc::new(RelayDouble {

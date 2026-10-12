@@ -3073,6 +3073,7 @@ fn server_selection(
         metrics_tls: cli.metrics_tls_files(config),
         mcp_row_cap: cli.mcp_row_cap(config),
         mcp_body_cap: cli.mcp_body_cap(config),
+        mcp_response_cap: cli.mcp_response_cap(config),
         mcp_wait_seconds: cli.mcp_wait_cap(config),
         mcp_sweep: cli.mcp_sweep_limits(config),
         mcp_sweep_jobs: cli.mcp_sweep_job_limits(config),

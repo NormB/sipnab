@@ -366,7 +366,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > no dialog, and no output format — so every total you read, and every ratio you
 > compute from one, describes the range and not the capture. sipnab counts what
 > it skipped and says so on stderr and at the end of the run, naming the busiest
-> ports so there is something to widen to:
+> ports so there is something to widen to, and `--report` names the count in
+> its `INCOMPLETE RUN` block:
 >
 > ```text
 > NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
@@ -1081,7 +1082,7 @@ report a healthy network in the middle of an outage.
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires. Config: `[security] alert_exec` |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line). Config: `[security] alert` |
 | `--stir-shaken` | -- | off | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
-| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before it loads the config and before it opens any capture device. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. The record replaces the value of a flag that takes a secret inline, such as `--hep-auth` or `--api-key`, with `[redacted]`. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
+| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before the config takes effect and before it opens any capture device; it reads the config file first, so `capture.node` is the node `--node-name` or `[capture] node_name` sets. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. The record replaces the value of a flag that takes a secret inline, such as `--hep-auth` or `--api-key`, with `[redacted]`. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
 | `--tui-audit-file` | `<FILE>` | -- | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination — including one sipnab refused. A keystroke log of the TUI bindings would be mostly navigation, unreadable at review time, and a privacy hazard of its own, so **the search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI** — an operator holding a live capture that exists nowhere else must not lose it because a log partition filled; the lost record leaves a permanent hole in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
 > **`--alert` accepts a channel or a threshold rule.** Channels are `syslog`, `json` or `exec`.
@@ -1438,6 +1439,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--one-way-delay` | `<MS>` | -- | One-way network path delay, in milliseconds — the single MOS input a passive tap cannot measure directly. Declared here it beats an RTCP-reported round trip, which an unauthenticated packet can move, and that in turn beats the round trip sipnab derives from a sender-report echo carried in a receiver report; with none of the three, sipnab assumes 100 ms and says so. Config: `[media] one_way_delay_ms` |
 | `--mcp-max-rows` | `<N>` | `1000` | Maximum rows in one list-style MCP response. The consumer decides the right value: a small-context agent wants fewer, a batch client wants more. Config: `[limits] mcp_max_rows`. Do not mistake this for `-l`/`--limit`, which bounds dialogs tracked over the run. At least 1: sipnab refuses `0` |
 | `--mcp-max-body-bytes` | `<N>` | `4096` | Maximum bytes of SIP body or matched snippet in one MCP response. `--mcp-max-rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. An SDP body with a dozen codecs and ICE candidates passes the default, and the agent reading the clipped half cannot tell a truncated answer from a short one. Config: `[limits] mcp_max_body_bytes` |
+| `--mcp-max-response-bytes` | `<N>` | `1048576` | Maximum bytes of ONE whole paged MCP response: the JSON page, the provenance note and the completeness fields. `--mcp-max-rows` bounds how many rows a page carries and `--mcp-max-body-bytes` how wide one body in a row can be; this bounds the page as a whole. Past it the tool drops whole rows from the end of the page, never part of one, and answers `truncated_by: "bytes"` with a `next_cursor` to the rest. A page always keeps at least one row. A caller narrows it per call with `max_response_bytes` and cannot exceed it. Config: `[limits] mcp_max_response_bytes`. At least 1: sipnab refuses `0` |
 | `--mcp-max-wait-seconds` | `<N>` | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `--mcp-max-rows` and `--mcp-max-body-bytes` bound how much an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. `await_condition` lets an agent wait for a condition on a live capture instead of re-asking `tail_dialogs` and paying a model turn per empty reply, and an unbounded wait is a held connection by another name. sipnab clamps a larger request to it and says so in the response. It also bounds `wait_seconds` on `find_in_captures` and `find_in_captures_status`, how long one of those calls waits for a background sweep before it answers with the running job. Config: `[limits] mcp_max_wait_seconds` |
 | `--mcp-max-findings` | `<N>` | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `--mcp-max-rows` and `--mcp-max-body-bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture. Config: `[limits] mcp_max_findings` |
 | `--mcp-sweep-max-files` | `<N>` | `20` | Files one MCP `find_in_captures` sweep may open, from `1` to `4294967295`. It is the ceiling on the tool's per-call `max_files`: sipnab clamps a larger request to it, and `0` or no request means this value. A rotated spool of forty files needs `40` here before one sweep can reach the oldest file. The response reports the limits applied and `files_examined`, `files_total` and `complete`. Config: `[limits] mcp_sweep_max_files` |
@@ -1508,6 +1510,8 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 5000` — raise the ceiling above the 1000 default for a batch client that pipes whole pages to a file, where the round trips cost more than the bytes
 - `sipnab -N -I capture.pcap --mcp --mcp-max-body-bytes 65536` — let an agent read a whole `INVITE` with a long SDP body rather than the first 4096 bytes of it, on a capture whose bodies are what the investigation is about
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 20 --mcp-max-body-bytes 512` — a small-context agent: few rows, and each one short, so a page of hits fits the window it has to reason in
+- `sipnab -N -I capture.pcap --mcp --mcp-max-response-bytes 65536` — no answer larger than 64 KiB, however many rows the caller asks for or however long their bodies run; a page that would pass it ends early with `truncated_by: "bytes"` and a cursor to the rest
+- `sipnab -N -I capture.pcap --mcp --mcp-max-rows 5000 --mcp-max-response-bytes 4194304` — a batch client allowed five thousand rows per page, with each answer still held to 4 MiB, so a page of long SIP messages ends early with a cursor rather than growing without a bound
 - `sudo sipnab -N -d eth0 --mcp --mcp-max-wait-seconds 300` — let an agent sit on a live capture for up to five minutes per `await_condition` call, on a box watching for a fault that reproduces slowly
 - `sudo sipnab -N -d eth0 --mcp --mcp-max-wait-seconds 5` — hold every wait to five seconds, for a host where MCP slots are scarce and a stalled agent must not occupy one
 - `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab --mcp-sweep-max-files 40` — let one `find_in_captures` call sweep a spool that rotates forty files, so the sweep reaches a call in the oldest file
@@ -1618,9 +1622,10 @@ CoreAudio the moment anything touches it.
 `--vcon-forward` runs sipnab as the process that delivers an
 `--export-vcon-dir` spool to a vCon store. It captures nothing, and sipnab
 refuses it beside any capture source, listener or export flag. The other flags
-in this section need it. Each flag but `--vcon-forward`, `--vcon-forward-once`
-and `--vcon-forward-auth` has a `[vcon_forward]` key in the config file, which
-the flag overrides. Needs the `vcon` Cargo feature. More:
+in this section need it, except `--vcon-spool-status`, which reads a spool's
+state and runs on its own. Each flag but `--vcon-forward`, `--vcon-forward-once`,
+`--vcon-forward-auth` and `--vcon-spool-status` has a `[vcon_forward]` key in
+the config file, which the flag overrides. Needs the `vcon` Cargo feature. More:
 [Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store).
 
 | Flag | Value | Default | Description |
@@ -1641,6 +1646,7 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
 | `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
+| `--vcon-spool-status` | `<SPOOL_DIR>` | -- | Print the state of an `--export-vcon-dir` spool as JSON and exit: containers pending, delivered and failed, and the `<name>.error.json` record beside each failed container. Reads the forwarder's default `delivered/` and `failed/` directories beside the spool. A snapshot of the files: it sends, moves, creates and deletes nothing. The MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give the same answer. Exit `0` after printing, also for a spool directory that does not exist yet, `1` when sipnab cannot read a directory that exists. Refused beside any capture flag, `--vcon-forward` and `--vcon-fetch` |
 
 **Examples**
 
@@ -1660,6 +1666,8 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
+- `sipnab --vcon-spool-status spool` — print how many containers wait in `spool`, how many the forwarder delivered and refused, and the store's answer for each refusal
+- `sipnab --vcon-spool-status /var/spool/sipnab-vcon` — the same for a spool given by absolute path; a spool the capture has not written yet prints zeros and `"exists": false`
 
 ## vCon fetcher
 
@@ -1769,7 +1777,7 @@ deliver the whole answer also says so in its output:
 - **`--report`** ends with an `INCOMPLETE RUN` block naming each reason.
 
 ```json
-{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0},"archives":{"cut_short":false}}}
+{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0},"archives":{"cut_short":false},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0}}}
 ```
 
 `input_complete` is the same predicate as the exit status, so a script reading
@@ -1784,3 +1792,15 @@ from the input, and it fails the run like a truncated file does.
 discarded (`[limits] idle_compact_after_secs`) — it appears because those
 ladders are short, and it is deliberately NOT a failure, because a retention
 policy doing what you configured it to do is not a run that went wrong.
+
+`port_gate` counts SIP that sipnab did not analyze because of the port it used:
+`sip_outside_portrange` for messages with both ports outside `--portrange`,
+and `sip_outside_ws_ports` for SIP over WebSocket on a port outside the
+WebSocket port set (`--ws-portrange`). Like retention, it is not a failure,
+because the range is what you asked for. `--report` names either count in its
+`INCOMPLETE RUN` block, in the words the run summary uses on stderr:
+
+```text
+INCOMPLETE RUN — this report does not describe the whole capture:
+  - 12 SIP message(s) were seen on ports outside --portrange and were not analyzed; re-run with --portrange 1-65535 to include them
+```

@@ -179,7 +179,7 @@ on `main` judge your pull request, and CI reads your pull request's commits as
 data, never checking them out or running them. A change you make to any of
 those three files takes effect only after it reaches `main`.
 
-**`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
+**`pre-push`** adds fourteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -195,6 +195,7 @@ which blocks the push:
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
 | `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
 | `scripts/tag-signature-check.sh` on every pushed `v*` tag | A release tag carries the name of the maintainer who publishes it. The tag must be an annotated tag with a good SSH signature from a key in `.github/allowed_signers`. Nothing in `cargo test` sees a tag. |
+| `scripts/commit-signature-check.sh` on every pushed commit, before any other gate | Branch protection on `main` requires signed commits, and GitHub applies that only at merge time: a pull request with an unsigned commit shows every check green and stays blocked with no reason given. The gate refuses a commit without a good signature, names it, and prints the command that re-signs it. A good signature from a key that `.github/allowed_signers` does not list passes with a note, because GitHub checks the key against the GitHub account that owns the committer email of the commit. Nothing in `cargo test` sees the commits a push carries. |
 
 CI's full feature matrix (every combination `.github/workflows/ci.yml` lists,
 with its `RUSTFLAGS=-Dwarnings`) is not in the hook: the Features job builds it
@@ -628,7 +629,10 @@ A pull request is acceptable when all of these hold:
    branch has signed the CLA.
 2. **Every commit carries a signature.** Branch protection on `main` requires signed
    commits, so GitHub refuses a merge that contains an unsigned or unverified
-   one.
+   one. The `pre-push` hook refuses an unsigned commit before it leaves your
+   machine. To re-sign the last commit, run `git commit --amend -S --no-edit`.
+   To re-sign every commit since `<base>`, run
+   `git rebase --exec 'git commit --amend --no-edit -S' <base>`.
 3. **No review conversation stays open.** Branch protection blocks the merge
    until someone marks each one resolved.
 4. **The reviewer agrees** that the change meets the pull request template

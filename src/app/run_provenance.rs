@@ -24,8 +24,10 @@
 //! path. A best-effort line would be worse than none: its absence would then
 //! mean either "not enabled" or "the disk was full", and no reader could tell
 //! which. The cost of the rule is bounded because of WHERE it runs — before
-//! the config is loaded, before any capture device is opened, before a single
-//! packet exists. Stopping here loses nothing, which is exactly the argument
+//! the config takes effect, before any capture device is opened, before a
+//! single packet exists. The config file has been READ by then, for one
+//! reason: the record carries the node name, which `[capture] node_name` can
+//! set. Stopping here loses nothing, which is exactly the argument
 //! that does NOT hold for the TUI action trail mid-session; see
 //! `tui::action_trail` for the opposite decision and its reasons. Named as
 //! text rather than linked: that module exists only in a `tui` build and this

@@ -647,8 +647,9 @@ its `action.yml` at the pinned commit), a digest-pinned engine and the mirror
 on every `docker/setup-buildx-action` step, no Docker Hub image in what `cross` builds in, and one
 codespell pin that CI and the hooks share.
 
-[`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
-does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
+[`pre-push`](../../.githooks/pre-push) adds fourteen hard gates that `cargo test`
+does not cover: a check that every pushed commit carries a good signature,
+`cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
 combinations `tls`, `api` and `wasm`, the full fifteen-combination matrix with
@@ -656,6 +657,38 @@ CI's flags, a non-Linux compile of the whole tree, a YANG validation of the
 `sipnab-diagnosis` module, a `zola build` of the website, the two prose
 linters — Vale and codespell — and, for a `v*` tag, a check that a trusted key
 signed the tag.
+
+The commit-signature gate runs first, before the hook looks for `cargo`.
+Branch protection on `main` requires signed commits, and GitHub applies that
+only at merge time: pull request #333 carried four unsigned commits and stayed
+blocked with every check green and no reason shown.
+[`scripts/commit-signature-check.sh`](../../scripts/commit-signature-check.sh)
+reads the hook's input, one `<local ref> <local sha> <remote ref> <remote sha>`
+line per ref. A deleted ref pushes nothing to check. Any other ref pushes
+the commits no remote-tracking branch has and, for an update, that the old
+remote commit does not reach either. A commit already on the remote is not
+the push's to sign: a branch rebased onto a newer `main` reaches main's
+squash merges, which GitHub signs with its own key. For each commit, the letter that
+`git log --format=%G?` prints decides, checked the way
+[`scripts/tag-signature-check.sh`](../../scripts/tag-signature-check.sh)
+verifies a tag, against [`.github/allowed_signers`](../../.github/allowed_signers):
+
+| `%G?` | Meaning | Verdict |
+|---|---|---|
+| `G` | good signature from a listed key | passes |
+| `U` | good signature from a key the file does not list | passes, and the hook names the key |
+| `N` | no signature | refused |
+| `B` | bad signature | refused |
+| `E` | signature this machine cannot check | refused |
+| `X`, `Y`, `R` | expired signature, expired key, revoked key | refused |
+
+`U` passes because GitHub marks a commit verified from the keys on the GitHub
+account that owns its committer email, which no file in the repository lists.
+The hook names each refused commit and prints both fixes:
+`git commit --amend -S --no-edit` for the last commit and
+`git rebase --exec 'git commit --amend --no-edit -S' <base>` for a range.
+[`tests/commit_signature_gate_test.rs`](../../tests/commit_signature_gate_test.rs)
+signs commits with throwaway SSH keys and drives both the script and the hook.
 
 The YANG gate, [`scripts/check-yang.py`](../../scripts/check-yang.py), exists
 because a test generates the module under `yang/`: [`tests/yang_module_test.rs`](../../tests/yang_module_test.rs)
@@ -821,7 +854,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the thirteen hard gates. Each of those fails in
+**When it runs.** Last, after the fourteen hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:

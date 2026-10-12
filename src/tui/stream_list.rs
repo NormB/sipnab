@@ -348,7 +348,8 @@ fn advertised_cell(
 
 /// Render the RTP stream list table into the given area.
 ///
-/// Borderless, bold-on-cyan header, reverse-video highlight.
+/// Borderless, with a bold header band whose text color contrasts with it,
+/// and a reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
 /// Only the visible viewport window is formatted (placeholder rows keep the
 /// stateful selection index correct); keys whose streams were evicted from
@@ -382,10 +383,9 @@ pub fn render_stream_list(
     // The entire area is used for the table (no title line)
     let table_area = area;
 
-    // Header style: bold on header-color background
-    let header_style = Style::default()
-        .bg(theme.header)
-        .add_modifier(Modifier::BOLD);
+    // The header band, with a text color chosen for it (#470): the call
+    // list's rule, so the two tables cannot disagree.
+    let header_style = super::call_list::header_band_style(theme.header);
 
     let header = Row::new(vec![
         Cell::from("SSRC"),
@@ -583,6 +583,54 @@ mod tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// The column labels on the filled header band name their own text color.
+    ///
+    /// They did not (#470): the band was `bg(theme.header)` with no `fg`, so
+    /// the labels took the terminal's default color and read as gray on
+    /// bright cyan. The call list had the same defect and was fixed with
+    /// `header_foreground`; this table now uses the same rule.
+    #[test]
+    fn the_header_labels_carry_a_foreground_chosen_for_the_band() -> Result<(), TestError> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = super::super::Theme::default();
+        let store = StreamStore::new(10);
+        let resolver = crate::names::NameResolver::new();
+        let bands = crate::rtp::bands::QualityBands::default();
+        let dialogs = DialogStore::new(10, false);
+        let display = StreamListDisplay {
+            theme: &theme,
+            resolver: &resolver,
+            name_mode: crate::names::NameMode::Off,
+            displayed: &[],
+            quality_bands: &bands,
+            dialogs: &dialogs,
+        };
+        let mut state = StreamListState::new();
+        let mut terminal = Terminal::new(TestBackend::new(120, 6))
+            .map_err(|e| format!("create the test terminal: {e}"))?;
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_stream_list(frame, area, &mut state, &store, &display);
+            })
+            .map_err(|e| format!("draw the frame: {e}"))?;
+        let buf = terminal.backend().buffer();
+        let want = crate::tui::call_list::header_foreground(theme.header)
+            .ok_or("the default theme fills the header band")?;
+        let row: String = (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let start = row.find("SSRC").ok_or("the header row names SSRC")?;
+        for x in start..start + 4 {
+            let cell = &buf[(u16::try_from(x)?, 0)];
+            assert_eq!(cell.bg, theme.header, "the label sits on the header band");
+            assert_eq!(
+                cell.fg, want,
+                "header label drawn in {:?} on {:?}; it must be {want:?}",
+                cell.fg, cell.bg
+            );
+        }
+        Ok(())
+    }
 
     /// Up/down/top/bottom navigation moves and clamps the selection.
     #[test]

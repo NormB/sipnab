@@ -298,6 +298,15 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
     vec![
         ("aggregate_dialogs", json!({"group_by": "state"})),
         ("capture_status", json!({})),
+        ("list_dialogs", json!({})),
+        ("find_problems", json!({"kinds": ["problems"]})),
+        ("search_messages", json!({"query": "INVITE"})),
+        ("triage_call", json!({"call_id": call_id})),
+        ("get_call_tree", json!({"call_id": call_id})),
+        ("group_dialogs", json!({"by": "state"})),
+        ("tail_dialogs", json!({})),
+        ("timeline", json!({"bucket_seconds": 60})),
+        ("validate_filter", json!({"expr": "response_code >= 400"})),
         ("server_capabilities", json!({})),
         ("list_tls_libraries", json!({})),
         // One second: the smallest window the tool accepts, because this is
@@ -370,6 +379,9 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // holds.
         ("export_vcon", json!({"filter": "response_code >= 400"})),
         ("validate_vcon", json!({"call_id": call_id})),
+        // Over the spool `vcon_spool_with_one_failure` writes, so the failed
+        // list carries one record and its schema is exercised.
+        ("vcon_spool_status", json!({})),
         // The TFPS peer's tools, answered by the fake `fake_tfps_ctl` writes:
         // the `installed: true` arm of each schema, which is the one that
         // carries the contract types. The absent arm is two fields and is
@@ -384,6 +396,51 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // the shape of an answer without another ban to wait out.
         ("actions_revert", json!({"all": true})),
     ]
+}
+
+/// The flags that give the server a vCon export spool under `fake`, holding
+/// one refused container beside the record the forwarder writes for it. Empty
+/// on a build without the `vcon` feature, which has neither the flags' effect
+/// nor the tool that reads them.
+///
+/// The filter matches no dialog, so the run adds nothing to the spool.
+fn vcon_spool_args(fake: &tempfile::TempDir) -> Result<Vec<String>, TestError> {
+    if !cfg!(feature = "vcon") {
+        return Ok(Vec::new());
+    }
+    let spool = vcon_spool_with_one_failure(fake)?;
+    Ok(vec![
+        "--export-vcon-when".to_string(),
+        "response_code >= 700".to_string(),
+        "--export-vcon-dir".to_string(),
+        spool,
+    ])
+}
+
+/// A vCon export spool under `fake` holding one refused container beside the
+/// record the forwarder writes for it.
+fn vcon_spool_with_one_failure(fake: &tempfile::TempDir) -> Result<String, TestError> {
+    let spool = fake.path().join("vcons");
+    let failed = spool.join("failed");
+    std::fs::create_dir_all(&failed).map_err(|e| format!("spool: {e:?}"))?;
+    std::fs::write(failed.join("refused.vcon.json"), b"{}")
+        .map_err(|e| format!("container: {e:?}"))?;
+    let record = json!({
+        "at": "2026-10-07T12:00:00Z",
+        "body": "{\"detail\":\"refused\"}",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 422,
+        "url": "https://vcon.example.com/v1/vcons",
+    });
+    std::fs::write(
+        failed.join("refused.vcon.json.error.json"),
+        record.to_string(),
+    )
+    .map_err(|e| format!("record: {e:?}"))?;
+    Ok(spool.display().to_string())
 }
 
 /// The flags that let `tfps_ban` and `tfps_unban` act against the fake in
@@ -555,6 +612,9 @@ fn no_tool_answers_with_a_top_level_array() -> Result<(), TestError> {
     let actions = tfps_action_args(&fake)?;
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
     args.extend(["--mcp-file-root", &root]);
+    // The spool the schema probe reads, for the same reason as the file root.
+    let spool = vcon_spool_args(&fake)?;
+    args.extend(spool.iter().map(String::as_str));
     let mut wire = Wire::start_with(&args)?;
     let call_id = wire.a_call_id()?;
 
@@ -940,6 +1000,11 @@ fn every_declared_output_schema_matches_the_payload_it_describes() -> Result<(),
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
     // Output schemas are off by default; this gate needs them declared.
     args.extend(["--mcp-file-root", &root, "--mcp-output-schemas"]);
+    // A vCon export spool holding one refused container and its record, so
+    // `vcon_spool_status` answers with the record shape rather than an empty
+    // list.
+    let spool = vcon_spool_args(&fake)?;
+    args.extend(spool.iter().map(String::as_str));
     let mut wire = Wire::start_with(&args)?;
     let call_id = wire.a_call_id()?;
     let probes = schema_probes(&call_id);
@@ -993,6 +1058,139 @@ fn every_declared_output_schema_matches_the_payload_it_describes() -> Result<(),
                 "{name}'s payload does not match its own outputSchema: {e}\n{structured:#}"
             )
             .into());
+        }
+    }
+    Ok(())
+}
+
+/// Core-bundle tools that do not declare an output schema yet, each with the
+/// reason. Every other `core` tool must declare one.
+///
+/// The list may only shrink: a tool added to `core` without a schema fails
+/// [`every_core_tool_declares_an_output_schema_or_is_deferred`] until it has
+/// one or an entry here says why it cannot.
+const CORE_SCHEMA_DEFERRED: &[(&str, &str)] = &[
+    (
+        "get_dialog",
+        "its page shape (cursor type and shared page fields) is being changed \
+         in a separate change; a schema declared now would describe the shape \
+         that change replaces",
+    ),
+    (
+        "get_capture_report",
+        "its `markdown` and `text` formats answer with a document, not an \
+         object, so there is no structuredContent for a schema to describe, \
+         and MCP requires structuredContent from a tool that declares one",
+    ),
+    (
+        "rtp_stats",
+        "it answers two shapes (one call, or a capture-wide page), and each \
+         stream is built as untyped JSON by `stream_json`; a schema needs a \
+         typed stream model first",
+    ),
+];
+
+/// Every `core` tool declares an output schema, or is deferred with a reason.
+#[test]
+fn every_core_tool_declares_an_output_schema_or_is_deferred() -> Result<(), TestError> {
+    let mut wire = Wire::start_with(&["--mcp-tools", "core", "--mcp-output-schemas"])?;
+    let tools = wire.tools()?;
+    assert!(tools.len() >= 9, "only {} core tools listed", tools.len());
+    let mut missing = Vec::new();
+    for tool in &tools {
+        let name = tool["name"].as_str().unwrap_or_default();
+        let deferred = CORE_SCHEMA_DEFERRED.iter().any(|(t, _)| *t == name);
+        let declared = tool["outputSchema"].is_object();
+        if !declared && !deferred {
+            missing.push(name.to_string());
+        }
+        assert!(
+            !(declared && deferred),
+            "{name} declares an output schema and is still listed in \
+             CORE_SCHEMA_DEFERRED; remove the entry"
+        );
+    }
+    assert!(
+        missing.is_empty(),
+        "core tools with no output schema and no deferral reason: {missing:?}"
+    );
+    Ok(())
+}
+
+/// `signaling` tools that declare an output schema. Each was a typed response
+/// already, so its schema is derived from the type that builds the payload.
+const SIGNALING_DECLARED: &[&str] = &[
+    "await_condition",
+    "find_correlated",
+    "get_call_tree",
+    "group_dialogs",
+    "tail_dialogs",
+    "timeline",
+    "validate_filter",
+];
+
+/// Every tool in [`SIGNALING_DECLARED`] declares an output schema.
+#[test]
+fn the_typed_signaling_tools_declare_output_schemas() -> Result<(), TestError> {
+    let mut wire = Wire::start_with(&[
+        "--mcp-tools",
+        "signaling,capture_status",
+        "--mcp-output-schemas",
+    ])?;
+    let declared: Vec<String> = wire
+        .tools()?
+        .into_iter()
+        .filter(|t| t["outputSchema"].is_object())
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    let missing: Vec<&&str> = SIGNALING_DECLARED
+        .iter()
+        .filter(|t| !declared.iter().any(|d| d == **t))
+        .collect();
+    assert!(missing.is_empty(), "no output schema on {missing:?}");
+    Ok(())
+}
+
+/// A `list_dialogs` page projected with `fields` still matches the declared
+/// schema. `fields` drops every row key except `call_id` and the ones named,
+/// so the schema must not require the others.
+#[test]
+fn a_projected_dialog_page_matches_its_output_schema() -> Result<(), TestError> {
+    let mut wire = Wire::start_with(&["--mcp-output-schemas"])?;
+    for tool in ["list_dialogs", "find_problems", "tail_dialogs"] {
+        let schema = wire
+            .tools()?
+            .into_iter()
+            .find(|t| t["name"] == json!(tool))
+            .map(|t| t["outputSchema"].clone())
+            .ok_or_else(|| format!("{tool} is listed"))?;
+        let validator = jsonschema::validator_for(&schema)
+            .map_err(|e| format!("{tool}'s outputSchema does not compile: {e}"))?;
+        let args = if tool == "find_problems" {
+            json!({"kinds": ["problems", "slow-setup", "short-calls"], "fields": ["state"]})
+        } else {
+            json!({"fields": ["state"]})
+        };
+        let reply = wire.call(tool, args, None)?;
+        let structured = &reply["result"]["structuredContent"];
+        let rows = structured["dialogs"]
+            .as_array()
+            .ok_or_else(|| format!("{tool}: no dialogs in {reply}"))?;
+        if tool == "list_dialogs" {
+            assert!(
+                !rows.is_empty(),
+                "the projection must be exercised: {reply}"
+            );
+        }
+        for row in rows {
+            let keys: Vec<&String> = row
+                .as_object()
+                .map(|o| o.keys().collect())
+                .unwrap_or_default();
+            assert!(keys.len() <= 2, "{tool}: the row was not projected: {row}");
+        }
+        if let Err(e) = validator.validate(structured) {
+            return Err(format!("{tool}'s projected page breaks its own schema: {e}").into());
         }
     }
     Ok(())

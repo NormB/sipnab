@@ -149,6 +149,18 @@ fn documented_invocations() -> Result<Vec<Invocation>, TestError> {
     );
     // The front page too: see `the_readme_commands_are_walked_and_all_run`.
     pages.push(repo().join("README.md"));
+    // The engineering notes, which show commands as how-tos do: the
+    // 2026-10-11 audit found notes whose commands had stopped matching the
+    // binary, and nothing ran them.
+    let mut notes: Vec<PathBuf> = std::fs::read_dir(repo().join("website/content/notes"))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .filter(|p| p.file_name().is_some_and(|n| n != "_index.md"))
+        .collect();
+    notes.sort();
+    assert!(notes.len() >= 30, "only {} notes found", notes.len());
+    pages.extend(notes);
     for page in pages {
         let name = page
             .file_name()
@@ -541,11 +553,11 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
         }
     }
     let names_device = argv.iter().any(|a| a == "-d" || a == "--device");
-    // The forwarder reads a spool and the fetcher a store, never a capture,
-    // and both refuse `-I`.
+    // The forwarder and the spool status read a spool and the fetcher a
+    // store, never a capture, and all three refuse `-I`.
     let forwards = argv
         .iter()
-        .any(|a| a == "--vcon-forward" || a == "--vcon-fetch");
+        .any(|a| a == "--vcon-forward" || a == "--vcon-fetch" || a == "--vcon-spool-status");
     if !names_device && !forwards && !argv.iter().any(|a| a == "-I" || a == "--input") {
         argv.push("-I".to_owned());
         argv.push(fixture);

@@ -13,6 +13,7 @@
 //! and neither may be reasoned about as though the answer described the
 //! capture the agent has been asking about.
 
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -295,7 +296,13 @@ impl SipnabMcp {
         // must not cost it. `resolve_dimensions` runs before any file is
         // touched.
         let dims = crate::capture::compare::resolve_dimensions(params.dimensions.as_deref())
-            .map_err(|e| rmcp::ErrorData::invalid_params(e.to_string(), None))?;
+            .map_err(|e| {
+                errors::refuse_choice(
+                    "dimensions",
+                    crate::sip::dialog::GROUPABLE.iter(),
+                    e.to_string(),
+                )
+            })?;
         let top_n = crate::mcp::shape::resolve_limit_with_cap(params.top_n, self.row_cap);
 
         // The MCP resolver confines both names to `--mcp-file-root` and
@@ -338,9 +345,15 @@ impl SipnabMcp {
             crate::capture::compare::CompareError::Unreadable { .. } => {
                 rmcp::ErrorData::internal_error(e.to_string(), None)
             }
-            crate::capture::compare::CompareError::SameFile { .. }
-            | crate::capture::compare::CompareError::UnknownDimension { .. } => {
-                rmcp::ErrorData::invalid_params(e.to_string(), None)
+            crate::capture::compare::CompareError::SameFile { .. } => {
+                errors::refuse(Reason::InvalidValue, e.to_string())
+            }
+            crate::capture::compare::CompareError::UnknownDimension { .. } => {
+                errors::refuse_choice(
+                    "dimensions",
+                    crate::sip::dialog::GROUPABLE.iter(),
+                    e.to_string(),
+                )
             }
         })?;
 
@@ -398,22 +411,24 @@ impl SipnabMcp {
         Parameters(params): Parameters<BuildEvidencePackageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if params.call_ids.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "call_ids",
                 "call_ids must name at least one call: an empty package is a \
                  directory of disclaimers"
                     .to_string(),
-                None,
             ));
         }
         let cap = self.row_cap;
         if params.call_ids.len() > cap {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::LimitExceeded,
+                "call_ids",
                 format!(
                     "{} call_ids exceeds this server's ceiling of {cap}; package \
                      them in batches",
                     params.call_ids.len()
                 ),
-                None,
             ));
         }
         // Deduped in the caller's order: a repeated Call-ID would otherwise
@@ -439,18 +454,22 @@ impl SipnabMcp {
             let mut collected = Vec::new();
             for id in &call_ids {
                 let dialog = ds.get(id).ok_or_else(|| {
-                    rmcp::ErrorData::invalid_params(format!("call_id '{id}' not found"), None)
+                    errors::refuse_param(
+                        Reason::NotFound,
+                        "call_ids",
+                        format!("call_id '{id}' not found"),
+                    )
                 })?;
                 collected.extend(dialog.messages.iter().cloned());
             }
             collected
         };
         if messages.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NoData,
                 "the named calls hold no messages, so there is nothing to \
                  package"
                     .to_string(),
-                None,
             ));
         }
         let mut messages = messages;

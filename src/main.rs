@@ -42,9 +42,10 @@ use sipnab::signals;
 ///
 /// Parses CLI arguments, initializes logging, runs the immediate commands
 /// (`--setup-caps`, `--strip-secrets`, `--mint-token`), installs signal and
-/// panic handlers, writes the run provenance record when
-/// `--run-provenance-file` asked for one, runs the vCon forwarder when
-/// `--vcon-forward` names a spool, loads and validates configuration,
+/// panic handlers, reads the config file and declares the node name, writes
+/// the run provenance record when `--run-provenance-file` asked for one, runs
+/// the vCon forwarder when `--vcon-forward` names a spool, validates and
+/// applies the configuration,
 /// plans the run, launches the capture, and dispatches to the TUI or batch
 /// runner.
 ///
@@ -72,12 +73,13 @@ fn main() {
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
 
-    // 1b-4. Everything decided by the command line alone.
+    // 1b-4. Everything decided by the command line, and the config file read
+    //       but not yet applied.
     run_immediate_steps(&cli);
-    run_validation_steps(&cli);
+    let read = run_validation_steps(&cli);
 
-    // 5. Load configuration and apply [limits].
-    let loaded = match bootstrap::load_config(&cli) {
+    // 5. Apply the configuration read in step 3a, and [limits].
+    let loaded = match read.and_then(|read| bootstrap::apply_config(&cli, read)) {
         Ok(loaded) => loaded,
         Err(e) => e.exit(),
     };
@@ -167,20 +169,36 @@ fn run_immediate_steps(cli: &Cli) {
 }
 
 /// Steps 3 to 4 of [`main`]: signal handlers and argument validation, the
-/// run provenance record, and `--mint-token`. Each step either continues or
-/// exits the process.
-fn run_validation_steps(cli: &Cli) {
+/// config file read, the node name, the run provenance record, and the
+/// commands that exit (`--mint-token`, `--vcon-forward`, `--vcon-fetch`).
+/// Each step either continues or exits the process.
+///
+/// # Returns
+///
+/// The config file as read in step 3a, or why it could not be read, for step
+/// 5 to apply or refuse. A read that failed stops the run there, after the
+/// record is written, as it did when step 5 also read the file.
+fn run_validation_steps(cli: &Cli) -> Result<sipnab::config::LoadedConfig, bootstrap::PlanError> {
     // 3. Signal handlers + argument-combination validation.
     signals::install_handlers();
     if let Err(msg) = cli.validate() {
         tracing::error!("{}", msg);
         sipnab::capture::archive::release_run_and_exit(2);
     }
+    // 3a. Read the config file, applying nothing in it yet. The one setting
+    //     needed before step 5 is the node name, which the record below
+    //     carries: declared after the record, it lost to the host name the
+    //     record fixed by reading it first, and the record and every vCon of
+    //     the run named the host instead of the node.
+    let read = bootstrap::read_config(cli);
+    bootstrap::declare_node_name(cli, read.as_ref().ok().map(|loaded| &loaded.config));
+
     // 3b. Record how this run was invoked, when --run-provenance-file named a
-    //     file. Here and not later: everything above this point either exits
-    //     or is a decision about THIS argv, and everything below reads a
-    //     config, opens a device or mints a credential. A record written after
-    //     any of that would be a record of a run already in progress.
+    //     file. Here and not later: everything above this point either exits,
+    //     is a decision about THIS argv, or read the config file without
+    //     applying it, and everything below applies the config, opens a device
+    //     or mints a credential. A record written after any of that would be a
+    //     record of a run already in progress.
     //
     //     Fatal on failure, deliberately. A best-effort provenance line would
     //     leave its own absence ambiguous -- "not enabled" or "the disk was
@@ -197,19 +215,26 @@ fn run_validation_steps(cli: &Cli) {
     }
 
     // 4b. --vcon-forward: deliver a vCon spool to a store, as a process of
-    //     its own. It loads the config itself, for [vcon_forward], and opens
-    //     no capture: it reads no packet, and clap refused every capture flag
+    //     its own. It applies the config read in step 3a, for
+    //     [vcon_forward], and opens no capture: it reads no packet, and clap refused every capture flag
     //     beside it.
-    if let Some(code) = bootstrap::run_vcon_forward(cli) {
+    if let Some(code) = bootstrap::run_vcon_forward(cli, &read) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 
     // 4c. --vcon-fetch: read stored vCons back by uuid, as a process of its
-    //     own, for the same reasons: it loads the config itself, for
-    //     [vcon_fetch], and opens no capture.
-    if let Some(code) = bootstrap::run_vcon_fetch(cli) {
+    //     own, for the same reasons: it applies the config read in step 3a,
+    //     for [vcon_fetch], and opens no capture.
+    if let Some(code) = bootstrap::run_vcon_fetch(cli, &read) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+
+    // 4d. --vcon-spool-status: print the export spool's state and exit. Reads
+    //     files only; opens no capture and no connection.
+    if let Some(code) = bootstrap::run_vcon_spool_status(cli) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
+    read
 }
 
 /// Steps 5b to 6b of [`main`]: the crash policy, then the commands that need

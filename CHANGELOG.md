@@ -8,10 +8,139 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.212] - 2026-10-12
+
+### Added
+
+- **MCP prompt `vcon-handoff`.** It orders `capture_status`,
+  `validate_filter`, `export_vcon` with the filter, and `validate_vcon` on each
+  exported container, then has the model record each container's `digest`.
+  It is served only when the `core`, `signaling` and `vcon` tools are loaded.
+  The [MCP tool reference](docs/mcp-tools.md#prompts) lists every prompt, its
+  steps and the bundles it needs, and a new table,
+  [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls), says
+  which of seven tools answers which question.
+- **A byte budget for one whole MCP page.** `--mcp-max-rows` bounded how many
+  rows a page carried and `--mcp-max-body-bytes` how wide one body in a row
+  could be; nothing bounded the response as a whole. The paged tools —
+  `list_dialogs`, `find_problems`, `search_by_time`, `search_messages`,
+  `tail_dialogs`, `get_dialog`, `reconcile_orphans` and the `rtp_stats` sweep —
+  now take `max_response_bytes`, clamped to the new `--mcp-max-response-bytes`
+  (`[limits] mcp_max_response_bytes`, default 1048576). Past it a page drops
+  whole rows from its end, never part of one, keeps at least one row, and
+  answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor` to the
+  rest. The count matches `sipnab_mcp_tool_response_bytes_total`: the JSON
+  page, the provenance note and the completeness fields. The default is under
+  twice the largest response measured over `tests/pcap-samples` (561,420
+  bytes, `list_dialogs` with `limit: 1000`), so it changes no answer there.
+- **`truncated_by` on every paged response.** `rows` when the row limit cut
+  the page, `bytes` when the byte budget did, absent when nothing was cut.
+- **`reconcile_orphans` pages with a cursor.** Rows run oldest first by first
+  packet, the order the `rtp_stats` sweep uses, and the response carries
+  `returned`, `truncated_by` and `next_cursor`. Its `limit` is now clamped to
+  `--mcp-max-rows`, as every other list tool's is; it was not bounded by it.
+  The tool documentation said rows ran most recent first; they ran in store
+  order.
+- **[Response bounding](docs/mcp-tools.md#response-bounding) names every tool
+  that takes `limit` without a cursor, and why:** `find_correlated` and
+  `top_talkers` are rankings, `get_call_tree` is a walk from one call,
+  `describe_endpoint` orders on a key that moves, `hep_senders` answers two
+  lists with the bytes `GET /v1/hep/senders` returns, and TFPS's `log` command
+  has no offset for `tfps_labels` to resume from.
+- **`export_vcon` pages with a cursor and can leave the audio out.** The
+  response carries `next_cursor`, the `<created_at>|<Call-ID>` cursor
+  `list_dialogs` uses, and the tool takes it back as `cursor`; containers now
+  come back ordered by the dialog's `created_at`, then Call-ID. `media: "omit"`
+  builds signaling-only containers, each of which records `media:
+  "not-considered"` in its own completeness carrier. `media: "inline"`, the
+  default, is the behavior before this change.
+- **The MCP resource `sipnab://vcon/{call_id}`** reads one dialog as a vCon
+  container, built by the same function as `export_vcon`, with `call_id`
+  completed from the Call-IDs the capture holds. It is refused past the 8 MiB
+  resource limit, and offered only by a build with the `vcon` feature.
+- **The MCP tool `vcon_spool_status`** counts the `--export-vcon-dir` spool:
+  containers pending, delivered and failed, with the record
+  `sipnab --vcon-forward` wrote beside each failed container. It reads files
+  and nothing else: it sends, fetches, moves and deletes nothing, and its
+  answer is a snapshot dated by `as_of`. It is in the `vcon` bundle.
+- **`GET /v1/vcon/spool` and `sipnab --vcon-spool-status <SPOOL_DIR>`** give
+  the answer `vcon_spool_status` gives, from the same function: the REST route
+  for a run started with `--api` and `--export-vcon-dir`, paged by `limit` and
+  `cursor`, and the command-line one-shot, which prints every failed record and
+  exits. Neither moves a file. The MCP tool additionally fences each store
+  answer and cuts it to `--mcp-max-body-bytes`.
+
+### Changed
+
+- **Reading a capture file on one core is about 20% faster.** A run with no
+  `--cores` maps an unfiltered classic pcap and reads it in place, as
+  `--cores 2` and above already did, instead of reading it through libpcap,
+  whose `fread` took a lock and whose frame was copied into a fresh allocation
+  per packet. pcapng, compressed files, pipes and a run with a BPF filter
+  still read through libpcap. The receive loop also no longer reads the clock
+  per packet for the keylog poll unless `--keylog-watch` or `--keylog-fd` is
+  set. On a 535k-packet corpus built with `bench/carrier.py --calls 5000`, a
+  single-core run of a release build went from 0.96M (0.5.211) to 1.18M
+  packets per second, the lowest of three interleaved replicates each; peak
+  memory rose from 160.9 to 168.4 MiB. Two, four and eight cores stayed
+  within the spread of the replicates. [Check how fast sipnab
+  is](docs/benchmarks.md) has the tables.
+  A nanosecond-resolution pcap now keeps all nine digits of each timestamp
+  on one core, as it did with `--cores`; libpcap dropped the last three.
+- **`--cores` names a record with a corrupt capture timestamp in the
+  capture-quality summary.** The mapped reader clamped a fraction of a second
+  past its range into the same second and counted nothing, so a `--cores` run
+  reported no corrupt timestamp where the default reader reported one. Both
+  readers now stamp such a record with the wall clock, count it, and keep it.
+- **The vCon guides describe only what the forwarder does now.**
+  `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier
+  releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
+  entries below no longer list that behavior: vcon.store accepts every
+  container as sipnab writes it.
+- **Breaking: `get_dialog` pages with the opaque string cursor the other paged
+  tools use.** `cursor` and `next_cursor` were the integer index of a message;
+  they are now `<RFC 3339>|<Call-ID>#<message index>`, the shape
+  `search_messages` hands out, to be passed back unchanged. An integer
+  `cursor`, a malformed one, or one issued for a different dialog fails with
+  `invalid_params`. The response gains `returned`, `truncated`,
+  `truncated_by` and `first_index` — the index of the page's first message,
+  for `get_message` — and keeps `complete` and `total_messages`.
+  The response now carries `schema_version: 2`; earlier responses carried no
+  `schema_version` field.
 
 ### Fixed
 
+- **The RTP Streams table header is readable on the default theme.** Its
+  column labels had no text color of their own, so they took the terminal's
+  default, gray on most terminals, on the bright cyan band. Both table headers
+  now take their text color from one rule, `header_band_style`, which picks
+  whichever of black and white has the higher WCAG 2 contrast ratio against
+  the band: black on cyan, about 7.2:1. The call list header, which had white
+  on cyan at about 2.9:1, uses the same rule. Reported by liwangob
+  ([@WangKLi](https://github.com/WangKLi)) in
+  [#470](https://github.com/NormB/sipnab/issues/470).
+- **`--run-provenance-file` no longer replaces the node name with the host
+  name.** The record was the first thing to read the node name, before
+  `--node-name` or `[capture] node_name` was applied, so the record and every
+  vCon of the run named the system host name. sipnab now reads the config file
+  and declares the node name before it writes the record; the config's settings
+  still take effect after it.
+- **`--call-report` prints the SIPREC recording block in its text and Markdown
+  forms.** It printed the block only in its JSON form, while
+  [See who is on a recorded call](docs/examples.md#60-see-who-is-on-a-recorded-call)
+  shows it in the text report. `--call-report` and `--report` now print it from
+  one function.
+- **`explain_attribution` reports a relay endpoint sniffed off a capture
+  interface as `port-gated-only`.** It gave such an endpoint the HEP listener's
+  posture, `hmac-verified` or `plain-secret`, although the listener never saw
+  the datagram. Only an endpoint the listener delivered (`input_origin: hep`)
+  now takes that posture.
+- **`--report` names the SIP a port gate set aside.** SIP on ports outside
+  `--portrange`, and SIP over WebSocket outside the WebSocket port set, was
+  reported on stderr, by `--analyze` and in a vCon, and not in the report. The
+  report's `INCOMPLETE RUN` block now names each count, and the `--json-dialogs`
+  `sipnab_run` record carries them under `port_gate`. Neither changes the exit
+  status.
 - **A diagnostic alias in the config file's `[filter] expression` works as it
   does on `--filter`.** `expression = "short-calls"` was refused at load with
   "unexpected input at position 0" and exit 1, while `--filter short-calls`
@@ -108,34 +237,17 @@ entry that carries them.
   later column of that row to the right, and an IPv6 socket did the same to
   the Source and Destination columns of both stream tables. Each column now
   widens to its longest value; a table of short values prints as before.
-
-### Changed
-
-- **Reading a capture file on one core is about 20% faster.** A run with no
-  `--cores` maps an unfiltered classic pcap and reads it in place, as
-  `--cores 2` and above already did, instead of reading it through libpcap,
-  whose `fread` took a lock and whose frame was copied into a fresh allocation
-  per packet. pcapng, compressed files, pipes and a run with a BPF filter
-  still read through libpcap. The receive loop also no longer reads the clock
-  per packet for the keylog poll unless `--keylog-watch` or `--keylog-fd` is
-  set. On a 535k-packet corpus built with `bench/carrier.py --calls 5000`, a
-  single-core run of a release build went from 0.96M (0.5.211) to 1.18M
-  packets per second, the lowest of three interleaved replicates each; peak
-  memory rose from 160.9 to 168.4 MiB. Two, four and eight cores stayed
-  within the spread of the replicates. [Check how fast sipnab
-  is](docs/benchmarks.md) has the tables.
-  A nanosecond-resolution pcap now keeps all nine digits of each timestamp
-  on one core, as it did with `--cores`; libpcap dropped the last three.
-- **`--cores` names a record with a corrupt capture timestamp in the
-  capture-quality summary.** The mapped reader clamped a fraction of a second
-  past its range into the same second and counted nothing, so a `--cores` run
-  reported no corrupt timestamp where the default reader reported one. Both
-  readers now stamp such a record with the wall clock, count it, and keep it.
-- **The vCon guides describe only what the forwarder does now.**
-  `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier
-  releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
-  entries below no longer list that behavior: vcon.store accepts every
-  container as sipnab writes it.
+- **MCP prompts named tools the server did not load.** `prompts/list` served
+  every prompt whatever `--mcp-tools` selected, so under `core` the
+  `triage-outage` prompt told the model to call `show_evidence`, which `core`
+  does not register. A prompt is now served only when every tool its text
+  names is registered, and `prompts/get` on one that is not refuses with
+  -32602, naming the missing tools and the bundles that hold them.
+- **The MCP tool reference listed `actions_revert` among the tools that omit
+  `source_exhausted`.** The code's list does not hold it; the paragraph now
+  names the eighteen tools the code lists, and a test derives it from that
+  list. The table of tools without a cursor named two tools; it now lists the
+  eight that lack a cursor or a total.
 
 ## [0.5.211] - 2026-10-11
 
