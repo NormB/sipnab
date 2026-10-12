@@ -303,6 +303,65 @@ fn a_new_branch_checks_only_commits_no_remote_branch_has() -> Result<(), TestErr
     Ok(())
 }
 
+/// A branch rebased onto a main that gained commits, then force-pushed. The
+/// update line carries the branch's OLD remote sha, so `<remote>..<local>`
+/// spans everything main gained since the old base. Those commits are already
+/// on the remote (a squash merge GitHub signs with a key this machine cannot
+/// check reads as `E`), so only the branch's own commits are this push's.
+#[test]
+fn a_rebased_branch_checks_only_its_own_commits() -> Result<(), TestError> {
+    let f = fixture()?;
+    f.on_remote(&f.base)?;
+    git(&f.root, &["checkout", "-q", "-b", "topic"])?;
+    let old_tip = f.signed("topic, first version", &f.trusted)?;
+    git(
+        &f.root,
+        &["update-ref", "refs/remotes/origin/topic", &old_tip],
+    )?;
+
+    // main gains commits this machine cannot call good: one unsigned, one
+    // whose signature no longer verifies.
+    git(&f.root, &["checkout", "-q", "main"])?;
+    let gained = f.unsigned("merged on main, unsigned")?;
+    let signed = f.signed("merged on main, altered", &f.trusted)?;
+    let raw = git(&f.root, &["cat-file", "commit", &signed])?;
+    let altered = format!("{}\n", raw.replace("merged on main, altered", "altered"));
+    let mut cmd = git_cmd(&f.root);
+    cmd.args(["hash-object", "-t", "commit", "-w", "--stdin"]);
+    let (ok, bad_sig) = run(cmd, &altered)?;
+    assert!(ok, "hash-object: {bad_sig}");
+    let bad_sig = bad_sig.trim().to_string();
+    git(
+        &f.root,
+        &["update-ref", "refs/remotes/origin/main", &bad_sig],
+    )?;
+
+    // The branch is rebased onto the new main and re-signed.
+    git(&f.root, &["checkout", "-q", "-B", "topic", &bad_sig])?;
+    let new_tip = f.signed("topic, rebased", &f.trusted)?;
+
+    let (ok, out) = check(&f, &line("topic", &new_tip, &old_tip))?;
+    assert!(
+        ok,
+        "main's commits are already on the remote, so they are not this \
+         push's to sign: {out}"
+    );
+    for sha in [&gained, &bad_sig] {
+        assert!(!out.contains(short(sha)), "{} is main's: {out}", short(sha));
+    }
+
+    // The branch's own commits are still checked.
+    let own = f.unsigned("topic, unsigned follow-up")?;
+    let (ok, out) = check(&f, &line("topic", &own, &old_tip))?;
+    assert!(!ok, "the branch's own unsigned commit is refused: {out}");
+    assert!(out.contains(short(&own)), "name it: {out}");
+    assert!(
+        !out.contains(short(&gained)) && !out.contains(short(&bad_sig)),
+        "and only it: {out}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_deleted_ref_checks_nothing() -> Result<(), TestError> {
     let f = fixture()?;

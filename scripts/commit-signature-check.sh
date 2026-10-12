@@ -11,9 +11,13 @@
 #   <local ref> <local sha> <remote ref> <remote sha>
 #
 # * A deleted ref (local sha all zeros) pushes no commit: nothing to check.
-# * A new ref (remote sha all zeros) pushes the commits no remote branch has.
-# * An update pushes <remote sha>..<local sha>. When the remote sha is not in
-#   this repository, the commits no remote branch has are checked instead.
+# * Otherwise the push carries the commits reachable from <local sha> that no
+#   remote-tracking ref reaches, and, for an update, that <remote sha> does
+#   not reach either. Only those need a good signature: a commit already on
+#   the remote is not this push's. <remote sha>..<local sha> alone is wrong
+#   for a branch rebased onto a newer main: it spans every commit main gained
+#   since the old base, and main's squash merges carry GitHub's own signature,
+#   which reads as E here.
 #
 # Why: branch protection on main requires signed commits. GitHub enforces that
 # only at merge time, so PR #333 sat BLOCKED with every check green and no
@@ -65,10 +69,9 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue
 	# A ref naming no commit (a tag on a tree or blob) pushes no commit.
 	tip=$(git rev-parse -q --verify "$local_sha^{commit}" 2>/dev/null) || continue
+	range=("$tip" --not --remotes)
 	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		range=("$remote_sha..$tip")
-	else
-		range=("$tip" --not --remotes)
+		range+=("$remote_sha")
 	fi
 	# Fail closed: a range git cannot list is a range nobody checked.
 	if ! commits=$(git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" \
