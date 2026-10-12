@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Internal
+
+- **The concurrent-load refusal test no longer races the load it tests.**
+  `a_second_load_is_refused_while_one_is_running` checked that the real load
+  was still running and then called `open_capture` again. On the macOS runner
+  the load finished in between, the second call was correctly accepted, and
+  the test failed on main; on a faster machine it skipped its assertion. It
+  now holds a load that never reports done, asserts the refusal names that
+  file, and asserts a new call is accepted once the load finishes.
+
 ## [0.5.214] - 2026-10-12
 
 ### Added
