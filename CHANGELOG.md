@@ -35,6 +35,8 @@ entry that carries them.
 - **`-x`/`--quiet-bad-parse` help names `SIPNAB_LOG=debug` as the way to see
   the notice it silences.** It said the notice was visible under `-v`, which
   is `--invert` and changes no log level.
+- **A panic in the TUI's processing thread is logged with its message.** The
+  log line read "Processing thread panicked: Any { .. }".
 
 ## [0.5.212] - 2026-10-12
 

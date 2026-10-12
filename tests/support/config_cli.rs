@@ -64,17 +64,6 @@ impl Outcome {
     }
 }
 
-/// Render a panic payload as text.
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        return (*s).to_string();
-    }
-    if let Some(s) = payload.downcast_ref::<String>() {
-        return s.clone();
-    }
-    "non-string panic payload".to_string()
-}
-
 /// An outcome recording a panic in `stage`.
 fn panicked(stage: Stage, payload: &(dyn std::any::Any + Send)) -> Outcome {
     Outcome {
@@ -82,7 +71,7 @@ fn panicked(stage: Stage, payload: &(dyn std::any::Any + Send)) -> Outcome {
         code: 101,
         message: String::new(),
         cli: None,
-        panic: Some(panic_text(payload)),
+        panic: Some(sipnab::crash::panic_message(payload)),
     }
 }
 

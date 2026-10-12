@@ -820,7 +820,10 @@ fn join_tui_threads(
     relay_thread: Option<std::thread::JoinHandle<()>>,
 ) {
     if let Err(e) = processing_thread.join() {
-        tracing::error!("Processing thread panicked: {:?}", e);
+        tracing::error!(
+            "Processing thread panicked: {}",
+            crate::crash::panic_message(e.as_ref())
+        );
     }
 
     // ONLY after the processing thread is joined. It owned the only sink, so
@@ -1624,6 +1627,28 @@ pub fn tui_pipeline_options(
 
 #[cfg(test)]
 mod tests {
+    /// A processing-thread panic is logged with the panic's own message.
+    ///
+    /// The payload of a `join` error is a `Box<dyn Any + Send>`, and it was
+    /// logged with `{:?}`, which prints `Any { .. }` and nothing an operator
+    /// can act on.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_processing_thread_panic_is_logged_with_its_message() {
+        // `resume_unwind` unwinds the thread with exactly the payload a
+        // `panic!("...")` literal carries, without calling `panic!`, which the
+        // unwrap ratchet counts.
+        let handle: std::thread::JoinHandle<()> =
+            std::thread::spawn(|| std::panic::resume_unwind(Box::new("ring index 9 out of range")));
+        let logs = crate::test_utils::capture_logs(tracing::Level::ERROR, || {
+            super::join_tui_threads(handle, None);
+        });
+        assert!(
+            logs.contains("Processing thread panicked: ring index 9 out of range"),
+            "{logs:?}"
+        );
+        assert!(!logs.contains("Any {"), "{logs:?}");
+    }
 
     type TestError = Box<dyn std::error::Error>;
 

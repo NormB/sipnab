@@ -443,6 +443,22 @@ fn hook_eprintln(args: std::fmt::Arguments<'_>) {
     hook_write_line(&mut std::io::stderr(), args);
 }
 
+/// A panic payload as text: the message `panic!` was given, or a fixed
+/// note when the payload is not a string.
+///
+/// `panic!("literal")` carries a `&'static str` and `panic!("{x}")` a
+/// `String`; a payload of any other type has no message to show. Formatting
+/// the payload with `{:?}` prints `Any { .. }` instead, so every place that
+/// reports a panic reads it through here.
+#[must_use]
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".to_string())
+}
+
 /// The hook body: restore terminal, report to stderr and file, decide
 /// the post action and hand it to the terminator.
 ///
@@ -465,12 +481,7 @@ fn hook_body(
     // the process before any report can be written.
     restore_terminal_if_raw();
 
-    let message = info
-        .payload()
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_string())
-        .or_else(|| info.payload().downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_string());
+    let message = panic_message(info.payload());
     let location = info
         .location()
         .map(|l| l.to_string())
@@ -526,6 +537,20 @@ fn hook_body(
 /// file/directory creation, and end-to-end panic-hook behavior.
 #[cfg(test)]
 mod tests {
+    /// A panic payload renders as its message, whichever of the two string
+    /// types `panic!` produces (`&'static str` for a literal, `String` for a
+    /// formatted message), and a fixed text otherwise. The payloads are built
+    /// directly rather than by panicking: the unwrap ratchet counts `panic!`.
+    #[test]
+    fn panic_message_reads_both_string_payloads() {
+        let literal: Box<dyn std::any::Any + Send> = Box::new("plain literal");
+        assert_eq!(panic_message(literal.as_ref()), "plain literal");
+        let formatted: Box<dyn std::any::Any + Send> = Box::new(format!("formatted {}", 7));
+        assert_eq!(panic_message(formatted.as_ref()), "formatted 7");
+        let other: Box<dyn std::any::Any + Send> = Box::new(42_u8);
+        assert_eq!(panic_message(other.as_ref()), "<non-string panic payload>");
+    }
+
     use super::*;
 
     /// Any error a test can return; `?` converts into it.
