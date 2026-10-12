@@ -352,11 +352,11 @@ impl SipnabMcp {
         Parameters(params): Parameters<VconSpoolStatusParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let spool = self.vcon_spool.as_deref().ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            crate::mcp::errors::refuse(
+                crate::mcp::errors::Reason::NotEnabled,
                 "this run has no vCon export spool: start sipnab with \
                  --export-vcon-when <EXPR> --export-vcon-dir <DIR>, and this \
                  tool reads that directory",
-                None,
             )
         })?;
         let page = crate::app::vcon_spool::SpoolPage {
@@ -430,10 +430,13 @@ impl SipnabMcp {
         // same way: restarting from the beginning on a malformed cursor would
         // loop a paging agent over the first page forever.
         let cursor = match params.cursor.as_deref() {
-            Some(raw) => Some(
-                crate::mcp::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
-            ),
+            Some(raw) => Some(crate::mcp::shape::parse_cursor(raw).map_err(|e| {
+                crate::mcp::errors::refuse_param(
+                    crate::mcp::errors::Reason::InvalidValue,
+                    "cursor",
+                    e,
+                )
+            })?),
             None => None,
         };
         let response = self.export_containers(&ExportRequest {

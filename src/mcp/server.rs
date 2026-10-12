@@ -5623,7 +5623,7 @@ impl SipnabMcp {
         let start = match params.cursor.as_deref() {
             None => 0usize,
             Some(raw) => message_cursor_start(raw, &params.call_id)
-                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
         };
 
         let (mut payload, row_cursors) = {
@@ -6710,7 +6710,7 @@ impl SipnabMcp {
             },
             tools: self.registered_tool_names(),
             bundles: self.loaded_bundles(),
-            prompts: super::prompts::all()
+            prompts: super::prompts::served(&|t| self.tool_router.has_route(t))
                 .iter()
                 .map(|w| w.name.to_string())
                 .collect(),
@@ -9851,7 +9851,9 @@ impl ServerHandler for SipnabMcp {
         // than handed over: its steps would fail with "tool not found".
         let missing = workflow.missing(&loaded);
         if !missing.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::NotEnabled,
+                "name",
                 format!(
                     "prompt '{}' is not served: it calls {}, which this server does not \
                      load. Add the bundle(s) {} with --mcp-tools or [mcp] tools. Served: {}",
@@ -9860,7 +9862,6 @@ impl ServerHandler for SipnabMcp {
                     super::prompts::bundles_holding(&missing).join(", "),
                     served.join(", ")
                 ),
-                None,
             ));
         }
         Ok(
@@ -15321,10 +15322,13 @@ mod tests {
             "{v}"
         );
         assert_eq!(v["bundles"], serde_json::json!(["core"]), "{v}");
-        let prompts: Vec<&str> = super::super::prompts::all()
-            .iter()
-            .map(|w| w.name)
-            .collect();
+        // The prompts `prompts/list` serves: only those whose every tool is
+        // loaded, which under `core` alone is none of them.
+        let prompts: Vec<&'static str> =
+            super::super::prompts::served(&|t| server.tool_router.has_route(t))
+                .iter()
+                .map(|w| w.name)
+                .collect();
         assert_eq!(v["prompts"], serde_json::json!(prompts), "{v}");
         // A bundle only partly loaded is not listed: `get_message` alone does
         // not make `signaling` loaded.

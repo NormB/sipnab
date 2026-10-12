@@ -526,7 +526,7 @@ impl SipnabMcp {
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 crate::mcp::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
         };

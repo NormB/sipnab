@@ -22400,11 +22400,13 @@ answered with 6 of 18,241 dialogs. `tail_dialogs` and `capture_status` have
 always carried `source_exhausted`. Now every tool that answers from the capture
 does.
 
-Seventeen tools are the exception, because their answer cannot move with
-the load. Nine read something other than the capture store —
+Eighteen tools are the exception, because their answer cannot move with
+the load. Ten read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
-`show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
-and `compare_captures`, which reads two files and never the loaded capture.
+`show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`,
+`vcon_spool_status`, which counts the vCon export spool that the forwarder
+drains, and `compare_captures`, which reads two files and never the
+loaded capture.
 The other eight ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
 `tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
