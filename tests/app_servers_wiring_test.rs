@@ -49,6 +49,7 @@ fn metrics_only() -> Selection {
         metrics_tls: (None, None),
         mcp_row_cap: Cli::DEFAULT_MCP_MAX_ROWS as usize,
         mcp_body_cap: Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+        mcp_response_cap: Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
         mcp_wait_seconds: Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
         mcp_sweep: sipnab::cli::McpSweepLimits::default(),
         mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),

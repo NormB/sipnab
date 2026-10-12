@@ -1615,6 +1615,14 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     (
+        "mcp-max-response-bytes",
+        Kind::Int {
+            lo: 1,
+            hi: 18446744073709551615,
+        },
+        &[],
+    ),
+    (
         "mcp-max-wait-seconds",
         Kind::Int {
             lo: 1,
@@ -3142,6 +3150,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.mcp_output_schemas(config)),
         format!("{:?}", cli.mcp_row_cap(config)),
         format!("{:?}", cli.mcp_body_cap(config)),
+        format!("{:?}", cli.mcp_response_cap(config)),
         format!("{:?}", cli.mcp_wait_cap(config)),
         format!("{:?}", cli.mcp_sweep_limits(config)),
         format!("{:?}", cli.mcp_sweep_job_limits(config)),

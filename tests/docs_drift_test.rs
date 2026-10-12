@@ -4846,7 +4846,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1115: the `reconcile_orphans` parameter table, which gained a
+    // cursor and a byte budget and outgrew its one-line parameter sentence.
+    // docs/mcp-tools.md 1 and website/content/docs/mcp-tools.md 1; every other
+    // staged .md held its table count against HEAD.
+    const EXPECTED_TABLES: usize = 1115;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

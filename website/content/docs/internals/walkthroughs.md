@@ -156,7 +156,11 @@ touching the help failed two assertions in `keybinding_drift_test`.
 4. Bound the response with
    [`resolve_limit_with_cap()`](https://github.com/NormB/sipnab/blob/main/src/mcp/shape.rs) — passing the caller's
    `limit` and the server's `row_cap` — and the body-bytes cap
-   (`--mcp-max-body-bytes` moves it).
+   (`--mcp-max-body-bytes` moves it). A tool that pages with a cursor also
+   takes `max_response_bytes` and passes its serialized page, after any
+   `fields` projection, through `SipnabMcp::fit_to_budget` with the cursor
+   that resumes after each row, so the whole response stays inside
+   `--mcp-max-response-bytes` ([`budget.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/budget.rs)).
 
    **Not `resolve_limit()`.** That one takes no ceiling, so a tool wired to it
    silently ignores `--mcp-max-rows` — the operator sets a limit and the tool

@@ -126,6 +126,14 @@ pub struct SipnabMcp {
     /// read from a constant at each call site is not something an operator can
     /// move.
     pub(crate) body_cap: usize,
+    /// Ceiling on the bytes of ONE whole paged response, from
+    /// `--mcp-max-response-bytes` or `[limits] mcp_max_response_bytes`.
+    /// Defaults to [`crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES`].
+    ///
+    /// Carried beside `row_cap` and `body_cap` for the reason spelled out on
+    /// the first of them. A caller's `max_response_bytes` narrows it per call
+    /// and cannot exceed it; see [`super::budget`].
+    pub(crate) response_cap: usize,
     /// Ceiling on how long ONE `await_condition` call may wait, in seconds,
     /// from `--mcp-max-wait-seconds` or `[limits] mcp_max_wait_seconds`.
     /// Defaults to
@@ -367,6 +375,7 @@ impl SipnabMcp {
             max_inline_media_bytes: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
+            response_cap: crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             max_wait_seconds: super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS,
             sweep_limits: crate::cli::McpSweepLimits::default(),
             sweeps: Arc::new(super::sweep::SweepJobs::default()),
@@ -562,6 +571,20 @@ impl SipnabMcp {
     pub fn with_body_cap(mut self, bytes: usize) -> Self {
         self.body_cap = if bytes == 0 {
             super::shape::DEFAULT_MAX_BODY_BYTES
+        } else {
+            bytes
+        };
+        self
+    }
+
+    /// Cap the bytes of one whole paged response.
+    ///
+    /// `0` is treated as the default rather than as "unlimited", the same
+    /// reading [`Self::with_row_cap`] gives it and for the same reason.
+    #[must_use]
+    pub fn with_response_cap(mut self, bytes: usize) -> Self {
+        self.response_cap = if bytes == 0 {
+            crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize
         } else {
             bytes
         };
@@ -1288,6 +1311,10 @@ pub struct ListDialogsParams {
     /// rather than ignored -- a silently dropped typo reads as "no such data".
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// Parameters for `get_dialog_report`.
@@ -1450,6 +1477,10 @@ pub struct FindProblemsParams {
     /// this row does not carry.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 // ── Dialog-inspection parameter structs ─────────────────────────────
@@ -1465,8 +1496,15 @@ pub struct GetDialogParams {
     /// Must be at least 1 when given. `0` is refused rather than treated as
     /// "unset": it is the value a computed budget most often collapses to.
     pub max_messages: Option<u32>,
-    /// Cursor — index of the first message to return. Default 0.
-    pub cursor: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339 created_at>|<Call-ID>#<zero-padded message index>`, the
+    /// shape `search_messages` hands out) to continue after that page. Omit
+    /// on the first call. A cursor issued for a different dialog is refused.
+    pub cursor: Option<String>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// Parameters for `get_message`.
@@ -1479,8 +1517,8 @@ pub struct GetMessageParams {
     /// dialog holds them.
     ///
     /// How to obtain one, because the number is meaningless on its own:
-    /// `get_dialog` returns a page of messages beginning at its `cursor`, so
-    /// the Nth message of that page is at index `cursor + N`. The upper bound
+    /// `get_dialog` reports `first_index` for each page of messages, so the
+    /// Nth message of that page is at index `first_index + N`. The upper bound
     /// is `msg_count` from `list_dialogs` — the last valid index is
     /// `msg_count - 1`.
     ///
@@ -1536,6 +1574,10 @@ pub struct RtpStatsParams {
     /// Capture-wide sweep only: pass back the previous response's
     /// `next_cursor` verbatim. Omit on the first call.
     pub cursor: Option<String>,
+    /// Capture-wide sweep only: byte ceiling for the whole response, at most
+    /// `--mcp-max-response-bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// Parameters for `search_messages`.
@@ -1551,6 +1593,10 @@ pub struct SearchMessagesParams {
     /// (`<RFC 3339 created_at>|<Call-ID>#<zero-padded message index>`) to
     /// continue after that page. Omit on the first call.
     pub cursor: Option<String>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// The tie-break half of a `search_messages` cursor: `<Call-ID>#<index>`.
@@ -1567,6 +1613,38 @@ pub struct SearchMessagesParams {
 /// by and what the cursor compares against.
 fn hit_identity(call_id: &str, index: usize) -> String {
     format!("{call_id}#{index:010}")
+}
+
+/// The first message index a `get_dialog` page resumes at, read from the
+/// cursor the previous page handed out.
+///
+/// The cursor is the one [`hit_identity`] builds into: `<RFC 3339>|<Call-ID>#
+/// <index>`, naming the LAST message already returned. The Call-ID half must
+/// be the dialog being paged. A cursor from another dialog would otherwise
+/// resume this one at an unrelated position and look like an ordinary page.
+///
+/// # Errors
+///
+/// A message naming what was wrong, for `invalid_params`: a timestamp that is
+/// not RFC 3339, no `|<Call-ID>#<index>` half, a different Call-ID, or an
+/// index that is not a number.
+fn message_cursor_start(raw: &str, call_id: &str) -> Result<usize, String> {
+    let cursor = super::shape::parse_cursor(raw)?;
+    let id = cursor.id.ok_or(
+        "a get_dialog cursor is `<RFC 3339>|<Call-ID>#<index>`; pass next_cursor back verbatim",
+    )?;
+    let (owner, index) = id
+        .rsplit_once('#')
+        .ok_or("a get_dialog cursor ends in `#<message index>`; pass next_cursor back verbatim")?;
+    if owner != call_id {
+        return Err(format!(
+            "this cursor belongs to dialog '{owner}', not '{call_id}'"
+        ));
+    }
+    let index: usize = index
+        .parse()
+        .map_err(|e| format!("cursor message index '{index}' is not a number: {e}"))?;
+    Ok(index.saturating_add(1))
 }
 
 /// Zero-allocation ASCII-case-insensitive substring test used by
@@ -1622,6 +1700,10 @@ pub struct TailDialogsParams {
     /// this row does not carry.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2350,6 +2432,10 @@ pub struct SearchByTimeParams {
     /// this row does not carry.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2999,6 +3085,10 @@ pub struct DialogPage {
     /// True when matches remain after this page. Pass `next_cursor` back to
     /// continue.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
     /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>` of the last row) to
     /// pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
@@ -3008,6 +3098,12 @@ pub struct DialogPage {
     /// replace the whole dialog set between two pages, and without this the
     /// second page would look like an ordinary continuation of the first.
     pub capture_identity: crate::provenance::CaptureEtag,
+    /// The cursor that resumes after each row, in row order. Not sent: the
+    /// byte budget reads it to hand on the cursor of the last row it keeps,
+    /// after `fields` may already have projected `created_at` off the rows.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub row_cursors: Vec<String>,
 }
 
 /// One method and how many matched dialogs it opened.
@@ -3053,6 +3149,10 @@ pub struct MessagePage {
     /// True when matches remain after this page. Pass `next_cursor` back to
     /// continue.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
     /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>#<index>` of the last
     /// row) to pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
@@ -3085,6 +3185,10 @@ pub struct StreamPage {
     pub ungrounded_excluded: usize,
     /// True when matches remain after this page.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
     /// Opaque cursor to pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
     /// Which capture this page came from, and which revision of its stores.
@@ -3846,7 +3950,7 @@ fn endpoint_reported_json(
 ///
 /// Unique per stream (the store keys on exactly these three values) and free
 /// of the cursor separator, so `<first_seen>|<identity>` splits unambiguously.
-fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
+pub(crate) fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
     format!("0x{:08x}@{}>{}", s.key.ssrc, s.key.src, s.key.dst)
 }
 
@@ -4333,6 +4437,50 @@ impl SipnabMcp {
         });
     }
 
+    /// Cut a serialized page to this call's byte budget, at a row boundary.
+    ///
+    /// The one place a paged tool applies [`super::budget`], so the budget a
+    /// caller asked for, the operator's ceiling and the bytes reserved for
+    /// what is added after the page cannot be combined differently by two
+    /// tools. Runs after field projection, because the projected rows are
+    /// what is sent, and inside the tool, which is before the dispatcher's
+    /// completeness stamp: the stamp's bytes are reserved here.
+    ///
+    /// # Arguments
+    ///
+    /// * `page` — the serialized page, rewritten in place when cut.
+    /// * `rows_key` — the key of its row array.
+    /// * `row_cursors` — the cursor resuming after each row, in row order.
+    /// * `requested` — the caller's `max_response_bytes`.
+    /// * `with_note` — whether the tool appends the provenance note block.
+    ///
+    /// # Returns
+    ///
+    /// Whether rows were cut.
+    ///
+    /// # Errors
+    ///
+    /// `internal_error` when the page and its cursors disagree, a defect in
+    /// the calling tool rather than in the request.
+    pub(crate) fn fit_to_budget(
+        &self,
+        page: &mut serde_json::Value,
+        rows_key: &str,
+        row_cursors: &[String],
+        requested: Option<u64>,
+        with_note: bool,
+    ) -> Result<bool, rmcp::ErrorData> {
+        let budget = super::budget::resolve(requested, self.response_cap);
+        let note = if with_note {
+            super::shape::untrusted_note().len()
+        } else {
+            0
+        };
+        let outside = super::completeness::stamp_growth_bound() + note;
+        super::budget::fit(page, rows_key, row_cursors, budget, outside)
+            .map_err(|e| rmcp::ErrorData::internal_error(e, None))
+    }
+
     /// Narrow every row of a rendered page to `fields`, plus `call_id`.
     ///
     /// Applied to the SERIALIZED page rather than to `DialogSummary`, because
@@ -4518,10 +4666,11 @@ impl SipnabMcp {
 
         let truncated = remaining.len() > limit;
         let page = &remaining[..remaining.len().min(limit)];
-        let next_cursor = truncated
-            .then(|| page.last())
-            .flatten()
-            .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
+        let row_cursors: Vec<String> = page
+            .iter()
+            .map(|d| super::shape::format_cursor(d.created_at, &d.call_id))
+            .collect();
+        let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
         let dialogs: Vec<DialogSummary> = page
             .iter()
             .map(|d| super::shape::fenced_dialog_summary(d))
@@ -4538,8 +4687,10 @@ impl SipnabMcp {
             total_matched,
             by_method,
             truncated,
+            truncated_by: truncated.then(|| super::budget::TRUNCATED_BY_ROWS.to_string()),
             next_cursor,
             capture_identity,
+            row_cursors,
         })
     }
 
@@ -4638,10 +4789,11 @@ impl SipnabMcp {
 
             let truncated = remaining.len() > limit;
             let rows = &remaining[..remaining.len().min(limit)];
-            let next_cursor = truncated
-                .then(|| rows.last())
-                .flatten()
-                .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)));
+            let row_cursors: Vec<String> = rows
+                .iter()
+                .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)))
+                .collect();
+            let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
             let streams: Vec<serde_json::Value> =
                 rows.iter().map(|s| stream_json(s, &ss)).collect();
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
@@ -4649,17 +4801,29 @@ impl SipnabMcp {
             drop(ds);
             drop(state);
 
-            StreamPage {
+            let page = StreamPage {
                 schema_version: 1,
                 returned: streams.len(),
                 streams,
                 total_matched,
                 ungrounded_excluded,
                 truncated,
+                truncated_by: truncated.then(|| super::budget::TRUNCATED_BY_ROWS.to_string()),
                 next_cursor,
                 capture_identity,
-            }
+            };
+            (page, row_cursors)
         };
+        let (page, row_cursors) = page;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        self.fit_to_budget(
+            &mut page,
+            "streams",
+            &row_cursors,
+            params.max_response_bytes,
+            false,
+        )?;
 
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -4697,7 +4861,7 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
-        let page = self.dialog_page(
+        let mut page = self.dialog_page(
             params.cursor.as_deref(),
             limit,
             |d, streams, capture, delay| {
@@ -4706,9 +4870,17 @@ impl SipnabMcp {
                     .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let row_cursors = std::mem::take(&mut page.row_cursors);
         let mut page = serde_json::to_value(page)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut page,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -5081,7 +5253,7 @@ impl SipnabMcp {
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
         // ORing them instead would widen the triage sweep rather than narrow it.
-        let page = self.dialog_page(
+        let mut page = self.dialog_page(
             params.cursor.as_deref(),
             limit,
             |d, streams, capture, delay| {
@@ -5093,9 +5265,17 @@ impl SipnabMcp {
                         .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let row_cursors = std::mem::take(&mut page.row_cursors);
         let mut page = serde_json::to_value(page)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut page,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -5109,17 +5289,20 @@ impl SipnabMcp {
     /// # Returns
     ///
     /// A JSON object with the dialog summary, the requested message page,
-    /// `total_messages`, a `next_cursor` (null on the last page), and a
-    /// `complete` flag. A cursor past the end yields an empty page.
+    /// `returned`, `total_messages`, `truncated` (with `truncated_by` when
+    /// set), a `next_cursor` (null on the last page), and a `complete` flag.
+    /// A cursor past the end yields an empty page.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `call_id` is not found.
+    /// `invalid_params` (-32602) when `call_id` is not found, when
+    /// `max_messages` is 0, or when `cursor` is malformed or was issued for a
+    /// different dialog.
     #[tool(
         name = "get_dialog",
         description = "Returns a paginated dialog including SIP messages. \
-                       Supports cursor-based pagination via max_messages \
-                       (default 100, max 1000) and cursor (default 0).",
+                       Pages by max_messages (default 100) and cursor: pass \
+                       next_cursor back verbatim.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_dialog(
@@ -5144,9 +5327,16 @@ impl SipnabMcp {
             None => 100usize.min(self.row_cap),
             Some(n) => (n as usize).min(self.row_cap),
         };
-        let cursor = params.cursor.unwrap_or(0) as usize;
+        // The cursor names the LAST message already returned, in the shape
+        // `search_messages` hands out for a message: `<created_at>|<Call-ID>#
+        // <index>`. Paging resumes at the message after it.
+        let start = match params.cursor.as_deref() {
+            None => 0usize,
+            Some(raw) => message_cursor_start(raw, &params.call_id)
+                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+        };
 
-        let payload: serde_json::Value = {
+        let (mut payload, row_cursors) = {
             let ds = self.dialog_store.read();
             let dialog = match ds.get(&params.call_id) {
                 Some(d) => d,
@@ -5159,38 +5349,72 @@ impl SipnabMcp {
                 }
             };
             let total = dialog.messages.len();
-            let end = (cursor + max).min(total);
-            let slice: Vec<serde_json::Value> = if cursor >= total {
-                Vec::new()
-            } else {
-                dialog.messages[cursor..end]
-                    .iter()
-                    .map(|m| {
-                        let mut v = crate::output::json::message_to_json_value(m);
-                        // The hole this closes was documented rather than
-                        // fixed: this array is the LARGEST run of
-                        // sender-written text the MCP surface returns, and it
-                        // used to arrive with no markers at all beside a
-                        // `dialog` summary that was fenced. One response
-                        // saying two different things about the same
-                        // provenance teaches an agent the markers are
-                        // decorative.
-                        super::shape::fence_message_json(&mut v, self.body_cap);
-                        v
-                    })
-                    .collect()
-            };
+            let first = start.min(total);
+            let end = start.saturating_add(max).min(total);
+            let slice: Vec<serde_json::Value> = dialog.messages[first..end]
+                .iter()
+                .map(|m| {
+                    let mut v = crate::output::json::message_to_json_value(m);
+                    // The hole this closes was documented rather than
+                    // fixed: this array is the LARGEST run of
+                    // sender-written text the MCP surface returns, and it
+                    // used to arrive with no markers at all beside a
+                    // `dialog` summary that was fenced. One response
+                    // saying two different things about the same
+                    // provenance teaches an agent the markers are
+                    // decorative.
+                    super::shape::fence_message_json(&mut v, self.body_cap);
+                    v
+                })
+                .collect();
+            let row_cursors: Vec<String> = (first..end)
+                .map(|i| {
+                    super::shape::format_cursor(
+                        dialog.created_at,
+                        &hit_identity(&dialog.call_id, i),
+                    )
+                })
+                .collect();
             let summary = super::shape::fenced_dialog_summary(dialog);
-            let next_cursor = if end < total { Some(end) } else { None };
             drop(ds);
-            serde_json::json!({
+            let truncated = end < total;
+            let mut payload = serde_json::json!({
+                // 2: `cursor` and `next_cursor` became the opaque string the
+                // other paged tools use, and `returned`, `truncated` and
+                // `truncated_by` joined the page.
+                "schema_version": 2,
                 "dialog": summary,
+                "returned": slice.len(),
+                // The index of `messages[0]` in the dialog, so row N of this
+                // page is `get_message { index: first_index + N }`. The cursor
+                // used to be that index; now that it is opaque, this says it.
+                "first_index": first,
                 "messages": slice,
                 "total_messages": total,
-                "next_cursor": next_cursor,
-                "complete": end >= total,
-            })
+                "truncated": truncated,
+                "next_cursor": truncated.then(|| row_cursors.last().cloned()).flatten(),
+                "complete": !truncated,
+            });
+            if truncated && let Some(obj) = payload.as_object_mut() {
+                obj.insert(
+                    super::budget::TRUNCATED_BY_KEY.to_string(),
+                    serde_json::Value::from(super::budget::TRUNCATED_BY_ROWS),
+                );
+            }
+            (payload, row_cursors)
         };
+        let cut = self.fit_to_budget(
+            &mut payload,
+            "messages",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
+        if cut && let Some(obj) = payload.as_object_mut() {
+            // Messages remain past the cut, so this page does not reach the
+            // end of the dialog.
+            obj.insert("complete".to_string(), serde_json::Value::Bool(false));
+        }
 
         Ok(CallToolResult::success(vec![
             ContentBlock::json(payload)?,
@@ -5210,9 +5434,9 @@ impl SipnabMcp {
         description = "Returns one SIP message from a dialog, by its position \
                        in that dialog's message list. Use it to re-read a \
                        single message in full after `get_dialog` showed you a \
-                       page of them. To find an index: `get_dialog` returns \
-                       messages in order starting at its `cursor`, so the Nth \
-                       message of that page is at index cursor+N, and \
+                       page of them. To find an index: `get_dialog` reports \
+                       `first_index` for its page, so the Nth message of that \
+                       page is at index first_index+N, and \
                        `list_dialogs` reports `msg_count`, which is one past \
                        the last valid index. Returns invalid_params when the \
                        Call-ID is unknown, or when the index is out of range \
@@ -5681,7 +5905,7 @@ impl SipnabMcp {
         // message of every call.
         let needle = params.query.to_ascii_lowercase();
         let needle_bytes = needle.as_bytes();
-        let page: MessagePage = {
+        let page: (MessagePage, Vec<String>) = {
             // Capture lock first, then the stores — see `CaptureState`. The
             // identity stamped on this page must describe the capture the rows
             // came out of, or the cursor it carries points into another one.
@@ -5744,10 +5968,11 @@ impl SipnabMcp {
 
             let truncated = remaining.len() > limit;
             let rows = &remaining[..remaining.len().min(limit)];
-            let next_cursor = truncated
-                .then(|| rows.last())
-                .flatten()
-                .map(|(d, _, id)| super::shape::format_cursor(d.created_at, id));
+            let row_cursors: Vec<String> = rows
+                .iter()
+                .map(|(d, _, id)| super::shape::format_cursor(d.created_at, id))
+                .collect();
+            let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
             let hits: Vec<SearchHit> = rows
                 .iter()
                 .map(|(d, idx, _)| SearchHit {
@@ -5767,16 +5992,28 @@ impl SipnabMcp {
             drop(ds);
             drop(state);
 
-            MessagePage {
+            let page = MessagePage {
                 schema_version: 1,
                 returned: hits.len(),
                 hits,
                 total_matched,
                 truncated,
+                truncated_by: truncated.then(|| super::budget::TRUNCATED_BY_ROWS.to_string()),
                 next_cursor,
                 capture_identity,
-            }
+            };
+            (page, row_cursors)
         };
+        let (page, row_cursors) = page;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        self.fit_to_budget(
+            &mut page,
+            "hits",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -5824,7 +6061,7 @@ impl SipnabMcp {
             None => None,
         };
 
-        let response: TailDialogsResponse = {
+        let response: (TailDialogsResponse, Vec<String>) = {
             // Capture lock first, then the stores — see `CaptureState`.
             let state = self.capture.read();
             let ds = self.dialog_store.read();
@@ -5836,6 +6073,12 @@ impl SipnabMcp {
             // its own fencing, source_exhausted, capture identity and field
             // projection on top.
             let (changed, next_cursor) = ds.tail_page(cursor.as_ref(), limit);
+            // The cursor `tail_page` would hand on after each row: the same
+            // `(updated_at, Call-ID)` key it pages on.
+            let row_cursors: Vec<String> = changed
+                .iter()
+                .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id))
+                .collect();
             let summaries: Vec<DialogSummary> = changed
                 .into_iter()
                 .map(super::shape::fenced_dialog_summary)
@@ -5845,7 +6088,7 @@ impl SipnabMcp {
             drop(ss);
             drop(ds);
             drop(state);
-            TailDialogsResponse {
+            let response = TailDialogsResponse {
                 dialogs: summaries,
                 next_cursor,
                 source_exhausted: self
@@ -5853,12 +6096,21 @@ impl SipnabMcp {
                     .as_ref()
                     .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)),
                 capture_identity,
-            }
+            };
+            (response, row_cursors)
         };
+        let (response, row_cursors) = response;
 
         let mut response = serde_json::to_value(response)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut response, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut response,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            false,
+        )?;
         Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
@@ -6651,10 +6903,11 @@ impl SipnabMcp {
             };
             let truncated = remaining.len() > limit;
             let rows = &remaining[..remaining.len().min(limit)];
-            let next_cursor = truncated
-                .then(|| rows.last())
-                .flatten()
-                .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
+            let row_cursors: Vec<String> = rows
+                .iter()
+                .map(|d| super::shape::format_cursor(d.created_at, &d.call_id))
+                .collect();
+            let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
             let hits: Vec<serde_json::Value> = rows
                 .iter()
                 .map(|d| {
@@ -6670,7 +6923,7 @@ impl SipnabMcp {
             drop(ss);
             drop(ds);
             drop(state);
-            serde_json::json!({
+            let mut page = serde_json::json!({
                 "schema_version": 1,
                 "returned": hits.len(),
                 "dialogs": hits,
@@ -6678,10 +6931,24 @@ impl SipnabMcp {
                 "truncated": truncated,
                 "next_cursor": next_cursor,
                 "capture_identity": capture_identity,
-            })
+            });
+            if truncated && let Some(obj) = page.as_object_mut() {
+                obj.insert(
+                    super::budget::TRUNCATED_BY_KEY.to_string(),
+                    serde_json::Value::from(super::budget::TRUNCATED_BY_ROWS),
+                );
+            }
+            (page, row_cursors)
         };
-        let mut payload = payload;
+        let (mut payload, row_cursors) = payload;
         Self::project_page_fields(&mut payload, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut payload,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(payload)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -11881,8 +12148,15 @@ mod tests {
     #[test]
     fn each_bundle_stays_within_its_byte_budget() -> Result<(), TestError> {
         const CEILINGS: &[(&str, usize)] = &[
-            ("core", 11_000),
-            ("signaling", 22_000),
+            // core 11_000 -> 12_500, signaling 22_000 -> 22_500 and full
+            // 81_000 -> 83_000 by `max_response_bytes` on the seven paged tools
+            // and the string `get_dialog` cursor (measured on the parent
+            // commit: core 10,981, signaling 21,922, full 80,612; after: core
+            // 12,223, signaling 22,349, full 82,649). media held under its
+            // 3_500 at 3,480, up from 3,112, by `reconcile_orphans`' cursor
+            // and byte budget.
+            ("core", 12_500),
+            ("signaling", 22_500),
             // 11_000 -> 13_000 and full 79_000 -> 81_000 by
             // `find_in_captures_status` and `cancel_find_in_captures`, the
             // poll and cancel of the background sweep job (captures measured
@@ -11895,7 +12169,7 @@ mod tests {
             ("server", 5_500),
             ("vcon", 5_000),
             ("tls", 3_000),
-            ("full", 81_000),
+            ("full", 83_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)
@@ -12079,6 +12353,7 @@ mod tests {
     ) -> Result<serde_json::Value, TestError> {
         let result = server
             .list_dialogs(Parameters(ListDialogsParams {
+                max_response_bytes: None,
                 filter: None,
                 limit: Some(limit),
                 cursor: cursor.map(str::to_string),
@@ -12412,6 +12687,7 @@ mod tests {
         let server = empty_server();
         let err = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "missing@x".to_string(),
                 max_messages: None,
                 cursor: None,
@@ -12430,6 +12706,7 @@ mod tests {
         let server = server_with_dialog("dlg@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "dlg@x".to_string(),
                 max_messages: None,
                 cursor: None,
@@ -12460,6 +12737,7 @@ mod tests {
         let server = server_with_dialog("cap@x")?.with_row_cap(1);
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "cap@x".to_string(),
                 max_messages: None,
                 cursor: None,
@@ -12489,6 +12767,7 @@ mod tests {
         let server = server_with_dialog("note@x")?;
         let result = server
             .search_by_time(Parameters(SearchByTimeParams {
+                max_response_bytes: None,
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
                 end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
                 filter: None,
@@ -12517,16 +12796,20 @@ mod tests {
         let server = server_with_dialog("page@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "page@x".to_string(),
                 max_messages: Some(1),
-                cursor: Some(0),
+                cursor: None,
             }))
             .await
             .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["total_messages"], 2);
         assert_eq!(v["complete"], false);
-        assert_eq!(v["next_cursor"], 1);
+        // The cursor names the last message returned, in the shape every
+        // other paged tool hands out.
+        let expected = crate::mcp::shape::format_cursor(base_ts(), &hit_identity("page@x", 0));
+        assert_eq!(v["next_cursor"], expected.as_str());
         assert_eq!(
             v["messages"]
                 .as_array()
@@ -12543,9 +12826,13 @@ mod tests {
         let server = server_with_dialog("end@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "end@x".to_string(),
                 max_messages: Some(100),
-                cursor: Some(99),
+                cursor: Some(crate::mcp::shape::format_cursor(
+                    base_ts(),
+                    &hit_identity("end@x", 99),
+                )),
             }))
             .await
             .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
@@ -13321,6 +13608,7 @@ mod tests {
     /// Parameters for a plain `search_messages` call: query and limit only.
     fn search_params(query: &str, limit: Option<u32>) -> SearchMessagesParams {
         SearchMessagesParams {
+            max_response_bytes: None,
             query: query.to_string(),
             limit,
             cursor: None,
@@ -13444,6 +13732,7 @@ mod tests {
         for _ in 0..12 {
             let result = server
                 .search_messages(Parameters(SearchMessagesParams {
+                    max_response_bytes: None,
                     query: "INVITE".to_string(),
                     limit: Some(1),
                     cursor: cursor.clone(),
@@ -13488,6 +13777,7 @@ mod tests {
         let server = server_with_dialog("srch4@x")?;
         let err = server
             .search_messages(Parameters(SearchMessagesParams {
+                max_response_bytes: None,
                 query: "INVITE".to_string(),
                 limit: None,
                 cursor: Some("yesterday|srch4@x#0000000000".to_string()),
@@ -13606,6 +13896,7 @@ mod tests {
         let server = empty_server();
         let err = server
             .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
                 cursor: Some("not-a-timestamp".to_string()),
                 limit: None,
                 fields: None,
@@ -13650,6 +13941,7 @@ mod tests {
         let future = "2099-01-01T00:00:00Z".to_string();
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
                 cursor: Some(future),
                 limit: None,
                 fields: None,
@@ -13676,6 +13968,7 @@ mod tests {
         for _ in 0..20 {
             let result = server
                 .tail_dialogs(Parameters(TailDialogsParams {
+                    max_response_bytes: None,
                     cursor: cursor.clone(),
                     limit: Some(limit),
                     fields: None,
@@ -13767,6 +14060,7 @@ mod tests {
         // Equal to the dialog's updated_at → strictly-after excludes it.
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
                 cursor: Some(base_ts().to_rfc3339()),
                 limit: None,
                 fields: None,
@@ -14285,6 +14579,7 @@ mod tests {
         assert!(
             empty_server()
                 .search_by_time(Parameters(SearchByTimeParams {
+                    max_response_bytes: None,
                     start: "yesterday".into(),
                     end: None,
                     filter: None,
@@ -14304,6 +14599,7 @@ mod tests {
         assert!(
             empty_server()
                 .search_by_time(Parameters(SearchByTimeParams {
+                    max_response_bytes: None,
                     start: "2026-01-02T00:00:00Z".into(),
                     end: Some("2026-01-01T00:00:00Z".into()),
                     filter: None,
@@ -14329,6 +14625,7 @@ mod tests {
     async fn search_by_time_cursor_reaches_every_dialog_in_the_window() -> Result<(), TestError> {
         let server = server_with_simultaneous_dialogs(&["t-c@x", "t-a@x", "t-b@x"])?;
         let window = |cursor: Option<String>| SearchByTimeParams {
+            max_response_bytes: None,
             start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
             end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
             filter: None,
@@ -14378,6 +14675,7 @@ mod tests {
     async fn search_by_time_rejects_a_malformed_cursor() -> Result<(), TestError> {
         let err = empty_server()
             .search_by_time(Parameters(SearchByTimeParams {
+                max_response_bytes: None,
                 start: "2026-01-01T00:00:00Z".into(),
                 end: None,
                 filter: None,
@@ -15137,6 +15435,7 @@ mod tests {
                 serde_json::from_str(&text_of(
                     &server
                         .tail_dialogs(Parameters(TailDialogsParams {
+                            max_response_bytes: None,
                             cursor: None,
                             limit: None,
                             fields: None,
@@ -17406,6 +17705,7 @@ mod tests {
                 text_of(
                     &server
                         .list_dialogs(Parameters(ListDialogsParams {
+                            max_response_bytes: None,
                             cursor: None,
                             limit: None,
                             filter: None,
@@ -17420,6 +17720,7 @@ mod tests {
                 text_of(
                     &server
                         .tail_dialogs(Parameters(TailDialogsParams {
+                            max_response_bytes: None,
                             cursor: None,
                             limit: None,
                             fields: None,
@@ -17433,6 +17734,7 @@ mod tests {
                 text_of(
                     &server
                         .get_dialog(Parameters(GetDialogParams {
+                            max_response_bytes: None,
                             call_id: "w4@x".into(),
                             cursor: None,
                             max_messages: None,
@@ -17828,6 +18130,582 @@ mod tests {
             v["timing_clock"].is_null(),
             "null means no time-based match was returned, not that the clock is fine"
         );
+        Ok(())
+    }
+
+    // ── whole-response byte budget and uniform paging ───────────────
+
+    /// Bytes of every text block in a result: the figure
+    /// `metrics::response_bytes` reports, before the dispatcher's stamp.
+    fn response_len(result: &CallToolResult) -> usize {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.len())
+            .sum()
+    }
+
+    /// The JSON page of a result, parsed.
+    fn json_page(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
+        Ok(serde_json::from_str(&text_of(result)?)?)
+    }
+
+    /// One page that a byte budget may have cut, checked against the rules
+    /// every budgeted page must keep: within budget once the stamp's bytes are
+    /// added (unless it is a single row), `returned` equal to the rows held,
+    /// and a `truncated_by` that names the bound that cut it.
+    fn checked_page(
+        result: &CallToolResult,
+        rows_key: &str,
+        budget: usize,
+    ) -> Result<serde_json::Value, TestError> {
+        let v = json_page(result)?;
+        let rows = v[rows_key].as_array().ok_or("row array")?.len();
+        if rows > 1 {
+            assert!(
+                response_len(result) + crate::mcp::completeness::stamp_growth_bound() <= budget,
+                "a {}-byte response (+{} stamped) exceeds a {budget}-byte budget: {v}",
+                response_len(result),
+                crate::mcp::completeness::stamp_growth_bound(),
+            );
+        }
+        if let Some(returned) = v.get("returned") {
+            assert_eq!(returned, rows, "returned must count the rows held: {v}");
+        }
+        if v["truncated_by"] == "bytes" {
+            assert_eq!(v["truncated"], true, "{v}");
+            assert!(
+                v["next_cursor"].is_string(),
+                "a byte cut hands on a cursor: {v}"
+            );
+        }
+        Ok(v)
+    }
+
+    /// Six dialogs, created one second apart, so their order is unambiguous.
+    fn server_with_six_dialogs() -> Result<SipnabMcp, TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for i in 0..6i64 {
+            let id = format!("budget-{i}@h");
+            let at = base_ts() + chrono::Duration::seconds(i);
+            ds.process_message(invite(&id, at)?);
+            ds.process_message(ok200(&id, at)?);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        ))
+    }
+
+    /// `list_dialogs` with a budget and a cursor, as a result.
+    async fn list_with_budget(
+        server: &SipnabMcp,
+        cursor: Option<String>,
+        budget: Option<u64>,
+    ) -> Result<CallToolResult, TestError> {
+        Ok(server
+            .list_dialogs(Parameters(ListDialogsParams {
+                limit: Some(6),
+                cursor,
+                max_response_bytes: budget,
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("list_dialogs: {e:?}"))?)
+    }
+
+    /// A budget smaller than the page cuts whole rows, says `truncated_by:
+    /// "bytes"`, and following `next_cursor` under the same budget reaches
+    /// every dialog exactly once, in order.
+    #[tokio::test]
+    async fn a_byte_budget_cuts_list_dialogs_at_rows_and_the_cursor_reaches_the_rest()
+    -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let whole = list_with_budget(&server, None, None).await?;
+        let all: Vec<String> = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .iter()
+            .filter_map(|d| d["call_id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(all.len(), 6);
+        assert!(
+            json_page(&whole)?.get("truncated_by").is_none(),
+            "nothing cut"
+        );
+
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut pages = 0;
+        loop {
+            let r = list_with_budget(&server, cursor.clone(), Some(budget as u64)).await?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            pages += 1;
+            for d in v["dialogs"].as_array().ok_or("dialogs")? {
+                seen.push(d["call_id"].as_str().ok_or("call_id")?.to_string());
+            }
+            if pages == 1 {
+                assert_eq!(v["truncated_by"], "bytes", "first page: {v}");
+                assert!(
+                    v["total_matched"] == 6,
+                    "the total still counts every match"
+                );
+            }
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+            assert!(pages < 20, "the cursor must make progress");
+        }
+        assert!(pages > 1, "a half-size budget must take more than one page");
+        assert_eq!(seen, all, "every dialog exactly once, in order");
+        Ok(())
+    }
+
+    /// A row-limit cut says `truncated_by: "rows"`, so a caller can tell the
+    /// two bounds apart.
+    #[tokio::test]
+    async fn a_row_limit_cut_says_truncated_by_rows() -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let v = page(&server, 2, None).await?;
+        assert_eq!(v["truncated"], true);
+        assert_eq!(v["truncated_by"], "rows", "{v}");
+        Ok(())
+    }
+
+    /// The operator's ceiling clamps a caller's larger request, the way
+    /// `--mcp-max-rows` clamps `limit`.
+    #[tokio::test]
+    async fn the_server_byte_ceiling_clamps_a_larger_request() -> Result<(), TestError> {
+        let whole = list_with_budget(&server_with_six_dialogs()?, None, None).await?;
+        let ceiling = response_len(&whole) / 2;
+        let server = server_with_six_dialogs()?.with_response_cap(ceiling);
+        for asked in [None, Some(0), Some(10_000_000)] {
+            let r = list_with_budget(&server, None, asked).await?;
+            let v = checked_page(&r, "dialogs", ceiling)?;
+            assert_eq!(v["truncated_by"], "bytes", "asked {asked:?}: {v}");
+        }
+        Ok(())
+    }
+
+    /// Six dialogs whose INVITE was answered 500, so the `problems` alias
+    /// selects every one of them.
+    fn server_with_six_failed_dialogs() -> Result<SipnabMcp, TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for i in 0..6i64 {
+            let id = format!("failed-{i}@h");
+            let at = base_ts() + chrono::Duration::seconds(i);
+            ds.process_message(invite(&id, at)?);
+            let raw = build_sip(
+                "SIP/2.0 500 Server Internal Error",
+                &[
+                    "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKabc",
+                    "From: Alice <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    &format!("Call-ID: {id}"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(parse_at(&raw, at)?);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        ))
+    }
+
+    /// `find_problems` and `search_by_time` page through the same budget.
+    #[tokio::test]
+    async fn find_problems_and_search_by_time_honor_the_byte_budget() -> Result<(), TestError> {
+        let failed = server_with_six_failed_dialogs()?;
+        let fp = |cursor: Option<String>, budget: Option<u64>| {
+            failed.find_problems(Parameters(FindProblemsParams {
+                kinds: None,
+                filter: None,
+                limit: Some(6),
+                cursor,
+                fields: None,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = fp(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .clone();
+        assert_eq!(all.len(), 6, "every failed call is a problem");
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..20 {
+            let r = fp(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                first = false;
+            }
+            seen.extend(v["dialogs"].as_array().ok_or("dialogs")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "find_problems: every row once, in order");
+
+        let server = server_with_six_dialogs()?;
+        let sbt = |cursor: Option<String>, budget: Option<u64>| {
+            server.search_by_time(Parameters(SearchByTimeParams {
+                start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
+                end: None,
+                filter: None,
+                limit: Some(6),
+                cursor,
+                fields: None,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = sbt(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .clone();
+        assert_eq!(all.len(), 6);
+        let budget = response_len(&whole) * 2 / 3;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..20 {
+            let r = sbt(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            seen.extend(v["dialogs"].as_array().ok_or("dialogs")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "search_by_time: every row once, in order");
+        Ok(())
+    }
+
+    /// `tail_dialogs` cuts at rows and its cursor resumes after the last row
+    /// kept.
+    #[tokio::test]
+    async fn tail_dialogs_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let tail = |cursor: Option<String>, budget: Option<u64>| {
+            server.tail_dialogs(Parameters(TailDialogsParams {
+                cursor,
+                limit: Some(6),
+                fields: None,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = tail(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .clone();
+        assert_eq!(all.len(), 6);
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..20 {
+            let r = tail(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            let rows = v["dialogs"].as_array().ok_or("dialogs")?;
+            if rows.is_empty() {
+                break;
+            }
+            seen.extend(rows.iter().cloned());
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+        }
+        assert_eq!(seen, all, "tail_dialogs: every row once, in order");
+        Ok(())
+    }
+
+    /// `search_messages` cuts hits at whole rows and the cursor reaches every
+    /// hit once.
+    #[tokio::test]
+    async fn search_messages_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let search = |cursor: Option<String>, budget: Option<u64>| {
+            server.search_messages(Parameters(SearchMessagesParams {
+                query: "CSeq".to_string(),
+                limit: Some(100),
+                cursor,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = search(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["hits"].as_array().ok_or("hits")?.clone();
+        assert_eq!(all.len(), 12, "two messages in each of six dialogs");
+        let budget = response_len(&whole) / 3;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..40 {
+            let r = search(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "hits", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                first = false;
+            }
+            seen.extend(v["hits"].as_array().ok_or("hits")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "search_messages: every hit once, in order");
+        Ok(())
+    }
+
+    /// A server holding `n` orphaned RTP streams, one SSRC each.
+    fn server_with_streams(n: u32) -> SipnabMcp {
+        use crate::rtp::parser::RtpHeader;
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        {
+            let mut s = ss.write();
+            for i in 0..n {
+                let hdr = RtpHeader {
+                    version: 2,
+                    padding: false,
+                    extension: false,
+                    csrc_count: 0,
+                    marker: false,
+                    payload_type: 0,
+                    sequence: 1,
+                    timestamp: 160,
+                    ssrc: 0x1000 + i,
+                    payload_offset: 12,
+                };
+                let at = base_ts() + chrono::Duration::milliseconds(i64::from(i));
+                let parsed = crate::capture::parse::ParsedPacket {
+                    frame_bytes: None,
+                    frame: None,
+                    timestamp: at,
+                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 40000,
+                    dst_port: 30000 + 2 * u16::try_from(i).unwrap_or(0),
+                    transport: TransportProto::Udp,
+                    payload: vec![0u8; 12 + 160].into(),
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                    dscp: None,
+                    input_origin: crate::capture::parse::InputOrigin::Wire,
+                    hep: None,
+                };
+                s.process_rtp(&parsed, &hdr, at);
+            }
+        }
+        SipnabMcp::new(Arc::new(RwLock::new(DialogStore::new(100, false))), ss)
+    }
+
+    /// The capture-wide `rtp_stats` sweep cuts streams at whole rows and the
+    /// cursor reaches every stream once.
+    #[tokio::test]
+    async fn the_rtp_stats_sweep_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_streams(5);
+        let sweep = |cursor: Option<String>, budget: Option<u64>| {
+            server.rtp_stats(Parameters(RtpStatsParams {
+                limit: Some(5),
+                cursor,
+                max_response_bytes: budget,
+                ..Default::default()
+            }))
+        };
+        let whole = sweep(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["streams"]
+            .as_array()
+            .ok_or("streams")?
+            .clone();
+        assert_eq!(all.len(), 5);
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..20 {
+            let r = sweep(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "streams", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                first = false;
+            }
+            seen.extend(v["streams"].as_array().ok_or("streams")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "rtp_stats: every stream once, in order");
+        Ok(())
+    }
+
+    /// A dialog of one INVITE and `responses` 200 OK retransmissions.
+    fn server_with_long_dialog(call_id: &str, responses: usize) -> Result<SipnabMcp, TestError> {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite(call_id, base_ts())?);
+        for i in 0..responses {
+            let at = base_ts() + chrono::Duration::milliseconds(i as i64 + 1);
+            ds.process_message(ok200(call_id, at)?);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        ))
+    }
+
+    /// `get_dialog` with a string cursor and an optional budget.
+    async fn dialog_page_of(
+        server: &SipnabMcp,
+        call_id: &str,
+        max_messages: Option<u32>,
+        cursor: Option<String>,
+        budget: Option<u64>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: call_id.to_string(),
+                max_messages,
+                cursor,
+                max_response_bytes: budget,
+            }))
+            .await
+    }
+
+    /// `get_dialog` pages with the opaque string cursor every other paged tool
+    /// uses, and carries the shared page fields.
+    #[tokio::test]
+    async fn get_dialog_pages_with_an_opaque_cursor_and_the_shared_fields() -> Result<(), TestError>
+    {
+        let server = server_with_long_dialog("long@x", 4)?;
+        let whole = json_page(
+            &dialog_page_of(&server, "long@x", None, None, None)
+                .await
+                .map_err(|e| format!("{e:?}"))?,
+        )?;
+        let total = whole["total_messages"].as_u64().ok_or("total_messages")? as usize;
+        assert!(total >= 3, "fixture holds several messages: {whole}");
+        assert_eq!(whole["schema_version"], 2, "{whole}");
+        assert_eq!(whole["returned"], total);
+        assert_eq!(whole["truncated"], false);
+        assert!(whole["next_cursor"].is_null());
+        assert_eq!(whole["complete"], true);
+
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..(total + 2) {
+            let v = json_page(
+                &dialog_page_of(&server, "long@x", Some(1), cursor.clone(), None)
+                    .await
+                    .map_err(|e| format!("{e:?}"))?,
+            )?;
+            assert_eq!(v["returned"], 1, "{v}");
+            assert_eq!(
+                v["first_index"],
+                seen.len(),
+                "the page names the index of its first message, for get_message: {v}"
+            );
+            seen.extend(v["messages"].as_array().ok_or("messages")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => {
+                    assert_eq!(v["truncated"], true);
+                    assert_eq!(v["truncated_by"], "rows");
+                    assert_eq!(v["complete"], false);
+                    cursor = Some(c.to_string());
+                }
+                None => {
+                    assert_eq!(v["complete"], true);
+                    break;
+                }
+            }
+        }
+        assert_eq!(&seen, whole["messages"].as_array().ok_or("messages")?);
+        Ok(())
+    }
+
+    /// A byte budget cuts `get_dialog` at whole messages.
+    #[tokio::test]
+    async fn get_dialog_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_long_dialog("big@x", 5)?;
+        let whole_result = dialog_page_of(&server, "big@x", None, None, None)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let whole = json_page(&whole_result)?;
+        let budget = response_len(&whole_result) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..20 {
+            let r = dialog_page_of(&server, "big@x", None, cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "messages", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                assert_eq!(v["complete"], false, "{v}");
+                first = false;
+            }
+            seen.extend(v["messages"].as_array().ok_or("messages")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(&seen, whole["messages"].as_array().ok_or("messages")?);
+        Ok(())
+    }
+
+    /// A malformed cursor, and a cursor issued for a different dialog, are
+    /// refused rather than read as "from the start".
+    #[tokio::test]
+    async fn get_dialog_refuses_a_foreign_or_malformed_cursor() -> Result<(), TestError> {
+        let server = server_with_long_dialog("one@x", 3)?;
+        {
+            let mut ds = server.dialog_store.write();
+            ds.process_message(invite("two@x", base_ts())?);
+            ds.process_message(ok200("two@x", base_ts())?);
+        }
+        let first = json_page(
+            &dialog_page_of(&server, "one@x", Some(1), None, None)
+                .await
+                .map_err(|e| format!("{e:?}"))?,
+        )?;
+        let foreign = first["next_cursor"].as_str().ok_or("cursor")?.to_string();
+        for bad in [
+            foreign,
+            "not-a-cursor".to_string(),
+            "2024-06-15T12:00:00Z".to_string(),
+        ] {
+            let err = dialog_page_of(&server, "two@x", Some(1), Some(bad.clone()), None)
+                .await
+                .err()
+                .ok_or_else(|| format!("cursor {bad:?} must be refused"))?;
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{bad:?}: {err:?}"
+            );
+        }
         Ok(())
     }
 }

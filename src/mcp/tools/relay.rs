@@ -31,7 +31,7 @@
 //! precisely so a second control decoder needs no second tool, and
 //! `relay_seam_test::no_mcp_tool_is_named_after_a_relay_vendor` refuses one.
 
-use crate::mcp::server::SipnabMcp;
+use crate::mcp::server::{SipnabMcp, stream_identity};
 use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -346,12 +346,22 @@ pub struct RelayControlRow {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct OrphanReconciliation {
-    /// One row per orphaned stream, most recent first.
+    /// One row per orphaned stream, oldest first: by first packet, ties
+    /// broken by `0xSSRC@src>dst`, the order the `rtp_stats` sweep pages in.
     pub orphans: Vec<OrphanRow>,
+    /// Rows in `orphans`, so counting the array is never necessary.
+    pub returned: usize,
     /// How many orphans this capture holds in total.
     pub total_orphans: usize,
-    /// Whether rows were cut to `limit`.
+    /// Whether orphans remain after this page.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
+    /// Cursor (`<RFC 3339 first packet>|0xSSRC@src>dst` of the last row) to
+    /// pass back for the next page. Null on the final page.
+    pub next_cursor: Option<String>,
     /// Whether a relay was ever asked about any of this.
     ///
     /// `false` means every `never-named` verdict below is "nobody asked",
@@ -369,11 +379,19 @@ pub struct OrphanReconciliation {
 }
 
 /// Arguments for `reconcile_orphans`.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct ReconcileOrphansParams {
     /// Maximum rows to return. Default 50.
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim.
+    /// Omit on the first call.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[tool_router(router = relay_router, vis = "pub(crate)")]
@@ -495,17 +513,55 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ReconcileOrphansParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = params.limit.unwrap_or(50).max(1) as usize;
-        let (rows, total, consulted, identity, relay_control) = {
+        // 0 is read as one row rather than the default, so a page always makes
+        // progress; the operator's row cap bounds it as it bounds every other
+        // list tool.
+        let limit = (params.limit.unwrap_or(50).max(1) as usize).min(self.row_cap.max(1));
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                crate::mcp::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
+        let (rows, row_cursors, total, consulted, identity, relay_control) = {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
             let identity = state.identity.etag(ds.generation(), ss.generation());
-            let mut rows = Vec::new();
-            let mut total = 0usize;
             let mut consulted = false;
+            let mut orphans: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
             for stream in ss.iter().filter(|s| s.orphaned()) {
-                total += 1;
+                // Accumulated over EVERY orphan, not only those that fit under
+                // `limit` or past the cursor. Read off the truncated page, a
+                // small limit would report "nobody asked" about a capture
+                // whose sixtieth orphan is a relay assertion -- turning an
+                // absence of evidence into evidence of absence, which is the
+                // one reading this field exists to prevent.
+                let named = named_endpoint(&ss, stream);
+                consulted |= orphan_reason(named.map(|(_, asserted)| asserted))
+                    == OrphanReason::RelayAssertedButNoDialog;
+                orphans.push(stream);
+            }
+            let total = orphans.len();
+            // Sorted on the cursor's own key before the cursor filter and the
+            // cut, as the `rtp_stats` sweep is: store order is insertion order,
+            // and cutting it first would let `next_cursor` skip rows.
+            crate::sort::sort_by_dyn(&mut orphans, &mut |a, b| {
+                a.first_seen
+                    .cmp(&b.first_seen)
+                    .then_with(|| stream_identity(a).cmp(&stream_identity(b)))
+            });
+            let mut rows = Vec::new();
+            let mut row_cursors = Vec::new();
+            for stream in orphans.into_iter().filter(|s| {
+                cursor
+                    .as_ref()
+                    .is_none_or(|c| c.precedes(s.first_seen, &stream_identity(s)))
+            }) {
+                if rows.len() > limit {
+                    break;
+                }
                 let named = named_endpoint(&ss, stream);
                 let reason = orphan_reason(named.map(|(_, asserted)| asserted));
                 let (endpoint, asserted) = match named {
@@ -517,16 +573,10 @@ impl SipnabMcp {
                     }
                     None => (None, None),
                 };
-                // Accumulated over EVERY orphan, not only those that fit under
-                // `limit`. Read off the truncated page, a small limit would
-                // report "nobody asked" about a capture whose sixtieth orphan
-                // is a relay assertion -- turning an absence of evidence into
-                // evidence of absence, which is the one reading this field
-                // exists to prevent.
-                consulted |= reason == OrphanReason::RelayAssertedButNoDialog;
-                if rows.len() >= limit {
-                    continue;
-                }
+                row_cursors.push(crate::mcp::shape::format_cursor(
+                    stream.first_seen,
+                    &stream_identity(stream),
+                ));
                 rows.push(OrphanRow {
                     ssrc: stream.key.ssrc,
                     src: stream.key.src.to_string(),
@@ -548,11 +598,20 @@ impl SipnabMcp {
                     retried_after_answer: c.retried_after_answer,
                 })
                 .collect();
-            (rows, total, consulted, identity, relay_control)
+            (rows, row_cursors, total, consulted, identity, relay_control)
         };
 
+        // One row past `limit` was read to learn whether any remain.
+        let mut rows = rows;
+        let mut row_cursors = row_cursors;
+        let truncated = rows.len() > limit;
+        rows.truncate(limit);
+        row_cursors.truncate(limit);
         let payload = OrphanReconciliation {
-            truncated: total > rows.len(),
+            returned: rows.len(),
+            truncated,
+            truncated_by: truncated.then(|| crate::mcp::budget::TRUNCATED_BY_ROWS.to_string()),
+            next_cursor: truncated.then(|| row_cursors.last().cloned()).flatten(),
             total_orphans: total,
             orphans: rows,
             relay_was_consulted: consulted,
@@ -560,11 +619,17 @@ impl SipnabMcp {
             schema_version: 1,
             capture_identity: identity,
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(
-            serde_json::to_value(&payload).map_err(|e| {
-                rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
-            })?,
-        )?]))
+        let mut payload = serde_json::to_value(&payload).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+        })?;
+        self.fit_to_budget(
+            &mut payload,
+            "orphans",
+            &row_cursors,
+            params.max_response_bytes,
+            false,
+        )?;
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
     /// Decode one captured relay control message.
@@ -2833,7 +2898,10 @@ mod relay_handler_tests {
     async fn orphans(ss: StreamStore, limit: Option<u32>) -> Result<serde_json::Value, TestError> {
         payload(
             &server(DialogStore::new(16, false), ss)
-                .reconcile_orphans(Parameters(ReconcileOrphansParams { limit }))
+                .reconcile_orphans(Parameters(ReconcileOrphansParams {
+                    limit,
+                    ..Default::default()
+                }))
                 .await
                 .map_err(|e| format!("reconciliation does not fail: {e:?}"))?,
         )
@@ -2973,6 +3041,141 @@ mod relay_handler_tests {
         assert_eq!(v["orphans"].as_array().map(Vec::len), Some(50), "{v}");
         assert_eq!(v["total_orphans"], 51);
         assert_eq!(v["truncated"], true);
+        Ok(())
+    }
+
+    /// `n` orphans, inserted in an order their sort order disagrees with.
+    fn store_with_orphans(n: u16) -> StreamStore {
+        let mut ss = StreamStore::new(256);
+        for i in (0..n).rev() {
+            rtp(
+                &mut ss,
+                (ip(90), 20000 + i * 2),
+                (ip(91), 30000 + i * 2),
+                0x100 + u32::from(i),
+                1,
+                late() + chrono::Duration::milliseconds(i64::from(i)),
+            );
+        }
+        ss
+    }
+
+    /// One `reconcile_orphans` page on `srv`.
+    async fn orphan_page(
+        srv: &SipnabMcp,
+        limit: Option<u32>,
+        cursor: Option<String>,
+        budget: Option<u64>,
+    ) -> Result<(serde_json::Value, usize), rmcp::ErrorData> {
+        let result = srv
+            .reconcile_orphans(Parameters(ReconcileOrphansParams {
+                limit,
+                cursor,
+                max_response_bytes: budget,
+            }))
+            .await?;
+        let bytes = result
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .map(|t| t.text.len())
+            .sum();
+        let v =
+            payload(&result).map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Ok((v, bytes))
+    }
+
+    /// Follow `next_cursor` to the end, collecting each row's SSRC.
+    async fn sweep_orphans(
+        srv: &SipnabMcp,
+        limit: Option<u32>,
+        budget: Option<u64>,
+    ) -> Result<(Vec<u64>, Vec<serde_json::Value>), TestError> {
+        let mut ssrcs = Vec::new();
+        let mut pages = Vec::new();
+        let mut cursor = None;
+        for _ in 0..50 {
+            let (v, _) = orphan_page(srv, limit, cursor.clone(), budget)
+                .await
+                .map_err(|e| format!("page: {e:?}"))?;
+            for row in v["orphans"].as_array().ok_or("orphans")? {
+                ssrcs.push(row["ssrc"].as_u64().ok_or("ssrc")?);
+            }
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+            pages.push(v);
+            if cursor.is_none() {
+                return Ok((ssrcs, pages));
+            }
+        }
+        Err("the cursor never reached a final page".into())
+    }
+
+    /// `reconcile_orphans` pages with a cursor: every orphan exactly once, in
+    /// first-packet order, whatever order the store holds them in.
+    #[tokio::test]
+    async fn reconcile_orphans_pages_through_every_orphan_with_a_cursor() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(5));
+        let (ssrcs, pages) = sweep_orphans(&srv, Some(2), None).await?;
+        assert_eq!(ssrcs, vec![0x100, 0x101, 0x102, 0x103, 0x104]);
+        assert_eq!(pages.len(), 3, "2 + 2 + 1");
+        assert_eq!(pages[0]["truncated"], true);
+        assert_eq!(pages[0]["truncated_by"], "rows");
+        assert_eq!(pages[0]["returned"], 2);
+        assert_eq!(pages[2]["truncated"], false);
+        assert!(pages[2]["next_cursor"].is_null());
+        assert!(pages.iter().all(|p| p["total_orphans"] == 5));
+        Ok(())
+    }
+
+    /// A limit above `--mcp-max-rows` is clamped to it, as on every other
+    /// list tool.
+    #[tokio::test]
+    async fn reconcile_orphans_limit_is_clamped_to_the_row_cap() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(5)).with_row_cap(2);
+        let (v, _) = orphan_page(&srv, Some(50), None, None)
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        assert_eq!(v["orphans"].as_array().map(Vec::len), Some(2), "{v}");
+        Ok(())
+    }
+
+    /// A byte budget cuts at whole rows and the cursor reaches the rest.
+    #[tokio::test]
+    async fn reconcile_orphans_honors_the_byte_budget() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(6));
+        let (_, whole) = orphan_page(&srv, Some(6), None, None)
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        let budget = whole / 2;
+        let (ssrcs, pages) = sweep_orphans(&srv, Some(6), Some(budget as u64)).await?;
+        assert_eq!(ssrcs, (0x100..0x106).collect::<Vec<u64>>());
+        assert_eq!(pages[0]["truncated_by"], "bytes", "{}", pages[0]);
+        for p in &pages {
+            assert_eq!(
+                p["returned"],
+                p["orphans"].as_array().map_or(0, Vec::len),
+                "{p}"
+            );
+        }
+        let (first, bytes) = orphan_page(&srv, Some(6), None, Some(budget as u64))
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        assert!(
+            bytes + crate::mcp::completeness::stamp_growth_bound() <= budget,
+            "{bytes} bytes against a {budget}-byte budget: {first}"
+        );
+        Ok(())
+    }
+
+    /// A cursor that is not one is refused rather than read as the start.
+    #[tokio::test]
+    async fn reconcile_orphans_refuses_a_malformed_cursor() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(2));
+        let err = orphan_page(&srv, None, Some("yesterday".into()), None)
+            .await
+            .err()
+            .ok_or("a malformed cursor must be refused")?;
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{err:?}");
         Ok(())
     }
 

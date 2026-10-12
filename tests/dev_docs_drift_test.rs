@@ -849,7 +849,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/fixtures/vcon-datasets/CORRECTED.tsv.
     // 506 -> 507: docs/internals/zero-copy-payloads.md links bench/carrier.py
     // in the single-threaded mapped-read measurement.
-    const EXPECTED_CODE_LINKS: usize = 507;
+    // 507 -> 508: docs/internals/walkthroughs.md links src/mcp/budget.rs in
+    // the new-tool recipe's step on bounding a paged response.
+    const EXPECTED_CODE_LINKS: usize = 508;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

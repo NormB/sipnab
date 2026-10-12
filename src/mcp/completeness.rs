@@ -444,6 +444,29 @@ fn note_in_prose(result: &mut CallToolResult, source_exhausted: bool, stopped_ea
     result.content[0] = ContentBlock::text(text);
 }
 
+/// The most bytes [`stamp`] can add to an object payload.
+///
+/// The byte budget in [`crate::mcp::budget`] is applied inside a tool, before
+/// this module stamps the result, so it reserves the stamp's bytes in advance
+/// instead of measuring them. The stamp's largest growth is both facts
+/// inserted at `false` (the longer spelling), plus `complete: true` turned to
+/// `false` — one byte. Removing `truncated: false` only shrinks a page.
+///
+/// Derived by serializing the facts rather than written as a number, so a
+/// renamed key moves the reserve with it.
+#[must_use]
+pub fn stamp_growth_bound() -> usize {
+    let mut facts = Map::new();
+    insert_facts(&mut facts, false, false);
+    // `{"a":false,"b":false}` inserted into a non-empty object costs its
+    // members plus one separating comma: the braces (2) are not paid, the
+    // comma (1) is.
+    let members =
+        serde_json::to_string(&Value::Object(facts)).map_or(0, |s| s.len().saturating_sub(1));
+    // `true` -> `false` on `complete`.
+    members + ("false".len() - "true".len())
+}
+
 /// Both facts, without disturbing a value the tool already published.
 fn insert_facts(map: &mut Map<String, Value>, source_exhausted: bool, stopped_early: bool) {
     map.entry(SOURCE_EXHAUSTED_KEY)
@@ -496,6 +519,44 @@ mod tests {
             return Err("the fixture's first block is text".into());
         };
         Ok(serde_json::from_str(&block.text).map_err(|e| format!("payload parses: {e:?}"))?)
+    }
+
+    /// No stamp grows an object payload by more than the bound the byte
+    /// budget reserves for it, in any load state.
+    #[test]
+    fn stamp_growth_never_exceeds_its_bound() -> Result<(), TestError> {
+        let shapes = [
+            r#"{"dialogs":[],"truncated":false,"next_cursor":null}"#,
+            r#"{"messages":[],"complete":true,"truncated":false}"#,
+            r#"{"messages":[],"complete":true}"#,
+            r#"{"rows":[1,2,3],"truncated":true,"next_cursor":"x"}"#,
+            r#"{}"#,
+        ];
+        let mut largest = 0usize;
+        for shape in shapes {
+            for (exhausted, stopped) in [(true, false), (false, false), (true, true), (false, true)]
+            {
+                let mut result = json_result(shape);
+                stamp("get_dialog", exhausted, stopped, &mut result);
+                let ContentBlock::Text(block) = &result.content[0] else {
+                    return Err("text block".into());
+                };
+                let grew = block.text.len().saturating_sub(shape.len());
+                largest = largest.max(grew);
+                assert!(
+                    grew <= stamp_growth_bound(),
+                    "{shape} grew {grew} bytes at exhausted={exhausted} \
+                     stopped={stopped}; the bound is {}",
+                    stamp_growth_bound()
+                );
+            }
+        }
+        assert_eq!(
+            largest,
+            stamp_growth_bound(),
+            "the bound is reached by some shape, so it is not padding"
+        );
+        Ok(())
     }
 
     /// A page answered mid-load says so in its own envelope.

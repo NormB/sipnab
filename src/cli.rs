@@ -3414,6 +3414,26 @@ pub struct McpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_body_bytes: Option<u64>,
+    /// Maximum bytes of ONE whole paged MCP response.
+    ///
+    /// `--mcp-max-rows` bounds how many rows a page carries and
+    /// `--mcp-max-body-bytes` how wide one body in a row can be; neither
+    /// bounds the page as a whole, and a page of rows that are each within
+    /// both can still exceed what a small model can read. Past this ceiling
+    /// a paged tool drops whole rows from the end of the page and answers
+    /// `truncated_by: "bytes"` with a `next_cursor` to the rest. A caller
+    /// narrows it per call with `max_response_bytes`, and cannot exceed it.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-response-bytes",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub mcp_max_response_bytes: Option<u64>,
     /// Longest wait ONE `await_condition` MCP call may take, in seconds.
     ///
     /// `--mcp-max-rows` bounds how much an answer carries; this bounds how
@@ -5291,6 +5311,22 @@ impl Cli {
     /// definition can serve both — `mcp::shape::DEFAULT_MAX_BODY_BYTES` reads
     /// it from here.
     pub const DEFAULT_MCP_MAX_BODY_BYTES: u64 = 4_096;
+    /// Default ceiling on one whole paged MCP response, in bytes — see
+    /// [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// 1 MiB, chosen so that no response sipnab gave before the budget
+    /// existed changes. Measured over every capture in `tests/pcap-samples`
+    /// that loads, at the default `limit` and at `limit: 1000`, on the paged
+    /// tools: the largest response was 561,420 bytes (`list_dialogs` with
+    /// `limit: 1000` over `sipp-branch-scenario.pcapng`), and the largest at
+    /// the default `limit` was 52,809 bytes (`get_dialog` over
+    /// `DTMFsipinfo.pcap`). 1 MiB is under twice the first and twenty times
+    /// the second, so the budget only binds on a page far larger than any
+    /// of those, or when a caller or operator asks for less.
+    ///
+    /// Lives here for the reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`]
+    /// records.
+    pub const DEFAULT_MCP_MAX_RESPONSE_BYTES: u64 = 1_048_576;
     /// Default ceiling on one `await_condition` wait, in seconds — see
     /// [`Self::DEFAULT_DIALOG_LIMIT`].
     ///
@@ -5543,6 +5579,22 @@ impl Cli {
             .mcp_max_body_bytes
             .or(config.limits.mcp_max_body_bytes)
             .unwrap_or(Self::DEFAULT_MCP_MAX_BODY_BYTES) as usize
+    }
+
+    /// MCP whole-response ceiling: `--mcp-max-response-bytes`, else
+    /// `[limits] mcp_max_response_bytes`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Bounds the whole page where [`Self::mcp_row_cap`] bounds its rows and
+    /// [`Self::mcp_body_cap`] the width of one body in a row.
+    #[must_use]
+    pub fn mcp_response_cap(&self, config: &crate::config::Config) -> usize {
+        let bytes = self
+            .mcp_args
+            .mcp_max_response_bytes
+            .or(config.limits.mcp_max_response_bytes)
+            .unwrap_or(Self::DEFAULT_MCP_MAX_RESPONSE_BYTES);
+        usize::try_from(bytes).unwrap_or(usize::MAX)
     }
 
     /// MCP wait ceiling: `--mcp-max-wait-seconds`, else
@@ -11522,6 +11574,17 @@ mod tests {
                 requires: &[],
             },
             Case {
+                key: "mcp_max_response_bytes",
+                flag: "--mcp-max-response-bytes",
+                set_key: |l| l.mcp_max_response_bytes = Some(65_536),
+                key_value: 65_536,
+                flag_value: "2048",
+                flag_number: 2048,
+                shipped: Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES,
+                resolve: |c, cfg| c.mcp_response_cap(cfg) as u64,
+                requires: &[],
+            },
+            Case {
                 key: "mcp_max_wait_seconds",
                 flag: "--mcp-max-wait-seconds",
                 set_key: |l| l.mcp_max_wait_seconds = Some(600),
@@ -11825,6 +11888,7 @@ mod tests {
             "--max-metadata-file-bytes",
             "--max-gunzip-bytes",
             "--mcp-max-body-bytes",
+            "--mcp-max-response-bytes",
             "--mcp-max-wait-seconds",
             "--mcp-sweep-max-files",
             "--mcp-sweep-deadline-ms",

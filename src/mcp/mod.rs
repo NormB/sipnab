@@ -46,6 +46,7 @@
 mod findings;
 
 pub mod audit;
+pub mod budget;
 pub mod completeness;
 pub mod completion;
 pub mod elicit;

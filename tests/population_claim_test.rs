@@ -160,6 +160,11 @@ const PER_PAGE: &[(&str, &str)] = &[
         "rows in this response, so the caller never has to count the array",
     ),
     (
+        "truncated_by",
+        "names which bound cut this page, the row limit or the byte budget, so \
+         it moves with the page exactly as `truncated` does",
+    ),
+    (
         "next_cursor",
         "where this page ended, which is the caller's handle for asking for \
          the next one",

@@ -10,34 +10,48 @@ entry that carries them.
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **A diagnostic alias in the config file's `[filter] expression` works as it
-  does on `--filter`.** `expression = "short-calls"` was refused at load with
-  "unexpected input at position 0" and exit 1, while `--filter short-calls`
-  ran. Both now go through the same alias expansion.
-- **`--vcon-digest` implies `--no-cli-print`.** With `-N` and no
-  `--no-cli-print`, every SIP message was printed on stdout beside the
-  digests, so `sipnab ... --vcon-digest > SHA256SUMS` followed by
-  `sha256sum -c SHA256SUMS`, as the help describes, reported the message lines
-  as improperly formatted.
-- **`--export-vcon`'s help lists all five `capture_completeness.media`
-  values;** it left out `withheld-by-redaction`.
-- **Two `--redact` examples in `docs/cli-reference.md` run.** Both omitted
-  `--export-vcon-when`, which sipnab requires with `--export-vcon-dir`, and
-  exited 2. The test that runs every documented command now also runs the
-  `sipnab …` examples that open a list item, not only fenced shell blocks.
-- **The docs describe what the code does:** a build without the `vcon` feature
-  leaves `export_vcon` and `validate_vcon` out of the tool list rather than
-  refusing them; `--filter` does not narrow what `-O` writes, while a BPF filter
-  does; the name popup's `Tab`, `Shift+Tab` and `Esc` keys; and the `--redact`
-  row no longer repeats a phrase.
-- **The homepage's notes list takes the newest how-tos and feature notes
-  together, by date.** It took the how-tos first, so no feature note could
-  appear.
+- **A byte budget for one whole MCP page.** `--mcp-max-rows` bounded how many
+  rows a page carried and `--mcp-max-body-bytes` how wide one body in a row
+  could be; nothing bounded the response as a whole. The paged tools —
+  `list_dialogs`, `find_problems`, `search_by_time`, `search_messages`,
+  `tail_dialogs`, `get_dialog`, `reconcile_orphans` and the `rtp_stats` sweep —
+  now take `max_response_bytes`, clamped to the new `--mcp-max-response-bytes`
+  (`[limits] mcp_max_response_bytes`, default 1048576). Past it a page drops
+  whole rows from its end, never part of one, keeps at least one row, and
+  answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor` to the
+  rest. The count matches `sipnab_mcp_tool_response_bytes_total`: the JSON
+  page, the provenance note and the completeness fields. The default is under
+  twice the largest response measured over `tests/pcap-samples` (561,420
+  bytes, `list_dialogs` with `limit: 1000`), so it changes no answer there.
+- **`truncated_by` on every paged response.** `rows` when the row limit cut
+  the page, `bytes` when the byte budget did, absent when nothing was cut.
+- **`reconcile_orphans` pages with a cursor.** Rows run oldest first by first
+  packet, the order the `rtp_stats` sweep uses, and the response carries
+  `returned`, `truncated_by` and `next_cursor`. Its `limit` is now clamped to
+  `--mcp-max-rows`, as every other list tool's is; it was not bounded by it.
+  The tool documentation said rows ran most recent first; they ran in store
+  order.
+- **[Response bounding](docs/mcp-tools.md#response-bounding) names every tool
+  that takes `limit` without a cursor, and why:** `find_correlated` and
+  `top_talkers` are rankings, `get_call_tree` is a walk from one call,
+  `describe_endpoint` orders on a key that moves, `hep_senders` answers two
+  lists with the bytes `GET /v1/hep/senders` returns, and TFPS's `log` command
+  has no offset for `tfps_labels` to resume from.
 
 ### Changed
 
+- **Breaking: `get_dialog` pages with the opaque string cursor the other paged
+  tools use.** `cursor` and `next_cursor` were the integer index of a message;
+  they are now `<RFC 3339>|<Call-ID>#<message index>`, the shape
+  `search_messages` hands out, to be passed back unchanged. An integer
+  `cursor`, a malformed one, or one issued for a different dialog fails with
+  `invalid_params`. The response gains `returned`, `truncated`,
+  `truncated_by` and `first_index` — the index of the page's first message,
+  for `get_message` — and keeps `complete` and `total_messages`.
+  The response now carries `schema_version: 2`; earlier responses carried no
+  `schema_version` field.
 - **Reading a capture file on one core is about 20% faster.** A run with no
   `--cores` maps an unfiltered classic pcap and reads it in place, as
   `--cores 2` and above already did, instead of reading it through libpcap,
@@ -63,6 +77,32 @@ entry that carries them.
   releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
   entries below no longer list that behavior: vcon.store accepts every
   container as sipnab writes it.
+
+### Fixed
+
+- **A diagnostic alias in the config file's `[filter] expression` works as it
+  does on `--filter`.** `expression = "short-calls"` was refused at load with
+  "unexpected input at position 0" and exit 1, while `--filter short-calls`
+  ran. Both now go through the same alias expansion.
+- **`--vcon-digest` implies `--no-cli-print`.** With `-N` and no
+  `--no-cli-print`, every SIP message was printed on stdout beside the
+  digests, so `sipnab ... --vcon-digest > SHA256SUMS` followed by
+  `sha256sum -c SHA256SUMS`, as the help describes, reported the message lines
+  as improperly formatted.
+- **`--export-vcon`'s help lists all five `capture_completeness.media`
+  values;** it left out `withheld-by-redaction`.
+- **Two `--redact` examples in `docs/cli-reference.md` run.** Both omitted
+  `--export-vcon-when`, which sipnab requires with `--export-vcon-dir`, and
+  exited 2. The test that runs every documented command now also runs the
+  `sipnab …` examples that open a list item, not only fenced shell blocks.
+- **The docs describe what the code does:** a build without the `vcon` feature
+  leaves `export_vcon` and `validate_vcon` out of the tool list rather than
+  refusing them; `--filter` does not narrow what `-O` writes, while a BPF filter
+  does; the name popup's `Tab`, `Shift+Tab` and `Esc` keys; and the `--redact`
+  row no longer repeats a phrase.
+- **The homepage's notes list takes the newest how-tos and feature notes
+  together, by date.** It took the how-tos first, so no feature note could
+  appear.
 
 ## [0.5.211] - 2026-10-11
 
