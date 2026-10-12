@@ -10,31 +10,16 @@ entry that carries them.
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **A diagnostic alias in the config file's `[filter] expression` works as it
-  does on `--filter`.** `expression = "short-calls"` was refused at load with
-  "unexpected input at position 0" and exit 1, while `--filter short-calls`
-  ran. Both now go through the same alias expansion.
-- **`--vcon-digest` implies `--no-cli-print`.** With `-N` and no
-  `--no-cli-print`, every SIP message was printed on stdout beside the
-  digests, so `sipnab ... --vcon-digest > SHA256SUMS` followed by
-  `sha256sum -c SHA256SUMS`, as the help describes, reported the message lines
-  as improperly formatted.
-- **`--export-vcon`'s help lists all five `capture_completeness.media`
-  values;** it left out `withheld-by-redaction`.
-- **Two `--redact` examples in `docs/cli-reference.md` run.** Both omitted
-  `--export-vcon-when`, which sipnab requires with `--export-vcon-dir`, and
-  exited 2. The test that runs every documented command now also runs the
-  `sipnab …` examples that open a list item, not only fenced shell blocks.
-- **The docs describe what the code does:** a build without the `vcon` feature
-  leaves `export_vcon` and `validate_vcon` out of the tool list rather than
-  refusing them; `--filter` does not narrow what `-O` writes, while a BPF filter
-  does; the name popup's `Tab`, `Shift+Tab` and `Esc` keys; and the `--redact`
-  row no longer repeats a phrase.
-- **The homepage's notes list takes the newest how-tos and feature notes
-  together, by date.** It took the how-tos first, so no feature note could
-  appear.
+- **MCP prompt `vcon-handoff`.** It orders `capture_status`,
+  `validate_filter`, `export_vcon` with the filter, and `validate_vcon` on each
+  exported container, then has the model record each container's `digest`.
+  It is served only when the `core`, `signaling` and `vcon` tools are loaded.
+  The [MCP tool reference](docs/mcp-tools.md#prompts) lists every prompt, its
+  steps and the bundles it needs, and a new table,
+  [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls), says
+  which of seven tools answers which question.
 
 ### Changed
 
@@ -63,6 +48,44 @@ entry that carries them.
   releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
   entries below no longer list that behavior: vcon.store accepts every
   container as sipnab writes it.
+
+### Fixed
+
+- **A diagnostic alias in the config file's `[filter] expression` works as it
+  does on `--filter`.** `expression = "short-calls"` was refused at load with
+  "unexpected input at position 0" and exit 1, while `--filter short-calls`
+  ran. Both now go through the same alias expansion.
+- **`--vcon-digest` implies `--no-cli-print`.** With `-N` and no
+  `--no-cli-print`, every SIP message was printed on stdout beside the
+  digests, so `sipnab ... --vcon-digest > SHA256SUMS` followed by
+  `sha256sum -c SHA256SUMS`, as the help describes, reported the message lines
+  as improperly formatted.
+- **`--export-vcon`'s help lists all five `capture_completeness.media`
+  values;** it left out `withheld-by-redaction`.
+- **Two `--redact` examples in `docs/cli-reference.md` run.** Both omitted
+  `--export-vcon-when`, which sipnab requires with `--export-vcon-dir`, and
+  exited 2. The test that runs every documented command now also runs the
+  `sipnab …` examples that open a list item, not only fenced shell blocks.
+- **The docs describe what the code does:** a build without the `vcon` feature
+  leaves `export_vcon` and `validate_vcon` out of the tool list rather than
+  refusing them; `--filter` does not narrow what `-O` writes, while a BPF filter
+  does; the name popup's `Tab`, `Shift+Tab` and `Esc` keys; and the `--redact`
+  row no longer repeats a phrase.
+- **The homepage's notes list takes the newest how-tos and feature notes
+  together, by date.** It took the how-tos first, so no feature note could
+  appear.
+
+- **MCP prompts named tools the server did not load.** `prompts/list` served
+  every prompt whatever `--mcp-tools` selected, so under `core` the
+  `triage-outage` prompt told the model to call `show_evidence`, which `core`
+  does not register. A prompt is now served only when every tool its text
+  names is registered, and `prompts/get` on one that is not refuses with
+  -32602, naming the missing tools and the bundles that hold them.
+- **The MCP tool reference listed `actions_revert` among the tools that omit
+  `source_exhausted`.** The code's list does not hold it; the paragraph now
+  names the seventeen tools the code lists, and a test derives it from that
+  list. The table of tools without a cursor named two tools; it now lists the
+  eleven that lack a cursor, a total, or both.
 
 ## [0.5.211] - 2026-10-11
 

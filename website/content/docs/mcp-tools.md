@@ -227,6 +227,72 @@ bundle.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
 > past its recorded ceiling; update this table in the same change.
 
+### Which tool finds calls
+
+Seven tools select calls, and each answers a different question. A filter is
+an expression in sipnab's filter language (the DSL), such as
+`state == failed`, or the name of a built-in alias such as `problems`.
+
+| The question | The tool | Why this one |
+|---|---|---|
+| Which calls match this condition? | [`list_dialogs`](#list-dialogs) with `filter` | Takes an alias or any DSL expression and pages through every match, with `total_matched` and a cursor |
+| Which calls show a known kind of problem? | [`find_problems`](#find-problems) | Takes diagnostic alias names (`problems`, `slow-setup`, `one-way` and the rest) instead of an expression, and can narrow them with a DSL filter |
+| Which calls contain this text: a number, a User-Agent, a header value? | [`search_messages`](#search-messages) | Searches the whole SIP message, every header, the request line and the body, case-insensitively, and returns the message that matched |
+| Which calls started in this time window? | [`search_by_time`](#search-by-time) | Selects by the time of the first message, in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window, optionally narrowed by a filter |
+| What did this one IP address or user do? | [`describe_endpoint`](#describe-endpoint) | Selects by `ip` or `user` and returns counts over every match plus a page of that participant's dialogs |
+| Which capture file holds these calls? | [`find_in_captures`](#find-in-captures) | Sweeps the files in `--mcp-file-root` with a filter and names the files that match, without replacing the loaded capture |
+| Does my filter parse, and how many calls does it select? | [`validate_filter`](#validate-filter) | Compiles the expression and returns the count with no rows, so a wrong filter costs one small answer |
+
+### Prompts
+
+A prompt is a named list of steps that tells a model which tools to call and
+in what order. A client lists them with `prompts/list` and fetches one with
+`prompts/get`. No prompt takes arguments, and every tool stays callable
+without one.
+
+| Prompt | When to use it | Tools it calls, in order | Bundles it needs |
+|---|---|---|---|
+| `triage-outage` | Something is failing now | `capture_status`, `find_problems`, `triage_call`, `show_evidence` | `core`, `captures` |
+| `carrier-escalation` | Building a case to send to a carrier | `capture_status`, `group_dialogs`, `get_call_tree`, `build_evidence_package` | `core`, `signaling`, `captures` |
+| `codec-interop-audit` | Two endpoints disagree about media | `capture_status`, `check_codec_negotiation`, `group_dialogs`, `media_diagnostics` | `core`, `signaling`, `media` |
+| `post-change-verification` | A change went in and needs checking against a baseline | `capture_status`, `compare_captures`, `evaluate_expectations`, `timeline` | `core`, `signaling`, `captures`, `security` |
+| `vcon-handoff` | You are exporting calls to a vCon store | `capture_status`, `validate_filter`, `export_vcon`, `validate_vcon` | `core`, `signaling`, `vcon` |
+
+Each prompt's steps:
+
+- **`triage-outage`**: read `unanalysed_sip_messages` from `capture_status`
+  first; get the shape of the failure from `find_problems`; run `triage_call`
+  on one Call-ID from that result; follow its `frame` pointer with
+  `show_evidence` before stating that a message caused the failure.
+- **`carrier-escalation`**: `capture_status`; `group_dialogs` by `next_hop`
+  with the `asr` and `ner` metrics, reading the `population` block;
+  `get_call_tree` on an affected Call-ID, because carrier faults usually span
+  several legs; `build_evidence_package` for the calls the escalation cites.
+- **`codec-interop-audit`**: `capture_status`; `check_codec_negotiation` for
+  offers with no common codec; `group_dialogs` by `rtp.codec` with `mos_p10`;
+  `media_diagnostics` on a call that negotiated a codec and still sounded
+  wrong.
+- **`post-change-verification`**: `capture_status`; `compare_captures`
+  against the baseline from before the change; `evaluate_expectations` when the
+  repository has a rules file; `timeline` to check the failures did not move
+  to a different hour.
+- **`vcon-handoff`**: `capture_status`; `validate_filter` on the filter that
+  selects the calls; `export_vcon` with that `filter`; `validate_vcon` on each
+  exported container, passed as `container`; then record each container's
+  `digest` (its SHA-256) and Call-ID. Passing `call_id` to `validate_vcon`
+  instead exports a second container with a different creation time, so its
+  digest differs from the one sent.
+
+**sipnab serves a prompt only when the server registers every tool it
+calls.** Under `--mcp-tools core`, `prompts/list` returns no prompt, because
+each one calls at least one tool outside `core`. `prompts/get` refuses a prompt
+it does not serve with error -32602, and the message names the tools the
+server does not register and the bundles that hold them. sipnab hides the prompt rather than
+serving it with a note, because a step that names a tool the client cannot call
+fails with "tool not found" in the middle of the workflow. A tool counts as
+loaded when the server registers it, so a tool the build does not carry also
+hides the prompts that call it.
+
 ### Rules every tool follows
 
 Six rules hold across the whole surface. Each tool section below states only
@@ -286,10 +352,10 @@ the load. Nine read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
 `show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
 and `compare_captures`, which reads two files and never the loaded capture.
-The other nine ask another process: `query_relay` and `relay_stats` put the
+The other eight ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
-`tfps_labels`, `tfps_ban`, `tfps_unban` and `actions_revert` put it to the
-toll-fraud prevention peer. How much
+`tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
+peer. How much
 of the capture sipnab has read says nothing about what those hold.
 
 The
@@ -6663,12 +6729,22 @@ rest, as do `tail_dialogs` and `get_dialog`. Asking for a `limit` above the
 ceiling does nothing — the ceiling clamps it — so either raise the ceiling with
 `--mcp-max-rows` or page.
 
-**Two tools remain exceptions, and a caller has to know which:**
+**These tools lack a cursor, a total, or both, and a caller has to know
+which:**
 
-| Tool | Reports a total | Carries a cursor | How to reach the rest |
-|---|---|---|---|
-| `security_findings` | Yes | No | Raise `limit`, and narrow with `since` |
-| `tail_dialogs` | No | Yes | Follow `next_cursor` until the page comes back empty |
+| Tool | Bound | Reports a total | Carries a cursor | How to reach the rest |
+|---|---|---|---|---|
+| `security_findings` | `limit` | Yes, `total_matched` | No | Raise `limit`, and narrow with `since` |
+| `find_correlated` | `limit` | Yes, `total_matched` | No | Raise `limit` up to the ceiling |
+| `get_call_tree` | `limit` | Yes, `total_legs` | No | Raise `limit` up to the ceiling |
+| `describe_endpoint` | `limit` | Yes, the counts cover every match; `limit` bounds only `recent_dialogs` | No | Raise `limit` up to the ceiling |
+| `top_talkers` | `limit` | Yes, `distinct_talkers` | No | Raise `limit` up to the ceiling |
+| `hep_senders` | `limit` | Yes, `senders_tracked` and `refused_sources_tracked` | No | Raise `limit` up to the ceiling |
+| `reconcile_orphans` | `limit` | Yes, `total_orphans` | No | Raise `limit` up to the ceiling |
+| `export_vcon` | `limit` | Yes, `total_matched` | No | Raise `limit`, or narrow `filter` and export in several calls |
+| `tfps_labels` | `limit` | No; `total` counts the rows TFPS returned for this request | No | Raise `limit` up to the ceiling |
+| `query_relay` | `max_calls` | No; `truncated` says the relay held more | No | Raise `max_calls`, or ask about one call with `call_id` |
+| `tail_dialogs` | `limit` | No | Yes | Follow `next_cursor` until the page comes back empty |
 
 `security_findings` has no cursor because its source is a ring buffer whose
 default depth is 1000 — the same as the maximum `limit`, so one call reaches

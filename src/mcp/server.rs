@@ -9188,7 +9188,7 @@ impl ServerHandler for SipnabMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListPromptsResult, rmcp::ErrorData> {
-        let prompts = super::prompts::all()
+        let prompts = super::prompts::served(&|t| self.tool_router.has_route(t))
             .into_iter()
             .map(|w| {
                 // No `arguments`: every workflow is a fixed ordering, and an
@@ -9212,17 +9212,37 @@ impl ServerHandler for SipnabMcp {
         request: rmcp::model::GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::GetPromptResponse, rmcp::ErrorData> {
+        let loaded = |t: &str| self.tool_router.has_route(t);
+        let served: Vec<&str> = super::prompts::served(&loaded)
+            .iter()
+            .map(|w| w.name)
+            .collect();
         let Some(workflow) = super::prompts::find(&request.name) else {
-            let known: Vec<&str> = super::prompts::all().iter().map(|w| w.name).collect();
             return Err(rmcp::ErrorData::invalid_params(
                 format!(
                     "no prompt named '{}'. Served: {}",
                     request.name,
-                    known.join(", ")
+                    served.join(", ")
                 ),
                 None,
             ));
         };
+        // A workflow whose tools this server does not load is refused rather
+        // than handed over: its steps would fail with "tool not found".
+        let missing = workflow.missing(&loaded);
+        if !missing.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "prompt '{}' is not served: it calls {}, which this server does not \
+                     load. Add the bundle(s) {} with --mcp-tools or [mcp] tools. Served: {}",
+                    workflow.name,
+                    missing.join(", "),
+                    super::prompts::bundles_holding(&missing).join(", "),
+                    served.join(", ")
+                ),
+                None,
+            ));
+        }
         Ok(
             rmcp::model::GetPromptResult::new(vec![rmcp::model::PromptMessage::new(
                 rmcp::model::Role::User,
@@ -18371,7 +18391,8 @@ mod in_process_handler_tests {
     async fn prompts_are_listed_fetched_by_name_and_refused_when_unknown() -> Result<(), TestError>
     {
         let (running, mut client) = connect(empty(), json!({})).await?;
-        let served = super::super::prompts::all();
+        let server = empty();
+        let served = super::super::prompts::served(&|t| server.tool_router.has_route(t));
 
         let listed = ask(&mut client, 2, "prompts/list", json!({})).await?;
         let names: Vec<&str> = listed["result"]["prompts"]
@@ -18399,6 +18420,55 @@ mod in_process_handler_tests {
         assert!(
             message.contains("no-such-workflow") && message.contains(first.name),
             "the refusal names what was asked and what is served: {message}"
+        );
+        drop(running);
+        Ok(())
+    }
+
+    /// Under `--mcp-tools core`, a prompt naming a tool `core` does not load is
+    /// neither listed nor fetchable, and the refusal names the tool and the
+    /// bundle that holds it.
+    #[tokio::test]
+    async fn a_prompt_needing_an_unloaded_tool_is_hidden_and_its_refusal_names_the_bundle()
+    -> Result<(), TestError> {
+        let core = crate::mcp_profile::resolve(
+            &["core".to_string(), "captures".to_string()],
+            &std::collections::BTreeMap::new(),
+        )
+        .map_err(|e| format!("core,captures resolves: {e}"))?;
+        let (running, mut client) = connect(empty().with_tool_selection(&core), json!({})).await?;
+
+        let listed = ask(&mut client, 2, "prompts/list", json!({})).await?;
+        let names: Vec<&str> = listed["result"]["prompts"]
+            .as_array()
+            .map(|p| p.iter().filter_map(|p| p["name"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(names, vec!["triage-outage"], "{listed}");
+
+        let hidden = ask(
+            &mut client,
+            3,
+            "prompts/get",
+            json!({"name": "vcon-handoff"}),
+        )
+        .await?;
+        assert_eq!(hidden["error"]["code"], -32602, "{hidden}");
+        let message = hidden["error"]["message"].as_str().unwrap_or_default();
+        for want in [
+            "vcon-handoff",
+            "validate_filter",
+            "export_vcon",
+            "signaling",
+            "vcon",
+        ] {
+            assert!(
+                message.contains(want),
+                "the refusal names {want}: {message}"
+            );
+        }
+        assert!(
+            !message.contains("capture_status"),
+            "a loaded tool is not reported missing: {message}"
         );
         drop(running);
         Ok(())
