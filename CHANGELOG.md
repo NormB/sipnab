@@ -31,6 +31,13 @@ entry that carries them.
   the test failed on main; on a faster machine it skipped its assertion. It
   now holds a load that never reports done, asserts the refusal names that
   file, and asserts a new call is accepted once the load finishes.
+- **A test runs retained audio and reused SSRCs together.** Two calls that
+  reuse one SSRC and socket pair, each exported with `--retain-audio`, must
+  each carry exactly their own second of audio per direction (8000 samples).
+  With the per-call stream split disabled, the first call's container carries
+  16000, and the test fails. Two code comments that still described the old
+  per-stream cap of 1500 frames now describe the whole-stream default and the
+  1 GiB `[limits] max_audio_bytes` budget.
 
 ## [0.5.214] - 2026-10-12
 

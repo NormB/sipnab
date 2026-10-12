@@ -1342,8 +1342,8 @@ pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
 /// plays a stream straight out of `payload_buffer` (`app::tui_mode` builds its
 /// own store and keeps that default). So the one-armed `if` gated the operator
 /// *notice* and never the behavior, and every batch run buffered audio nothing
-/// in it could read: up to 1500 frames per stream across up to 50,000 streams
-/// at the defaults, bounded per frame only by snaplen.
+/// in it could read: the whole of every stream at the defaults, bounded only by
+/// the 1 GiB `[limits] max_audio_bytes` budget across all streams.
 ///
 /// It stayed latent because the auto-BPF filter is `portrange 5060-5061`, so no
 /// RTP reaches the store to retain. It arms the moment an operator widens the
@@ -13244,8 +13244,8 @@ mod tests {
         assert!(
             !ss.audio_capture(),
             "a non-MCP run must leave retention OFF; leaving the constructor's \
-             default in place buffers up to 1500 frames per stream that nothing \
-             in this run can read"
+             default in place buffers every stream's audio, up to the 1 GiB \
+             budget, that nothing in this run can read"
         );
 
         cli.mcp_args.mcp = true;
