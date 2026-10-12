@@ -96,7 +96,7 @@ Parse only the first N bytes of each packet. Caps what the SIP parser and matche
 Disable IP\-fragment and TCP\-segment reassembly; every packet is parsed standalone. Useful for pure single\-packet UDP scanning where reassembly is only overhead.
 .TP
 \fB\-x\fR, \fB\-\-quiet\-bad\-parse\fR
-Quiet bad\-parse packets: suppress the per\-packet diagnostic emitted when a SIP\-looking packet fails to parse. The packet is dropped either way; this only silences the "SIP parse error" notice on a noisy link (visible under \-v / debug logging).
+Quiet bad\-parse packets: suppress the per\-packet diagnostic emitted when a SIP\-looking packet fails to parse. The packet is dropped either way; this only silences the "SIP parse error" notice on a noisy link. sipnab logs the notice at debug level, so it shows only with SIPNAB_LOG=debug.
 .TP
 \fB\-\-portrange\fR \fIRANGE\fR
 SIP port range to capture [default: 5060\-5061].
@@ -479,7 +479,7 @@ Bound which files this process can reach, using Landlock.
 Values: \fBoff\fR, \fBbest\-effort\fR, \fBrequired\fR.
 .TP
 \fB\-\-seccomp\fR \fIMODE\fR
-Install a seccomp filter: \fBlog\fR records every system call and allows it, \fBenforce\fR kills the process on a call outside the derived allowlist.
+Record every system call (\fBlog\fR), or refuse the ones outside a host\-derived allowlist (\fBenforce\fR).
 Values: \fBoff\fR, \fBlog\fR, \fBenforce\fR.
 .TP
 \fB\-\-kill\-ua\fR \fIPATTERN\fR
@@ -756,6 +756,9 @@ Maximum rows in one list\-style MCP response.
 .TP
 \fB\-\-mcp\-max\-body\-bytes\fR \fIN\fR
 Maximum bytes of SIP body or matched snippet in one MCP response.
+.TP
+\fB\-\-mcp\-max\-response\-bytes\fR \fIN\fR
+Maximum bytes of ONE whole paged MCP response.
 .TP
 \fB\-\-mcp\-max\-wait\-seconds\fR \fIN\fR
 Longest wait ONE \fBawait_condition\fR MCP call may take, in seconds.
@@ -1034,6 +1037,9 @@ Default: \fBfull\fR.
 \fB\-\-vcon\-forward\fR \fISPOOL_DIR\fR
 Run as the vCon forwarder: deliver each container in this \fB\-\-export\-vcon\-dir\fR spool to \-\-vcon\-forward\-url, byte for byte, and move it out of the spool once the store answers. Captures nothing. Needs a URL and a credential, from a flag or from \fB[vcon_forward]\fR in the config file. Needs the \fBvcon\fR feature.
 .TP
+\fB\-\-vcon\-spool\-status\fR \fISPOOL_DIR\fR
+Print the state of this \fB\-\-export\-vcon\-dir\fR spool as JSON and exit 0: containers pending, delivered and failed, and the record the forwarder wrote beside each failed container. A snapshot of the files, read from the forwarder's default \fBdelivered/\fR and \fBfailed/\fR directories; it sends, moves and deletes nothing. The same answer the MCP tool \fBvcon_spool_status\fR and \fBGET /v1/vcon/spool\fR give. Exits 1 when a directory exists and cannot be read. Needs the \fBvcon\fR feature.
+.TP
 \fB\-\-vcon\-forward\-url\fR \fIURL\fR
 Where the forwarder POSTs each container, \fBhttp://\fR or \fBhttps://\fR, path and query included, for example \fBhttp://127.0.0.1:8000/vcon/external\-ingress?ingress_list=sipnab\fR. With a \-\-vcon\-forward\-kind other than \fBgeneric\fR, a URL with no path is the store's base URL and the kind adds its ingest path. Overrides \fB[vcon_forward] url\fR.
 .TP
@@ -1131,183 +1137,9 @@ Values: \fBbash\fR, \fBelvish\fR, \fBfish\fR, \fBpowershell\fR, \fBzsh\fR.
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see more with '\-\-help').
 .TP
-.BI \-\-hep\-silence\-warn " secs"
-Warn when the
-.B \-\-hep\-listen
-listener has admitted no packet for
-.I secs
-seconds (default 30;
-.B 0
-turns the warning off). Only admitted packets count: when packets arrive and
-every one is refused, the warning names the refusal and a peer that sent them.
-.TP
-.B \-\-hep\-senders
-At the end of a headless run, print who fed the
-.B \-\-hep\-listen
-listener: each sender (the capture id it claims and its address), its packet
-count, when it was last heard and whether it went silent, then every address
-the listener refused with the reasons. With
-.BR \-\-json ,
-one JSON object on the last line of stdout.
-.TP
-.BI \-\-export\-vcon " call-id"
-Export one observed dialog as a vCon container, the IETF conversation
-interchange format, on stdout. Requires a build with the
-.B vcon
-feature. Pair with
-.B \-\-vcon\-out
-to write it to a file instead.
-.TP
-.BI \-\-vcon\-forward " spool-dir"
-Run as the vCon forwarder: a separate process that POSTs each container in an
-.B \-\-export\-vcon\-dir
-spool to
-.BR \-\-vcon\-forward\-url ,
-byte for byte, with the one header the credential names, and moves it by the
-answer: a 2xx to the delivered directory, another 4xx to the failed directory
-beside a
-.I name.error.json
-record, a 5xx, timeout or refused connection retried later. A 401 or 403
-stops it: nothing more is sent, no file moves, and it exits 3. Captures nothing,
-and is refused beside any capture flag. Requires a build with the
-.B vcon
-feature. Every forwarder flag except
-.BR \-\-vcon\-forward ,
-.B \-\-vcon\-forward\-once
-and
-.B \-\-vcon\-forward\-auth
-has a key in the
-.B [vcon_forward]
-section of
-.IR sipnab.toml ,
-named after the flag without its
-.B \-\-vcon\-forward\-
-prefix, with underscores for dashes; the flag overrides its key. A URL and a
-credential are required, from a flag or from a key.
-.IP
-Exit status: 0 with
-.B \-\-vcon\-forward\-once
-when every container was delivered or the spool held none, and without it
-after SIGTERM or SIGINT; 1 with
-.B \-\-vcon\-forward\-once
-when a container was refused or is still waiting, and when the config file
-cannot be read or holds a
-.B [vcon_forward]
-number or
-.B kind
-outside its range or list, or an empty path; 2 when sipnab refuses the
-settings (a refused flag value, no URL or no credential, a refused URL, an
-unreadable credential, or a build without the
-.B vcon
-feature); 3 after a 401 or 403.
-.TP
-.BI \-\-vcon\-forward\-url " url"
-Where each container is POSTed,
-.I http://
-or
-.IR https:// .
-With a
-.B \-\-vcon\-forward\-kind
-other than
-.BR generic ,
-a URL with no path is the store's base URL and the kind adds its ingest path.
-A URL with a user name or password in it is refused; the message shows that
-part as
-.BR [redacted] .
-.TP
-.BI \-\-vcon\-forward\-kind " kind"
-The kind of store:
-.B generic
-(the default, which supplies nothing),
-.B vcon\-store
-or
-.BR conserver .
-A kind supplies the ingest path for a base URL and the header for a bare key;
-an explicit setting overrides each. No kind changes the container sent.
-.TP
-.BI \-\-vcon\-forward\-auth\-file " file"
-File holding one line,
-.IR "Header-Name: value" ,
-sent with every request, or the bare key with a kind other than
-.BR generic .
-Refused when other users can read it.
-.TP
-.BI \-\-vcon\-forward\-auth " header"
-The credential itself, as the auth file holds it. Also read from
-.BR SIPNAB_VCON_FORWARD_AUTH .
-A flag's value is visible to other users in the process list; prefer the
-environment variable or the file. Refused when empty and beside
-.B \-\-vcon\-forward\-auth\-file
-or the
-.B auth_file
-key. The value never appears in a log line, an error or a failure record.
-.TP
-.BI \-\-vcon\-forward\-backoff\-first " secs"
-Seconds a container waits after its first failed try; each further failure
-doubles the wait. 1 to 4294967295, no longer than the cap. Default: 2.
-.TP
-.BI \-\-vcon\-forward\-backoff\-cap " secs"
-The longest wait between tries, 1 to 4294967295, no shorter than
-.BR \-\-vcon\-forward\-backoff\-first .
-Default: 300.
-.TP
-.BI \-\-vcon\-forward\-max\-response\-head " bytes"
-The most bytes of a store's status line and headers read; an answer with more
-counts as no answer and the container is retried. 1 to 4294967295. Default:
-65536.
-.TP
-.BI \-\-vcon\-forward\-max\-error\-body " bytes"
-The most bytes of a refused container's answer its
-.I name.error.json
-record keeps. 1 to 4294967295. Default: 8192.
-.TP
-.BI \-\-vcon\-spool\-status " spool-dir"
-Print the state of an
-.B \-\-export\-vcon\-dir
-spool as JSON on stdout and exit: containers pending, delivered and failed, and
-for each failed container the
-.I name.error.json
-record the forwarder wrote beside it. Reads the forwarder's default
-.I delivered/
-and
-.I failed/
-directories beside the spool. A snapshot of the files: it sends, moves, creates
-and deletes nothing. The MCP tool
-.B vcon_spool_status
-and
-.B GET /v1/vcon/spool
-give the same answer. Refused beside any capture flag. Requires a build with the
-.B vcon
-feature.
-.IP
-Exit status: 0 after printing the answer, including for a spool directory that
-does not exist yet; 1 when a directory exists and cannot be read; 2 for a build
-without the
-.B vcon
-feature.
-.TP
-.BI \-\-notes " file"
-Operator notes for
-.BR \-\-write\-annotated :
-JSON Lines, one
-.I {"frame": "<pointer>", "note": "<text>"}
-per line, each pointer taken from the
-.B frame
-field of
-.BR \-\-json .
-In the TUI, the session's notes file: loaded when it exists, and where the save
-dialog's NOTES format writes. A note is a person's text and never analysis;
-sipnab writes it into a packet comment and never reads one back.
-.TP
-.BI \-\-write\-annotated " output"
-With
-.B \-I
-and
-.BR \-\-notes ,
-write a pcapng copy of the one input capture with each note as a packet
-comment on the frame it names, then exit. Every note must carry its frame's
-digest, and a capture that changed since the note was written is refused with
-nothing written.
+\fB\-V\fR, \fB\-\-version\fR
+Print version.
+.\" END GENERATED OPTIONS
 .SH TUI KEYBINDINGS
 The interactive TUI supports the terminal viewer-compatible navigation:
 .SS Call List
